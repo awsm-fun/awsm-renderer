@@ -280,6 +280,7 @@ fn default_cross_section_samples() -> u32 {
 /// function. `axis`: 0=X, 1=Y, 2=Z.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum VertexPredicate {
     /// Normal points within `threshold` (dot > threshold) of `dir`.
     NormalDir { dir: [f32; 3], threshold: f32 },

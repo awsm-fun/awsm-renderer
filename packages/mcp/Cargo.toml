@@ -13,8 +13,8 @@ name = "awsm-mcp-server"
 path = "src/main.rs"
 
 [dependencies]
-awsm-editor-protocol = { workspace = true }
-awsm-scene-schema = { workspace = true }
+awsm-editor-protocol = { workspace = true, features = ["schemars"] }
+awsm-scene-schema = { workspace = true, features = ["schemars"] }
 glam = { workspace = true }
 
 tokio = { workspace = true }

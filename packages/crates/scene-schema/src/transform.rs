@@ -1,6 +1,7 @@
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Copy)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Trs {
     pub translation: [f32; 3],
     pub rotation: [f32; 4],

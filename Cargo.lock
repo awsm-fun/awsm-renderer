@@ -248,6 +248,7 @@ name = "awsm-editor-protocol"
 version = "0.2.0"
 dependencies = [
  "awsm-scene-schema",
+ "schemars",
  "serde",
  "serde_json",
 ]
@@ -466,6 +467,7 @@ version = "0.2.0"
 dependencies = [
  "bitcode",
  "glam 0.32.1",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

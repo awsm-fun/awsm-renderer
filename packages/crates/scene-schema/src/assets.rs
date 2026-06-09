@@ -20,6 +20,18 @@ use super::material::{MaterialDef, MeshDef, TextureDef};
 #[derive(Eq, Hash, Copy)]
 pub struct AssetId(pub Uuid);
 
+// A `AssetId` is a UUID string on the wire — describe it as such for JSON Schema
+// (used by the MCP server's typed tool params) rather than recursing into Uuid.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for AssetId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "AssetId".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "format": "uuid" })
+    }
+}
+
 impl AssetId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())

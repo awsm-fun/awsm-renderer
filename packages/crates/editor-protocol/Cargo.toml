@@ -11,3 +11,10 @@ rust-version.workspace = true
 awsm-scene-schema = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+# Optional: JSON Schemas for strongly-typed MCP tool params (e.g. VertexPredicate).
+schemars = { version = "1", optional = true }
+
+[features]
+default = []
+# Derive JSON Schemas (pulls scene-schema's too). Enabled by the MCP server.
+schemars = ["dep:schemars", "awsm-scene-schema/schemars"]

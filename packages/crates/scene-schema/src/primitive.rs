@@ -7,6 +7,7 @@ use super::assets::AssetId;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum PrimitiveShape {
     Plane {
         width: f32,
@@ -237,6 +238,7 @@ fn default_uv_scale() -> [f32; 2] {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 #[derive(Eq, Hash, Copy)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshRef(pub AssetId);
 
 impl std::fmt::Display for MaterialRef {

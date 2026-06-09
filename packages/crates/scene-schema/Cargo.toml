@@ -13,6 +13,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 uuid = { version = "1.11.0", features = ["v4", "serde", "js"] }
 thiserror = { workspace = true }
+# Optional: derive JSON Schemas so the MCP server can expose strongly-typed,
+# self-documenting tool params (e.g. `set_mesh_modifiers`'s ModifierStack) instead
+# of free-form JSON. Off by default — only the MCP server enables it.
+schemars = { version = "1", optional = true }
 
 [features]
 # Native filesystem `load_material_folder`. Off by default so the wasm
@@ -21,6 +25,7 @@ thiserror = { workspace = true }
 # side folder readers; native consumers (tests, CLI tools) enable this.
 default = []
 fs-loader = ["dep:serde_json"]
+schemars = ["dep:schemars"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

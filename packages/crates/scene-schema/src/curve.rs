@@ -32,6 +32,7 @@ impl Default for CurveDef {
 /// Cross-section selection for `SweepAlongCurve`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CrossSectionDef {
     Strip { width: f32, y_offset: f32 },
     Tube { radius: f32, radial_segments: u32 },
@@ -73,6 +74,7 @@ impl CrossSectionDef {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Copy, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum SweepUvMode {
     #[default]
     StretchOnce,

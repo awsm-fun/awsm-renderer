@@ -59,6 +59,18 @@ fn default_visible() -> bool {
 #[derive(Eq, Hash, Copy)]
 pub struct NodeId(pub Uuid);
 
+// A `NodeId` is a UUID string on the wire — describe it as such for JSON Schema
+// (the MCP server's typed tool params) rather than recursing into Uuid.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for NodeId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "NodeId".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "format": "uuid" })
+    }
+}
+
 impl NodeId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())

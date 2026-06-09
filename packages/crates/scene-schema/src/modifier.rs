@@ -18,6 +18,7 @@ use super::primitive::{MeshRef, PrimitiveShape};
 /// The full editable recipe: a base generator + an ordered deformer list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ModifierStack {
     pub base: MeshBase,
     #[serde(default)]
@@ -31,6 +32,7 @@ pub struct ModifierStack {
 /// a pre-baked base. (Phase 5 adds an `Sdf(SdfNode)` variant.)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum MeshBase {
     /// A built-in primitive shape (box / sphere / cylinder / …).
     Primitive(PrimitiveShape),
@@ -64,6 +66,7 @@ pub enum MeshBase {
 /// cannot do — the deliberate reason SDF is the chosen CSG paradigm.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum SdfNode {
     /// A primitive SDF, positioned by its own transform via [`SdfNode::Transform`].
     Primitive(SdfPrimitive),
@@ -83,6 +86,7 @@ pub enum SdfNode {
 /// SDF primitive shapes (centered at the local origin).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum SdfPrimitive {
     Sphere {
         radius: f32,
@@ -110,6 +114,7 @@ pub enum SdfPrimitive {
 /// A world/local axis selector for axis-parameterized deformers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Axis {
     X,
     #[default]
@@ -122,6 +127,7 @@ pub enum Axis {
 /// symbolic ones land first (tier order — see the spec capability menu).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Modifier {
     /// Scale cross-sections along `axis` linearly from `1.0` at the low end to
     /// `factor` at the high end.

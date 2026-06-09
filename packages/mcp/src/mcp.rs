@@ -128,8 +128,8 @@ fn default_cross_samples() -> u32 {
 pub struct SelectVerticesParams {
     /// UUID of the geometry node.
     pub node: String,
-    /// A `VertexPredicate` JSON (tagged by `kind`).
-    pub predicate: serde_json::Value,
+    /// Strongly-typed selection predicate (the schema lists every `kind`).
+    pub predicate: awsm_editor_protocol::VertexPredicate,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -168,11 +168,9 @@ pub struct SoftTransformParams {
 pub struct SetMeshModifiersParams {
     /// UUID of the editable mesh asset.
     pub mesh: String,
-    /// A `ModifierStack` JSON: `{ "base": {...}, "modifiers": [...] }`. Base is
-    /// one of `primitive`/`lathe`/`superquadric`/`sweep`/`captured`; modifiers is
-    /// an ordered list (taper/twist/bend/inflate/spherify/roughen/subdivide/
-    /// smooth/mirror/array/displace).
-    pub stack: serde_json::Value,
+    /// Strongly-typed modifier stack (the schema lists every base + modifier).
+    /// See the `awsm://docs/mesh-tools` resource for worked examples.
+    pub stack: awsm_scene_schema::modifier::ModifierStack,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1269,10 +1267,11 @@ impl EditorMcp {
         let mesh = AssetId(uuid::Uuid::parse_str(&p.mesh).map_err(|e| {
             McpError::invalid_params(format!("invalid mesh id {:?}: {e}", p.mesh), None)
         })?);
-        let stack: awsm_scene_schema::modifier::ModifierStack =
-            json_arg(p.stack, "modifier stack")?;
-        self.dispatch(EditorCommand::SetMeshModifiers { mesh, stack })
-            .await
+        self.dispatch(EditorCommand::SetMeshModifiers {
+            mesh,
+            stack: p.stack,
+        })
+        .await
     }
 
     #[tool(
@@ -1326,10 +1325,9 @@ impl EditorMcp {
         &self,
         Parameters(p): Parameters<SelectVerticesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let predicate = json_arg(p.predicate, "predicate")?;
         self.query(EditorQuery::SelectVerticesWhere {
             node: parse_node(&p.node)?,
-            predicate,
+            predicate: p.predicate,
         })
         .await
     }
