@@ -394,9 +394,11 @@ fn collect_texture_assets(node: &Node, ids: &mut Vec<AssetId>, seen: &mut HashSe
     }
 }
 
-/// The texture refs a PBR/Unlit `MaterialDef` carries (the five glTF slots).
+/// The texture refs a PBR/Unlit `MaterialDef` carries: the five standard glTF
+/// slots plus every KHR-extension texture slot (so the player can bind them —
+/// mirrors the loader's `bind_extension_textures`).
 fn material_texture_refs(def: &MaterialDef) -> Vec<TextureRef> {
-    [
+    let mut refs: Vec<TextureRef> = [
         &def.base_color_texture,
         &def.metallic_roughness_texture,
         &def.normal_texture,
@@ -406,7 +408,38 @@ fn material_texture_refs(def: &MaterialDef) -> Vec<TextureRef> {
     .into_iter()
     .flatten()
     .cloned()
-    .collect()
+    .collect();
+    let ext = &def.extensions;
+    for t in [
+        ext.specular.as_ref().and_then(|e| e.tex.as_ref()),
+        ext.specular.as_ref().and_then(|e| e.color_tex.as_ref()),
+        ext.transmission.as_ref().and_then(|e| e.tex.as_ref()),
+        ext.diffuse_transmission
+            .as_ref()
+            .and_then(|e| e.tex.as_ref()),
+        ext.diffuse_transmission
+            .as_ref()
+            .and_then(|e| e.color_tex.as_ref()),
+        ext.volume.as_ref().and_then(|e| e.thickness_tex.as_ref()),
+        ext.clearcoat.as_ref().and_then(|e| e.tex.as_ref()),
+        ext.clearcoat
+            .as_ref()
+            .and_then(|e| e.roughness_tex.as_ref()),
+        ext.clearcoat.as_ref().and_then(|e| e.normal_tex.as_ref()),
+        ext.sheen.as_ref().and_then(|e| e.color_tex.as_ref()),
+        ext.sheen.as_ref().and_then(|e| e.roughness_tex.as_ref()),
+        ext.anisotropy.as_ref().and_then(|e| e.tex.as_ref()),
+        ext.iridescence.as_ref().and_then(|e| e.tex.as_ref()),
+        ext.iridescence
+            .as_ref()
+            .and_then(|e| e.thickness_tex.as_ref()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        refs.push(*t);
+    }
+    refs
 }
 
 /// Resolve one texture asset to `(name, png_bytes)`. Procedural → regenerate +

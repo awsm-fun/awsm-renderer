@@ -471,6 +471,9 @@ async fn resolve_material(
                 pbr.emissive_tex =
                     texture::load_texture(renderer, assets, t, true, K::Emissive).await;
             }
+            // KHR-extension texture slots (the factors are already mapped by
+            // `material_to_pbr`; bind their textures the same way the editor does).
+            bind_extension_textures(renderer, assets, def, &mut pbr).await;
             Material::Pbr(Box::new(pbr))
         }
         _ => material::material_to_renderer(def),
@@ -481,6 +484,87 @@ async fn resolve_material(
         &renderer.dynamic_materials,
         &renderer.extras_pool,
     )
+}
+
+/// Bind the KHR-extension texture slots on a PBR material from the bundle,
+/// mirroring the editor's `apply_extension_textures`. The extension *factors* are
+/// already mapped by [`material::material_to_pbr`] (so each `pbr.<ext>` is `Some`
+/// iff the material carries it); here we bind the *textures*. `color_tex` slots
+/// are colour data (sRGB + albedo mips); normal maps use the normal mip kind; the
+/// rest are linear data (metallic-roughness mips).
+async fn bind_extension_textures(
+    renderer: &mut AwsmRenderer,
+    assets: &HashMap<String, Vec<u8>>,
+    def: &awsm_scene::MaterialDef,
+    pbr: &mut awsm_renderer::materials::pbr::PbrMaterial,
+) {
+    use MipmapTextureKind as K;
+    let ext = &def.extensions;
+    if let (Some(e), Some(p)) = (ext.specular.as_ref(), pbr.specular.as_mut()) {
+        if let Some(t) = &e.tex {
+            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+        }
+        if let Some(t) = &e.color_tex {
+            p.color_tex = texture::load_texture(renderer, assets, t, true, K::Albedo).await;
+        }
+    }
+    if let (Some(e), Some(p)) = (ext.transmission.as_ref(), pbr.transmission.as_mut()) {
+        if let Some(t) = &e.tex {
+            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+        }
+    }
+    if let (Some(e), Some(p)) = (
+        ext.diffuse_transmission.as_ref(),
+        pbr.diffuse_transmission.as_mut(),
+    ) {
+        if let Some(t) = &e.tex {
+            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+        }
+        if let Some(t) = &e.color_tex {
+            p.color_tex = texture::load_texture(renderer, assets, t, true, K::Albedo).await;
+        }
+    }
+    if let (Some(e), Some(p)) = (ext.volume.as_ref(), pbr.volume.as_mut()) {
+        if let Some(t) = &e.thickness_tex {
+            p.thickness_tex =
+                texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+        }
+    }
+    if let (Some(e), Some(p)) = (ext.clearcoat.as_ref(), pbr.clearcoat.as_mut()) {
+        if let Some(t) = &e.tex {
+            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+        }
+        if let Some(t) = &e.roughness_tex {
+            p.roughness_tex =
+                texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+        }
+        if let Some(t) = &e.normal_tex {
+            p.normal_tex = texture::load_texture(renderer, assets, t, false, K::Normal).await;
+        }
+    }
+    if let (Some(e), Some(p)) = (ext.sheen.as_ref(), pbr.sheen.as_mut()) {
+        if let Some(t) = &e.color_tex {
+            p.color_tex = texture::load_texture(renderer, assets, t, true, K::Albedo).await;
+        }
+        if let Some(t) = &e.roughness_tex {
+            p.roughness_tex =
+                texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+        }
+    }
+    if let (Some(e), Some(p)) = (ext.anisotropy.as_ref(), pbr.anisotropy.as_mut()) {
+        if let Some(t) = &e.tex {
+            p.tex = texture::load_texture(renderer, assets, t, false, K::Normal).await;
+        }
+    }
+    if let (Some(e), Some(p)) = (ext.iridescence.as_ref(), pbr.iridescence.as_mut()) {
+        if let Some(t) = &e.tex {
+            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+        }
+        if let Some(t) = &e.thickness_tex {
+            p.thickness_tex =
+                texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+        }
+    }
 }
 
 /// A magenta unlit placeholder for unassigned meshes (and glb meshes until their
