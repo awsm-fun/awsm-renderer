@@ -2019,6 +2019,26 @@ impl EditorController {
                     ))),
                 }
             }
+            EditorCommand::ImportKtxEnvFromUrl { id, url } => {
+                // Idempotent (cross-tab replay): skip if this id already exists.
+                if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
+                    return Ok(None);
+                }
+                // Register a URL-sourced cubemap asset; the env-sync bridge
+                // fetches + decodes the KTX bytes when `SetEnvironment` applies a
+                // config that references this id (see `env_sync::load_ktx_by_id`'s
+                // `AssetSource::Url` arm). No GPU upload here — unlike a raster
+                // texture, the cubemap is materialized lazily at apply time.
+                self.scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .insert(id, AssetEntry::new(SceneAssetSource::Url(url)));
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::DeleteAsset { id }))
+            }
             // ───────────────────── Animation: clip lifecycle ─────────────────
             EditorCommand::AddClip { id } => {
                 // Idempotent: a cross-tab relay replays this; if the clip id

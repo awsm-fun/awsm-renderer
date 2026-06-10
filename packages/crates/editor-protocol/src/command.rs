@@ -213,6 +213,15 @@ pub enum EditorCommand {
     /// `DeleteAsset` of the new id.
     ImportTextureFromUrl { id: AssetId, url: String },
 
+    /// Register a KTX2 cubemap asset that resolves from a URL (the env-sync
+    /// fetches the bytes on apply — see `AssetSource::Url`). Used to wire a
+    /// skybox / IBL-prefiltered / IBL-irradiance cubemap for `SetEnvironment`
+    /// from a URL, the cubemap analogue of `ImportTextureFromUrl` (which only
+    /// makes 2D rasters). **Carries its `id`** (caller-minted, idempotent) so
+    /// the MCP path can reference it in a following `SetEnvironment`. Inverse:
+    /// `DeleteAsset` of the new id.
+    ImportKtxEnvFromUrl { id: AssetId, url: String },
+
     /// Create a fresh custom material asset (Content Browser "+ Material") of the
     /// given shading family. Inserts a `MaterialDef` into the project asset table
     /// and selects it. **Carries its `id`** (caller-minted, idempotent) so the
@@ -875,6 +884,7 @@ impl EditorCommand {
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
             EditorCommand::ImportModelFromFile { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
+            EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",
             EditorCommand::AddMaterialAsset { .. } => "Add material",
             EditorCommand::AddTextureAsset { .. } => "Add texture",
             EditorCommand::DeleteAsset { .. } | EditorCommand::RestoreAsset { .. } => {

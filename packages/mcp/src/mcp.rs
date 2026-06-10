@@ -2000,16 +2000,36 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment (skybox + IBL). Use 'builtin' (or omit) for the built-in default cubemap/lighting, or pass KTX texture asset UUIDs. A fresh scene already seeds the built-in environment; use this to switch to custom KTX."
+        description = "Set the scene environment (skybox + IBL). Each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default cubemap/lighting, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap (fetched + registered on the fly, like import_texture_from_url). IBL needs both ibl_prefiltered + ibl_irradiance. A fresh scene already seeds the built-in environment."
     )]
     async fn set_environment(
         &self,
         Parameters(p): Parameters<EnvironmentParams>,
     ) -> Result<CallToolResult, McpError> {
+        let is_url = |s: &str| s.starts_with("http://") || s.starts_with("https://");
+        // Resolve a cubemap arg → an existing KTX asset id, registering a
+        // URL-sourced asset first when given a URL (the cubemap analogue of
+        // import_texture_from_url; the env-sync fetches the bytes on apply).
+        macro_rules! resolve_ktx {
+            ($v:expr) => {{
+                let v: &str = $v;
+                if is_url(v) {
+                    let id = AssetId::new();
+                    self.dispatch(EditorCommand::ImportKtxEnvFromUrl {
+                        id,
+                        url: v.to_string(),
+                    })
+                    .await?;
+                    id
+                } else {
+                    parse_asset(v)?
+                }
+            }};
+        }
         let skybox = match p.skybox.as_deref() {
             None | Some("builtin") | Some("builtin_default") => SkyboxConfig::BuiltInDefault,
-            Some(uuid) => SkyboxConfig::Ktx {
-                asset_id: parse_asset(uuid)?,
+            Some(v) => SkyboxConfig::Ktx {
+                asset_id: resolve_ktx!(v),
             },
         };
         let ibl = match p.ibl_prefiltered.as_deref() {
@@ -2017,13 +2037,13 @@ impl EditorMcp {
             Some(prefiltered) => {
                 let irradiance = p.ibl_irradiance.as_deref().ok_or_else(|| {
                     McpError::invalid_params(
-                        "ibl_irradiance is required when ibl_prefiltered is a KTX asset UUID",
+                        "ibl_irradiance is required when ibl_prefiltered is set (KTX asset UUID or .ktx2 URL)",
                         None,
                     )
                 })?;
                 IblConfig::Ktx {
-                    prefiltered_asset_id: parse_asset(prefiltered)?,
-                    irradiance_asset_id: parse_asset(irradiance)?,
+                    prefiltered_asset_id: resolve_ktx!(prefiltered),
+                    irradiance_asset_id: resolve_ktx!(irradiance),
                 }
             }
         };

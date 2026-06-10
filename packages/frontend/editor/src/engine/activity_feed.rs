@@ -331,7 +331,9 @@ fn describe(cmd: &EditorCommand) -> Option<(FocusTarget, String)> {
         EditorCommand::DeleteAsset { .. } | EditorCommand::RestoreAsset { .. } => {
             (F::Inspector, "removed an asset".to_string())
         }
-        EditorCommand::SetEnvironment { .. } => (F::Inspector, "set the environment".to_string()),
+        EditorCommand::SetEnvironment { .. } | EditorCommand::ImportKtxEnvFromUrl { .. } => {
+            (F::Inspector, "set the environment".to_string())
+        }
 
         // ── Animation ─────────────────────────────────────────────────────
         EditorCommand::AddClip { .. } => (F::None, "added a clip".to_string()),
