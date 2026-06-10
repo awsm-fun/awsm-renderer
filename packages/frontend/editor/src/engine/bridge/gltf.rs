@@ -457,38 +457,71 @@ fn extract_extensions(
 ) -> awsm_editor_protocol::material::PbrExtensions {
     use awsm_editor_protocol::material::*;
     let mut e = PbrExtensions::default();
-    // Capture an extension texture slot (a glTF `textureInfo` object) by name.
+
+    // KHR_materials_{emissive_strength, ior, specular, transmission, volume} are
+    // parsed NATIVELY by the `gltf` crate into typed accessors. Reading them via
+    // `extension_value` returns `None` (the crate already consumed them out of the
+    // raw extensions map) — which silently DROPPED transmission/volume/ior/specular
+    // on import (e.g. a glass model imported opaque, not translucent). Use the typed
+    // accessors, exactly as `populate_gltf` (renderer-gltf) does. The remaining
+    // extensions below are NOT in the crate's typed API, so they read raw JSON.
+    if let Some(strength) = m.emissive_strength() {
+        e.emissive_strength = Some(EmissiveStrengthExt { strength });
+    }
+    if let Some(ior) = m.ior() {
+        e.ior = Some(IorExt { ior });
+    }
+    if let Some(s) = m.specular() {
+        e.specular = Some(SpecularExt {
+            factor: s.specular_factor(),
+            color_factor: s.specular_color_factor(),
+            ..Default::default()
+        });
+        if let Some(i) = s.specular_texture() {
+            ext_textures.push(("specular.tex", info_to_ext(i)));
+        }
+        if let Some(i) = s.specular_color_texture() {
+            ext_textures.push(("specular.color_tex", info_to_ext(i)));
+        }
+    }
+    if let Some(t) = m.transmission() {
+        e.transmission = Some(TransmissionExt {
+            factor: t.transmission_factor(),
+            ..Default::default()
+        });
+        if let Some(i) = t.transmission_texture() {
+            ext_textures.push(("transmission.tex", info_to_ext(i)));
+        }
+    }
+    if let Some(vol) = m.volume() {
+        // attenuation_distance defaults to +inf ("no absorption") in glTF; clamp
+        // non-finite to a large finite value so the MaterialDef stays
+        // JSON/TOML-serializable (the bundle round-trip) without changing the look.
+        let attenuation_distance = {
+            let d = vol.attenuation_distance();
+            if d.is_finite() {
+                d
+            } else {
+                f32::MAX
+            }
+        };
+        e.volume = Some(VolumeExt {
+            thickness_factor: vol.thickness_factor(),
+            attenuation_distance,
+            attenuation_color: vol.attenuation_color(),
+            ..Default::default()
+        });
+        if let Some(i) = vol.thickness_texture() {
+            ext_textures.push(("volume.thickness_tex", info_to_ext(i)));
+        }
+    }
+
+    // Capture an extension texture slot (a glTF `textureInfo` JSON object) by name.
     let mut grab = |slot: &'static str, v: &gltf::json::Value, json_key: &str| {
         if let Some(t) = ext_tex(v, json_key) {
             ext_textures.push((slot, t));
         }
     };
-    if let Some(v) = m.extension_value("KHR_materials_emissive_strength") {
-        e.emissive_strength = Some(EmissiveStrengthExt {
-            strength: ext_f32(v, "emissiveStrength", 1.0),
-        });
-    }
-    if let Some(v) = m.extension_value("KHR_materials_ior") {
-        e.ior = Some(IorExt {
-            ior: ext_f32(v, "ior", 1.5),
-        });
-    }
-    if let Some(v) = m.extension_value("KHR_materials_specular") {
-        e.specular = Some(SpecularExt {
-            factor: ext_f32(v, "specularFactor", 1.0),
-            color_factor: ext_color3(v, "specularColorFactor", [1.0, 1.0, 1.0]),
-            ..Default::default()
-        });
-        grab("specular.tex", v, "specularTexture");
-        grab("specular.color_tex", v, "specularColorTexture");
-    }
-    if let Some(v) = m.extension_value("KHR_materials_transmission") {
-        e.transmission = Some(TransmissionExt {
-            factor: ext_f32(v, "transmissionFactor", 0.0),
-            ..Default::default()
-        });
-        grab("transmission.tex", v, "transmissionTexture");
-    }
     if let Some(v) = m.extension_value("KHR_materials_diffuse_transmission") {
         e.diffuse_transmission = Some(DiffuseTransmissionExt {
             factor: ext_f32(v, "diffuseTransmissionFactor", 0.0),
@@ -501,15 +534,6 @@ fn extract_extensions(
             v,
             "diffuseTransmissionColorTexture",
         );
-    }
-    if let Some(v) = m.extension_value("KHR_materials_volume") {
-        e.volume = Some(VolumeExt {
-            thickness_factor: ext_f32(v, "thicknessFactor", 0.0),
-            attenuation_distance: ext_f32(v, "attenuationDistance", 1.0),
-            attenuation_color: ext_color3(v, "attenuationColor", [1.0, 1.0, 1.0]),
-            ..Default::default()
-        });
-        grab("volume.thickness_tex", v, "thicknessTexture");
     }
     if let Some(v) = m.extension_value("KHR_materials_clearcoat") {
         e.clearcoat = Some(ClearcoatExt {
@@ -563,6 +587,21 @@ fn extract_extensions(
         );
     }
     e
+}
+
+/// A typed glTF extension `textureInfo` (from the crate's native accessors —
+/// e.g. `specular.specular_texture()`, `transmission.transmission_texture()`) →
+/// (glTF texture index, binding). The typed-accessor counterpart of [`ext_tex`]
+/// (which parses crate-unknown extensions' textures from raw JSON); mirrors the
+/// standard-slot path in `extract_material_specs`.
+fn info_to_ext(info: gltf::texture::Info) -> (usize, TexBinding) {
+    let texture = info.texture();
+    let index = texture.index();
+    let sampler = gltf_sampler(texture.sampler());
+    (
+        index,
+        tex_binding(info.tex_coord(), info.texture_transform(), sampler),
+    )
 }
 
 /// Read an extension `textureInfo` JSON object → (glTF texture index, binding).
