@@ -4,11 +4,13 @@
 //! bytes are pure data shipped separately; refs here point at glTF image
 //! indices).
 //!
-//! Status: base PBR (factors + standard texture slots + alpha + double-sided +
-//! unlit). FOLLOW-ON (its own increment): the KHR extensions
-//! (transmission/ior/volume/iridescence/specular/clearcoat/sheen/…), sampler +
+//! Covers: base PBR (factors + standard texture slots + alpha + double-sided +
+//! unlit) AND every KHR extension's FACTORS (transmission/ior/volume/iridescence/
+//! specular/emissive_strength/diffuse_transmission/clearcoat/sheen/dispersion/
+//! anisotropy). FOLLOW-ON: extension *texture* refs + sampler +
 //! `KHR_texture_transform` on the refs. Mirrors the editor's
-//! `extract_material_specs`, which stays until the wiring step adopts this.
+//! `extract_material_specs`/`extract_extensions`, which stay until the wiring
+//! step adopts this.
 
 /// glTF `alphaMode` (+ mask cutoff).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -190,49 +192,6 @@ pub fn extract_extensions(m: &gltf::Material) -> MaterialExtensions {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // A scene-less glTF with the dish's extension set (typed:
-    // transmission/ior/volume; raw-JSON: iridescence).
-    const GLASS_GLTF: &str = r#"{
-        "asset": {"version": "2.0"},
-        "extensionsUsed": ["KHR_materials_transmission","KHR_materials_ior","KHR_materials_volume","KHR_materials_iridescence"],
-        "materials": [{
-            "name": "glass",
-            "pbrMetallicRoughness": {"metallicFactor": 0.0, "roughnessFactor": 0.07},
-            "doubleSided": true,
-            "extensions": {
-                "KHR_materials_transmission": {"transmissionFactor": 0.9},
-                "KHR_materials_ior": {"ior": 1.5},
-                "KHR_materials_volume": {"thicknessFactor": 0.1, "attenuationColor": [0.9, 0.95, 1.0]},
-                "KHR_materials_iridescence": {"iridescenceFactor": 1.0, "iridescenceIor": 1.3, "iridescenceThicknessMinimum": 500.0, "iridescenceThicknessMaximum": 550.0}
-            }
-        }]
-    }"#;
-
-    #[test]
-    fn extracts_khr_extensions() {
-        let (doc, _, _) = gltf::import_slice(GLASS_GLTF.as_bytes()).expect("parse gltf");
-        let specs = extract_materials(&doc);
-        assert_eq!(specs.len(), 1);
-        let s = &specs[0];
-        assert_eq!(s.metallic, 0.0);
-        assert!(s.double_sided);
-        let x = &s.extensions;
-        assert_eq!(x.transmission, Some(0.9));
-        assert_eq!(x.ior, Some(1.5));
-        let vol = x.volume.expect("volume");
-        assert_eq!(vol.thickness_factor, 0.1);
-        assert_eq!(vol.attenuation_color, [0.9, 0.95, 1.0]);
-        let ir = x.iridescence.expect("iridescence");
-        assert_eq!(ir.factor, 1.0);
-        assert_eq!(ir.thickness_min, 500.0);
-        assert_eq!(ir.thickness_max, 550.0);
-    }
-}
-
 /// Extract every material in the document into neutral [`MaterialSpec`]s, index-
 /// aligned with `doc.materials()`.
 pub fn extract_materials(doc: &gltf::Document) -> Vec<MaterialSpec> {
@@ -275,4 +234,47 @@ pub fn extract_materials(doc: &gltf::Document) -> Vec<MaterialSpec> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A scene-less glTF with the dish's extension set (typed:
+    // transmission/ior/volume; raw-JSON: iridescence).
+    const GLASS_GLTF: &str = r#"{
+        "asset": {"version": "2.0"},
+        "extensionsUsed": ["KHR_materials_transmission","KHR_materials_ior","KHR_materials_volume","KHR_materials_iridescence"],
+        "materials": [{
+            "name": "glass",
+            "pbrMetallicRoughness": {"metallicFactor": 0.0, "roughnessFactor": 0.07},
+            "doubleSided": true,
+            "extensions": {
+                "KHR_materials_transmission": {"transmissionFactor": 0.9},
+                "KHR_materials_ior": {"ior": 1.5},
+                "KHR_materials_volume": {"thicknessFactor": 0.1, "attenuationColor": [0.9, 0.95, 1.0]},
+                "KHR_materials_iridescence": {"iridescenceFactor": 1.0, "iridescenceIor": 1.3, "iridescenceThicknessMinimum": 500.0, "iridescenceThicknessMaximum": 550.0}
+            }
+        }]
+    }"#;
+
+    #[test]
+    fn extracts_khr_extensions() {
+        let (doc, _, _) = gltf::import_slice(GLASS_GLTF.as_bytes()).expect("parse gltf");
+        let specs = extract_materials(&doc);
+        assert_eq!(specs.len(), 1);
+        let s = &specs[0];
+        assert_eq!(s.metallic, 0.0);
+        assert!(s.double_sided);
+        let x = &s.extensions;
+        assert_eq!(x.transmission, Some(0.9));
+        assert_eq!(x.ior, Some(1.5));
+        let vol = x.volume.expect("volume");
+        assert_eq!(vol.thickness_factor, 0.1);
+        assert_eq!(vol.attenuation_color, [0.9, 0.95, 1.0]);
+        let ir = x.iridescence.expect("iridescence");
+        assert_eq!(ir.factor, 1.0);
+        assert_eq!(ir.thickness_min, 500.0);
+        assert_eq!(ir.thickness_max, 550.0);
+    }
 }
