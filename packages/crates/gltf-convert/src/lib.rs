@@ -25,7 +25,11 @@
 //!   - extract materials + animations (move the pure logic out of the editor
 //!     bridge: `extract_material_specs`/`extract_extensions`/`extract_animations`).
 
+pub mod animations;
 pub mod materials;
+pub use animations::{
+    extract_animations, AnimChannel, AnimProperty, AnimationSpec, Interpolation,
+};
 pub use materials::{
     extract_extensions, extract_materials, AlphaMode, Clearcoat, Iridescence, MaterialExtensions,
     MaterialSpec, Sheen, TexRef, Volume,
@@ -58,7 +62,9 @@ pub struct CanonicalImport {
     /// Materials lifted from the source glTF, in neutral form (empty for an
     /// already-canonical/geometry-only glb — its materials live in the bundle).
     pub materials: Vec<MaterialSpec>,
-    // FOLLOW-ON: extracted animation clips.
+    /// Animations lifted from the source glTF, in neutral form (raw sampler data
+    /// keyed by glTF node index). Empty for an already-canonical glb.
+    pub animations: Vec<AnimationSpec>,
 }
 
 /// Conversion failures (all pure-data; no I/O).
@@ -106,10 +112,11 @@ pub fn convert(bytes: &[u8]) -> Result<CanonicalImport, ConvertError> {
         });
     }
 
-    // Lift the source materials into neutral specs BEFORE reexport strips them
-    // from the geometry-only canonical glb.
+    // Lift the source materials + animations into neutral specs BEFORE reexport
+    // strips them from the geometry-only canonical glb.
     let materials = extract_materials(&doc);
     let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
+    let animations = extract_animations(&doc, &buffers);
     let scene = reexport_clean_scene(&doc, &buffers).ok_or(ConvertError::NoScene)?;
     let glb = stamp_awsm_format(write_glb(&scene))?;
 
@@ -118,6 +125,7 @@ pub fn convert(bytes: &[u8]) -> Result<CanonicalImport, ConvertError> {
         is_already_canonical: false,
         format_version: None,
         materials,
+        animations,
     })
 }
 
@@ -246,6 +254,50 @@ mod tests {
         // The canonical glb itself is geometry-only (material stripped).
         let (doc, _, _) = gltf::import_slice(&out.glb).unwrap();
         assert_eq!(doc.materials().count(), 0);
+    }
+
+    /// A source glTF animation is lifted into a neutral AnimationSpec (name,
+    /// per-channel node index + property + interpolation + raw sampler data),
+    /// while the canonical glb is animation-free.
+    #[test]
+    fn extracts_source_animation() {
+        use awsm_glb_export::{AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation};
+        let node = ExportNode::new("Cube").with_mesh(box_mesh(Vec3::ONE));
+        let anim = ExportAnimation {
+            name: "spin".into(),
+            channels: vec![ExportAnimChannel {
+                node_index: 0,
+                path: AnimPath::Rotation,
+                interpolation: AnimInterp::Linear,
+                times: vec![0.0, 0.5, 1.0],
+                // 4/key quaternion xyzw × 3 keys.
+                values: vec![
+                    0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0,
+                ],
+            }],
+        };
+        let source = export_glb(&GlbScene {
+            nodes: vec![node],
+            animations: vec![anim],
+            ..Default::default()
+        });
+
+        let out = convert(&source).expect("convert");
+        assert_eq!(out.animations.len(), 1);
+        let a = &out.animations[0];
+        assert_eq!(a.name.as_deref(), Some("spin"));
+        assert_eq!(a.channels.len(), 1);
+        let ch = &a.channels[0];
+        assert_eq!(ch.node_index, 0);
+        assert_eq!(ch.property, crate::AnimProperty::Rotation);
+        assert_eq!(ch.interpolation, crate::Interpolation::Linear);
+        assert_eq!(ch.times, vec![0.0, 0.5, 1.0]);
+        assert_eq!(ch.values.len(), 12); // 4/key × 3 keys
+        assert_eq!(&ch.values[0..4], &[0.0, 0.0, 0.0, 1.0]);
+
+        // The canonical glb itself carries no animation.
+        let (doc, _, _) = gltf::import_slice(&out.glb).unwrap();
+        assert_eq!(doc.animations().count(), 0);
     }
 
     /// Idempotency: converting an already-canonical glb passes it through
