@@ -272,11 +272,15 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
   MaterialSpec (currently factors only); the image BYTE-BLOBS (`CanonicalImport`
   needs an `images: Vec<...>` of decoded/raw texture bytes for the player to
   upload); sampler + KHR_texture_transform on `TexRef`.
-- **Phase 2b — gltf unification (RISKIER):** route `renderer-gltf`'s
-  `create_visibility_vertices`/`create_transparency_vertices` through
-  `mesh_pack` too (decode attribute byte-maps → typed slices; thread `front_face`
-  into `pack_visibility_bytes` — add it as a param, raw_mesh passes CCW). Then the
-  two builders are byte-identical by construction. Hot path — careful.
+- **Phase 2b — gltf unification — ⚠️ DEFER (needs your eyes):** route
+  `renderer-gltf`'s `create_visibility_vertices`/`create_transparency_vertices`
+  through `mesh_pack` (decode attribute byte-maps → typed slices; thread
+  `front_face` into `pack_visibility_bytes`). It changes how EVERY gltf mesh is
+  packed; renderer-gltf is wasm-only-testable so a byte mistake can't be caught
+  by native `cargo test` and would break all rendered models. The autonomous loop
+  should NOT attempt this blind — do it with the user present to verify a render.
+  (The shared packer already exists and is wired on the raw-mesh side; this is
+  just the second caller.)
 - **Phase 5 — skin/morph MCP backend (USER PRIORITY).** Landscape surveyed:
   morph already exists as an ANIMATION TRACK target (mcp.rs add_track
   `morph(node,index)`); `drop_skinning` bakes skin→editable; scene types
