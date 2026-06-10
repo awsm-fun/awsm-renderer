@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 # The core renderer (GPU) + the glTF loader we reuse for the per-mesh glbs.
 awsm-renderer = { workspace = true }
+awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 # Player-lean meshgen (default = primitives only) for `RuntimeMesh::Primitive`.
 awsm-meshgen = { workspace = true }

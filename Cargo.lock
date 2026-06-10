@@ -538,6 +538,7 @@ dependencies = [
  "anyhow",
  "awsm-meshgen",
  "awsm-renderer",
+ "awsm-renderer-core",
  "awsm-renderer-gltf",
  "awsm-scene",
  "glam 0.32.1",

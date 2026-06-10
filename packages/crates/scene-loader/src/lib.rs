@@ -24,6 +24,7 @@
 pub mod camera;
 pub mod light;
 pub mod material;
+pub mod texture;
 
 use std::collections::HashMap;
 
@@ -35,11 +36,12 @@ use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::{AwsmRenderer, LoadPhase};
+use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOpts};
 use awsm_scene::{
-    mesh_glb_filename, AssetSource, EditorNode, MaterialInstance, NodeId, NodeKind, RuntimeMesh,
-    Scene, Trs, ASSETS_DIR,
+    mesh_glb_filename, AssetSource, EditorNode, MaterialInstance, MaterialShading, NodeId,
+    NodeKind, RuntimeMesh, Scene, Trs, ASSETS_DIR,
 };
 use glam::{Quat, Vec3};
 
@@ -97,10 +99,8 @@ pub async fn populate_awsm_scene(
     let total = renderables.len();
     for (i, (id, material)) in renderables.iter().enumerate() {
         on_phase(LoadPhase::BuildingMaterials { done: i, total });
-        node_materials.insert(
-            *id,
-            resolve_material(renderer, material.as_ref(), placeholder),
-        );
+        let key = resolve_material(renderer, material.as_ref(), placeholder, assets).await;
+        node_materials.insert(*id, key);
     }
     on_phase(LoadPhase::BuildingMaterials { done: total, total });
 
@@ -353,23 +353,57 @@ fn mesh_data_to_raw(md: awsm_meshgen::MeshData) -> RawMeshData {
 /// A built-in assignment's `inline` is a faithful, complete `MaterialDef` — it's
 /// seeded from the shared variant when the material is assigned, and per-mesh
 /// edits only touch uniform fields — so the player lowers it directly via the
-/// shared [`material::material_to_renderer`] (the same conversion the editor's
-/// live render uses). Texture binding and custom-WGSL materials are follow-ons;
-/// an unassigned node (`None`) renders the magenta placeholder.
-fn resolve_material(
+/// shared [`material`] conversion. For a **PBR** material this also binds the five
+/// standard texture slots from the bundle's `assets/<id>.png` (mirroring the
+/// editor's `apply_textures`); Unlit/Toon are texture-less (as in the editor).
+/// Custom-WGSL materials are a follow-on; an unassigned node (`None`) renders the
+/// magenta placeholder.
+async fn resolve_material(
     renderer: &mut AwsmRenderer,
     instance: Option<&MaterialInstance>,
     placeholder: MaterialKey,
+    assets: &HashMap<String, Vec<u8>>,
 ) -> MaterialKey {
-    match instance {
-        Some(inst) => renderer.materials.insert(
-            material::material_to_renderer(&inst.inline),
-            &renderer.textures,
-            &renderer.dynamic_materials,
-            &renderer.extras_pool,
-        ),
-        None => placeholder,
-    }
+    let Some(inst) = instance else {
+        return placeholder;
+    };
+    let def = &inst.inline;
+    let material = match def.shading {
+        MaterialShading::Pbr => {
+            let alpha = material::alpha_mode_of(def);
+            let mut pbr = material::material_to_pbr(def, alpha, None);
+            // Bind each enabled standard PBR texture slot. sRGB for color data
+            // (base-color / emissive), linear for the rest.
+            use MipmapTextureKind as K;
+            if let Some(t) = &def.base_color_texture {
+                pbr.base_color_tex =
+                    texture::load_texture(renderer, assets, t, true, K::Albedo).await;
+            }
+            if let Some(t) = &def.metallic_roughness_texture {
+                pbr.metallic_roughness_tex =
+                    texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+            }
+            if let Some(t) = &def.normal_texture {
+                pbr.normal_tex = texture::load_texture(renderer, assets, t, false, K::Normal).await;
+            }
+            if let Some(t) = &def.occlusion_texture {
+                pbr.occlusion_tex =
+                    texture::load_texture(renderer, assets, t, false, K::Occlusion).await;
+            }
+            if let Some(t) = &def.emissive_texture {
+                pbr.emissive_tex =
+                    texture::load_texture(renderer, assets, t, true, K::Emissive).await;
+            }
+            Material::Pbr(Box::new(pbr))
+        }
+        _ => material::material_to_renderer(def),
+    };
+    renderer.materials.insert(
+        material,
+        &renderer.textures,
+        &renderer.dynamic_materials,
+        &renderer.extras_pool,
+    )
 }
 
 /// A magenta unlit placeholder for unassigned meshes (and glb meshes until their
