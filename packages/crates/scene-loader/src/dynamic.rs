@@ -8,15 +8,17 @@
 //! `build_custom`, but from the serialized definition instead of the live
 //! `CustomMaterial`.
 //!
-//! Scope: uniforms (defaults + per-mesh `uniform_overrides`). Texture/buffer
-//! slot DEFAULTS and per-mesh texture/buffer OVERRIDES are a follow-on — the
-//! editor's CustomMaterial doesn't carry default bytes, so the bundle can't
-//! export them yet; slots stay unbound (the renderer falls back at upload time).
+//! Scope: uniforms (defaults + per-mesh `uniform_overrides`) and per-mesh
+//! `texture_overrides` (the bake emits each as `assets/<id>.png`; bound here like
+//! the editor's `build_custom`). Still a follow-on: per-mesh BUFFER overrides
+//! (the bake doesn't emit their bytes yet) and material-level texture/buffer
+//! DEFAULTS (the editor's CustomMaterial carries no default bytes) — those slots
+//! stay unbound (the renderer falls back at upload time).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use awsm_materials::dynamic::DynamicMaterial;
+use awsm_materials::dynamic::{DynamicMaterial, DynamicTextureBinding};
 use awsm_materials::dynamic_layout::{
     BufferSlotRuntime, FieldType, MaterialLayout, TextureSlotRuntime, UniformFieldRuntime,
     UniformValue,
@@ -27,6 +29,7 @@ use awsm_materials::{
 use awsm_renderer::dynamic_materials::MaterialRegistration;
 use awsm_renderer::materials::Material;
 use awsm_renderer::AwsmRenderer;
+use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_scene::{
     AssetId, FieldType as SFieldType, MaterialAlphaMode as SAlphaMode, MaterialDefinition,
     MaterialInstance, Scene, UniformValue as SUniformValue,
@@ -66,38 +69,53 @@ pub fn register_custom_materials(
 
 /// Build a per-mesh `Material::Custom` for a registered custom material, applying
 /// the instance's `uniform_overrides` (matched by slot name + type) on top of the
-/// registration defaults. Returns `None` if the shader id isn't registered.
-/// (Texture/buffer overrides are a follow-on — slots stay unbound.)
-pub fn build_custom_material(
-    renderer: &AwsmRenderer,
+/// registration defaults, and binding its per-mesh `texture_overrides` (each
+/// `assets/<id>.png` decoded + staged, exactly like the editor's `build_custom`).
+/// Returns `None` if the shader id isn't registered.
+///
+/// `buffer_overrides` are not bound yet — the bake doesn't emit buffer-override
+/// bytes (see [`export`](crate)); slots stay unbound. Texture/buffer *defaults*
+/// (material-level, vs. these per-mesh overrides) are [`registration`-side].
+pub async fn build_custom_material(
+    renderer: &mut AwsmRenderer,
     shader_id: MaterialShaderId,
     inst: &MaterialInstance,
+    assets: &HashMap<String, Vec<u8>>,
 ) -> Option<Material> {
-    let reg = renderer.dynamic_material_registration(shader_id)?;
-    // Snapshot what we need so we don't hold the renderer borrow.
-    let alpha_mode = reg.alpha_mode;
-    let double_sided = reg.double_sided;
-    let texture_count = reg.layout.textures.len();
-    let buffer_count = reg.layout.buffers.len();
-    let uniforms: Vec<(String, FieldType)> = reg
-        .layout
-        .uniforms
-        .iter()
-        .map(|u| (u.name.clone(), u.ty))
-        .collect();
-    let mut values: Vec<UniformValue> = reg
-        .layout
-        .uniforms
-        .iter()
-        .enumerate()
-        .map(|(i, u)| {
-            reg.uniform_defaults
-                .get(i)
-                .cloned()
-                .filter(|v| v.field_type() == u.ty)
-                .unwrap_or_else(|| default_value_for(u.ty))
-        })
-        .collect();
+    // Snapshot everything we need from the registration up front, then DROP the
+    // borrow — binding textures below needs `&mut renderer`.
+    let (alpha_mode, double_sided, texture_slots, buffer_count, uniforms, mut values) = {
+        let reg = renderer.dynamic_material_registration(shader_id)?;
+        let uniforms: Vec<(String, FieldType)> = reg
+            .layout
+            .uniforms
+            .iter()
+            .map(|u| (u.name.clone(), u.ty))
+            .collect();
+        let values: Vec<UniformValue> = reg
+            .layout
+            .uniforms
+            .iter()
+            .enumerate()
+            .map(|(i, u)| {
+                reg.uniform_defaults
+                    .get(i)
+                    .cloned()
+                    .filter(|v| v.field_type() == u.ty)
+                    .unwrap_or_else(|| default_value_for(u.ty))
+            })
+            .collect();
+        let texture_slots: Vec<String> =
+            reg.layout.textures.iter().map(|t| t.name.clone()).collect();
+        (
+            reg.alpha_mode,
+            reg.double_sided,
+            texture_slots,
+            reg.layout.buffers.len(),
+            uniforms,
+            values,
+        )
+    };
 
     // Per-mesh uniform overrides (matched by name, type-checked).
     for (i, (name, ty)) in uniforms.iter().enumerate() {
@@ -109,12 +127,38 @@ pub fn build_custom_material(
         }
     }
 
+    // Per-mesh texture overrides → pooled bindings (slot order). A custom texture
+    // is treated as color data (srgb + albedo mips), mirroring the editor's
+    // `resolve_texture_binding`. An override whose texture isn't in the bundle (or
+    // fails to decode) leaves the slot unbound.
+    let mut textures: Vec<Option<DynamicTextureBinding>> = vec![None; texture_slots.len()];
+    for (i, name) in texture_slots.iter().enumerate() {
+        if let Some(tref) = inst.texture_overrides.get(name) {
+            if let Some(mt) = crate::texture::load_texture(
+                renderer,
+                assets,
+                tref,
+                true,
+                MipmapTextureKind::Albedo,
+            )
+            .await
+            {
+                if let Some(sampler) = mt.sampler_key {
+                    textures[i] = Some(DynamicTextureBinding::Pooled {
+                        texture: mt.key,
+                        sampler,
+                    });
+                }
+            }
+        }
+    }
+
     Some(Material::Custom(Box::new(DynamicMaterial {
         shader_id,
         alpha_mode,
         double_sided,
         values,
-        textures: vec![None; texture_count],
+        textures,
         buffers: vec![None; buffer_count],
     })))
 }

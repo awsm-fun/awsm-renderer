@@ -430,7 +430,7 @@ async fn resolve_material(
     // Custom-WGSL assignment: the asset resolved to a registered shader (Phase 0).
     // Build a Material::Custom (defaults + uniform overrides); `inline` is ignored.
     if let Some(&shader_id) = custom.get(&inst.asset) {
-        if let Some(mat) = dynamic::build_custom_material(renderer, shader_id, inst) {
+        if let Some(mat) = dynamic::build_custom_material(renderer, shader_id, inst, assets).await {
             return renderer.materials.insert(
                 mat,
                 &renderer.textures,
