@@ -226,11 +226,28 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
   spec's spectral→RGB (Belcour-Barla/`evalSensitivity`). Ruled out texture
   extraction + thickness mapping. FIX needs render verification.
 
-NEXT (in order): Phase 3 convert (decision: implement `convert()` + `AWSM_format`
-by REUSING glb-export's `reexport_clean_scene`/`write_glb` — likely as a thin new
-`awsm-gltf-convert` crate depending on glb-export, or a `convert` module inside
-glb-export if a separate crate proves redundant; note the choice in the report) →
-Phase 2 shared packer (extract raw_mesh packing into pure fns + byte-identity test
-first; gltf unification is the riskier follow-on) → Phase 5 skin/morph MCP backend
-→ Phase 7 sweep. Phases 4 (wiring) + 6 (visualization) build-but-don't-claim
-(browser verification needed).
+- **Phase 3** 🔨 IN PROGRESS — new crate `awsm-gltf-convert` (decision: separate
+  crate depending on glb-export, NOT a module inside it — clean boundary so both
+  editor + player can depend without glb-export's export surface). Increment 1
+  committed (`8b943443`): `AWSM_format` (versioned) + `is_canonical` + `convert()`
+  geometry path (reuses `reexport_clean_scene`/`write_glb`); 2 unit tests green.
+  REMAINING increments (each documented in `gltf-convert/src/lib.rs`, do in order):
+  1. **Stamp `AWSM_format`** onto the output glb — needs a writer hook in
+     `glb-export::write_glb` to add a document-level extension to `extensionsUsed`
+     + `extensions`. Then the idempotency pass-through works → add proptests
+     `convert(convert(x))==convert(x)` and `convert(canonical)==canonical`.
+  2. **Bake tangents + ensure normals** into the canonical glb — needs
+     `MeshData.tangents: Option<Vec<[f32;4]>>` + a `TANGENT` accessor in
+     `write_glb`, then bake via bevy_mikktspace in `convert` (reuse the mikktspace
+     adapter from `renderer/src/raw_mesh.rs` `TangentGeometry` — consider lifting
+     it to a shared spot). Bake whenever normals+uvs exist (materials are
+     stripped, so can't gate on normal-map presence — over-bake is harmless).
+  3. **Extract materials + animations** — move the PURE logic out of the editor
+     bridge (`engine/bridge/gltf.rs`: `extract_material_specs`/`extract_extensions`/
+     `extract_animations`) into `gltf-convert`; image bytes are pure data, GPU
+     upload stays in population. Populate `CanonicalImport.materials`/`.animations`.
+
+NEXT after Phase 3: Phase 2 shared packer (extract raw_mesh packing into pure fns +
+byte-identity test first; gltf unification is the riskier follow-on) → Phase 5
+skin/morph MCP backend → Phase 7 sweep. Phases 4 (wiring) + 6 (visualization)
+build-but-don't-claim (browser verification needed).
