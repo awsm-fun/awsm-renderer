@@ -763,8 +763,11 @@ impl EditorCommand {
         matches!(
             self,
             // Project-level resets / loads / imports that replace the clip set.
+            // NOTE: `LoadPlayerBundle` is deliberately NOT here — it loads clips
+            // into the renderer DIRECTLY via the player path (`populate_awsm_scene`),
+            // bypassing the editor model. Triggering a relower would rebuild
+            // `r.animations` from the (just-cleared) model and wipe those clips.
             EditorCommand::NewProject
-                | EditorCommand::LoadPlayerBundle
                 | EditorCommand::LoadProjectFromUrl { .. }
                 | EditorCommand::ImportModelFromUrl { .. }
                 | EditorCommand::ImportModelFromFile { .. }

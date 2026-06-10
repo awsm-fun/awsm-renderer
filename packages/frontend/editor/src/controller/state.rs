@@ -927,6 +927,12 @@ impl EditorController {
                 {
                     let handle = crate::engine::context::renderer_handle();
                     let mut r = handle.lock().await;
+                    // Drop the editor's own clips + mixer (a prior relower may have
+                    // populated them from the now-cleared model) so the bundle's
+                    // clips don't double up. LoadPlayerBundle doesn't relower (see
+                    // `affects_animation`), so nothing repopulates them.
+                    r.animations.clear_clips();
+                    r.animations.mixer.clear();
                     // Surface each load phase (building materials / uploading
                     // textures / uploading meshes / compiling pipelines N) in the
                     // activity pill — live, because the pill is a reactive signal
