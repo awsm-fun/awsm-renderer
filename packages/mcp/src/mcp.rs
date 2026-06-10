@@ -811,7 +811,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "The last `limit` editor notices (toasts: info/warning/error) — surfaces runtime errors otherwise invisible over MCP. For material compile errors prefer get_material_diagnostics."
+        description = "The last `limit` log entries: `logs` = editor toasts (info/warning/error notices), and `tracing` = raw `tracing` events (WARN/ERROR/etc. from the render loop, bridges, loader — the same lines you'd see in the browser devtools console, otherwise invisible over MCP). For material compile errors prefer get_material_diagnostics."
     )]
     async fn get_console_logs(
         &self,

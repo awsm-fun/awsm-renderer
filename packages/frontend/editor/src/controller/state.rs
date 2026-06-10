@@ -3674,6 +3674,7 @@ impl EditorController {
             }
             EditorQuery::ConsoleLogs { limit } => {
                 use serde_json::json;
+                // Editor toasts (info/warning/error notices).
                 let logs: Vec<serde_json::Value> = CONSOLE_LOG.with(|b| {
                     let b = b.borrow();
                     let start = b.len().saturating_sub(limit as usize);
@@ -3682,8 +3683,17 @@ impl EditorController {
                         .map(|(level, message)| json!({ "level": level, "message": message }))
                         .collect()
                 });
+                // Raw `tracing` events (WARN/ERROR/etc. from anywhere — render
+                // loop, bridges, loader) mirrored from the browser console via the
+                // web-shared CaptureLayer, so a headless MCP driver can read them.
+                let tracing_logs: Vec<serde_json::Value> =
+                    awsm_web_shared::logger::captured_logs(limit as usize)
+                        .into_iter()
+                        .map(|(level, message)| json!({ "level": level, "message": message }))
+                        .collect();
                 let mut entries = std::collections::BTreeMap::new();
                 entries.insert("logs".to_string(), json!(logs));
+                entries.insert("tracing".to_string(), json!(tracing_logs));
                 QueryResult::Map(query::MapResult {
                     kind: "console_logs".to_string(),
                     entries,
