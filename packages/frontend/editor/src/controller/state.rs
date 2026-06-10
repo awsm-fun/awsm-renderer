@@ -856,6 +856,79 @@ impl EditorController {
                 Toast::info("New project");
                 Ok(None)
             }
+            EditorCommand::LoadPlayerBundle => {
+                // Round-trip self-test: bake the open project to an in-memory
+                // bundle, reset to empty, then reload it via the player path
+                // (`populate_awsm_scene`). Destructive + not undoable — the
+                // viewport ends up showing the runtime reload (the scene tree is
+                // left empty; reload the project to keep editing). An agent
+                // screenshots before/after to compare authored vs runtime render.
+
+                // 1. Bake the CURRENT project — must read it before we clear.
+                let files = crate::controller::export::bake_player_bundle(self)
+                    .await
+                    .map_err(|e| crate::error::EditorError::msg(format!("bake: {e}")))?;
+                // 2. Split scene.toml out; the rest is the asset map
+                //    (bundle-relative path → bytes) `populate_awsm_scene` reads.
+                let mut scene_toml: Option<String> = None;
+                let mut assets: std::collections::HashMap<String, Vec<u8>> =
+                    std::collections::HashMap::new();
+                for f in files {
+                    if f.path == awsm_editor_protocol::SCENE_FILE {
+                        scene_toml = Some(String::from_utf8_lossy(&f.bytes).into_owned());
+                    } else {
+                        assets.insert(f.path, f.bytes);
+                    }
+                }
+                let scene_toml = scene_toml
+                    .ok_or_else(|| crate::error::EditorError::msg("bundle missing scene.toml"))?;
+                let scene = awsm_editor_protocol::scene_from_toml(&scene_toml)
+                    .map_err(|e| crate::error::EditorError::msg(format!("scene.toml: {e}")))?;
+
+                // 3. Bare reset to empty — NO default-light seed (the bundle
+                //    carries its own light; seeding one would double it). Mirrors
+                //    NewProject's clears. Carry the bundle's environment so the
+                //    env bridge applies the same skybox/IBL.
+                self.scene.nodes.lock_mut().clear();
+                self.selected.set(Vec::new());
+                *self.scene.assets.lock().unwrap() = Default::default();
+                self.custom_materials.lock_mut().clear();
+                self.current_material.set(None);
+                self.asset_selection.set(None);
+                self.custom_animations.lock_mut().clear();
+                self.current_clip.set(None);
+                self.anim_mixer.set(MixerDoc::default());
+                self.anim_selection.set(None);
+                self.anim_solo_root.set(None);
+                self.playhead.set_neq(0.0);
+                self.playing.set_neq(false);
+                crate::engine::bridge::bridge().clear_skin_joints();
+                crate::engine::bridge::bridge().clear_templates();
+                crate::engine::bridge::skinned_bake_cache::clear();
+                self.missing_assets.set(Vec::new());
+                self.scene.environment.set(scene.environment.clone());
+                self.scene.bump_revision();
+
+                // 4. Load the bundle into the renderer via the player path. The
+                //    bridge's teardown of the old nodes (observer-driven, needs
+                //    the renderer lock) runs once we release this guard, removing
+                //    only the old keys — populate's fresh keys persist. The
+                //    render loop then presents the reload via the free camera.
+                {
+                    let handle = crate::engine::context::renderer_handle();
+                    let mut r = handle.lock().await;
+                    awsm_scene_loader::populate_awsm_scene(&mut r, &scene, &assets)
+                        .await
+                        .map_err(|e| crate::error::EditorError::msg(format!("populate: {e}")))?;
+                }
+                self.project_name.set("round-trip.awsm".to_string());
+                self.dirty.set_neq(false);
+                self.undo.borrow_mut().clear();
+                self.redo.borrow_mut().clear();
+                self.refresh_history_signals();
+                Toast::info("Round-trip: reloaded via populate_awsm_scene");
+                Ok(None)
+            }
             EditorCommand::Insert { id, spec, parent } => {
                 // Idempotent (apply-when-absent): a cross-tab replay or a
                 // duplicate caller-minted id is a no-op, so the id stays stable.

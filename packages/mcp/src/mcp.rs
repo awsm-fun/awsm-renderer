@@ -1305,6 +1305,13 @@ impl EditorMcp {
         self.dispatch(EditorCommand::NewProject).await
     }
 
+    #[tool(
+        description = "Round-trip self-test: bake the CURRENT project to an in-memory player bundle (scene.toml + assets/), reset to empty, then reload it through populate_awsm_scene (the runtime/player path). DESTRUCTIVE: the viewport ends up showing the reload and the scene tree is left empty (reload your project to keep editing). Workflow: screenshot_scene (authored) → load_player_bundle → wait_render_settled → screenshot_scene (runtime reload), and compare. Geometry/built-in-materials/lights load today; textures, custom-WGSL, glb-mesh materials, cameras + clips are follow-ons."
+    )]
+    async fn load_player_bundle(&self) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::LoadPlayerBundle).await
+    }
+
     #[tool(description = "Load a project from a base URL (fetches <base>/project.toml).")]
     async fn load_project_from_url(
         &self,

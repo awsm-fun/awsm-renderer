@@ -158,6 +158,14 @@ pub enum EditorCommand {
     /// Start a fresh, empty project.
     NewProject,
 
+    /// Round-trip self-test: bake the CURRENT project to an in-memory player
+    /// bundle (`scene.toml` + `assets/`), reset to an empty project, then load
+    /// that bundle back through `awsm_scene_loader::populate_awsm_scene` — the
+    /// player/runtime path. Destructive (replaces the open project with the
+    /// reloaded bundle); not undoable. Lets an agent screenshot-compare the
+    /// editor's authored render against the runtime reload over MCP.
+    LoadPlayerBundle,
+
     /// Insert a fresh node (from a ribbon Insert action) under `parent` (root
     /// when `None`). **Carries its `id`** (minted by the dispatcher, not in
     /// `apply`) so the command is deterministic data — the MCP path can echo the
@@ -756,6 +764,7 @@ impl EditorCommand {
             self,
             // Project-level resets / loads / imports that replace the clip set.
             EditorCommand::NewProject
+                | EditorCommand::LoadPlayerBundle
                 | EditorCommand::LoadProjectFromUrl { .. }
                 | EditorCommand::ImportModelFromUrl { .. }
                 | EditorCommand::ImportModelFromFile { .. }
@@ -835,6 +844,7 @@ impl EditorCommand {
             EditorCommand::SetVertexSelection { .. } => "Select vertices",
             EditorCommand::Batch(_) => "Batch edit",
             EditorCommand::NewProject => "New project",
+            EditorCommand::LoadPlayerBundle => "Load player bundle",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",
