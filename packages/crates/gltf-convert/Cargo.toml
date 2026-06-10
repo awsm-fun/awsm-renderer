@@ -1,0 +1,26 @@
+[package]
+name = "awsm-gltf-convert"
+description = "Pure-data glTF → canonical AWSM-format normalizer (no GPU, no browser) — the single import/convert path shared by editor + player"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+# The pure-data glb IR + reader/writer (reexport_clean_scene, write_glb,
+# extract_node_mesh, MeshData re-export, AWSM extension constants). This crate
+# orchestrates those primitives into one canonical conversion.
+awsm-glb-export = { workspace = true }
+awsm-meshgen = { workspace = true }
+gltf = { workspace = true }
+glam = { workspace = true }
+serde_json = { workspace = true }
+# Tangent baking at convert time so the canonical glb is self-contained and the
+# (browser) population path is a dumb upload. Pure CPU.
+bevy_mikktspace = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

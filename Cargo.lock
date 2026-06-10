@@ -328,6 +328,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-gltf-convert"
+version = "0.2.0"
+dependencies = [
+ "awsm-glb-export",
+ "awsm-meshgen",
+ "bevy_mikktspace",
+ "glam 0.32.1",
+ "gltf",
+ "proptest",
+ "serde_json",
+]
+
+[[package]]
 name = "awsm-materials"
 version = "0.2.0"
 dependencies = [
