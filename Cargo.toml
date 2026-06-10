@@ -136,6 +136,8 @@ half = "2.4.1"
 bevy_mikktspace = "0.15.3"
 # Property-based testing (dev-only; pulled in under [dev-dependencies]).
 proptest = "1"
+# base64 — decoding `data:` URI image payloads in the pure-data converter.
+base64 = "0.22"
 
 # Debugging - only needed for `android_chrome_check`
 tokio = {version = "1.52.3", features = ["full"]}

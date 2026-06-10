@@ -334,6 +334,7 @@ version = "0.2.0"
 dependencies = [
  "awsm-glb-export",
  "awsm-meshgen",
+ "base64 0.22.1",
  "bevy_mikktspace",
  "glam 0.32.1",
  "gltf",
