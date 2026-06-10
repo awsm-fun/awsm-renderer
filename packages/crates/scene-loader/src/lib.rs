@@ -11,16 +11,22 @@
 //! our exported bundles this way.
 //!
 //! Runs as one batched, phased pass (build materials → upload textures → upload
-//! meshes → compile pipelines), reporting each [`LoadPhase`] through a callback.
-//! Handles: the node hierarchy (transforms); **primitive** meshes with their
-//! built-in materials; **glb** meshes (`assets/<id>.glb`) AND **skinned** meshes
-//! (`assets/<skin.source>.glb`), both fed through `populate_gltf` with
-//! [`GltfMaterialSource::Single`] so they take OUR material (no glTF default-mint)
-//! and ride the same geometry+skin+morph upload foreign glTF uses; and **lights**
-//! (shared `light_from_config` + shadow params). Remaining follow-ons (each
-//! marked below): texture binding, custom-WGSL materials, cameras, driving a
-//! skinned mesh from our animation clips (the glb poses it at bind pose for now).
+//! meshes → load animation → compile pipelines), reporting each [`LoadPhase`]
+//! through a callback. Handles: the node hierarchy (transforms); **primitive**
+//! meshes with their built-in materials; **glb** meshes (`assets/<id>.glb`) AND
+//! **skinned** meshes (`assets/<skin.source>.glb`), both fed through
+//! `populate_gltf` with [`GltfMaterialSource::Single`] so they take OUR material
+//! (no glTF default-mint) and ride the same geometry+skin+morph upload foreign
+//! glTF uses; **lights** (shared `light_from_config` + shadow params);
+//! **cameras**; textures + custom-WGSL materials; and **animation** — the scene's
+//! clips + NLA mixer ([`animation::load_animations`]) lowered against the per-node
+//! keys built here. The loader only LOADS the clips; the consumer drives the
+//! clock (a player's `update_animations`, or the editor round-trip's playhead
+//! pin). Remaining follow-on: driving a skinned mesh's rig glb joints from our
+//! Transform tracks (skin correspondence — the rig still poses at bind pose, and
+//! its bone tracks currently target the scene bone nodes, not the glb joints).
 
+pub mod animation;
 pub mod camera;
 pub mod dynamic;
 pub mod light;
@@ -29,7 +35,9 @@ pub mod texture;
 
 use std::collections::HashMap;
 
+use animation::AnimResolveMaps;
 use anyhow::{anyhow, Result};
+use awsm_renderer::animation::AnimationClipKey;
 use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
@@ -56,6 +64,11 @@ use glam::{Quat, Vec3};
 pub struct LoadedScene {
     pub meshes: Vec<MeshKey>,
     pub lights: Vec<LightKey>,
+    /// Animation clips inserted into `renderer.animations` (the scene's
+    /// `StoredAnimation`s lowered to runtime clip groups). Tracked so a host can
+    /// remove them on the next load — like meshes/lights, they live outside any
+    /// per-node tracking. The mixer is rebuilt wholesale on each load.
+    pub clips: Vec<AnimationClipKey>,
 }
 
 /// Load a runtime [`Scene`] into the renderer as one batched, phased pass.
@@ -96,20 +109,32 @@ pub async fn populate_awsm_scene(
     // ── Phase 1: build materials ──────────────────────────────────────────────
     // The missing-material sentinel (magenta) for unassigned meshes.
     let placeholder = insert_placeholder_material(renderer);
+    // The key maps the animation resolver consults (filled across phases): node
+    // material keys here, transform/light/camera/mesh keys while materializing.
+    let mut maps = AnimResolveMaps::default();
     // Per-node material key. A built-in assignment's `inline` is a faithful,
     // complete MaterialDef (seeded from the shared variant at assign time), so
     // the player lowers it directly. NOT deduped by asset id: two nodes assigned
     // the same library material carry different per-mesh `inline` uniforms, so
     // they are distinct renderer materials.
-    let mut node_materials: HashMap<NodeId, MaterialKey> = HashMap::new();
     let renderables = collect_renderables(&scene.nodes);
     let total = renderables.len();
     for (i, (id, material)) in renderables.iter().enumerate() {
         on_phase(LoadPhase::BuildingMaterials { done: i, total });
         let key = resolve_material(renderer, material.as_ref(), placeholder, assets, &custom).await;
-        node_materials.insert(*id, key);
+        maps.node_materials.insert(*id, key);
+        // A custom-WGSL asset's first built key is the one a Uniform track drives
+        // (an asset assigned to N nodes mints N keys; mirror the editor's
+        // first-match `material_key_for_shader`).
+        if let Some(inst) = material.as_ref() {
+            if custom.contains_key(&inst.asset) {
+                maps.custom_materials.entry(inst.asset).or_insert(key);
+            }
+        }
     }
     on_phase(LoadPhase::BuildingMaterials { done: total, total });
+    // The custom-WGSL asset → shader-id table (Phase 0) feeds Uniform resolution.
+    maps.custom_shaders = custom;
 
     // ── Phase 2: upload textures (one batch across the whole scene) ───────────
     on_phase(LoadPhase::UploadingTextures);
@@ -125,7 +150,7 @@ pub async fn populate_awsm_scene(
             node,
             None,
             assets,
-            &node_materials,
+            &mut maps,
             placeholder,
             &mut on_phase,
             &mut uploaded,
@@ -134,6 +159,13 @@ pub async fn populate_awsm_scene(
         )
         .await?;
     }
+
+    // ── Phase 3b: load animation clips + the NLA mixer ────────────────────────
+    // Now that every node's transform / material / light / camera / mesh key
+    // exists, lower the scene's clips + mixer against them and insert into the
+    // renderer. The loader only LOADS animation; the consumer drives the clock
+    // (`update_animations` each frame, or the editor round-trip's playhead pin).
+    loaded.clips = animation::load_animations(renderer, scene, &maps);
 
     // ── Phase 4: compile pipelines to ready (materials + shadows) ─────────────
     renderer
@@ -169,7 +201,7 @@ async fn materialize(
     node: &EditorNode,
     parent: Option<TransformKey>,
     assets: &HashMap<String, Vec<u8>>,
-    node_materials: &HashMap<NodeId, MaterialKey>,
+    maps: &mut AnimResolveMaps,
     placeholder: MaterialKey,
     on_phase: &mut dyn FnMut(LoadPhase),
     uploaded: &mut usize,
@@ -179,9 +211,15 @@ async fn materialize(
     let tk = renderer
         .transforms
         .insert(trs_to_transform(&node.transform), parent);
+    // Record this node's transform key for animation Transform tracks.
+    maps.transforms.insert(node.id, tk);
     // The material key built for this node in Phase 1 (placeholder if unassigned
     // or — defensively — somehow unbuilt).
-    let mat = node_materials.get(&node.id).copied().unwrap_or(placeholder);
+    let mat = maps
+        .node_materials
+        .get(&node.id)
+        .copied()
+        .unwrap_or(placeholder);
 
     match &node.kind {
         NodeKind::Mesh { mesh, .. } => {
@@ -189,9 +227,9 @@ async fn materialize(
                 match &entry.source {
                     AssetSource::Mesh(RuntimeMesh::Primitive(shape)) => {
                         let md = awsm_meshgen::primitive_mesh(shape);
-                        loaded
-                            .meshes
-                            .push(renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?);
+                        let key = renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
+                        maps.meshes.entry(node.id).or_insert(key);
+                        loaded.meshes.push(key);
                     }
                     AssetSource::Mesh(RuntimeMesh::Glb) => {
                         // Bare geometry glb (single identity node) — root it UNDER
@@ -204,6 +242,9 @@ async fn materialize(
                             mat,
                         )
                         .await?;
+                        if let Some(&first) = keys.first() {
+                            maps.meshes.entry(node.id).or_insert(first);
+                        }
                         loaded.meshes.extend(keys);
                     }
                     // A Mesh node always references an AssetSource::Mesh; other
@@ -233,6 +274,9 @@ async fn materialize(
         NodeKind::SkinnedMesh { skin, .. } => {
             let keys = load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
                 .await?;
+            if let Some(&first) = keys.first() {
+                maps.meshes.entry(node.id).or_insert(first);
+            }
             loaded.meshes.extend(keys);
             *uploaded += 1;
             on_phase(LoadPhase::UploadingMeshes {
@@ -251,6 +295,7 @@ async fn materialize(
             let casts = shadow.cast;
             if let Ok(k) = renderer.insert_light(lt, Some(shadow)) {
                 renderer.lights.bind_transform(k, tk);
+                maps.lights.insert(node.id, k);
                 loaded.lights.push(k);
             }
             // Compile shadow pipelines on the first caster (no-op once compiled).
@@ -263,9 +308,10 @@ async fn materialize(
             // transform `tk`). A player's camera controller picks which camera
             // drives the view + reads `tk` for position; the editor round-trip
             // uses its own free camera, so this just makes the camera node load.
-            renderer
+            let ck = renderer
                 .cameras
                 .insert(camera::camera_params_from_config(cfg));
+            maps.cameras.insert(node.id, ck);
         }
         // Follow-on: our-clip (animation) wiring.
         _ => {}
@@ -278,7 +324,7 @@ async fn materialize(
             child,
             Some(tk),
             assets,
-            node_materials,
+            maps,
             placeholder,
             on_phase,
             uploaded,

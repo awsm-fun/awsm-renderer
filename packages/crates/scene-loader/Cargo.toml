@@ -9,7 +9,10 @@ rust-version.workspace = true
 
 [dependencies]
 # The core renderer (GPU) + the glTF loader we reuse for the per-mesh glbs.
-awsm-renderer = { workspace = true }
+# `scene-schema` pulls in the reusable animation lowering
+# (`animation::scene_loader::lower_stored_clip` / `lower_stored_mixer`) we feed
+# the bundle's clips + mixer through.
+awsm-renderer = { workspace = true, features = ["scene-schema"] }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 # Dynamic-material types (custom-WGSL registration: layout, registration, shader id).

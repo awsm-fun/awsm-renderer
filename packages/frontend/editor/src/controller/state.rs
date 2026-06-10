@@ -941,7 +941,7 @@ impl EditorController {
                         res.map_err(|e| crate::error::EditorError::msg(format!("populate: {e}")))?;
                     // Track the direct inserts so the NEXT reset removes them
                     // (they're outside the bridge's per-node teardown).
-                    set_bundle_resources(loaded.meshes, loaded.lights);
+                    set_bundle_resources(loaded.meshes, loaded.lights, loaded.clips);
                 }
                 self.project_name.set("round-trip.awsm".to_string());
                 self.dirty.set_neq(false);
@@ -3889,7 +3889,8 @@ thread_local! {
     static LAST_BUNDLE_RESOURCES: RefCell<(
         Vec<awsm_renderer::meshes::MeshKey>,
         Vec<awsm_renderer::lights::LightKey>,
-    )> = const { RefCell::new((Vec::new(), Vec::new())) };
+        Vec<awsm_renderer::animation::AnimationClipKey>,
+    )> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
 }
 
 /// Record the resources a `LoadPlayerBundle` populate just created, so the next
@@ -3897,8 +3898,9 @@ thread_local! {
 fn set_bundle_resources(
     meshes: Vec<awsm_renderer::meshes::MeshKey>,
     lights: Vec<awsm_renderer::lights::LightKey>,
+    clips: Vec<awsm_renderer::animation::AnimationClipKey>,
 ) {
-    LAST_BUNDLE_RESOURCES.with(|c| *c.borrow_mut() = (meshes, lights));
+    LAST_BUNDLE_RESOURCES.with(|c| *c.borrow_mut() = (meshes, lights, clips));
 }
 
 /// On a project reset, remove renderer resources that live OUTSIDE the bridge's
@@ -3914,8 +3916,9 @@ async fn clear_untracked_renderer_resources() {
         .values()
         .cloned()
         .collect();
-    let (meshes, lights) = LAST_BUNDLE_RESOURCES.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    if templates.is_empty() && meshes.is_empty() && lights.is_empty() {
+    let (meshes, lights, clips) =
+        LAST_BUNDLE_RESOURCES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    if templates.is_empty() && meshes.is_empty() && lights.is_empty() && clips.is_empty() {
         return;
     }
     crate::engine::context::with_renderer_mut(move |r| {
@@ -3927,6 +3930,14 @@ async fn clear_untracked_renderer_resources() {
         }
         for lk in lights {
             r.remove_light(lk);
+        }
+        // Drop the bundle's animation clips; the mixer referenced them by key, so
+        // reset it too (the editor's own clips/mixer re-lower on the next edit).
+        if !clips.is_empty() {
+            for ck in clips {
+                r.animations.remove_clip(ck);
+            }
+            r.animations.mixer.clear();
         }
     })
     .await;
