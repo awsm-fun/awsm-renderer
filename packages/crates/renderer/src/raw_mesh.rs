@@ -114,6 +114,210 @@ impl RawMeshData {
         }
         Some(Aabb { min, max })
     }
+
+    /// Per-vertex MikkTSpace tangents (`vec4`: xyz direction + handedness `w`),
+    /// one entry per original (non-exploded) vertex, or `None` when the mesh
+    /// lacks the normals/UVs MikkTSpace needs (or generation fails).
+    ///
+    /// This mirrors the gltf populate path's `ensure_tangents` so a captured /
+    /// imported mesh gets the SAME tangent basis a `populate_gltf` load would —
+    /// without it the geometry packs the synthetic `[0,0,0,1]` fallback, which
+    /// degenerates normal mapping (flat, washed-out normal-mapped surfaces —
+    /// e.g. an imported model's normal-mapped metal/glass looks wrong vs the
+    /// model-viewer's `populate_gltf` render). Callers only invoke this when the
+    /// material actually samples a normal map (see `material_wants_tangents`),
+    /// matching populate's gating so non-normal-mapped meshes pay nothing.
+    fn compute_tangents(&self) -> Option<Vec<[f32; 4]>> {
+        let normals = self.normals.as_ref()?;
+        let uvs = self.uvs.as_ref()?;
+        let vcount = self.positions.len();
+        if self.indices.len() < 3
+            || normals.len() != vcount
+            || uvs.len() != vcount
+            || self.indices.iter().any(|&i| i as usize >= vcount)
+        {
+            return None;
+        }
+        let triangles: Vec<[usize; 3]> = self
+            .indices
+            .chunks_exact(3)
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
+        let mut geo = TangentGeometry::new(&self.positions, normals, uvs, &triangles);
+        if !bevy_mikktspace::generate_tangents(&mut geo) {
+            return None;
+        }
+        Some(geo.finalize())
+    }
+}
+
+/// True when a material samples a normal map (base or clearcoat) and therefore
+/// needs a real tangent basis. Mirrors `renderer-gltf`'s `ensure_tangents`
+/// gating so the raw-mesh path generates tangents in exactly the cases the
+/// gltf path does.
+fn material_wants_tangents(mat: &Material) -> bool {
+    match mat {
+        Material::Pbr(m) => {
+            m.normal_tex.is_some()
+                || m.clearcoat
+                    .as_ref()
+                    .is_some_and(|c| c.normal_tex.is_some())
+        }
+        _ => false,
+    }
+}
+
+/// MikkTSpace [`bevy_mikktspace::Geometry`] adapter over a [`RawMeshData`]'s
+/// per-vertex typed attribute slices. Accumulates the per-corner tangents
+/// MikkTSpace emits into per-vertex sums (UV charts that meet at a shared vertex
+/// can emit differing tangents) and resolves a deterministic per-vertex basis in
+/// [`TangentGeometry::finalize`]. Ported from `renderer-gltf::buffers::tangents`
+/// (which works on raw bytes) to operate on `[f32; N]` slices.
+struct TangentGeometry<'a> {
+    positions: &'a [[f32; 3]],
+    normals: &'a [[f32; 3]],
+    uvs: &'a [[f32; 2]],
+    triangles: &'a [[usize; 3]],
+    tangent_sum: Vec<[f32; 3]>,
+    tangent_sign_sum: Vec<f32>,
+    sign_pos: Vec<u32>,
+    sign_neg: Vec<u32>,
+    count: Vec<u32>,
+}
+
+impl<'a> TangentGeometry<'a> {
+    fn new(
+        positions: &'a [[f32; 3]],
+        normals: &'a [[f32; 3]],
+        uvs: &'a [[f32; 2]],
+        triangles: &'a [[usize; 3]],
+    ) -> Self {
+        let n = positions.len();
+        Self {
+            positions,
+            normals,
+            uvs,
+            triangles,
+            tangent_sum: vec![[0.0; 3]; n],
+            tangent_sign_sum: vec![0.0; n],
+            sign_pos: vec![0; n],
+            sign_neg: vec![0; n],
+            count: vec![0; n],
+        }
+    }
+
+    fn finalize(&self) -> Vec<[f32; 4]> {
+        let mut out = Vec::with_capacity(self.tangent_sum.len());
+        for v in 0..self.tangent_sum.len() {
+            if self.count[v] == 0 {
+                out.push([1.0, 0.0, 0.0, 1.0]);
+                continue;
+            }
+            let mut tangent = normalize_or_fallback(self.tangent_sum[v], self.normals[v]);
+            if !tangent.iter().all(|x| x.is_finite()) {
+                tangent = [1.0, 0.0, 0.0];
+            }
+            let sign_sum = self.tangent_sign_sum[v];
+            const SIGN_EPSILON: f32 = 1e-4;
+            let sign = if !sign_sum.is_finite() {
+                1.0
+            } else if sign_sum.abs() >= SIGN_EPSILON {
+                if sign_sum > 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            } else if self.sign_pos[v] >= self.sign_neg[v] {
+                1.0
+            } else {
+                -1.0
+            };
+            out.push([tangent[0], tangent[1], tangent[2], sign]);
+        }
+        out
+    }
+}
+
+impl bevy_mikktspace::Geometry for TangentGeometry<'_> {
+    fn num_faces(&self) -> usize {
+        self.triangles.len()
+    }
+    fn num_vertices_of_face(&self, _face: usize) -> usize {
+        3
+    }
+    fn position(&self, face: usize, vert: usize) -> [f32; 3] {
+        self.positions[self.triangles[face][vert]]
+    }
+    fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
+        self.normals[self.triangles[face][vert]]
+    }
+    fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
+        self.uvs[self.triangles[face][vert]]
+    }
+    fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
+        let v = self.triangles[face][vert];
+        self.tangent_sum[v][0] += tangent[0];
+        self.tangent_sum[v][1] += tangent[1];
+        self.tangent_sum[v][2] += tangent[2];
+        self.tangent_sign_sum[v] += tangent[3];
+        if tangent[3] > 0.0 {
+            self.sign_pos[v] += 1;
+        } else if tangent[3] < 0.0 {
+            self.sign_neg[v] += 1;
+        }
+        self.count[v] += 1;
+    }
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize3(v: [f32; 3]) -> [f32; 3] {
+    let len_sq = dot3(v, v);
+    if len_sq > 1e-20 {
+        let inv = len_sq.sqrt().recip();
+        [v[0] * inv, v[1] * inv, v[2] * inv]
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
+
+fn canonical_tangent_from_normal(normal: [f32; 3]) -> [f32; 3] {
+    let n = normalize3(normal);
+    let axis = if n[1].abs() < 0.999 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let t = normalize3(cross3(axis, n));
+    if dot3(t, t) > 0.0 {
+        t
+    } else {
+        [1.0, 0.0, 0.0]
+    }
+}
+
+/// Orthonormalize the accumulated tangent against the vertex normal (Gram-
+/// Schmidt), falling back to a canonical basis when the sum degenerates.
+fn normalize_or_fallback(v: [f32; 3], normal: [f32; 3]) -> [f32; 3] {
+    let n = normalize3(normal);
+    let proj = dot3(v, n);
+    let v_ortho = [v[0] - n[0] * proj, v[1] - n[1] * proj, v[2] - n[2] * proj];
+    let t = normalize3(v_ortho);
+    if dot3(t, t) > 0.0 {
+        t
+    } else {
+        canonical_tangent_from_normal(normal)
+    }
 }
 
 impl AwsmRenderer {
@@ -157,6 +361,17 @@ impl AwsmRenderer {
             Vec::with_capacity(exploded_count * VIS_BYTES_PER_VERTEX);
         let normals = data.normals.as_ref().expect("ensure_normals filled this");
 
+        // Real MikkTSpace tangents when the material samples a normal map (the
+        // gltf populate path does the same via `ensure_tangents`); otherwise the
+        // synthetic [0,0,0,1] below is fine — a surface with no normal map never
+        // reads the tangent, so we skip the generation cost.
+        let tangents = self
+            .materials
+            .get(material_key)
+            .is_ok_and(material_wants_tangents)
+            .then(|| data.compute_tangents())
+            .flatten();
+
         // Same barycentric pattern the gltf path uses (see
         // `gltf/buffers/mesh/visibility.rs`).
         const BARYCENTRICS: [[f32; 2]; 3] = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
@@ -181,12 +396,16 @@ impl AwsmRenderer {
                 visibility_bytes.extend_from_slice(&normal[0].to_le_bytes());
                 visibility_bytes.extend_from_slice(&normal[1].to_le_bytes());
                 visibility_bytes.extend_from_slice(&normal[2].to_le_bytes());
-                // tangent (16) — synthetic [0,0,0,1] when caller didn't supply one.
-                // Matches gltf populate's default-tangent fallback.
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+                // tangent (16) — real MikkTSpace basis when generated above, else
+                // synthetic [0,0,0,1] (matches gltf populate's default fallback).
+                let tan = tangents
+                    .as_ref()
+                    .map(|t| t[v_idx])
+                    .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                visibility_bytes.extend_from_slice(&tan[0].to_le_bytes());
+                visibility_bytes.extend_from_slice(&tan[1].to_le_bytes());
+                visibility_bytes.extend_from_slice(&tan[2].to_le_bytes());
+                visibility_bytes.extend_from_slice(&tan[3].to_le_bytes());
                 // original_vertex_index (4)
                 visibility_bytes.extend_from_slice(&vertex_index.to_le_bytes());
             }
@@ -347,41 +566,27 @@ impl AwsmRenderer {
         let aabb = data.aabb();
         let vertex_count = data.vertex_count();
         let triangle_count = data.triangle_count();
-        let exploded_count = triangle_count * 3;
-
-        // ── Visibility geometry (56 B / exploded vertex) — same layout as
-        // the opaque path; the transparent pipeline doesn't consume this but
-        // the buffer_info expects both visibility + transparency offsets.
-        let mut visibility_bytes: Vec<u8> = Vec::with_capacity(
-            exploded_count * MeshBufferVertexInfo::VISIBILITY_GEOMETRY_BYTE_SIZE,
-        );
         let normals = data.normals.as_ref().expect("ensure_normals filled this");
-        const BARYCENTRICS: [[f32; 2]; 3] = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
-        for (triangle_index, tri) in data.indices.chunks_exact(3).enumerate() {
-            for (corner, &vertex_index) in tri.iter().enumerate() {
-                let v_idx = vertex_index as usize;
-                let pos = data.positions[v_idx];
-                let normal = normals[v_idx];
-                let bary = BARYCENTRICS[corner];
-                visibility_bytes.extend_from_slice(&pos[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&pos[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&pos[2].to_le_bytes());
-                visibility_bytes.extend_from_slice(&(triangle_index as u32).to_le_bytes());
-                visibility_bytes.extend_from_slice(&bary[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&bary[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[2].to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&1.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&vertex_index.to_le_bytes());
-            }
-        }
 
-        // ── Transparency geometry (40 B / vertex, per-original-vertex,
+        // Real MikkTSpace tangents when the material samples a normal map — same
+        // gating + basis as the gltf populate path (see opaque `add_raw_mesh`).
+        let tangents = self
+            .materials
+            .get(material_key)
+            .is_ok_and(material_wants_tangents)
+            .then(|| data.compute_tangents())
+            .flatten();
+
+        // ── Transparency geometry ONLY (40 B / vertex, per-original-vertex,
         // *not* exploded). Matches `gltf/buffers/mesh/transparency.rs`.
+        //
+        // A transparency-pass material (we returned early above for opaque)
+        // builds NO visibility geometry: emitting it would also rasterize this
+        // mesh into the opaque/visibility buffer, rendering it as a solid
+        // occluder *in front of* its own transmission/blend — a glass surface
+        // would read opaque-white. The gltf path is identical: a
+        // transmission/blend/mask primitive maps to `GeometryKind::Transparency`
+        // with the visibility offset `None` (see `mesh_buffer_geometry_kind`).
         let mut transparency_bytes: Vec<u8> = Vec::with_capacity(
             vertex_count * MeshBufferVertexInfo::TRANSPARENCY_GEOMETRY_BYTE_SIZE,
         );
@@ -394,12 +599,16 @@ impl AwsmRenderer {
             transparency_bytes.extend_from_slice(&normal[0].to_le_bytes());
             transparency_bytes.extend_from_slice(&normal[1].to_le_bytes());
             transparency_bytes.extend_from_slice(&normal[2].to_le_bytes());
-            // Synthetic tangent [0,0,0,1] matches the gltf default-tangent
-            // fallback when meshes don't ship per-vertex tangents.
-            transparency_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-            transparency_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-            transparency_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-            transparency_bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+            // tangent (16) — real MikkTSpace basis when generated above, else the
+            // synthetic [0,0,0,1] fallback (matches gltf populate).
+            let tan = tangents
+                .as_ref()
+                .map(|t| t[v_idx])
+                .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            transparency_bytes.extend_from_slice(&tan[0].to_le_bytes());
+            transparency_bytes.extend_from_slice(&tan[1].to_le_bytes());
+            transparency_bytes.extend_from_slice(&tan[2].to_le_bytes());
+            transparency_bytes.extend_from_slice(&tan[3].to_le_bytes());
         }
 
         // Attribute index (per-triangle u32s — same as opaque).
@@ -461,9 +670,10 @@ impl AwsmRenderer {
             },
         };
         let buffer_info = MeshBufferInfo {
-            visibility_geometry_vertex: Some(MeshBufferVertexInfo {
-                count: exploded_count,
-            }),
+            // Transparency-pass mesh: no visibility geometry (see the comment
+            // on the transparency-bytes build above — it would double-render
+            // the mesh as an opaque occluder).
+            visibility_geometry_vertex: None,
             transparency_geometry_vertex: Some(MeshBufferVertexInfo {
                 count: vertex_count,
             }),
@@ -493,7 +703,7 @@ impl AwsmRenderer {
             &self.materials,
             &self.transforms,
             buffer_info_key,
-            Some(&visibility_bytes),
+            None,
             Some(&transparency_bytes),
             &custom_attribute_bytes,
             &attribute_index_bytes,
@@ -504,6 +714,18 @@ impl AwsmRenderer {
         )?;
 
         self.sync_spatial_for_mesh(mesh_key);
+
+        // A transparent mesh carries NO visibility geometry (see above), so it
+        // can't participate in the shadow-generation pass — which rasterizes
+        // visibility geometry. Default it to no cast / no receive so the shadow
+        // pass never looks up a visibility buffer that doesn't exist (the
+        // `cast: true` mesh default would otherwise make a shadow-casting light
+        // try, and fail, to draw it). Mirrors the scene loader's transparent
+        // shadow default; a caller may still override via `set_mesh_shadow_flags`.
+        let _ = self.set_mesh_shadow_flags(
+            mesh_key,
+            crate::shadows::MeshShadowFlags::TRANSPARENT_DEFAULT,
+        );
 
         // Register the per-mesh transparent pipeline key so the transparent
         // pass has a draw pipeline for this geometry. Mirrors what
