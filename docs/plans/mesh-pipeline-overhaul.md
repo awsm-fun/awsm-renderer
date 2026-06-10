@@ -287,8 +287,10 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
   glb-export share it; renderer-gltf byte variant is the remaining follow-on).
   ✅ extension TEXTURE refs DONE (`MaterialSpec.extension_textures`) — material
   extraction is now feature-complete (base PBR + all KHR factors + textures).
-  (b) LEFT: `data:`-URI image bytes (needs a base64 dep) — the last convert edge.
-  (c) Phase 7 doc/MCP fidelity sweep.
+  ✅ `data:`-URI image bytes DONE (base64). **The convert crate is now
+  FEATURE-COMPLETE** (geometry + full materials + animations + images).
+  (c) LEFT (genuine but smaller): Phase 7 doc/MCP fidelity sweep; when this turns
+  marginal the loop posts the morning report — the big features need the browser.
   These are GENUINE but smaller; when they run dry the loop should STOP and post
   the morning report rather than manufacture busywork — the big features need the
   user + browser.
