@@ -209,3 +209,28 @@ with suspected root cause(s) + proposed fix; no blind edits.
 Per phase: what landed, commit hashes, what's `cargo`-verified, what needs
 in-browser verification, what's scaffolded/partial, and any decisions/blocks
 encountered.
+
+---
+
+## PROGRESS LOG (overnight run, newest notes at bottom)
+
+Sequencing the run by value×safety (zero-risk/completable first; hot-path + browser
+work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring`:
+
+- **Phase 0** ✅ — committed the session's in-browser-verified work in 4 commits:
+  `b165cdaa` (renderer transmission/tangent/shadow fix), `3b6fae5c` (env-from-URL
+  MCP), `df42cfc7` (glb round-trip proptest), `94463275` (this plan doc).
+- **Phase 1** ✅ — `docs/buffers.md` written + committed (`afea4b66`).
+- **Phase 8** ✅ (analysis) — `docs/iridescence-analysis.md` committed (`85adb942`).
+  Prime suspect: the 3-wavelength two-beam thin-film approx in `brdf.wgsl` vs the
+  spec's spectral→RGB (Belcour-Barla/`evalSensitivity`). Ruled out texture
+  extraction + thickness mapping. FIX needs render verification.
+
+NEXT (in order): Phase 3 convert (decision: implement `convert()` + `AWSM_format`
+by REUSING glb-export's `reexport_clean_scene`/`write_glb` — likely as a thin new
+`awsm-gltf-convert` crate depending on glb-export, or a `convert` module inside
+glb-export if a separate crate proves redundant; note the choice in the report) →
+Phase 2 shared packer (extract raw_mesh packing into pure fns + byte-identity test
+first; gltf unification is the riskier follow-on) → Phase 5 skin/morph MCP backend
+→ Phase 7 sweep. Phases 4 (wiring) + 6 (visualization) build-but-don't-claim
+(browser verification needed).
