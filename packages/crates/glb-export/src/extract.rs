@@ -449,4 +449,49 @@ mod tests {
         // The skinned node still binds the skin.
         assert!(doc.nodes().any(|n| n.skin().is_some()));
     }
+
+    /// `reexport_clean` PRESERVES each node's local transform (it does not bake
+    /// or strip them). This is the invariant `awsm-scene-loader` relies on: a
+    /// skinned rig glb carries the original glTF's root basis-conversion node
+    /// (e.g. RiggedSimple's `Z_UP`), so the rig glb is self-placing and the
+    /// loader roots it at the renderer root rather than re-applying a scene
+    /// transform — otherwise the root rotation double-applies. If a future change
+    /// makes reexport flatten/bake transforms, this fails and the loader's
+    /// SkinnedMesh placement must be revisited.
+    #[test]
+    fn reexport_clean_preserves_node_transforms() {
+        // A non-identity root transform, like the Z-up→Y-up `Z_UP` node.
+        let rot = glam::Quat::from_rotation_x(std::f32::consts::FRAC_PI_2).to_array();
+        let mut parent = ExportNode::new("Z_UP");
+        parent.transform = Trs {
+            translation: [1.0, 2.0, 3.0],
+            rotation: rot,
+            scale: [1.0, 1.0, 1.0],
+        };
+        parent.children = vec![ExportNode::new("Cube").with_mesh(box_mesh(Vec3::splat(1.0)))];
+        let glb = write_glb(&GlbScene {
+            nodes: vec![parent],
+            ..Default::default()
+        });
+
+        let clean = reexport_clean(&glb).expect("reexport");
+        assert_eq!(clean.nodes.len(), 1, "single root preserved");
+        let t = &clean.nodes[0].transform;
+        for (got, want) in t.translation.iter().zip([1.0, 2.0, 3.0].iter()) {
+            assert!((got - want).abs() < 1e-5, "translation {:?}", t.translation);
+        }
+        for (got, want) in t.rotation.iter().zip(rot.iter()) {
+            assert!(
+                (got - want).abs() < 1e-5,
+                "rotation {:?} vs {:?}",
+                t.rotation,
+                rot
+            );
+        }
+        assert_eq!(
+            clean.nodes[0].children.len(),
+            1,
+            "child hierarchy preserved"
+        );
+    }
 }
