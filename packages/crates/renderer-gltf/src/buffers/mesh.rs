@@ -34,6 +34,16 @@ pub(super) fn mesh_buffer_geometry_kind(
     primitive: &gltf::Primitive,
     hints: &GltfDataHints,
 ) -> GltfMeshBufferGeometryKind {
+    use crate::data::GltfGeometryOverride as Ov;
+    // A caller-applied material overrides the glb's own alpha (e.g. the bundle
+    // loader over a materialless geometry-only glb). Transparent → transparency
+    // geometry only (no visibility waste); the glb's own material is irrelevant.
+    match hints.geometry_override {
+        Ov::Opaque => return GltfMeshBufferGeometryKind::Visibility,
+        Ov::Transparent => return GltfMeshBufferGeometryKind::Transparency,
+        Ov::Both => return GltfMeshBufferGeometryKind::Both,
+        Ov::FromMaterial => {}
+    }
     if hints.hud {
         GltfMeshBufferGeometryKind::Both
     } else {

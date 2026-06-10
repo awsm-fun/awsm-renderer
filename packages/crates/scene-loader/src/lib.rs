@@ -367,7 +367,23 @@ async fn load_glb_under(
     let bytes = assets
         .get(&key)
         .ok_or_else(|| anyhow!("bundle is missing mesh glb `{key}`"))?;
-    let data = GltfLoader::from_glb_bytes(bytes).await?.into_data(None)?;
+    // The bundle's glb is geometry-only (materials stripped), so `populate_gltf`
+    // would decide every primitive Opaque and build no transparency geometry —
+    // but we apply OUR material via `Single`. If that material is transparent the
+    // transparency pass would then fail (`TransparencyGeometryBufferNotFound`), so
+    // override the geometry kind from our material (per-load — the same glb asset
+    // can be shared by nodes with different materials).
+    use awsm_renderer_gltf::data::GltfGeometryOverride;
+    let geometry_override = if renderer.materials.is_transparency_pass(material) {
+        GltfGeometryOverride::Transparent
+    } else {
+        GltfGeometryOverride::FromMaterial
+    };
+    let hints = awsm_renderer_gltf::data::GltfDataHints::default()
+        .with_geometry_override(geometry_override);
+    let data = GltfLoader::from_glb_bytes(bytes)
+        .await?
+        .into_data(Some(hints))?;
     let ctx = renderer
         .populate_gltf_with(
             data,
