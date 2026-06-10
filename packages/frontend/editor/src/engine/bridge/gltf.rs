@@ -54,6 +54,13 @@ pub struct GltfImport {
     /// so the geometry is used as-is (no extra matrix). Skinned meshes bake to
     /// their bind pose (JOINTS/WEIGHTS are not read).
     pub node_meshes: HashMap<(u32, Option<u32>), MeshData>,
+    /// `Some` when the import carries skins: the whole rig (geometry + skeleton +
+    /// joints/weights + morph) re-exported through our writer into a clean glb
+    /// (materials/animations dropped). This is what the player bundle ships for
+    /// the import's `SkinnedMesh` nodes (`assets/<source-id>.glb`); cached under
+    /// the source-file `AssetId` at `finish_model_import`. `None` for unskinned
+    /// imports (those go through the captured-mesh path).
+    pub skinned_glb: Option<Vec<u8>>,
 }
 
 /// A glTF material extracted into an editable [`MaterialDef`] (factors only;
@@ -240,6 +247,18 @@ async fn import_typed(
             Vec::new()
         }
     };
+    // If the import carries skins, ingest the whole rig (geometry + skeleton +
+    // joints/weights + morph) into OUR clean glb — re-exported through our writer
+    // (materials/anims/cruft dropped), the same pipeline static meshes use. This
+    // is what the player bundle ships for skinned content (the source bytes never
+    // need retaining — we have our own re-export). Static imports go through
+    // `node_meshes`/`mesh_cache` instead, so we only pay this for skinned files.
+    let skinned_glb = if data.doc.skins().next().is_some() {
+        awsm_glb_export::reexport_clean_scene(&data.doc, &data.buffers.raw)
+            .map(|scene| awsm_glb_export::write_glb(&scene))
+    } else {
+        None
+    };
     let (template, materials) = {
         // Hold the renderer lock across the async populate + the synchronous
         // template snapshot, so nothing mutates the freshly-built tree first.
@@ -262,6 +281,7 @@ async fn import_typed(
         materials,
         animations,
         node_meshes,
+        skinned_glb,
     })
 }
 

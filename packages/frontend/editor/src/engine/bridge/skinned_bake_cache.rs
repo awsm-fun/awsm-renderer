@@ -31,6 +31,22 @@ type BakeKey = (AssetId, u32, Option<u32>);
 
 thread_local! {
     static SKINNED_BAKES: RefCell<HashMap<BakeKey, MeshData>> = RefCell::new(HashMap::new());
+    /// Per-imported-source the **clean rig glb** (geometry + skeleton + joints/
+    /// weights + morph, re-exported through our writer; materials/anims dropped),
+    /// keyed by the source-file `AssetId`. This is what the player bundle ships
+    /// for the import's skinned nodes (`assets/<source>.glb`). Session-local (same
+    /// caveat as the bind-pose cache above).
+    static SOURCE_RIG_GLB: RefCell<HashMap<AssetId, Vec<u8>>> = RefCell::new(HashMap::new());
+}
+
+/// Stash the clean rig glb for an imported source (keyed by its source-file id).
+pub fn store_rig_glb(source: AssetId, glb: Vec<u8>) {
+    SOURCE_RIG_GLB.with(|c| c.borrow_mut().insert(source, glb));
+}
+
+/// The clean rig glb for an imported source, if present (the bundle reads this).
+pub fn get_rig_glb(source: AssetId) -> Option<Vec<u8>> {
+    SOURCE_RIG_GLB.with(|c| c.borrow().get(&source).cloned())
 }
 
 /// Stash a skinned node's bind-pose geometry under its `(source, node_index,
@@ -51,7 +67,8 @@ pub fn get(source: AssetId, node_index: u32, primitive_index: Option<u32>) -> Op
     })
 }
 
-/// Drop every cached bake (project reset).
+/// Drop every cached bake + rig glb (project reset).
 pub fn clear() {
     SKINNED_BAKES.with(|c| c.borrow_mut().clear());
+    SOURCE_RIG_GLB.with(|c| c.borrow_mut().clear());
 }

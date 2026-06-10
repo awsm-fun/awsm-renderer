@@ -2678,6 +2678,13 @@ impl EditorController {
         // meshes ignores it — but it's cheap + keeps the path uniform.
         crate::engine::bridge::bridge().insert_template(asset_id, template.clone());
 
+        // Cache the import's clean rig glb (built at import for skinned files)
+        // under the source-file id, so the player bundle can ship it as
+        // `assets/<source>.glb` for this import's `SkinnedMesh` nodes.
+        if let Some(glb) = import.skinned_glb {
+            crate::engine::bridge::skinned_bake_cache::store_rig_glb(asset_id, glb);
+        }
+
         // glTF primitives with no material use glTF's default material — white,
         // metallic 1.0, roughness 1.0 (NOT the editor's magenta sentinel, which is
         // for deliberately-unassigned meshes). Create one shared "Default"

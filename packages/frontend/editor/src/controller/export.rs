@@ -137,6 +137,30 @@ pub async fn bake_player_bundle(
         }
     }
 
+    // 4. Skinned meshes: one clean rig glb (skeleton + mesh + skin + morph, built
+    // at import via reexport_clean_scene) per imported source. The scene.toml
+    // SkinnedMesh nodes reference `skin.source` → `assets/<source>.glb`.
+    fn collect_skinned(node: &Node, out: &mut HashSet<AssetId>) {
+        if let NodeKind::SkinnedMesh { skin, .. } = &node.kind.get_cloned() {
+            out.insert(skin.source);
+        }
+        for c in node.children.lock_ref().iter() {
+            collect_skinned(c, out);
+        }
+    }
+    let mut skinned_sources: HashSet<AssetId> = HashSet::new();
+    for n in &roots {
+        collect_skinned(n, &mut skinned_sources);
+    }
+    for src in skinned_sources {
+        if let Some(glb) = crate::engine::bridge::skinned_bake_cache::get_rig_glb(src) {
+            files.push(BundleFile::asset(
+                awsm_editor_protocol::mesh_glb_filename(src),
+                glb,
+            ));
+        }
+    }
+
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
 }
 
