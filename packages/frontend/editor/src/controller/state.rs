@@ -833,6 +833,11 @@ impl EditorController {
                 // Skin bridge mappings (#2) + import templates belong to imported
                 // models — drop them.
                 crate::engine::bridge::bridge().clear_skin_joints();
+                // Remove imported-glTF template meshes from the renderer BEFORE
+                // dropping the template metadata: `clear_templates` only clears the
+                // map, and the skinned populate copies are template-owned (node
+                // teardown deliberately skips them), so without this they ghost.
+                remove_imported_template_meshes().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 self.project_name.set("untitled.awsm".to_string());
@@ -903,6 +908,11 @@ impl EditorController {
                 self.playhead.set_neq(0.0);
                 self.playing.set_neq(false);
                 crate::engine::bridge::bridge().clear_skin_joints();
+                // Remove imported-glTF template meshes from the renderer BEFORE
+                // dropping the template metadata: `clear_templates` only clears the
+                // map, and the skinned populate copies are template-owned (node
+                // teardown deliberately skips them), so without this they ghost.
+                remove_imported_template_meshes().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 self.missing_assets.set(Vec::new());
@@ -3870,6 +3880,30 @@ type Aabb3 = ([f32; 3], [f32; 3]);
 /// A coarse local-space AABB for a node kind (half-extents from primitive dims;
 /// a unit box for anything without obvious bounds). Used only to frame the
 /// camera + report approximate size — not a tight collision bound.
+/// On a project reset, remove every imported-glTF template's renderer meshes.
+/// `clear_templates` (called right after) only clears the metadata map; the
+/// skinned populate copies are template-owned, so node teardown deliberately
+/// leaves them rendering — without this they ghost after New Project or a bundle
+/// round-trip reload.
+async fn remove_imported_template_meshes() {
+    let templates: Vec<_> = crate::engine::bridge::bridge()
+        .templates
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect();
+    if templates.is_empty() {
+        return;
+    }
+    crate::engine::context::with_renderer_mut(move |r| {
+        for t in &templates {
+            crate::engine::bridge::asset_template::remove_template_meshes(r, t);
+        }
+    })
+    .await;
+}
+
 fn local_aabb(kind: &NodeKind) -> Aabb3 {
     // A Mesh's true bounds come from its baked geometry in the mesh cache; every
     // procedural node (box / sphere / sweep / …) is a Mesh now.

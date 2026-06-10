@@ -223,6 +223,28 @@ pub fn hide_template_meshes(renderer: &mut AwsmRenderer, template: &AssetTemplat
     walk(renderer, &template.roots);
 }
 
+/// Teardown counterpart to [`hide_template_meshes`]: remove EVERY mesh this
+/// import's `populate_gltf` baked — skinned copies AND hidden static copies
+/// alike — from the renderer.
+///
+/// `clear_templates` only drops the template *metadata*; the skinned populate
+/// copies are template-owned, so `remove_node`/`teardown` deliberately leave
+/// them rendering. Without removing them here on a project reset they linger as
+/// ghosts (a flat bind-pose blob) after New Project / a round-trip reload.
+/// Orphaned baked transforms are left (invisible without a mesh) — `remove_mesh`
+/// is the visible-resource cleanup.
+pub fn remove_template_meshes(renderer: &mut AwsmRenderer, template: &AssetTemplate) {
+    fn walk(renderer: &mut AwsmRenderer, nodes: &[AssetTemplateNode]) {
+        for n in nodes {
+            for mk in &n.mesh_keys {
+                renderer.remove_mesh(*mk);
+            }
+            walk(renderer, &n.children);
+        }
+    }
+    walk(renderer, &template.roots);
+}
+
 /// Convert a renderer [`Transform`] into the schema [`Trs`].
 pub fn transform_to_trs(t: &Transform) -> Trs {
     Trs {
