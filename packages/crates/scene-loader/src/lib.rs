@@ -10,21 +10,27 @@
 //! against the source render. The model-test page can load a `.glb` *or* one of
 //! our exported bundles this way.
 //!
-//! Status: this first cut materializes the node hierarchy (transforms) +
-//! **primitive** meshes (regenerated from params). The remaining arms —
-//! `RuntimeMesh::Glb` (reuse `populate_gltf` on `assets/<id>.glb`), real material
-//! binding (currently a magenta placeholder), lights, cameras, skins, and our
-//! animation clips — are staged follow-ons (each marked below).
+//! Status: this cut materializes the node hierarchy (transforms), **primitive**
+//! meshes (regenerated from params), and **glb** meshes (the per-mesh
+//! `assets/<id>.glb` fed through `populate_gltf`, rooted under the scene node's
+//! transform — this is the geometry+skin+morph path foreign glTF already uses).
+//! The remaining arms — real material binding (currently a magenta placeholder),
+//! lights, cameras, standalone skins, and our animation clips — are staged
+//! follow-ons (each marked below).
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::AwsmRenderer;
-use awsm_scene::{AssetSource, EditorNode, NodeKind, RuntimeMesh, Scene, Trs};
+use awsm_renderer_gltf::loader::GltfLoader;
+use awsm_renderer_gltf::AwsmRendererGltfExt;
+use awsm_scene::{
+    mesh_glb_filename, AssetSource, EditorNode, NodeKind, RuntimeMesh, Scene, Trs, ASSETS_DIR,
+};
 use glam::{Quat, Vec3};
 
 /// Load a runtime [`Scene`] into the renderer. `assets` maps bundle-relative
@@ -65,10 +71,17 @@ async fn materialize(
                     let md = awsm_meshgen::primitive_mesh(shape);
                     renderer.add_raw_mesh(mesh_data_to_raw(md), tk, placeholder)?;
                 }
-                // Follow-on: load `assets/<mesh.0>.glb` from `assets` and feed it
-                // through `populate_gltf`'s mesh/skin upload (reusing the exact
-                // path foreign glTF uses), then place it under `tk`.
-                AssetSource::Mesh(RuntimeMesh::Glb) => {}
+                // Geometry (+ skin / morph) glb: feed the in-memory bytes through
+                // the exact path foreign glTF uses, rooted under `tk` so the scene
+                // node's TRS applies on top of the glb's identity node.
+                AssetSource::Mesh(RuntimeMesh::Glb) => {
+                    let key = format!("{ASSETS_DIR}/{}", mesh_glb_filename(mesh.0));
+                    let bytes = assets
+                        .get(&key)
+                        .ok_or_else(|| anyhow!("bundle is missing mesh glb `{key}`"))?;
+                    let data = GltfLoader::from_glb_bytes(bytes).await?.into_data(None)?;
+                    renderer.populate_gltf_under(data, None, Some(tk)).await?;
+                }
                 _ => {}
             }
         }

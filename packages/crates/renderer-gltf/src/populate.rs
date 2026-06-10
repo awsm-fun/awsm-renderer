@@ -175,6 +175,7 @@ pub async fn populate_gltf(
     renderer: &mut AwsmRenderer,
     gltf_data: impl Into<Arc<GltfData>>,
     scene: Option<usize>,
+    parent_transform: Option<awsm_renderer::transforms::TransformKey>,
 ) -> anyhow::Result<GltfPopulateContext> {
     use crate::populate::animation::GltfAnimationExt;
     use crate::populate::extensions::instancing::GltfInstancingExt;
@@ -221,7 +222,7 @@ pub async fn populate_gltf(
     };
 
     for node in scene.nodes() {
-        renderer.populate_gltf_node_transform(&ctx, &node, None)?;
+        renderer.populate_gltf_node_transform(&ctx, &node, parent_transform)?;
     }
 
     for node in scene.nodes() {

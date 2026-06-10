@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use awsm_renderer::AwsmRenderer;
+use awsm_renderer::{transforms::TransformKey, AwsmRenderer};
 
 use crate::{data::GltfData, populate::GltfPopulateContext};
 
@@ -22,6 +22,19 @@ pub trait AwsmRendererGltfExt {
         gltf_data: impl Into<Arc<GltfData>>,
         scene: Option<usize>,
     ) -> anyhow::Result<GltfPopulateContext>;
+
+    /// Like [`populate_gltf`](Self::populate_gltf), but roots the document's
+    /// scene nodes under `parent_transform` instead of at the renderer root.
+    /// Used by `awsm-scene-loader` to drop a runtime-bundle's per-mesh glb
+    /// (a single identity node holding geometry) beneath the scene node that
+    /// carries its real TRS.
+    #[allow(async_fn_in_trait)]
+    async fn populate_gltf_under(
+        &mut self,
+        gltf_data: impl Into<Arc<GltfData>>,
+        scene: Option<usize>,
+        parent_transform: Option<TransformKey>,
+    ) -> anyhow::Result<GltfPopulateContext>;
 }
 
 impl AwsmRendererGltfExt for AwsmRenderer {
@@ -30,6 +43,15 @@ impl AwsmRendererGltfExt for AwsmRenderer {
         gltf_data: impl Into<Arc<GltfData>>,
         scene: Option<usize>,
     ) -> anyhow::Result<GltfPopulateContext> {
-        crate::populate::populate_gltf(self, gltf_data, scene).await
+        crate::populate::populate_gltf(self, gltf_data, scene, None).await
+    }
+
+    async fn populate_gltf_under(
+        &mut self,
+        gltf_data: impl Into<Arc<GltfData>>,
+        scene: Option<usize>,
+        parent_transform: Option<TransformKey>,
+    ) -> anyhow::Result<GltfPopulateContext> {
+        crate::populate::populate_gltf(self, gltf_data, scene, parent_transform).await
     }
 }
