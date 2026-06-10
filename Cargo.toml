@@ -6,6 +6,7 @@ members = [
     "packages/crates/meshgen",
     "packages/crates/glb-export",
     "packages/crates/gltf-convert",
+    "packages/crates/tangents",
     "packages/crates/particles",
     "packages/crates/renderer",
     "packages/crates/renderer-core",
@@ -90,6 +91,7 @@ awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.2.0"
 awsm-meshgen = { path = "packages/crates/meshgen", version = "0.2.0" }
 awsm-glb-export = { path = "packages/crates/glb-export", version = "0.2.0" }
 awsm-gltf-convert = { path = "packages/crates/gltf-convert", version = "0.2.0" }
+awsm-tangents = { path = "packages/crates/tangents", version = "0.2.0" }
 awsm-particles = { path = "packages/crates/particles", version = "0.2.0" }
 awsm-materials = { path = "packages/crates/materials", version = "0.2.0" }
 awsm-renderer = { path = "packages/crates/renderer", version = "0.2.0" }

@@ -319,7 +319,7 @@ name = "awsm-glb-export"
 version = "0.2.0"
 dependencies = [
  "awsm-meshgen",
- "bevy_mikktspace",
+ "awsm-tangents",
  "glam 0.32.1",
  "gltf",
  "gltf-json",
@@ -436,7 +436,7 @@ dependencies = [
  "awsm-materials",
  "awsm-renderer-core",
  "awsm-scene",
- "bevy_mikktspace",
+ "awsm-tangents",
  "futures",
  "glam 0.32.1",
  "indexmap",
@@ -560,6 +560,13 @@ dependencies = [
  "glam 0.32.1",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "awsm-tangents"
+version = "0.2.0"
+dependencies = [
+ "bevy_mikktspace",
 ]
 
 [[package]]

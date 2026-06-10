@@ -68,7 +68,8 @@ askama = {workspace = true}
 strum = {workspace = true}
 ordered-float = {workspace = true}
 indexmap = { workspace = true}
-bevy_mikktspace = { workspace = true}
+# MikkTSpace tangent generation (shared crate) for the raw-mesh upload path.
+awsm-tangents = { workspace = true }
 rstar = "0.12"
 # Required unconditionally by the `workers/` module (Phase 4.3a) — job
 # Input/Output must be serializable. The legacy optional `serde`
