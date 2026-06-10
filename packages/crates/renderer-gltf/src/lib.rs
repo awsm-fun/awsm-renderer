@@ -27,4 +27,4 @@ pub mod worker_job;
 pub use aabb::{aabb_from_gltf_doc, aabb_from_gltf_node, aabb_from_gltf_primitive};
 pub use ext::AwsmRendererGltfExt;
 pub use extract::{extract_animations, ExtractedAnimation, ExtractedChannel, ExtractedProperty};
-pub use populate::{GltfKeyLookups, GltfPopulateContext};
+pub use populate::{GltfKeyLookups, GltfMaterialSource, GltfPopulateContext, PopulateGltfOpts};

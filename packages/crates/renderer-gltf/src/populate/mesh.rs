@@ -22,6 +22,7 @@ use crate::{
 
 use super::animation::GltfAnimationExt;
 use super::GltfMaterialLookupKey;
+use super::GltfMaterialSource;
 use super::GltfPopulateContext;
 
 /// Per-crate extension trait carrying mesh-population methods on
@@ -192,7 +193,12 @@ impl GltfMeshExt for AwsmRenderer {
                 &ctx.data.buffers.raw,
             );
 
-        let material_key = {
+        let material_key = if let GltfMaterialSource::Single(key) = ctx.material_source {
+            // The caller supplied the material (our runtime glb: one per node,
+            // from scene.toml). Skip glTF material + texture creation + pipeline
+            // scheduling entirely — no throwaway default to mint and replace.
+            key
+        } else {
             let existing = ctx
                 .material_keys
                 .lock()
