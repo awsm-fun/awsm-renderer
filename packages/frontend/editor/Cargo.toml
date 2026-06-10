@@ -17,6 +17,7 @@ awsm-particles = { workspace = true, features = ["serde"] }
 awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export", "debug-views"] }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
+awsm-scene-loader = { workspace = true }
 awsm-editor-protocol = { workspace = true }
 awsm-web-shared = { workspace = true }
 

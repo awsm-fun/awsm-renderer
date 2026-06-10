@@ -11,12 +11,15 @@
 //! our exported bundles this way.
 //!
 //! Status: this cut materializes the node hierarchy (transforms), **primitive**
-//! meshes (regenerated from params), and **glb** meshes (the per-mesh
-//! `assets/<id>.glb` fed through `populate_gltf`, rooted under the scene node's
-//! transform — this is the geometry+skin+morph path foreign glTF already uses).
-//! The remaining arms — real material binding (currently a magenta placeholder),
-//! lights, cameras, standalone skins, and our animation clips — are staged
-//! follow-ons (each marked below).
+//! meshes (regenerated from params) with their **built-in materials** (the
+//! shared `material_to_renderer` conversion, texture-less), and **glb** meshes
+//! (the per-mesh `assets/<id>.glb` fed through `populate_gltf`, rooted under the
+//! scene node's transform — the geometry+skin+morph path foreign glTF already
+//! uses). The remaining arms — texture binding, custom-WGSL materials, glb-mesh
+//! material reassignment, lights, cameras, standalone skins, and our animation
+//! clips — are staged follow-ons (each marked below).
+
+pub mod material;
 
 use std::collections::HashMap;
 
@@ -29,7 +32,8 @@ use awsm_renderer::AwsmRenderer;
 use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::AwsmRendererGltfExt;
 use awsm_scene::{
-    mesh_glb_filename, AssetSource, EditorNode, NodeKind, RuntimeMesh, Scene, Trs, ASSETS_DIR,
+    mesh_glb_filename, AssetSource, EditorNode, MaterialInstance, NodeKind, RuntimeMesh, Scene,
+    Trs, ASSETS_DIR,
 };
 use glam::{Quat, Vec3};
 
@@ -43,8 +47,9 @@ pub async fn populate_awsm_scene(
     scene: &Scene,
     assets: &HashMap<String, Vec<u8>>,
 ) -> Result<()> {
-    // A shared placeholder material until real material binding lands (follow-on:
-    // resolve each node's `MaterialInstance` + `scene.custom_materials`).
+    // The missing-material sentinel for unassigned meshes (and glb meshes until
+    // their material reassignment lands). Built-in-assigned meshes resolve their
+    // own key via `resolve_material`.
     let placeholder = insert_placeholder_material(renderer);
     for node in &scene.nodes {
         materialize(renderer, scene, node, None, assets, placeholder).await?;
@@ -64,16 +69,22 @@ async fn materialize(
         .transforms
         .insert(trs_to_transform(&node.transform), parent);
 
-    if let NodeKind::Mesh { mesh, .. } = &node.kind {
+    if let NodeKind::Mesh { mesh, material, .. } = &node.kind {
         if let Some(entry) = scene.assets.get(mesh.0) {
             match &entry.source {
                 AssetSource::Mesh(RuntimeMesh::Primitive(shape)) => {
+                    let mat = resolve_material(renderer, material.as_ref(), placeholder);
                     let md = awsm_meshgen::primitive_mesh(shape);
-                    renderer.add_raw_mesh(mesh_data_to_raw(md), tk, placeholder)?;
+                    renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
                 }
                 // Geometry (+ skin / morph) glb: feed the in-memory bytes through
                 // the exact path foreign glTF uses, rooted under `tk` so the scene
                 // node's TRS applies on top of the glb's identity node.
+                //
+                // Follow-on: the node's assigned material. `populate_gltf` mints
+                // its own keys from the glb's (absent → default) materials; binding
+                // our `material` over them means reassigning each primitive's
+                // material key from the returned `GltfPopulateContext`.
                 AssetSource::Mesh(RuntimeMesh::Glb) => {
                     let key = format!("{ASSETS_DIR}/{}", mesh_glb_filename(mesh.0));
                     let bytes = assets
@@ -120,7 +131,32 @@ fn mesh_data_to_raw(md: awsm_meshgen::MeshData) -> RawMeshData {
     }
 }
 
-/// A magenta unlit placeholder until real material binding lands.
+/// Resolve a mesh node's assigned material to a renderer key.
+///
+/// A built-in assignment's `inline` is a faithful, complete `MaterialDef` — it's
+/// seeded from the shared variant when the material is assigned, and per-mesh
+/// edits only touch uniform fields — so the player lowers it directly via the
+/// shared [`material::material_to_renderer`] (the same conversion the editor's
+/// live render uses). Texture binding and custom-WGSL materials are follow-ons;
+/// an unassigned node (`None`) renders the magenta placeholder.
+fn resolve_material(
+    renderer: &mut AwsmRenderer,
+    instance: Option<&MaterialInstance>,
+    placeholder: MaterialKey,
+) -> MaterialKey {
+    match instance {
+        Some(inst) => renderer.materials.insert(
+            material::material_to_renderer(&inst.inline),
+            &renderer.textures,
+            &renderer.dynamic_materials,
+            &renderer.extras_pool,
+        ),
+        None => placeholder,
+    }
+}
+
+/// A magenta unlit placeholder for unassigned meshes (and glb meshes until their
+/// material reassignment lands).
 fn insert_placeholder_material(renderer: &mut AwsmRenderer) -> MaterialKey {
     let mut m = UnlitMaterial::new(MaterialAlphaMode::Opaque, false);
     m.base_color_factor = [1.0, 0.0, 1.0, 1.0];
