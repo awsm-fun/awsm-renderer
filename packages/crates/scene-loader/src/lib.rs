@@ -27,8 +27,10 @@ pub mod material;
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
+use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
+use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::{AwsmRenderer, LoadPhase};
@@ -40,7 +42,20 @@ use awsm_scene::{
 };
 use glam::{Quat, Vec3};
 
+/// The renderer resources `populate_awsm_scene` created, returned so a host can
+/// tear the loaded scene back down — these inserts live OUTSIDE any per-node
+/// tracking the host keeps, so without removing them they'd leak/ghost on the
+/// next load. Only the *visible* resources (meshes + lights) are tracked;
+/// orphaned transforms / materials are invisible and cleared on a full renderer
+/// rebuild.
+#[derive(Default, Debug)]
+pub struct LoadedScene {
+    pub meshes: Vec<MeshKey>,
+    pub lights: Vec<LightKey>,
+}
+
 /// Load a runtime [`Scene`] into the renderer as one batched, phased pass.
+/// Returns the [`LoadedScene`] handles for later teardown.
 ///
 /// `assets` maps bundle-relative paths (e.g. `assets/<id>.glb`, `assets/<id>.png`)
 /// to their bytes — the in-memory file set the bundle exporter produces, so the
@@ -67,7 +82,7 @@ pub async fn populate_awsm_scene(
     scene: &Scene,
     assets: &HashMap<String, Vec<u8>>,
     mut on_phase: impl FnMut(LoadPhase),
-) -> Result<()> {
+) -> Result<LoadedScene> {
     // ── Phase 1: build materials ──────────────────────────────────────────────
     // The missing-material sentinel (magenta) for unassigned meshes.
     let placeholder = insert_placeholder_material(renderer);
@@ -93,6 +108,7 @@ pub async fn populate_awsm_scene(
     renderer.finalize_gpu_textures().await?;
 
     // ── Phase 3: upload meshes (geometry + skins) + lights ────────────────────
+    let mut loaded = LoadedScene::default();
     let mut uploaded = 0usize;
     for node in &scene.nodes {
         materialize(
@@ -106,6 +122,7 @@ pub async fn populate_awsm_scene(
             &mut on_phase,
             &mut uploaded,
             total,
+            &mut loaded,
         )
         .await?;
     }
@@ -114,7 +131,7 @@ pub async fn populate_awsm_scene(
     renderer
         .wait_for_pipelines_ready_with_progress(|cp| on_phase(LoadPhase::CompilingPipelines(cp)))
         .await?;
-    Ok(())
+    Ok(loaded)
 }
 
 /// Flatten the tree (DFS) to the renderable nodes that carry a material —
@@ -149,6 +166,7 @@ async fn materialize(
     on_phase: &mut dyn FnMut(LoadPhase),
     uploaded: &mut usize,
     total: usize,
+    loaded: &mut LoadedScene,
 ) -> Result<()> {
     let tk = renderer
         .transforms
@@ -163,13 +181,22 @@ async fn materialize(
                 match &entry.source {
                     AssetSource::Mesh(RuntimeMesh::Primitive(shape)) => {
                         let md = awsm_meshgen::primitive_mesh(shape);
-                        renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
+                        loaded
+                            .meshes
+                            .push(renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?);
                     }
                     AssetSource::Mesh(RuntimeMesh::Glb) => {
                         // Bare geometry glb (single identity node) — root it UNDER
                         // the scene node's transform, which is what places it.
-                        load_glb_under(renderer, assets, &mesh_glb_filename(mesh.0), Some(tk), mat)
-                            .await?;
+                        let keys = load_glb_under(
+                            renderer,
+                            assets,
+                            &mesh_glb_filename(mesh.0),
+                            Some(tk),
+                            mat,
+                        )
+                        .await?;
+                        loaded.meshes.extend(keys);
                     }
                     // A Mesh node always references an AssetSource::Mesh; other
                     // source kinds (Filename / Url / Material / Texture) can't be a
@@ -196,7 +223,9 @@ async fn materialize(
         // is the remaining skin-correspondence follow-on; the glb poses at bind
         // pose for now.)
         NodeKind::SkinnedMesh { skin, .. } => {
-            load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat).await?;
+            let keys = load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
+                .await?;
+            loaded.meshes.extend(keys);
             *uploaded += 1;
             on_phase(LoadPhase::UploadingMeshes {
                 done: *uploaded,
@@ -214,6 +243,7 @@ async fn materialize(
             let casts = shadow.cast;
             if let Ok(k) = renderer.insert_light(lt, Some(shadow)) {
                 renderer.lights.bind_transform(k, tk);
+                loaded.lights.push(k);
             }
             // Compile shadow pipelines on the first caster (no-op once compiled).
             if casts {
@@ -236,6 +266,7 @@ async fn materialize(
             on_phase,
             uploaded,
             total,
+            loaded,
         ))
         .await?;
     }
@@ -258,13 +289,13 @@ async fn load_glb_under(
     leaf: &str,
     parent: Option<TransformKey>,
     material: MaterialKey,
-) -> Result<()> {
+) -> Result<Vec<MeshKey>> {
     let key = format!("{ASSETS_DIR}/{leaf}");
     let bytes = assets
         .get(&key)
         .ok_or_else(|| anyhow!("bundle is missing mesh glb `{key}`"))?;
     let data = GltfLoader::from_glb_bytes(bytes).await?.into_data(None)?;
-    renderer
+    let ctx = renderer
         .populate_gltf_with(
             data,
             PopulateGltfOpts {
@@ -275,7 +306,18 @@ async fn load_glb_under(
             },
         )
         .await?;
-    Ok(())
+    // The renderer mesh keys this glb produced (one per primitive), so the host
+    // can remove them on teardown.
+    let keys = ctx
+        .key_lookups
+        .lock()
+        .unwrap()
+        .all_mesh_keys
+        .values()
+        .flatten()
+        .copied()
+        .collect();
+    Ok(keys)
 }
 
 fn trs_to_transform(trs: &Trs) -> Transform {

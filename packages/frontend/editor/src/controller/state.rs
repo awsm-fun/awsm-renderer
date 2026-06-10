@@ -837,7 +837,7 @@ impl EditorController {
                 // dropping the template metadata: `clear_templates` only clears the
                 // map, and the skinned populate copies are template-owned (node
                 // teardown deliberately skips them), so without this they ghost.
-                remove_imported_template_meshes().await;
+                clear_untracked_renderer_resources().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 self.project_name.set("untitled.awsm".to_string());
@@ -912,7 +912,7 @@ impl EditorController {
                 // dropping the template metadata: `clear_templates` only clears the
                 // map, and the skinned populate copies are template-owned (node
                 // teardown deliberately skips them), so without this they ghost.
-                remove_imported_template_meshes().await;
+                clear_untracked_renderer_resources().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 self.missing_assets.set(Vec::new());
@@ -937,7 +937,11 @@ impl EditorController {
                         })
                         .await;
                     crate::engine::activity::set_load_phase(None);
-                    res.map_err(|e| crate::error::EditorError::msg(format!("populate: {e}")))?;
+                    let loaded =
+                        res.map_err(|e| crate::error::EditorError::msg(format!("populate: {e}")))?;
+                    // Track the direct inserts so the NEXT reset removes them
+                    // (they're outside the bridge's per-node teardown).
+                    set_bundle_resources(loaded.meshes, loaded.lights);
                 }
                 self.project_name.set("round-trip.awsm".to_string());
                 self.dirty.set_neq(false);
@@ -3877,15 +3881,32 @@ impl EditorController {
 /// A min/max bound as a pair of `[x,y,z]` corners.
 type Aabb3 = ([f32; 3], [f32; 3]);
 
-/// A coarse local-space AABB for a node kind (half-extents from primitive dims;
-/// a unit box for anything without obvious bounds). Used only to frame the
-/// camera + report approximate size — not a tight collision bound.
-/// On a project reset, remove every imported-glTF template's renderer meshes.
-/// `clear_templates` (called right after) only clears the metadata map; the
-/// skinned populate copies are template-owned, so node teardown deliberately
-/// leaves them rendering — without this they ghost after New Project or a bundle
-/// round-trip reload.
-async fn remove_imported_template_meshes() {
+thread_local! {
+    /// Renderer meshes + lights a prior `LoadPlayerBundle` populated DIRECTLY
+    /// (via `populate_awsm_scene`) — these live OUTSIDE the bridge's per-node
+    /// tracking, so the next reset must remove them explicitly or a repeated
+    /// round-trip / New-Project-after-round-trip leaves them ghosting.
+    static LAST_BUNDLE_RESOURCES: RefCell<(
+        Vec<awsm_renderer::meshes::MeshKey>,
+        Vec<awsm_renderer::lights::LightKey>,
+    )> = const { RefCell::new((Vec::new(), Vec::new())) };
+}
+
+/// Record the resources a `LoadPlayerBundle` populate just created, so the next
+/// project reset removes them.
+fn set_bundle_resources(
+    meshes: Vec<awsm_renderer::meshes::MeshKey>,
+    lights: Vec<awsm_renderer::lights::LightKey>,
+) {
+    LAST_BUNDLE_RESOURCES.with(|c| *c.borrow_mut() = (meshes, lights));
+}
+
+/// On a project reset, remove renderer resources that live OUTSIDE the bridge's
+/// per-node tracking — otherwise they ghost. Two sources: (a) imported-glTF
+/// template meshes (skinned populate copies node teardown skips; `clear_templates`,
+/// called right after, only drops the metadata map); (b) a prior
+/// `LoadPlayerBundle` populate's direct mesh/light inserts.
+async fn clear_untracked_renderer_resources() {
     let templates: Vec<_> = crate::engine::bridge::bridge()
         .templates
         .lock()
@@ -3893,17 +3914,27 @@ async fn remove_imported_template_meshes() {
         .values()
         .cloned()
         .collect();
-    if templates.is_empty() {
+    let (meshes, lights) = LAST_BUNDLE_RESOURCES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    if templates.is_empty() && meshes.is_empty() && lights.is_empty() {
         return;
     }
     crate::engine::context::with_renderer_mut(move |r| {
         for t in &templates {
             crate::engine::bridge::asset_template::remove_template_meshes(r, t);
         }
+        for mk in meshes {
+            r.remove_mesh(mk);
+        }
+        for lk in lights {
+            r.remove_light(lk);
+        }
     })
     .await;
 }
 
+/// A coarse local-space AABB for a node kind (half-extents from primitive dims;
+/// a unit box for anything without obvious bounds). Used only to frame the
+/// camera + report approximate size — not a tight collision bound.
 fn local_aabb(kind: &NodeKind) -> Aabb3 {
     // A Mesh's true bounds come from its baked geometry in the mesh cache; every
     // procedural node (box / sphere / sweep / …) is a Mesh now.
