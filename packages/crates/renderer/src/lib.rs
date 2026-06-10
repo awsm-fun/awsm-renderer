@@ -52,6 +52,7 @@ pub mod frustum;
 pub mod instances;
 pub mod light_buckets;
 pub mod lights;
+pub mod load_phase;
 pub mod materials;
 pub mod meshes;
 pub mod opaque_mipgen;
@@ -84,6 +85,8 @@ pub mod animation;
 
 mod renderer;
 pub use renderer::*;
+
+pub use load_phase::LoadPhase;
 
 // `AwsmRendererLogging` lives in `crate::debug`; the crate root re-exports
 // it crate-internally so modules can keep referencing `crate::AwsmRendererLogging`.

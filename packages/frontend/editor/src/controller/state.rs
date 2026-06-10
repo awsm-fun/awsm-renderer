@@ -917,9 +917,17 @@ impl EditorController {
                 {
                     let handle = crate::engine::context::renderer_handle();
                     let mut r = handle.lock().await;
-                    awsm_scene_loader::populate_awsm_scene(&mut r, &scene, &assets)
-                        .await
-                        .map_err(|e| crate::error::EditorError::msg(format!("populate: {e}")))?;
+                    // Surface each load phase (building materials / uploading
+                    // textures / uploading meshes / compiling pipelines N) in the
+                    // activity pill — live, because the pill is a reactive signal
+                    // and the loader's awaits yield to the event loop.
+                    let res =
+                        awsm_scene_loader::populate_awsm_scene(&mut r, &scene, &assets, |p| {
+                            crate::engine::activity::set_load_phase(Some(p.label()));
+                        })
+                        .await;
+                    crate::engine::activity::set_load_phase(None);
+                    res.map_err(|e| crate::error::EditorError::msg(format!("populate: {e}")))?;
                 }
                 self.project_name.set("round-trip.awsm".to_string());
                 self.dirty.set_neq(false);
