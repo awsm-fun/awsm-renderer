@@ -22,3 +22,5 @@ gltf = { workspace = true }
 [dev-dependencies]
 # Throwaway directories for the player-bundle write_to_dir integration test.
 tempfile = "3"
+# Property-based round-trip tests (MeshData → glb → MeshData fidelity).
+proptest = { workspace = true }

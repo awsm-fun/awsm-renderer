@@ -130,6 +130,8 @@ askama = {version = "0.15.6", default-features = false, features = ["config", "d
 glam = {version = "0.32.1"}
 half = "2.4.1"
 bevy_mikktspace = "0.15.3"
+# Property-based testing (dev-only; pulled in under [dev-dependencies]).
+proptest = "1"
 
 # Debugging - only needed for `android_chrome_check`
 tokio = {version = "1.52.3", features = ["full"]}
