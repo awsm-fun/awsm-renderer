@@ -8,12 +8,13 @@
 //! `build_custom`, but from the serialized definition instead of the live
 //! `CustomMaterial`.
 //!
-//! Scope: uniforms (defaults + per-mesh `uniform_overrides`) and per-mesh
-//! `texture_overrides` (the bake emits each as `assets/<id>.png`; bound here like
-//! the editor's `build_custom`). Still a follow-on: per-mesh BUFFER overrides
-//! (the bake doesn't emit their bytes yet) and material-level texture/buffer
-//! DEFAULTS (the editor's CustomMaterial carries no default bytes) — those slots
-//! stay unbound (the renderer falls back at upload time).
+//! Scope: uniforms (defaults + per-mesh `uniform_overrides`), per-mesh
+//! `texture_overrides` (the bake emits each as `assets/<id>.png`), and per-mesh
+//! `buffer_overrides` (the bake emits each as `assets/buffer-<id>.bin` of
+//! little-endian u32 words) — all bound here like the editor's `build_custom`.
+//! Texture/buffer slots with no per-mesh override stay unbound (correct: an
+//! unbound texture samples transparent-black; there is no "default texture"
+//! concept — only uniforms have authored defaults).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -68,14 +69,11 @@ pub fn register_custom_materials(
 }
 
 /// Build a per-mesh `Material::Custom` for a registered custom material, applying
-/// the instance's `uniform_overrides` (matched by slot name + type) on top of the
-/// registration defaults, and binding its per-mesh `texture_overrides` (each
-/// `assets/<id>.png` decoded + staged, exactly like the editor's `build_custom`).
-/// Returns `None` if the shader id isn't registered.
-///
-/// `buffer_overrides` are not bound yet — the bake doesn't emit buffer-override
-/// bytes (see [`export`](crate)); slots stay unbound. Texture/buffer *defaults*
-/// (material-level, vs. these per-mesh overrides) are [`registration`-side].
+/// the instance's `uniform_overrides` (by name + type), `texture_overrides` (each
+/// `assets/<id>.png` decoded + staged), and `buffer_overrides` (each
+/// `assets/buffer-<id>.bin` of little-endian u32 words) — exactly like the
+/// editor's `build_custom`. Returns `None` if the shader id isn't registered.
+/// Slots without an override stay unbound (no "default texture" concept).
 pub async fn build_custom_material(
     renderer: &mut AwsmRenderer,
     shader_id: MaterialShaderId,
@@ -84,7 +82,7 @@ pub async fn build_custom_material(
 ) -> Option<Material> {
     // Snapshot everything we need from the registration up front, then DROP the
     // borrow — binding textures below needs `&mut renderer`.
-    let (alpha_mode, double_sided, texture_slots, buffer_count, uniforms, mut values) = {
+    let (alpha_mode, double_sided, texture_slots, buffer_slots, uniforms, mut values) = {
         let reg = renderer.dynamic_material_registration(shader_id)?;
         let uniforms: Vec<(String, FieldType)> = reg
             .layout
@@ -107,11 +105,12 @@ pub async fn build_custom_material(
             .collect();
         let texture_slots: Vec<String> =
             reg.layout.textures.iter().map(|t| t.name.clone()).collect();
+        let buffer_slots: Vec<String> = reg.layout.buffers.iter().map(|b| b.name.clone()).collect();
         (
             reg.alpha_mode,
             reg.double_sided,
             texture_slots,
-            reg.layout.buffers.len(),
+            buffer_slots,
             uniforms,
             values,
         )
@@ -153,13 +152,31 @@ pub async fn build_custom_material(
         }
     }
 
+    // Per-mesh buffer overrides (slot order): the bake emitted each as a `.bin`
+    // (little-endian u32 words) at the BufferRef path; read them back into the
+    // slot. An override whose `.bin` is absent leaves the slot unbound.
+    let mut buffers: Vec<Option<Vec<u32>>> = vec![None; buffer_slots.len()];
+    for (i, name) in buffer_slots.iter().enumerate() {
+        if let Some(bref) = inst.buffer_overrides.get(name) {
+            let path = bref.path.to_string_lossy();
+            if let Some(bytes) = assets.get(path.as_ref()) {
+                buffers[i] = Some(
+                    bytes
+                        .chunks_exact(4)
+                        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect(),
+                );
+            }
+        }
+    }
+
     Some(Material::Custom(Box::new(DynamicMaterial {
         shader_id,
         alpha_mode,
         double_sided,
         values,
         textures,
-        buffers: vec![None; buffer_count],
+        buffers,
     })))
 }
 

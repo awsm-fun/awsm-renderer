@@ -514,6 +514,19 @@ pub enum EditorCommand {
         slot: String,
         texture: Option<AssetId>,
     },
+    /// Bind raw buffer DATA into a mesh node's assigned custom-material buffer
+    /// slot (by slot name), or clear it (`data: None`). The `data` is the slot's
+    /// little-endian `u32` words (e.g. an `array<vec4<f32>>` of N vec4s is `4·N`
+    /// words, the f32 bit patterns). Writes the node's
+    /// `MaterialInstance::buffer_overrides` — the editor stashes the words under a
+    /// session path and the bundle bake emits them as `assets/<id>.bin`. The node
+    /// must have a custom material assigned with a matching declared buffer slot.
+    /// Inverse: restore the node's prior kind.
+    SetMaterialBuffer {
+        node: NodeId,
+        slot: String,
+        data: Option<Vec<u32>>,
+    },
 
     // ───────────────────────── Animation: clip lifecycle ─────────────────────
     /// Create a fresh empty animation clip and make it current. Lifecycle (no
@@ -901,6 +914,7 @@ impl EditorCommand {
             EditorCommand::SetBuiltinParam { .. } => "Set material param",
             EditorCommand::SetLightParam { .. } => "Set light param",
             EditorCommand::SetMaterialTexture { .. } => "Bind texture",
+            EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",

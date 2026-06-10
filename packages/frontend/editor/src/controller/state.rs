@@ -1856,6 +1856,24 @@ impl EditorController {
                 }
                 None => Ok(None),
             },
+            EditorCommand::SetMaterialBuffer { node, slot, data } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.kind.get_cloned();
+                        let mut next = prev.clone();
+                        if !patch_material_buffer(&mut next, &slot, data) {
+                            return Ok(None);
+                        }
+                        n.kind.set(next);
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetKind {
+                            id: node,
+                            kind: Box::new(prev),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::SetEnvironment { env } => {
                 let prev = self.scene.environment.get_cloned();
                 self.scene.environment.set(env);
@@ -4420,6 +4438,32 @@ fn patch_material_texture(kind: &mut NodeKind, slot: &str, texture: Option<Asset
         }
         None => {
             inst.texture_overrides.remove(slot);
+        }
+    }
+    true
+}
+
+/// Bind (or clear) a buffer-data override on a node's assigned custom material.
+/// The `data` words are stashed in the session buffer store and referenced by a
+/// synthetic `session://buffer/<id>` path (the bundle bake later emits the bytes
+/// then rewrites the path to `assets/buffer-<id>.bin`). Returns false if the node
+/// has no custom-material instance.
+fn patch_material_buffer(kind: &mut NodeKind, slot: &str, data: Option<Vec<u32>>) -> bool {
+    let Some(inst) = node_material_mut(kind) else {
+        return false;
+    };
+    match data {
+        Some(words) => {
+            let path = crate::engine::bridge::dynamic::store_buffer_words(words);
+            inst.buffer_overrides.insert(
+                slot.to_string(),
+                awsm_editor_protocol::dynamic_material::BufferRef {
+                    path: std::path::PathBuf::from(path),
+                },
+            );
+        }
+        None => {
+            inst.buffer_overrides.remove(slot);
         }
     }
     true

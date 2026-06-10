@@ -66,7 +66,7 @@ pub(crate) fn store_buffer_words(words: Vec<u32>) -> String {
     path
 }
 
-fn buffer_words_for(path: &str) -> Option<Vec<u32>> {
+pub(crate) fn buffer_words_for(path: &str) -> Option<Vec<u32>> {
     BUFFER_DATA.with(|m| m.borrow().get(path).cloned())
 }
 

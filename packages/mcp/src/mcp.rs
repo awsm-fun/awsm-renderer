@@ -495,6 +495,18 @@ pub struct MaterialTextureParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MaterialBufferParams {
+    /// Mesh node UUID (must already have a custom material assigned).
+    pub node: String,
+    /// Declared buffer slot name on the material.
+    pub slot: String,
+    /// The buffer's f32 words in declaration order (e.g. 4·N floats for an
+    /// `array<vec4<f32>>` of N elements). Empty = clear the slot.
+    #[serde(default)]
+    pub values: Vec<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct LightColorParams {
     /// Light node UUID.
     pub node: String,
@@ -1831,6 +1843,28 @@ impl EditorMcp {
             node: parse_node(&p.node)?,
             slot: p.slot,
             texture: parse_asset_opt(&p.texture)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bind raw buffer DATA into a mesh node's custom-material buffer slot (by slot name), or clear it (empty `values`). `values` are f32 words in declaration order — e.g. for an `array<vec4<f32>>` slot pass 4·N floats (the shader reads them via `extras_load_vec4_f32(<slot>_offset + i*4)`). The node needs a custom material assigned with a matching declared buffer slot. The bundle bake emits the bytes as `assets/<id>.bin`."
+    )]
+    async fn set_material_buffer(
+        &self,
+        Parameters(p): Parameters<MaterialBufferParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // f32 values → little-endian u32 bit patterns (the extras pool stores
+        // u32 words; the shader bitcasts back via `extras_load_f32`).
+        let data = if p.values.is_empty() {
+            None
+        } else {
+            Some(p.values.iter().map(|f| f.to_bits()).collect())
+        };
+        self.dispatch(EditorCommand::SetMaterialBuffer {
+            node: parse_node(&p.node)?,
+            slot: p.slot,
+            data,
         })
         .await
     }

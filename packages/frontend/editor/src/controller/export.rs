@@ -89,8 +89,15 @@ pub async fn bake_player_bundle(
     use awsm_editor_protocol::{lower_mesh, project_to_scene};
 
     let project = crate::controller::persistence::to_editor_project(ctrl);
-    let scene = project_to_scene(&project);
+    let mut scene = project_to_scene(&project);
     let mut files: Vec<BundleFile> = Vec::new();
+
+    // 0. Custom-material BUFFER overrides: the per-mesh `buffer_overrides` carry a
+    //    session path into the editor's in-memory word store. Emit each as
+    //    `assets/buffer-<id>.bin` and rewrite the path to that bundle-relative
+    //    location so the player can read it back (the words don't otherwise
+    //    survive the bake — they're not in the asset table like textures).
+    rewrite_buffer_overrides(&mut scene.nodes, &mut files);
 
     // 1. One geometry-only glb per Glb-lowered mesh asset.
     for (id, entry) in &project.assets.entries {
@@ -161,6 +168,39 @@ pub async fn bake_player_bundle(
     }
 
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
+}
+
+/// Emit each custom-material BUFFER override's words as `assets/buffer-<id>.bin`
+/// and rewrite its `BufferRef` path to that bundle location. The editor stores
+/// override words in an in-memory session map keyed by a `session://buffer/<id>`
+/// path; that path means nothing to the player, and (unlike textures) the words
+/// aren't in the asset table — so the bake must materialize them. Recurses the
+/// whole tree (operates on the baked `Scene`'s plain nodes, pre-serialization).
+fn rewrite_buffer_overrides(
+    nodes: &mut [awsm_editor_protocol::EditorNode],
+    files: &mut Vec<awsm_editor_protocol::BundleFile>,
+) {
+    use awsm_editor_protocol::{BundleFile, NodeKind, ASSETS_DIR};
+    for node in nodes {
+        let material = match &mut node.kind {
+            NodeKind::Mesh { material, .. } | NodeKind::SkinnedMesh { material, .. } => {
+                material.as_mut()
+            }
+            _ => None,
+        };
+        if let Some(inst) = material {
+            for bref in inst.buffer_overrides.values_mut() {
+                let path = bref.path.to_string_lossy().to_string();
+                if let Some(words) = crate::engine::bridge::dynamic::buffer_words_for(&path) {
+                    let leaf = format!("buffer-{}.bin", AssetId::new().0);
+                    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+                    files.push(BundleFile::asset(leaf.clone(), bytes));
+                    bref.path = std::path::PathBuf::from(format!("{ASSETS_DIR}/{leaf}"));
+                }
+            }
+        }
+        rewrite_buffer_overrides(&mut node.children, files);
+    }
 }
 
 /// Walk a subtree collecting the (unique, ordered) texture asset ids referenced
