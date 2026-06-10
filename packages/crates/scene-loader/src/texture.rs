@@ -67,7 +67,13 @@ pub async fn load_texture(
     mipmap_kind: MipmapTextureKind,
 ) -> Option<MaterialTexture> {
     let path = format!("{ASSETS_DIR}/{}.png", tref.asset);
-    let bytes = assets.get(&path)?;
+    let Some(bytes) = assets.get(&path) else {
+        // A material references this texture but the bundle didn't ship it — the
+        // slot renders unbound (e.g. an extension factor with no mask → applied
+        // everywhere). Loud because it's silent-wrong otherwise.
+        tracing::warn!("scene-loader: bundle missing texture `{path}` — slot left unbound");
+        return None;
+    };
 
     // Decode the PNG to an ImageBitmap (browser), same options the glTF loader
     // uses for embedded images.

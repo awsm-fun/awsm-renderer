@@ -544,6 +544,7 @@ dependencies = [
  "awsm-scene",
  "glam 0.32.1",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

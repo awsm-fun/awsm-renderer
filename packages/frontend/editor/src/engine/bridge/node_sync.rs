@@ -768,7 +768,9 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
     let mut r = handle.lock().await;
     let mat_key = material::insert_material(&mut r, &sprite_mat);
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    match r.add_raw_mesh(raw, sub_tk, mat_key) {
+    // Transparent path (a tinted/blended sprite routes through the transparency
+    // pass; opaque delegates to `add_raw_mesh`).
+    match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
         Ok(mk) => {
             if let Err(e) = r.finalize_gpu_textures().await {
                 tracing::warn!("sprite finalize_gpu_textures: {e}");
@@ -884,7 +886,12 @@ async fn upload_simple_mesh(
         MeshMaterial::Flat(def) => material::insert_material(&mut r, def),
     };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    match r.add_raw_mesh(raw, sub_tk, mat_key) {
+    // `add_raw_mesh_transparent` builds transparency geometry when the material
+    // routes through the transparency pass (alpha Blend/Mask OR transmission) and
+    // otherwise delegates to the opaque `add_raw_mesh`. The plain `add_raw_mesh`
+    // ERRORS on a transparency-pass material, so a transmissive/blended captured
+    // mesh (e.g. an imported glass model) wouldn't upload at all.
+    match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
         Ok(mk) => {
             if let Err(e) = r.finalize_gpu_textures().await {
                 tracing::warn!("upload_simple_mesh finalize: {e}");
