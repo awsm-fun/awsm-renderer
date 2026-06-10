@@ -61,6 +61,11 @@ pub struct GltfImport {
     /// the source-file `AssetId` at `finish_model_import`. `None` for unskinned
     /// imports (those go through the captured-mesh path).
     pub skinned_glb: Option<Vec<u8>>,
+    /// Source glTF node index → its node index in the clean re-export
+    /// (`skinned_glb`), the depth-first flatten the player's loader sees. Used at
+    /// `finish_model_import` to record each skin joint's bone `NodeId` → clean-glb
+    /// index on `SkinnedMeshRef::joints`. Empty for unskinned imports.
+    pub node_flat_indices: HashMap<u32, u32>,
 }
 
 /// A glTF material extracted into an editable [`MaterialDef`] (factors only;
@@ -259,6 +264,17 @@ async fn import_typed(
     } else {
         None
     };
+    // The source→clean node-index map (same DFS flatten the clean glb uses), so
+    // `finish_model_import` can bind each skin joint's bone `NodeId` to the index
+    // the player's loader will assign that joint. Only meaningful when skinned.
+    let node_flat_indices: HashMap<u32, u32> = if skinned_glb.is_some() {
+        awsm_glb_export::scene_node_flat_indices(&data.doc)
+            .into_iter()
+            .map(|(src, clean)| (src as u32, clean as u32))
+            .collect()
+    } else {
+        HashMap::new()
+    };
     let (template, materials) = {
         // Hold the renderer lock across the async populate + the synchronous
         // template snapshot, so nothing mutates the freshly-built tree first.
@@ -282,6 +298,7 @@ async fn import_typed(
         animations,
         node_meshes,
         skinned_glb,
+        node_flat_indices,
     })
 }
 

@@ -136,6 +136,29 @@ pub struct SkinnedMeshRef {
     /// node destructured into per-primitive children). `None` = the whole node.
     #[serde(default)]
     pub primitive_index: Option<u32>,
+    /// Bone correspondence for driving the rig from our clips: each skeleton
+    /// joint's scene bone `NodeId` paired with its node index in the re-exported
+    /// clean rig glb (`assets/<source>.glb`) — the index space the player's
+    /// `populate_gltf` assigns when it loads that glb. Our clips' `Transform`
+    /// tracks target bone `NodeId`s; the player maps those NodeIds → the rig's
+    /// baked joint transforms through this table so animating a bone deforms the
+    /// skin. Captured at skinned-glTF import; **empty** for legacy projects (the
+    /// rig then poses at bind pose). Every skinned node of one import shares the
+    /// same table (one rig glb, one flat index space).
+    #[serde(default)]
+    pub joints: Vec<SkinJoint>,
+}
+
+/// One skin-joint correspondence: a skeleton bone's scene [`NodeId`] paired with
+/// its node index in the re-exported clean rig glb. See
+/// [`SkinnedMeshRef::joints`].
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SkinJoint {
+    /// The bone's scene node id (an animation `Transform` track targets this).
+    pub node: NodeId,
+    /// That bone's node index in the re-exported clean rig glb.
+    pub index: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -278,5 +301,71 @@ impl NodeKind {
             Self::InstancesAlongCurve(d) => Some(&mut d.shadow),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `SkinnedMesh` node with a joint table round-trips through TOML — the
+    /// bundle's `scene.toml` format. `Vec<SkinJoint>` must serialize as an array
+    /// of tables (NOT a `Vec<(NodeId, u32)>` tuple, which would be a mixed-type
+    /// TOML array and fail to parse).
+    #[test]
+    fn skinned_mesh_joints_toml_round_trip() {
+        let node = EditorNode {
+            id: NodeId::new(),
+            name: "Cylinder".into(),
+            transform: Trs::default(),
+            kind: NodeKind::SkinnedMesh {
+                skin: SkinnedMeshRef {
+                    source: AssetId::new(),
+                    node_index: 2,
+                    primitive_index: None,
+                    joints: vec![
+                        SkinJoint {
+                            node: NodeId::new(),
+                            index: 3,
+                        },
+                        SkinJoint {
+                            node: NodeId::new(),
+                            index: 4,
+                        },
+                    ],
+                },
+                material: None,
+                shadow: MeshShadowConfig::default(),
+            },
+            locked: false,
+            visible: true,
+            prefab: false,
+            children: Vec::new(),
+        };
+
+        let text = toml::to_string(&node).expect("serialize");
+        let back: EditorNode = toml::from_str(&text).expect("deserialize");
+        assert_eq!(node, back);
+        match back.kind {
+            NodeKind::SkinnedMesh { skin, .. } => {
+                assert_eq!(skin.joints.len(), 2);
+                assert_eq!(skin.joints[0].index, 3);
+                assert_eq!(skin.joints[1].index, 4);
+            }
+            other => panic!("expected SkinnedMesh, got {other:?}"),
+        }
+    }
+
+    /// A legacy `SkinnedMeshRef` with no `joints` key deserializes to an empty
+    /// table (the `#[serde(default)]` path → bind-pose, no animation binding).
+    #[test]
+    fn skinned_mesh_ref_joints_default_empty() {
+        let toml = r#"
+            source = "00000000-0000-0000-0000-000000000000"
+            node_index = 1
+        "#;
+        let skin: SkinnedMeshRef = toml::from_str(toml).expect("deserialize legacy");
+        assert!(skin.joints.is_empty());
+        assert_eq!(skin.node_index, 1);
     }
 }

@@ -234,7 +234,7 @@ async fn materialize(
                     AssetSource::Mesh(RuntimeMesh::Glb) => {
                         // Bare geometry glb (single identity node) — root it UNDER
                         // the scene node's transform, which is what places it.
-                        let keys = load_glb_under(
+                        let (keys, _) = load_glb_under(
                             renderer,
                             assets,
                             &mesh_glb_filename(mesh.0),
@@ -272,10 +272,20 @@ async fn materialize(
         // is the remaining skin-correspondence follow-on; the glb poses at bind
         // pose for now.)
         NodeKind::SkinnedMesh { skin, .. } => {
-            let keys = load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
-                .await?;
+            let (keys, node_index_transforms) =
+                load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
+                    .await?;
             if let Some(&first) = keys.first() {
                 maps.meshes.entry(node.id).or_insert(first);
+            }
+            // Bind each skeleton bone (NodeId) → the rig glb's baked joint
+            // transform (by the joint's clean-glb node index), so our clips'
+            // Transform tracks drive the joints the skin reads. (Empty `joints`
+            // for legacy projects → no binding → bind-pose, as before.)
+            for j in &skin.joints {
+                if let Some(&tk) = node_index_transforms.get(&(j.index as usize)) {
+                    maps.skin_joints.insert(j.node, tk);
+                }
             }
             loaded.meshes.extend(keys);
             *uploaded += 1;
@@ -352,7 +362,7 @@ async fn load_glb_under(
     leaf: &str,
     parent: Option<TransformKey>,
     material: MaterialKey,
-) -> Result<Vec<MeshKey>> {
+) -> Result<(Vec<MeshKey>, HashMap<usize, TransformKey>)> {
     let key = format!("{ASSETS_DIR}/{leaf}");
     let bytes = assets
         .get(&key)
@@ -369,18 +379,14 @@ async fn load_glb_under(
             },
         )
         .await?;
+    let lookups = ctx.key_lookups.lock().unwrap();
     // The renderer mesh keys this glb produced (one per primitive), so the host
     // can remove them on teardown.
-    let keys = ctx
-        .key_lookups
-        .lock()
-        .unwrap()
-        .all_mesh_keys
-        .values()
-        .flatten()
-        .copied()
-        .collect();
-    Ok(keys)
+    let keys = lookups.all_mesh_keys.values().flatten().copied().collect();
+    // glb node index → baked transform key — the skinned-mesh arm binds each
+    // skeleton joint (by its clean-glb node index) to drive the skin.
+    let node_index_transforms = lookups.node_index_to_transform.clone();
+    Ok((keys, node_index_transforms))
 }
 
 fn trs_to_transform(trs: &Trs) -> Transform {

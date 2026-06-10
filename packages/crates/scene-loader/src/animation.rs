@@ -53,6 +53,13 @@ pub struct AnimResolveMaps {
     pub cameras: HashMap<NodeId, CameraKey>,
     /// Mesh/skinned nodes → their first renderer mesh key (morph-weight target).
     pub meshes: HashMap<NodeId, MeshKey>,
+    /// Skeleton bone `NodeId` → the rig glb's baked joint `TransformKey` the skin
+    /// reads. Built from `SkinnedMeshRef::joints` + the loaded rig glb's
+    /// node-index→transform map. A bone's Transform track resolves HERE (driving
+    /// the baked joint directly, so the skin deforms) in preference to the bone's
+    /// own scene transform key — no per-frame mirror copy needed (the player
+    /// equivalent of the editor's skin bridge).
+    pub skin_joints: HashMap<NodeId, TransformKey>,
     /// Mesh/skinned nodes → the material key built for them (BuiltinParam target).
     pub node_materials: HashMap<NodeId, MaterialKey>,
     /// Custom-WGSL material asset → the shader id it registered as (Phase 0).
@@ -139,9 +146,12 @@ fn resolve_target(
     match target {
         // T/R/S all drive the node's single transform key; the per-field
         // `TransformAnimation` (built in lowering) isolates which component writes.
+        // A skeleton bone resolves to the rig glb's baked joint key (so the skin
+        // deforms); any other node to its own scene transform key.
         TrackTarget::Transform { node, .. } => maps
-            .transforms
+            .skin_joints
             .get(node)
+            .or_else(|| maps.transforms.get(node))
             .copied()
             .map(AnimationTarget::Transform),
         TrackTarget::BuiltinParam { node, param } => {

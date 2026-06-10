@@ -2807,8 +2807,9 @@ impl EditorController {
         // Imported animation channels (keyed by glTF node index) resolve through
         // this to bind onto the real scene nodes.
         let mut node_map: std::collections::HashMap<u32, NodeId> = std::collections::HashMap::new();
+        let mut roots: Vec<std::sync::Arc<crate::engine::scene::node::Node>> = Vec::new();
         for root in &template.roots {
-            let node = build_editor_subtree(
+            roots.push(build_editor_subtree(
                 root,
                 asset_id,
                 &mat_ids,
@@ -2816,8 +2817,24 @@ impl EditorController {
                 &import.node_meshes,
                 Some(&import.display_name),
                 &mut node_map,
-            );
-            mutate::insert_under(&self.scene, None, node);
+            ));
+        }
+        // With `node_map` now complete, build the bone correspondence — each skin
+        // joint's bone `NodeId` → its node index in the re-exported clean rig glb
+        // (`node_flat_indices`) — and stamp it onto every `SkinnedMesh` node's
+        // `skin.joints`. This is what lets the player drive the rig's baked joints
+        // from our clips (which target bone NodeIds). Patched on the in-memory
+        // nodes BEFORE insertion, so no `node_sync` observer re-materializes on the
+        // kind change. Shared across all skinned nodes of this import (one rig).
+        let skin_joints =
+            assemble_skin_joints(&template.roots, &node_map, &import.node_flat_indices);
+        if !skin_joints.is_empty() {
+            for root in &roots {
+                patch_skin_joints(root, &skin_joints);
+            }
+        }
+        for root in roots {
+            mutate::insert_under(&self.scene, None, root);
         }
         self.scene.bump_revision();
         self.dirty.set_neq(true);
@@ -4859,6 +4876,59 @@ fn mint_imported_mesh(
 /// extra matrix. `fallback_name` only labels an unnamed *top-level* node (so a
 /// single-root import shows the file name); children fall back to `Node {index}`.
 #[allow(clippy::too_many_arguments)]
+/// Build the skin-joint correspondence for an import: every template node flagged
+/// `is_skin_joint`, paired with its bone `NodeId` (via `node_map`) and its node
+/// index in the re-exported clean rig glb (via `node_flat_indices`). Returns the
+/// `SkinJoint` table stored on each `SkinnedMesh` node so the player can bind our
+/// clips' bone targets to the rig's baked joints. Joints whose bone or clean
+/// index is missing are skipped.
+fn assemble_skin_joints(
+    nodes: &[crate::engine::bridge::asset_template::AssetTemplateNode],
+    node_map: &std::collections::HashMap<u32, NodeId>,
+    node_flat_indices: &std::collections::HashMap<u32, u32>,
+) -> Vec<awsm_editor_protocol::SkinJoint> {
+    let mut out = Vec::new();
+    fn walk(
+        nodes: &[crate::engine::bridge::asset_template::AssetTemplateNode],
+        node_map: &std::collections::HashMap<u32, NodeId>,
+        node_flat_indices: &std::collections::HashMap<u32, u32>,
+        out: &mut Vec<awsm_editor_protocol::SkinJoint>,
+    ) {
+        for n in nodes {
+            if n.is_skin_joint {
+                if let (Some(&node), Some(&index)) = (
+                    node_map.get(&n.gltf_node_index),
+                    node_flat_indices.get(&n.gltf_node_index),
+                ) {
+                    out.push(awsm_editor_protocol::SkinJoint { node, index });
+                }
+            }
+            walk(&n.children, node_map, node_flat_indices, out);
+        }
+    }
+    walk(nodes, node_map, node_flat_indices, &mut out);
+    out
+}
+
+/// Stamp `joints` onto every `SkinnedMesh` node in a freshly-built (not-yet-
+/// inserted) subtree. Mutating the kind before insertion avoids triggering a
+/// `node_sync` re-materialize (the field is metadata; the renderer mesh is
+/// unaffected).
+fn patch_skin_joints(
+    node: &std::sync::Arc<crate::engine::scene::node::Node>,
+    joints: &[awsm_editor_protocol::SkinJoint],
+) {
+    use awsm_editor_protocol::NodeKind;
+    let mut kind = node.kind.get_cloned();
+    if let NodeKind::SkinnedMesh { skin, .. } = &mut kind {
+        skin.joints = joints.to_vec();
+        node.kind.set(kind);
+    }
+    for child in node.children.lock_ref().iter() {
+        patch_skin_joints(child, joints);
+    }
+}
+
 fn build_editor_subtree(
     tn: &crate::engine::bridge::asset_template::AssetTemplateNode,
     asset_id: AssetId,
@@ -4951,6 +5021,9 @@ fn build_editor_subtree(
                         source: asset_id,
                         node_index: tn.gltf_node_index,
                         primitive_index: None,
+                        // Filled after the whole subtree is built (node_map
+                        // complete) — see `assemble_skin_joints` / patch below.
+                        joints: Vec::new(),
                     },
                     material,
                     shadow: Default::default(),
@@ -4986,6 +5059,7 @@ fn build_editor_subtree(
                             source: asset_id,
                             node_index: tn.gltf_node_index,
                             primitive_index: Some(i as u32),
+                            joints: Vec::new(),
                         },
                         material,
                         shadow: Default::default(),

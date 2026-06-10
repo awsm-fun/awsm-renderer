@@ -35,16 +35,20 @@ pub fn reexport_clean(bytes: &[u8]) -> Option<GlbScene> {
     reexport_clean_scene(&doc, &buffers)
 }
 
-/// Like [`reexport_clean`] but operating on an already-parsed
-/// [`gltf::Document`] + its raw buffer blobs — so a caller that already decoded
-/// the source (e.g. the editor's import, which holds the doc before it's consumed
-/// by the renderer) can build the clean rig without re-parsing bytes.
-pub fn reexport_clean_scene(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Option<GlbScene> {
-    let scene = doc.default_scene().or_else(|| doc.scenes().next())?;
-
-    // glTF node index → flat (depth-first) index, matching `write_glb`'s flatten,
-    // so skin joint refs (glTF node indices) become our flat indices.
+/// Map each source glTF node index → its index in the **clean re-export**: the
+/// depth-first (root-first, children in order) flatten over the default scene,
+/// exactly the order [`reexport_clean_scene`] builds [`GlbScene::nodes`] and
+/// [`write_glb`](crate::write_glb) assigns glTF node indices. Nodes outside the
+/// default scene are absent.
+///
+/// Use this to translate a source joint node index into the index the player's
+/// loader will see after it loads the re-exported `assets/<id>.glb` — the basis
+/// for binding our animation clips' bone targets to the rig's baked joints.
+pub fn scene_node_flat_indices(doc: &gltf::Document) -> HashMap<usize, usize> {
     let mut flat_of: HashMap<usize, usize> = HashMap::new();
+    let Some(scene) = doc.default_scene().or_else(|| doc.scenes().next()) else {
+        return flat_of;
+    };
     fn index_walk(node: &gltf::Node, flat_of: &mut HashMap<usize, usize>, next: &mut usize) {
         flat_of.insert(node.index(), *next);
         *next += 1;
@@ -56,6 +60,19 @@ pub fn reexport_clean_scene(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Option
     for r in scene.nodes() {
         index_walk(&r, &mut flat_of, &mut next);
     }
+    flat_of
+}
+
+/// Like [`reexport_clean`] but operating on an already-parsed
+/// [`gltf::Document`] + its raw buffer blobs — so a caller that already decoded
+/// the source (e.g. the editor's import, which holds the doc before it's consumed
+/// by the renderer) can build the clean rig without re-parsing bytes.
+pub fn reexport_clean_scene(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Option<GlbScene> {
+    let scene = doc.default_scene().or_else(|| doc.scenes().next())?;
+
+    // glTF node index → flat (depth-first) index, matching `write_glb`'s flatten,
+    // so skin joint refs (glTF node indices) become our flat indices.
+    let flat_of = scene_node_flat_indices(doc);
 
     let nodes: Vec<ExportNode> = scene
         .nodes()
