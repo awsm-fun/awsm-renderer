@@ -21,6 +21,7 @@
 //! marked below): texture binding, custom-WGSL materials, cameras, driving a
 //! skinned mesh from our animation clips (the glb poses it at bind pose for now).
 
+pub mod camera;
 pub mod light;
 pub mod material;
 
@@ -250,7 +251,16 @@ async fn materialize(
                 renderer.ensure_shadow_pipelines_compiled().await?;
             }
         }
-        // Follow-on: Camera arm + our-clip wiring.
+        NodeKind::Camera(cfg) => {
+            // Register the camera's projection params in the renderer (under its
+            // transform `tk`). A player's camera controller picks which camera
+            // drives the view + reads `tk` for position; the editor round-trip
+            // uses its own free camera, so this just makes the camera node load.
+            renderer
+                .cameras
+                .insert(camera::camera_params_from_config(cfg));
+        }
+        // Follow-on: our-clip (animation) wiring.
         _ => {}
     }
 

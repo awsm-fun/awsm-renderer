@@ -5,11 +5,11 @@
 use std::sync::Arc;
 
 use awsm_meshgen::MeshData;
-use awsm_renderer::cameras::{CameraParams, CameraProjectionParams};
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
 // Shared with the runtime-bundle loader (`populate_awsm_scene`) so a light lowers
 // identically on the editor's live render and the player — the round-trip premise.
+use awsm_scene_loader::camera::camera_params_from_config;
 use awsm_scene_loader::light::{light_from_config, light_shadow_params_from_config};
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::{SignalVecExt, VecDiff};
@@ -1092,29 +1092,6 @@ async fn materialize_camera(entry: Arc<RendererNode>, cfg: awsm_editor_protocol:
     let params = camera_params_from_config(&cfg);
     let key = with_renderer_mut(move |r| r.cameras.insert(params)).await;
     *entry.camera_key.lock().unwrap() = Some(key);
-}
-
-/// Schema camera config → renderer camera params. Maps the projection kind +
-/// clip planes; depth-of-field (`aperture`/`focus_distance`) isn't authored on
-/// the node config yet, so it defaults to the same values `scene_camera_matrices`
-/// has always used (`5.6` / `10.0`).
-fn camera_params_from_config(cfg: &awsm_editor_protocol::CameraConfig) -> CameraParams {
-    use awsm_editor_protocol::CameraProjection;
-    let projection = match cfg.projection {
-        CameraProjection::Perspective { fov_y_rad } => {
-            CameraProjectionParams::Perspective { fov_y_rad }
-        }
-        CameraProjection::Orthographic { half_height } => {
-            CameraProjectionParams::Orthographic { half_height }
-        }
-    };
-    CameraParams {
-        projection,
-        near: cfg.near,
-        far: cfg.far,
-        aperture: 5.6,
-        focus_distance: 10.0,
-    }
 }
 
 pub(crate) fn trs_to_transform(trs: &Trs) -> Transform {
