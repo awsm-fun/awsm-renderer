@@ -25,6 +25,9 @@
 //!   - extract materials + animations (move the pure logic out of the editor
 //!     bridge: `extract_material_specs`/`extract_extensions`/`extract_animations`).
 
+pub mod materials;
+pub use materials::{extract_materials, AlphaMode, MaterialSpec, TexRef};
+
 use awsm_glb_export::{reexport_clean_scene, write_glb};
 
 /// Document-level glTF extension stamped onto a canonical AWSM glb. Its presence
@@ -49,8 +52,10 @@ pub struct CanonicalImport {
     /// The canonical-form version read from the input's `AWSM_format` (when
     /// `is_already_canonical`), else `None`.
     pub format_version: Option<u32>,
-    // FOLLOW-ON: extracted materials (our `MaterialDefinition`s) + animation clips.
-    // Empty until the extraction increment moves the editor's pure logic here.
+    /// Materials lifted from the source glTF, in neutral form (empty for an
+    /// already-canonical/geometry-only glb — its materials live in the bundle).
+    pub materials: Vec<MaterialSpec>,
+    // FOLLOW-ON: extracted animation clips.
 }
 
 /// Conversion failures (all pure-data; no I/O).
@@ -98,6 +103,9 @@ pub fn convert(bytes: &[u8]) -> Result<CanonicalImport, ConvertError> {
         });
     }
 
+    // Lift the source materials into neutral specs BEFORE reexport strips them
+    // from the geometry-only canonical glb.
+    let materials = extract_materials(&doc);
     let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
     let scene = reexport_clean_scene(&doc, &buffers).ok_or(ConvertError::NoScene)?;
     let glb = stamp_awsm_format(write_glb(&scene))?;
@@ -106,7 +114,7 @@ pub fn convert(bytes: &[u8]) -> Result<CanonicalImport, ConvertError> {
         glb,
         is_already_canonical: false,
         format_version: None,
-        ..Default::default()
+        materials,
     })
 }
 
@@ -198,6 +206,43 @@ mod tests {
         let (out_doc, _, _) = gltf::import_slice(&out.glb).unwrap();
         assert!(is_canonical(&out_doc));
         assert_eq!(awsm_format_version(&out_doc), Some(AWSM_FORMAT_VERSION));
+    }
+
+    /// A source PBR material is lifted into a neutral MaterialSpec (factors +
+    /// alpha + double-sided) while the canonical glb stays geometry-only.
+    #[test]
+    fn extracts_source_material_factors() {
+        use awsm_glb_export::{AlphaMode as ExAlpha, ExportMaterial, PbrMaterial};
+        let (_src, _) = cube_glb();
+        let mut node = ExportNode::new("Cube").with_mesh(box_mesh(Vec3::splat(2.0)));
+        node.material = Some(ExportMaterial::Pbr(PbrMaterial {
+            name: "brass".into(),
+            base_color: [0.1, 0.2, 0.3, 1.0],
+            metallic: 0.25,
+            roughness: 0.75,
+            emissive: [0.0, 0.0, 0.0],
+            alpha_mode: ExAlpha::Mask { cutoff: 0.4 },
+            double_sided: true,
+            ..Default::default()
+        }));
+        let source = export_glb(&GlbScene {
+            nodes: vec![node],
+            ..Default::default()
+        });
+
+        let out = convert(&source).expect("convert");
+        assert_eq!(out.materials.len(), 1);
+        let m = &out.materials[0];
+        assert_eq!(m.label, "brass");
+        assert_eq!(m.base_color, [0.1, 0.2, 0.3, 1.0]);
+        assert_eq!(m.metallic, 0.25);
+        assert_eq!(m.roughness, 0.75);
+        assert!(m.double_sided);
+        assert_eq!(m.alpha_mode, crate::AlphaMode::Mask { cutoff: 0.4 });
+
+        // The canonical glb itself is geometry-only (material stripped).
+        let (doc, _, _) = gltf::import_slice(&out.glb).unwrap();
+        assert_eq!(doc.materials().count(), 0);
     }
 
     /// Idempotency: converting an already-canonical glb passes it through
