@@ -22,6 +22,7 @@
 //! skinned mesh from our animation clips (the glb poses it at bind pose for now).
 
 pub mod camera;
+pub mod dynamic;
 pub mod light;
 pub mod material;
 pub mod texture;
@@ -40,7 +41,7 @@ use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOpts};
 use awsm_scene::{
-    mesh_glb_filename, AssetSource, EditorNode, MaterialInstance, MaterialShading, NodeId,
+    mesh_glb_filename, AssetId, AssetSource, EditorNode, MaterialInstance, MaterialShading, NodeId,
     NodeKind, RuntimeMesh, Scene, Trs, ASSETS_DIR,
 };
 use glam::{Quat, Vec3};
@@ -86,6 +87,12 @@ pub async fn populate_awsm_scene(
     assets: &HashMap<String, Vec<u8>>,
     mut on_phase: impl FnMut(LoadPhase),
 ) -> Result<LoadedScene> {
+    // ── Phase 0: register custom-WGSL materials ──────────────────────────────
+    // Build + register each custom material (material.json + wgsl) once; nodes
+    // assigned one resolve to its shader id below. Built-in materials have no
+    // folder, so they're skipped here and lower via their inline MaterialDef.
+    let custom = dynamic::register_custom_materials(renderer, scene, assets);
+
     // ── Phase 1: build materials ──────────────────────────────────────────────
     // The missing-material sentinel (magenta) for unassigned meshes.
     let placeholder = insert_placeholder_material(renderer);
@@ -99,7 +106,7 @@ pub async fn populate_awsm_scene(
     let total = renderables.len();
     for (i, (id, material)) in renderables.iter().enumerate() {
         on_phase(LoadPhase::BuildingMaterials { done: i, total });
-        let key = resolve_material(renderer, material.as_ref(), placeholder, assets).await;
+        let key = resolve_material(renderer, material.as_ref(), placeholder, assets, &custom).await;
         node_materials.insert(*id, key);
     }
     on_phase(LoadPhase::BuildingMaterials { done: total, total });
@@ -363,10 +370,24 @@ async fn resolve_material(
     instance: Option<&MaterialInstance>,
     placeholder: MaterialKey,
     assets: &HashMap<String, Vec<u8>>,
+    custom: &HashMap<AssetId, awsm_materials::MaterialShaderId>,
 ) -> MaterialKey {
     let Some(inst) = instance else {
         return placeholder;
     };
+    // Custom-WGSL assignment: the asset resolved to a registered shader (Phase 0).
+    // Build a Material::Custom (defaults + uniform overrides); `inline` is ignored.
+    if let Some(&shader_id) = custom.get(&inst.asset) {
+        if let Some(mat) = dynamic::build_custom_material(renderer, shader_id, inst) {
+            return renderer.materials.insert(
+                mat,
+                &renderer.textures,
+                &renderer.dynamic_materials,
+                &renderer.extras_pool,
+            );
+        }
+        return placeholder;
+    }
     let def = &inst.inline;
     let material = match def.shading {
         MaterialShading::Pbr => {

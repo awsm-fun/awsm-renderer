@@ -167,6 +167,13 @@ pub fn project_to_toml(ctrl: &EditorController) -> EditorResult<String> {
 pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for m in ctrl.custom_materials.lock_ref().iter() {
+        // Only custom-WGSL materials get a folder (wgsl + def). Built-in library
+        // materials (`builtin = Some`) round-trip via each node's inline
+        // MaterialDef, not a folder — emitting one would make the player try to
+        // register them as custom shaders.
+        if m.builtin.get_cloned().is_some() {
+            continue;
+        }
         let folder = material_folder_path(m.id, &m.name.get_cloned());
         out.push((format!("{folder}/material.wgsl"), m.wgsl.get_cloned()));
         // The full serde `MaterialDefinition` — the player parses this +
