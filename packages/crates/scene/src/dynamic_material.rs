@@ -81,6 +81,15 @@ pub struct MaterialDefinition {
     /// renderer-wide extras pool.
     #[serde(default)]
     pub buffers: Vec<BufferSlot>,
+    /// Renderer shader-include keys the author opted into (the runtime
+    /// `MaterialRegistration` needs these to assemble the shader). `#[serde(default)]`
+    /// so pre-existing material.json files round-trip as "none opted in".
+    #[serde(default)]
+    pub shader_includes: Vec<String>,
+    /// Fragment-input keys the author opted into (passed to the runtime
+    /// `MaterialRegistration`). `#[serde(default)]` for back-compat.
+    #[serde(default)]
+    pub fragment_inputs: Vec<String>,
 }
 
 /// A single uniform parameter on a [`MaterialDefinition`].
@@ -242,6 +251,12 @@ pub struct BufferSlot {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CustomMaterialRef {
+    /// Stable id of the custom material — the same [`AssetId`] a node's
+    /// [`MaterialInstance::asset`] carries, so the player can map an assignment
+    /// to this entry (and its folder). `#[serde(default)]` so pre-id bundles
+    /// still load (the player then can't resolve custom assignments).
+    #[serde(default)]
+    pub id: AssetId,
     /// Folder name. Matches the parent folder's name AND the
     /// [`MaterialDefinition::name`] inside the folder's `material.json`.
     pub name: String,
@@ -620,6 +635,8 @@ mod tests {
                 name: "frames".into(),
                 default: Some(PathBuf::from("assets/frames.bin")),
             }],
+            shader_includes: vec!["camera".into()],
+            fragment_inputs: vec!["world_normal".into()],
         }
     }
 

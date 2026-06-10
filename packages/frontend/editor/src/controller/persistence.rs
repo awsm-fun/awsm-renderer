@@ -102,6 +102,7 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
             let name = m.name.get_cloned();
             let folder = material_folder_path(m.id, &name);
             CustomMaterialRef {
+                id: m.id,
                 name,
                 folder: PathBuf::from(folder),
             }
