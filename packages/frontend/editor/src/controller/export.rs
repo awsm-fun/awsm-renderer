@@ -79,14 +79,13 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
 /// materials/animations in the glb, those are ours); `assets/materials/<name>/…`
 /// (custom-material wgsl + sidecars); `assets/<id>.png` (referenced textures).
 ///
-/// Skinned/morph meshes' glb re-export from their source (preserving the rig) is
-/// the follow-on; this pass bakes static geometry, like the prior path.
+/// Skinned/morph meshes re-export a clean rig glb from their source (skeleton +
+/// mesh + skin + morph, built at import via `reexport_clean_scene`); the
+/// `scene.toml` SkinnedMesh nodes reference it by `skin.source` → `assets/<source>.glb`.
 pub async fn bake_player_bundle(
     ctrl: &super::EditorController,
 ) -> Result<Vec<awsm_editor_protocol::BundleFile>, String> {
-    use awsm_editor_protocol::{
-        assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh, ASSETS_DIR,
-    };
+    use awsm_editor_protocol::{assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh};
     use awsm_editor_protocol::{lower_mesh, project_to_scene};
 
     let project = crate::controller::persistence::to_editor_project(ctrl);
@@ -115,12 +114,12 @@ pub async fn bake_player_bundle(
         }
     }
 
-    // 2. Custom-material folders (paths already bundle-relative under assets/).
+    // 2. Custom-material folders. `material_files` already returns paths rooted
+    //    under `assets/` (e.g. `assets/materials/<slug>-<id>/material.wgsl`), so
+    //    they go in verbatim — prepending `ASSETS_DIR` here would double it to
+    //    `assets/assets/materials/…`.
     for (path, contents) in crate::controller::persistence::material_files(ctrl) {
-        files.push(BundleFile::new(
-            format!("{ASSETS_DIR}/{path}"),
-            contents.into_bytes(),
-        ));
+        files.push(BundleFile::new(path, contents.into_bytes()));
     }
 
     // 3. Textures the materials reference → assets/<id>.png (built-in + custom-WGSL).
