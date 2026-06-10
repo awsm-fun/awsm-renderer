@@ -166,7 +166,9 @@ async fn materialize(
                         renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
                     }
                     AssetSource::Mesh(RuntimeMesh::Glb) => {
-                        load_glb_under(renderer, assets, &mesh_glb_filename(mesh.0), tk, mat)
+                        // Bare geometry glb (single identity node) — root it UNDER
+                        // the scene node's transform, which is what places it.
+                        load_glb_under(renderer, assets, &mesh_glb_filename(mesh.0), Some(tk), mat)
                             .await?;
                     }
                     // A Mesh node always references an AssetSource::Mesh; other
@@ -182,11 +184,19 @@ async fn materialize(
             });
         }
         // A skinned mesh's whole rig glb (skeleton + mesh + skin + morph,
-        // re-exported clean at export) loads through the same path, keyed by the
-        // skin source. The glb's own skeleton poses the skin at bind pose;
-        // driving it from our animation clips is a follow-on.
+        // re-exported clean at export) loads keyed by the skin source. Unlike a
+        // bare Mesh(Glb), the rig glb carries the original glTF's FULL hierarchy —
+        // including its root basis-conversion node (e.g. RiggedSimple's `Z_UP`) —
+        // so it is SELF-PLACING. We root it at the renderer root (`None`), exactly
+        // as the editor's own import does (`populate_gltf` with parent=None).
+        // Rooting it under the scene node's `tk` would double-apply that root
+        // rotation, because scene.toml ALSO mirrors the `Z_UP` node — the cause of
+        // the "skinned mesh loads lying on its side" bug. (Composing a user's
+        // *repositioning* of the rig + driving the skin from our scene-node bones
+        // is the remaining skin-correspondence follow-on; the glb poses at bind
+        // pose for now.)
         NodeKind::SkinnedMesh { skin, .. } => {
-            load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), tk, mat).await?;
+            load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat).await?;
             *uploaded += 1;
             on_phase(LoadPhase::UploadingMeshes {
                 done: *uploaded,
@@ -232,15 +242,21 @@ async fn materialize(
     Ok(())
 }
 
-/// Load a geometry-only glb (`assets/<leaf>`) under `parent`, applying our
-/// pre-built `material` to every primitive — no glTF material/texture mint (see
-/// [`GltfMaterialSource::Single`]). Texture finalize is deferred to the batched
-/// Phase 2. Reuses the exact mesh/skin/morph upload foreign glTF uses.
+/// Load a glb (`assets/<leaf>`) rooted under `parent` (or the renderer root when
+/// `None`), applying our pre-built `material` to every primitive — no glTF
+/// material/texture mint (see [`GltfMaterialSource::Single`]). Texture finalize
+/// is deferred to the batched Phase 2. Reuses the exact mesh/skin/morph upload
+/// foreign glTF uses.
+///
+/// `parent`: `Some(tk)` for a bare geometry glb (the scene node's transform
+/// places it); `None` for a self-placing rig glb that carries its own root
+/// hierarchy (see the SkinnedMesh arm — rooting it under the scene chain would
+/// double-apply the glTF's basis-conversion node).
 async fn load_glb_under(
     renderer: &mut AwsmRenderer,
     assets: &HashMap<String, Vec<u8>>,
     leaf: &str,
-    parent: TransformKey,
+    parent: Option<TransformKey>,
     material: MaterialKey,
 ) -> Result<()> {
     let key = format!("{ASSETS_DIR}/{leaf}");
@@ -253,7 +269,7 @@ async fn load_glb_under(
             data,
             PopulateGltfOpts {
                 scene: None,
-                parent_transform: Some(parent),
+                parent_transform: parent,
                 material_source: GltfMaterialSource::Single(material),
                 finalize_textures: false,
             },
