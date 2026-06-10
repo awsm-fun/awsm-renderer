@@ -231,11 +231,12 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
   editor + player can depend without glb-export's export surface). Increment 1
   committed (`8b943443`): `AWSM_format` (versioned) + `is_canonical` + `convert()`
   geometry path (reuses `reexport_clean_scene`/`write_glb`); 2 unit tests green.
+  ✅ Increment 2 committed (`6d8dc9f9`): `AWSM_format` STAMPING via JSON-chunk
+  surgery (`stamp_awsm_format`, `gltf::binary::Glb`) + `awsm_format_version` read —
+  idempotency works. ✅ Proptests committed (`7ed5c49b`): geometry-preservation +
+  idempotency over arbitrary meshes (256 cases each, green).
   REMAINING increments (each documented in `gltf-convert/src/lib.rs`, do in order):
-  1. **Stamp `AWSM_format`** onto the output glb — needs a writer hook in
-     `glb-export::write_glb` to add a document-level extension to `extensionsUsed`
-     + `extensions`. Then the idempotency pass-through works → add proptests
-     `convert(convert(x))==convert(x)` and `convert(canonical)==canonical`.
+  1. ~~Stamp AWSM_format~~ ✅ DONE.
   2. **Bake tangents + ensure normals** into the canonical glb — needs
      `MeshData.tangents: Option<Vec<[f32;4]>>` + a `TANGENT` accessor in
      `write_glb`, then bake via bevy_mikktspace in `convert` (reuse the mikktspace
