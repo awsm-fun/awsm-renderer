@@ -11,18 +11,16 @@ use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
 use crate::recipe::{Axis, MeshBase, Modifier, ModifierStack};
-use awsm_scene::PrimitiveShape;
 use glam::Vec3;
 
 use crate::mesh_data::MeshData;
-use crate::primitives::{box_mesh, cone_mesh, cylinder_mesh, plane_mesh, sphere_mesh, torus_mesh};
 
 /// Evaluate a full stack to triangles. `Sweep`/`Captured` bases (which need scene
 /// state) produce an empty base here — resolve those editor-side and call
 /// [`apply_modifiers`] instead.
 pub fn evaluate(stack: &ModifierStack) -> MeshData {
     let base = match &stack.base {
-        MeshBase::Primitive(shape) => primitive_mesh(shape),
+        MeshBase::Primitive(shape) => crate::primitives::primitive_mesh(shape),
         MeshBase::Lathe {
             profile,
             segments,
@@ -40,41 +38,6 @@ pub fn evaluate(stack: &ModifierStack) -> MeshData {
         MeshBase::Sdf { node, resolution } => crate::sdf_mesh::surface_nets_mesh(node, *resolution),
     };
     apply_modifiers(base, &stack.modifiers)
-}
-
-/// Map a scene `PrimitiveShape` to its generated mesh (mirrors the renderer
-/// bridge's `primitive_to_mesh`, kept here so eval is self-contained).
-pub fn primitive_mesh(shape: &PrimitiveShape) -> MeshData {
-    match shape {
-        PrimitiveShape::Plane {
-            width,
-            depth,
-            segments_x,
-            segments_z,
-        } => plane_mesh(*width, *depth, *segments_x, *segments_z),
-        PrimitiveShape::Box { dims } => box_mesh(Vec3::from_array(*dims)),
-        PrimitiveShape::Sphere {
-            radius,
-            segments_long,
-            segments_lat,
-        } => sphere_mesh(*radius, *segments_long, *segments_lat),
-        PrimitiveShape::Cylinder {
-            radius,
-            height,
-            radial_segments,
-        } => cylinder_mesh(*radius, *height, *radial_segments),
-        PrimitiveShape::Cone {
-            radius,
-            height,
-            radial_segments,
-        } => cone_mesh(*radius, *height, *radial_segments),
-        PrimitiveShape::Torus {
-            radius,
-            thickness,
-            segments_major,
-            segments_minor,
-        } => torus_mesh(*radius, *thickness, *segments_major, *segments_minor),
-    }
 }
 
 /// Apply an ordered modifier list to a base mesh, recomputing normals after each
@@ -611,7 +574,7 @@ mod tests {
     }
 
     fn cube() -> MeshData {
-        box_mesh(Vec3::splat(2.0))
+        crate::primitives::box_mesh(Vec3::splat(2.0))
     }
 
     #[test]

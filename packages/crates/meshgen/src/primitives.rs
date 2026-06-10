@@ -2,9 +2,46 @@
 
 use std::f32::consts::TAU;
 
+use awsm_scene::PrimitiveShape;
 use glam::Vec3;
 
 use crate::mesh_data::MeshData;
+
+/// Map a scene [`PrimitiveShape`] to its generated [`MeshData`]. Always available
+/// (no `authoring` feature needed) — the player regenerates primitive meshes from
+/// params this way, and the editor's modifier-stack eval calls it for the base.
+pub fn primitive_mesh(shape: &PrimitiveShape) -> MeshData {
+    match shape {
+        PrimitiveShape::Plane {
+            width,
+            depth,
+            segments_x,
+            segments_z,
+        } => plane_mesh(*width, *depth, *segments_x, *segments_z),
+        PrimitiveShape::Box { dims } => box_mesh(Vec3::from_array(*dims)),
+        PrimitiveShape::Sphere {
+            radius,
+            segments_long,
+            segments_lat,
+        } => sphere_mesh(*radius, *segments_long, *segments_lat),
+        PrimitiveShape::Cylinder {
+            radius,
+            height,
+            radial_segments,
+        } => cylinder_mesh(*radius, *height, *radial_segments),
+        PrimitiveShape::Cone {
+            radius,
+            height,
+            radial_segments,
+        } => cone_mesh(*radius, *height, *radial_segments),
+        PrimitiveShape::Torus {
+            radius,
+            thickness,
+            segments_major,
+            segments_minor,
+        } => torus_mesh(*radius, *thickness, *segments_major, *segments_minor),
+    }
+}
 
 /// XZ-plane facing +Y. `width` along X, `depth` along Z, centred at origin.
 ///

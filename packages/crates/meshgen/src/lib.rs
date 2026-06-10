@@ -30,7 +30,8 @@ pub mod sweep;
 
 pub use mesh_data::{compute_vertex_normals, MeshData};
 pub use primitives::{
-    box_mesh, cone_mesh, cylinder_mesh, plane_mesh, sphere_mesh, sprite_quad, torus_mesh,
+    box_mesh, cone_mesh, cylinder_mesh, plane_mesh, primitive_mesh, sphere_mesh, sprite_quad,
+    torus_mesh,
 };
 
 #[cfg(feature = "recipes")]
