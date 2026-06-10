@@ -31,6 +31,18 @@ thread_local! {
     /// means an external scrub (`SetPlayhead`) landed and the phase must re-seed.
     static TRANSPORT: std::cell::Cell<(f64, f64)> =
         const { std::cell::Cell::new((0.0, f64::NAN)) };
+
+    /// Backstop latch for the "starts black until you resize the window" bug:
+    /// whether we've run the thorough surface re-sync ([`context::sync_canvas_size`])
+    /// since the canvas last had a real (nonzero) client size. The mount-time
+    /// call to that function only polls ~480ms before giving up, and the
+    /// `ResizeObserver` doesn't reliably fire on the reparent into the viewport
+    /// slot — so on a slow/late layout the surface can stay at its stale default
+    /// (black) until a manual resize finally triggers the observer. We reset this
+    /// to `false` whenever the canvas is zero-sized and re-run the full re-sync on
+    /// the next nonzero frame, so every 0→nonzero transition (first mount, tab
+    /// show, reparent) auto-heals — exactly what the manual resize did by hand.
+    static DID_REAL_SIZE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn request_frame() {
@@ -132,6 +144,21 @@ fn playhead_from_phase(
 }
 
 fn render_one_frame() {
+    // Black-on-start backstop: drive the full surface re-sync once per
+    // 0→nonzero canvas-size transition. Reads only the canvas client box (no
+    // renderer lock); `sync_canvas_size` is `IN_FLIGHT`-coalesced + idempotent
+    // and a no-op while the size is zero, so this is safe to poll every frame.
+    // It's what finally heals the stale-default surface that otherwise stays
+    // black until the user resizes the window (see `DID_REAL_SIZE_SYNC`).
+    {
+        let (cw, ch) = context::with_canvas(|c| (c.client_width(), c.client_height()));
+        if cw <= 0 || ch <= 0 {
+            DID_REAL_SIZE_SYNC.with(|done| done.set(false));
+        } else if !DID_REAL_SIZE_SYNC.with(|done| done.replace(true)) {
+            context::sync_canvas_size();
+        }
+    }
+
     // Which camera drives the view this frame: the free built-in camera (None),
     // or a scene Camera node (Some) — see `EditorController::active_camera`.
     let active = controller().active_camera.get();
