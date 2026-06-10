@@ -50,6 +50,29 @@ pub struct MaterialSpec {
     pub occlusion_tex: Option<TexRef>,
     pub emissive_tex: Option<TexRef>,
     pub extensions: MaterialExtensions,
+    /// Texture refs carried by the KHR extensions (slot → image+uv), e.g. the
+    /// iridescence / transmission / clearcoat-normal maps.
+    pub extension_textures: Vec<(ExtTextureSlot, TexRef)>,
+}
+
+/// Which KHR-extension texture slot an [`MaterialSpec::extension_textures`] entry
+/// fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtTextureSlot {
+    Transmission,
+    Specular,
+    SpecularColor,
+    VolumeThickness,
+    Iridescence,
+    IridescenceThickness,
+    Clearcoat,
+    ClearcoatRoughness,
+    ClearcoatNormal,
+    SheenColor,
+    SheenRoughness,
+    Anisotropy,
+    DiffuseTransmission,
+    DiffuseTransmissionColor,
 }
 
 fn info_ref(info: gltf::texture::Info) -> TexRef {
@@ -192,6 +215,71 @@ pub fn extract_extensions(m: &gltf::Material) -> MaterialExtensions {
     }
 }
 
+/// Resolve a raw-JSON `textureInfo` (`{ "index": <texture>, "texCoord": <n> }`)
+/// to a [`TexRef`] (the texture's IMAGE source index + uv set), via `doc`.
+fn json_tex_ref(doc: &gltf::Document, v: &serde_json::Value, key: &str) -> Option<TexRef> {
+    let info = v.get(key)?;
+    let tex_idx = info.get("index")?.as_u64()? as usize;
+    let uv_index = info.get("texCoord").and_then(|t| t.as_u64()).unwrap_or(0) as u32;
+    let image = doc.textures().nth(tex_idx)?.source().index();
+    Some(TexRef { image, uv_index })
+}
+
+/// Collect every KHR-extension texture ref on a material (typed accessors for the
+/// crate-native extensions, raw JSON for the rest). Mirrors the editor's
+/// `extract_extensions` `ext_textures` collection.
+fn extract_extension_textures(
+    doc: &gltf::Document,
+    m: &gltf::Material,
+) -> Vec<(ExtTextureSlot, TexRef)> {
+    use ExtTextureSlot as S;
+    let mut out = Vec::new();
+    if let Some(t) = m.transmission() {
+        if let Some(i) = t.transmission_texture() {
+            out.push((S::Transmission, info_ref(i)));
+        }
+    }
+    if let Some(s) = m.specular() {
+        if let Some(i) = s.specular_texture() {
+            out.push((S::Specular, info_ref(i)));
+        }
+        if let Some(i) = s.specular_color_texture() {
+            out.push((S::SpecularColor, info_ref(i)));
+        }
+    }
+    if let Some(vol) = m.volume() {
+        if let Some(i) = vol.thickness_texture() {
+            out.push((S::VolumeThickness, info_ref(i)));
+        }
+    }
+    let mut grab = |slot: ExtTextureSlot, v: &serde_json::Value, key: &str| {
+        if let Some(r) = json_tex_ref(doc, v, key) {
+            out.push((slot, r));
+        }
+    };
+    if let Some(v) = m.extension_value("KHR_materials_iridescence") {
+        grab(S::Iridescence, v, "iridescenceTexture");
+        grab(S::IridescenceThickness, v, "iridescenceThicknessTexture");
+    }
+    if let Some(v) = m.extension_value("KHR_materials_clearcoat") {
+        grab(S::Clearcoat, v, "clearcoatTexture");
+        grab(S::ClearcoatRoughness, v, "clearcoatRoughnessTexture");
+        grab(S::ClearcoatNormal, v, "clearcoatNormalTexture");
+    }
+    if let Some(v) = m.extension_value("KHR_materials_sheen") {
+        grab(S::SheenColor, v, "sheenColorTexture");
+        grab(S::SheenRoughness, v, "sheenRoughnessTexture");
+    }
+    if let Some(v) = m.extension_value("KHR_materials_anisotropy") {
+        grab(S::Anisotropy, v, "anisotropyTexture");
+    }
+    if let Some(v) = m.extension_value("KHR_materials_diffuse_transmission") {
+        grab(S::DiffuseTransmission, v, "diffuseTransmissionTexture");
+        grab(S::DiffuseTransmissionColor, v, "diffuseTransmissionColorTexture");
+    }
+    out
+}
+
 /// Extract every material in the document into neutral [`MaterialSpec`]s, index-
 /// aligned with `doc.materials()`.
 pub fn extract_materials(doc: &gltf::Document) -> Vec<MaterialSpec> {
@@ -231,6 +319,7 @@ pub fn extract_materials(doc: &gltf::Document) -> Vec<MaterialSpec> {
                 }),
                 emissive_tex: m.emissive_texture().map(info_ref),
                 extensions: extract_extensions(&m),
+                extension_textures: extract_extension_textures(doc, &m),
             }
         })
         .collect()
@@ -257,6 +346,40 @@ mod tests {
             }
         }]
     }"#;
+
+    // Iridescence with texture refs (texture → image). Parsed without decoding
+    // (the image uri is never loaded), so `Gltf::from_slice` is enough.
+    const IRID_TEX_GLTF: &str = r#"{
+        "asset": {"version": "2.0"},
+        "extensionsUsed": ["KHR_materials_iridescence"],
+        "images": [{"uri": "irid.png"}],
+        "textures": [{"source": 0}],
+        "materials": [{
+            "name": "glass",
+            "extensions": {
+                "KHR_materials_iridescence": {
+                    "iridescenceFactor": 1.0,
+                    "iridescenceTexture": {"index": 0},
+                    "iridescenceThicknessTexture": {"index": 0, "texCoord": 1}
+                }
+            }
+        }]
+    }"#;
+
+    #[test]
+    fn extracts_extension_texture_refs() {
+        let g = gltf::Gltf::from_slice(IRID_TEX_GLTF.as_bytes()).expect("parse");
+        let specs = extract_materials(&g);
+        let xt = &specs[0].extension_textures;
+        assert!(xt.contains(&(ExtTextureSlot::Iridescence, TexRef { image: 0, uv_index: 0 })));
+        assert!(xt.contains(&(
+            ExtTextureSlot::IridescenceThickness,
+            TexRef {
+                image: 0,
+                uv_index: 1
+            }
+        )));
+    }
 
     #[test]
     fn extracts_khr_extensions() {

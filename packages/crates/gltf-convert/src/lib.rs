@@ -33,8 +33,8 @@ pub use animations::{
 };
 pub use images::{extract_images, ImageData};
 pub use materials::{
-    extract_extensions, extract_materials, AlphaMode, Clearcoat, Iridescence, MaterialExtensions,
-    MaterialSpec, Sheen, TexRef, Volume,
+    extract_extensions, extract_materials, AlphaMode, Clearcoat, ExtTextureSlot, Iridescence,
+    MaterialExtensions, MaterialSpec, Sheen, TexRef, Volume,
 };
 
 use awsm_glb_export::{reexport_clean_scene, write_glb};
