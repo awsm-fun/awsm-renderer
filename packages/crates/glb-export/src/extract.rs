@@ -32,6 +32,14 @@ use crate::{ExportNode, ExportSkin, GlbScene, MeshData, MorphTarget, Trs};
 pub fn reexport_clean(bytes: &[u8]) -> Option<GlbScene> {
     let (doc, buffers, _images) = gltf::import_slice(bytes).ok()?;
     let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
+    reexport_clean_scene(&doc, &buffers)
+}
+
+/// Like [`reexport_clean`] but operating on an already-parsed
+/// [`gltf::Document`] + its raw buffer blobs — so a caller that already decoded
+/// the source (e.g. the editor's import, which holds the doc before it's consumed
+/// by the renderer) can build the clean rig without re-parsing bytes.
+pub fn reexport_clean_scene(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Option<GlbScene> {
     let scene = doc.default_scene().or_else(|| doc.scenes().next())?;
 
     // glTF node index → flat (depth-first) index, matching `write_glb`'s flatten,
@@ -51,7 +59,7 @@ pub fn reexport_clean(bytes: &[u8]) -> Option<GlbScene> {
 
     let nodes: Vec<ExportNode> = scene
         .nodes()
-        .map(|r| build_clean_node(&r, &buffers))
+        .map(|r| build_clean_node(&r, buffers))
         .collect();
 
     let skins: Vec<ExportSkin> = doc
