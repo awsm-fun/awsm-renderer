@@ -93,15 +93,14 @@ pub fn convert(bytes: &[u8]) -> Result<CanonicalImport, ConvertError> {
         return Ok(CanonicalImport {
             glb: bytes.to_vec(),
             is_already_canonical: true,
-            // FOLLOW-ON: read the concrete version from the extension value.
-            format_version: Some(AWSM_FORMAT_VERSION),
+            format_version: awsm_format_version(&doc).or(Some(AWSM_FORMAT_VERSION)),
             ..Default::default()
         });
     }
 
     let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
     let scene = reexport_clean_scene(&doc, &buffers).ok_or(ConvertError::NoScene)?;
-    let glb = write_glb(&scene);
+    let glb = stamp_awsm_format(write_glb(&scene))?;
 
     Ok(CanonicalImport {
         glb,
@@ -111,6 +110,55 @@ pub fn convert(bytes: &[u8]) -> Result<CanonicalImport, ConvertError> {
     })
 }
 
+/// Inject the [`AWSM_FORMAT`] marker into a GLB's JSON chunk — adds the name to
+/// `extensionsUsed` and a document-level `extensions.AWSM_format = { version }`.
+/// Pure byte/JSON surgery on the JSON chunk (the BIN chunk is untouched), so the
+/// result re-parses as a normal glTF that [`is_canonical`] now recognizes.
+pub fn stamp_awsm_format(glb_bytes: Vec<u8>) -> Result<Vec<u8>, ConvertError> {
+    let mut glb = gltf::binary::Glb::from_slice(&glb_bytes)
+        .map_err(|e| ConvertError::Parse(format!("glb: {e}")))?;
+    let mut root: serde_json::Value = serde_json::from_slice(&glb.json)
+        .map_err(|e| ConvertError::Parse(format!("glb json: {e}")))?;
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| ConvertError::Parse("glTF root is not an object".into()))?;
+
+    // extensionsUsed: append AWSM_format if not present.
+    let used = obj
+        .entry("extensionsUsed")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if let Some(arr) = used.as_array_mut() {
+        if !arr.iter().any(|v| v.as_str() == Some(AWSM_FORMAT)) {
+            arr.push(serde_json::Value::String(AWSM_FORMAT.to_string()));
+        }
+    }
+    // extensions.AWSM_format = { version }.
+    let exts = obj
+        .entry("extensions")
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    if let Some(map) = exts.as_object_mut() {
+        map.insert(
+            AWSM_FORMAT.to_string(),
+            serde_json::json!({ "version": AWSM_FORMAT_VERSION }),
+        );
+    }
+
+    glb.json = std::borrow::Cow::Owned(serde_json::to_vec(&root).expect("reserialize gltf json"));
+    glb.to_vec()
+        .map_err(|e| ConvertError::Parse(format!("glb write: {e}")))
+}
+
+/// Read the `AWSM_format` version from an already-canonical document, if present.
+pub fn awsm_format_version(doc: &gltf::Document) -> Option<u32> {
+    // The gltf crate doesn't surface unknown document-level extension *values*, so
+    // re-read it from the raw extensions json.
+    doc.extensions()
+        .and_then(|e| e.get(AWSM_FORMAT))
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,37 +166,50 @@ mod tests {
     use awsm_meshgen::box_mesh;
     use glam::Vec3;
 
-    /// A plain (non-AWSM) glb converts: geometry survives, and the result is not
-    /// flagged already-canonical (since stamping isn't wired yet, a freshly
-    /// converted glb is correctly seen as "not yet canonical").
-    #[test]
-    fn converts_foreign_glb_preserving_geometry() {
+    fn cube_glb() -> (awsm_meshgen::MeshData, Vec<u8>) {
         let src = box_mesh(Vec3::splat(2.0));
-        let node = ExportNode::new("Cube").with_mesh(src.clone());
-        let source_glb = export_glb(&GlbScene {
-            nodes: vec![node],
+        let glb = export_glb(&GlbScene {
+            nodes: vec![ExportNode::new("Cube").with_mesh(src.clone())],
             ..Default::default()
         });
+        (src, glb)
+    }
+
+    /// A plain (non-AWSM) glb converts: geometry survives AND the output is now
+    /// stamped canonical (re-reads with AWSM_format present).
+    #[test]
+    fn converts_foreign_glb_preserving_geometry() {
+        let (src, source_glb) = cube_glb();
+        // The source isn't canonical yet.
+        let (src_doc, _, _) = gltf::import_slice(&source_glb).unwrap();
+        assert!(!is_canonical(&src_doc));
 
         let out = convert(&source_glb).expect("convert");
         assert!(!out.is_already_canonical);
         assert!(!out.glb.is_empty());
 
-        // The canonical glb re-reads with the same vertex/index counts.
+        // The canonical glb re-reads with the same vertex/index counts...
         let mesh = awsm_glb_export::extract_node_mesh_from_bytes(&out.glb, 0, None)
             .expect("canonical glb yields geometry");
         assert_eq!(mesh.positions.len(), src.positions.len());
         assert_eq!(mesh.indices.len(), src.indices.len());
+
+        // ...and is now stamped canonical (version 1).
+        let (out_doc, _, _) = gltf::import_slice(&out.glb).unwrap();
+        assert!(is_canonical(&out_doc));
+        assert_eq!(awsm_format_version(&out_doc), Some(AWSM_FORMAT_VERSION));
     }
 
-    /// A plain glb is correctly detected as NOT canonical.
+    /// Idempotency: converting an already-canonical glb passes it through
+    /// untouched, and convert∘convert == convert on the geometry.
     #[test]
-    fn plain_glb_is_not_canonical() {
-        let glb = export_glb(&GlbScene {
-            nodes: vec![ExportNode::new("n").with_mesh(box_mesh(Vec3::ONE))],
-            ..Default::default()
-        });
-        let (doc, _, _) = gltf::import_slice(&glb).unwrap();
-        assert!(!is_canonical(&doc));
+    fn convert_is_idempotent() {
+        let (_src, source_glb) = cube_glb();
+        let once = convert(&source_glb).expect("convert 1");
+        let twice = convert(&once.glb).expect("convert 2");
+        assert!(twice.is_already_canonical, "second pass must detect canonical");
+        assert_eq!(twice.format_version, Some(AWSM_FORMAT_VERSION));
+        // Pass-through returns the same bytes.
+        assert_eq!(twice.glb, once.glb);
     }
 }
