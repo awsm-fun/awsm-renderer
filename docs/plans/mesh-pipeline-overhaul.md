@@ -285,8 +285,10 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
   (Phase 4/5/6 wiring + skin/morph visuals + Phase 2b). Safe autonomous work left:
   ✅ (a) tangent-generator consolidation DONE (`awsm-tangents` crate; renderer +
   glb-export share it; renderer-gltf byte variant is the remaining follow-on).
-  (b) convert edge-case completeness: `data:`-URI image bytes (needs a base64 dep)
-  + extension TEXTURE refs on MaterialSpec; (c) Phase 7 doc/MCP fidelity sweep.
+  ✅ extension TEXTURE refs DONE (`MaterialSpec.extension_textures`) — material
+  extraction is now feature-complete (base PBR + all KHR factors + textures).
+  (b) LEFT: `data:`-URI image bytes (needs a base64 dep) — the last convert edge.
+  (c) Phase 7 doc/MCP fidelity sweep.
   These are GENUINE but smaller; when they run dry the loop should STOP and post
   the morning report rather than manufacture busywork — the big features need the
   user + browser.
