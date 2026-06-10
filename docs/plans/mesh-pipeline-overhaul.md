@@ -268,10 +268,21 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
   all KHR extension FACTORS (`MaterialSpec`/`MaterialExtensions`). `animations.rs`:
   `AnimationSpec` (raw sampler data, via the gltf crate's pure channel reader).
   `CanonicalImport.materials`/`.animations` populated. Tests + clippy green.
-  REMAINING sub-items (lower priority, do later): extension TEXTURE refs on
-  MaterialSpec (currently factors only); the image BYTE-BLOBS (`CanonicalImport`
-  needs an `images: Vec<...>` of decoded/raw texture bytes for the player to
-  upload); sampler + KHR_texture_transform on `TexRef`.
+  ✅ images DONE: `CanonicalImport.images` carries raw encoded PNG/JPEG bytes
+  (`images.rs`, View/GLB-embedded source); convert() switched to
+  `Gltf::from_slice` + `import_buffers` (no image decode — robustness + speed).
+  **The convert crate is now DATA-COMPLETE** (geometry + materials + animations +
+  images), all proptested.
+  REMAINING sub-items (lower priority): extension TEXTURE refs on MaterialSpec
+  (factors only today); `data:`-URI image bytes (needs base64 dep); sampler +
+  KHR_texture_transform on `TexRef`.
+
+- **NEXT for the autonomous loop:** prefer Phase 7 sweep + Phase 9 (safe,
+  additive, no browser). **Phase 5 skin/morph:** the READ-BACK queries
+  (get_morph_data / get_skin_data) are safe to build; the MUTATING tools
+  (set_morph_weight, joint-weight editing) are additive (no regression risk) but
+  their CORRECTNESS is visual — build + flag "needs your eyes", don't claim them
+  working. Phase 5's full value really wants the user present to verify renders.
 - **Phase 2b — gltf unification — ⚠️ DEFER (needs your eyes):** route
   `renderer-gltf`'s `create_visibility_vertices`/`create_transparency_vertices`
   through `mesh_pack` (decode attribute byte-maps → typed slices; thread
