@@ -262,13 +262,16 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
   `cargo test`.
 
 ### REMAINING WORK (fresh-context continuation; newest state above)
-- **Phase 3 increment 3 — material + animation extraction** into `gltf-convert`.
-  DECISION NEEDED/SUGGESTED: give `gltf-convert` its OWN neutral output structs
-  (`MaterialSpec`/`AnimationSpec`, glTF-faithful), decoupled from BOTH
-  editor-protocol AND scene; editor + player each map at the wiring step. Port the
-  PURE logic from `editor/src/engine/bridge/gltf.rs`
-  (`extract_material_specs`/`extract_extensions`/`extract_animations`). Big but
-  pure + proptestable. Image bytes = pure data; GPU upload stays in population.
+- **Phase 3 material + animation extraction** ✅ MOSTLY DONE (committed):
+  `gltf-convert` got its own neutral structs (decision taken: decoupled from BOTH
+  editor-protocol AND scene). `materials.rs`: base PBR + standard texture slots +
+  all KHR extension FACTORS (`MaterialSpec`/`MaterialExtensions`). `animations.rs`:
+  `AnimationSpec` (raw sampler data, via the gltf crate's pure channel reader).
+  `CanonicalImport.materials`/`.animations` populated. Tests + clippy green.
+  REMAINING sub-items (lower priority, do later): extension TEXTURE refs on
+  MaterialSpec (currently factors only); the image BYTE-BLOBS (`CanonicalImport`
+  needs an `images: Vec<...>` of decoded/raw texture bytes for the player to
+  upload); sampler + KHR_texture_transform on `TexRef`.
 - **Phase 2b — gltf unification (RISKIER):** route `renderer-gltf`'s
   `create_visibility_vertices`/`create_transparency_vertices` through
   `mesh_pack` too (decode attribute byte-maps → typed slices; thread `front_face`
