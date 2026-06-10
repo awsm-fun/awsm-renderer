@@ -169,15 +169,13 @@ pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
     for m in ctrl.custom_materials.lock_ref().iter() {
         let folder = material_folder_path(m.id, &m.name.get_cloned());
         out.push((format!("{folder}/material.wgsl"), m.wgsl.get_cloned()));
-        // A compact TOML sidecar of the surface + declared slots.
-        let meta = format!(
-            "name = \"{}\"\nalpha = \"{}\"\ndouble_sided = {}\nregistered = {}\n",
-            m.name.get_cloned(),
-            m.alpha.get().key(),
-            m.double_sided.get(),
-            m.registered.get(),
-        );
-        out.push((format!("{folder}/material.toml"), meta));
+        // The full serde `MaterialDefinition` — the player parses this +
+        // `material.wgsl` to rebuild the `MaterialRegistration`.
+        let def = crate::engine::bridge::dynamic::material_definition(m);
+        out.push((
+            format!("{folder}/material.json"),
+            serde_json::to_string_pretty(&def).unwrap_or_default(),
+        ));
     }
     out
 }

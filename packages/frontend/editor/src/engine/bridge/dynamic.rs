@@ -326,6 +326,104 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
     }
 }
 
+/// Serialize a live `CustomMaterial` into the bundle's serde `MaterialDefinition`
+/// (written as `material.json`) — the player rebuilds a `MaterialRegistration`
+/// from this + `material.wgsl`. Texture/buffer slot DEFAULTS serialize as `None`
+/// (the editor's `CustomMaterial` doesn't carry default bytes); per-mesh texture/
+/// buffer overrides still apply at instance time.
+pub fn material_definition(mat: &CustomMaterial) -> awsm_editor_protocol::MaterialDefinition {
+    use awsm_editor_protocol::dynamic_material::{
+        BufferSlot, FieldType as FT, MaterialDefinition, TextureSlot, UniformField,
+        UniformValue as UV,
+    };
+    use awsm_editor_protocol::MaterialAlphaMode;
+
+    let parse_ty = |s: &str| -> FT {
+        match s {
+            "u32" | "i32" => FT::U32,
+            "vec2<f32>" => FT::Vec2,
+            "vec3<f32>" => FT::Vec3,
+            "vec4<f32>" => FT::Vec4,
+            "vec2<i32>" => FT::IVec2,
+            "vec3<i32>" => FT::IVec3,
+            "vec4<i32>" => FT::IVec4,
+            "mat3x3<f32>" => FT::Mat3,
+            "mat4x4<f32>" => FT::Mat4,
+            "color3" => FT::Color3,
+            "color4" => FT::Color4,
+            "bool" => FT::Bool,
+            _ => FT::F32,
+        }
+    };
+    let parse_val = |ty: FT, s: &str| -> UV {
+        let fnums: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let inums: Vec<i32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let f = |i: usize| fnums.get(i).copied().unwrap_or(0.0);
+        let n = |i: usize| inums.get(i).copied().unwrap_or(0);
+        match ty {
+            FT::F32 => UV::F32(f(0)),
+            FT::U32 => UV::U32(s.trim().parse().unwrap_or(0)),
+            FT::Vec2 => UV::Vec2([f(0), f(1)]),
+            FT::Vec3 => UV::Vec3([f(0), f(1), f(2)]),
+            FT::Vec4 => UV::Vec4([f(0), f(1), f(2), f(3)]),
+            FT::IVec2 => UV::IVec2([n(0), n(1)]),
+            FT::IVec3 => UV::IVec3([n(0), n(1), n(2)]),
+            FT::IVec4 => UV::IVec4([n(0), n(1), n(2), n(3)]),
+            FT::Mat3 => UV::Mat3(std::array::from_fn(f)),
+            FT::Mat4 => UV::Mat4(std::array::from_fn(f)),
+            FT::Color3 => UV::Color3([f(0), f(1), f(2)]),
+            FT::Color4 => UV::Color4([f(0), f(1), f(2), f(3)]),
+            FT::Bool => UV::Bool(matches!(s.trim(), "true" | "1")),
+        }
+    };
+    let alpha_mode = match mat.alpha.get() {
+        AlphaMode::Opaque => MaterialAlphaMode::Opaque,
+        AlphaMode::Mask => MaterialAlphaMode::Mask {
+            cutoff: mat.cutoff.get() as f32,
+        },
+        AlphaMode::Blend => MaterialAlphaMode::Blend,
+    };
+    MaterialDefinition {
+        name: mat.name.get_cloned(),
+        version: 1,
+        alpha_mode,
+        double_sided: mat.double_sided.get(),
+        uniforms: mat
+            .uniforms
+            .get_cloned()
+            .iter()
+            .map(|u| {
+                let ty = parse_ty(&u.ty);
+                UniformField {
+                    name: u.name.clone(),
+                    ty,
+                    default: parse_val(ty, &u.val),
+                }
+            })
+            .collect(),
+        textures: mat
+            .textures
+            .get_cloned()
+            .iter()
+            .map(|t| TextureSlot {
+                name: t.name.clone(),
+                default: None,
+            })
+            .collect(),
+        buffers: mat
+            .buffers
+            .get_cloned()
+            .iter()
+            .map(|b| BufferSlot {
+                name: b.name.clone(),
+                default: None,
+            })
+            .collect(),
+        shader_includes: mat.shader_includes.get_cloned(),
+        fragment_inputs: mat.fragment_inputs.get_cloned(),
+    }
+}
+
 fn parse_field_type(s: &str) -> FieldType {
     match s {
         "f32" => FieldType::F32,
