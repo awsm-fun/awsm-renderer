@@ -283,11 +283,13 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
 
 - **NEXT for the autonomous loop:** the remaining HIGH-value work is browser-gated
   (Phase 4/5/6 wiring + skin/morph visuals + Phase 2b). Safe autonomous work left:
-  (a) consolidate the 3 mikktspace tangent generators into one shared home (DRY;
-  renderer avoids meshgen → likely a tiny pure crate); (b) Phase 7 sweep (doc
-  comments, MCP tool/resource fidelity); (c) small Phase 9 robustness/efficiency.
-  When these run dry (the loop should NOT manufacture busywork), STOP and post the
-  morning report — the big features genuinely need the user + browser.
+  ✅ (a) tangent-generator consolidation DONE (`awsm-tangents` crate; renderer +
+  glb-export share it; renderer-gltf byte variant is the remaining follow-on).
+  (b) convert edge-case completeness: `data:`-URI image bytes (needs a base64 dep)
+  + extension TEXTURE refs on MaterialSpec; (c) Phase 7 doc/MCP fidelity sweep.
+  These are GENUINE but smaller; when they run dry the loop should STOP and post
+  the morning report rather than manufacture busywork — the big features need the
+  user + browser.
   **Phase 5 skin/morph:** READ-BACK queries safe; MUTATING tools additive but
   visual-correctness = "needs your eyes". Full value wants the user present.
 - **Phase 2b — gltf unification — ⚠️ DEFER (needs your eyes):** route
