@@ -248,7 +248,46 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
      `extract_animations`) into `gltf-convert`; image bytes are pure data, GPU
      upload stays in population. Populate `CanonicalImport.materials`/`.animations`.
 
-NEXT after Phase 3: Phase 2 shared packer (extract raw_mesh packing into pure fns +
-byte-identity test first; gltf unification is the riskier follow-on) → Phase 5
-skin/morph MCP backend → Phase 7 sweep. Phases 4 (wiring) + 6 (visualization)
-build-but-don't-claim (browser verification needed).
+- **Phase 3 increment 2 (tangent-baking)** ✅ committed (`feat(glb-export): bake
+  MikkTSpace TANGENT`): `glb-export/src/tangents.rs` (pure mikktspace) + `write_glb`
+  now emits a `TANGENT` accessor from normals+uvs. Canonical/exported glbs are now
+  self-contained. Native tests green. ⚠️ changes editor bundle-export output (every
+  glb carries TANGENT now — additive/standard, but wants an in-editor export→player
+  visual confirm).
+- **Phase 2 (shared packer)** ✅ KEYSTONE committed (`refactor(renderer): extract
+  shared mesh_pack`): `renderer/src/mesh_pack.rs` (`pack_visibility_bytes` /
+  `pack_transparency_bytes`); `add_raw_mesh`/`add_raw_mesh_transparent` route
+  through it. Behavior-preserving literal move; compiles (wasm). ⚠️ renderer is
+  wasm-only-testable so the byte-layout tests compile but don't run under bare
+  `cargo test`.
+
+### REMAINING WORK (fresh-context continuation; newest state above)
+- **Phase 3 increment 3 — material + animation extraction** into `gltf-convert`.
+  DECISION NEEDED/SUGGESTED: give `gltf-convert` its OWN neutral output structs
+  (`MaterialSpec`/`AnimationSpec`, glTF-faithful), decoupled from BOTH
+  editor-protocol AND scene; editor + player each map at the wiring step. Port the
+  PURE logic from `editor/src/engine/bridge/gltf.rs`
+  (`extract_material_specs`/`extract_extensions`/`extract_animations`). Big but
+  pure + proptestable. Image bytes = pure data; GPU upload stays in population.
+- **Phase 2b — gltf unification (RISKIER):** route `renderer-gltf`'s
+  `create_visibility_vertices`/`create_transparency_vertices` through
+  `mesh_pack` too (decode attribute byte-maps → typed slices; thread `front_face`
+  into `pack_visibility_bytes` — add it as a param, raw_mesh passes CCW). Then the
+  two builders are byte-identical by construction. Hot path — careful.
+- **Phase 5 — skin/morph MCP backend (USER PRIORITY).** Landscape surveyed:
+  morph already exists as an ANIMATION TRACK target (mcp.rs add_track
+  `morph(node,index)`); `drop_skinning` bakes skin→editable; scene types
+  `SkinnedMeshRef`/`SkinJoint` in `scene/src/tree.rs`. MISSING (build as NEW
+  commands+tools+queries, additive/safe at the command layer, visual = browser):
+  live `set_morph_weight(node,index,value)` + `get_morph_data` query (target
+  count/names/current weights); skin joint-weight / bind-pose editing; richer
+  skeletal/morph animation authoring. "Pull out the stops, 3rd-party crates (IK,
+  weight-smoothing, retarget), no human-ergonomic constraints." Find the renderer
+  morph-weight API + how the animation morph track drives it, mirror that.
+- **Phase 7 — sweep** (doc comments, MCP tool/resource/doc fidelity, cleanup).
+  Also CONSOLIDATE the now-THREE mikktspace tangent generators (renderer
+  `raw_mesh::TangentGeometry`, `glb-export::tangents`, `renderer-gltf::ensure_tangents`)
+  into one shared home — tricky because `renderer` deliberately avoids depending on
+  `meshgen`; consider a tiny pure `mesh-buffers`/`tangents` crate they all use.
+- **Phases 4 (wiring) + 6 (visualization)** — build-but-don't-claim (browser
+  verification needed).
