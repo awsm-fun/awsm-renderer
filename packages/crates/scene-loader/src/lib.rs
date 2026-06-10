@@ -374,7 +374,8 @@ async fn load_glb_under(
     // override the geometry kind from our material (per-load — the same glb asset
     // can be shared by nodes with different materials).
     use awsm_renderer_gltf::data::GltfGeometryOverride;
-    let geometry_override = if renderer.materials.is_transparency_pass(material) {
+    let transparent = renderer.materials.is_transparency_pass(material);
+    let geometry_override = if transparent {
         GltfGeometryOverride::Transparent
     } else {
         GltfGeometryOverride::FromMaterial
@@ -395,13 +396,32 @@ async fn load_glb_under(
             },
         )
         .await?;
-    let lookups = ctx.key_lookups.lock().unwrap();
-    // The renderer mesh keys this glb produced (one per primitive), so the host
-    // can remove them on teardown.
-    let keys = lookups.all_mesh_keys.values().flatten().copied().collect();
-    // glb node index → baked transform key — the skinned-mesh arm binds each
-    // skeleton joint (by its clean-glb node index) to drive the skin.
-    let node_index_transforms = lookups.node_index_to_transform.clone();
+    let (keys, node_index_transforms): (Vec<MeshKey>, HashMap<usize, TransformKey>) = {
+        let lookups = ctx.key_lookups.lock().unwrap();
+        // The renderer mesh keys this glb produced (one per primitive), so the host
+        // can remove them on teardown.
+        let keys = lookups.all_mesh_keys.values().flatten().copied().collect();
+        // glb node index → baked transform key — the skinned-mesh arm binds each
+        // skeleton joint (by its clean-glb node index) to drive the skin.
+        (keys, lookups.node_index_to_transform.clone())
+    };
+    // A transparent mesh is built with transparency geometry only (above), so it
+    // must NOT enter the shadow pass — that pass draws from VISIBILITY geometry
+    // (`shadows/render_pass.rs`), which transparent meshes lack →
+    // `VisibilityGeometryBufferNotFound`. Matches `MeshShadowConfig::
+    // TRANSPARENT_DEFAULT` (transparent = no cast / no receive); the bundle's
+    // geometry-only glb carries no per-mesh shadow flags, so set them here.
+    if transparent {
+        for &k in &keys {
+            let _ = renderer.set_mesh_shadow_flags(
+                k,
+                awsm_renderer::shadows::MeshShadowFlags {
+                    cast: false,
+                    receive: false,
+                },
+            );
+        }
+    }
     Ok((keys, node_index_transforms))
 }
 
