@@ -33,6 +33,9 @@ tasks:
         --watch "{{joinPath .PATH_CRATES "editor-protocol"}}"
         --watch "{{joinPath .PATH_CRATES "meshgen"}}"
         --watch "{{joinPath .PATH_CRATES "glb-export"}}"
+        --watch "{{joinPath .PATH_CRATES "scene"}}"
+        --watch "{{joinPath .PATH_CRATES "scene-loader"}}"
+        --watch "{{joinPath .PATH_CRATES "renderer-gltf"}}"
 
   build:
     desc: "editor: production build"
