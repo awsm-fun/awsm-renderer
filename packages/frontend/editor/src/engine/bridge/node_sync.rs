@@ -8,6 +8,9 @@ use awsm_meshgen::MeshData;
 use awsm_renderer::cameras::{CameraParams, CameraProjectionParams};
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
+// Shared with the runtime-bundle loader (`populate_awsm_scene`) so a light lowers
+// identically on the editor's live render and the player — the round-trip premise.
+use awsm_scene_loader::light::{light_from_config, light_shadow_params_from_config};
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::{SignalVecExt, VecDiff};
 use glam::{Quat, Vec3, Vec4};
@@ -1111,90 +1114,6 @@ fn camera_params_from_config(cfg: &awsm_editor_protocol::CameraConfig) -> Camera
         far: cfg.far,
         aperture: 5.6,
         focus_distance: 10.0,
-    }
-}
-
-/// Schema → runtime light shadow params.
-fn light_shadow_params_from_config(
-    cfg: &awsm_editor_protocol::LightShadowConfig,
-) -> awsm_renderer::shadows::LightShadowParams {
-    use awsm_editor_protocol as s;
-    use awsm_renderer::shadows as r;
-    r::LightShadowParams {
-        cast: cfg.cast,
-        depth_bias: cfg.depth_bias,
-        normal_bias: cfg.normal_bias,
-        resolution: cfg.resolution,
-        hardness: match cfg.hardness {
-            s::LightShadowHardness::Hard => r::LightShadowHardness::Hard,
-            s::LightShadowHardness::Soft => r::LightShadowHardness::Soft,
-            s::LightShadowHardness::Pcss => r::LightShadowHardness::Pcss,
-        },
-        pcss_penumbra_scale: cfg.pcss_penumbra_scale,
-        max_distance: cfg.max_distance,
-        cascade_count: cfg.cascade_count,
-        cascade_split_lambda: cfg.cascade_split_lambda,
-        evsm_cutoff: match cfg.evsm_cutoff {
-            s::EvsmCutoff::Off => r::EvsmCutoff::Off,
-            s::EvsmCutoff::LastCascade => r::EvsmCutoff::LastCascade,
-            s::EvsmCutoff::LastTwoCascades => r::EvsmCutoff::LastTwoCascades,
-        },
-        far_cascade_update_rate: match cfg.far_cascade_update_rate {
-            s::FarCascadeUpdateRate::EveryFrame => r::FarCascadeUpdateRate::EveryFrame,
-            s::FarCascadeUpdateRate::Every2Frames => r::FarCascadeUpdateRate::Every2Frames,
-            s::FarCascadeUpdateRate::Every4Frames => r::FarCascadeUpdateRate::Every4Frames,
-            s::FarCascadeUpdateRate::Every8Frames => r::FarCascadeUpdateRate::Every8Frames,
-        },
-        cube_face_update_rate: match cfg.cube_face_update_rate {
-            s::CubeFaceUpdateRate::EveryFrame => r::CubeFaceUpdateRate::EveryFrame,
-            s::CubeFaceUpdateRate::Every2Frames => r::CubeFaceUpdateRate::Every2Frames,
-            s::CubeFaceUpdateRate::Every4Frames => r::CubeFaceUpdateRate::Every4Frames,
-            s::CubeFaceUpdateRate::Every8Frames => r::CubeFaceUpdateRate::Every8Frames,
-        },
-    }
-}
-
-fn light_from_config(
-    cfg: &LightConfig,
-    position: Vec3,
-    direction: Vec3,
-) -> awsm_renderer::lights::Light {
-    use awsm_renderer::lights::Light;
-    match cfg {
-        LightConfig::Directional {
-            color, intensity, ..
-        } => Light::Directional {
-            color: *color,
-            intensity: *intensity,
-            direction: direction.to_array(),
-        },
-        LightConfig::Point {
-            color,
-            intensity,
-            range,
-            ..
-        } => Light::Point {
-            color: *color,
-            intensity: *intensity,
-            position: position.to_array(),
-            range: *range,
-        },
-        LightConfig::Spot {
-            color,
-            intensity,
-            range,
-            inner_angle,
-            outer_angle,
-            ..
-        } => Light::Spot {
-            color: *color,
-            intensity: *intensity,
-            position: position.to_array(),
-            direction: direction.to_array(),
-            range: *range,
-            inner_angle: *inner_angle,
-            outer_angle: *outer_angle,
-        },
     }
 }
 

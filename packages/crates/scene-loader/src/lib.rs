@@ -12,13 +12,15 @@
 //!
 //! Status: this cut materializes the node hierarchy (transforms), **primitive**
 //! meshes (regenerated from params) with their **built-in materials** (the
-//! shared `material_to_renderer` conversion, texture-less), and **glb** meshes
-//! (the per-mesh `assets/<id>.glb` fed through `populate_gltf`, rooted under the
-//! scene node's transform — the geometry+skin+morph path foreign glTF already
-//! uses). The remaining arms — texture binding, custom-WGSL materials, glb-mesh
-//! material reassignment, lights, cameras, standalone skins, and our animation
-//! clips — are staged follow-ons (each marked below).
+//! shared `material_to_renderer` conversion, texture-less), **glb** meshes (the
+//! per-mesh `assets/<id>.glb` fed through `populate_gltf`, rooted under the scene
+//! node's transform — the geometry+skin+morph path foreign glTF already uses),
+//! and **lights** (the shared `light_from_config` conversion + shadow params,
+//! bound to the node transform). The remaining arms — texture binding,
+//! custom-WGSL materials, glb-mesh material reassignment, cameras, standalone
+//! skins, and our animation clips — are staged follow-ons (each marked below).
 
+pub mod light;
 pub mod material;
 
 use std::collections::HashMap;
@@ -97,7 +99,26 @@ async fn materialize(
             }
         }
     }
-    // Follow-on: Light / Camera / SkinnedMesh arms + our-clip wiring.
+    if let NodeKind::Light(cfg) = &node.kind {
+        // Same derivation as the editor bridge's `apply_light`: position from the
+        // node translation, forward from rotating local -Z. Bind the light to its
+        // transform so a moved/rotated light node re-derives pos/dir per frame.
+        let pos = Vec3::from_array(node.transform.translation);
+        let dir = (Quat::from_array(node.transform.rotation) * Vec3::NEG_Z).normalize_or_zero();
+        let lt = light::light_from_config(cfg, pos, dir);
+        let shadow = light::light_shadow_params_from_config(cfg.shadow());
+        let casts = shadow.cast;
+        if let Ok(k) = renderer.insert_light(lt, Some(shadow)) {
+            renderer.lights.bind_transform(k, tk);
+        }
+        // Compile the shadow pipelines on the first casting light so the next
+        // frame can draw shadows (no-op once compiled / when nothing casts).
+        if casts {
+            renderer.ensure_shadow_pipelines_compiled().await?;
+        }
+    }
+
+    // Follow-on: Camera / SkinnedMesh arms + our-clip wiring.
 
     for child in &node.children {
         Box::pin(materialize(
