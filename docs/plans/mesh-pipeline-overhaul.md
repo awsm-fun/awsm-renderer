@@ -291,3 +291,25 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
   `meshgen`; consider a tiny pure `mesh-buffers`/`tangents` crate they all use.
 - **Phases 4 (wiring) + 6 (visualization)** — build-but-don't-claim (browser
   verification needed).
+
+### Phase 9 — STANDING LATITUDE (opportunistic, runs the loop dry slowly)
+Once the listed phases are progressing/done, keep finding valuable work each
+iteration — the loop should NOT stop early. Broad mandate from the user, with
+guardrails:
+- **Code + docs cleanup**: dead code, confusing names, missing/clarifying doc
+  comments on code you touch, README/doc drift, TODO triage.
+- **Efficiency gains**: implement ones you spot — but ONLY when behavior-preserving
+  (or proptest/byte-identity-guarded). NO perf regressions; don't micro-opt a
+  render hot path on a hunch without a measurement or a guard; flag anything that
+  could change rendered output for browser verification.
+- **MCP robustness + helpers**: better error messages, input validation,
+  idempotency, truthful tool/resource descriptions, and NEW query/tool helpers
+  that make agent-driving easier (e.g. richer read-backs, batch ops, safer
+  defaults). Keep the tool layer compile/clippy-clean.
+- **Mesh / editor capabilities**: new useful mesh ops, editor tools, and MCP
+  capabilities you think of — additive, tested at the command/cargo layer; flag
+  visual/browser bits.
+Always: cargo-verifiable, small incremental commits, tree compiles at every
+commit, never claim render-verified what isn't, log notable adds in this progress
+section. Prefer high-value/low-risk; when unsure whether a change is safe without
+the browser, build it behind a flag or leave a note rather than risk a regression.
