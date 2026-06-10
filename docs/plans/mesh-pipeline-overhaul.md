@@ -277,12 +277,19 @@ work deferred). Done so far, all `cargo`-verified + committed on `mesh-authoring
   (factors only today); `data:`-URI image bytes (needs base64 dep); sampler +
   KHR_texture_transform on `TexRef`.
 
-- **NEXT for the autonomous loop:** prefer Phase 7 sweep + Phase 9 (safe,
-  additive, no browser). **Phase 5 skin/morph:** the READ-BACK queries
-  (get_morph_data / get_skin_data) are safe to build; the MUTATING tools
-  (set_morph_weight, joint-weight editing) are additive (no regression risk) but
-  their CORRECTNESS is visual — build + flag "needs your eyes", don't claim them
-  working. Phase 5's full value really wants the user present to verify renders.
+  ✅ convert crate also PROPTESTED beyond geometry: material-factor survival +
+  animation-sampler survival (`tests/convert_proptest.rs`). The convert crate is
+  DONE for the autonomous run.
+
+- **NEXT for the autonomous loop:** the remaining HIGH-value work is browser-gated
+  (Phase 4/5/6 wiring + skin/morph visuals + Phase 2b). Safe autonomous work left:
+  (a) consolidate the 3 mikktspace tangent generators into one shared home (DRY;
+  renderer avoids meshgen → likely a tiny pure crate); (b) Phase 7 sweep (doc
+  comments, MCP tool/resource fidelity); (c) small Phase 9 robustness/efficiency.
+  When these run dry (the loop should NOT manufacture busywork), STOP and post the
+  morning report — the big features genuinely need the user + browser.
+  **Phase 5 skin/morph:** READ-BACK queries safe; MUTATING tools additive but
+  visual-correctness = "needs your eyes". Full value wants the user present.
 - **Phase 2b — gltf unification — ⚠️ DEFER (needs your eyes):** route
   `renderer-gltf`'s `create_visibility_vertices`/`create_transparency_vertices`
   through `mesh_pack` (decode attribute byte-maps → typed slices; thread
