@@ -355,61 +355,25 @@ impl AwsmRenderer {
         let triangle_count = data.triangle_count();
         let exploded_count = triangle_count * 3;
 
-        // ── Visibility geometry (56 bytes / exploded vertex) ───────────────
-        const VIS_BYTES_PER_VERTEX: usize = MeshBufferVertexInfo::VISIBILITY_GEOMETRY_BYTE_SIZE;
-        let mut visibility_bytes: Vec<u8> =
-            Vec::with_capacity(exploded_count * VIS_BYTES_PER_VERTEX);
+        // ── Visibility geometry (56 bytes / exploded vertex) — packed by the
+        // shared `mesh_pack` packer (the canonical byte layout). Real MikkTSpace
+        // tangents when the material samples a normal map (the gltf populate path
+        // does the same via `ensure_tangents`); otherwise the packer writes the
+        // synthetic [0,0,0,1] fallback — a surface with no normal map never reads
+        // the tangent, so we skip the generation cost.
         let normals = data.normals.as_ref().expect("ensure_normals filled this");
-
-        // Real MikkTSpace tangents when the material samples a normal map (the
-        // gltf populate path does the same via `ensure_tangents`); otherwise the
-        // synthetic [0,0,0,1] below is fine — a surface with no normal map never
-        // reads the tangent, so we skip the generation cost.
         let tangents = self
             .materials
             .get(material_key)
             .is_ok_and(material_wants_tangents)
             .then(|| data.compute_tangents())
             .flatten();
-
-        // Same barycentric pattern the gltf path uses (see
-        // `gltf/buffers/mesh/visibility.rs`).
-        const BARYCENTRICS: [[f32; 2]; 3] = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
-
-        for (triangle_index, tri) in data.indices.chunks_exact(3).enumerate() {
-            for (corner, &vertex_index) in tri.iter().enumerate() {
-                let v_idx = vertex_index as usize;
-                let pos = data.positions[v_idx];
-                let normal = normals[v_idx];
-                let bary = BARYCENTRICS[corner];
-
-                // position (12)
-                visibility_bytes.extend_from_slice(&pos[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&pos[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&pos[2].to_le_bytes());
-                // triangle_index (4)
-                visibility_bytes.extend_from_slice(&(triangle_index as u32).to_le_bytes());
-                // barycentric (8)
-                visibility_bytes.extend_from_slice(&bary[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&bary[1].to_le_bytes());
-                // normal (12)
-                visibility_bytes.extend_from_slice(&normal[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[2].to_le_bytes());
-                // tangent (16) — real MikkTSpace basis when generated above, else
-                // synthetic [0,0,0,1] (matches gltf populate's default fallback).
-                let tan = tangents
-                    .as_ref()
-                    .map(|t| t[v_idx])
-                    .unwrap_or([0.0, 0.0, 0.0, 1.0]);
-                visibility_bytes.extend_from_slice(&tan[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&tan[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&tan[2].to_le_bytes());
-                visibility_bytes.extend_from_slice(&tan[3].to_le_bytes());
-                // original_vertex_index (4)
-                visibility_bytes.extend_from_slice(&vertex_index.to_le_bytes());
-            }
-        }
+        let visibility_bytes = crate::mesh_pack::pack_visibility_bytes(
+            &data.positions,
+            normals,
+            tangents.as_deref(),
+            &data.indices,
+        );
 
         // ── Custom attribute index (12 bytes per triangle = 3 * u32) ──────
         let mut attribute_index_bytes: Vec<u8> = Vec::with_capacity(triangle_count * 12);
@@ -578,7 +542,7 @@ impl AwsmRenderer {
             .flatten();
 
         // ── Transparency geometry ONLY (40 B / vertex, per-original-vertex,
-        // *not* exploded). Matches `gltf/buffers/mesh/transparency.rs`.
+        // *not* exploded), packed by the shared `mesh_pack` packer.
         //
         // A transparency-pass material (we returned early above for opaque)
         // builds NO visibility geometry: emitting it would also rasterize this
@@ -587,29 +551,12 @@ impl AwsmRenderer {
         // would read opaque-white. The gltf path is identical: a
         // transmission/blend/mask primitive maps to `GeometryKind::Transparency`
         // with the visibility offset `None` (see `mesh_buffer_geometry_kind`).
-        let mut transparency_bytes: Vec<u8> = Vec::with_capacity(
-            vertex_count * MeshBufferVertexInfo::TRANSPARENCY_GEOMETRY_BYTE_SIZE,
+        let transparency_bytes = crate::mesh_pack::pack_transparency_bytes(
+            &data.positions,
+            normals,
+            tangents.as_deref(),
+            vertex_count,
         );
-        for (v_idx, normal) in normals.iter().enumerate().take(vertex_count) {
-            let pos = data.positions[v_idx];
-            let normal = *normal;
-            transparency_bytes.extend_from_slice(&pos[0].to_le_bytes());
-            transparency_bytes.extend_from_slice(&pos[1].to_le_bytes());
-            transparency_bytes.extend_from_slice(&pos[2].to_le_bytes());
-            transparency_bytes.extend_from_slice(&normal[0].to_le_bytes());
-            transparency_bytes.extend_from_slice(&normal[1].to_le_bytes());
-            transparency_bytes.extend_from_slice(&normal[2].to_le_bytes());
-            // tangent (16) — real MikkTSpace basis when generated above, else the
-            // synthetic [0,0,0,1] fallback (matches gltf populate).
-            let tan = tangents
-                .as_ref()
-                .map(|t| t[v_idx])
-                .unwrap_or([0.0, 0.0, 0.0, 1.0]);
-            transparency_bytes.extend_from_slice(&tan[0].to_le_bytes());
-            transparency_bytes.extend_from_slice(&tan[1].to_le_bytes());
-            transparency_bytes.extend_from_slice(&tan[2].to_le_bytes());
-            transparency_bytes.extend_from_slice(&tan[3].to_le_bytes());
-        }
 
         // Attribute index (per-triangle u32s — same as opaque).
         let mut attribute_index_bytes: Vec<u8> = Vec::with_capacity(triangle_count * 12);

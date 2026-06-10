@@ -61,6 +61,7 @@ pub mod picker;
 pub mod pipeline_layouts;
 pub mod pipeline_scheduler;
 pub mod pipelines;
+pub mod mesh_pack;
 pub mod post_process;
 pub mod profile;
 pub mod raw_mesh;
