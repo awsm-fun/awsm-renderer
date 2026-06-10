@@ -113,6 +113,9 @@ pub fn insert_custom(
     inst: &MaterialInstance,
 ) -> Option<awsm_renderer::materials::MaterialKey> {
     let material = build_custom(renderer, inst)?;
+    // Upload per-instance buffer-override words to the extras pool BEFORE insert
+    // (insert packs `MaterialData.<slot>_offset` from `extras_pool.slice_for`).
+    renderer.upload_dynamic_material_buffers(&material);
     Some(renderer.materials.insert(
         material,
         &renderer.textures,

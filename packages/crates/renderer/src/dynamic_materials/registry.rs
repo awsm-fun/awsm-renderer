@@ -1082,6 +1082,45 @@ impl crate::AwsmRenderer {
         Ok(id)
     }
 
+    /// Upload a custom material instance's per-slot BUFFER data into the extras
+    /// pool (keyed by its `shader_id`), so the packed `MaterialData.<slot>_offset`
+    /// / `_length` resolve to those bytes. The registration-time `buffer_defaults`
+    /// path only covers material-level defaults; per-instance `buffer_overrides`
+    /// flow through HERE — without this call the slice stays `(0, 0)` and the
+    /// shader's `extras_load_*` reads pool[0] (zero → black).
+    ///
+    /// Call BEFORE [`Materials::insert`]/`update`: `insert` packs the payload by
+    /// reading `extras_pool.slice_for`, so the slice must exist first.
+    ///
+    /// Keyed per-shader, not per-instance: two meshes sharing one custom material
+    /// with DIFFERENT buffer data collide (last write wins). The common
+    /// single-assignment case (and the bundle round-trip) is correct.
+    pub fn upload_dynamic_material_buffers(&mut self, material: &crate::materials::Material) {
+        let crate::materials::Material::Custom(dm) = material else {
+            return;
+        };
+        for (slot_index, data) in dm.buffers.iter().enumerate() {
+            let Some(words) = data else { continue };
+            if words.is_empty() {
+                continue;
+            }
+            match self
+                .extras_pool
+                .assign_or_update(&self.gpu, dm.shader_id, slot_index, words)
+            {
+                Ok(outcome) => {
+                    if outcome.resized {
+                        self.bind_groups
+                            .mark_create(crate::bind_groups::BindGroupCreate::ExtrasPoolResize);
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "extras_pool: per-instance buffer assign failed (slot {slot_index}): {e:?}"
+                ),
+            }
+        }
+    }
+
     /// Per-frame reconcile: route each opaque PBR material to its
     /// per-feature-set *variant* bucket, allocating + compiling new variants
     /// and re-laying-out the bucket-dependent GPU state when the set grows.

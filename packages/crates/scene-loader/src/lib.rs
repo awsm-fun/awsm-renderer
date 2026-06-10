@@ -431,6 +431,10 @@ async fn resolve_material(
     // Build a Material::Custom (defaults + uniform overrides); `inline` is ignored.
     if let Some(&shader_id) = custom.get(&inst.asset) {
         if let Some(mat) = dynamic::build_custom_material(renderer, shader_id, inst, assets).await {
+            // Upload the instance's per-slot buffer-override words into the extras
+            // pool BEFORE insert (insert packs `MaterialData.<slot>_offset` from
+            // `extras_pool.slice_for`, so the slice must exist first).
+            renderer.upload_dynamic_material_buffers(&mat);
             return renderer.materials.insert(
                 mat,
                 &renderer.textures,
