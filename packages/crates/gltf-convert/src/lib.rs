@@ -26,10 +26,12 @@
 //!     bridge: `extract_material_specs`/`extract_extensions`/`extract_animations`).
 
 pub mod animations;
+pub mod images;
 pub mod materials;
 pub use animations::{
     extract_animations, AnimChannel, AnimProperty, AnimationSpec, Interpolation,
 };
+pub use images::{extract_images, ImageData};
 pub use materials::{
     extract_extensions, extract_materials, AlphaMode, Clearcoat, Iridescence, MaterialExtensions,
     MaterialSpec, Sheen, TexRef, Volume,
@@ -65,6 +67,9 @@ pub struct CanonicalImport {
     /// Animations lifted from the source glTF, in neutral form (raw sampler data
     /// keyed by glTF node index). Empty for an already-canonical glb.
     pub animations: Vec<AnimationSpec>,
+    /// Texture images' raw encoded bytes, index-aligned with the source glTF's
+    /// images (what `MaterialSpec`'s `TexRef.image` points at).
+    pub images: Vec<ImageData>,
 }
 
 /// Conversion failures (all pure-data; no I/O).
@@ -98,26 +103,34 @@ pub fn is_canonical(doc: &gltf::Document) -> bool {
 /// - Otherwise → geometry re-exported clean (materials/animations/cruft stripped,
 ///   multi-primitive nodes preserved, skins kept) via `glb-export`.
 pub fn convert(bytes: &[u8]) -> Result<CanonicalImport, ConvertError> {
-    let (doc, buffers, _images) =
-        gltf::import_slice(bytes).map_err(|e| ConvertError::Parse(e.to_string()))?;
+    // Parse WITHOUT decoding images (`Gltf::from_slice` + `import_buffers`, not
+    // `import_slice`): a pure-data converter ships RAW image bytes, so it must
+    // not depend on the image decoder accepting them — and it skips the decode
+    // cost entirely.
+    let mut g = gltf::Gltf::from_slice(bytes).map_err(|e| ConvertError::Parse(e.to_string()))?;
 
-    if is_canonical(&doc) {
+    if is_canonical(&g) {
         // Our own export — already canonical. Pass the bytes through untouched.
         // (Materials/animations live alongside it in the bundle, not in the glb.)
         return Ok(CanonicalImport {
             glb: bytes.to_vec(),
             is_already_canonical: true,
-            format_version: awsm_format_version(&doc).or(Some(AWSM_FORMAT_VERSION)),
+            format_version: awsm_format_version(&g).or(Some(AWSM_FORMAT_VERSION)),
             ..Default::default()
         });
     }
 
-    // Lift the source materials + animations into neutral specs BEFORE reexport
-    // strips them from the geometry-only canonical glb.
-    let materials = extract_materials(&doc);
+    // Resolve buffers (GLB blob + data-URI; no external files — pure data).
+    let blob = g.blob.take();
+    let buffers = gltf::import_buffers(&g, None, blob)
+        .map_err(|e| ConvertError::Parse(format!("buffers: {e}")))?;
     let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
-    let animations = extract_animations(&doc, &buffers);
-    let scene = reexport_clean_scene(&doc, &buffers).ok_or(ConvertError::NoScene)?;
+    // Lift the source materials + animations + image bytes into neutral specs
+    // BEFORE reexport strips them from the geometry-only canonical glb.
+    let materials = extract_materials(&g);
+    let animations = extract_animations(&g, &buffers);
+    let images = extract_images(&g, &buffers);
+    let scene = reexport_clean_scene(&g, &buffers).ok_or(ConvertError::NoScene)?;
     let glb = stamp_awsm_format(write_glb(&scene))?;
 
     Ok(CanonicalImport {
@@ -126,6 +139,7 @@ pub fn convert(bytes: &[u8]) -> Result<CanonicalImport, ConvertError> {
         format_version: None,
         materials,
         animations,
+        images,
     })
 }
 
@@ -298,6 +312,48 @@ mod tests {
         // The canonical glb itself carries no animation.
         let (doc, _, _) = gltf::import_slice(&out.glb).unwrap();
         assert_eq!(doc.animations().count(), 0);
+    }
+
+    // A valid 1x1 RGBA PNG (so gltf::import_slice's eager image decode succeeds).
+    const PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x62, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    /// A source texture image's raw bytes survive convert (and the material's
+    /// texture slot points at the right image index).
+    #[test]
+    fn extracts_image_bytes() {
+        use awsm_glb_export::{
+            ExportImage, ExportMaterial, ImageMime, PbrMaterial, TexRef as ExTexRef,
+        };
+        let mut node = ExportNode::new("Cube").with_mesh(box_mesh(Vec3::ONE));
+        node.material = Some(ExportMaterial::Pbr(PbrMaterial {
+            name: "m".into(),
+            base_color_texture: Some(ExTexRef {
+                image: 0,
+                tex_coord: 0,
+            }),
+            ..Default::default()
+        }));
+        let source = export_glb(&GlbScene {
+            nodes: vec![node],
+            images: vec![ExportImage {
+                name: "tex".into(),
+                bytes: PNG_1X1.to_vec(),
+                mime: ImageMime::Png,
+            }],
+            ..Default::default()
+        });
+
+        let out = convert(&source).expect("convert");
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(out.images[0].bytes, PNG_1X1);
+        assert_eq!(out.images[0].mime_type.as_deref(), Some("image/png"));
+        assert_eq!(out.materials[0].base_color_tex.map(|t| t.image), Some(0));
     }
 
     /// Idempotency: converting an already-canonical glb passes it through
