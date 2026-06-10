@@ -319,6 +319,7 @@ name = "awsm-glb-export"
 version = "0.2.0"
 dependencies = [
  "awsm-meshgen",
+ "bevy_mikktspace",
  "glam 0.32.1",
  "gltf",
  "gltf-json",

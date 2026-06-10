@@ -33,6 +33,7 @@
 
 mod bundle;
 mod extract;
+mod tangents;
 mod write;
 
 pub use awsm_meshgen::MeshData;

@@ -187,6 +187,26 @@ impl Builder {
             }
         }
 
+        // TANGENT (vec4: xyz + handedness). Baked here from normals+uvs via
+        // MikkTSpace so the canonical/exported glb is self-contained and the
+        // population path is a dumb upload (it skips generation when tangents are
+        // present). Generated whenever normals+uvs exist — see `tangents` mod.
+        if let (Some(normals), Some(uvs)) = (&m.normals, &m.uvs) {
+            if let Some(tangents) =
+                crate::tangents::generate_tangents(&m.positions, normals, uvs, &m.indices)
+            {
+                let acc = self.push_accessor(
+                    &flatten_f32x4(&tangents),
+                    tangents.len(),
+                    accessor::ComponentType::F32,
+                    accessor::Type::Vec4,
+                    None,
+                    None,
+                );
+                attributes.insert(Checked::Valid(mesh::Semantic::Tangents), acc);
+            }
+        }
+
         // JOINTS_0 / WEIGHTS_0 (skinned meshes). u16 joint indices + f32 weights,
         // one vec4 per vertex.
         if let (Some(joints), Some(weights)) = (&n.joints, &n.weights) {

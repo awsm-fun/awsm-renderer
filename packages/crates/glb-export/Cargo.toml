@@ -18,6 +18,9 @@ serde_json = { workspace = true }
 # geometry back out of a source glTF/GLB's accessors (the editor's Model-node
 # export re-reads the imported file). Pure-Rust + wasm-friendly, no GPU deps.
 gltf = { workspace = true }
+# MikkTSpace tangent generation, baked into the exported/canonical glb so the
+# (browser) population path is a dumb upload. Pure CPU, wasm-friendly.
+bevy_mikktspace = { workspace = true }
 
 [dev-dependencies]
 # Throwaway directories for the player-bundle write_to_dir integration test.
