@@ -26,7 +26,10 @@
 //!     bridge: `extract_material_specs`/`extract_extensions`/`extract_animations`).
 
 pub mod materials;
-pub use materials::{extract_materials, AlphaMode, MaterialSpec, TexRef};
+pub use materials::{
+    extract_extensions, extract_materials, AlphaMode, Clearcoat, Iridescence, MaterialExtensions,
+    MaterialSpec, Sheen, TexRef, Volume,
+};
 
 use awsm_glb_export::{reexport_clean_scene, write_glb};
 
