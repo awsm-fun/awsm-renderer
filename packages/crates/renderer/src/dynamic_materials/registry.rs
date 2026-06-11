@@ -1368,6 +1368,9 @@ impl crate::AwsmRenderer {
         &mut self,
         shader_id: MaterialShaderId,
     ) -> Result<(), AwsmDynamicMaterialError> {
+        // The masked pool may hold a now-stale variant for this id; flag a
+        // rebuild so the next finalize clears + recompiles the live set.
+        self.masked_dynamic_dirty = true;
         let dropped = self.extras_pool.drop_shader(shader_id);
         if dropped > 0 {
             tracing::debug!(

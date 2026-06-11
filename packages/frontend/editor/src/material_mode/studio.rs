@@ -1155,6 +1155,14 @@ fn code_pane(mat: &Arc<CustomMaterial>, help: Mutable<bool>) -> Dom {
         }))
         // Editor (line gutter + textarea).
         .child(code_editor(mat))
+        // Second, alpha-only WGSL window — only for MASK materials. Returns an
+        // `f32` alpha; compiled into the masked visibility raster so the cutout
+        // is alpha-tested (holes see-through + hole-shaped shadows +
+        // transmission-through-holes), cheaply (no color/lighting).
+        .child_signal(mat.alpha.signal().map(clone!(mat => move |a| {
+            (a == crate::controller::custom_material::AlphaMode::Mask)
+                .then(|| alpha_code_editor(&mat))
+        })))
         // Problems strip.
         .child(html!("div", {
             .style("flex", "0 0 auto").style("border-top", "1px solid var(--line-soft)").style("background", "var(--bg-2)").style("max-height", "120px").style("overflow-y", "auto")
@@ -1182,6 +1190,42 @@ fn code_editor(mat: &Arc<CustomMaterial>) -> Dom {
                 // cross-tab broadcast, MCP-reachable) rather than writing the
                 // reactive model directly.
                 .event(clone!(ta, mat => move |_: events::Input| dispatch(EditorCommand::SetCustomMaterialWgsl { id: mat.id, wgsl: ta.value() })))
+            })
+        }))
+    })
+}
+
+/// The second, alpha-only WGSL editor (MASK materials only). Dispatches
+/// `SetCustomMaterialAlphaWgsl`; the body must `return` an `f32` alpha in
+/// `[0,1]` — the masked raster discards below the material's cutoff.
+fn alpha_code_editor(mat: &Arc<CustomMaterial>) -> Dom {
+    let mat = mat.clone();
+    let initial = mat.alpha_wgsl.get_cloned();
+    html!("div", {
+        .style("flex", "0 0 auto").style("display", "flex").style("flex-direction", "column")
+        .style("border-top", "1px solid var(--line-soft)").style("height", "150px")
+        .child(html!("div", {
+            .style("flex", "0 0 auto").style("padding", "5px 12px").style("background", "var(--bg-2)")
+            .style("display", "flex").style("align-items", "center").style("gap", "8px")
+            .child(html!("span", {
+                .class("kicker").style("font-size", "10px").style("color", "var(--text-3)")
+                .style("text-transform", "uppercase").style("letter-spacing", ".06em")
+                .text("Alpha (cutout) WGSL → f32")
+            }))
+            .child(html!("span", {
+                .style("font-size", "11px").style("color", "var(--text-3)")
+                .text("e.g. return select(1.0, 0.0, fract(input.uv.x * 8.0) < 0.5);")
+            }))
+        }))
+        .child(html!("textarea" => web_sys::HtmlTextAreaElement, {
+            .class("mono")
+            .attr("spellcheck", "false").attr("wrap", "off")
+            .prop("value", &initial)
+            .style("flex", "1").style("min-width", "0").style("margin", "0").style("padding", "12px 14px")
+            .style("background", "var(--bg-3)").style("border-style", "none").style("outline-style", "none").style("resize", "none")
+            .style("color", "var(--text-0)").style("font-size", "12.5px").style("line-height", "19px").style("white-space", "pre").style("tab-size", "4")
+            .with_node!(ta => {
+                .event(clone!(ta, mat => move |_: events::Input| dispatch(EditorCommand::SetCustomMaterialAlphaWgsl { id: mat.id, wgsl: ta.value() })))
             })
         }))
     })
