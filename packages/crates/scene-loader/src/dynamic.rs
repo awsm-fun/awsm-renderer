@@ -234,6 +234,10 @@ fn registration_from_definition(
         uniform_defaults,
         shader_includes: includes_from_keys(&def.shader_includes),
         fragment_inputs: inputs_from_keys(&def.fragment_inputs),
+        // TODO(round-trip): thread the 2nd alpha-only WGSL window through the
+        // scene `MaterialDefinition` so the player rebuilds masked cutouts too.
+        // For now the player renders custom MASK materials solid (no cutout).
+        alpha_wgsl: None,
     }
 }
 

@@ -33,6 +33,12 @@ pub struct StoredMaterial {
     pub builtin: Option<MaterialDef>,
     #[serde(default)]
     pub wgsl: String,
+    /// The second, alpha-only WGSL window (returns `f32`). Only meaningful for
+    /// `alpha == "mask"`; compiled into the masked visibility-raster variant.
+    /// Empty / absent → no masked cutout. `#[serde(default)]` so older projects
+    /// round-trip.
+    #[serde(default)]
+    pub alpha_wgsl: String,
     /// "opaque" / "mask" / "blend".
     #[serde(default)]
     pub alpha: String,

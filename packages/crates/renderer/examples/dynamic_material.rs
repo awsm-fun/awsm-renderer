@@ -102,6 +102,8 @@ return OpaqueShadingOutput(overlay + vec3<f32>(0.5), 1.0);
         // module / fragment input (the pre-skinny behaviour).
         shader_includes: awsm_materials::ShaderIncludes::all(),
         fragment_inputs: awsm_materials::FragmentInputs::all(),
+        // Opaque example material — no alpha-test cutout.
+        alpha_wgsl: None,
     }
 }
 

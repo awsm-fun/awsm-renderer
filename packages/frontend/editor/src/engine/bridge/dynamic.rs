@@ -326,6 +326,16 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
         uniform_defaults,
         shader_includes: includes_from_keys(&mat.shader_includes.get_cloned()),
         fragment_inputs: inputs_from_keys(&mat.fragment_inputs.get_cloned()),
+        // The 2nd ("alpha-only") WGSL window — only meaningful for MASK
+        // materials. Empty body → `None` (no masked variant built).
+        alpha_wgsl: {
+            let body = mat.alpha_wgsl.get_cloned();
+            if matches!(mat.alpha.get(), AlphaMode::Mask) && !body.trim().is_empty() {
+                Some(body)
+            } else {
+                None
+            }
+        },
     }
 }
 

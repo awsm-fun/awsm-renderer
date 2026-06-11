@@ -926,6 +926,17 @@ pub struct MaterialRegistration {
     /// ([`awsm_materials::FragmentInputs`]). Carried for the cache key +
     /// future scaffolding gating; defaults to `all()`.
     pub fragment_inputs: awsm_materials::FragmentInputs,
+    /// The **second** ("alpha-only") WGSL fragment, present only when
+    /// `alpha_mode` is [`MaterialAlphaMode::Mask`]. Wrapped into
+    /// `fn custom_alpha_dynamic(input: MaskAlphaInput) -> f32` and compiled into
+    /// the masked visibility-raster variant so the material's cutout is
+    /// alpha-tested (and casts hole-shaped shadows / shows through to
+    /// transmission). `None` → the masked variant isn't built and the mesh
+    /// renders solid through the opaque path. The body returns an `f32` alpha in
+    /// `[0,1]`; the raster `discard`s below the per-mesh cutoff. Optional even
+    /// for Mask materials (a procedural cutout can be tiny; a textured one
+    /// samples via the generated `material_sample_<name>` helpers).
+    pub alpha_wgsl: Option<String>,
 }
 
 impl crate::AwsmRenderer {
@@ -1453,6 +1464,7 @@ mod tests {
             uniform_defaults: Vec::new(),
             shader_includes: awsm_materials::ShaderIncludes::all(),
             fragment_inputs: awsm_materials::FragmentInputs::all(),
+            alpha_wgsl: None,
         }
     }
 
