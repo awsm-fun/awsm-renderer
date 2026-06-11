@@ -446,3 +446,25 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   (delete clips → poke → expect "copied 1" + ScenePng diff). If deform works clean,
   the skin path is DONE-verified and the single remaining bug is the stateful
   degradation — chase it with the edge breadcrumbs + a coverage-pass staleness probe.
+
+### Overnight run, iteration 6 — SKINNED IMPORTS FIXED + POSE-DEFORM BROWSER-VERIFIED 🦊
+- **ROOT CAUSE of everything skin-related tonight: editor skinned imports NEVER rendered
+  correctly** — they arrived as collapsed shards (verified: every "framed fox" screenshot
+  was an empty grid or fragments; NodeBounds returns a unit-cube fallback for SkinnedMesh
+  so frame_node aimed at nothing — separate small bug, still open). Mechanism:
+  skins.insert seeded matrices with bare IBM (no world×), correct only if a later pass
+  refreshes every joint — but an ASYNC mid-session import lands after the frame consumed
+  its joints' dirty flags, so un-animated joints kept IBM-only matrices forever →
+  vertices collapsed (only clip-touched bones rendered: the "strips"). The player never
+  hit it (cold-boot derives all worlds before first render).
+- **FIX (renderer): `pending_full_refresh` one-shot full joint-matrix seed** — skins
+  record their key at insert; the next update_transforms seeds EVERY joint from current
+  worlds (bypassing dirty set + skip gate), then never again. VERIFIED: fresh fox import
+  arrives FULLY INTACT (first time in the editor), and a neck-bone SetTransform visibly
+  bows the head (A/B screenshots fox13_arrival/fox14_neckbend).
+- Also landed: skins.update_transforms diagnostic ("N joint matrices updated, M skins
+  skipped") which proved the dirty-flow worked and localized the seed bug.
+- Phase 5 state: morph editing VERIFIED (iter 2), rig discovery + posing VERIFIED (now).
+  Remaining Phase 5: richer animation authoring polish; NodeBounds-for-SkinnedMesh fix;
+  pin_pose-vs-manual-pose semantics note (pose while clip active is owned by the clip —
+  by design, document in tool descriptions).

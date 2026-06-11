@@ -1649,7 +1649,9 @@ impl Meshes {
 
         // This does update the GPU as dirty, bit skins manage their own GPU dirty state
         self.skins
-            .update_transforms(dirty_transforms, |skin_key| !skip_skins.contains(&skin_key));
+            .update_transforms(dirty_transforms, transforms, |skin_key| {
+                !skip_skins.contains(&skin_key)
+            });
 
         touched
     }
