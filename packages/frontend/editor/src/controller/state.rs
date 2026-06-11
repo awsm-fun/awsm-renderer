@@ -1510,6 +1510,22 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::SetCustomMaterialAlphaWgsl { id, wgsl } => {
+                // Replace a MASK material's 2nd alpha-only WGSL window. Setting
+                // the live `alpha_wgsl` field marks the material a draft + bumps
+                // the recompile rev (via mark_material_draft), so the
+                // auto-register observer recompiles the masked variant.
+                match find_material(&self.custom_materials, id) {
+                    Some(mat) => {
+                        let prev = mat.alpha_wgsl.get_cloned();
+                        mat.alpha_wgsl.set(wgsl);
+                        mark_material_draft(&mat);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetCustomMaterialAlphaWgsl { id, wgsl: prev }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::AssignMaterial { node, material } => {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {

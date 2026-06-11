@@ -1729,6 +1729,51 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Set a custom MASK material's SECOND, alpha-only WGSL window — a cheap `f32`-returning fragment compiled into the masked visibility raster so the cutout is alpha-tested (holes see-through + hole-shaped shadows + transmission-through-holes). Body must `return` an f32 alpha in [0,1]; the raster discards below the material's cutoff. Inputs arrive on `input` (e.g. input.uv, input.barycentric, input.material.<field>, material_sample_<tex>(input.material, input.uv)). Only meaningful when alpha mode = mask (set via set_material_alpha_mode). Empty clears it. Recompiles + reports diagnostics like set_material_wgsl."
+    )]
+    async fn set_material_alpha_wgsl(
+        &self,
+        Parameters(p): Parameters<SetWgslParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = parse_asset(&p.material)?;
+        if let Response::Err(e) = self
+            .req(Request::Dispatch(EditorCommand::SetCustomMaterialAlphaWgsl {
+                id,
+                wgsl: p.wgsl,
+            }))
+            .await?
+        {
+            return Err(McpError::internal_error(e, None));
+        }
+        // Synchronous re-register so the masked variant recompiles + diagnostics
+        // are recorded on the material.
+        if let Response::Err(e) = self
+            .req(Request::Dispatch(EditorCommand::RegisterMaterial { id }))
+            .await?
+        {
+            return Err(McpError::internal_error(e, None));
+        }
+        match self
+            .req(Request::Query(EditorQuery::MaterialDiagnostics { material: id }))
+            .await?
+        {
+            Response::Query(qr) => match *qr {
+                QueryResult::Diagnostics(d) if d.ok => Ok(text("ok")),
+                QueryResult::Diagnostics(d) => Err(McpError::internal_error(
+                    format!("alpha WGSL compile failed:\n{}", fmt_diag_errors(&d.errors)),
+                    None,
+                )),
+                QueryResult::Error { error } => Err(McpError::internal_error(error, None)),
+                other => Ok(text(
+                    serde_json::to_string_pretty(&other).unwrap_or_default(),
+                )),
+            },
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
         description = "Set a custom material's alpha mode: opaque | mask (with `cutoff`) | blend."
     )]
     async fn set_material_alpha_mode(

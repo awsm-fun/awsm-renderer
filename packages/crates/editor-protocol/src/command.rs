@@ -281,6 +281,15 @@ pub enum EditorCommand {
     /// path (the Studio textarea writes the live model directly).
     SetCustomMaterialWgsl { id: AssetId, wgsl: String },
 
+    /// Replace a custom MASK material's **second** (alpha-only) WGSL window —
+    /// the cheap `f32`-returning fragment compiled into the masked
+    /// visibility-raster variant so the cutout is alpha-tested (holes
+    /// see-through + hole-shaped shadows + transmission-through-holes). Only
+    /// meaningful when the material's alpha mode is Mask; empty clears it.
+    /// Sets the live `alpha_wgsl` field (auto-register observes + recompiles).
+    /// Inverse: restore the prior source.
+    SetCustomMaterialAlphaWgsl { id: AssetId, wgsl: String },
+
     /// Set the scene environment (skybox + IBL). Stored in `scene.environment`
     /// (serialized to TOML); the `env_sync` bridge uploads the cubemaps as a
     /// side effect. Inverse: restore the prior environment.
@@ -897,6 +906,7 @@ impl EditorCommand {
             EditorCommand::SetCurrentMaterial { .. } => "Select material",
             EditorCommand::RegisterMaterial { .. } => "Register material",
             EditorCommand::SetCustomMaterialWgsl { .. } => "Edit shader",
+            EditorCommand::SetCustomMaterialAlphaWgsl { .. } => "Edit alpha shader",
             EditorCommand::AssignMaterial { .. } => "Assign material",
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
             EditorCommand::DropSkinning { .. } => "Drop skinning",
