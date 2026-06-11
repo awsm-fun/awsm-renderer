@@ -277,14 +277,21 @@ impl<'a> MaterialMeshMeta<'a> {
         // compute kernel fetches vertex colours manually, so it needs the real
         // offset (colours pack after UVs, not at 0). Formerly `_reserved0`.
         push_u32(calculate_color_sets_index(buffer_info));
-        // Reserved trailing u32s (indices 21-23). The last two formerly
-        // held the per-mesh light slice (`offset`/`count`) for the old
-        // per-mesh lighting path, removed when shading unified on the
-        // per-pixel froxel light list; kept as inert tail padding (each
-        // entry is 256-byte aligned, so removing them reclaims nothing).
-        // The four u32s keep the populated region at a vec4 multiple so
-        // `padding_4: array<vec4<u32>, _>` stays vec4-aligned.
-        push_u32(0);
+        // alpha_cutoff (index 21, f32 bits) — the glTF MASK cutoff for this
+        // mesh's material (0.0 for non-MASK materials, which never route to the
+        // masked geometry variant anyway). The masked raster reads this per-mesh
+        // and `discard`s fragments whose masking alpha < cutoff. Uniform across
+        // built-in (base-color alpha) and custom (alpha-only WGSL) materials, so
+        // the masked fragment reads the cutoff from one place regardless of type.
+        // Formerly `_reserved1`.
+        let alpha_cutoff = materials.alpha_cutoff(material_key).unwrap_or(0.0);
+        push_u32(alpha_cutoff.to_bits());
+        // Reserved trailing u32s (indices 22-23). Formerly held the per-mesh
+        // light slice (`offset`/`count`) for the old per-mesh lighting path,
+        // removed when shading unified on the per-pixel froxel light list; kept
+        // as inert tail padding (each entry is 256-byte aligned, so removing
+        // them reclaims nothing) and to keep the populated region at a vec4
+        // multiple so `padding_4: array<vec4<u32>, _>` stays vec4-aligned.
         push_u32(0);
         push_u32(0);
 

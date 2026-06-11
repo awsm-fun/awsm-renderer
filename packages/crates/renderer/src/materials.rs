@@ -525,6 +525,17 @@ impl Materials {
             .unwrap_or(MaterialShaderId::PBR)
     }
 
+    /// Returns the material's alpha-mask cutoff when it's a glTF `MASK`
+    /// material, else `None`. Drives two things: (1) routing — a `Some`
+    /// material is alpha-tested-opaque, so it renders through the masked
+    /// geometry variant; (2) `MaterialMeshMeta` packing, which writes the
+    /// cutoff per-mesh so the masked raster can `discard` below it.
+    /// Returns `None` for unknown keys (defensive — the caller's key came
+    /// from a validated `Mesh`).
+    pub fn alpha_cutoff(&self, key: MaterialKey) -> Option<f32> {
+        self.lookup.get(key).and_then(|m| m.alpha_mask())
+    }
+
     /// Iterates `(key, &Material)` for materials that may route to a
     /// first-party feature-set variant (opaque PBR/Toon). Used by the
     /// renderer's reconcile pass to derive each one's feature mask.

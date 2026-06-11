@@ -55,7 +55,10 @@ struct MaterialMeshMeta {
     // colours manually, so it needs the real offset — colours pack after UVs,
     // not at 0. Formerly `_reserved0`.
     color_sets_index: u32,
-    _reserved1: u32,
+    // glTF MASK cutoff for this mesh's material (f32). 0.0 for non-MASK
+    // materials. The masked geometry raster variant `discard`s fragments whose
+    // masking alpha < this. Written at index 21 by `MaterialMeshMeta::to_bytes`.
+    alpha_cutoff: f32,
     _reserved2: u32,
     _reserved3: u32,
     padding_4: array<vec4<u32>, 10>,

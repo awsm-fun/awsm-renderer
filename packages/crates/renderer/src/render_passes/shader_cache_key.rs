@@ -5,6 +5,7 @@ use crate::render_passes::{
     display::shader::cache_key::ShaderCacheKeyDisplay,
     effects::shader::cache_key::ShaderCacheKeyEffects,
     geometry::shader::cache_key::ShaderCacheKeyGeometry,
+    geometry::shader::masked_cache_key::ShaderCacheKeyGeometryMasked,
     hzb::shader::cache_key::{ShaderCacheKeyHzbReduce, ShaderCacheKeyHzbSeed},
     light_culling::shader::cache_key::ShaderCacheKeyLightCulling,
     material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify,
@@ -28,6 +29,9 @@ use crate::render_passes::{
 pub enum ShaderCacheKeyRenderPass {
     Coverage(ShaderCacheKeyCoverage),
     Geometry(ShaderCacheKeyGeometry),
+    /// Masked (alpha-tested) variant of the geometry raster — per-`shader_id`
+    /// specialized; see [`ShaderCacheKeyGeometryMasked`].
+    GeometryMasked(ShaderCacheKeyGeometryMasked),
     HzbSeed(ShaderCacheKeyHzbSeed),
     HzbReduce(ShaderCacheKeyHzbReduce),
     LightCulling(ShaderCacheKeyLightCulling),
