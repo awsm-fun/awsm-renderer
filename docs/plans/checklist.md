@@ -7,6 +7,54 @@ correct rendering, and full testing. Companion to `docs/plans/mesh-pipeline-over
 Legend: **cargo** = verifiable with `cargo test`/`clippy`; **browser** = needs an
 in-browser render/MCP check. Check items off as completed.
 
+## ▶▶ RESUME STATE (cutout + AA phase — branch mesh-authoring)
+DONE + COMMITTED + BROWSER-VERIFIED (live MCP) + clippy/fmt-clean:
+- B1 PBR cutout (masked visibility raster): DiffuseTransmissionPlant leaves cut out.
+- B3 custom cutout: a custom material's 2nd "alpha-only" WGSL window (gated on
+  alpha_mode=Mask); procedural stripe cutout verified see-through. Custom MASK routes
+  opaque + masked-raster cutout. MCP `set_material_alpha_wgsl` + editor 2nd-WGSL pane.
+- MSAA cutout anti-aliasing: the masked fragment evaluates the masking alpha at each of
+  the 4 MSAA sample sub-positions (bary screen-space derivatives) → `@builtin(sample_mask)`
+  per-sample coverage → the EXISTING compute MSAA edge-resolve blends it. Works for binary/
+  procedural alpha (the analytic fwidth approach did NOT — gradient-free). Verified smooth.
+  Gated to MSAA-on × cutout-materials; non-cutout opaque skips it entirely. Documented in
+  docs/buffers.md ("Masked materials" + the no-TAA promo angle).
+- BUG FIXED (caught only in-browser): editor `build_registration` wgsl_hash hashed ONLY the
+  main WGSL → editing alpha_mode/alpha_wgsl was a no-op (stale registration → masked never
+  built). Now folds alpha_mode+cutoff+alpha_wgsl into wgsl_hash.
+
+KEY FILES: renderer `render_passes/geometry/{masked_bind_group,masked_pipeline}.rs` +
+`shader/{masked_cache_key,masked_template}.rs` + `shader/masked_wgsl/{bind_groups,fragment}.wgsl`;
+`materials.rs` (alpha_cutoff/canonical_shader_id + Custom is_transparency_pass flip);
+`textures.rs finalize_gpu_textures` (masked PBR + custom build, `masked_dynamic_dirty` flag);
+`renderable.rs` (geometry_masked_render_pipeline_key routing); `meshes/mesh.rs`
+(push_geometry_pass_commands `masked` param); `meshes/meta/material_meta.rs` (alpha_cutoff @idx21);
+editor `controller/custom_material.rs`+`persistence.rs`+`material_mode/studio.rs`+`engine/bridge/dynamic.rs`;
+`editor-protocol/{command,project}.rs`; `mcp/src/mcp.rs`.
+
+IN PROGRESS (this is the current task): move Unlit/Toon MASK → opaque/masked path (FlipBook
+DEFERRED — its mask alpha is the time-varying atlas cell, needs flipbook-specific WGSL).
+Unlit+Toon share PBR's header prefix EXACTLY (shader_id,alpha_mode,alpha_cutoff,base_color_tex(5),
+base_color_factor(4)) → the masked fragment's `{% else %}` base-color path already covers them
+(reads base_index+2 tex, +10 factor.a). STEPS: (1) `materials/src/{unlit,toon}.rs`
+is_transparency_pass → drop the `alpha_cutoff().is_some()` term (→ `has_alpha_blend()`), like
+pbr.rs. Leave flipbook.rs as-is. (2) `textures.rs` finalize masked-build: add MaskedVariant
+{shader_id: UNLIT, base: Unlit} and {TOON, Toon} alongside the PBR one (dynamic_alpha: None).
+(3) verify Unlit/Toon cutout in browser. NOTE: ShadingBase::Unlit/Toon exist; the masked
+template {% else %} is base-agnostic so no WGSL change needed.
+
+REMAINING AFTER THIS: FlipBook masked (atlas-cell alpha, deferred); B2 shadow masked variant
+(hole-shaped shadows — shadow pass is depth-only + at maxBindGroups=4, needs a bind-group
+consolidation, see B2 EXECUTION PLAN below); textured-CUSTOM cutout browser test
+(material_sample_<name> path — PBR-textured already verified); scene-loader player round-trip
+of alpha_wgsl (currently None); editor Mask contract docs (main WGSL now OpaqueShadingOutput).
+
+DEV STACK: `task mcp-dev` runs in a background Bash task (id bf79wbng1) — trunk:9085 (editor,
+auto-rebuilds on renderer/editor save + live-reloads browser), MCP:9086 (`cargo run`, rebuilds
+on mcp/editor-protocol change), media:9082/3. Editor URL: http://localhost:9085/?mcp=http://127.0.0.1:9086.
+Verify via MCP: ping → insert_primitive/import_model_from_url → set_material_* → screenshot_scene.
+KNOWN LIMITATION: masked pipelines (re)build on texture-finalize, not on MSAA toggle.
+
 ## Already done (context)
 - `awsm-gltf-convert` crate FEATURE-COMPLETE + proptested: geometry (canonical glb +
   baked tangents + `AWSM_format`, idempotent) + materials (PBR + all KHR extension
