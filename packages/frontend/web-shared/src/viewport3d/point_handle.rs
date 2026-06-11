@@ -14,7 +14,7 @@
 use awsm_meshgen::sphere_mesh;
 use awsm_renderer::{
     camera::CameraMatrices,
-    materials::{pbr::PbrMaterial, Material, MaterialAlphaMode, MaterialKey},
+    materials::{unlit::UnlitMaterial, Material, MaterialAlphaMode, MaterialKey},
     meshes::MeshKey,
     raw_mesh::RawMeshData,
     transforms::{Transform, TransformKey},
@@ -29,7 +29,7 @@ use crate::viewport3d::transform_controller::ray_plane_intersection;
 const HANDLE_RADIUS: f32 = 1.0;
 
 /// Desired on-screen radius in CSS pixels.
-const HANDLE_DESIRED_PIXEL_RADIUS: f32 = 8.0;
+const HANDLE_DESIRED_PIXEL_RADIUS: f32 = 12.0;
 
 /// Per-handle GPU state.
 struct PointHandle {
@@ -76,13 +76,15 @@ impl PointHandleSet {
         if self.material_key.is_none() {
             // Bright emissive cyan so handles stay readable against a
             // wide range of scene materials.
-            let mut mat = PbrMaterial::new(MaterialAlphaMode::Opaque, false);
-            mat.base_color_factor = [0.1, 0.9, 1.0, 1.0];
-            mat.metallic_factor = 0.0;
-            mat.roughness_factor = 1.0;
-            mat.emissive_factor = [0.6, 1.4, 1.6];
+            // Unlit so the handle reads as a flat, bright marker regardless of
+            // scene lighting / a blown-out IBL. A PBR sphere lit + tonemapped
+            // against a bright background washed out to a faint tint; Unlit
+            // emits the base color directly. HDR-bright cyan so it survives
+            // tonemapping as a strong, saturated dot.
+            let mut mat = UnlitMaterial::new(MaterialAlphaMode::Opaque, false);
+            mat.base_color_factor = [0.5, 6.0, 8.0, 1.0];
             let key = renderer.materials.insert(
-                Material::Pbr(Box::new(mat)),
+                Material::Unlit(mat),
                 &renderer.textures,
                 &renderer.dynamic_materials,
                 &renderer.extras_pool,

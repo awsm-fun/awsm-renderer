@@ -108,6 +108,8 @@ pub fn main() {
                             engine::gizmo::init();
                             // Per-control-point drag handles for selected curves.
                             engine::curve_handles::init();
+                            // Pickable HUD icons so lights are selectable in the viewport.
+                            engine::light_icons::init();
                             // Push view settings (MSAA / light-heatmap) to the renderer.
                             engine::settings_sync::start();
                             ctx_ready.set(true);

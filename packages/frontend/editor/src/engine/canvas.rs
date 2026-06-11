@@ -288,7 +288,15 @@ fn pick_and_select(x: i32, y: i32) {
         }
         match result {
             Ok(PickResult::Hit(mesh_key)) => {
-                if let Some(node_id) = bridge().node_for_mesh(mesh_key) {
+                // A light has no scene mesh — clicking its HUD icon resolves to
+                // the light node. Check that first, then the normal mesh → node
+                // lookup.
+                let node_id = {
+                    let r = handle.lock().await;
+                    super::light_icons::try_pick(&r, mesh_key, x, y)
+                }
+                .or_else(|| bridge().node_for_mesh(mesh_key));
+                if let Some(node_id) = node_id {
                     let _ = controller()
                         .dispatch(EditorCommand::SetSelection { ids: vec![node_id] })
                         .await;

@@ -207,6 +207,8 @@ fn render_one_frame() {
         // Keep the gizmo screen-constant + anchored under the selection, and
         // enforce its visibility against the selection + toggle.
         super::gizmo::per_frame_update(renderer);
+        // Re-anchor + zoom the pickable light icons (one per light node).
+        super::light_icons::per_frame_update(renderer, &matrices);
         // Keep curve control-point handles screen-constant + anchored.
         super::curve_handles::per_frame_update(renderer);
         // Advance any particle emitters + push their live particles to the GPU.

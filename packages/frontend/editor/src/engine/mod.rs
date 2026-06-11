@@ -13,6 +13,7 @@ pub mod context;
 pub mod curve_handles;
 pub mod gizmo;
 pub mod grid;
+pub mod light_icons;
 pub mod preview;
 pub mod query;
 pub mod render_loop;
