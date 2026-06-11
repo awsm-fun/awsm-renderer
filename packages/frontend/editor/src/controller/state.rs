@@ -5089,7 +5089,13 @@ fn build_editor_subtree(
     // the step-2 regression where skinned imports froze at bind pose.
     let node_is_skinned = tn.mesh_is_skinned.iter().any(|&s| s);
 
-    let node = if tn.mesh_keys.is_empty() {
+    let node = if let Some(light_cfg) = &tn.light {
+        // A KHR_lights_punctual node → an editable Light node. Its renderer light
+        // is (re)created by node_sync `apply_light` bound to THIS node's
+        // transform_key, so it follows animation + exposes the shadow inspector.
+        // The populate-baked copy was removed at import (`remove_template_lights`).
+        Node::new_with_transform_and_kind(name, trs, NodeKind::Light(light_cfg.clone()))
+    } else if tn.mesh_keys.is_empty() {
         Node::new_with_transform_and_kind(name, trs, NodeKind::Group)
     } else if node_is_skinned {
         // A skinned mesh node. With one material per node, a single-material node

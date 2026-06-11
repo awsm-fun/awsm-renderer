@@ -61,6 +61,13 @@ pub struct AssetTemplateNode {
     /// and deforming via the skeleton) rather than a baked-to-bind-pose captured
     /// `Mesh` — this is what fixes the step-2 skinned-import regression.
     pub mesh_is_skinned: Vec<bool>,
+    /// `Some` when this glTF node carries a `KHR_lights_punctual` light. The
+    /// controller materializes it as an editable `NodeKind::Light` (so it shows
+    /// in the outliner, gets the shadow inspector, and — crucially — binds its
+    /// renderer light to THIS editor node's transform_key, so animating the node
+    /// moves the light). The duplicate light `populate_gltf` baked is removed at
+    /// import (see `remove_template_lights`) so they don't double up.
+    pub light: Option<awsm_editor_protocol::LightConfig>,
     pub children: Vec<AssetTemplateNode>,
 }
 
@@ -120,6 +127,19 @@ pub fn build_from_context(renderer: &AwsmRenderer, ctx: &GltfPopulateContext) ->
         map.values().flat_map(|arc| arc.0.iter().copied()).collect()
     };
 
+    // glTF node index → editor LightConfig for every KHR_lights_punctual node,
+    // so each light becomes an editable `NodeKind::Light` mirror (bound to the
+    // editor node's transform) instead of a dead Group.
+    let lights_by_node: HashMap<u32, awsm_editor_protocol::LightConfig> = ctx
+        .data
+        .doc
+        .nodes()
+        .filter_map(|n| {
+            n.light()
+                .map(|l| (n.index() as u32, light_config_from_gltf(&l)))
+        })
+        .collect();
+
     let root = renderer.transforms.root_node;
     let top_level: Vec<TransformKey> = all_keys
         .into_iter()
@@ -136,10 +156,51 @@ pub fn build_from_context(renderer: &AwsmRenderer, ctx: &GltfPopulateContext) ->
                 &key_to_label,
                 &mesh_mat,
                 &skin_joints,
+                &lights_by_node,
             )
         })
         .collect();
     AssetTemplate { roots }
+}
+
+/// glTF `KHR_lights_punctual` light → editor `LightConfig` (1:1 with
+/// `renderer-gltf`'s `to_renderer_light`; position/direction come from the
+/// editor node's transform at materialize time). Shadow config defaults to the
+/// editor's authored-light default (cast on) — the user controls it via the
+/// light inspector's Shadows section.
+fn light_config_from_gltf(
+    light: &gltf::khr_lights_punctual::Light,
+) -> awsm_editor_protocol::LightConfig {
+    use awsm_editor_protocol::{LightConfig, LightShadowConfig};
+    let color = light.color();
+    let intensity = light.intensity();
+    // glTF `range` is `Option`; 0.0 means "unlimited" in our renderer.
+    let range = light.range().unwrap_or(0.0);
+    let shadow = LightShadowConfig::default();
+    match light.kind() {
+        gltf::khr_lights_punctual::Kind::Directional => LightConfig::Directional {
+            color,
+            intensity,
+            shadow,
+        },
+        gltf::khr_lights_punctual::Kind::Point => LightConfig::Point {
+            color,
+            intensity,
+            range,
+            shadow,
+        },
+        gltf::khr_lights_punctual::Kind::Spot {
+            inner_cone_angle,
+            outer_cone_angle,
+        } => LightConfig::Spot {
+            color,
+            intensity,
+            range,
+            inner_angle: inner_cone_angle,
+            outer_angle: outer_cone_angle,
+            shadow,
+        },
+    }
 }
 
 fn snapshot(
@@ -149,6 +210,7 @@ fn snapshot(
     key_to_label: &HashMap<TransformKey, String>,
     mesh_mat: &HashMap<MeshKey, Option<usize>>,
     skin_joints: &HashSet<TransformKey>,
+    lights_by_node: &HashMap<u32, awsm_editor_protocol::LightConfig>,
 ) -> AssetTemplateNode {
     let local = renderer
         .transforms
@@ -181,13 +243,15 @@ fn snapshot(
                         key_to_label,
                         mesh_mat,
                         skin_joints,
+                        lights_by_node,
                     )
                 })
                 .collect()
         })
         .unwrap_or_default();
+    let gltf_node_index = key_to_node_index.get(&key).copied().unwrap_or(0);
     AssetTemplateNode {
-        gltf_node_index: key_to_node_index.get(&key).copied().unwrap_or(0),
+        gltf_node_index,
         baked_transform_key: key,
         is_skin_joint: skin_joints.contains(&key),
         label: key_to_label.get(&key).cloned(),
@@ -195,6 +259,7 @@ fn snapshot(
         mesh_keys,
         mesh_gltf_material_indices,
         mesh_is_skinned,
+        light: lights_by_node.get(&gltf_node_index).cloned(),
         children,
     }
 }
@@ -221,6 +286,18 @@ pub fn hide_template_meshes(renderer: &mut AwsmRenderer, template: &AssetTemplat
         }
     }
     walk(renderer, &template.roots);
+}
+
+/// Remove the lights `populate_gltf` baked for this import. Each is bound to the
+/// renderer's populate transform tree, which the editor does NOT animate — the
+/// editor mirrors every KHR light as an editable `NodeKind::Light` bound to its
+/// own node's transform instead (see [`AssetTemplateNode::light`]). Removing the
+/// populate copies here prevents two lights per glTF light (one frozen, one
+/// live). Called at import right after [`build_from_context`].
+pub fn remove_template_lights(renderer: &mut AwsmRenderer, ctx: &GltfPopulateContext) {
+    for key in &ctx.punctual_lights {
+        renderer.remove_light(*key);
+    }
 }
 
 /// Teardown counterpart to [`hide_template_meshes`]: remove EVERY mesh this

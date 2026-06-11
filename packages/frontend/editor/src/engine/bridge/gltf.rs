@@ -288,6 +288,11 @@ async fn import_typed(
         // The renderer already rendered these meshes directly; hide them so the
         // editor's user-movable Model-node duplicates are the only visible copy.
         asset_template::hide_template_meshes(&mut r, &template);
+        // Remove the populate-baked lights: each KHR light is re-materialized as
+        // an editable `NodeKind::Light` bound to its editor node's transform (so
+        // it follows animation + gets the inspector). Drop the populate copies so
+        // they don't double up (and so the frozen populate-bound copy is gone).
+        asset_template::remove_template_lights(&mut r, &ctx);
         let materials = resolve_materials(&ctx, mat_specs);
         (template, materials)
     };
