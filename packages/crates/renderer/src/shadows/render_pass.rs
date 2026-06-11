@@ -219,7 +219,11 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 // `else` skips the draw if the invariant is broken.
                 let (pipeline_key, use_masked) = match masked_key {
                     Some(key) => (key, true),
-                    None => match shadows.shadow_pipeline_key(mesh.instanced, is_cube, mesh.double_sided) {
+                    None => match shadows.shadow_pipeline_key(
+                        mesh.instanced,
+                        is_cube,
+                        mesh.double_sided,
+                    ) {
                         Some(key) => (key, false),
                         None => continue,
                     },

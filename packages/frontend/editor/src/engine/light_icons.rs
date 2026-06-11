@@ -271,7 +271,10 @@ impl LightIcons {
                 world_pos: l.pos,
             });
         }
-        self.signature = lights.iter().map(|l| (l.node_id, l.shape.has_ray())).collect();
+        self.signature = lights
+            .iter()
+            .map(|l| (l.node_id, l.shape.has_ray()))
+            .collect();
     }
 
     /// Per-frame: re-anchor each icon to its light's pose and rescale the whole
@@ -388,8 +391,10 @@ pub fn per_frame_update(renderer: &mut AwsmRenderer, camera_matrices: &CameraMat
             }
             return;
         }
-        let sig: Vec<(NodeId, bool)> =
-            lights.iter().map(|l| (l.node_id, l.shape.has_ray())).collect();
+        let sig: Vec<(NodeId, bool)> = lights
+            .iter()
+            .map(|l| (l.node_id, l.shape.has_ray()))
+            .collect();
         if sig != icons.signature {
             icons.rebuild(renderer, &lights);
         }
@@ -410,9 +415,7 @@ pub fn try_pick(renderer: &AwsmRenderer, mesh_key: MeshKey, x: i32, y: i32) -> O
         let icons = guard.as_ref()?;
         // Exact mesh hit (bulb or ray).
         for icon in &icons.icons {
-            if icon.bulb_mesh == mesh_key
-                || icon.ray.map(|(m, _)| m == mesh_key).unwrap_or(false)
-            {
+            if icon.bulb_mesh == mesh_key || icon.ray.map(|(m, _)| m == mesh_key).unwrap_or(false) {
                 return Some(icon.node_id);
             }
         }
