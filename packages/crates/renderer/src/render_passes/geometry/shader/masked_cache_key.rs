@@ -46,6 +46,11 @@ pub struct ShaderCacheKeyGeometryMasked {
     pub texture_pool_arrays_len: u32,
     /// Texture-pool comparison/filter sampler bindings, same role.
     pub texture_pool_samplers_len: u32,
+    /// MSAA sample count of the visibility buffer (e.g. `Some(4)`), or `None`
+    /// for single-sampled. When multisampled, the masked fragment emits a
+    /// `@builtin(sample_mask)` of analytic cutout coverage (instead of a binary
+    /// `discard`) so the existing MSAA edge-resolve anti-aliases the cutout edge.
+    pub msaa_samples: Option<u32>,
     /// Which material this masked variant alpha-tests for. Built-in ids
     /// (PBR/Unlit/Toon) take the base-color path; a dynamic id takes the
     /// custom alpha-only path via [`Self::dynamic_alpha`].

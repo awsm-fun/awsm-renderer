@@ -110,6 +110,7 @@ impl GeometryMaskedPipelines {
             shader_id: variant.shader_id,
             base: variant.base,
             dynamic_alpha: variant.dynamic_alpha.clone(),
+            msaa_samples,
         };
         ctx.shaders
             .ensure_keys(ctx.gpu, vec![shader_cache.clone().into()])

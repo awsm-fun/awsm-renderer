@@ -114,6 +114,12 @@ struct FragmentOutput {
     @location(1) barycentric: vec4<u32>,
     @location(2) normal_tangent: vec4<f32>,
     @location(3) barycentric_derivatives: vec4<f32>,
+    {% if msaa_sample_count > 1 %}
+    // Per-sample cutout coverage. Fractional at the cutout boundary so the
+    // covered samples write the surface while the rest stay the cleared skybox
+    // sentinel — the MSAA edge-resolve then blends them (anti-aliased cutout).
+    @builtin(sample_mask) coverage_mask: u32,
+    {% endif %}
 }
 
 @fragment
@@ -164,13 +170,38 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     }
     {% endif %}
 
-    // glTF MASK: discard below the per-mesh cutoff (carried in MaterialMeshMeta).
+    // glTF MASK cutoff (per-mesh, from MaterialMeshMeta).
+    {% if msaa_sample_count > 1 %}
+    // MSAA: convert the cutout to fractional per-sample coverage so the existing
+    // edge-resolve anti-aliases the boundary. `coverage` is the analytic edge
+    // fraction over the ~1px alpha-gradient band; map it to a count of covered
+    // samples. Zero coverage → discard (a real hole, writes no depth/samples).
+    let coverage = clamp(
+        (alpha - mm.alpha_cutoff) / max(fwidth(alpha), 1e-5) + 0.5,
+        0.0,
+        1.0,
+    );
+    let covered_samples = u32(coverage * f32({{ msaa_sample_count }}u) + 0.5);
+    if covered_samples == 0u {
+        discard;
+    }
+    {% else %}
     if alpha < mm.alpha_cutoff {
         discard;
     }
+    {% endif %}
 
     // ── Write the visibility buffer exactly like the plain geometry pass ──
     var out: FragmentOutput;
+    {% if msaa_sample_count > 1 %}
+    // Set the low `covered_samples` bits (the resolve averages by count, not
+    // position); all bits when fully covered.
+    out.coverage_mask = select(
+        (1u << covered_samples) - 1u,
+        0xFFFFFFFFu,
+        covered_samples >= {{ msaa_sample_count }}u,
+    );
+    {% endif %}
     let t = split16(input.triangle_index);
     let m = split16(input.material_mesh_meta_offset);
     out.visibility_data_out = vec4<u32>(t.x, t.y, m.x, m.y);

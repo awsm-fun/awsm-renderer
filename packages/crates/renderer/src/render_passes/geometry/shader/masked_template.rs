@@ -38,6 +38,10 @@ pub struct ShaderTemplateGeometryMaskedBindGroups {
 pub struct ShaderTemplateGeometryMaskedFragment {
     texture_pool_arrays_len: u32,
     texture_pool_samplers_len: u32,
+    /// MSAA sample count (0 = single-sampled). When > 1 the fragment emits a
+    /// `sample_mask` of analytic cutout coverage so the MSAA edge-resolve
+    /// anti-aliases the cutout boundary; when 0 it uses a binary `discard`.
+    msaa_sample_count: u32,
     /// Built-in shading family (selects the base-color path) or `Custom`
     /// (emits the author's alpha-only fragment).
     base: ShadingBase,
@@ -83,6 +87,7 @@ impl TryFrom<&ShaderCacheKeyGeometryMasked> for ShaderTemplateGeometryMasked {
             fragment: ShaderTemplateGeometryMaskedFragment {
                 texture_pool_arrays_len: value.texture_pool_arrays_len,
                 texture_pool_samplers_len: value.texture_pool_samplers_len,
+                msaa_sample_count: value.msaa_samples.unwrap_or(0),
                 base: value.base,
                 dynamic_struct_decl: struct_decl,
                 dynamic_loader_decl: loader_decl,
