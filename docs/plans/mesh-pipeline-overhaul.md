@@ -468,3 +468,23 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   Remaining Phase 5: richer animation authoring polish; NodeBounds-for-SkinnedMesh fix;
   pin_pose-vs-manual-pose semantics note (pose while clip active is owned by the clip —
   by design, document in tool descriptions).
+
+### Overnight run, iteration 7 (bounds fix + bone icons; capture mystery)
+- **NodeBounds fixed for SkinnedMesh** (QUERY-VERIFIED: fox reports real ±90-unit world
+  extents instead of the unit cube): node_bounds now prefers the renderer's LIVE
+  world AABB (union over the node's materialized meshes via renderer_meshes_for_node,
+  resolved BEFORE the renderer lock to avoid bridge-lock nesting), falling back to the
+  scene-side local_aabb only when nothing is materialized. frame_node on rigs now has
+  real bounds to aim at (visual confirm pending — see capture issue).
+- **Phase 6 first slice: bone icons in the outliner.** New "bone" glyph in the shared
+  icon set; outliner rows show it for Group nodes registered as skin joints (bridge
+  skin_joint_baked lookup — zero NodeKind/protocol change). NEEDS VISUAL CONFIRM in the
+  morning (outliner is DOM; ScenePng only captures the viewport).
+- **OPEN: ScenePng = "no image available"** (after ~2min; the earlier empty replies were
+  my own curl timeouts aborting the write → STOP_SENDING warns). State: fresh page,
+  edge pipelines all cache-hit-installed, NO preamble warn-skips, queries fine — so
+  presentation looks healthy but poll_scene_capture can't grab an image. Viewport size
+  changed to 2032×1094 around the same time. NEXT: read the scene-capture impl
+  (editor engine/query.rs poll_scene_capture) — suspects: copy alignment at this size,
+  capture queue wedged by the aborted writes, or capture-canvas re-init after reloads.
+  drive.py curl timeout bumped to 150s.

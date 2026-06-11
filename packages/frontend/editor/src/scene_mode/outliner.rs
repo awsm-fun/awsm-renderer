@@ -428,7 +428,7 @@ fn row(node: Arc<Node>, depth: usize) -> Dom {
         } else {
             html!("span", { .style("width", "13px").style("flex", "0 0 auto") })
         })
-        .child(Icon::new(kind_icon(&node.kind.get_cloned())).size(15.0).color("var(--text-2)").style("flex", "0 0 auto").render())
+        .child(Icon::new(row_icon(&node)).size(15.0).color("var(--text-2)").style("flex", "0 0 auto").render())
         .child(html!("span", {
             .style("flex", "1")
             .style("font-size", "12.5px")
@@ -580,6 +580,23 @@ fn select_node(id: NodeId, additive: bool, range: bool) {
             .dispatch(EditorCommand::SetSelection { ids: new })
             .await;
     });
+}
+
+/// Row icon: `kind_icon`, except skin-joint mirror bones (plain Groups in the
+/// scene model) get the bone glyph — the bridge's joint registry knows which
+/// Group ids are bones, so no NodeKind change is needed.
+fn row_icon(node: &Arc<Node>) -> &'static str {
+    let kind = node.kind.get_cloned();
+    if matches!(kind, NodeKind::Group)
+        && crate::engine::bridge::bridge()
+            .skin_joint_baked
+            .lock()
+            .unwrap()
+            .contains_key(&node.id)
+    {
+        return "bone";
+    }
+    kind_icon(&kind)
 }
 
 pub fn kind_icon(kind: &NodeKind) -> &'static str {

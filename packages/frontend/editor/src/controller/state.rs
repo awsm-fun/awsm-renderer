@@ -3986,14 +3986,58 @@ impl EditorController {
                     .map(|n| (*id, local_aabb(&n.kind.get_cloned())))
             })
             .collect();
+        // Resolve per-node renderer meshes + transform keys BEFORE taking the
+        // renderer lock: renderer_meshes_for_node locks the bridge nodes map,
+        // which must never nest inside a scope already holding that lock.
+        let resolved: Vec<(
+            NodeId,
+            Aabb3,
+            Vec<awsm_renderer::meshes::MeshKey>,
+            Option<awsm_renderer::transforms::TransformKey>,
+        )> = {
+            let bridge = crate::engine::bridge::bridge();
+            locals
+                .iter()
+                .map(|(id, aabb)| {
+                    let meshes = renderer_meshes_for_node(*id);
+                    let tk = bridge
+                        .nodes
+                        .lock()
+                        .unwrap()
+                        .get(id)
+                        .map(|n| n.transform_key);
+                    (*id, *aabb, meshes, tk)
+                })
+                .collect()
+        };
         let entries = crate::engine::context::with_renderer_mut(move |r| {
             let mut m = std::collections::BTreeMap::new();
-            let bridge = crate::engine::bridge::bridge();
-            let nodes = bridge.nodes.lock().unwrap();
-            for (id, (lmin, lmax)) in &locals {
-                let world = nodes
-                    .get(id)
-                    .map(|n| n.transform_key)
+            for (id, (lmin, lmax), meshes, tk) in &resolved {
+                // Prefer the renderer's LIVE world AABB (union over the node's
+                // materialized meshes) — exact for whatever actually renders,
+                // including populate-baked SkinnedMesh nodes whose scene-side
+                // local_aabb is just a unit-cube fallback (the bug that made
+                // frame_node aim at nothing on imported rigs).
+                let live = meshes
+                    .iter()
+                    .filter_map(|mk| {
+                        r.meshes
+                            .get(*mk)
+                            .ok()
+                            .and_then(|mesh| mesh.world_aabb.clone())
+                    })
+                    .reduce(|mut acc, b| {
+                        acc.extend(&b);
+                        acc
+                    });
+                if let Some(aabb) = live {
+                    m.insert(
+                        id.to_string(),
+                        json!({ "min": aabb.min.to_array(), "max": aabb.max.to_array() }),
+                    );
+                    continue;
+                }
+                let world = tk
                     .and_then(|tk| r.transforms.get_world(tk).ok().copied())
                     .unwrap_or(glam::Mat4::IDENTITY);
                 let (wmin, wmax) = transform_aabb(world, *lmin, *lmax);
