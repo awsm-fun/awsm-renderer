@@ -231,6 +231,11 @@ pub struct AwsmRenderer {
     /// Runtime-registered dynamic materials. See
     /// [`crate::dynamic_materials`].
     pub dynamic_materials: crate::dynamic_materials::DynamicMaterials,
+    /// Set when a custom material registers/unregisters or its alpha-only WGSL
+    /// changes, so the next `finalize_gpu_textures` rebuilds the masked
+    /// (alpha-tested) pipelines for MASK customs even if no texture changed
+    /// (a procedural cutout needs no texture). Cleared by `finalize_gpu_textures`.
+    pub masked_dynamic_dirty: bool,
     /// Renderer-wide variable-length per-material data pool. Backs
     /// `BufferSlot` declarations on registered dynamic materials.
     pub extras_pool: crate::dynamic_materials::extras_pool::ExtrasPool,
@@ -1774,6 +1779,7 @@ impl AwsmRendererBuilder {
             bind_groups,
             materials,
             dynamic_materials: crate::dynamic_materials::DynamicMaterials::new(),
+            masked_dynamic_dirty: false,
             extras_pool: extras_pool_built,
             pipeline_layouts,
             pipelines,

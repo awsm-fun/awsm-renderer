@@ -69,6 +69,13 @@ fn mask_texture_pool_sample(info: TextureInfo, attribute_uv: vec2<f32>) -> vec4<
 // `material_sample_<name>` helpers so a texture-based cutout can sample.
 {{ dynamic_struct_decl|safe }}
 {{ dynamic_loader_decl|safe }}
+// The generated `material_sample_<name>` helpers call `texture_pool_sample`;
+// alias it to the masked pass's LOD-0 sampler so they resolve (the opaque pass
+// emits its own `texture_pool_sample` from texture_uvs.wgsl, which the masked
+// variant deliberately does not include).
+fn texture_pool_sample(info: TextureInfo, attribute_uv: vec2<f32>) -> vec4<f32> {
+    return mask_texture_pool_sample(info, attribute_uv);
+}
 {{ dynamic_texture_helpers|safe }}
 
 // Input handed to the author's alpha-only fragment. `uv` is the interpolated

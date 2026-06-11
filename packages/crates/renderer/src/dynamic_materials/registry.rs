@@ -1071,6 +1071,9 @@ impl crate::AwsmRenderer {
         }
         let buffer_defaults = registration.buffer_defaults.clone();
         let id = self.dynamic_materials.insert(registration)?;
+        // A new/changed registration may carry a 2nd alpha-only WGSL → its masked
+        // variant must (re)build on the next finalize even with no texture change.
+        self.masked_dynamic_dirty = true;
         // Assign extras-pool slices for any buffer-slot defaults
         // declared on the registration. Per-instance overrides
         // (the per-instance MaterialInstance.buffer_overrides) can

@@ -113,9 +113,14 @@ impl AwsmRenderer {
             .textures
             .write_gpu_texture_pool(&self.logging, &self.gpu)
             .await?;
+        // A custom-material register/alpha-edit can need the masked variant
+        // (re)built with no texture change (procedural cutout). Take the flag so
+        // the rebuild below runs; with an unchanged pool the opaque/transparent
+        // descriptors below are cache hits and only the new masked variant compiles.
+        let force_masked = std::mem::take(&mut self.masked_dynamic_dirty);
         let was_dirty = pool_dirty || sampler_pool_dirty;
 
-        if !was_dirty {
+        if !was_dirty && !force_masked {
             return Ok(());
         }
 
