@@ -3789,6 +3789,69 @@ impl EditorController {
                     entries,
                 })
             }
+            EditorQuery::SkinData { nodes } => {
+                use serde_json::json;
+                // Rig discovery: every SkinnedMesh node's joint table, each joint
+                // resolved to its live editor bone node (name + current local TRS).
+                // Joints are ordinary scene nodes — SetTransform poses them and a
+                // Transform animation track animates them; this query is just the
+                // map that makes the rig reachable without walking the outliner.
+                let ids = self.resolve_node_ids(&nodes);
+                let mut entries = std::collections::BTreeMap::new();
+                for id in ids {
+                    let Some(n) = mutate::find_by_id(&self.scene, id) else {
+                        continue;
+                    };
+                    let NodeKind::SkinnedMesh { skin, .. } = n.kind.get_cloned() else {
+                        continue;
+                    };
+                    // `live`: the skin bridge holds a mirror→baked mapping for
+                    // this bone, i.e. posing it actually deforms the skin. False
+                    // means the rig is display-only (registration failed/skipped)
+                    // — surfaced so an agent (and we) can SEE a broken chain.
+                    let baked_map = crate::engine::bridge::bridge()
+                        .skin_joint_baked
+                        .lock()
+                        .unwrap()
+                        .clone();
+                    let joints: Vec<serde_json::Value> = skin
+                        .joints
+                        .iter()
+                        .map(|j| {
+                            let bone = mutate::find_by_id(&self.scene, j.node);
+                            let (name, trs) = bone
+                                .map(|b| (b.name.get_cloned(), b.transform.get_cloned()))
+                                .unwrap_or_else(|| {
+                                    (
+                                        "<missing>".to_string(),
+                                        crate::engine::scene::Trs::default(),
+                                    )
+                                });
+                            json!({
+                                "node": j.node.to_string(),
+                                "index": j.index,
+                                "name": name,
+                                "live": baked_map.contains_key(&j.node),
+                                "translation": trs.translation,
+                                "rotation": trs.rotation,
+                                "scale": trs.scale,
+                            })
+                        })
+                        .collect();
+                    entries.insert(
+                        id.to_string(),
+                        json!({
+                            "source": skin.source.to_string(),
+                            "primitive_index": skin.primitive_index,
+                            "joints": joints,
+                        }),
+                    );
+                }
+                QueryResult::Map(query::MapResult {
+                    kind: "skin_data".to_string(),
+                    entries,
+                })
+            }
             EditorQuery::ConsoleLogs { limit } => {
                 use serde_json::json;
                 // Editor toasts (info/warning/error notices).

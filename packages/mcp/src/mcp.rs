@@ -2087,6 +2087,19 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Rig discovery per skinned node: { source, primitive_index, joints:[{node,index,name,translation,rotation,scale}] }. Joints ARE ordinary scene nodes — POSE one with set_node_transform on its `node` id (the skin deforms live), ANIMATE one with add_track targeting it (transform). Pass node UUIDs, or empty for all skinned nodes."
+    )]
+    async fn get_skin_data(
+        &self,
+        Parameters(p): Parameters<NodesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::SkinData {
+            nodes: parse_nodes(&p.nodes)?,
+        })
+        .await
+    }
+
+    #[tool(
         description = "Set the scene environment (skybox + IBL). Each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default cubemap/lighting, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap (fetched + registered on the fly, like import_texture_from_url). IBL needs both ibl_prefiltered + ibl_irradiance. A fresh scene already seeds the built-in environment."
     )]
     async fn set_environment(

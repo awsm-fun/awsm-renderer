@@ -93,6 +93,8 @@ uploader (`raw_mesh.rs` packs UVs as `uvs[v]` for `v in 0..positions.len()`).
 
 **Protocol changes need a native-relay restart.** The :9086 relay (awsm-renderer-mcp) compiles the Request/Query enums in — trunk hot-reloads the wasm but NOT the relay. After editing editor-protocol, `pkill -f "task mcp-dev"; pkill -f awsm-renderer-mcp;` then nohup-restart task mcp-dev (tab auto-reattaches). Symptom: "unknown variant" from /debug.
 
+**Frozen-canvas mode (preamble warn-skip).** frame_count advances + queries answer + settled:true, but canvas_stats/ScenePng never change — a required pipeline (e.g. material_opaque::edge_resolve final_blend after a textured import) was never installed, so presentation warn-skips every frame (log suppressed after first). Sanity-check the viewport with insert-box + canvas_stats delta BEFORE trusting A/B screenshots; recover via editor-file touch → trunk rebuild → reload.
+
 **Pinned frame time freezes ALL time-driven materials.** `set_frame_time{seconds}`
 overrides the wall clock; nothing animates until `clear_frame_time`. (This session's
 "the cutout shadow isn't moving" was exactly this.)

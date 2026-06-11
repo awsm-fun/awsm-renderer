@@ -211,6 +211,17 @@ pub enum EditorQuery {
         #[serde(default)]
         nodes: Vec<NodeId>,
     },
+    /// Rig discovery for each skinned node (empty `nodes` = every SkinnedMesh):
+    /// `{ source, primitive_index, joints: [{ node, index, name, translation,
+    /// rotation, scale }] }`. Joints ARE editor scene nodes (mirror bones synced
+    /// onto the renderer skin each frame), so POSING is plain `SetTransform` on a
+    /// joint's `node` id and ANIMATING is a `Transform` track targeting it — this
+    /// query is the lookup that makes those reachable for an agent. Returned as a
+    /// `Map` result with `kind = "skin_data"`.
+    SkinData {
+        #[serde(default)]
+        nodes: Vec<NodeId>,
+    },
     /// The last `limit` editor notices (toasts: info/warning/error) from an
     /// in-process ring buffer — surfaces runtime errors otherwise invisible over
     /// MCP. Material compile errors have a dedicated path (`MaterialDiagnostics`).

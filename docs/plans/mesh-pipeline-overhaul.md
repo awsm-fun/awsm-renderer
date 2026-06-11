@@ -379,3 +379,28 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   CLIP (AnimatedMorphCube) has its weights re-written every frame by the populate-baked
   renderer animation player, clobbering live pokes — the editor needs to own/neutralize
   template players (same root as "editor doesn't play imported clips").
+
+### Overnight run, iteration 3 (Phase 5 skin + 2 findings)
+- **SkinData query + get_skin_data MCP tool landed**: per skinned node →
+  { source, primitive_index, joints:[{node,index,name,live,translation,rotation,scale}] }.
+  Joints ARE editor nodes (mirror bones) — posing = SetTransform on the joint's node id,
+  animating = a Transform track targeting it; this query is the discovery map. `live` flag =
+  the skin bridge holds the mirror→baked mapping (Fox: 24/24 live). VERIFIED: query returns a
+  real rig over /debug. Pose-deforms-skin NOT yet seen (blocked by the finding below).
+- **FINDING (blocker, NEXT UP): edge_resolve/final_blend pipeline never reinstalled after
+  import.** Importing Fox (textured PBR) → register_material → clear_dynamic_pipelines()
+  nulls final_blend_pipeline_key → relaunch pushes "7 layout-level edge sub-pipelines" but
+  final_blend is never installed → render-frame preamble warn-skips EVERY frame
+  ("pipeline not compiled at material_opaque::edge_resolve (id=final_blend)", suppressed
+  after first log) → CANVAS FREEZES at the last presented frame while frame_count keeps
+  advancing AND wait_render_settled returns settled:true (the scheduler drained because
+  final_blend was never queued — settle is lying). Likely the known "variant edge pipeline
+  never installed" MSAA bug (msaa-unify memory; Fix A may not be on this branch). Leads:
+  pipeline_scheduler/launch.rs:1110 (install site), launch_edge_resolve_compile (launch.rs:762),
+  edge_pipeline.rs clear_dynamic_pipelines + render_pass.rs:128 guard.
+- **GOTCHA (added to handoff): frozen-canvas mode.** Symptom: frame_count advances, queries
+  answer, settled:true, but canvas_stats/ScenePng never change (luma frozen). The earlier
+  fox pose screenshots were INVALID because of this. Sanity-check renders with an
+  insert-box + canvas_stats delta before trusting any A/B. Force-recover by touching an
+  editor file (trunk rebuild → page reload) — but the freeze RECURS on the next skinned
+  import until the final_blend bug is fixed.
