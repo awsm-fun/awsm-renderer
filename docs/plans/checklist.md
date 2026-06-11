@@ -8,6 +8,29 @@ Legend: **cargo** = verifiable with `cargo test`/`clippy`; **browser** = needs a
 in-browser render/MCP check. Check items off as completed.
 
 ## ▶▶ RESUME STATE (cutout + AA phase — branch mesh-authoring)
+BROWSER-VERIFIED FULLY (fresh editor tab + :9080 model-tests): DiffuseTransmissionPlant
+leaves cut out, undersides glow (back-face normal flip), cutout edges anti-aliased; a
+cutout sphere primitive — holes see-through, curved silhouette + hole edges AA'd. Cutout +
+AA + two-sided transmission = DONE.
+
+ANIMATION-TRACK BUGS found during verification (SEPARATE from cutout/AA — my session never
+touched lights/transforms/animation; these belong to the mesh-authoring animation track):
+1. Animated glTF LIGHTS don't follow their animated nodes on the populate_gltf/scene-loader
+   path (:9080) — firefly meshes move but their point-lights stay at the bind pose. Infra
+   EXISTS + works: `lights.rs:303 update_from_transforms` (called per-frame from
+   `transforms.rs:51`) re-derives bound lights, gated on `lights.node_transforms` (binding at
+   `lights.rs:292`; early-returns if empty at :307). FIX: the scene-loader/populate light path
+   must bind each glTF light to its node TransformKey (the editor bridge does — see
+   `editor/.../bridge/asset_template.rs:105` — but populate_gltf apparently doesn't). Verify
+   whether `scene-loader/src/light.rs` / populate populates node_transforms.
+2. The EDITOR (:9085) doesn't play imported glTF clips at all (set_playing/set_playhead don't
+   pose the scene) — the known-pending "animation playback in the loader/editor" wiring.
+
+NOTE: editor's `Destroyed texture "Effects"` GPU error earlier was hot-reload WebGPU-device
+accumulation (NOT a code bug — render-loop/effects code is byte-identical to main); a fresh
+browser tab fixed it.
+
+
 DONE + COMMITTED + BROWSER-VERIFIED (live MCP) + clippy/fmt-clean:
 - B1 PBR cutout (masked visibility raster): DiffuseTransmissionPlant leaves cut out.
 - B3 custom cutout: a custom material's 2nd "alpha-only" WGSL window (gated on
