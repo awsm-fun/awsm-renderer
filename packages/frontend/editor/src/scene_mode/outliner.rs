@@ -9,9 +9,93 @@ use std::sync::Arc;
 use awsm_editor_protocol::PrimitiveShape;
 
 use crate::controller::InsertSpec;
-use crate::engine::scene::mutate::flatten_visible_order;
+use crate::engine::scene::mutate::{ancestor_dedup, find_parent, flatten_visible_order};
 use crate::engine::scene::{Node, NodeId, NodeKind};
 use crate::prelude::*;
+
+thread_local! {
+    /// The node grabbed at the start of an outliner drag. Same-app drag, so we
+    /// don't bother with the HTML5 `dataTransfer` payload — this cell is the
+    /// source of truth, cleared on drop / drag-end.
+    static DRAG_SRC: std::cell::Cell<Option<NodeId>> = const { std::cell::Cell::new(None) };
+}
+
+/// Reparent `src` (and, if it's part of the current multi-selection, the whole
+/// selection) under `new_parent` (`None` = scene root). `mutate::reparent`
+/// guards against cycles + self-parenting, so invalid drops just no-op.
+fn reparent_into(new_parent: Option<NodeId>, src: NodeId) {
+    let ctrl = controller();
+    let selection = ctrl.selected.get_cloned();
+    // Drag one of several selected rows → move the whole (ancestor-deduped)
+    // selection; drag an unselected row → move just it.
+    let ids: Vec<NodeId> = if selection.contains(&src) {
+        ancestor_dedup(&ctrl.scene, selection.iter().copied())
+    } else {
+        vec![src]
+    };
+    for id in ids {
+        if Some(id) == new_parent {
+            continue;
+        }
+        spawn_local(async move {
+            let _ = controller()
+                .dispatch(EditorCommand::Reparent {
+                    id,
+                    new_parent,
+                    index: None,
+                })
+                .await;
+        });
+    }
+}
+
+/// Wrap the current selection (or `seed` if nothing's selected) in a fresh Empty
+/// parent, created under the first selected node's parent so world positions are
+/// preserved, then reparent the selection under it. This is the "create a new
+/// parent to contain these nodes" action.
+fn group_selection(seed: NodeId) {
+    let ctrl = controller();
+    let mut selection = ctrl.selected.get_cloned();
+    if selection.is_empty() {
+        selection = vec![seed];
+    }
+    let ids = ancestor_dedup(&ctrl.scene, selection.iter().copied());
+    if ids.is_empty() {
+        return;
+    }
+    // Place the group where the first grouped node already lives, so grouping
+    // doesn't yank the nodes across the hierarchy.
+    let parent = find_parent(&ctrl.scene, ids[0]).map(|p| p.id);
+    let group_id = NodeId::new();
+    spawn_local(async move {
+        let ctrl = controller();
+        if ctrl
+            .dispatch(EditorCommand::Insert {
+                id: group_id,
+                spec: InsertSpec::Empty,
+                parent,
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        for id in ids {
+            let _ = ctrl
+                .dispatch(EditorCommand::Reparent {
+                    id,
+                    new_parent: Some(group_id),
+                    index: None,
+                })
+                .await;
+        }
+        let _ = ctrl
+            .dispatch(EditorCommand::SetSelection {
+                ids: vec![group_id],
+            })
+            .await;
+    });
+}
 
 pub fn render() -> Dom {
     let ctrl = controller();
@@ -31,6 +115,20 @@ pub fn render() -> Dom {
             .style("flex", "1")
             .style("overflow-y", "auto")
             .style("padding", "0 6px 8px")
+            // Dropping on the empty area below the rows reparents to the scene
+            // root (un-parent). Row drops stop propagation, so this only fires
+            // for the background.
+            .event(move |e: events::DragOver| {
+                if DRAG_SRC.with(|c| c.get()).is_some() {
+                    e.prevent_default();
+                }
+            })
+            .event(move |e: events::Drop| {
+                e.prevent_default();
+                if let Some(src) = DRAG_SRC.with(|c| c.take()) {
+                    reparent_into(None, src);
+                }
+            })
             // Rebuild the row list when the scene structure (revision) or the
             // filter changes; per-row selection/visibility bindings are reactive
             // so selection changes don't rebuild the list.
@@ -195,6 +293,8 @@ fn row(node: Arc<Node>, depth: usize) -> Dom {
     let has_kids = !node.children.lock_ref().is_empty();
     let ctx_open: Mutable<Option<(f64, f64)>> = Mutable::new(None);
     let hover = Mutable::new(false);
+    // Highlight when a drag hovers over this row (it's a drop target).
+    let drag_over = Mutable::new(false);
 
     // selection signals
     let sel = controller().selected.clone();
@@ -217,6 +317,37 @@ fn row(node: Arc<Node>, depth: usize) -> Dom {
             }
         })
         .style_signal("box-shadow", primary_sig.map(|p| if p { "inset 2px 0 0 var(--accent)" } else { "none" }))
+        // Drop-target ring while a drag hovers over this row.
+        .style_signal("outline", drag_over.signal().map(|d| if d { "2px solid var(--accent)" } else { "none" }))
+        .style("outline-offset", "-2px")
+        // Drag-to-reparent: this row is both a draggable source and a drop target.
+        .attr("draggable", "true")
+        .event(move |_: events::DragStart| {
+            DRAG_SRC.with(|c| c.set(Some(id)));
+        })
+        .event(move |_: events::DragEnd| {
+            DRAG_SRC.with(|c| c.set(None));
+        })
+        .event(clone!(drag_over => move |e: events::DragOver| {
+            // Only a real drag (a source was grabbed) is a valid drop here, and
+            // dropping onto the dragged row itself is a no-op.
+            let src = DRAG_SRC.with(|c| c.get());
+            if matches!(src, Some(s) if s != id) {
+                e.prevent_default();
+                drag_over.set_neq(true);
+            }
+        }))
+        .event(clone!(drag_over => move |_: events::DragLeave| drag_over.set_neq(false)))
+        .event(clone!(drag_over => move |e: events::Drop| {
+            e.prevent_default();
+            e.stop_propagation();
+            drag_over.set_neq(false);
+            if let Some(src) = DRAG_SRC.with(|c| c.take()) {
+                if src != id {
+                    reparent_into(Some(id), src);
+                }
+            }
+        }))
         .event(clone!(hover => move |_: events::MouseEnter| hover.set_neq(true)))
         .event(clone!(hover => move |_: events::MouseLeave| hover.set_neq(false)))
         .event(move |e: events::Click| {
@@ -332,6 +463,13 @@ fn row_context_menu(node: Arc<Node>, x: f64, y: f64, open: Mutable<Option<(f64, 
             .on_click(clone!(close => move || { dispatch(EditorCommand::SetVisible { id, visible: !vis }); close(); })).render(),
         MenuItem::new(if prefab { "Unmark prefab" } else { "Mark as prefab" }).icon("layers")
             .on_click(clone!(close => move || { dispatch(EditorCommand::SetPrefab { id, prefab: !prefab }); close(); })).render(),
+        menu_sep(),
+        // Reparenting. "Group" wraps the selection in a new Empty parent;
+        // "Move to root" un-parents. (Drag-and-drop in the tree also reparents.)
+        MenuItem::new("Group selection").icon("layers")
+            .on_click(clone!(close => move || { group_selection(id); close(); })).render(),
+        MenuItem::new("Move to root").icon("chevron")
+            .on_click(clone!(close => move || { reparent_into(None, id); close(); })).render(),
         menu_sep(),
         MenuItem::new("Delete").icon("trash").danger(true).hint("\u{232b}")
             .on_click(clone!(close => move || { dispatch(EditorCommand::Delete { id }); close(); })).render(),
