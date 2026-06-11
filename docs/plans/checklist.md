@@ -124,6 +124,13 @@ KEY ARCH FACTS (verified this session):
   normal/tangent) — `geometry_wgsl/fragment.wgsl`. No texture access today.
 
 FINALIZED B DESIGN (validated against code, this session — supersedes ambiguities above):
+NEXT ACTION (start here): build the `geometry_masked` module as ONE cohesive unit
+(see MODULE STRUCTURE below) — cache key + enum/dispatch arm + masked WGSL template +
+augmented group-0 bind group + lazy per-shader-id pipeline pool + render integration +
+`Material::Custom` Mask→visibility routing — then layer the custom alpha-only arm
+(`alpha_wgsl`) + editor 2nd-window + MCP. First browser test = a PROCEDURAL custom
+cutout on a plane. No smaller standalone increment adds value (routing flip alone just
+regresses custom cutouts to solid; an unused `alpha_wgsl` field is cross-crate churn).
 - WHY raster (not compute) discard: the visibility raster writes DEPTH. If discard
   happened only in the opaque COMPUTE (after geometry), the hole's depth is already
   written → later depth-tested geometry/shadows/transmission can't see through the
