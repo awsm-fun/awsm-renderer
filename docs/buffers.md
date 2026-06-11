@@ -116,16 +116,24 @@ a visibility-buffer pipeline: the geometry pass writes integer visibility IDs
 visibility-buffer renderers normally fall back to **TAA** for cutout AA, with its
 ghosting and blur.
 
-Instead, the masked raster emits an **analytic `@builtin(sample_mask)`**:
-`coverage = clamp((alpha − cutoff) / fwidth(alpha) + 0.5, 0, 1)` mapped to a
-count of covered samples. A boundary pixel writes *k of N* samples as the
-surface and leaves the rest as the cleared skybox sentinel — so the existing
-**compute MSAA edge-resolve** (which already shades per-sample at silhouette
-edges) blends them. The result: **crisp, temporally-stable, ghost-free
-anti-aliased alpha cutouts under true MSAA in a deferred pipeline** — a property
-most visibility-buffer/deferred renderers don't have (they lean on TAA). Zero
-coverage still discards (a true hole writes no depth); single-sampled falls back
-to the binary discard (where a post-process AA would complement it).
+Instead, the masked raster emits a **`@builtin(sample_mask)`** of true
+per-sample coverage: it evaluates the masking alpha at each of the MSAA sample
+sub-positions (offset from the pixel center via the barycentric screen-space
+derivatives) and sets that sample's bit when it passes the cutoff. A boundary
+pixel writes *k of N* samples as the surface and leaves the rest as the cleared
+skybox sentinel, so the existing **compute MSAA edge-resolve** (which already
+shades per-sample at silhouette edges) blends them. The result: **crisp,
+temporally-stable, ghost-free anti-aliased alpha cutouts under true MSAA in a
+deferred pipeline** — a property most visibility-buffer/deferred renderers don't
+have (they lean on TAA).
+
+Per-*sample* evaluation (rather than deriving coverage analytically from
+`fwidth(alpha)`) is what makes it robust: it works for **any** alpha, including a
+**binary/procedural** cutout (`select(1.0, 0.0, …)`) whose alpha is a hard step
+with no usable gradient. Zero coverage still discards (a true hole writes no
+depth); single-sampled falls back to the binary discard (where a post-process AA
+would complement it). Cost is scoped to the MSAA-on × cutout-material combo —
+opaque non-cutout materials never enter this path.
 
 ## Tangents
 
