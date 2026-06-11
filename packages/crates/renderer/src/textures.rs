@@ -397,6 +397,68 @@ impl AwsmRenderer {
             .pipelines
             .install_per_mesh_keys(mesh_keys, transparent_pipeline_keys);
 
+        // -----------------------------------------------------------
+        // Masked (alpha-tested) geometry — rebuild against the new pool
+        // -----------------------------------------------------------
+        // The masked group-0 carries the texture pool, so its layout changes
+        // when the pool grows. Relayout the bind group + pipeline pool, then
+        // (re)compile the built-in PBR masked variant (its base-color cutout
+        // samples the pool). Custom masked variants are rebuilt by the dynamic
+        // scheduler's re-launch below (which `relayout` cleared).
+        {
+            let new_masked_bg = {
+                let mut ctx = RenderPassInitContext {
+                    gpu: &mut self.gpu,
+                    pipelines: &mut self.pipelines,
+                    shaders: &mut self.shaders,
+                    textures: &mut self.textures,
+                    render_texture_formats: &mut self.render_textures.formats,
+                    bind_group_layouts: &mut self.bind_group_layouts,
+                    pipeline_layouts: &mut self.pipeline_layouts,
+                    features: &self.features,
+                    anti_aliasing: &self.anti_aliasing,
+                    post_processing: &self.post_processing,
+                };
+                self.render_passes
+                    .geometry
+                    .masked_bind_group
+                    .clone_because_texture_pool_changed(&mut ctx)?
+            };
+            self.render_passes.geometry.masked_bind_group = new_masked_bg;
+
+            let mut ctx = RenderPassInitContext {
+                gpu: &mut self.gpu,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                textures: &mut self.textures,
+                render_texture_formats: &mut self.render_textures.formats,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+            };
+            self.render_passes.geometry.masked_pipelines.relayout(
+                &mut ctx,
+                &self.render_passes.geometry.masked_bind_group,
+                &self.render_passes.geometry.bind_groups,
+            )?;
+            let pbr_variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
+                shader_id: awsm_materials::MaterialShaderId::PBR,
+                base: crate::dynamic_materials::ShadingBase::Pbr,
+                dynamic_alpha: None,
+            };
+            self.render_passes
+                .geometry
+                .masked_pipelines
+                .ensure_variant(
+                    &mut ctx,
+                    &self.render_passes.geometry.masked_bind_group,
+                    &pbr_variant,
+                )
+                .await?;
+        }
+
         // Re-launch the compile for every currently-registered
         // scheduler material entry.
         //

@@ -88,16 +88,17 @@ impl GeometryMaskedPipelines {
         Ok(())
     }
 
-    /// Builds the shader + pipeline cache keys for one variant across all cull
-    /// modes at the active MSAA. The caller threads the returned keys through
-    /// the shared `Shaders::ensure_keys` / `RenderPipelines::ensure_keys`
-    /// batches, then folds the resolved keys back via [`Self::insert`].
-    pub async fn build_descriptors(
-        &self,
+    /// Compiles one masked variant (shader + the 3 cull-mode pipelines at the
+    /// active MSAA) and folds the resolved keys into the pool. Self-contained:
+    /// ensures the shader, then the render pipelines, then inserts — so the
+    /// texture-finalize flow (built-in PBR) and the dynamic scheduler (custom)
+    /// can each call it directly without threading cross-pass batches.
+    pub async fn ensure_variant(
+        &mut self,
         ctx: &mut RenderPassInitContext<'_>,
         masked_bind_group: &GeometryMaskedBindGroup,
         variant: &MaskedVariant,
-    ) -> Result<MaskedPrewarmDescriptors> {
+    ) -> Result<()> {
         let msaa_samples = match ctx.anti_aliasing.msaa_sample_count {
             Some(4) => Some(4u32),
             _ => None,
@@ -110,6 +111,9 @@ impl GeometryMaskedPipelines {
             base: variant.base,
             dynamic_alpha: variant.dynamic_alpha.clone(),
         };
+        ctx.shaders
+            .ensure_keys(ctx.gpu, vec![shader_cache.clone().into()])
+            .await?;
         let shader_key = ctx.shaders.get_key(ctx.gpu, shader_cache).await?;
 
         let color_targets = [
@@ -138,18 +142,20 @@ impl GeometryMaskedPipelines {
             });
         }
 
-        Ok(MaskedPrewarmDescriptors {
-            pipeline_cache_keys,
-            slots,
-        })
-    }
-
-    /// Folds resolved pipeline keys (one `RenderPipelines::ensure_keys` batch)
-    /// into the pool.
-    pub fn insert(&mut self, slots: Vec<MaskedPipelineKeyId>, keys: Vec<RenderPipelineKey>) {
+        let keys = ctx
+            .pipelines
+            .render
+            .ensure_keys(
+                ctx.gpu,
+                ctx.shaders,
+                ctx.pipeline_layouts,
+                pipeline_cache_keys,
+            )
+            .await?;
         for (slot, key) in slots.into_iter().zip(keys) {
             self.main.insert(slot, key);
         }
+        Ok(())
     }
 
     /// Drops every compiled masked pipeline. Used before recompiling against a
@@ -176,12 +182,6 @@ impl GeometryMaskedPipelines {
             })
             .copied()
     }
-}
-
-/// Output of [`GeometryMaskedPipelines::build_descriptors`].
-pub struct MaskedPrewarmDescriptors {
-    pub pipeline_cache_keys: Vec<RenderPipelineCacheKey>,
-    pub slots: Vec<MaskedPipelineKeyId>,
 }
 
 fn resolve_layout_key(
