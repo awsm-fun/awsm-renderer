@@ -233,6 +233,31 @@ FINALIZED B DESIGN (validated against code, this session — supersedes ambiguit
   existing non-masked geometry pipeline (render SOLID, = step-A behavior) until step
   5, so dynamic-first is regression-free + incremental.
 
+KHR-EXTENSION IMPLICATIONS (analyzed this session — our change is consistent):
+- `has_transmission()` (`materials/src/pbr.rs:416`) gates ONLY refractive
+  KHR_materials_transmission (samples `opaque_tex` → must be transparent). Diffuse
+  transmission (KHR_materials_diffuse_transmission) is a BRDF lobe (`brdf.wgsl`,
+  included by opaque's SHADER_INCLUDES) → needs NO framebuffer → an alpha-masked
+  diffuse-transmission surface is correctly OPAQUE/alpha-tested (matches Khronos
+  sample-viewer; better than the old transparent path: casts cutout shadows + lands
+  in opaque_tex, no inter-leaf blend artifacts).
+- Canonical test asset: `media/.../DiffuseTransmissionPlant/glTF/DiffuseTransmissionPlant.gltf`
+  — mat `leaves` = alphaMode=MASK (cutoff absent → glTF default 0.5) + diffuse_transmission
+  + doubleSided. After step A it routes opaque but renders SOLID rectangles until B
+  adds the raster cutout. Great real-world B test (Mask + diffuse-transmission + 2-sided).
+- Routing matrix: Mask-only / Mask+diffuse-transmission / Mask+other-BRDF-lobes →
+  OPAQUE (cutout in the masked raster, B). Blend / Mask+refractive-transmission /
+  Mask+volume → TRANSPARENT (cutout in the transparent fragment — VERIFIED still
+  discards: `material_transparent/.../fragment.wgsl:230` + `helpers/material_color_calc.wgsl:53,511`).
+  The two cutout paths are mutually exclusive → no double-discard.
+- B-impl consequences: (1) the masked raster discard is extension-AGNOSTIC — purely
+  `base_color.a < cutoff` (glTF MASK def); diffuse-transmission/volume/clearcoat shade
+  later in the opaque compute. (2) B2 shadow alpha-test must gate on
+  `alpha_mask().is_some()` (cutoff present), INDEPENDENT of opaque/transparent routing
+  — a Mask+refractive material is transparent-routed but must still cast a hole-shaped
+  shadow (shadow pass rasterizes all cast_shadows meshes). (3) ensure MASK-with-absent-
+  cutoff writes 0.5 into the material buffer (convert/material-write path).
+
 DEV STACK / TEST SETUP (this session):
 - Trunk's file-watch went stale mid-session; FIX = restart `task mcp-dev` (kills+
   restarts trunk:9085 + media:9082/3 + MCP:9086; editor browser reconnects on
