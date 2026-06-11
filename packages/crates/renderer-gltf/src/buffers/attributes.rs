@@ -209,5 +209,12 @@ pub(super) fn convert_attribute_kind(
             // extracted into storage buffer
             None
         }
+        // Application-specific `_CUSTOM` attributes (the gltf crate surfaces
+        // these once the `extras` feature is on). Not part of our vertex
+        // layout — skip, like Joints/Weights above skip the storage-routed sets.
+        Semantic::Extras(name) => {
+            tracing::debug!("skipping app-specific vertex attribute `_{name}`");
+            None
+        }
     }
 }

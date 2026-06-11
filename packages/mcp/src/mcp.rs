@@ -2074,7 +2074,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Live morph data per node: { target_count, weights } from the renderer's morph buffer (what set_morph_weight writes and morph animation tracks drive). Pass node UUIDs, or empty for all. Nodes without MATERIALIZED morphs are omitted — empty on a morph-bearing scene means not-yet-materialized, not no-morphs."
+        description = "Live morph data per node: { target_count, weights, names } from the renderer's morph buffer (names from the glTF mesh.extras.targetNames convention; empty when the source had none) (what set_morph_weight writes and morph animation tracks drive). Pass node UUIDs, or empty for all. Nodes without MATERIALIZED morphs are omitted — empty on a morph-bearing scene means not-yet-materialized, not no-morphs."
     )]
     async fn get_morph_data(
         &self,

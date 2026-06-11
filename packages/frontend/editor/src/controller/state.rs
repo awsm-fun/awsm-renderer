@@ -3760,14 +3760,23 @@ impl EditorController {
                 // an empty map on a morph-bearing scene means "not materialized
                 // yet", not "no morphs".
                 let ids = self.resolve_node_ids(&nodes);
-                let pairs: Vec<(NodeId, Vec<awsm_renderer::meshes::MeshKey>)> = ids
+                // (id, meshes, target names) — names ride the import template
+                // (glTF `mesh.extras.targetNames`); empty when the source had
+                // none or the node isn't a template-backed import.
+                let pairs: Vec<(NodeId, Vec<awsm_renderer::meshes::MeshKey>, Vec<String>)> = ids
                     .iter()
-                    .map(|id| (*id, renderer_meshes_for_node(*id)))
-                    .filter(|(_, meshes)| !meshes.is_empty())
+                    .map(|id| {
+                        (
+                            *id,
+                            renderer_meshes_for_node(*id),
+                            morph_names_for_node(*id),
+                        )
+                    })
+                    .filter(|(_, meshes, _)| !meshes.is_empty())
                     .collect();
                 let entries = crate::engine::context::with_renderer_mut(move |r| {
                     let mut entries = std::collections::BTreeMap::new();
-                    for (id, meshes) in pairs {
+                    for (id, meshes, names) in pairs {
                         // First morph-bearing primitive wins (multi-primitive
                         // nodes share one weight set per glTF mesh anyway).
                         let weights = meshes.iter().find_map(|mesh| {
@@ -3780,6 +3789,7 @@ impl EditorController {
                                 json!({
                                     "target_count": weights.len(),
                                     "weights": weights,
+                                    "names": names,
                                 }),
                             );
                         }
@@ -4319,6 +4329,26 @@ fn renderer_meshes_for_node(node: NodeId) -> Vec<awsm_renderer::meshes::MeshKey>
             .into_iter()
             .collect(),
     }
+}
+
+/// Morph target names for a node, via its import template (`SkinnedMesh` ref →
+/// template node → glTF `mesh.extras.targetNames`). Empty when the node isn't a
+/// template-backed import or the source carried no names.
+fn morph_names_for_node(node: NodeId) -> Vec<String> {
+    let b = crate::engine::bridge::bridge();
+    let entry = { b.nodes.lock().unwrap().get(&node).cloned() };
+    let Some(entry) = entry else {
+        return Vec::new();
+    };
+    let NodeKind::SkinnedMesh { skin, .. } = entry.node.kind.get_cloned() else {
+        return Vec::new();
+    };
+    b.get_template(skin.source)
+        .and_then(|t| {
+            t.find_by_node_index(skin.node_index)
+                .map(|tn| tn.morph_target_names.clone())
+        })
+        .unwrap_or_default()
 }
 
 /// Read one readback target from CPU-side renderer state → a JSON number / array

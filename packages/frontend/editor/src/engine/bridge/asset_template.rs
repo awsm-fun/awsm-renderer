@@ -67,6 +67,10 @@ pub struct AssetTemplateNode {
     /// captured/editable `Mesh` would silently drop the morph buffers, freezing
     /// `set_morph_weight` + morph animation tracks for that node.
     pub mesh_has_morphs: Vec<bool>,
+    /// Morph target names for this node's mesh, from the glTF
+    /// `mesh.extras.targetNames` convention (empty when absent). Indexed like
+    /// the weights `MorphData`/`set_morph_weight` operate on.
+    pub morph_target_names: Vec<String>,
     /// `Some` when this glTF node carries a `KHR_lights_punctual` light. The
     /// controller materializes it as an editable `NodeKind::Light` (so it shows
     /// in the outliner, gets the shadow inspector, and — crucially — binds its
@@ -133,6 +137,27 @@ pub fn build_from_context(renderer: &AwsmRenderer, ctx: &GltfPopulateContext) ->
         map.values().flat_map(|arc| arc.0.iter().copied()).collect()
     };
 
+    // glTF node index → morph target names, from the `mesh.extras.targetNames`
+    // convention (the only interoperable home for morph names in glTF 2.0).
+    let morph_names_by_node: HashMap<u32, Vec<String>> = ctx
+        .data
+        .doc
+        .nodes()
+        .filter_map(|n| {
+            let mesh = n.mesh()?;
+            let raw = mesh.extras().as_ref()?;
+            let v: serde_json::Value = serde_json::from_str(raw.get()).ok()?;
+            let names = v.get("targetNames")?.as_array()?;
+            Some((
+                n.index() as u32,
+                names
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect(),
+            ))
+        })
+        .collect();
+
     // glTF node index → editor LightConfig for every KHR_lights_punctual node,
     // so each light becomes an editable `NodeKind::Light` mirror (bound to the
     // editor node's transform) instead of a dead Group.
@@ -158,11 +183,14 @@ pub fn build_from_context(renderer: &AwsmRenderer, ctx: &GltfPopulateContext) ->
             snapshot(
                 renderer,
                 k,
-                &key_to_node_index,
-                &key_to_label,
-                &mesh_mat,
-                &skin_joints,
-                &lights_by_node,
+                &SnapshotLookups {
+                    key_to_node_index: &key_to_node_index,
+                    key_to_label: &key_to_label,
+                    mesh_mat: &mesh_mat,
+                    skin_joints: &skin_joints,
+                    lights_by_node: &lights_by_node,
+                    morph_names_by_node: &morph_names_by_node,
+                },
             )
         })
         .collect();
@@ -209,14 +237,21 @@ fn light_config_from_gltf(
     }
 }
 
+/// Read-only lookup tables shared by every node of one template snapshot —
+/// bundled so the recursive walk passes one reference instead of six.
+struct SnapshotLookups<'a> {
+    key_to_node_index: &'a HashMap<TransformKey, u32>,
+    key_to_label: &'a HashMap<TransformKey, String>,
+    mesh_mat: &'a HashMap<MeshKey, Option<usize>>,
+    skin_joints: &'a HashSet<TransformKey>,
+    lights_by_node: &'a HashMap<u32, awsm_editor_protocol::LightConfig>,
+    morph_names_by_node: &'a HashMap<u32, Vec<String>>,
+}
+
 fn snapshot(
     renderer: &AwsmRenderer,
     key: TransformKey,
-    key_to_node_index: &HashMap<TransformKey, u32>,
-    key_to_label: &HashMap<TransformKey, String>,
-    mesh_mat: &HashMap<MeshKey, Option<usize>>,
-    skin_joints: &HashSet<TransformKey>,
-    lights_by_node: &HashMap<u32, awsm_editor_protocol::LightConfig>,
+    lk: &SnapshotLookups<'_>,
 ) -> AssetTemplateNode {
     let local = renderer
         .transforms
@@ -230,7 +265,7 @@ fn snapshot(
         .unwrap_or_default();
     let mesh_gltf_material_indices = mesh_keys
         .iter()
-        .map(|mk| mesh_mat.get(mk).copied().unwrap_or(None))
+        .map(|mk| lk.mesh_mat.get(mk).copied().unwrap_or(None))
         .collect();
     let mesh_is_skinned = mesh_keys
         .iter()
@@ -246,34 +281,25 @@ fn snapshot(
     let children = renderer
         .transforms
         .get_children(key)
-        .map(|kids| {
-            kids.iter()
-                .map(|c| {
-                    snapshot(
-                        renderer,
-                        *c,
-                        key_to_node_index,
-                        key_to_label,
-                        mesh_mat,
-                        skin_joints,
-                        lights_by_node,
-                    )
-                })
-                .collect()
-        })
+        .map(|kids| kids.iter().map(|c| snapshot(renderer, *c, lk)).collect())
         .unwrap_or_default();
-    let gltf_node_index = key_to_node_index.get(&key).copied().unwrap_or(0);
+    let gltf_node_index = lk.key_to_node_index.get(&key).copied().unwrap_or(0);
     AssetTemplateNode {
         gltf_node_index,
         baked_transform_key: key,
-        is_skin_joint: skin_joints.contains(&key),
-        label: key_to_label.get(&key).cloned(),
+        is_skin_joint: lk.skin_joints.contains(&key),
+        label: lk.key_to_label.get(&key).cloned(),
         local,
         mesh_keys,
         mesh_gltf_material_indices,
         mesh_is_skinned,
         mesh_has_morphs,
-        light: lights_by_node.get(&gltf_node_index).cloned(),
+        morph_target_names: lk
+            .morph_names_by_node
+            .get(&gltf_node_index)
+            .cloned()
+            .unwrap_or_default(),
+        light: lk.lights_by_node.get(&gltf_node_index).cloned(),
         children,
     }
 }

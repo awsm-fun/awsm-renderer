@@ -154,6 +154,7 @@ reqwest = {version = "0.13.4", features = ["json"]}
 # JSON in `renderer-gltf` instead. See gltf-rs/gltf#465.
 gltf = {version = "1.4.1", features = [
     "extensions",
+    "extras",
     "KHR_lights_punctual",
     "KHR_texture_transform",
     "KHR_materials_emissive_strength",
