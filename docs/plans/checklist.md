@@ -32,18 +32,15 @@ KEY FILES: renderer `render_passes/geometry/{masked_bind_group,masked_pipeline}.
 editor `controller/custom_material.rs`+`persistence.rs`+`material_mode/studio.rs`+`engine/bridge/dynamic.rs`;
 `editor-protocol/{command,project}.rs`; `mcp/src/mcp.rs`.
 
-IN PROGRESS (this is the current task): move Unlit/Toon MASK → opaque/masked path (FlipBook
-DEFERRED — its mask alpha is the time-varying atlas cell, needs flipbook-specific WGSL).
-Unlit+Toon share PBR's header prefix EXACTLY (shader_id,alpha_mode,alpha_cutoff,base_color_tex(5),
-base_color_factor(4)) → the masked fragment's `{% else %}` base-color path already covers them
-(reads base_index+2 tex, +10 factor.a). STEPS: (1) `materials/src/{unlit,toon}.rs`
-is_transparency_pass → drop the `alpha_cutoff().is_some()` term (→ `has_alpha_blend()`), like
-pbr.rs. Leave flipbook.rs as-is. (2) `textures.rs` finalize masked-build: add MaskedVariant
-{shader_id: UNLIT, base: Unlit} and {TOON, Toon} alongside the PBR one (dynamic_alpha: None).
-(3) verify Unlit/Toon cutout in browser. NOTE: ShadingBase::Unlit/Toon exist; the masked
-template {% else %} is base-agnostic so no WGSL change needed.
+DONE (Unlit/Toon sweep, committed, cargo+clippy clean): `materials/src/{unlit,toon}.rs`
+is_transparency_pass now `has_alpha_blend()` (MASK→opaque like PBR); `textures.rs` finalize
+builds masked variants for PBR/UNLIT/TOON (they share the header prefix exactly, so the
+masked fragment's `{% else %}` base-color path covers all three — no WGSL change). NOT
+separately browser-tested (identical code path to verified-PBR, differs only by shader_id;
+a real Unlit/Toon cutout needs a base-color texture with an alpha pattern to be visible).
 
-REMAINING AFTER THIS: FlipBook masked (atlas-cell alpha, deferred); B2 shadow masked variant
+REMAINING: FlipBook masked (atlas-cell alpha, DEFERRED — mask alpha is the time-varying
+sprite cell; flipbook.rs left transparent-routed); B2 shadow masked variant
 (hole-shaped shadows — shadow pass is depth-only + at maxBindGroups=4, needs a bind-group
 consolidation, see B2 EXECUTION PLAN below); textured-CUSTOM cutout browser test
 (material_sample_<name> path — PBR-textured already verified); scene-loader player round-trip
