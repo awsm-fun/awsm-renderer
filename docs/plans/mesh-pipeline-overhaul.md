@@ -503,3 +503,19 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   Pivot: build + NUMERICALLY verify animation playback (SampleClipTimeseries is
   GPU-independent by design), MCP robustness (query-verifiable), and queue all visual
   confirms (bone icons, skeleton viz when built, fox-framed screenshot) for morning.
+
+### Overnight run, iteration 8b — animation playback verified NUMERICALLY (partial) + a lowering suspect
+- With the display locked (no RAF/no pixels), used the GPU-independent
+  sample_clip_timeseries to verify item (3)'s data chain: Fox "Walk" (0.708s) sampled at
+  pinned times via NodeLocalTrs readbacks shows TIME-VARYING bone rotations
+  (b_RightFoot01: max quaternion delta 0.0218 across t=0/0.25/0.5) — editor clip →
+  lowering → renderer sampling → bone TRS all function headlessly. Scrub posing
+  (pin_pose) was already proven (the copied-20-per-frame fight in iter 5).
+- **SUSPECT for next window: left/right asymmetry** — b_LeftFoot01/b_LeftLeg01 read
+  dead-zero deltas at the same times the right side swings. Either the Walk clip is
+  genuinely asymmetric at those sample phases (check times against the 0.708s loop) or
+  the lowering DROPS some channels (per-bone TrackTarget resolution gap). Compare
+  get_track_data for a left-leg track vs right, and sample finer times.
+- MORNING VISUAL QUEUE: bone icons in outliner (DOM); fox framed via fixed NodeBounds;
+  fox Walk playing in viewport (set_playing); skeleton viz (not yet built); cutout/
+  shadow scenes from earlier iterations are already verified.
