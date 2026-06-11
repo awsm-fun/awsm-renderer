@@ -393,13 +393,18 @@ impl crate::AwsmRenderer {
         );
         slots.push(LaunchSlot::Classify { msaa: active_msaa });
 
-        // Opaque variant for THIS bucket — only when it routes to the
-        // opaque pass. A Blend/Mask custom material's body targets the
-        // transparent contract; it renders via the transparent pass.
+        // Opaque variant for THIS bucket — built when it routes to the opaque
+        // pass: OPAQUE and (now) MASK customs. A MASK custom is alpha-tested
+        // opaque — its MAIN WGSL shades in the opaque compute (OpaqueShadingOutput
+        // contract) while its 2nd alpha-only WGSL discards cutouts in the masked
+        // visibility raster. Only BLEND targets the transparent contract.
         // First-party variants (no registration) always build.
-        let build_opaque = reg
-            .as_ref()
-            .is_none_or(|r| matches!(r.alpha_mode, MaterialAlphaMode::Opaque));
+        let build_opaque = reg.as_ref().is_none_or(|r| {
+            matches!(
+                r.alpha_mode,
+                MaterialAlphaMode::Opaque | MaterialAlphaMode::Mask { .. }
+            )
+        });
         if build_opaque {
             shader_jobs.push(
                 ShaderCacheKeyMaterialOpaque {

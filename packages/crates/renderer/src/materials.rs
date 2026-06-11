@@ -126,18 +126,15 @@ impl Material {
             Material::Unlit(m) => MaterialShader::is_transparency_pass(m),
             Material::Toon(m) => MaterialShader::is_transparency_pass(m.as_ref()),
             Material::FlipBook(m) => MaterialShader::is_transparency_pass(m.as_ref()),
-            // Dynamic instances snapshot the registration's
-            // `alpha_mode` at construction time
-            // (`DynamicMaterial::alpha_mode`), so reading it here
-            // doesn't require a registry handle. Blend AND Mask
-            // both route through the transparent pass — Mask uses
-            // the cutoff via `alpha_mask` below.
+            // Dynamic instances snapshot the registration's `alpha_mode` at
+            // construction time (`DynamicMaterial::alpha_mode`). MASK is NOT
+            // transparency — like built-in PBR (step A), a custom MASK material
+            // is alpha-tested OPAQUE: its MAIN WGSL shades in the opaque compute
+            // (OpaqueShadingOutput contract) and its 2nd alpha-only WGSL discards
+            // cutouts in the masked visibility raster. Only BLEND routes to the
+            // forward transparent pass.
             Material::Custom(m) => {
-                matches!(
-                    m.alpha_mode,
-                    awsm_materials::MaterialAlphaMode::Blend
-                        | awsm_materials::MaterialAlphaMode::Mask { .. }
-                )
+                matches!(m.alpha_mode, awsm_materials::MaterialAlphaMode::Blend)
             }
         }
     }
