@@ -11,7 +11,9 @@ use awsm_editor_protocol::PrimitiveShape;
 use std::cell::RefCell;
 
 use crate::controller::InsertSpec;
-use crate::engine::scene::mutate::{ancestor_dedup, find_by_id, find_parent, flatten_visible_order};
+use crate::engine::scene::mutate::{
+    ancestor_dedup, find_by_id, find_parent, flatten_visible_order,
+};
 use crate::engine::scene::{Node, NodeId, NodeKind};
 use crate::prelude::*;
 

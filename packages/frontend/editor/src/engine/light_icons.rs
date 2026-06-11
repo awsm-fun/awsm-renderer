@@ -47,6 +47,18 @@ pub fn init() {
 /// Per-frame: re-anchor one HUD icon on every light node + keep them a fixed
 /// pixel size. Called from the render loop after world transforms are derived.
 pub fn per_frame_update(renderer: &mut AwsmRenderer, camera_matrices: &CameraMatrices) {
+    // Honor the Settings → "Light gizmos" toggle: hide the markers when off.
+    if !crate::controller::controller().settings.light_gizmos.get() {
+        ICONS.with(|c| {
+            if let Some(icons) = c.borrow_mut().as_mut() {
+                if icons.handles.is_visible() {
+                    icons.handles.show(renderer, false);
+                }
+            }
+        });
+        return;
+    }
+
     // Snapshot the live light nodes + their world positions. Light nodes are
     // tracked by the node-sync bridge as they materialize/teardown.
     let mut positions: Vec<Vec3> = Vec::new();

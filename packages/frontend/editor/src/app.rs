@@ -447,6 +447,7 @@ fn settings_drawer() -> Dom {
             DrawerSection::new("Viewport")
                 .child(row("Show grid", toggle(s.grid.clone())))
                 .child(row("Show gizmo", toggle(s.gizmo.clone())))
+                .child(row("Light gizmos", toggle(s.light_gizmos.clone())))
                 .child(row("MSAA", toggle(s.msaa.clone())))
                 .child(row("Light heatmap", toggle(s.heatmap.clone())))
                 .child(row(
