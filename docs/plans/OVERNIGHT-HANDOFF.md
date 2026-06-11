@@ -137,21 +137,31 @@ PASTE:
 > Request enum to :9086/debug (you do NOT have the MCP tools, only its resources): commands {"cmd":"snake",...}
 > wrapped {"Dispatch":<cmd>} or {"DispatchBatch":[<cmd>...]}; queries {"query":"snake",...} wrapped
 > {"Query":<q>}; {"ScenePng":{"width":N,"height":N}} writes the PNG to /tmp/awsm-mcp-last.png; settle with
-> {"Query":{"query":"wait_render_settled","max_ms":4000}} before each screenshot. Work the remaining scope in
-> priority order: (1) Phase 5 skin/morph MCP backend (set_morph_weight + get_morph_data + joint-weight/
-> bind-pose editing + richer skeletal/morph animation authoring — new EditorCommand/EditorQuery variants +
-> typed MCP tools/schemas + renderer-core wiring); (2) Phase 6 bones-in-outliner + skeleton/morph viz (build
-> on the HUD-glyph+picking pattern in engine/light_icons.rs and scene_mode/outliner.rs); (3) animation
-> playback in the editor/loader; (4) Phase 4 packer/convert parity (verify via the load_player_bundle
-> round-trip screenshot compare); (5) vertex-selection highlight; then (6) Phase 9 standing-latitude cleanup.
-> Source-of-truth detail is docs/plans/mesh-pipeline-overhaul.md (Phase 5/6 notes + landscape survey). For
-> EACH item: build it, then verify it live in the tab with a screenshot — and remember the gotchas (a panic
-> makes /debug return empty until trunk rebuild+reload; clear_frame_time or nothing animates; wait for the
-> wasm to rebuild + frame_count to advance before trusting a render). Rules: commit incrementally with clear
-> messages, tree compiles at every commit, run `task lint` + relevant `cargo test` before each commit, NEVER
-> claim verified what you didn't actually see correct in the tab, never write the banned project codename into
-> any committed file (grep the staged diff), do NOT push. Append notable progress to the PROGRESS LOG in
-> docs/plans/mesh-pipeline-overhaul.md as you go so a mid-run /clear can resume cleanly. When the listed scope
-> is built + browser-verified, keep finding valuable additive work under the Phase 9 mandate until the loop is
-> genuinely dry; then write a final report (what landed + verified, anything still needing my judgment,
-> decisions made).
+> {"Query":{"query":"wait_render_settled","max_ms":4000}} before each screenshot. CORE SCOPE, in priority
+> order: (1) Phase 5 skin/morph MCP backend (set_morph_weight + get_morph_data + joint-weight/bind-pose
+> editing + richer skeletal/morph animation authoring — new EditorCommand/EditorQuery variants + typed MCP
+> tools/schemas + renderer-core wiring); (2) Phase 6 bones-in-outliner + skeleton/morph viz (build on the
+> HUD-glyph+picking pattern in engine/light_icons.rs and scene_mode/outliner.rs); (3) animation playback in
+> the editor/loader; (4) Phase 4 packer/convert parity (verify via the load_player_bundle round-trip
+> screenshot compare); (5) vertex-selection highlight. Source-of-truth detail is
+> docs/plans/mesh-pipeline-overhaul.md (Phase 5/6 notes + landscape survey). For EACH item: build it, then
+> verify it live in the tab with a screenshot — remember the gotchas (a panic makes /debug return empty until
+> trunk rebuild+reload; clear_frame_time or nothing animates; wait for the wasm to rebuild + frame_count to
+> advance before trusting a render). THEN THE STRETCH GOALS, same verification discipline: (6) MCP
+> agent-robustness — better error messages, input validation, idempotency, truthful tool/resource docs, and
+> new read-back/batch/helper tools that make agent driving easier; (7) STRESS-TEST the editor like a hostile
+> QA: build varied scenes via MCP (many lights + shadow modes, deep node hierarchies + reparenting, big
+> modifier stacks + undo/redo storms, skinned + morphing imports animating, MASK/blend/custom-WGSL materials,
+> camera + viewport modes), screenshot + check console_logs after each, and FIX what breaks; (8) visual
+> quality within reason for a AAA-web-game target — improvements you can see in an A/B screenshot (shadow/AA/
+> tonemap papercuts, glyph polish), each verified live; (9) performance — no avoidable regressions: keep an
+> eye on delta_time in frame_globals on the stress scenes, prefer behavior-preserving optimizations
+> (measure or byte/proptest-guard; never blind-tune a hot path). STANDING RULES THROUGHOUT: clean up code,
+> comments, and docs as you touch them (clarity, separation of concerns, YAGNI, dead code, doc drift);
+> commit incrementally with clear messages, tree compiles at every commit, run `task lint` + relevant
+> `cargo test` before each commit; NEVER claim verified what you didn't actually see correct in the tab;
+> never write the banned project codename into any committed file (grep the staged diff); do NOT push.
+> Append notable progress to the PROGRESS LOG in docs/plans/mesh-pipeline-overhaul.md as you go so a mid-run
+> /clear can resume cleanly. Loop until core scope + stretch goals are genuinely dry, then write a final
+> report: what landed + was SEEN verified, stress-test findings (fixed vs needs-my-judgment), perf notes,
+> and decisions made.
