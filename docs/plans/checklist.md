@@ -55,10 +55,20 @@ texture lookup, via a `geometry` pipeline variant).
   masked pipeline pool; PBR built on texture-finalize. COMPILES + clippy-clean.
   ▶ BROWSER-VERIFY (pending user): DiffuseTransmissionPlant `leaves` leaf-shaped.
 - [ ] **Step B2** — same alpha-test in the SHADOW raster variant (else cutout
-  masks cast solid/rectangular shadows).
-- [ ] **Step B3** — dynamic/custom material mask: route `Material::Custom` mask →
-  visibility (`materials.rs:135`); masked variant alpha-tests using the custom
-  WGSL's alpha output; editor UI toggle + MCP tool to set `alpha_mode=Mask`+cutoff.
+  masks cast solid/rectangular shadows). NOT YET DONE — see the B2 EXECUTION PLAN.
+- [x] **Step B3** — dynamic/custom material mask DONE + clippy/fmt-clean: routed
+  `Material::Custom` mask → opaque (`materials.rs`), launch builds its opaque pipeline,
+  the masked variant runs the author's 2nd alpha-only WGSL (`custom_alpha_dynamic`),
+  `DynamicMaterials::alpha_info_for` + finalize build (with a `masked_dynamic_dirty`
+  registration trigger for procedural cutouts), MCP `set_material_alpha_wgsl`, editor
+  2nd-WGSL pane (shown when alpha=Mask) + `StoredMaterial.alpha_wgsl` persistence.
+  ▶ BROWSER-VERIFY (pending user): a custom procedural cutout on a plane authored via MCP
+  (set main WGSL → OpaqueShadingOutput, set_material_alpha_mode mask, set_material_alpha_wgsl
+  → e.g. `return select(1.0,0.0,fract(input.uv.x*8.0)<0.5);`). NOTE: a custom MASK
+  material's MAIN WGSL now uses the OPAQUE contract (returns OpaqueShadingOutput) since it
+  shades in the opaque pass; the cutout lives in the 2nd window. (Editor Mask contract docs
+  `AlphaMode::Mask::ret_sig` still say MaskShadingOutput — update as a follow-up.)
+  Player round-trip (`scene-loader`) still passes `alpha_wgsl: None` (TODO).
 - [ ] **Sweep** — `is_transparency_pass` call sites, `docs/buffers.md` geometry-kind
   table, raw_mesh/mesh_pack/geometry comments. Comprehensive.
 
