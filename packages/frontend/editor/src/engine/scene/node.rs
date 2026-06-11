@@ -77,6 +77,19 @@ impl Node {
         if matches!(kind, LightKind::Directional | LightKind::Spot) {
             let mut trs = node.transform.get();
             trs.rotation = glam::Quat::from_rotation_x(-50f32.to_radians()).to_array();
+            // Lights have no pickable viewport mesh, so their transform gizmo is
+            // the ONLY way to grab + rotate them. A directional light's position
+            // is cosmetic (infinite light; irrelevant to lighting + the
+            // camera-fit cascade shadows), so at the origin its rotation ring
+            // sits buried inside whatever geometry is centred there — the GPU
+            // pick then returns that object instead of the ring, and the user
+            // ends up rotating the wrong thing. Lift it a few metres up (the
+            // "key light overhead" spot) so the gizmo floats clear of the scene
+            // and is reliably grabbable. Spot lights ARE positional, so leave
+            // them where the user drops them.
+            if matches!(kind, LightKind::Directional) {
+                trs.translation = [0.0, 3.0, 0.0];
+            }
             node.transform.set(trs);
         }
         node
