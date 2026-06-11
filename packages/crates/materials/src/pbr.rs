@@ -488,7 +488,15 @@ impl MaterialShader for PbrMaterial {
     }
 
     fn is_transparency_pass(&self) -> bool {
-        self.has_alpha_blend() || self.alpha_cutoff().is_some() || self.has_transmission()
+        // MASK is NOT transparency: per glTF it's alpha-tested OPAQUE, so it
+        // belongs in the visibility/opaque path (where it lands in `opaque_tex`
+        // for transmission to sample, casts shadows, and is deferred-shaded). The
+        // per-fragment cutoff is applied by the masked variant of the `geometry`
+        // raster pass (`alpha_test` in `ShaderCacheKeyGeometry`), which discards
+        // fragments whose base-color alpha < `alpha_cutoff` — NOT here. Only BLEND
+        // (order-dependent) and TRANSMISSION (samples the opaque framebuffer)
+        // route to the forward transparent pass.
+        self.has_alpha_blend() || self.has_transmission()
     }
 
     fn write_uniform_buffer(&self, ctx: &dyn TextureContext, data: &mut Vec<u8>) {

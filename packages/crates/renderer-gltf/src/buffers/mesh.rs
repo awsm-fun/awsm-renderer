@@ -50,7 +50,11 @@ pub(super) fn mesh_buffer_geometry_kind(
         let gltf_material = primitive.material();
 
         match gltf_material.alpha_mode() {
-            AlphaMode::Mask => GltfMeshBufferGeometryKind::Transparency,
+            // MASK is alpha-tested OPAQUE (glTF): visibility geometry, so it lands
+            // in `opaque_tex` for transmission + casts shadows. The per-fragment
+            // cutoff is applied by the masked `geometry` raster variant (matches
+            // `PbrMaterial::is_transparency_pass`, which no longer flags Mask).
+            AlphaMode::Mask => GltfMeshBufferGeometryKind::Visibility,
             AlphaMode::Blend => GltfMeshBufferGeometryKind::Transparency,
             AlphaMode::Opaque => match gltf_material.transmission() {
                 Some(transmission) => {
