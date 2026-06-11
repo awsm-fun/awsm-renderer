@@ -169,6 +169,10 @@ struct FragmentInput {
     @location(3) world_tangent: vec4<f32>,
     @location(4) @interpolate(flat) instance_id: u32,
     @location(5) @interpolate(flat) material_mesh_meta_offset: u32,
+    // See the plain geometry fragment: flip the normal for back faces so
+    // double-sided masked meshes (e.g. foliage) shade two-sided correctly —
+    // including diffuse-transmission undersides.
+    @builtin(front_facing) front_facing: bool,
 }
 
 struct FragmentOutput {
@@ -248,9 +252,12 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     let iid = split16(input.instance_id);
     out.barycentric = vec4<u32>(bary_x_u16, bary_y_u16, iid.x, iid.y);
 
-    let N = normalize(input.world_normal);
+    var N = normalize(input.world_normal);
     let T = normalize(input.world_tangent.xyz);
     let s = input.world_tangent.w;
+    if !input.front_facing {
+        N = -N;
+    }
     out.normal_tangent = pack_normal_tangent(N, T, s);
 
     let ddx = dpdx(input.barycentric);

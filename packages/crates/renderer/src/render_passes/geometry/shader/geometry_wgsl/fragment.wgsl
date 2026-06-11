@@ -16,6 +16,13 @@ struct FragmentInput {
     // reads byte offset 0 for every pixel and routes every mesh's
     // shading through material slot 0.
     @location(5) @interpolate(flat) material_mesh_meta_offset: u32,
+    // Triangle winding side. Single-sided meshes cull back faces, so a
+    // shaded fragment is always front-facing there; double-sided meshes
+    // (cull = none) rasterize both, and a back face's interpolated normal
+    // still points to the FRONT — so we flip it below. Correct two-sided
+    // shading (and the only way diffuse-transmission undersides light up:
+    // the back lobe needs the light on the −N side).
+    @builtin(front_facing) front_facing: bool,
 }
 
 struct FragmentOutput {
@@ -60,9 +67,15 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
 
     // Pack normal and tangent into a single vec4 (RGBA16Float)
     // octahedral normal (2 channels) + tangent angle (1 channel) + handedness sign (1 channel)
-    let N = normalize(input.world_normal);
+    // Flip the geometric normal for back-facing fragments so double-sided
+    // surfaces shade with a viewer-facing normal (single-sided back faces are
+    // culled, so this only ever fires for double-sided meshes).
+    var N = normalize(input.world_normal);
     let T = normalize(input.world_tangent.xyz);
     let s = input.world_tangent.w; // handedness: +1 or -1
+    if !input.front_facing {
+        N = -N;
+    }
     out.normal_tangent = pack_normal_tangent(N, T, s);
 
     // perspective-correct barycentrics by default:
