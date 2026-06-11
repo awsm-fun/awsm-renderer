@@ -78,14 +78,54 @@ Two geometry streams, chosen per mesh by its material's pass:
 A mesh gets visibility geometry, transparency geometry, or — never *both* as a
 duplicate of the same surface:
 
-| Material pass        | Geometry built        |
-|----------------------|-----------------------|
-| opaque               | visibility only       |
-| transmission / blend / mask | transparency only |
+| Material pass            | Geometry built    |
+|--------------------------|-------------------|
+| opaque / **mask**        | visibility only   |
+| transmission / blend     | transparency only |
+
+`mask` (glTF `alphaMode = MASK`) is alpha-tested **opaque**, so it takes the
+visibility path (see "Masked materials" below) — *not* the transparency path.
+Only order-dependent **blend** and framebuffer-sampling **transmission** are
+transparency.
 
 Emitting visibility geometry for a transparency-pass mesh would rasterize it into
 the opaque buffer as a solid occluder *in front of* its own transmission — i.e. a
 glass surface reads opaque. (This was a real bug; see the historical note.)
+
+## Masked (alpha-tested) materials
+
+A `MASK` material is opaque with a per-fragment cutout: fragments whose alpha is
+below the material's `alphaCutoff` are discarded so the cutout is see-through.
+Because it's opaque, it lives in the visibility path — it lands in `opaque_tex`
+(so transmission samples it), casts shadows, and is deferred-shaded — and the
+cutout is applied by a **masked variant of the visibility raster** (a per-
+`shader_id` pipeline that only masked meshes pay for): it reconstructs the
+fragment UV from the merged geometry pool, samples the masking alpha (PBR
+base-color alpha, or a custom material's *alpha-only* WGSL), and rejects sub-
+cutoff fragments. The discard must happen in the **raster** (not the later
+opaque compute) because the raster writes depth — a hole has to write *no* depth
+so geometry/shadows/transmission behind it show through.
+
+### MSAA-anti-aliased cutout edges (without TAA)
+
+A binary `discard` kills all of a pixel's MSAA samples at once, so the cutout
+boundary gets no sub-pixel coverage — classic jaggy alpha-test edges. Forward
+renderers fix this with hardware **alpha-to-coverage**, but that's unavailable in
+a visibility-buffer pipeline: the geometry pass writes integer visibility IDs
+(`RGBA16Uint`), not a float color the hardware can convert. So deferred /
+visibility-buffer renderers normally fall back to **TAA** for cutout AA, with its
+ghosting and blur.
+
+Instead, the masked raster emits an **analytic `@builtin(sample_mask)`**:
+`coverage = clamp((alpha − cutoff) / fwidth(alpha) + 0.5, 0, 1)` mapped to a
+count of covered samples. A boundary pixel writes *k of N* samples as the
+surface and leaves the rest as the cleared skybox sentinel — so the existing
+**compute MSAA edge-resolve** (which already shades per-sample at silhouette
+edges) blends them. The result: **crisp, temporally-stable, ghost-free
+anti-aliased alpha cutouts under true MSAA in a deferred pipeline** — a property
+most visibility-buffer/deferred renderers don't have (they lean on TAA). Zero
+coverage still discards (a true hole writes no depth); single-sampled falls back
+to the binary discard (where a post-process AA would complement it).
 
 ## Tangents
 
