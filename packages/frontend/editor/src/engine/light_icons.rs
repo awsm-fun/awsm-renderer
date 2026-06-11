@@ -116,14 +116,14 @@ fn append(into: &mut MeshData, other: &MeshData, rot: Quat, translate: Vec3) {
                 src.iter()
                     .map(|n| (rot * Vec3::from_array(*n)).normalize_or_zero().to_array()),
             ),
-            None => dst.extend(std::iter::repeat([0.0, 1.0, 0.0]).take(count)),
+            None => dst.extend(std::iter::repeat_n([0.0, 1.0, 0.0], count)),
         }
     }
     {
         let dst = into.uvs.get_or_insert_with(Vec::new);
         match &other.uvs {
             Some(src) => dst.extend_from_slice(src),
-            None => dst.extend(std::iter::repeat([0.0, 0.0]).take(count)),
+            None => dst.extend(std::iter::repeat_n([0.0, 0.0], count)),
         }
     }
     into.indices.extend(other.indices.iter().map(|i| i + base));
@@ -378,7 +378,7 @@ pub fn per_frame_update(renderer: &mut AwsmRenderer, camera_matrices: &CameraMat
             }
         }
     }
-    lights.sort_by(|a, b| a.node_id.0.cmp(&b.node_id.0));
+    lights.sort_by_key(|l| l.node_id.0);
 
     ICONS.with(|c| {
         let mut guard = c.borrow_mut();

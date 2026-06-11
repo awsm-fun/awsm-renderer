@@ -191,7 +191,7 @@ impl NumField {
                 .event(clone!(ah => move |_: events::MouseLeave| ah.set_neq(false)))
                 .event(clone!(drag, display => move |e: events::MouseDown| {
                     let start_val = display.get_cloned().parse::<f64>().unwrap_or(0.0);
-                    drag.set(Some((e.x() as f64, e.y() as f64, start_val)));
+                    drag.set(Some((e.x(), e.y(), start_val)));
                 }))
             }));
         } else {
@@ -220,7 +220,7 @@ impl NumField {
                 .event(clone!(ah => move |_: events::MouseLeave| ah.set_neq(false)))
                 .event(clone!(drag, display => move |e: events::MouseDown| {
                     let start_val = display.get_cloned().parse::<f64>().unwrap_or(0.0);
-                    drag.set(Some((e.x() as f64, e.y() as f64, start_val)));
+                    drag.set(Some((e.x(), e.y(), start_val)));
                 }))
             }));
         }
@@ -285,7 +285,7 @@ impl NumField {
                     // Right OR up increases, left OR down decreases — so the same
                     // handle scrubs whether the user drags horizontally or
                     // vertically (the field's generic handle hints "up/down").
-                    let delta_px = (e.x() as f64 - start_x) - (e.y() as f64 - start_y);
+                    let delta_px = (e.x() - start_x) - (e.y() - start_y);
                     let n = clamp_round(start_val + delta_px * step, step, min, max, true);
                     display.set(fmt(n));
                     call(&on_change, n);
