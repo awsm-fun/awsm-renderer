@@ -199,7 +199,7 @@ with suspected root cause(s) + proposed fix; no blind edits.
 ## 6. Conventions & guardrails
 - Branch: **`mesh-authoring`**. Commit incrementally, clear messages, tree
   compiles at every commit (bisectable). End commit messages per CLAUDE.md.
-- **Never write "lockstep"** or its repo path into committed files (see memory).
+- **Never write the banned project codename** or its repo path into committed files (see memory).
 - Overnight = cargo-verifiable only. Anything needing the browser: build it,
   commit it separately, flag it. **Report outcomes faithfully** — split
   "cargo-verified" vs "needs your eyes" in the morning report.
@@ -344,3 +344,25 @@ Always: cargo-verifiable, small incremental commits, tree compiles at every
 commit, never claim render-verified what isn't, log notable adds in this progress
 section. Prefer high-value/low-risk; when unsure whether a change is safe without
 the browser, build it behind a flag or leave a note rather than risk a regression.
+
+---
+
+## SESSION HANDOFF (2026-06-11, interactive) — read `docs/plans/OVERNIGHT-HANDOFF.md`
+
+Landed this session (all committed on `mesh-authoring`, fmt+compile clean; shadow/cutout
+items BROWSER-VERIFIED live via the `:9086/debug` relay):
+- Editor fix batch #14–#18: multi-node drag-reparent into Empty (`d623ca5b`); light-gizmo
+  settings toggle + drag-to-scrub numeric inputs (`65b63041`); **bulb-glyph light icons +
+  direction rays** replacing the cyan-sphere marker (`f0dd0421`).
+- Shadows: Soft penumbra tamed + **PCSS acne killed**, unified per-light **Softness** knob
+  (`pcss_penumbra_scale` now drives Soft AND PCSS; world-sized→texel→scale-invariant) (`cf352b30`);
+  **double-sided shadow casters** via `CullMode::None` so thin cutout panels/planes cast
+  hole-shaped shadows (4→8 caster pipeline variants) (`3303be95`); **frame_globals bound into
+  the masked-shadow pass** so a time-driven procedural cutout animates its SHADOW for free
+  (`d384a072`).
+
+Accurate remaining scope (was previously ambiguous): **Phase 5 (skin/morph MCP backend) and
+Phase 6 (bones-in-outliner + skeleton/morph viz) are NOT built — surveyed only.** Plus:
+animation playback in the editor/loader, Phase 4 packer/convert parity browser-verify, and the
+vertex-selection-highlight cosmetic. Full prioritized scope + the time-saving gotchas +
+the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDOFF.md`**.
