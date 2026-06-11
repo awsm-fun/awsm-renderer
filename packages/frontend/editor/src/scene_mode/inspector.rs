@@ -3429,9 +3429,12 @@ fn light_shadow_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
         move |v| update_shadow(&n, |s| s.hardness = hardness_from(&v)),
     ));
 
+    // Governs both Soft (scales the fixed PCF disc) and PCSS (scales the
+    // virtual light-disc radius), so it's labelled generically and shown for
+    // every hardness except Hard, where it has no effect.
     let n = node.clone();
     sec = sec.child(row(
-        "PCSS Scale",
+        "Softness",
         NumField::new(shadow.pcss_penumbra_scale as f64)
             .min(0.0)
             .step(0.1)

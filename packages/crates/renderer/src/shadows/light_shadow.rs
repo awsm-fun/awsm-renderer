@@ -24,8 +24,12 @@ pub struct LightShadowParams {
     pub resolution: u32,
     /// Sample-site filter mode.
     pub hardness: LightShadowHardness,
-    /// Multiplier on the estimated PCSS penumbra size. Only consulted
-    /// when `hardness == Pcss`.
+    /// Per-light softness knob, in world-space penumbra units. Consulted
+    /// by both `Soft` (scales the fixed PCF disc) and `Pcss` (scales the
+    /// virtual light-disc radius the blocker search uses). `1.0` is the
+    /// neutral default; `0.0` collapses to a near-hard edge. Named for
+    /// PCSS for back-compat, but it now governs the `Soft` mode too so a
+    /// single control drives both.
     pub pcss_penumbra_scale: f32,
     /// Camera-distance fadeout cutoff for this light's shadow.
     pub max_distance: f32,
