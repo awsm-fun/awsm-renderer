@@ -155,25 +155,37 @@ FINALIZED B DESIGN (validated against code, this session — supersedes ambiguit
   `material_mesh_metas[material_mesh_meta_offset/256]`). The masked vertex shader
   forwards `material_mesh_meta_offset` (already a flat varying) + triangle_index +
   barycentric to the fragment.
-- B3 alpha-only custom: USER-CHOSEN approach = a lighter optional "alpha-only" WGSL
-  contract (author returns `f32`), compiled into a lean masked variant (NO lighting/
-  brdf). Cutoff for custom is host-side only today (`materials.rs:152`) and NOT in the
-  GPU buffer → plumb the cutoff into the masked custom variant (simplest: pass via the
-  material buffer prefix or a small per-mesh uniform; decide at impl). Route
+- B3 alpha-only custom (USER-CLARIFIED): a custom material whose alpha mode = cutoff
+  gets a SECOND WGSL editor window that returns `alpha: f32`. This second fragment is
+  wrapped + compiled into the masked visibility variant (NO lighting/brdf), and
+  OPTIONALLY binds textures (procedural cutoff → near-zero cost; texture cutoff → one
+  sample). The second window + its templating only EXIST when alpha mode = cutoff is
+  selected for the material. So the dynamic registration carries an optional
+  `alpha_wgsl: Option<String>` (present iff alpha_mode=Mask). The masked variant for
+  that custom shader_id wraps it as `fn custom_alpha_dynamic(AlphaOnlyInput) -> f32`
+  and discards if `< cutoff`. Reuse the generated `MaterialData` + `material_sample_*`
+  helpers. Gate the texture-pool binding on whether the layout has any textures
+  (skip for purely-procedural). Cutoff for custom is host-side only today
+  (`materials.rs:152`) and NOT in the GPU buffer → plumb it into the masked custom
+  variant (decide at impl: material-buffer prefix or per-mesh uniform). Route
   `Material::Custom` mask → visibility: `renderer/src/materials.rs:135`
   `is_transparency_pass` drop `Mask` from the Custom arm (keep `Blend`).
 - Per-mesh routing: `renderable.rs:172` collection — add the masked signal via
   `material.alpha_mask().is_some()` (renderer `materials.rs:146`) into
   `GeometryRenderPipelineKeyOpts`; `meshes/mesh.rs::push_geometry_pass_commands`
   binds the augmented group-0 for masked draws.
-- IMPLEMENTATION ORDER (validated): (1) inert `alpha_test` cache-key field (done,
-  build green). (2) PBR masked variant end-to-end (de-risks the raster machinery
-  with the simplest material) → browser-verify a PBR cutout (dish goldLeaf MASK, or
-  foliage). (3) B3 custom alpha-only + routing + editor toggle + MCP → browser-verify
-  the dynamic cutout plane (holes + transmission-through-holes) — the user's
-  dynamic-first test. (4) B2 shadow masked variant → hole-shaped shadows. (5) sweep.
-  NOTE: user asked to "test dynamic FIRST"; reordered to PBR-first only to de-risk
-  the shared raster machinery cheaply — confirm with user before/at step 3.
+- IMPLEMENTATION ORDER (USER-CONFIRMED dynamic-first): (1) masked geometry variant
+  machinery (group-0 augmentation, per-shader-id specialized cache key + pipeline +
+  bind group + template). (2) custom alpha-only contract (`alpha_wgsl`) + wrap into
+  the masked variant + route `Material::Custom` mask→visibility + minimal masked
+  routing → browser-verify a PROCEDURAL dynamic cutout on a plane (holes
+  see-through), then a TEXTURE-based dynamic cutout (separately, to exercise both
+  paths). (3) editor: second WGSL window shown only when alpha-cutoff selected +
+  MCP to set it. (4) B2 shadow masked variant → hole-shaped shadows; then
+  transmission-through-holes. (5) PBR masked arm (minimal base-color alpha) →
+  browser-verify a PBR cutout. (6) sweep. RATIONALE: PBR `MASK` meshes stay on the
+  existing non-masked geometry pipeline (render SOLID, = step-A behavior) until step
+  5, so dynamic-first is regression-free + incremental.
 
 DEV STACK / TEST SETUP (this session):
 - Trunk's file-watch went stale mid-session; FIX = restart `task mcp-dev` (kills+
