@@ -563,3 +563,24 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   ⑥ set_morph_weight visual on MorphStressTest (named targets), ⑦ load_player_bundle
   round-trip screenshot compare, ⑧ hostile-QA stress scenes + console_logs, ⑨ visual-
   quality A/Bs, ⑩ delta_time perf eyeball on stress scenes. Then the final report.
+
+### Overnight run, iteration 12 (morning, user unlocked) — frame_node FIXED+SEEN; LIMIT PAUSE
+- FrameNode now uses the live world-AABB (same policy as the NodeBounds query fix —
+  the command had its own bounds path). **SEEN VERIFIED: frame_node centers a fresh
+  Fox import** (am3 screenshot; tight framing, fox fills view). Faint whitish lines
+  visible at the chest = likely the skeleton overlay but WASHED OUT — check
+  BONE_COLOR/width/depth handling when resuming (maybe HDR-bright it like the
+  light icons, or the lines pass tonemaps it down).
+- ▶▶ RESUME QUEUE (run on restart, tab open + unlocked): ① skeleton overlay clearly
+  visible on Fox (fix color if washed out) ② fox Walk PLAYING in viewport
+  (set_current_clip + set_playing, two shots apart) ③ set_morph_weight visual A/B on
+  MorphStressTest (named targets) ④ vertex highlight markers (select_vertices_where +
+  SetVertexSelection on an editable mesh) ⑤ load_player_bundle round-trip screenshot
+  compare ⑥ bone icons in outliner (user eyeball — DOM) ⑦ hostile-QA stress scenes +
+  console_logs + FIX ⑧ visual-quality A/Bs ⑨ delta_time perf eyeball ⑩ FINAL REPORT.
+- Session inventory (27 commits on mesh-authoring tonight, cf352b30..HEAD): shadows
+  (soft/PCSS/double-sided/animated-cutout), editor batch #14-18, morph editing
+  end-to-end, skin rig discovery+posing, skinned-import seed fix (fox renders!),
+  channel-race fix (L/R legs verified), NodeBounds+FrameNode live-AABB, bone icons,
+  skeleton overlay (built), morph names, docs/recipes, edge breadcrumbs, capture
+  error surfacing. All gated (lint+tests); nothing pushed.

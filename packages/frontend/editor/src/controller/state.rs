@@ -1988,27 +1988,46 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::FrameNode { node, padding } => {
-                // Compute the node's world AABB (local extent × world matrix),
-                // then fit the camera with a margin (padding 0 = tight).
+                // Prefer the renderer's LIVE world AABB (union over the node's
+                // materialized meshes) — same policy as the NodeBounds query;
+                // the scene-side local box is a unit-cube fallback for
+                // populate-baked SkinnedMesh nodes, which made frame_node aim
+                // at nothing on imported rigs. Resolve meshes BEFORE the
+                // renderer lock (renderer_meshes_for_node locks bridge nodes).
                 let local =
                     mutate::find_by_id(&self.scene, node).map(|n| local_aabb(&n.kind.get_cloned()));
                 let Some((lmin, lmax)) = local else {
                     return Ok(None);
                 };
+                let meshes = renderer_meshes_for_node(node);
+                let tk = {
+                    let b = crate::engine::bridge::bridge();
+                    let nodes = b.nodes.lock().unwrap();
+                    nodes.get(&node).map(|n| n.transform_key)
+                };
                 crate::engine::context::with_renderer_mut(move |r| {
-                    let world = crate::engine::bridge::bridge()
-                        .nodes
-                        .lock()
-                        .unwrap()
-                        .get(&node)
-                        .map(|n| n.transform_key)
-                        .and_then(|tk| r.transforms.get_world(tk).ok().copied())
-                        .unwrap_or(glam::Mat4::IDENTITY);
-                    let (wmin, wmax) = transform_aabb(world, lmin, lmax);
-                    let aabb = awsm_renderer::bounds::Aabb::new(
-                        glam::Vec3::from_array(wmin),
-                        glam::Vec3::from_array(wmax),
-                    );
+                    let live = meshes
+                        .iter()
+                        .filter_map(|mk| {
+                            r.meshes
+                                .get(*mk)
+                                .ok()
+                                .and_then(|mesh| mesh.world_aabb.clone())
+                        })
+                        .reduce(|mut acc, b| {
+                            acc.extend(&b);
+                            acc
+                        });
+                    let aabb = live.unwrap_or_else(|| {
+                        let world = tk
+                            .and_then(|tk| r.transforms.get_world(tk).ok().copied())
+                            .unwrap_or(glam::Mat4::IDENTITY);
+                        let (wmin, wmax) = transform_aabb(world, lmin, lmax);
+                        awsm_renderer::bounds::Aabb::new(
+                            glam::Vec3::from_array(wmin),
+                            glam::Vec3::from_array(wmax),
+                        )
+                    });
                     crate::engine::context::try_with_camera_mut(|c| {
                         c.frame_aabb(aabb, 1.0 + padding.max(0.0))
                     });
