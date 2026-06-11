@@ -120,22 +120,54 @@ code, docs, or plans. The exact word lives in your auto-memory (the
 
 ---
 
-## 4. THE LOOP PROMPT (paste this into `/loop`)
+## 4. TWO-PHASE EXECUTION (headless build → browser verify)
 
-> Autonomously finish the `mesh-authoring` roadmap. Read `docs/plans/OVERNIGHT-HANDOFF.md`
-> FIRST (current state, remaining scope, and the CRITICAL gotchas — especially: drive the
-> editor via `POST :9086/debug` not MCP tools; restart `task mcp-dev` with nohup if `/debug`
-> goes empty; a panic kills the render loop until reload; `clear_frame_time` or nothing
-> animates; wait for trunk rebuild + `frame_count` to advance before trusting a render; never
-> write the banned project codename into committed files). Then work the remaining scope in priority order from
-> that doc: (A) Phase 5 skin/morph MCP backend, (B) Phase 6 bones-in-outliner + skeleton/morph
-> viz, (C) animation playback in the editor/loader, (D) Phase 4 packer/convert parity verify,
-> (E) vertex-selection highlight, then (F) Phase 9 standing-latitude cleanup. Source-of-truth
-> detail is `docs/plans/mesh-pipeline-overhaul.md` (read its Phase 5/6 notes + landscape survey).
-> Rules: commit incrementally, keep the tree compiling, run `task lint` + relevant `cargo test`
-> before each commit, NEVER claim browser-verified what you didn't actually verify in a live tab
-> (mark those "needs browser verify"), and append notable progress to the PROGRESS LOG in
-> mesh-pipeline-overhaul.md. Prefer cargo-verifiable backend work; flag/guard anything that could
-> change rendered output. Don't stop early — when the listed phases are progressing, keep finding
-> valuable additive work under the Phase 9 mandate. Leave a crisp morning report of what landed,
-> what needs my eyes in the browser, and any decisions you made.
+The work splits cleanly: what a headless run can build + `cargo`-verify, and what
+needs a live browser tab. Run them as two separate `/loop` sessions. Phase A fills
+`docs/plans/PHASE-2-QUEUE.md`; Phase B drains it.
+
+### PHASE A — headless build (scheduled; NO browser, NO MCP, NO screenshots)
+
+There is no editor tab attached. Do NOT start `task mcp-dev`, do NOT POST to
+`:9086/debug`, do NOT screenshot. Everything is proven by `cargo` / `task lint` only.
+For anything whose correctness fundamentally needs the GPU/browser, BUILD it (compile +
+clippy + unit/integration tests at the command / renderer-core layer) and enqueue the
+exact visual check in `docs/plans/PHASE-2-QUEUE.md` — never claim it verified.
+
+PASTE:
+> Headless autonomous build for the `mesh-authoring` roadmap — NO browser, NO MCP, NO screenshots;
+> do NOT start `task mcp-dev` or POST to :9086/debug (no editor tab is attached). Read
+> docs/plans/OVERNIGHT-HANDOFF.md FIRST (state, scope, gotchas — ignore the browser-driving ones this
+> phase). Build the CARGO-VERIFIABLE parts of: Phase 5 skin/morph MCP backend — set_morph_weight +
+> get_morph_data + joint-weight/bind-pose editing + richer skeletal/morph animation authoring (new
+> EditorCommand/EditorQuery variants + typed MCP tools/schemas + the command→renderer-core wiring),
+> with unit/integration tests at the command + renderer-core layer (no GPU); Phase 4 packer/convert
+> parity (pure-data logic + proptests); finish the renderer-gltf tangent consolidation; plus any
+> Phase-7 cleanup you touch. Also scaffold the editor-UI/visual pieces those need (Phase 6
+> bones-in-outliner + skeleton lines, animation-playback wiring, vertex-selection highlight) as far as
+> compiles + cargo-tests allow, behind no-op-safe paths. Detail in docs/plans/mesh-pipeline-overhaul.md
+> (Phase 5/6 notes + landscape survey). Rules: commit incrementally, tree compiles every commit, run
+> `task lint` + relevant `cargo test` before each commit, NEVER claim browser/render-verified anything —
+> for every item needing the live editor append a precise check to docs/plans/PHASE-2-QUEUE.md (steps +
+> expected result). Keep history bisectable; do NOT push. STOP when the cargo-verifiable scope is
+> exhausted or you're blocked needing the browser, then write a crisp report (what landed + cargo-test
+> status, what's queued for Phase 2, decisions made). Do not churn on open-ended cleanup past that point.
+
+### PHASE B — browser verify + visual build (manual kickoff; browser tab open)
+
+Start this when you're back, with `task mcp-dev` up and a Chrome WebGPU tab at
+`http://localhost:9085/?mcp=http://127.0.0.1:9086`. It loops until the queue is clear.
+
+PASTE:
+> Browser-verify + finish the `mesh-authoring` roadmap. Read docs/plans/OVERNIGHT-HANDOFF.md (esp. §2
+> gotchas: drive via POST :9086/debug not MCP tools; restart `task mcp-dev` with nohup if /debug goes
+> empty; a panic kills the render loop until reload; clear_frame_time or nothing animates; wait for trunk
+> rebuild + frame_count to advance before trusting a render). Then work docs/plans/PHASE-2-QUEUE.md top
+> to bottom: for each item drive the live editor, screenshot-verify the expected result, and FIX whatever
+> Phase A built that doesn't actually render/behave right. After the queue, complete the remaining VISUAL
+> work with live verification: Phase 6 bones-in-outliner + skeleton/morph viz, animation playback in the
+> editor, vertex-selection highlight, and Phase 4 parity via the load_player_bundle round-trip screenshot
+> compare. Rules: commit incrementally, `task lint` + cargo test before each commit, mark a queue item done
+> ONLY after you SAW it correct in the tab, append progress to the PROGRESS LOG in mesh-pipeline-overhaul.md,
+> and tick items off PHASE-2-QUEUE.md. Loop until the queue is empty and the listed visual work is verified;
+> then write a final report.
