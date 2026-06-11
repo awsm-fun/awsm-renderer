@@ -220,6 +220,7 @@ impl Mesh {
         mesh_key: MeshKey,
         render_pass: &RenderPassEncoder,
         bind_groups: &GeometryBindGroups,
+        masked: bool,
     ) -> Result<()> {
         let meta_offset = ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
         // Mesh slot index = byte offset / aligned slot size. The
@@ -229,8 +230,12 @@ impl Mesh {
             / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT as u32;
 
         // Bind-group selection mirrors the pipeline-variant selection
-        // in `geometry_render_pipeline_key`.
-        let use_storage_meta = !self.instanced && ctx.features.indirect_first_instance_enabled();
+        // in `geometry_render_pipeline_key`. The masked (alpha-tested)
+        // variant always takes the portable non-instanced uniform-meta
+        // CPU-recorded path (its pipeline is compiled only for that shape),
+        // so force the uniform-meta binding + the plain indexed draw below.
+        let use_storage_meta =
+            !masked && !self.instanced && ctx.features.indirect_first_instance_enabled();
         if use_storage_meta {
             render_pass.set_bind_group(2, bind_groups.meta.get_storage_bind_group()?, None)?;
         } else {
@@ -281,7 +286,8 @@ impl Mesh {
                 .transform_instance_count(self.transform_key)
                 .ok_or(AwsmMeshError::InstancingMissingTransforms(mesh_key))?;
             render_pass.draw_indexed_with_instance_count(index_count, instance_count as u32);
-        } else if ctx.frame_optimizations.get().indirect_geometry
+        } else if !masked
+            && ctx.frame_optimizations.get().indirect_geometry
             && self.world_aabb.is_some()
             && !self.hud
         {

@@ -196,6 +196,23 @@ impl AwsmRenderer {
                         );
                     })
                     .ok(),
+                // Masked (alpha-tested) variant: only for non-instanced glTF
+                // MASK meshes whose per-shader-id masked pipeline is compiled.
+                // `None` → falls back to the plain (solid) geometry pipeline.
+                geometry_masked_render_pipeline_key: if !mesh.instanced
+                    && self.materials.alpha_cutoff(routing_material).is_some()
+                {
+                    let msaa = match self.anti_aliasing.msaa_sample_count {
+                        Some(4) => Some(4u32),
+                        _ => None,
+                    };
+                    self.render_passes
+                        .geometry
+                        .masked_pipelines
+                        .get(msaa, shader_id, cull_mode)
+                } else {
+                    None
+                },
                 material_opaque_compute_pipeline_key: self
                     .render_passes
                     .material_opaque
@@ -315,6 +332,11 @@ pub struct Renderable {
     /// comparator stays free of `RenderContext` access (which lets
     /// `collect_renderables` populate the pool before `ctx` is built).
     pub geometry_render_pipeline_key: Option<RenderPipelineKey>,
+    /// Set for glTF `MASK` meshes whose masked (alpha-tested) variant has been
+    /// compiled. When `Some`, the geometry pass draws this mesh with the masked
+    /// pipeline + augmented group-0 (cutoff `discard`); when `None` the mesh
+    /// falls back to `geometry_render_pipeline_key` (renders solid).
+    pub geometry_masked_render_pipeline_key: Option<RenderPipelineKey>,
     pub material_opaque_compute_pipeline_key: Option<ComputePipelineKey>,
     pub material_transparent_render_pipeline_key: Option<RenderPipelineKey>,
 }
@@ -345,15 +367,24 @@ impl Renderable {
         self.world_aabb.as_ref()
     }
 
-    /// Pushes geometry pass commands for this renderable.
+    /// Pushes geometry pass commands for this renderable. `masked` selects the
+    /// alpha-tested draw path (forces the non-instanced uniform-meta CPU draw,
+    /// matching the masked pipeline's compiled shape).
     pub fn push_geometry_pass_commands(
         &self,
         ctx: &RenderContext,
         render_pass: &RenderPassEncoder,
         geometry_bind_groups: &GeometryBindGroups,
+        masked: bool,
     ) -> Result<()> {
         let mesh = ctx.meshes.get(self.key)?;
-        mesh.push_geometry_pass_commands(ctx, self.key, render_pass, geometry_bind_groups)
+        mesh.push_geometry_pass_commands(ctx, self.key, render_pass, geometry_bind_groups, masked)
+    }
+
+    /// Returns the masked (alpha-tested) geometry pipeline key, if this mesh's
+    /// material is glTF `MASK` and its masked variant has been compiled.
+    pub fn geometry_masked_render_pipeline_key(&self) -> Option<RenderPipelineKey> {
+        self.geometry_masked_render_pipeline_key
     }
 
     /// Pushes transparent material pass commands for this renderable.
