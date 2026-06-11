@@ -63,7 +63,14 @@ thread_local! {
 
 /// Debounced (~200ms, like material auto-register) re-lower of the active clip +
 /// mixer into the renderer. Coalesces a burst of edits into one rebuild.
-fn schedule_relower() {
+///
+/// `pub(crate)` because node materialization (node_sync) also nudges it: a
+/// channel whose target node hadn't materialized at lower time is skipped as
+/// pending, and nothing else re-fires when the node appears — an import whose
+/// clips register before all its (async) bone mirrors land would otherwise
+/// lower only the bones that won the race (seen live: Fox's left-leg channels
+/// silently missing while the right leg animated).
+pub(crate) fn schedule_relower() {
     let already = RELOWER_PENDING.with(|p| p.swap(true, Ordering::SeqCst));
     if already {
         return;

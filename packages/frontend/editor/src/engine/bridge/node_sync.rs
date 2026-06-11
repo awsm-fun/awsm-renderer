@@ -160,6 +160,14 @@ async fn add_node(
         .insert(node_id, entry.clone());
     order_insert(parent_id, index, node_id);
 
+    // A freshly materialized node may be the missing dependency of a PENDING
+    // animation channel (lowering skips channels whose target node isn't in the
+    // bridge yet — e.g. clips registering before their import's bone mirrors
+    // finish landing). Nudge the debounced re-lower so those channels resolve;
+    // bursts (a whole rig materializing) coalesce into one rebuild, and the
+    // relower is a cheap no-op when no clips exist.
+    super::animation_sync::schedule_relower();
+
     // Kind observer — fires on the current value first, so this materializes
     // the node on insert and re-materializes on any kind change.
     {

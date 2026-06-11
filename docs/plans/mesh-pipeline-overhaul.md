@@ -519,3 +519,17 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
 - MORNING VISUAL QUEUE: bone icons in outliner (DOM); fox framed via fixed NodeBounds;
   fox Walk playing in viewport (set_playing); skeleton viz (not yet built); cutout/
   shadow scenes from earlier iterations are already verified.
+
+### Overnight run, iteration 9 — animation-channel materialization race FIXED (numerically verified)
+- Root-caused the left-leg asymmetry: import registers clips (anim_revision → debounced
+  relower at ~200ms) while bone mirrors are still materializing ASYNC; channels whose
+  target node lost that race were skipped as "pending" and NOTHING re-fired when the
+  node appeared → silently un-animated bones (Fox: left legs static, right legs won the
+  race — nondeterministic per run). Probes en route: all 21 Walk tracks carry real
+  motion + target real bones (two of my own probe bugs corrected: alphabetized serde
+  fields truncated past, and TrackTarget serializes flat).
+- FIX: node_sync nudges the (pub(crate)) debounced schedule_relower whenever a node
+  materializes — a rig's burst coalesces into one rebuild; no-op without clips.
+  NUMERICALLY VERIFIED post-fix: b_LeftLeg01 Δ0.018 == b_RightLeg01 Δ0.018, LeftFoot01
+  Δ0.1137 (was 0.0), Neck Δ0.0227 across pinned Walk times. Item (3)'s lowering is now
+  complete; viewport playback visual goes to the MORNING VISUAL QUEUE (display locked).
