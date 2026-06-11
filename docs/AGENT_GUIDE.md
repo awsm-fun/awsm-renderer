@@ -127,7 +127,33 @@ frame for reproducible captures: `set_frame_time { seconds }` (and
 `set_playhead { t }` for animations), screenshot, then `clear_frame_time` to
 resume. See [`TEMPORAL_SHADERS.md`](TEMPORAL_SHADERS.md).
 
-## 8. What's in scope
+## 8. Skins & morphs (rigs over MCP)
+
+A skinned import keeps its rig live: every joint is an ordinary scene node
+(a "mirror bone", bone-icon rows in the outliner), so rigs are driven with the
+SAME tools as everything else.
+
+- **Discover** — `get_skin_data { nodes: [] }` → per skinned node:
+  `{ source, primitive_index, joints: [{ node, index, name, live, translation,
+  rotation, scale }] }`. `live: true` = posing that joint deforms the skin
+  (the skin bridge holds its mapping); `false` flags a broken chain.
+- **Pose** — `set_node_transform` on a joint's `node` id. The mesh deforms live.
+  NOTE: while a clip is playing/scrubbing, the clip OWNS the bones — it
+  overwrites manual pokes every frame (like any DCC). Delete/mute the clip or
+  pause first.
+- **Animate** — `add_track` with a `transform` target on the joint's node id;
+  the transport (set_playing / set_playhead) poses the whole rig.
+- **Morphs** — `get_morph_data { nodes: [] }` → `{ target_count, weights,
+  names }` (names from glTF `mesh.extras.targetNames`, empty when absent).
+  `set_morph_weight { node, index, value }` is a LIVE transient preview (a
+  playing morph track overwrites it); persistent poses are animation tracks
+  (`add_track` morph target).
+- **See the rig** — Settings → "Skeleton overlay" draws bone lines through the
+  mesh; "Light gizmos" is the same pattern for lights. Verify numerically
+  without pixels via `sample_clip_timeseries` (pins the playhead, reads
+  NodeLocalTrs / MorphWeight back — GPU-independent).
+
+## 9. What's in scope
 
 This is a **renderer + scene/material/animation editor**. In scope: meshes,
 primitives, glTF import, transforms/hierarchy, PBR + custom-WGSL materials,

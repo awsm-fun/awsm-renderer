@@ -122,6 +122,12 @@ and asset references are UUID strings — get them from `get_snapshot`.
   mode, undo/redo depth, animation library, custom materials (incl. `compile_ok`
   + `errors`), textures, project coordinate-system metadata. *Start here.*
 - `get_mode` — current workspace (`scene` / `material` / `animation`).
+- `get_skin_data { nodes? }` — rig discovery: joints as scene-node ids (+ name,
+  live flag, current local TRS); pose joints with `set_node_transform`, animate
+  them with `add_track` transform targets.
+- `get_morph_data { nodes? }` / `set_morph_weight { node, index, value }` —
+  live morph weights (+ target names via glTF `mesh.extras.targetNames`);
+  set is a transient preview, tracks own the weights during playback.
 - `get_node_transforms { nodes? }` — local TRS + world matrix per node (empty = all).
 - `get_node_details { nodes? }` — full per-kind config + material assignment.
 - `get_node_bounds { nodes? }` — world-space AABB per node (for framing/sizing).

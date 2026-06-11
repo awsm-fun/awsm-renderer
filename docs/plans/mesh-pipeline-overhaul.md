@@ -545,3 +545,21 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
 - Confirmed vertex-selection highlight (backlog item b) was ALREADY fully built
   (bridge/vertex_highlight.rs — cross markers per selected vertex, one LineKey,
   selection-observer driven). Morning visual only.
+
+### Overnight run, iteration 11 — docs + Phase 4 headless data checks; HEADLESS BACKLOG DRY
+- docs: AGENT_GUIDE gains "§8 Skins & morphs (rigs over MCP)" (discover/pose/animate/
+  morph/see-the-rig recipes incl. the clip-owns-the-bones caveat + numeric verify via
+  sample_clip_timeseries); MCP.md lists get_skin_data / get_morph_data / set_morph_weight.
+  Both are served as MCP resources (agent-guide) so agents self-serve the recipes.
+- Phase 4 headless data checks: export_glb of Fox+MorphStressTest → valid glb, 3 meshes /
+  30 nodes / 3 animations; rigs flatten to static (skins:0, targets:0) which is the
+  DOCUMENTED current behavior ("Skinned/morph glb re-export from source is a follow-on").
+  export_player_bundle{name} → 6-file set with sane scene.toml (env/shadows/assets +
+  source-glb refs). Pixel parity (load_player_bundle screenshot compare) → morning queue.
+- HEADLESS BACKLOG NOW DRY. Switching to slim wakeups polling frame_globals; when
+  frame_count advances (user unlocked), run the MORNING VISUAL QUEUE: ① bone icons in
+  outliner (user eyeball or full-page shot), ② skeleton overlay on Fox, ③ frame_node on
+  fox (fixed bounds), ④ fox Walk via set_playing (viewport), ⑤ vertex highlight markers,
+  ⑥ set_morph_weight visual on MorphStressTest (named targets), ⑦ load_player_bundle
+  round-trip screenshot compare, ⑧ hostile-QA stress scenes + console_logs, ⑨ visual-
+  quality A/Bs, ⑩ delta_time perf eyeball on stress scenes. Then the final report.
