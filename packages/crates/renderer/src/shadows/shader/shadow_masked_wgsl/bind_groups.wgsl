@@ -13,6 +13,10 @@
 // include. WGSL resolves module-scope identifiers order-independently, so
 // referencing them here is fine — the masked geometry pass relies on the same.
 
+// `FrameGlobalsRaw` + `frame_globals_from_raw` for the `frame_globals_raw`
+// uniform below (an animated cutout's alpha-only window reads `time`).
+{% include "shared_wgsl/frame_globals.wgsl" %}
+
 struct ShadowView {
     view_projection: mat4x4<f32>,
     // (depth_bias, normal_bias, 0, 0) — unused by the cutout fragment; carried
@@ -33,11 +37,18 @@ struct ShadowView {
 // Per-material UV transforms (KHR_texture_transform). Referenced by
 // `texture_transform_uvs` in textures.wgsl.
 @group(0) @binding(4) var<storage, read> texture_transforms: array<TextureTransform>;
+// Per-frame uniform (`time`, etc.). The plain shadow pass doesn't need it, but
+// the cutout alpha-test does: a custom alpha-only window may be a function of
+// `time` (an animated / procedural cutout), and the SAME author fragment runs in
+// both the geometry-masked AND shadow-masked passes — so the shadow variant must
+// expose `frame_globals_raw` too, or referencing it there fails to compile.
+// Fragment-only (the shadow vertex uses `shadow_view`, not time).
+@group(0) @binding(5) var<uniform> frame_globals_raw: FrameGlobalsRaw;
 {% for i in 0..texture_pool_arrays_len %}
-@group(0) @binding({{ 5 + i }}u) var pool_tex_{{ i }}: texture_2d_array<f32>;
+@group(0) @binding({{ 6 + i }}u) var pool_tex_{{ i }}: texture_2d_array<f32>;
 {% endfor %}
 {% for i in 0..texture_pool_samplers_len %}
-@group(0) @binding({{ 5 + texture_pool_arrays_len + i }}u) var pool_sampler_{{ i }}: sampler;
+@group(0) @binding({{ 6 + texture_pool_arrays_len + i }}u) var pool_sampler_{{ i }}: sampler;
 {% endfor %}
 
 // === Group 1: transforms (vertex) — mirrors geometry bind_groups ===

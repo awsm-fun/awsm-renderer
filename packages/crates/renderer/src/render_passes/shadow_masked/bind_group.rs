@@ -37,7 +37,7 @@ use crate::textures::SamplerKey;
 /// Number of fixed buffer bindings on the masked-shadow group 0, before the
 /// texture pool arrays/samplers. Keep in sync with
 /// `shadow_masked_wgsl/bind_groups.wgsl`.
-const MASKED_SHADOW_GROUP0_BUFFER_BINDINGS: u32 = 5;
+const MASKED_SHADOW_GROUP0_BUFFER_BINDINGS: u32 = 6;
 
 /// Masked-shadow group-0 bind group (shadow_view + material data + texture pool).
 pub struct ShadowMaskedBindGroup {
@@ -114,9 +114,14 @@ impl ShadowMaskedBindGroup {
                     &ctx.textures.texture_transforms_gpu_buffer,
                 )),
             ),
+            // 5: frame_globals (uniform, fragment) — `time` for animated cutouts.
+            BindGroupEntry::new(
+                5,
+                BindGroupResource::Buffer(BufferBinding::new(&ctx.frame_globals.gpu_buffer)),
+            ),
         ];
 
-        // Texture pool: arrays then samplers (binding indices continue from 5).
+        // Texture pool: arrays then samplers (binding indices continue from 6).
         for view in ctx.textures.pool.texture_views() {
             entries.push(BindGroupEntry::new(
                 entries.len() as u32,
@@ -151,8 +156,8 @@ impl ShadowMaskedBindGroup {
 }
 
 /// Builds the masked-shadow group-0 layout: shadow_view (uniform, dynamic
-/// offset, vertex) + 4 fragment storage buffers, then `arrays_len` texture-array
-/// bindings, then the pool samplers.
+/// offset, vertex) + 4 fragment storage buffers + frame_globals (uniform,
+/// fragment), then `arrays_len` texture-array bindings, then the pool samplers.
 fn build_layout_key(
     ctx: &mut RenderPassInitContext<'_>,
     arrays_len: u32,
@@ -179,13 +184,22 @@ fn build_layout_key(
         visibility_fragment: true,
         visibility_compute: false,
     };
+    let frame_globals_f = BindGroupLayoutCacheKeyEntry {
+        resource: BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+        ),
+        visibility_vertex: false,
+        visibility_fragment: true,
+        visibility_compute: false,
+    };
 
     let mut entries = vec![
-        shadow_view_v, // shadow_view
-        storage_f(),   // materials
-        storage_f(),   // material_mesh_metas
-        storage_f(),   // visibility_data (merged pool)
-        storage_f(),   // texture_transforms
+        shadow_view_v,   // shadow_view
+        storage_f(),     // materials
+        storage_f(),     // material_mesh_metas
+        storage_f(),     // visibility_data (merged pool)
+        storage_f(),     // texture_transforms
+        frame_globals_f, // frame_globals (uniform, fragment)
     ];
     debug_assert_eq!(entries.len() as u32, MASKED_SHADOW_GROUP0_BUFFER_BINDINGS);
 
