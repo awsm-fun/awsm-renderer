@@ -1865,13 +1865,7 @@ impl EditorController {
                 // track write does per frame (animations.rs), so the preview is
                 // exactly what playback would produce. Out-of-range index or a
                 // morph-less node is a silent no-op; read back via `MorphData`.
-                let meshes: Vec<awsm_renderer::meshes::MeshKey> = crate::engine::bridge::bridge()
-                    .nodes
-                    .lock()
-                    .unwrap()
-                    .get(&node)
-                    .map(|n| n.model_meshes.lock().unwrap().clone())
-                    .unwrap_or_default();
+                let meshes = renderer_meshes_for_node(node);
                 crate::engine::context::with_renderer_mut(move |r| {
                     for mesh in meshes {
                         if let Some(key) = r.meshes.geometry_morph_key_for_mesh(mesh) {
@@ -3763,31 +3757,28 @@ impl EditorController {
                 // an empty map on a morph-bearing scene means "not materialized
                 // yet", not "no morphs".
                 let ids = self.resolve_node_ids(&nodes);
-                let pairs: Vec<(NodeId, awsm_renderer::meshes::MeshKey)> = {
-                    let b = crate::engine::bridge::bridge();
-                    let nodes_map = b.nodes.lock().unwrap();
-                    ids.iter()
-                        .filter_map(|id| {
-                            nodes_map
-                                .get(id)
-                                .and_then(|n| n.model_meshes.lock().unwrap().first().copied())
-                                .map(|mesh| (*id, mesh))
-                        })
-                        .collect()
-                };
+                let pairs: Vec<(NodeId, Vec<awsm_renderer::meshes::MeshKey>)> = ids
+                    .iter()
+                    .map(|id| (*id, renderer_meshes_for_node(*id)))
+                    .filter(|(_, meshes)| !meshes.is_empty())
+                    .collect();
                 let entries = crate::engine::context::with_renderer_mut(move |r| {
                     let mut entries = std::collections::BTreeMap::new();
-                    for (id, mesh) in pairs {
-                        if let Some(key) = r.meshes.geometry_morph_key_for_mesh(mesh) {
-                            if let Ok(weights) = r.meshes.morphs.geometry.read_morph_weights(key) {
-                                entries.insert(
-                                    id.to_string(),
-                                    json!({
-                                        "target_count": weights.len(),
-                                        "weights": weights,
-                                    }),
-                                );
-                            }
+                    for (id, meshes) in pairs {
+                        // First morph-bearing primitive wins (multi-primitive
+                        // nodes share one weight set per glTF mesh anyway).
+                        let weights = meshes.iter().find_map(|mesh| {
+                            let key = r.meshes.geometry_morph_key_for_mesh(*mesh)?;
+                            r.meshes.morphs.geometry.read_morph_weights(key).ok()
+                        });
+                        if let Some(weights) = weights {
+                            entries.insert(
+                                id.to_string(),
+                                json!({
+                                    "target_count": weights.len(),
+                                    "weights": weights,
+                                }),
+                            );
                         }
                     }
                     entries
@@ -4183,6 +4174,43 @@ fn readback_key(t: &query::ReadbackTarget) -> String {
     }
 }
 
+/// Renderer mesh keys for a node, covering BOTH materialization paths: a
+/// captured/editable node's own `model_meshes`, or — when that's empty — a
+/// `SkinnedMesh` node's populate-baked keys resolved through the import
+/// template (those keys are template-owned and deliberately never pushed to
+/// `model_meshes`; see `materialize_skinned_mesh`). Morph-bearing imports ride
+/// the SkinnedMesh path, so any morph resolution MUST use this, not
+/// `model_meshes` alone. Empty when the node isn't materialized.
+fn renderer_meshes_for_node(node: NodeId) -> Vec<awsm_renderer::meshes::MeshKey> {
+    let b = crate::engine::bridge::bridge();
+    let entry = { b.nodes.lock().unwrap().get(&node).cloned() };
+    let Some(entry) = entry else {
+        return Vec::new();
+    };
+    let own = entry.model_meshes.lock().unwrap().clone();
+    if !own.is_empty() {
+        return own;
+    }
+    let NodeKind::SkinnedMesh { skin, .. } = entry.node.kind.get_cloned() else {
+        return Vec::new();
+    };
+    let Some(template) = b.get_template(skin.source) else {
+        return Vec::new();
+    };
+    let Some(tnode) = template.find_by_node_index(skin.node_index) else {
+        return Vec::new();
+    };
+    match skin.primitive_index {
+        None => tnode.mesh_keys.clone(),
+        Some(i) => tnode
+            .mesh_keys
+            .get(i as usize)
+            .copied()
+            .into_iter()
+            .collect(),
+    }
+}
+
 /// Read one readback target from CPU-side renderer state → a JSON number / array
 /// (null when unreadable / pending).
 fn read_readback_target(
@@ -4351,14 +4379,9 @@ fn read_readback_target(
             // node → first materialized mesh → geometry morph key → current
             // weights; return weights[index] as a number. Null if unresolvable
             // (mesh/morph not materialized, or index out of range).
-            let mesh = crate::engine::bridge::bridge()
-                .nodes
-                .lock()
-                .unwrap()
-                .get(node)
-                .and_then(|n| n.model_meshes.lock().unwrap().first().copied());
-            let weight = mesh
-                .and_then(|mesh| r.meshes.geometry_morph_key_for_mesh(mesh))
+            let weight = renderer_meshes_for_node(*node)
+                .into_iter()
+                .find_map(|mesh| r.meshes.geometry_morph_key_for_mesh(mesh))
                 .and_then(|key| r.meshes.morphs.geometry.read_morph_weights(key).ok())
                 .and_then(|weights| weights.get(*index).copied());
             match weight {
@@ -5168,13 +5191,14 @@ fn build_editor_subtree(
         })
     };
 
-    // Skinned-ness is per-primitive; a node is skinned if ANY primitive is.
-    // Skinned nodes are a different rendering category (renderer skin path,
-    // NOT editable): they become `NodeKind::SkinnedMesh` referencing the
-    // populate-baked renderer mesh — preserving the rig + deformation — rather
-    // than baking to a captured (bind-pose, static) `Mesh`. This is what fixes
-    // the step-2 regression where skinned imports froze at bind pose.
-    let node_is_skinned = tn.mesh_is_skinned.iter().any(|&s| s);
+    // Skinned-ness / morphed-ness is per-primitive; a node qualifies if ANY
+    // primitive does. Both categories must keep the populate-baked renderer
+    // mesh (`NodeKind::SkinnedMesh`) rather than baking to a captured (static)
+    // `Mesh`: skins because the capture freezes at bind pose (the step-2
+    // regression), morphs because the captured-MeshData path drops the morph
+    // buffers entirely — freezing `set_morph_weight` + morph animation tracks.
+    let node_is_skinned =
+        tn.mesh_is_skinned.iter().any(|&s| s) || tn.mesh_has_morphs.iter().any(|&m| m);
 
     let node = if let Some(light_cfg) = &tn.light {
         // A KHR_lights_punctual node → an editable Light node. Its renderer light

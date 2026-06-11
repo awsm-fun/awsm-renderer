@@ -366,3 +366,16 @@ Phase 6 (bones-in-outliner + skeleton/morph viz) are NOT built — surveyed only
 animation playback in the editor/loader, Phase 4 packer/convert parity browser-verify, and the
 vertex-selection-highlight cosmetic. Full prioritized scope + the time-saving gotchas +
 the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDOFF.md`**.
+
+### Overnight run, iteration 2 (Phase 5)
+- `SetMorphWeight`/`MorphData` BROWSER-VERIFIED: MorphPrimitivesTest imports with its
+  glTF default weights (0.5) intact; set_morph_weight 0→1.0 persists + visibly morphs
+  (A/B screenshots). Two fixes en route: (a) morph-bearing imports were baked to captured
+  Mesh and silently LOST their morph buffers — they now ride the SkinnedMesh/populate
+  path (`mesh_has_morphs` in asset_template + the node-kind decision); (b) new shared
+  `renderer_meshes_for_node` resolver (model_meshes OR template-owned SkinnedMesh keys) —
+  also fixes the pre-existing R::MorphWeight readback, which could never see SkinnedMesh
+  nodes. KNOWN + DEFERRED to the animation-playback item: a model whose glb ships a morph
+  CLIP (AnimatedMorphCube) has its weights re-written every frame by the populate-baked
+  renderer animation player, clobbering live pokes — the editor needs to own/neutralize
+  template players (same root as "editor doesn't play imported clips").

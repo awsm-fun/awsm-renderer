@@ -61,6 +61,12 @@ pub struct AssetTemplateNode {
     /// and deforming via the skeleton) rather than a baked-to-bind-pose captured
     /// `Mesh` — this is what fixes the step-2 skinned-import regression.
     pub mesh_is_skinned: Vec<bool>,
+    /// One entry per `mesh_keys[i]`: whether that primitive carries morph
+    /// targets (geometry or material). Morph-bearing nodes ride the SAME
+    /// populate-baked path as skinned ones (`NodeKind::SkinnedMesh`) — a
+    /// captured/editable `Mesh` would silently drop the morph buffers, freezing
+    /// `set_morph_weight` + morph animation tracks for that node.
+    pub mesh_has_morphs: Vec<bool>,
     /// `Some` when this glTF node carries a `KHR_lights_punctual` light. The
     /// controller materializes it as an editable `NodeKind::Light` (so it shows
     /// in the outliner, gets the shadow inspector, and — crucially — binds its
@@ -230,6 +236,13 @@ fn snapshot(
         .iter()
         .map(|mk| renderer.meshes.mesh_is_skinned(*mk))
         .collect();
+    let mesh_has_morphs = mesh_keys
+        .iter()
+        .map(|mk| {
+            renderer.meshes.geometry_morph_key_for_mesh(*mk).is_some()
+                || renderer.meshes.material_morph_key_for_mesh(*mk).is_some()
+        })
+        .collect();
     let children = renderer
         .transforms
         .get_children(key)
@@ -259,6 +272,7 @@ fn snapshot(
         mesh_keys,
         mesh_gltf_material_indices,
         mesh_is_skinned,
+        mesh_has_morphs,
         light: lights_by_node.get(&gltf_node_index).cloned(),
         children,
     }
