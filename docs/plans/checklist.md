@@ -48,11 +48,12 @@ texture lookup, via a `geometry` pipeline variant).
   (`is_transparency_pass` drops alpha_cutoff for PBR; `mesh_buffer_geometry_kind`
   Mask→Visibility). VERIFIED: dish bowl now solid gold (no floor-through), mask
   casts shadows, console clean. Renders mask SOLID (no cutout) until B.
-- [ ] **Step B1** — masked `geometry` raster variant: bind material+texture pool+
-  attribute (UV) buffers, sample base-color alpha at the fragment UV (read UV via
-  triangle_index+barycentric like the opaque compute), `discard` if `< cutoff`.
-  Cache-key `alpha_test` flag → only masked meshes use it. Verify on a cutout-mask
-  model (foliage).
+- [x] **Step B1** — masked `geometry` raster variant (built-in PBR): binds material+
+  texture pool+attribute (UV) buffers on an augmented group 0, samples base-color alpha
+  at the fragment UV (UV via triangle_index+barycentric like the opaque compute),
+  `discard` if `< cutoff` (per-mesh cutoff in MaterialMeshMeta). Separate per-shader-id
+  masked pipeline pool; PBR built on texture-finalize. COMPILES + clippy-clean.
+  ▶ BROWSER-VERIFY (pending user): DiffuseTransmissionPlant `leaves` leaf-shaped.
 - [ ] **Step B2** — same alpha-test in the SHADOW raster variant (else cutout
   masks cast solid/rectangular shadows).
 - [ ] **Step B3** — dynamic/custom material mask: route `Material::Custom` mask →
@@ -143,7 +144,63 @@ BUILD PROGRESS (this session — all COMPILING on `cargo check -p awsm-renderer`
   `get`/`clear`/`relayout`. Forces non-instanced uniform-meta path.
 - Commits: "masked geometry shader", "masked geometry bind group + lazy pipeline pool".
 
-REMAINING WIRING (mapped; the machinery above is inert until these land):
+B1 STATUS = ✅ COMPLETE + COMPILING + CLIPPY-CLEAN (`-D warnings`). PBR glTF MASK
+meshes alpha-test in the visibility raster (holes see-through + transmission-through-
+holes). Test: import `media/.../DiffuseTransmissionPlant/glTF/DiffuseTransmissionPlant.gltf`
+— `leaves` should now be leaf-shaped (not solid rectangles). Wiring landed: construction
+threading, recreate dispatch (FunctionToCall::GeometryMasked), finalize PBR pipeline
+build (ensure_variant), render+routing (canonical shader_id). ~12 commits this session.
+B1 KNOWN LIMITATION: masked PBR pipeline (re)builds on texture-finalize only, NOT on
+MSAA toggle — after an MSAA change, masked PBR meshes fall back to solid until the next
+texture change. (Fix: also rebuild masked in `set_anti_aliasing`'s recompile path.)
+
+B3 (custom alpha-only) — EXECUTION PLAN (scoped this session):
+- `MaterialRegistration` (renderer `dynamic_materials/registry.rs`) gains
+  `alpha_wgsl: Option<String>` (Some iff alpha_mode=Mask + author provided). Update the
+  5 construction sites: renderer `examples/dynamic_material.rs` (×2), registry test
+  `reg()`, `scene-loader/src/dynamic.rs:225`, `editor/.../bridge/dynamic.rs:314`.
+- `DynamicMaterials::alpha_info_for(id) -> Option<DynamicAlphaShaderInfo>` (mirror
+  `shader_info_for` at registry.rs:662): generate struct/loader/texture_helpers from
+  `reg.layout` (`generate_wgsl_struct`/`_loader`/`_texture_helpers`) + `reg.alpha_wgsl`.
+- Build masked CUSTOM pipelines: do NOT use the compute-oriented launch scheduler
+  (`pipeline_scheduler/launch.rs` issues `createComputePipelineAsync`; masked is a
+  RENDER pipeline). Instead extend the finalize-style block: a method that iterates
+  registered MASK customs and `ensure_variant`s each (base=Custom, dynamic_alpha=Some).
+  Call it from `finalize_gpu_textures` (covers textured customs) AND on custom-material
+  registration (covers procedural/no-texture customs) — add a `masked_dynamic_dirty`
+  flag set by `register_material`, drained in the render preamble via an async ensure
+  step (or reuse the existing post-register pipeline-prewarm path).
+- Routing flip: `renderer/src/materials.rs:135` `Material::Custom` is_transparency_pass
+  → drop `Mask` (keep `Blend`). The geometry-kind for editor-added custom meshes follows
+  is_transparency_pass via `raw_mesh.rs` (verify: it should give Visibility geometry once
+  the flip lands — same mechanism step A used for PBR). glTF custom path uses
+  renderer-gltf `mesh_buffer_geometry_kind` (already Mask→Visibility).
+- Editor 2nd-WGSL window: add `alpha_wgsl` to the editor `CustomMaterial` type + an
+  inspector pane shown only when alpha-mode=Mask; thread into `build_registration`.
+- MCP: a tool to set a dynamic material's `alpha_wgsl` + alpha_mode=Mask+cutoff
+  (`mcp/src/mcp.rs`; `set_material_alpha_mode` exists — extend for dynamic + the 2nd WGSL).
+- Test (procedural first): MCP author a custom material whose alpha is a known cutout
+  pattern (e.g. `return select(1.0, 0.0, fract(input.uv.x*8.0) < 0.5);`), alpha_mode=Mask,
+  apply to a plane → holes see-through; then a texture-based cutout; then shadows (B2);
+  then transmission-through-holes.
+
+B2 (shadow masked variant) — EXECUTION PLAN (scoped this session):
+- Shadow pass is depth-only (no fragment) and at maxBindGroups=4 (group 0 shadow_view
+  dynamic-offset uniform, 1 transforms, 2 meta, 3 animation — render_pass.rs:110-132).
+  Need a fragment that samples base-color/custom-alpha + `discard`. The masked-shadow
+  fragment needs materials+material_mesh_metas+merged-pool+texture_transforms+pool — but
+  all 4 groups are taken, and shadow_view (per-view dynamic offset) can't host them.
+  CONSOLIDATION: fold the masked-shadow's material data into a NEW 5th-binding-free
+  layout by merging transforms+animation into one group (both vertex storage), freeing a
+  group for the augmented material/pool data; OR build a dedicated masked-shadow group
+  set. Gate the masked-shadow fragment on `alpha_cutoff` present REGARDLESS of opaque/
+  transparent routing (a Mask+refractive material is transparent-routed but must still
+  cast a hole-shaped shadow). Add a masked shadow vertex that forwards triangle_index+
+  barycentric+material_mesh_meta_offset; masked shadow pipeline pool + render integration
+  in `shadows/render_pass.rs` (bind masked groups + masked shadow pipeline for masked
+  casters).
+
+REMAINING WIRING (DONE for B1 — kept for history):
 1. Hold + construct: add `masked_bind_group: GeometryMaskedBindGroup` + `masked_pipelines:
    GeometryMaskedPipelines` to `GeometryRenderPass` (geometry/render_pass.rs). Build them
    in `RenderPasses::describe_shaders` (render_passes.rs:277 area, after `geometry_bg`)
