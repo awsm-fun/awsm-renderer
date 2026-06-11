@@ -423,3 +423,26 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   animation_sync::pin_pose + the lowering lifecycle; test pose with playhead transport
   fully neutralized; if (a), the fix likely also solves the morph-clip clobber + is the
   groundwork for core item (3) animation playback.
+
+### Overnight run, iteration 5 (pose-clobber root-caused to a systemic stateful degradation)
+- skin_bridge breadcrumb LANDED ("copied N changed bone local(s) → baked joints").
+  Evidence chain on a live session: with clips present, pin_pose rewrites ~20 bone
+  mirrors EVERY frame (per-frame "copied 20" — manual pokes are clobbered by design
+  while a clip owns the pose, like any DCC). After delete_clip: fight stops, a neck
+  poke logs "copied 1" (mirror→baked write CONFIRMED) — yet pixels don't move.
+- **CAPTURE-PATH SPLIT (critical for verification discipline): canvas_stats froze
+  (stuck at a stale luma across new_project + imports) while ScenePng kept tracking
+  scenes correctly. canvas_stats is NOT a liveness oracle — use ScenePng byte-diffs
+  across DIFFERENT scenes/cameras instead (identical-bytes on same-scene+camera is
+  legitimate determinism, not freeze).**
+- Unified hypothesis: the session enters a degraded state (origin = the earlier
+  final_blend/preamble freeze): canvas-element presentation breaks (user-visible
+  freeze + frozen canvas_stats), the GPU coverage pass output goes stale/zero, and
+  the skinning-LOD coverage gate then "freezes submeshes in their last-skinned pose"
+  (meshes.rs update_world skip_skins grace logic) — which is EXACTLY why a confirmed
+  baked-joint write doesn't deform. ScenePng still updates because render() keeps
+  running for non-skin content.
+- NEXT (fresh window): force trunk reload FIRST, verify fox pose on a CLEAN page
+  (delete clips → poke → expect "copied 1" + ScenePng diff). If deform works clean,
+  the skin path is DONE-verified and the single remaining bug is the stateful
+  degradation — chase it with the edge breadcrumbs + a coverage-pass staleness probe.

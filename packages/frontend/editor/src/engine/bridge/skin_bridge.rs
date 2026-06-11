@@ -40,6 +40,7 @@ pub fn sync_bones_to_skin(renderer: &mut AwsmRenderer) {
         map.iter().map(|(n, k)| (*n, *k)).collect()
     };
 
+    let mut copied = 0usize;
     for (node_id, baked_key) in pairs {
         // Resolve the mirror bone's renderer transform key (materialized async by
         // node_sync; absent until then → skip this frame).
@@ -63,6 +64,13 @@ pub fn sync_bones_to_skin(renderer: &mut AwsmRenderer) {
             continue;
         }
         let _ = renderer.transforms.set_local(baked_key, src);
+        copied += 1;
+    }
+    if copied > 0 {
+        // Breadcrumb for the pose-doesn't-deform investigations: proves the
+        // mirror→baked copy actually ran this frame (rate-limited by nature —
+        // only fires on change).
+        tracing::info!("skin bridge: copied {copied} changed bone local(s) → baked joints");
     }
 }
 
