@@ -209,6 +209,8 @@ fn render_one_frame() {
         super::gizmo::per_frame_update(renderer);
         // Re-anchor + zoom the pickable light icons (one per light node).
         super::light_icons::per_frame_update(renderer, &matrices);
+        // Bone-line skeleton overlay for skinned rigs (Settings toggle).
+        super::skeleton_viz::per_frame_update(renderer);
         // Keep curve control-point handles screen-constant + anchored.
         super::curve_handles::per_frame_update(renderer);
         // Advance any particle emitters + push their live particles to the GPU.

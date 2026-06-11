@@ -533,3 +533,15 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   NUMERICALLY VERIFIED post-fix: b_LeftLeg01 Δ0.018 == b_RightLeg01 Δ0.018, LeftFoot01
   Δ0.1137 (was 0.0), Neck Δ0.0227 across pinned Walk times. Item (3)'s lowering is now
   complete; viewport playback visual goes to the MORNING VISUAL QUEUE (display locked).
+
+### Overnight run, iteration 10 — Phase 6 skeleton bone-line overlay BUILT (morning visual)
+- New engine/skeleton_viz.rs: per-frame fat-line overlay of every registered skin's
+  bone hierarchy (parent→child segments from the MIRROR transform hierarchy — the
+  thing posing/animation actually drive), warm orange, depth_test_always so the rig
+  reads through the mesh, one LineKey rebuilt per frame (tens of segments). New
+  Settings → "Skeleton overlay" toggle (default on), wired in the settings drawer +
+  render loop beside light icons. Compiles + lint-green; CANNOT see it (display
+  locked) → MORNING VISUAL QUEUE.
+- Confirmed vertex-selection highlight (backlog item b) was ALREADY fully built
+  (bridge/vertex_highlight.rs — cross markers per selected vertex, one LineKey,
+  selection-observer driven). Morning visual only.

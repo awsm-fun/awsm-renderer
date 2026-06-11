@@ -208,6 +208,8 @@ pub struct Settings {
     pub gizmo: Mutable<bool>,
     /// Show the pickable light-icon HUD markers (one per light node).
     pub light_gizmos: Mutable<bool>,
+    /// Show the skeleton bone-line overlay on skinned rigs.
+    pub skeleton_viz: Mutable<bool>,
     pub msaa: Mutable<bool>,
     pub heatmap: Mutable<bool>,
     pub snap: Mutable<bool>,
@@ -224,6 +226,7 @@ impl Default for Settings {
             grid: Mutable::new(true),
             gizmo: Mutable::new(true),
             light_gizmos: Mutable::new(true),
+            skeleton_viz: Mutable::new(true),
             msaa: Mutable::new(true),
             heatmap: Mutable::new(false),
             snap: Mutable::new(false),

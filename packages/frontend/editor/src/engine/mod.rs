@@ -20,4 +20,5 @@ pub mod render_loop;
 pub mod scene;
 pub mod selection_box;
 pub mod settings_sync;
+pub mod skeleton_viz;
 pub mod thumbnail;
