@@ -17,7 +17,10 @@ use crate::{
         shader_cache_key::ShaderCacheKeyRenderPass,
         shader_template::ShaderTemplateRenderPass,
     },
-    shadows::shader::{cache_key::ShaderCacheKeyShadow, template::ShaderTemplateShadow},
+    shadows::shader::{
+        cache_key::ShaderCacheKeyShadow, masked_cache_key::ShaderCacheKeyShadowMasked,
+        masked_template::ShaderTemplateShadowMasked, template::ShaderTemplateShadow,
+    },
 };
 
 /// Cached GPU shader modules keyed by template parameters.
@@ -294,6 +297,9 @@ pub enum ShaderCacheKey {
     RenderPass(ShaderCacheKeyRenderPass),
     Picker(ShaderCacheKeyPicker),
     Shadow(ShaderCacheKeyShadow),
+    /// Masked (alpha-tested) shadow caster — cutout / hole-shaped shadows.
+    /// Per-`shader_id` specialized; see [`ShaderCacheKeyShadowMasked`].
+    ShadowMasked(ShaderCacheKeyShadowMasked),
     /// Fat-line shader (renderer-built editor / debug overlays).
     /// Hoisted out of `RenderPass` for the same reason as `Picker` —
     /// it's a top-level renderer concern, not a per-pass variant.
@@ -314,6 +320,7 @@ pub enum ShaderTemplate {
     RenderPass(Box<ShaderTemplateRenderPass>),
     Picker(ShaderTemplatePicker),
     Shadow(ShaderTemplateShadow),
+    ShadowMasked(ShaderTemplateShadowMasked),
     Line(ShaderTemplateLine),
 }
 
@@ -327,6 +334,9 @@ impl TryFrom<&ShaderCacheKey> for ShaderTemplate {
             }
             ShaderCacheKey::Picker(cache_key) => Ok(ShaderTemplate::Picker(cache_key.into())),
             ShaderCacheKey::Shadow(cache_key) => Ok(ShaderTemplate::Shadow(cache_key.try_into()?)),
+            ShaderCacheKey::ShadowMasked(cache_key) => {
+                Ok(ShaderTemplate::ShadowMasked(cache_key.try_into()?))
+            }
             ShaderCacheKey::Line(cache_key) => Ok(ShaderTemplate::Line(cache_key.try_into()?)),
         }
     }
@@ -353,6 +363,7 @@ impl ShaderTemplate {
             ShaderTemplate::RenderPass(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Picker(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Shadow(tmpl) => tmpl.debug_label(),
+            ShaderTemplate::ShadowMasked(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Line(tmpl) => tmpl.debug_label(),
         }
     }
@@ -363,6 +374,7 @@ impl ShaderTemplate {
             ShaderTemplate::RenderPass(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Picker(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Shadow(tmpl) => tmpl.into_source()?,
+            ShaderTemplate::ShadowMasked(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Line(tmpl) => tmpl.into_source()?,
         };
         //tracing::info!("{:#?}", tmpl);
