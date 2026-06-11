@@ -216,6 +216,7 @@ impl BindGroups {
             GeometryMeta,
             GeometryAnimation,
             GeometryMasked,
+            ShadowMasked,
             Hzb,
             Occlusion,
             OcclusionCompaction,
@@ -247,6 +248,7 @@ impl BindGroups {
                 BindGroupCreate::CameraInitOnly => {
                     functions_to_call.insert(FunctionToCall::GeometryCamera);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
+                    functions_to_call.insert(FunctionToCall::ShadowMasked);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
                 BindGroupCreate::LightsInfoCreate => {
@@ -265,6 +267,7 @@ impl BindGroups {
                 BindGroupCreate::MaterialResize => {
                     functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
+                    functions_to_call.insert(FunctionToCall::ShadowMasked);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMeshMaterial);
                     // The deferred material-classify pass binds the material
@@ -320,11 +323,13 @@ impl BindGroups {
                     // relayouts the bind group + recompiles the pipelines first,
                     // then marks TexturePool so this rebinds against the new layout.
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
+                    functions_to_call.insert(FunctionToCall::ShadowMasked);
                 }
                 BindGroupCreate::TextureTransformsResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueTextures);
                     functions_to_call.insert(FunctionToCall::TransparentTextures);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
+                    functions_to_call.insert(FunctionToCall::ShadowMasked);
                 }
                 BindGroupCreate::BrdfLutTextures => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -349,6 +354,7 @@ impl BindGroups {
                 BindGroupCreate::MaterialMeshMetaResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
+                    functions_to_call.insert(FunctionToCall::ShadowMasked);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::Picker);
                     // The deferred material-classify pass also binds the
@@ -366,6 +372,7 @@ impl BindGroups {
                 BindGroupCreate::MeshGeometryPoolResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
+                    functions_to_call.insert(FunctionToCall::ShadowMasked);
                 }
                 BindGroupCreate::AntiAliasingChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -489,6 +496,13 @@ impl BindGroups {
                     // on the union of those buffers' resize events (see the
                     // fan-out above).
                     render_passes.geometry.masked_bind_group.recreate(&ctx)?;
+                }
+                FunctionToCall::ShadowMasked => {
+                    // Masked-shadow group-0 binds shadow_view (from
+                    // `ctx.shadows`) + materials, material_mesh_metas, the merged
+                    // geometry pool, texture_transforms and the texture pool —
+                    // the same resize-event union as the geometry masked group.
+                    render_passes.shadow_masked.bind_group.recreate(&ctx)?;
                 }
                 FunctionToCall::OpaqueMain => {
                     render_passes

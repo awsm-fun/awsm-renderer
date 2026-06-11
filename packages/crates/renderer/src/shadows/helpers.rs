@@ -225,7 +225,7 @@ pub(super) fn build_evsm_blur_bind_group(
 /// in. Lifted out of the async per-pipeline builder so the four
 /// shadow variants can be issued through one batched
 /// `RenderPipelines::ensure_keys` call.
-pub(super) fn shadow_pipeline_cache_key(
+pub(crate) fn shadow_pipeline_cache_key(
     shader_key: crate::shaders::ShaderKey,
     pipeline_layout_key: PipelineLayoutKey,
     instancing: bool,
