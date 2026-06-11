@@ -1845,6 +1845,16 @@ impl Meshes {
             .and_then(|r| r.geometry_morph_key)
     }
 
+    /// Material-morph counterpart of [`Self::geometry_morph_key_for_mesh`] —
+    /// `None` if the mesh has no resource or no material (UV/color) morph
+    /// targets. Used by the editor's live `SetMorphWeight` path so a weight
+    /// poke drives BOTH morph buffers, exactly like a morph animation track.
+    pub fn material_morph_key_for_mesh(&self, mesh_key: MeshKey) -> Option<MaterialMorphKey> {
+        self.resource(mesh_key)
+            .ok()
+            .and_then(|r| r.material_morph_key)
+    }
+
     /// Smallest `skin_update_period` across every mesh that references
     /// `skin_key`. Used by the per-frame skinning-LOD gate: a skin is
     /// updated this frame if ANY of its consumer meshes wants the

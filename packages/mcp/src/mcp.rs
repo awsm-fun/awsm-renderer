@@ -522,6 +522,17 @@ pub struct LightScalarParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MorphWeightParams {
+    /// Mesh node UUID (a node whose mesh has morph targets).
+    pub node: String,
+    /// Morph target index (0-based; `get_morph_data` reports the target count).
+    pub index: u32,
+    /// New weight (0.0 = off, 1.0 = full; out-of-[0,1] extrapolates, matching
+    /// glTF semantics).
+    pub value: f32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct LightAnglesParams {
     /// Spot light node UUID.
     pub node: String,
@@ -2041,6 +2052,36 @@ impl EditorMcp {
             node,
             param: LightParamKind::OuterAngle,
             value: vec![p.outer],
+        })
+        .await
+    }
+
+    // ── morphs (live preview; persistent poses are animation tracks) ─────────
+
+    #[tool(
+        description = "Set one morph-target weight on a node's mesh, LIVE in the renderer (transient preview — it does not persist in the scene and a playing/scrubbing morph animation track will overwrite it). 0-based index; out-of-range or a morph-less node is a no-op. Read back with get_morph_data; author persistent poses as animation tracks (add_track morph)."
+    )]
+    async fn set_morph_weight(
+        &self,
+        Parameters(p): Parameters<MorphWeightParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetMorphWeight {
+            node: parse_node(&p.node)?,
+            index: p.index,
+            value: p.value,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Live morph data per node: { target_count, weights } from the renderer's morph buffer (what set_morph_weight writes and morph animation tracks drive). Pass node UUIDs, or empty for all. Nodes without MATERIALIZED morphs are omitted — empty on a morph-bearing scene means not-yet-materialized, not no-morphs."
+    )]
+    async fn get_morph_data(
+        &self,
+        Parameters(p): Parameters<NodesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MorphData {
+            nodes: parse_nodes(&p.nodes)?,
         })
         .await
     }

@@ -1858,6 +1858,47 @@ impl EditorController {
                 crate::engine::context::with_renderer_mut(|r| r.clear_time_source()).await;
                 Ok(None)
             }
+            EditorCommand::SetMorphWeight { node, index, value } => {
+                // Live renderer poke (transient — see the protocol doc comment):
+                // node → materialized mesh(es) → geometry AND material morph
+                // buffers, weights[index] = value. Mirrors what a morph animation
+                // track write does per frame (animations.rs), so the preview is
+                // exactly what playback would produce. Out-of-range index or a
+                // morph-less node is a silent no-op; read back via `MorphData`.
+                let meshes: Vec<awsm_renderer::meshes::MeshKey> = crate::engine::bridge::bridge()
+                    .nodes
+                    .lock()
+                    .unwrap()
+                    .get(&node)
+                    .map(|n| n.model_meshes.lock().unwrap().clone())
+                    .unwrap_or_default();
+                crate::engine::context::with_renderer_mut(move |r| {
+                    for mesh in meshes {
+                        if let Some(key) = r.meshes.geometry_morph_key_for_mesh(mesh) {
+                            let _ = r.meshes.morphs.geometry.update_morph_weights_with(
+                                key,
+                                |weights| {
+                                    if let Some(w) = weights.get_mut(index as usize) {
+                                        *w = value;
+                                    }
+                                },
+                            );
+                        }
+                        if let Some(key) = r.meshes.material_morph_key_for_mesh(mesh) {
+                            let _ = r.meshes.morphs.material.update_morph_weights_with(
+                                key,
+                                |weights| {
+                                    if let Some(w) = weights.get_mut(index as usize) {
+                                        *w = value;
+                                    }
+                                },
+                            );
+                        }
+                    }
+                })
+                .await;
+                Ok(None)
+            }
             EditorCommand::SetMaterialTexture {
                 node,
                 slot,
@@ -3711,6 +3752,49 @@ impl EditorController {
                 entries.insert("resolution".to_string(), json!(fg.resolution));
                 QueryResult::Map(query::MapResult {
                     kind: "frame_globals".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::MorphData { nodes } => {
+                use serde_json::json;
+                // node → first materialized mesh → live geometry morph weights
+                // (the same store `SetMorphWeight` writes and morph animation
+                // tracks drive). Nodes without materialized morphs are omitted —
+                // an empty map on a morph-bearing scene means "not materialized
+                // yet", not "no morphs".
+                let ids = self.resolve_node_ids(&nodes);
+                let pairs: Vec<(NodeId, awsm_renderer::meshes::MeshKey)> = {
+                    let b = crate::engine::bridge::bridge();
+                    let nodes_map = b.nodes.lock().unwrap();
+                    ids.iter()
+                        .filter_map(|id| {
+                            nodes_map
+                                .get(id)
+                                .and_then(|n| n.model_meshes.lock().unwrap().first().copied())
+                                .map(|mesh| (*id, mesh))
+                        })
+                        .collect()
+                };
+                let entries = crate::engine::context::with_renderer_mut(move |r| {
+                    let mut entries = std::collections::BTreeMap::new();
+                    for (id, mesh) in pairs {
+                        if let Some(key) = r.meshes.geometry_morph_key_for_mesh(mesh) {
+                            if let Ok(weights) = r.meshes.morphs.geometry.read_morph_weights(key) {
+                                entries.insert(
+                                    id.to_string(),
+                                    json!({
+                                        "target_count": weights.len(),
+                                        "weights": weights,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                    entries
+                })
+                .await;
+                QueryResult::Map(query::MapResult {
+                    kind: "morph_data".to_string(),
                     entries,
                 })
             }

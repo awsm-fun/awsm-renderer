@@ -202,6 +202,15 @@ pub enum EditorQuery {
     /// The renderer's current frame globals: `time`, `delta_time`, `frame_count`,
     /// `resolution`. Reflects a `SetFrameTime` pin.
     FrameGlobals,
+    /// Live morph data for each node (empty `nodes` = every node that has
+    /// morphs): `{ target_count, weights }` read from the renderer's geometry
+    /// morph buffer (the same store `SetMorphWeight` writes and morph animation
+    /// tracks drive). Nodes without materialized morphs are omitted. Returned as
+    /// a `Map` result with `kind = "morph_data"`.
+    MorphData {
+        #[serde(default)]
+        nodes: Vec<NodeId>,
+    },
     /// The last `limit` editor notices (toasts: info/warning/error) from an
     /// in-process ring buffer — surfaces runtime errors otherwise invisible over
     /// MCP. Material compile errors have a dedicated path (`MaterialDiagnostics`).

@@ -331,6 +331,18 @@ pub enum EditorCommand {
     /// Clear the pinned frame time — back to the wall-clock source. **Transient**.
     ClearFrameTime,
 
+    /// Set one morph-target weight on a node's materialized mesh(es), live in the
+    /// renderer (both the geometry and material morph buffers when present).
+    /// **Transient** — a preview poke, not scene state: persistent morph poses are
+    /// authored as animation tracks (`TrackTarget::Morph`), which own these
+    /// weights whenever a clip is playing/scrubbing. Out-of-range `index` (or a
+    /// node with no morphs) is a no-op; read back via the `MorphData` query.
+    SetMorphWeight {
+        node: NodeId,
+        index: u32,
+        value: f32,
+    },
+
     /// Assign a library material (built-in or custom WGSL, by id) to a scene
     /// node's mesh, or clear it (`material: None` → magenta). Sets the node's
     /// single `material: Option<MaterialInstance>` field. Inverse: restore the
@@ -741,6 +753,7 @@ impl EditorCommand {
                 | EditorCommand::FrameNode { .. }
                 | EditorCommand::SetFrameTime { .. }
                 | EditorCommand::ClearFrameTime
+                | EditorCommand::SetMorphWeight { .. }
                 | EditorCommand::SetCurrentClip { .. }
                 | EditorCommand::SetPlayhead { .. }
                 | EditorCommand::SetPlaying { .. }
@@ -771,6 +784,7 @@ impl EditorCommand {
                 | EditorCommand::FrameNode { .. }
                 | EditorCommand::SetFrameTime { .. }
                 | EditorCommand::ClearFrameTime
+                | EditorCommand::SetMorphWeight { .. }
                 | EditorCommand::SetAnimSelection { .. }
                 | EditorCommand::SetSoloRoot { .. }
         )
@@ -943,6 +957,7 @@ impl EditorCommand {
             EditorCommand::FrameNode { .. } => "Frame node",
             EditorCommand::SetFrameTime { .. } => "Pin frame time",
             EditorCommand::ClearFrameTime => "Clear frame time",
+            EditorCommand::SetMorphWeight { .. } => "Set morph weight",
             EditorCommand::AddClip { .. } => "New clip",
             EditorCommand::DeleteClip { .. } => "Delete clip",
             EditorCommand::DuplicateClip { .. } => "Duplicate clip",
