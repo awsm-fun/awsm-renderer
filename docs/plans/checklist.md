@@ -139,11 +139,57 @@ FINALIZED B DESIGN (validated against code, this session — supersedes ambiguit
 - The masked variant is SPECIALIZED PER shader_id (mirrors the opaque compute's
   `ShaderCacheKeyMaterialOpaque`), because the geometry template canNOT include the
   full `{{ materials_wgsl }}` blob (it pulls dynamic-material fragments that
-  reference opaque-only contract types `OpaqueShadingInput` etc.). So
-  `ShaderCacheKeyGeometry` gains an `alpha_test: Option<…>` carrying shader_id/base/
-  pool-lens/(dynamic info). Non-masked meshes keep `None` (one bool's worth of cost,
-  no texture lookup). Builtin (PBR/Unlit/Toon) masked variants emit just that
-  material's base-color-alpha load; custom emits the alpha-only fragment (B3).
+  reference opaque-only contract types `OpaqueShadingInput` etc.). Builtin
+  (PBR/Unlit/Toon) masked variants emit just that material's base-color-alpha load;
+  custom emits the alpha-only fragment (B3).
+- MODULE STRUCTURE (settled): build a SEPARATE module, NOT a field on
+  `ShaderCacheKeyGeometry` (that key has a fixed-enumerated 9-leaf pool; masked is
+  per-shader-id + runtime-registered → needs a lazy HashMap pool like opaque's
+  `main`). Mirror `render_passes/material_opaque/`:
+  * `render_passes/geometry_masked/` (or `geometry/masked/`) with:
+    - `shader/cache_key.rs`: `ShaderCacheKeyGeometryMasked { texture_pool_arrays_len,
+      texture_pool_samplers_len, msaa_sample_count, shader_id, base,
+      dynamic_shader: Option<DynamicAlphaShaderInfo{shader_includes, struct_decl,
+      loader_decl, alpha_wgsl}> }`. Add `ShaderCacheKeyRenderPass::GeometryMasked`
+      arm (`shader_cache_key.rs`) + the source-dispatch arm (find the
+      `ShaderCacheKeyRenderPass → into_source()` match in `shaders.rs`/`shaders/`).
+    - `shader/masked_wgsl/{bind_groups,vertex,fragment}.wgsl` + `template.rs`:
+      vertex = reuse the plain geometry vertex (it already forwards
+      `material_mesh_meta_offset` as flat varying @location(5), + triangle_index +
+      barycentric) so morph/skin still apply; fragment = read
+      `material_mesh_metas[material_mesh_meta_offset/256u]` → attribute offsets/
+      stride/uv_sets_index/material_offset → `texture_uv(...)` from the merged pool
+      → builtin: load base_color α+cutoff (mirror `pbr_get_material` header at
+      base_index+1 cutoff, +2 base_color_tex(5), +7..10 factor) & sample via
+      `texture_pool_sample`; custom: `custom_alpha_dynamic(...)`; `if α<cutoff
+      { discard; }`. bind_groups.wgsl = the AUGMENTED group 0 (camera+frame_globals
+      already there for the vertex, + materials, material_mesh_metas, visibility_data
+      merged pool, texture_transforms, pool_tex_*/pool_sampler_*). Groups 1/2/3
+      reuse the plain geometry transforms/meta/animation layouts verbatim.
+    - `bind_group.rs`: build the augmented group-0 bind group (reuse
+      `TexturePoolDeps::new(ctx, Render)` for the pool layout + entries; pool buffer
+      accessors per the plumbing map: `ctx.materials.gpu_buffer`,
+      `ctx.meshes.meta.material_gpu_buffer()`,
+      `ctx.meshes.visibility_geometry_data_gpu_buffer()`,
+      `ctx.textures.texture_transforms_gpu_buffer`). recreate via
+      `BindGroupRecreateContext`.
+    - `pipeline.rs`: a lazy `HashMap<(msaa,mipmaps,shader_id), RenderPipelineKey>`
+      pool with `get_masked_render_pipeline_key(shader_id)` + `insert_dynamic` +
+      `clear_dynamic`, mirroring `MaterialOpaquePipelines`. Pipeline layout =
+      [augmented_group0_bgl, transforms_bgl, meta_bgl(storage+uniform variants),
+      animation_bgl]. Same 4 color targets + depth as the plain geometry pipeline
+      (so masked meshes write the same visibility buffer); add per-cull-mode leaves.
+  * Compile hook: when a masked material is needed, compile its masked pipeline via
+    the SAME flow that compiles opaque per-shader-id pipelines — `register_material`
+    / `prewarm_pipelines` / `ensure_scene_pipelines`. For builtin PBR masked, compile
+    on first use like opaque first-party.
+  * Render integration: in `geometry/render_pass.rs`, masked renderables bind the
+    augmented group-0 (instead of the plain camera group-0) + their masked pipeline.
+    Collect masked meshes via `material.alpha_mask().is_some()` AND a compiled masked
+    variant exists; carry a `geometry_masked_render_pipeline_key` on `Renderable`
+    (alongside `geometry_render_pipeline_key`). Until a mesh's masked variant is
+    compiled, it falls back to the plain geometry pipeline (renders SOLID) — the
+    regression-free incremental property.
 - Material buffer carries the cutoff for BUILTIN: `pbr_material.wgsl` header after
   shader_id = [alpha_mode(u32), alpha_cutoff(f32), base_color_tex(5), base_color_factor(4), …]
   (`materials/src/wgsl/pbr/pbr_material.wgsl:110` `pbr_get_material`; written at
