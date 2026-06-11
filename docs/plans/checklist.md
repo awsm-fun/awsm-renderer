@@ -154,6 +154,21 @@ BUILD PROGRESS (this session — all COMPILING on `cargo check -p awsm-renderer`
   `get`/`clear`/`relayout`. Forces non-instanced uniform-meta path.
 - Commits: "masked geometry shader", "masked geometry bind group + lazy pipeline pool".
 
+BROWSER-VERIFIED (this session, live MCP + screenshots):
+- ✅ B1 PBR cutout: DiffuseTransmissionPlant `leaves` render leaf-shaped (not solid),
+  light through the gaps, diffuse-transmission translucency. Textured PBR cutout works.
+- ✅ B3 custom cutout: a procedural custom material (alpha-only WGSL stripe pattern) on a
+  plane renders see-through holes. (Textured CUSTOM cutout — `material_sample_<name>` —
+  not yet visually tested; PBR-textured proves the texture-pool path.)
+- ✅ MSAA cutout anti-aliasing: cutout edges are smooth under MSAA (analytic sample_mask
+  coverage → existing compute edge-resolve; no TAA). Documented in docs/buffers.md as a
+  promotable property (deferred/visibility-buffer renderers normally need TAA for this).
+- 🐛 FIXED (caught only by the in-browser test): the editor bridge's register no-op + the
+  registry idempotency keyed on `wgsl_hash`, which hashed ONLY the main WGSL — so editing
+  the alpha mode or the 2nd alpha-only WGSL was a no-op (stale Opaque/no-alpha
+  registration → masked routing skipped + masked pipeline never built). Fix folds
+  alpha_mode+cutoff+alpha_wgsl into wgsl_hash (`editor/.../bridge/dynamic.rs build_registration`).
+
 B1 STATUS = ✅ COMPLETE + COMPILING + CLIPPY-CLEAN (`-D warnings`). PBR glTF MASK
 meshes alpha-test in the visibility raster (holes see-through + transmission-through-
 holes). Test: import `media/.../DiffuseTransmissionPlant/glTF/DiffuseTransmissionPlant.gltf`

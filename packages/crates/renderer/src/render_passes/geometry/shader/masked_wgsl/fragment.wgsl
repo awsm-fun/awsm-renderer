@@ -98,6 +98,68 @@ fn custom_alpha_dynamic(input: MaskAlphaInput) -> f32 {
 }
 {% endif %}
 
+// ── Masking alpha at a given barycentric. Re-evaluated per MSAA sample (at the
+// sub-pixel sample positions) so the cutout is anti-aliased for ANY alpha —
+// smooth (texture) OR binary (procedural `select`), where an analytic
+// fwidth-of-alpha derivative would carry no sub-pixel information. Unified
+// signature across bases (the Custom body loads its own `MaterialData`), so the
+// per-sample call site is identical regardless of material type. ─────────────
+{% if base == ShadingBase::Custom %}
+fn mask_alpha_at(
+    bary: vec3<f32>,
+    triangle_indices: vec3<u32>,
+    attribute_data_offset: u32,
+    vertex_attribute_stride: u32,
+    uv_sets_index: u32,
+    color_sets_index: u32,
+    material_offset: u32,
+) -> f32 {
+    let uv = _mask_uv_per_vertex(attribute_data_offset, 0u, triangle_indices.x, vertex_attribute_stride, uv_sets_index) * bary.x
+        + _mask_uv_per_vertex(attribute_data_offset, 0u, triangle_indices.y, vertex_attribute_stride, uv_sets_index) * bary.y
+        + _mask_uv_per_vertex(attribute_data_offset, 0u, triangle_indices.z, vertex_attribute_stride, uv_sets_index) * bary.z;
+    let mat = material_data_load(material_offset);
+    return custom_alpha_dynamic(MaskAlphaInput(
+        uv,
+        bary,
+        triangle_indices,
+        attribute_data_offset,
+        vertex_attribute_stride,
+        color_sets_index,
+        material_offset,
+        mat,
+    ));
+}
+{% else %}
+fn mask_alpha_at(
+    bary: vec3<f32>,
+    triangle_indices: vec3<u32>,
+    attribute_data_offset: u32,
+    vertex_attribute_stride: u32,
+    uv_sets_index: u32,
+    color_sets_index: u32,
+    material_offset: u32,
+) -> f32 {
+    // PBR base-color alpha. Header: word 0 = shader_id; base_index =
+    // material_offset/4 + 1 (alpha_mode @+0, alpha_cutoff @+1,
+    // base_color_tex @+2..6, base_color_factor @+7..10).
+    let base_index = (material_offset / 4u) + 1u;
+    let base_color_tex = material_load_texture_info(base_index + 2u);
+    var alpha = material_load_f32(base_index + 10u);
+    if base_color_tex.exists {
+        let uv = mask_texture_uv(attribute_data_offset, triangle_indices, bary, base_color_tex, vertex_attribute_stride, uv_sets_index);
+        alpha = alpha * mask_texture_pool_sample(base_color_tex, uv).a;
+    }
+    return alpha;
+}
+{% endif %}
+
+// Barycentric at a sub-pixel offset (pixel-space, center origin), via the
+// screen-space derivatives of the interpolated barycentric.
+fn mask_bary_at(b: vec2<f32>, dbx: vec2<f32>, dby: vec2<f32>, ox: f32, oy: f32) -> vec3<f32> {
+    let p = b + dbx * ox + dby * oy;
+    return vec3<f32>(p.x, p.y, 1.0 - p.x - p.y);
+}
+
 // ── Fragment I/O (identical to the plain geometry pass — masked meshes write
 // the SAME visibility buffer; we only add the cutoff discard up front). ──────
 struct FragmentInput {
@@ -138,54 +200,34 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         bitcast<u32>(visibility_data[base_triangle_index + 1u]),
         bitcast<u32>(visibility_data[base_triangle_index + 2u]),
     );
-    let bary = vec3<f32>(input.barycentric.x, input.barycentric.y, 1.0 - input.barycentric.x - input.barycentric.y);
-
-    // ── Compute the masking alpha for this fragment ──
-    {% if base == ShadingBase::Custom %}
-    let mat = material_data_load(material_offset);
-    // Default TEXCOORD_0 convenience UV (set 0).
-    let default_uv = _mask_uv_per_vertex(attribute_data_offset, 0u, triangle_indices.x, vertex_attribute_stride, uv_sets_index) * bary.x
-        + _mask_uv_per_vertex(attribute_data_offset, 0u, triangle_indices.y, vertex_attribute_stride, uv_sets_index) * bary.y
-        + _mask_uv_per_vertex(attribute_data_offset, 0u, triangle_indices.z, vertex_attribute_stride, uv_sets_index) * bary.z;
-    let alpha = custom_alpha_dynamic(MaskAlphaInput(
-        default_uv,
-        bary,
-        triangle_indices,
-        attribute_data_offset,
-        vertex_attribute_stride,
-        color_sets_index,
-        material_offset,
-        mat,
-    ));
-    {% else %}
-    // PBR base-color alpha (glTF MASK = alpha from the base-color factor × texture).
-    // Header layout: word 0 = shader_id; base_index = material_offset/4 + 1.
-    // (alpha_mode @+0, alpha_cutoff @+1, base_color_tex @+2..6, base_color_factor @+7..10)
-    let base_index = (material_offset / 4u) + 1u;
-    let base_color_tex = material_load_texture_info(base_index + 2u);
-    var alpha = material_load_f32(base_index + 10u);
-    if base_color_tex.exists {
-        let uv = mask_texture_uv(attribute_data_offset, triangle_indices, bary, base_color_tex, vertex_attribute_stride, uv_sets_index);
-        alpha = alpha * mask_texture_pool_sample(base_color_tex, uv).a;
-    }
-    {% endif %}
-
-    // glTF MASK cutoff (per-mesh, from MaterialMeshMeta).
+    // ── Cutout: keep/discard the pixel, and (under MSAA) per-sample coverage ──
     {% if msaa_sample_count > 1 %}
-    // MSAA: convert the cutout to fractional per-sample coverage so the existing
-    // edge-resolve anti-aliases the boundary. `coverage` is the analytic edge
-    // fraction over the ~1px alpha-gradient band; map it to a count of covered
-    // samples. Zero coverage → discard (a real hole, writes no depth/samples).
-    let coverage = clamp(
-        (alpha - mm.alpha_cutoff) / max(fwidth(alpha), 1e-5) + 0.5,
-        0.0,
-        1.0,
-    );
-    let covered_samples = u32(coverage * f32({{ msaa_sample_count }}u) + 0.5);
-    if covered_samples == 0u {
+    // A single center alpha test is enough to KEEP/DROP the pixel — but it's
+    // all-or-nothing, so the cutout edge aliases. To ANTI-ALIAS it we need the
+    // sub-pixel coverage: evaluate the masking alpha at each of the 4 MSAA
+    // sample sub-positions (offset from pixel center via the barycentric
+    // screen-space derivatives) and set that sample's coverage bit when it
+    // passes the cutoff. The covered samples write the surface; the rest stay
+    // the cleared background, and the existing MSAA edge-resolve blends them.
+    // True per-sample sampling works for ANY alpha — smooth (texture) OR binary
+    // (procedural `select`), where an fwidth-of-alpha gradient carries nothing.
+    // Standard 4x sample offsets (the exact positions only nudge spatial
+    // placement; the resolve blends by covered-sample COUNT, all carrying the
+    // shared center data).
+    let dbx = dpdx(input.barycentric);
+    let dby = dpdy(input.barycentric);
+    let cut = mm.alpha_cutoff;
+    var coverage_mask = 0u;
+    if mask_alpha_at(mask_bary_at(input.barycentric, dbx, dby, -0.125, -0.375), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 1u; }
+    if mask_alpha_at(mask_bary_at(input.barycentric, dbx, dby,  0.375, -0.125), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 2u; }
+    if mask_alpha_at(mask_bary_at(input.barycentric, dbx, dby, -0.375,  0.125), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 4u; }
+    if mask_alpha_at(mask_bary_at(input.barycentric, dbx, dby,  0.125,  0.375), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 8u; }
+    if coverage_mask == 0u {
         discard;
     }
     {% else %}
+    let bary = vec3<f32>(input.barycentric.x, input.barycentric.y, 1.0 - input.barycentric.x - input.barycentric.y);
+    let alpha = mask_alpha_at(bary, triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset);
     if alpha < mm.alpha_cutoff {
         discard;
     }
@@ -194,13 +236,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     // ── Write the visibility buffer exactly like the plain geometry pass ──
     var out: FragmentOutput;
     {% if msaa_sample_count > 1 %}
-    // Set the low `covered_samples` bits (the resolve averages by count, not
-    // position); all bits when fully covered.
-    out.coverage_mask = select(
-        (1u << covered_samples) - 1u,
-        0xFFFFFFFFu,
-        covered_samples >= {{ msaa_sample_count }}u,
-    );
+    out.coverage_mask = coverage_mask;
     {% endif %}
     let t = split16(input.triangle_index);
     let m = split16(input.material_mesh_meta_offset);
