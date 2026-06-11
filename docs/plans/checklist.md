@@ -33,8 +33,33 @@ The convert crate is built + tested but **unused**. Wiring it is the payoff.
   Byte-parity test. **[cargo(wasm) + browser]** ⚠️ gltf hot path — verify a render.
 
 ## 2. Verify tonight's safe changes render right **[browser]**
-- [ ] `mesh_pack` refactor (`555cee5a`) — a normal model + a glass model still render right.
-- [ ] `glb-export` TANGENT baking (`16a92110`) — editor export → player round-trip looks right.
+- [x] `mesh_pack` refactor (`555cee5a`) — behavior-preserving (confirmed once the
+  mask bug below was understood; mesh_pack didn't cause it).
+- [ ] `glb-export` TANGENT baking (`16a92110`) — editor export → player round-trip
+  looks right (verify alongside the round-trip harness, #5/#6).
+
+## 2b. MASK-as-alpha-tested-opaque (the floor-through-bowl bug → proper fix)
+Mask was routed to the transparent pass, so it was absent from `opaque_tex` (the
+framebuffer transmission samples) AND didn't cast shadows. Proper fix = MASK is
+alpha-tested OPAQUE (deferred), with alpha-test in the raster. Decided: deferred
+alpha-test in the visibility raster (only masked meshes pay the base-color-alpha
+texture lookup, via a `geometry` pipeline variant).
+- [x] **Step A** (`fix(renderer): route MASK … step A`) — mask → Visibility/opaque
+  (`is_transparency_pass` drops alpha_cutoff for PBR; `mesh_buffer_geometry_kind`
+  Mask→Visibility). VERIFIED: dish bowl now solid gold (no floor-through), mask
+  casts shadows, console clean. Renders mask SOLID (no cutout) until B.
+- [ ] **Step B1** — masked `geometry` raster variant: bind material+texture pool+
+  attribute (UV) buffers, sample base-color alpha at the fragment UV (read UV via
+  triangle_index+barycentric like the opaque compute), `discard` if `< cutoff`.
+  Cache-key `alpha_test` flag → only masked meshes use it. Verify on a cutout-mask
+  model (foliage).
+- [ ] **Step B2** — same alpha-test in the SHADOW raster variant (else cutout
+  masks cast solid/rectangular shadows).
+- [ ] **Step B3** — dynamic/custom material mask: route `Material::Custom` mask →
+  visibility (`materials.rs:135`); masked variant alpha-tests using the custom
+  WGSL's alpha output; editor UI toggle + MCP tool to set `alpha_mode=Mask`+cutoff.
+- [ ] **Sweep** — `is_transparency_pass` call sites, `docs/buffers.md` geometry-kind
+  table, raw_mesh/mesh_pack/geometry comments. Comprehensive.
 
 ## 3. Dish / KHR-material shading fix (analysis in `docs/iridescence-analysis.md`)
 - [ ] Replace the 3-wavelength two-beam thin-film approx in `brdf.wgsl` with the spec's
