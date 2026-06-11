@@ -39,6 +39,18 @@ masked fragment's `{% else %}` base-color path covers all three — no WGSL chan
 separately browser-tested (identical code path to verified-PBR, differs only by shader_id;
 a real Unlit/Toon cutout needs a base-color texture with an alpha pattern to be visible).
 
+DONE (two-sided shading fix, committed, compiles): back-facing fragments now flip the
+normal (`if !front_facing { N = -N; }`) in BOTH geometry fragments
+(`geometry_wgsl/fragment.wgsl` + `masked_wgsl/fragment.wgsl`) — single-sided back faces are
+culled so it only affects double-sided meshes. WHY: DiffuseTransmissionPlant leaf undersides
+were DARK vs Khronos (glow) — a double-sided back face kept its front-pointing normal, so the
+diffuse-transmission BACK lobe (`dot(-n,l)`, brdf.wgsl:549) never fired + the reflective lobe
+was killed by the transmission weight. ⚠ NOT yet browser-confirmed: my editor MCP session hit
+an UNRELATED `Destroyed texture "Effects"` GPU validation error (post-process pass, untouched
+by these changes — a hot-reload/resize artifact) that blanked the editor view; needs a fresh
+page load to verify. Verify in the :9080 model viewer (model-tests, populate_gltf) at
+/app/model/DiffuseTransmissionPlant after it rebuilds — undersides should glow.
+
 REMAINING: FlipBook masked (atlas-cell alpha, DEFERRED — mask alpha is the time-varying
 sprite cell; flipbook.rs left transparent-routed); B2 shadow masked variant
 (hole-shaped shadows — shadow pass is depth-only + at maxBindGroups=4, needs a bind-group
