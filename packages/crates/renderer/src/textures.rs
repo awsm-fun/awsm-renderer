@@ -466,20 +466,41 @@ impl AwsmRenderer {
                 &self.render_passes.geometry.masked_bind_group,
                 &self.render_passes.geometry.bind_groups,
             )?;
-            let pbr_variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
-                shader_id: awsm_materials::MaterialShaderId::PBR,
-                base: crate::dynamic_materials::ShadingBase::Pbr,
-                dynamic_alpha: None,
-            };
-            self.render_passes
-                .geometry
-                .masked_pipelines
-                .ensure_variant(
-                    &mut ctx,
-                    &self.render_passes.geometry.masked_bind_group,
-                    &pbr_variant,
-                )
-                .await?;
+            // Built-in MASK materials whose MASK routes opaque: PBR, Unlit, Toon.
+            // All three share the same header prefix (shader_id, alpha_mode,
+            // alpha_cutoff, base_color_tex(5), base_color_factor(4)), so the masked
+            // fragment's base-color path covers them with one WGSL — only the
+            // cache-key shader_id differs. (FlipBook MASK still routes transparent —
+            // its mask alpha is the time-varying atlas cell.)
+            for (shader_id, base) in [
+                (
+                    awsm_materials::MaterialShaderId::PBR,
+                    crate::dynamic_materials::ShadingBase::Pbr,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::UNLIT,
+                    crate::dynamic_materials::ShadingBase::Unlit,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::TOON,
+                    crate::dynamic_materials::ShadingBase::Toon,
+                ),
+            ] {
+                let variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
+                    shader_id,
+                    base,
+                    dynamic_alpha: None,
+                };
+                self.render_passes
+                    .geometry
+                    .masked_pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.geometry.masked_bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
 
             // Custom MASK materials — one masked variant each, emitting the
             // author's alpha-only fragment.

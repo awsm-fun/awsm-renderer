@@ -122,7 +122,10 @@ impl MaterialShader for ToonMaterial {
     }
 
     fn is_transparency_pass(&self) -> bool {
-        self.has_alpha_blend() || self.alpha_cutoff().is_some()
+        // MASK is alpha-tested OPAQUE (same as PBR — see pbr.rs): it takes the
+        // visibility/masked-raster path (cutout shadows, opaque_tex inclusion,
+        // MSAA cutout AA), not the transparent pass. Only BLEND is transparency.
+        self.has_alpha_blend()
     }
 
     /// Layout must stay in sync with `toon_get_material` in WGSL.
