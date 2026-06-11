@@ -404,3 +404,22 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   insert-box + canvas_stats delta before trusting any A/B. Force-recover by touching an
   editor file (trunk rebuild → page reload) — but the freeze RECURS on the next skinned
   import until the final_blend bug is fixed.
+
+### Overnight run, iteration 4 (frozen-canvas instrumentation + skin-pose detective work)
+- Edge-launch instrumentation LANDED (launch.rs): INFO breadcrumbs for in-flight skips,
+  "0 pushed (N cache-hit installs, M in-flight skips)", and apply-path "no longer desired —
+  dropped". With these in, the original final_blend freeze did NOT reproduce (fresh-session
+  imports + 2nd/3rd imports all healthy; relaunch shows clean cache-hit reinstalls). The
+  freeze remains REAL but stateful/intermittent — breadcrumbs will name the eaten branch
+  when it recurs. Keep the insert-box+luma sanity check before trusting A/Bs.
+- **Skin pose still does NOT deform** (fox neck/root pokes → byte-identical renders, canvas
+  PROVEN live), even after delete_clip of all 3 fox clips. Chain verified so far: 24/24
+  joints registered; SetTransform commits to the mirror's renderer local (node_transforms
+  shows it); sync_bones_to_skin IS in the render loop (render_loop.rs:222, before
+  update_transforms). REMAINING SUSPECTS: (a) animation_sync::pin_pose runs every frame
+  BEFORE the skin bridge and may re-pin bone mirrors from LOWERED renderer players that
+  delete_clip didn't unlower → clobbers manual pokes (same mechanism as the morph-cube
+  clip clobber); (b) the transforms_eq guard/copy in sync_bones_to_skin. NEXT: read
+  animation_sync::pin_pose + the lowering lifecycle; test pose with playhead transport
+  fully neutralized; if (a), the fix likely also solves the morph-clip clobber + is the
+  groundwork for core item (3) animation playback.

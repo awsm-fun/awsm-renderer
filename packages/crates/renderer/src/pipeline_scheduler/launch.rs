@@ -685,9 +685,11 @@ impl crate::AwsmRenderer {
         // bookkeeping — edge pipelines are layout-level, deduped here by the
         // edge cache itself + the in-flight set.
         let mut promise_jobs: Vec<(EdgeLaunchSlot, ComputePipelineCacheKey)> = Vec::new();
+        let (mut hits, mut inflight_skips) = (0usize, 0usize);
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_edge_per_pass(self, &slot.0, existing_key);
+                hits += 1;
             } else if self
                 .render_passes
                 .material_opaque
@@ -696,13 +698,27 @@ impl crate::AwsmRenderer {
             {
                 // A prior launch this window already has this compile in
                 // flight; its single resolution installs for the layout.
+                inflight_skips += 1;
+                tracing::info!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "launch_edge_resolve_compile: {:?} skipped as in-flight",
+                    slot.0,
+                );
             } else {
                 promise_jobs.push((slot.clone(), cache_key.clone()));
             }
         }
 
         if promise_jobs.is_empty() {
-            // Every pipeline was a cache hit or already in flight.
+            // Every pipeline was a cache hit or already in flight. Logged
+            // because a stuck in-flight marker here looks like "settled but
+            // frozen" downstream — this line is the breadcrumb.
+            tracing::info!(
+                target: "awsm_renderer::pipeline_readiness",
+                "launch_edge_resolve_compile: 0 pushed ({} cache-hit installs, {} in-flight skips)",
+                hits,
+                inflight_skips,
+            );
             return Ok(());
         }
 
@@ -821,6 +837,14 @@ impl crate::AwsmRenderer {
                     .edge_pipelines
                     .is_edge_key_desired(&cache_key)
                 {
+                    // The layout moved on while this compiled. Logged because a
+                    // dropped FinalBlend with no follow-up relaunch presents as
+                    // the frozen-canvas mode (preamble warn-skip, settled:true).
+                    tracing::info!(
+                        target: "awsm_renderer::pipeline_readiness",
+                        "apply_compile_resolution: edge resolution no longer desired — dropped (slot {:?})",
+                        edge_slot_from_target(&target),
+                    );
                     return;
                 }
                 match result {
