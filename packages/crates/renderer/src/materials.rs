@@ -525,6 +525,20 @@ impl Materials {
             .unwrap_or(MaterialShaderId::PBR)
     }
 
+    /// Returns the material's **canonical** shader id (PBR / Unlit / Toon /
+    /// FlipBook / a custom material's own id), ignoring any resolved
+    /// feature-set variant id. The masked (alpha-tested) geometry variant keys
+    /// on this: its fragment only reads base-color alpha (for built-ins) or the
+    /// custom alpha-only WGSL — neither depends on a PBR feature-set variant, so
+    /// one masked pipeline per *canonical* id serves every variant. Returns
+    /// `Pbr` for unknown keys (defensive).
+    pub fn canonical_shader_id(&self, key: MaterialKey) -> MaterialShaderId {
+        self.lookup
+            .get(key)
+            .map(|m| m.shader_id())
+            .unwrap_or(MaterialShaderId::PBR)
+    }
+
     /// Returns the material's alpha-mask cutoff when it's a glTF `MASK`
     /// material, else `None`. Drives two things: (1) routing — a `Some`
     /// material is alpha-tested-opaque, so it renders through the masked

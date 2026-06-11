@@ -206,10 +206,13 @@ impl AwsmRenderer {
                         Some(4) => Some(4u32),
                         _ => None,
                     };
+                    // Key on the CANONICAL id (not the resolved variant id) —
+                    // the masked fragment is variant-independent.
+                    let masked_shader_id = self.materials.canonical_shader_id(routing_material);
                     self.render_passes
                         .geometry
                         .masked_pipelines
-                        .get(msaa, shader_id, cull_mode)
+                        .get(msaa, masked_shader_id, cull_mode)
                 } else {
                     None
                 },
