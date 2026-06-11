@@ -681,6 +681,45 @@ impl DynamicMaterials {
         )
     }
 
+    /// Returns the **alpha-only** dynamic-shader info for a registered MASK
+    /// custom material — the generated `MaterialData` struct + loader + texture
+    /// helpers, plus the author's alpha-only WGSL fragment — so the masked
+    /// visibility-raster variant can wrap it into `custom_alpha_dynamic`.
+    /// `None` unless the material is registered, `alpha_mode == Mask`, and a
+    /// non-empty `alpha_wgsl` was provided.
+    pub fn alpha_info_for(
+        &self,
+        shader_id: MaterialShaderId,
+    ) -> Option<crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo>
+    {
+        let reg = self.registrations.get(&shader_id)?;
+        if !matches!(reg.alpha_mode, MaterialAlphaMode::Mask { .. }) {
+            return None;
+        }
+        let alpha_wgsl = reg.alpha_wgsl.as_ref()?.clone();
+        if alpha_wgsl.trim().is_empty() {
+            return None;
+        }
+        Some(
+            crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo {
+                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                    "MaterialData",
+                    &reg.layout,
+                ),
+                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                    "MaterialData",
+                    "material_data_load",
+                    &reg.layout,
+                ),
+                texture_helpers: awsm_materials::dynamic_layout::generate_wgsl_texture_helpers(
+                    "MaterialData",
+                    &reg.layout,
+                ),
+                alpha_wgsl,
+            },
+        )
+    }
+
     /// Returns the count of currently-registered dynamic materials.
     /// Returns `true` if inserting `registration` would NOT grow the
     /// registry (i.e., it'd be idempotent on an existing

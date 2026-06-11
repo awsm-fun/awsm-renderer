@@ -403,9 +403,23 @@ impl AwsmRenderer {
         // The masked group-0 carries the texture pool, so its layout changes
         // when the pool grows. Relayout the bind group + pipeline pool, then
         // (re)compile the built-in PBR masked variant (its base-color cutout
-        // samples the pool). Custom masked variants are rebuilt by the dynamic
-        // scheduler's re-launch below (which `relayout` cleared).
+        // samples the pool), plus every registered MASK custom material that
+        // carries a 2nd alpha-only WGSL window.
         {
+            // Collect the registered MASK customs first (releases the
+            // dynamic_materials borrow before the RenderPassInitContext below).
+            let custom_masked: Vec<(
+                awsm_materials::MaterialShaderId,
+                crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo,
+            )> = self
+                .dynamic_materials
+                .iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|id| self.dynamic_materials.alpha_info_for(id).map(|info| (id, info)))
+                .collect();
+
             let new_masked_bg = {
                 let mut ctx = RenderPassInitContext {
                     gpu: &mut self.gpu,
@@ -457,6 +471,25 @@ impl AwsmRenderer {
                     &pbr_variant,
                 )
                 .await?;
+
+            // Custom MASK materials — one masked variant each, emitting the
+            // author's alpha-only fragment.
+            for (shader_id, info) in custom_masked {
+                let variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
+                    shader_id,
+                    base: crate::dynamic_materials::ShadingBase::Custom,
+                    dynamic_alpha: Some(info),
+                };
+                self.render_passes
+                    .geometry
+                    .masked_pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.geometry.masked_bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
         }
 
         // Re-launch the compile for every currently-registered
