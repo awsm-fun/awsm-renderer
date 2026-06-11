@@ -250,56 +250,410 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
     }
 }
 
-/// Read-only geometry summary for a `NodeKind::Mesh`: the backing `MeshDef`'s
-/// stack base (box / sphere / sweep / lathe / SDF / captured) + modifier count.
-/// Geometry editing is done via MCP (`set_mesh_modifiers` / vertex tools), so
-/// this is purely informational. Falls back to a "missing asset" note when the
-/// referenced mesh asset isn't in the table.
+/// Geometry editor for a `NodeKind::Mesh`. When the backing `MeshDef`'s stack
+/// base is a built-in **primitive**, expose live editable parameters (box dims,
+/// sphere/cylinder/cone radius + segments, plane subdivisions, torus, …) — each
+/// rewrites the stack base via `SetMeshModifiers`, which re-bakes the mesh + the
+/// bridge re-materializes referencing nodes. Non-primitive bases (lathe /
+/// superquadric / sweep / SDF / captured) + the modifier stack stay MCP-authored,
+/// so those show a read-only summary. Falls back to a "missing asset" note.
 fn mesh_geometry_section(mesh: awsm_editor_protocol::AssetId) -> Dom {
     use awsm_editor_protocol::MeshBase;
 
-    let summary = {
+    let (prim, base_name, mod_count) = {
         let ctrl = controller();
         let assets = ctrl.scene.assets.lock().unwrap();
         match assets.get(mesh).map(|e| &e.source) {
             Some(AssetSource::Mesh(def)) => {
-                let base = match &def.stack.base {
-                    MeshBase::Primitive(s) => match s {
-                        PrimitiveShape::Plane { .. } => "plane".to_string(),
-                        PrimitiveShape::Box { .. } => "box".to_string(),
-                        PrimitiveShape::Sphere { .. } => "sphere".to_string(),
-                        PrimitiveShape::Cylinder { .. } => "cylinder".to_string(),
-                        PrimitiveShape::Cone { .. } => "cone".to_string(),
-                        PrimitiveShape::Torus { .. } => "torus".to_string(),
-                    },
-                    MeshBase::Lathe { .. } => "lathe".to_string(),
-                    MeshBase::Superquadric { .. } => "superquadric".to_string(),
-                    MeshBase::Sweep(_) => "sweep along curve".to_string(),
-                    MeshBase::Captured(_) => "captured".to_string(),
-                    MeshBase::Sdf { .. } => "SDF/CSG".to_string(),
-                };
                 let n = def.stack.modifiers.len();
-                let mods = if n == 1 {
-                    "1 modifier".to_string()
-                } else {
-                    format!("{n} modifiers")
-                };
-                format!("base: {base} · {mods}")
+                match &def.stack.base {
+                    MeshBase::Primitive(s) => (Some(s.clone()), None, n),
+                    MeshBase::Lathe { .. } => (None, Some("lathe"), n),
+                    MeshBase::Superquadric { .. } => (None, Some("superquadric"), n),
+                    MeshBase::Sweep(_) => (None, Some("sweep along curve"), n),
+                    MeshBase::Captured(_) => (None, Some("captured"), n),
+                    MeshBase::Sdf { .. } => (None, Some("SDF/CSG"), n),
+                }
             }
-            _ => "geometry asset missing".to_string(),
+            _ => (None, Some("geometry asset missing"), 0),
         }
     };
-    Section::new("Geometry")
-        .dense(true)
-        .child(html!("div", {
-            .style("font-size", "12px").style("color", "var(--text-3)").style("line-height", "1.5")
-            .text(&summary)
-        }))
-        .child(html!("div", {
-            .style("font-size", "11px").style("color", "var(--text-4)").style("margin-top", "4px")
-            .text("Edit the modifier stack + vertices via the MCP mesh tools.")
-        }))
-        .render()
+
+    let mut sec = Section::new("Geometry").dense(true);
+    match prim {
+        Some(shape) => {
+            sec = primitive_fields(sec, mesh, &shape);
+            if mod_count > 0 {
+                let mods = if mod_count == 1 {
+                    "1 modifier".to_string()
+                } else {
+                    format!("{mod_count} modifiers")
+                };
+                sec = sec.child(html!("div", {
+                    .style("font-size", "11px").style("color", "var(--text-4)").style("margin-top", "6px")
+                    .text(&format!("+ {mods} on the stack (edit via the MCP mesh tools)"))
+                }));
+            }
+        }
+        None => {
+            sec = sec
+                .child(html!("div", {
+                    .style("font-size", "12px").style("color", "var(--text-3)").style("line-height", "1.5")
+                    .text(&format!("base: {}", base_name.unwrap_or("")))
+                }))
+                .child(html!("div", {
+                    .style("font-size", "11px").style("color", "var(--text-4)").style("margin-top", "4px")
+                    .text("Edit the modifier stack + vertices via the MCP mesh tools.")
+                }));
+        }
+    }
+    sec.render()
+}
+
+/// Replace the mesh's stack base with `shape` (preserving its modifiers) and
+/// dispatch `SetMeshModifiers` so the geometry re-bakes live.
+fn apply_primitive(mesh: awsm_editor_protocol::AssetId, shape: PrimitiveShape) {
+    use awsm_editor_protocol::MeshBase;
+    let stack = {
+        let ctrl = controller();
+        let assets = ctrl.scene.assets.lock().unwrap();
+        match assets.get(mesh).map(|e| &e.source) {
+            Some(AssetSource::Mesh(def)) => Some(def.stack.clone()),
+            _ => None,
+        }
+    };
+    if let Some(mut stack) = stack {
+        stack.base = MeshBase::Primitive(shape);
+        spawn_local(async move {
+            let _ = controller()
+                .dispatch(EditorCommand::SetMeshModifiers { mesh, stack })
+                .await;
+        });
+    }
+}
+
+/// Append the per-variant editable NumFields for a primitive base. Each field's
+/// `on_change` rebuilds the full `PrimitiveShape` (the other params captured from
+/// the current snapshot) and calls [`apply_primitive`]. `u32` segment counts are
+/// floored to their topological minimum.
+fn primitive_fields(
+    sec: Section,
+    mesh: awsm_editor_protocol::AssetId,
+    shape: &PrimitiveShape,
+) -> Section {
+    use PrimitiveShape as P;
+    // `mesh` is Copy; build an f32 field whose change maps to a new shape.
+    let f = move |val: f32, min: f64, step: f64, build: Box<dyn Fn(f64) -> P>| {
+        NumField::new(val as f64)
+            .min(min)
+            .step(step)
+            .on_change(move |v| apply_primitive(mesh, build(v)))
+            .render()
+    };
+    match shape {
+        P::Plane {
+            width,
+            depth,
+            segments_x,
+            segments_z,
+        } => {
+            let (w, d, sx, sz) = (*width, *depth, *segments_x, *segments_z);
+            sec.child(row(
+                "Width",
+                f(
+                    w,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Plane {
+                        width: v as f32,
+                        depth: d,
+                        segments_x: sx,
+                        segments_z: sz,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Depth",
+                f(
+                    d,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Plane {
+                        width: w,
+                        depth: v as f32,
+                        segments_x: sx,
+                        segments_z: sz,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments X",
+                f(
+                    sx as f32,
+                    1.0,
+                    1.0,
+                    Box::new(move |v| P::Plane {
+                        width: w,
+                        depth: d,
+                        segments_x: (v as u32).max(1),
+                        segments_z: sz,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Z",
+                f(
+                    sz as f32,
+                    1.0,
+                    1.0,
+                    Box::new(move |v| P::Plane {
+                        width: w,
+                        depth: d,
+                        segments_x: sx,
+                        segments_z: (v as u32).max(1),
+                    }),
+                ),
+            ))
+        }
+        P::Box { dims } => {
+            let dm = *dims;
+            sec.child(row(
+                "Width",
+                f(
+                    dm[0],
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Box {
+                        dims: [v as f32, dm[1], dm[2]],
+                    }),
+                ),
+            ))
+            .child(row(
+                "Height",
+                f(
+                    dm[1],
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Box {
+                        dims: [dm[0], v as f32, dm[2]],
+                    }),
+                ),
+            ))
+            .child(row(
+                "Depth",
+                f(
+                    dm[2],
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Box {
+                        dims: [dm[0], dm[1], v as f32],
+                    }),
+                ),
+            ))
+        }
+        P::Sphere {
+            radius,
+            segments_long,
+            segments_lat,
+        } => {
+            let (r, sl, sa) = (*radius, *segments_long, *segments_lat);
+            sec.child(row(
+                "Radius",
+                f(
+                    r,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Sphere {
+                        radius: v as f32,
+                        segments_long: sl,
+                        segments_lat: sa,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Long",
+                f(
+                    sl as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Sphere {
+                        radius: r,
+                        segments_long: (v as u32).max(3),
+                        segments_lat: sa,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Lat",
+                f(
+                    sa as f32,
+                    2.0,
+                    1.0,
+                    Box::new(move |v| P::Sphere {
+                        radius: r,
+                        segments_long: sl,
+                        segments_lat: (v as u32).max(2),
+                    }),
+                ),
+            ))
+        }
+        P::Cylinder {
+            radius,
+            height,
+            radial_segments,
+        } => {
+            let (r, h, rs) = (*radius, *height, *radial_segments);
+            sec.child(row(
+                "Radius",
+                f(
+                    r,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Cylinder {
+                        radius: v as f32,
+                        height: h,
+                        radial_segments: rs,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Height",
+                f(
+                    h,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Cylinder {
+                        radius: r,
+                        height: v as f32,
+                        radial_segments: rs,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Radial Segments",
+                f(
+                    rs as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Cylinder {
+                        radius: r,
+                        height: h,
+                        radial_segments: (v as u32).max(3),
+                    }),
+                ),
+            ))
+        }
+        P::Cone {
+            radius,
+            height,
+            radial_segments,
+        } => {
+            let (r, h, rs) = (*radius, *height, *radial_segments);
+            sec.child(row(
+                "Radius",
+                f(
+                    r,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Cone {
+                        radius: v as f32,
+                        height: h,
+                        radial_segments: rs,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Height",
+                f(
+                    h,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Cone {
+                        radius: r,
+                        height: v as f32,
+                        radial_segments: rs,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Radial Segments",
+                f(
+                    rs as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Cone {
+                        radius: r,
+                        height: h,
+                        radial_segments: (v as u32).max(3),
+                    }),
+                ),
+            ))
+        }
+        P::Torus {
+            radius,
+            thickness,
+            segments_major,
+            segments_minor,
+        } => {
+            let (r, t, sj, sn) = (*radius, *thickness, *segments_major, *segments_minor);
+            sec.child(row(
+                "Radius",
+                f(
+                    r,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Torus {
+                        radius: v as f32,
+                        thickness: t,
+                        segments_major: sj,
+                        segments_minor: sn,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Thickness",
+                f(
+                    t,
+                    0.0,
+                    0.05,
+                    Box::new(move |v| P::Torus {
+                        radius: r,
+                        thickness: v as f32,
+                        segments_major: sj,
+                        segments_minor: sn,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Major",
+                f(
+                    sj as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Torus {
+                        radius: r,
+                        thickness: t,
+                        segments_major: (v as u32).max(3),
+                        segments_minor: sn,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Minor",
+                f(
+                    sn as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Torus {
+                        radius: r,
+                        thickness: t,
+                        segments_major: sj,
+                        segments_minor: (v as u32).max(3),
+                    }),
+                ),
+            ))
+        }
+    }
 }
 
 /// A small read-only info Section (used for kinds whose only settable properties
