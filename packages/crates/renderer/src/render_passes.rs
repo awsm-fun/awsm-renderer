@@ -104,6 +104,8 @@ impl RenderPassesShaderPlan {
 /// from_resolved unchanged.
 struct RenderPassesBindings {
     geometry_bg: geometry::bind_group::GeometryBindGroups,
+    geometry_masked_bg: geometry::masked_bind_group::GeometryMaskedBindGroup,
+    geometry_masked_pipelines: geometry::masked_pipeline::GeometryMaskedPipelines,
     coverage_bg_single: Option<coverage::bind_group::CoverageBindGroups>,
     coverage_bg_msaa: Option<coverage::bind_group::CoverageBindGroups>,
     hzb_bg: Option<hzb::bind_group::HzbBindGroups>,
@@ -275,6 +277,13 @@ impl RenderPasses {
         // Phase 1 — sync bind-group setup + auxiliary resources
         // ----------------------------------------------------------
         let geometry_bg = geometry::bind_group::GeometryBindGroups::new(ctx).await?;
+        // Masked (alpha-tested) geometry variant: augmented group-0 bind group +
+        // an empty lazy pipeline pool. Pipelines compile later (built-in PBR in
+        // the texture-finalize flow; custom via the dynamic scheduler).
+        let geometry_masked_bg =
+            geometry::masked_bind_group::GeometryMaskedBindGroup::new(ctx).await?;
+        let geometry_masked_pipelines =
+            geometry::masked_pipeline::GeometryMaskedPipelines::new(ctx, &geometry_masked_bg, &geometry_bg)?;
         let (coverage_bg_single, coverage_bg_msaa) = if features.coverage_lod {
             (
                 Some(coverage::bind_group::CoverageBindGroups::new(ctx, false).await?),
@@ -379,6 +388,8 @@ impl RenderPasses {
         Ok(RenderPassesShaderPlan {
             bindings: RenderPassesBindings {
                 geometry_bg,
+                geometry_masked_bg,
+                geometry_masked_pipelines,
                 coverage_bg_single,
                 coverage_bg_msaa,
                 hzb_bg,
@@ -608,6 +619,8 @@ impl RenderPasses {
         } = descs;
         let RenderPassesBindings {
             geometry_bg,
+            geometry_masked_bg,
+            geometry_masked_pipelines,
             coverage_bg_single,
             coverage_bg_msaa,
             hzb_bg,
@@ -633,6 +646,8 @@ impl RenderPasses {
                 &per_pass_descs.geometry,
                 render_keys[ranges.geometry].to_vec(),
             )?,
+            masked_bind_group: geometry_masked_bg,
+            masked_pipelines: geometry_masked_pipelines,
         };
 
         let coverage = match (

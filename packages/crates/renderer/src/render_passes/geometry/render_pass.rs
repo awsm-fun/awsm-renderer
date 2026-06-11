@@ -13,7 +13,10 @@ use crate::{
     error::Result,
     render::RenderContext,
     render_passes::{
-        geometry::{bind_group::GeometryBindGroups, pipeline::GeometryPipelines},
+        geometry::{
+            bind_group::GeometryBindGroups, masked_bind_group::GeometryMaskedBindGroup,
+            masked_pipeline::GeometryMaskedPipelines, pipeline::GeometryPipelines,
+        },
         RenderPassInitContext,
     },
     renderable::Renderable,
@@ -33,6 +36,13 @@ static VISIBILITY_CLEAR_COLOR: LazyLock<Color> = LazyLock::new(|| {
 pub struct GeometryRenderPass {
     pub bind_groups: GeometryBindGroups,
     pub pipelines: GeometryPipelines,
+    /// Augmented group-0 bind group bound for the masked (alpha-tested)
+    /// variant draws. See [`GeometryMaskedBindGroup`].
+    pub masked_bind_group: GeometryMaskedBindGroup,
+    /// Lazy per-`shader_id` pool of masked (alpha-tested) pipelines.
+    /// Populated by the texture-finalize flow (built-in) + the dynamic
+    /// scheduler (custom); empty until a masked material needs one.
+    pub masked_pipelines: GeometryMaskedPipelines,
 }
 
 impl GeometryRenderPass {
@@ -45,10 +55,14 @@ impl GeometryRenderPass {
         let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
         let bind_groups = GeometryBindGroups::new(ctx).await?;
         let pipelines = GeometryPipelines::new(ctx, &bind_groups, multisampled_geometry).await?;
+        let masked_bind_group = GeometryMaskedBindGroup::new(ctx).await?;
+        let masked_pipelines = GeometryMaskedPipelines::new(ctx, &masked_bind_group, &bind_groups)?;
 
         Ok(Self {
             bind_groups,
             pipelines,
+            masked_bind_group,
+            masked_pipelines,
         })
     }
 
