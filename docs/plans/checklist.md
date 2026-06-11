@@ -123,6 +123,58 @@ KEY ARCH FACTS (verified this session):
 - geometry fragment currently writes only visibility data (triangle id, bary,
   normal/tangent) — `geometry_wgsl/fragment.wgsl`. No texture access today.
 
+FINALIZED B DESIGN (validated against code, this session — supersedes ambiguities above):
+- WHY raster (not compute) discard: the visibility raster writes DEPTH. If discard
+  happened only in the opaque COMPUTE (after geometry), the hole's depth is already
+  written → later depth-tested geometry/shadows/transmission can't see through the
+  hole. So the discard MUST be in the raster. Confirmed: no compute-side shortcut.
+- maxBindGroups = 4 (macOS Metal ceiling; geometry already uses all 4: 0 camera+
+  frame_globals, 1 transforms, 2 meta, 3 animation). SOLUTION: the masked variant
+  does NOT add a 5th group — it APPENDS its fragment-only bindings onto GROUP 0
+  (already F-visible) as a DISTINCT group-0 layout: `materials`(storage),
+  `material_mesh_metas`(storage), the merged geometry pool `visibility_data`(storage),
+  `texture_transforms`(storage), texture pool arrays+samplers, (+extras_pool/
+  instance_attrs for custom). Vertex path + shared morph/skin/meta helpers
+  (groups 1–3) are UNTOUCHED → low risk. Per-stage storage-buffer budget stays <8.
+- The masked variant is SPECIALIZED PER shader_id (mirrors the opaque compute's
+  `ShaderCacheKeyMaterialOpaque`), because the geometry template canNOT include the
+  full `{{ materials_wgsl }}` blob (it pulls dynamic-material fragments that
+  reference opaque-only contract types `OpaqueShadingInput` etc.). So
+  `ShaderCacheKeyGeometry` gains an `alpha_test: Option<…>` carrying shader_id/base/
+  pool-lens/(dynamic info). Non-masked meshes keep `None` (one bool's worth of cost,
+  no texture lookup). Builtin (PBR/Unlit/Toon) masked variants emit just that
+  material's base-color-alpha load; custom emits the alpha-only fragment (B3).
+- Material buffer carries the cutoff for BUILTIN: `pbr_material.wgsl` header after
+  shader_id = [alpha_mode(u32), alpha_cutoff(f32), base_color_tex(5), base_color_factor(4), …]
+  (`materials/src/wgsl/pbr/pbr_material.wgsl:110` `pbr_get_material`; written at
+  `materials/src/pbr.rs:505-512`). Masked PBR fragment: read alpha_cutoff + base_color
+  → `color=base_color_factor; if base_color_tex.exists { color*=texture_pool_sample(uv) }`;
+  `if color.a < alpha_cutoff { discard; }`. UV via `texture_uv(attribute_data_offset,
+  triangle_indices, bary, tex_info, stride, uv_sets_index)` reading the merged pool
+  (mirror compute.wgsl:128-140 reconstruction of triangle_indices + the offsets from
+  `material_mesh_metas[material_mesh_meta_offset/256]`). The masked vertex shader
+  forwards `material_mesh_meta_offset` (already a flat varying) + triangle_index +
+  barycentric to the fragment.
+- B3 alpha-only custom: USER-CHOSEN approach = a lighter optional "alpha-only" WGSL
+  contract (author returns `f32`), compiled into a lean masked variant (NO lighting/
+  brdf). Cutoff for custom is host-side only today (`materials.rs:152`) and NOT in the
+  GPU buffer → plumb the cutoff into the masked custom variant (simplest: pass via the
+  material buffer prefix or a small per-mesh uniform; decide at impl). Route
+  `Material::Custom` mask → visibility: `renderer/src/materials.rs:135`
+  `is_transparency_pass` drop `Mask` from the Custom arm (keep `Blend`).
+- Per-mesh routing: `renderable.rs:172` collection — add the masked signal via
+  `material.alpha_mask().is_some()` (renderer `materials.rs:146`) into
+  `GeometryRenderPipelineKeyOpts`; `meshes/mesh.rs::push_geometry_pass_commands`
+  binds the augmented group-0 for masked draws.
+- IMPLEMENTATION ORDER (validated): (1) inert `alpha_test` cache-key field (done,
+  build green). (2) PBR masked variant end-to-end (de-risks the raster machinery
+  with the simplest material) → browser-verify a PBR cutout (dish goldLeaf MASK, or
+  foliage). (3) B3 custom alpha-only + routing + editor toggle + MCP → browser-verify
+  the dynamic cutout plane (holes + transmission-through-holes) — the user's
+  dynamic-first test. (4) B2 shadow masked variant → hole-shaped shadows. (5) sweep.
+  NOTE: user asked to "test dynamic FIRST"; reordered to PBR-first only to de-risk
+  the shared raster machinery cheaply — confirm with user before/at step 3.
+
 DEV STACK / TEST SETUP (this session):
 - Trunk's file-watch went stale mid-session; FIX = restart `task mcp-dev` (kills+
   restarts trunk:9085 + media:9082/3 + MCP:9086; editor browser reconnects on
