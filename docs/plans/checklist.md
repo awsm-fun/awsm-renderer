@@ -13,6 +13,22 @@ leaves cut out, undersides glow (back-face normal flip), cutout edges anti-alias
 cutout sphere primitive — holes see-through, curved silhouette + hole edges AA'd. Cutout +
 AA + two-sided transmission = DONE.
 
+▶ B2 (hole-shaped cutout SHADOWS) = DONE + BROWSER-VERIFIED (5 commits 2b124ad7..dbf5da03):
+the cutout story is complete — masked casters now write hole-shaped shadow depth. Verified
+in the editor via MCP (`POST /debug` raw-Request seam on :9086): a spot light + the
+DiffuseTransmissionPlant + a ground plane → the leaves cast leaf-shaped (cutout) shadows
+with see-through gaps + thin stem lines, the opaque pot casts a solid blob;
+`render:Shadow Masked ... ok` pipeline compiles logged. See §2b Step B2 for the full design.
+NEXT (per session prompt): (2) firefly-light animation-track sync on :9080; then (3) the rest
+(FlipBook masked [deferred], §2b sweep, editor clip-playback, scene-loader alpha_wgsl
+round-trip). VERIFY-VIA-MCP NOTE: the awsm-editor MCP tools weren't exposed to the agent
+session, but `curl -s -X POST http://127.0.0.1:9086/debug -d '<Request JSON>'` drives the
+attached editor tab directly (Dispatch=EditorCommand, Query={"query":...}, ScenePng={width,
+height} → writes /var/.../awsm-mcp-last.png). Raw command/query shapes live in
+`packages/crates/editor-protocol/src/{command,query}.rs`. Inserted lights default cast=true;
+directional-cascade shadows were ~invisible for a tiny object — a SPOT light gives a crisp,
+reliable shadow.
+
 ANIMATION-TRACK BUGS found during verification (SEPARATE from cutout/AA — my session never
 touched lights/transforms/animation; these belong to the mesh-authoring animation track):
 1. Animated glTF LIGHTS don't follow their animated nodes on :9080 (firefly meshes move,
@@ -83,9 +99,7 @@ page load to verify. Verify in the :9080 model viewer (model-tests, populate_glt
 /app/model/DiffuseTransmissionPlant after it rebuilds — undersides should glow.
 
 REMAINING: FlipBook masked (atlas-cell alpha, DEFERRED — mask alpha is the time-varying
-sprite cell; flipbook.rs left transparent-routed); B2 shadow masked variant
-(hole-shaped shadows — shadow pass is depth-only + at maxBindGroups=4, needs a bind-group
-consolidation, see B2 EXECUTION PLAN below); textured-CUSTOM cutout browser test
+sprite cell; flipbook.rs left transparent-routed); textured-CUSTOM cutout browser test
 (material_sample_<name> path — PBR-textured already verified); scene-loader player round-trip
 of alpha_wgsl (currently None); editor Mask contract docs (main WGSL now OpaqueShadingOutput).
 
@@ -142,8 +156,27 @@ texture lookup, via a `geometry` pipeline variant).
   `discard` if `< cutoff` (per-mesh cutoff in MaterialMeshMeta). Separate per-shader-id
   masked pipeline pool; PBR built on texture-finalize. COMPILES + clippy-clean.
   ▶ BROWSER-VERIFY (pending user): DiffuseTransmissionPlant `leaves` leaf-shaped.
-- [ ] **Step B2** — same alpha-test in the SHADOW raster variant (else cutout
-  masks cast solid/rectangular shadows). NOT YET DONE — see the B2 EXECUTION PLAN.
+- [x] **Step B2** — same alpha-test in the SHADOW raster variant (else cutout
+  masks cast solid/rectangular shadows). DONE + BROWSER-VERIFIED. A from-scratch
+  parallel masked implementation for the shadow pass: a new
+  `ShaderCacheKey::ShadowMasked` shader (`shadows/shader/masked_*` +
+  `shadow_masked_wgsl/{bind_groups,vertex,fragment}`) whose vertex forwards
+  triangle_index/bary/material_mesh_meta_offset and whose depth-only fragment
+  reuses the shared `shared_wgsl/masked_alpha.wgsl` (extracted from the geometry
+  masked fragment) for a binary cutoff `discard` (no sample_mask — shadow atlas is
+  single-sampled, PCF softens); an augmented shadow_view group 0 (shadow_view +
+  materials/metas/visibility_data/texture_transforms + texture pool) to stay within
+  maxBindGroups=4; a lazy `ShadowMaskedPipelines` pool (shader_id × instancing ×
+  cube_face) held on `RenderPasses` (reuses `shadow_pipeline_cache_key` +
+  `with_force_fragment_stage`), built in `finalize_gpu_textures` alongside the
+  geometry masked variants; recreate via `FunctionToCall::ShadowMasked`; render
+  routing in `shadows/render_pass.rs` binds the augmented group + masked pipeline
+  for casters whose `alpha_cutoff().is_some()` (independent of opaque/transparent
+  routing), else falls back to the solid pipeline. VERIFIED (editor MCP, spot light):
+  DiffuseTransmissionPlant leaves cast leaf-shaped (cutout) shadows + thin stem
+  lines, while the opaque pot casts a solid blob — `render:Shadow Masked ... ok`
+  pipeline compiles confirmed in console. KNOWN LIMITATION (mirrors B1): masked
+  shadow pipelines (re)build on texture-finalize, not on every state change.
 - [x] **Step B3** — dynamic/custom material mask DONE + clippy/fmt-clean: routed
   `Material::Custom` mask → opaque (`materials.rs`), launch builds its opaque pipeline,
   the masked variant runs the author's 2nd alpha-only WGSL (`custom_alpha_dynamic`),

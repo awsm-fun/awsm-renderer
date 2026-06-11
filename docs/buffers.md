@@ -135,6 +135,29 @@ depth); single-sampled falls back to the binary discard (where a post-process AA
 would complement it). Cost is scoped to the MSAA-on × cutout-material combo —
 opaque non-cutout materials never enter this path.
 
+### Hole-shaped (cutout) shadows
+
+A cutout caster has to cast a *cutout* shadow — the holes must let light through,
+not a solid rectangle. The shadow pass is depth-only with no fragment, so it gets
+a **parallel masked variant** (`render_passes/shadow_masked/` +
+`shadows/shader/masked_*`): a masked shadow vertex forwards the
+triangle-index/barycentric/material-meta offset, and a depth-only fragment reuses
+the *same* `shared_wgsl/masked_alpha.wgsl` helper as the geometry masked fragment
+to `discard` sub-cutoff fragments (binary discard — the shadow atlas is
+single-sampled, so there's no `sample_mask`; PCF/PCSS softens the edge at sample
+time). To stay within the macOS `maxBindGroups = 4` ceiling the variant augments
+**group 0** (the per-view `shadow_view` uniform) with the fragment-only material /
+mesh-pool / texture-pool bindings — mirroring the geometry masked group-0
+augmentation — so the vertex's transforms/meta/animation groups (1–3) are
+untouched. The lazy pipeline pool (keyed `shader_id × instancing × cube_face`)
+builds in the texture-finalize flow alongside the geometry masked pipelines, and
+the shadow render pass binds the augmented group + masked pipeline for any caster
+whose material has an `alpha_cutoff` — **independent of opaque/transparent
+routing**, since a `MASK`+refractive material is transparent-routed but must still
+cast a hole-shaped shadow. Until a caster's masked variant is compiled it falls
+back to the plain solid-shadow pipeline, so a cutout mesh always casts *some*
+shadow.
+
 ## Tangents
 
 Most glTF assets ship **no** `TANGENT` attribute even when they have normal maps —
