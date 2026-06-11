@@ -136,7 +136,10 @@ pub struct Sheen {
 }
 
 fn ext_f32(v: &serde_json::Value, key: &str, default: f32) -> f32 {
-    v.get(key).and_then(|x| x.as_f64()).map(|x| x as f32).unwrap_or(default)
+    v.get(key)
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32)
+        .unwrap_or(default)
 }
 
 fn ext_color3(v: &serde_json::Value, key: &str, default: [f32; 3]) -> [f32; 3] {
@@ -170,14 +173,16 @@ pub fn extract_extensions(m: &gltf::Material) -> MaterialExtensions {
                 ext_color3(v, "diffuseTransmissionColorFactor", [1.0, 1.0, 1.0]),
             )
         });
-    let clearcoat = m.extension_value("KHR_materials_clearcoat").map(|v| Clearcoat {
-        factor: ext_f32(v, "clearcoatFactor", 0.0),
-        roughness_factor: ext_f32(v, "clearcoatRoughnessFactor", 0.0),
-        normal_scale: v
-            .get("clearcoatNormalTexture")
-            .map(|t| ext_f32(t, "scale", 1.0))
-            .unwrap_or(1.0),
-    });
+    let clearcoat = m
+        .extension_value("KHR_materials_clearcoat")
+        .map(|v| Clearcoat {
+            factor: ext_f32(v, "clearcoatFactor", 0.0),
+            roughness_factor: ext_f32(v, "clearcoatRoughnessFactor", 0.0),
+            normal_scale: v
+                .get("clearcoatNormalTexture")
+                .map(|t| ext_f32(t, "scale", 1.0))
+                .unwrap_or(1.0),
+        });
     let sheen = m.extension_value("KHR_materials_sheen").map(|v| Sheen {
         roughness_factor: ext_f32(v, "sheenRoughnessFactor", 0.0),
         color_factor: ext_color3(v, "sheenColorFactor", [0.0, 0.0, 0.0]),
@@ -275,7 +280,11 @@ fn extract_extension_textures(
     }
     if let Some(v) = m.extension_value("KHR_materials_diffuse_transmission") {
         grab(S::DiffuseTransmission, v, "diffuseTransmissionTexture");
-        grab(S::DiffuseTransmissionColor, v, "diffuseTransmissionColorTexture");
+        grab(
+            S::DiffuseTransmissionColor,
+            v,
+            "diffuseTransmissionColorTexture",
+        );
     }
     out
 }
@@ -371,7 +380,13 @@ mod tests {
         let g = gltf::Gltf::from_slice(IRID_TEX_GLTF.as_bytes()).expect("parse");
         let specs = extract_materials(&g);
         let xt = &specs[0].extension_textures;
-        assert!(xt.contains(&(ExtTextureSlot::Iridescence, TexRef { image: 0, uv_index: 0 })));
+        assert!(xt.contains(&(
+            ExtTextureSlot::Iridescence,
+            TexRef {
+                image: 0,
+                uv_index: 0
+            }
+        )));
         assert!(xt.contains(&(
             ExtTextureSlot::IridescenceThickness,
             TexRef {

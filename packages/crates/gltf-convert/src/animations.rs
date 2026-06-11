@@ -67,8 +67,7 @@ pub fn extract_animations(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Vec<Anim
                         GltfInterp::Step => Interpolation::Step,
                         GltfInterp::CubicSpline => Interpolation::CubicSpline,
                     };
-                    let reader =
-                        channel.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
+                    let reader = channel.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
                     let times: Vec<f32> = reader
                         .read_inputs()
                         .map(|it| it.collect())

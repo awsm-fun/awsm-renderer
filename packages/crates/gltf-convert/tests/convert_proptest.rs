@@ -12,18 +12,26 @@
 //! material factors, animation paths/interpolation) rather than hand-enumerating.
 
 use awsm_glb_export::{extract_node_mesh_from_bytes, write_glb, ExportNode, GlbScene, MeshData};
-use awsm_gltf_convert::{awsm_format_version, convert, is_canonical, AlphaMode, AWSM_FORMAT_VERSION};
+use awsm_gltf_convert::{
+    awsm_format_version, convert, is_canonical, AlphaMode, AWSM_FORMAT_VERSION,
+};
 use proptest::prelude::*;
 
 fn mesh_data_strategy() -> impl Strategy<Value = MeshData> {
     (3usize..30usize).prop_flat_map(|vcount| {
         let positions = prop::collection::vec(prop::array::uniform3(-1000.0f32..1000.0), vcount);
-        let normals =
-            prop::option::of(prop::collection::vec(prop::array::uniform3(-1.0f32..1.0), vcount));
-        let uvs =
-            prop::option::of(prop::collection::vec(prop::array::uniform2(0.0f32..8.0), vcount));
-        let colors =
-            prop::option::of(prop::collection::vec(prop::array::uniform4(0.0f32..1.0), vcount));
+        let normals = prop::option::of(prop::collection::vec(
+            prop::array::uniform3(-1.0f32..1.0),
+            vcount,
+        ));
+        let uvs = prop::option::of(prop::collection::vec(
+            prop::array::uniform2(0.0f32..8.0),
+            vcount,
+        ));
+        let colors = prop::option::of(prop::collection::vec(
+            prop::array::uniform4(0.0f32..1.0),
+            vcount,
+        ));
         let indices = prop::collection::vec(0u32..(vcount as u32), 3..=60).prop_map(|mut v| {
             let keep = (v.len() / 3) * 3;
             v.truncate(keep.max(3));

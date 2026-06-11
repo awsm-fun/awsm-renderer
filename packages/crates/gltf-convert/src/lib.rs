@@ -28,9 +28,7 @@
 pub mod animations;
 pub mod images;
 pub mod materials;
-pub use animations::{
-    extract_animations, AnimChannel, AnimProperty, AnimationSpec, Interpolation,
-};
+pub use animations::{extract_animations, AnimChannel, AnimProperty, AnimationSpec, Interpolation};
 pub use images::{extract_images, ImageData};
 pub use materials::{
     extract_extensions, extract_materials, AlphaMode, Clearcoat, ExtTextureSlot, Iridescence,
@@ -285,9 +283,7 @@ mod tests {
                 interpolation: AnimInterp::Linear,
                 times: vec![0.0, 0.5, 1.0],
                 // 4/key quaternion xyzw × 3 keys.
-                values: vec![
-                    0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0,
-                ],
+                values: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0],
             }],
         };
         let source = export_glb(&GlbScene {
@@ -363,7 +359,10 @@ mod tests {
         let (_src, source_glb) = cube_glb();
         let once = convert(&source_glb).expect("convert 1");
         let twice = convert(&once.glb).expect("convert 2");
-        assert!(twice.is_already_canonical, "second pass must detect canonical");
+        assert!(
+            twice.is_already_canonical,
+            "second pass must detect canonical"
+        );
         assert_eq!(twice.format_version, Some(AWSM_FORMAT_VERSION));
         // Pass-through returns the same bytes.
         assert_eq!(twice.glb, once.glb);

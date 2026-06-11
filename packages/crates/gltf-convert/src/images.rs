@@ -82,8 +82,9 @@ mod tests {
         // Arbitrary raw bytes (extract ships them raw; no decode happens).
         let raw: &[u8] = b"\x89PNG\r\n\x1a\nhello-image-bytes";
         let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
-        let json =
-            format!(r#"{{"asset":{{"version":"2.0"}},"images":[{{"uri":"data:image/png;base64,{b64}"}}]}}"#);
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"images":[{{"uri":"data:image/png;base64,{b64}"}}]}}"#
+        );
         let g = gltf::Gltf::from_slice(json.as_bytes()).expect("parse");
         let imgs = extract_images(&g, &[]);
         assert_eq!(imgs.len(), 1);
