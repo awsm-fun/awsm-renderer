@@ -311,31 +311,42 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
         .collect();
     let buffer_defaults: Vec<Vec<u32>> = buffers.iter().map(|_| Vec::new()).collect();
 
+    let main_wgsl = mat.wgsl.get_cloned();
+    let alpha_body = mat.alpha_wgsl.get_cloned();
+    let alpha_mode = convert_alpha(mat.alpha.get(), mat.cutoff.get() as f32);
+    // The 2nd ("alpha-only") WGSL window — only meaningful for MASK materials.
+    // Empty body → `None` (no masked variant built).
+    let alpha_wgsl = if matches!(mat.alpha.get(), AlphaMode::Mask) && !alpha_body.trim().is_empty()
+    {
+        Some(alpha_body.clone())
+    } else {
+        None
+    };
+    // CRITICAL: the bridge's register no-op + the registry's idempotency are keyed
+    // on `wgsl_hash`, so it MUST cover everything that changes the compiled output
+    // — not just the main WGSL. Fold in the alpha mode/cutoff and the alpha-only
+    // WGSL, else editing only the cutout (or toggling Mask) is treated as a no-op
+    // and the masked variant never (re)builds.
+    let wgsl_hash = hash_str(&format!(
+        "{main_wgsl}\u{0}alpha_mode={alpha_mode:?}\u{0}alpha_wgsl={alpha_body}"
+    ));
+
     MaterialRegistration {
         // The renderer-internal registration key is the material's stable id
         // (the display name is UI-only); keeps the registry rename-proof and
         // free of duplicate-display-name collisions.
         name: mat.id.to_string(),
-        alpha_mode: convert_alpha(mat.alpha.get(), mat.cutoff.get() as f32),
+        alpha_mode,
         double_sided: mat.double_sided.get(),
         layout,
         layout_hash: layout_hash(mat, &uniforms, &textures, &buffers),
-        wgsl_hash: hash_str(&mat.wgsl.get_cloned()),
-        wgsl_fragment: mat.wgsl.get_cloned(),
+        wgsl_hash,
+        wgsl_fragment: main_wgsl,
         buffer_defaults,
         uniform_defaults,
         shader_includes: includes_from_keys(&mat.shader_includes.get_cloned()),
         fragment_inputs: inputs_from_keys(&mat.fragment_inputs.get_cloned()),
-        // The 2nd ("alpha-only") WGSL window — only meaningful for MASK
-        // materials. Empty body → `None` (no masked variant built).
-        alpha_wgsl: {
-            let body = mat.alpha_wgsl.get_cloned();
-            if matches!(mat.alpha.get(), AlphaMode::Mask) && !body.trim().is_empty() {
-                Some(body)
-            } else {
-                None
-            }
-        },
+        alpha_wgsl,
     }
 }
 
