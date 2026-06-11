@@ -503,12 +503,13 @@ impl AwsmRenderer {
             }
 
             // Custom MASK materials — one masked variant each, emitting the
-            // author's alpha-only fragment.
-            for (shader_id, info) in custom_masked {
+            // author's alpha-only fragment. Iterate by reference so the same
+            // list feeds the masked-shadow build below.
+            for (shader_id, info) in &custom_masked {
                 let variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
-                    shader_id,
+                    shader_id: *shader_id,
                     base: crate::dynamic_materials::ShadingBase::Custom,
-                    dynamic_alpha: Some(info),
+                    dynamic_alpha: Some(info.clone()),
                 };
                 self.render_passes
                     .geometry
@@ -516,6 +517,72 @@ impl AwsmRenderer {
                     .ensure_variant(
                         &mut ctx,
                         &self.render_passes.geometry.masked_bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
+
+            // -------------------------------------------------------------
+            // Masked (alpha-tested) SHADOW casters — same per-shader-id pool,
+            // for hole-shaped (cutout) shadows (B2). The masked-shadow group-0
+            // carries the texture pool too, so relayout it against the new pool,
+            // then compile the built-in PBR/Unlit/Toon variants (base-color
+            // cutout) + every registered MASK custom (alpha-only WGSL). The
+            // shadow render path falls back to the solid pipeline until these
+            // land, so a masked caster always casts *some* shadow.
+            // -------------------------------------------------------------
+            let new_shadow_masked_bg = self
+                .render_passes
+                .shadow_masked
+                .bind_group
+                .clone_because_texture_pool_changed(&mut ctx)?;
+            self.render_passes.shadow_masked.bind_group = new_shadow_masked_bg;
+            self.render_passes.shadow_masked.pipelines.relayout(
+                &mut ctx,
+                &self.render_passes.shadow_masked.bind_group,
+                &self.render_passes.geometry.bind_groups,
+            )?;
+            for (shader_id, base) in [
+                (
+                    awsm_materials::MaterialShaderId::PBR,
+                    crate::dynamic_materials::ShadingBase::Pbr,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::UNLIT,
+                    crate::dynamic_materials::ShadingBase::Unlit,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::TOON,
+                    crate::dynamic_materials::ShadingBase::Toon,
+                ),
+            ] {
+                let variant = crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
+                    shader_id,
+                    base,
+                    dynamic_alpha: None,
+                };
+                self.render_passes
+                    .shadow_masked
+                    .pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.shadow_masked.bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
+            for (shader_id, info) in &custom_masked {
+                let variant = crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
+                    shader_id: *shader_id,
+                    base: crate::dynamic_materials::ShadingBase::Custom,
+                    dynamic_alpha: Some(info.clone()),
+                };
+                self.render_passes
+                    .shadow_masked
+                    .pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.shadow_masked.bind_group,
                         &variant,
                     )
                     .await?;
