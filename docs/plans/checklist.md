@@ -15,14 +15,22 @@ AA + two-sided transmission = DONE.
 
 ANIMATION-TRACK BUGS found during verification (SEPARATE from cutout/AA — my session never
 touched lights/transforms/animation; these belong to the mesh-authoring animation track):
-1. Animated glTF LIGHTS don't follow their animated nodes on the populate_gltf/scene-loader
-   path (:9080) — firefly meshes move but their point-lights stay at the bind pose. Infra
-   EXISTS + works: `lights.rs:303 update_from_transforms` (called per-frame from
-   `transforms.rs:51`) re-derives bound lights, gated on `lights.node_transforms` (binding at
-   `lights.rs:292`; early-returns if empty at :307). FIX: the scene-loader/populate light path
-   must bind each glTF light to its node TransformKey (the editor bridge does — see
-   `editor/.../bridge/asset_template.rs:105` — but populate_gltf apparently doesn't). Verify
-   whether `scene-loader/src/light.rs` / populate populates node_transforms.
+1. Animated glTF LIGHTS don't follow their animated nodes on :9080 (firefly meshes move,
+   point-lights stay at bind pose). CORRECTED diagnosis (deeper than a one-liner — the
+   binding is NOT the gap): `populate_gltf` DOES bind each light to its node
+   (`renderer-gltf/src/populate/lights.rs:132 lights.bind_transform`). And the chain is
+   intended to work: `transforms.rs:51` feeds `lights.update_from_transforms` the
+   `take_dirty_meshes()` set, which `update_world` fills for EVERY node whose world matrix
+   changed (`transforms.rs:520`, not mesh-filtered despite the name); `update_from_transforms`
+   (lights.rs:303) re-derives bound lights from it. So the real bug is upstream in the
+   ANIMATION-APPLICATION → transform-dirty path: the :9080 animation that moves the firefly
+   meshes apparently doesn't route those node updates through `set_local`/`update_world`'s
+   dirty-tracking (so the light's bound transform never lands in `dirty_meshes`), OR the
+   light's bound `transform_key` isn't the node the animation drives. NEXT: trace how the
+   model-tests/:9080 animation applies node transforms (does it call `Transforms::set_local`
+   → `update_world`, or write a separate buffer bypassing dirty-tracking?) + confirm the
+   firefly light's bound transform_key vs the animated node. (Editor :9085 doesn't play clips
+   at all — see #2 — so this is only observable on :9080.)
 2. The EDITOR (:9085) doesn't play imported glTF clips at all (set_playing/set_playhead don't
    pose the scene) — the known-pending "animation playback in the loader/editor" wiring.
 
