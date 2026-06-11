@@ -8,45 +8,97 @@ use std::sync::Arc;
 
 use awsm_editor_protocol::PrimitiveShape;
 
+use std::cell::RefCell;
+
 use crate::controller::InsertSpec;
-use crate::engine::scene::mutate::{ancestor_dedup, find_parent, flatten_visible_order};
+use crate::engine::scene::mutate::{ancestor_dedup, find_by_id, find_parent, flatten_visible_order};
 use crate::engine::scene::{Node, NodeId, NodeKind};
 use crate::prelude::*;
 
 thread_local! {
-    /// The node grabbed at the start of an outliner drag. Same-app drag, so we
-    /// don't bother with the HTML5 `dataTransfer` payload — this cell is the
-    /// source of truth, cleared on drop / drag-end.
-    static DRAG_SRC: std::cell::Cell<Option<NodeId>> = const { std::cell::Cell::new(None) };
+    /// The node set captured at the start of an outliner drag — the whole
+    /// (ancestor-deduped) selection if the grabbed row is part of it, else just
+    /// the grabbed node. Snapshotting at drag-start (rather than reading the
+    /// selection at drop-time) makes a multi-node drag robust against any
+    /// selection change the pointer interaction might trigger mid-drag. Same-app
+    /// drag, so no HTML5 `dataTransfer`; cleared on drop / drag-end.
+    static DRAG_SET: RefCell<Vec<NodeId>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Reparent `src` (and, if it's part of the current multi-selection, the whole
-/// selection) under `new_parent` (`None` = scene root). `mutate::reparent`
-/// guards against cycles + self-parenting, so invalid drops just no-op.
-fn reparent_into(new_parent: Option<NodeId>, src: NodeId) {
+/// The nodes a drag starting on `src` should move: the whole selection (deduped
+/// to top-most ancestors) if `src` is selected, else just `src`.
+fn selection_aware_ids(src: NodeId) -> Vec<NodeId> {
     let ctrl = controller();
     let selection = ctrl.selected.get_cloned();
-    // Drag one of several selected rows → move the whole (ancestor-deduped)
-    // selection; drag an unselected row → move just it.
-    let ids: Vec<NodeId> = if selection.contains(&src) {
+    if selection.contains(&src) {
         ancestor_dedup(&ctrl.scene, selection.iter().copied())
     } else {
         vec![src]
-    };
-    for id in ids {
-        if Some(id) == new_parent {
-            continue;
-        }
-        spawn_local(async move {
-            let _ = controller()
+    }
+}
+
+/// Reparent every node in `ids` under `new_parent` (`None` = scene root) as one
+/// sequential transaction, then expand the target so the moved nodes are visible
+/// (a collapsed Empty would otherwise look like the drop did nothing).
+/// `mutate::reparent` guards cycles + self-parenting, so invalid moves no-op.
+fn reparent_nodes(ids: Vec<NodeId>, new_parent: Option<NodeId>) {
+    if ids.is_empty() {
+        return;
+    }
+    spawn_local(async move {
+        let ctrl = controller();
+        for id in ids {
+            if Some(id) == new_parent {
+                continue;
+            }
+            let _ = ctrl
                 .dispatch(EditorCommand::Reparent {
                     id,
                     new_parent,
                     index: None,
                 })
                 .await;
-        });
-    }
+        }
+        if let Some(parent) = new_parent {
+            if let Some(node) = find_by_id(&controller().scene, parent) {
+                node.expanded.set(true);
+                controller().scene.bump_revision();
+            }
+        }
+    });
+}
+
+fn reparent_into(new_parent: Option<NodeId>, src: NodeId) {
+    reparent_nodes(selection_aware_ids(src), new_parent);
+}
+
+/// Snapshot the drag set when a drag begins on `src`.
+fn begin_drag(src: NodeId) {
+    DRAG_SET.with(|c| *c.borrow_mut() = selection_aware_ids(src));
+}
+
+/// True if a drag is in flight (any captured nodes).
+fn drag_active() -> bool {
+    DRAG_SET.with(|c| !c.borrow().is_empty())
+}
+
+/// True if a drag is in flight and `target` is a valid drop target (not one of
+/// the dragged nodes — you can't drop a node onto itself / its own selection).
+fn drag_active_for(target: NodeId) -> bool {
+    DRAG_SET.with(|c| {
+        let s = c.borrow();
+        !s.is_empty() && !s.contains(&target)
+    })
+}
+
+/// Commit the in-flight drag under `new_parent` (taking + clearing the set).
+fn drop_drag(new_parent: Option<NodeId>) {
+    let ids = DRAG_SET.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    reparent_nodes(ids, new_parent);
+}
+
+fn clear_drag() {
+    DRAG_SET.with(|c| c.borrow_mut().clear());
 }
 
 /// Wrap the current selection (or `seed` if nothing's selected) in a fresh Empty
@@ -119,15 +171,13 @@ pub fn render() -> Dom {
             // root (un-parent). Row drops stop propagation, so this only fires
             // for the background.
             .event(move |e: events::DragOver| {
-                if DRAG_SRC.with(|c| c.get()).is_some() {
+                if drag_active() {
                     e.prevent_default();
                 }
             })
             .event(move |e: events::Drop| {
                 e.prevent_default();
-                if let Some(src) = DRAG_SRC.with(|c| c.take()) {
-                    reparent_into(None, src);
-                }
+                drop_drag(None);
             })
             // Rebuild the row list when the scene structure (revision) or the
             // filter changes; per-row selection/visibility bindings are reactive
@@ -322,17 +372,11 @@ fn row(node: Arc<Node>, depth: usize) -> Dom {
         .style("outline-offset", "-2px")
         // Drag-to-reparent: this row is both a draggable source and a drop target.
         .attr("draggable", "true")
-        .event(move |_: events::DragStart| {
-            DRAG_SRC.with(|c| c.set(Some(id)));
-        })
-        .event(move |_: events::DragEnd| {
-            DRAG_SRC.with(|c| c.set(None));
-        })
+        .event(move |_: events::DragStart| begin_drag(id))
+        .event(move |_: events::DragEnd| clear_drag())
         .event(clone!(drag_over => move |e: events::DragOver| {
-            // Only a real drag (a source was grabbed) is a valid drop here, and
-            // dropping onto the dragged row itself is a no-op.
-            let src = DRAG_SRC.with(|c| c.get());
-            if matches!(src, Some(s) if s != id) {
+            // A real drag whose set doesn't include this row → a valid drop here.
+            if drag_active_for(id) {
                 e.prevent_default();
                 drag_over.set_neq(true);
             }
@@ -342,10 +386,8 @@ fn row(node: Arc<Node>, depth: usize) -> Dom {
             e.prevent_default();
             e.stop_propagation();
             drag_over.set_neq(false);
-            if let Some(src) = DRAG_SRC.with(|c| c.take()) {
-                if src != id {
-                    reparent_into(Some(id), src);
-                }
+            if drag_active_for(id) {
+                drop_drag(Some(id));
             }
         }))
         .event(clone!(hover => move |_: events::MouseEnter| hover.set_neq(true)))
