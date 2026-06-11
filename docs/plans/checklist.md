@@ -124,7 +124,59 @@ KEY ARCH FACTS (verified this session):
   normal/tangent) — `geometry_wgsl/fragment.wgsl`. No texture access today.
 
 FINALIZED B DESIGN (validated against code, this session — supersedes ambiguities above):
-NEXT ACTION (start here): build the `geometry_masked` module as ONE cohesive unit
+BUILD PROGRESS (this session — all COMPILING on `cargo check -p awsm-renderer`):
+- ✅ Masked shader: `geometry/shader/masked_cache_key.rs` (ShaderCacheKeyGeometryMasked
+  + DynamicAlphaShaderInfo), `masked_template.rs` (reuses the plain geometry vertex,
+  renders masked bind_groups + fragment), `masked_wgsl/{bind_groups,fragment}.wgsl`.
+  Wired into the `ShaderCacheKeyRenderPass::GeometryMasked` + `ShaderTemplateRenderPass`
+  dispatch. Built-in PBR emits a minimal base-color-alpha load; custom emits the
+  author's alpha-only fragment (`custom_alpha_dynamic`).
+- ✅ Per-mesh cutoff: `MaterialMeshMeta` index 21 (was `_reserved1`) now `alpha_cutoff:
+  f32`; written from `Materials::alpha_cutoff(key)` (new helper). WGSL struct updated.
+- ✅ Masked bind group: `geometry/masked_bind_group.rs` (`GeometryMaskedBindGroup`) —
+  augmented group 0 (camera/frame_globals + materials/material_mesh_metas/merged-pool/
+  texture_transforms + texture pool), with `clone_because_texture_pool_changed` +
+  `recreate`.
+- ✅ Masked pipeline pool: `geometry/masked_pipeline.rs` (`GeometryMaskedPipelines`) —
+  lazy `(msaa,shader_id,cull)` map mirroring `MaterialOpaquePipelines`; pipeline layout
+  = [masked_group0, transforms, uniform-meta, animation]; `build_descriptors`/`insert`/
+  `get`/`clear`/`relayout`. Forces non-instanced uniform-meta path.
+- Commits: "masked geometry shader", "masked geometry bind group + lazy pipeline pool".
+
+REMAINING WIRING (mapped; the machinery above is inert until these land):
+1. Hold + construct: add `masked_bind_group: GeometryMaskedBindGroup` + `masked_pipelines:
+   GeometryMaskedPipelines` to `GeometryRenderPass` (geometry/render_pass.rs). Build them
+   in `RenderPasses::describe_shaders` (render_passes.rs:277 area, after `geometry_bg`)
+   and thread through `RenderPassesBindings`/`RenderPassesShaderPlan` → `from_resolved`
+   (render_passes.rs:630 `let geometry = GeometryRenderPass { ... }`).
+2. Recreate dispatch (bind_groups.rs): add `FunctionToCall::GeometryMasked`; insert it for
+   `CameraInitOnly`, `MaterialResize`, `MaterialMeshMetaResize`, `MeshGeometryPoolResize`,
+   `TexturePool`, `TextureTransformsResize`; exec case calls
+   `render_passes.geometry.masked_bind_group.recreate(&ctx)?`.
+3. Build masked PBR pipeline in `textures.rs::finalize_gpu_textures` (NOT at setup — needs
+   the live texture pool): Phase A also `clone_because_texture_pool_changed` the masked
+   bind group + `relayout` the masked pool; Phase B/C add the masked PBR variant
+   (`MaskedVariant{shader_id:PBR, base:Pbr, dynamic_alpha:None}`) via
+   `masked_pipelines.build_descriptors`; Phase D/E fold via `insert`. (At setup the pool
+   is empty → masked meshes fall back to plain/solid, which is fine.)
+4. Render + routing: `Renderable` gets `geometry_masked_render_pipeline_key: Option<...>`;
+   `collect_renderables` (renderable.rs:172) sets it when `materials.alpha_cutoff(key)
+   .is_some()` AND `masked_pipelines.get(msaa, shader_id, cull)` is Some. In
+   geometry/render_pass.rs, masked renderables `set_bind_group(0, masked_group0)` + their
+   masked pipeline, then the existing uniform-meta draw (mesh.rs already supports the
+   non-instanced uniform-meta path). Bind plain camera group 0 back for non-masked.
+5. Custom arm (B3): add `alpha_wgsl: Option<String>` to `MaterialRegistration` (+ all
+   constructors: editor, scene-loader, MCP) gated on `alpha_mode=Mask`; in
+   `pipeline_scheduler/launch.rs` add a `LaunchSlot::Masked`/install arm that, when an
+   opaque per-shader-id pipeline compiles for a MASK custom material, ALSO compiles the
+   masked variant (DynamicAlphaShaderInfo from `generate_wgsl_struct`/`generate_wgsl_loader`
+   /`generate_wgsl_texture_helpers` + `reg.alpha_wgsl`). Flip `materials.rs:135`
+   `Material::Custom` to drop `Mask` from `is_transparency_pass`.
+6. Editor 2nd-WGSL window (shown when alpha-mode=cutoff) + MCP tool to set alpha_wgsl.
+7. B2 shadow masked variant (shadows/shader) — gate on `alpha_cutoff` present regardless
+   of opaque/transparent routing.
+
+(historical) NEXT ACTION (start here): build the `geometry_masked` module as ONE cohesive unit
 (see MODULE STRUCTURE below) — cache key + enum/dispatch arm + masked WGSL template +
 augmented group-0 bind group + lazy per-shader-id pipeline pool + render integration +
 `Material::Custom` Mask→visibility routing — then layer the custom alpha-only arm
