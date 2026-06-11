@@ -61,6 +61,82 @@ texture lookup, via a `geometry` pipeline variant).
 - [ ] **Sweep** — `is_transparency_pass` call sites, `docs/buffers.md` geometry-kind
   table, raw_mesh/mesh_pack/geometry comments. Comprehensive.
 
+### B IMPLEMENTATION MAP (do B1 + B3 together; TEST WITH A DYNAMIC MATERIAL FIRST)
+USER DIRECTIVE: implement the masked-raster alpha-test (B1) AND the dynamic-material
+cutoff flag (B3) in the same step, and **build the test case with a DYNAMIC (custom
+WGSL) material first** — it's the easiest way to construct controlled cutout +
+shadow test cases (author a custom material whose alpha is a known pattern, e.g. a
+checker / radial cutout, apply to a plane, verify holes are see-through, cast
+hole-shaped shadows, and let transmission show through the holes).
+
+STATE: Step A done+committed+VERIFIED (`fix(renderer): route MASK … step A`):
+- `materials/src/pbr.rs:490` `is_transparency_pass` = `has_alpha_blend()||has_transmission()` (Mask dropped).
+- `renderer-gltf/src/buffers/mesh.rs` `mesh_buffer_geometry_kind`: Mask → Visibility.
+- Mask now renders SOLID opaque (no cutout yet); dish bowl fixed (goldLeaf solid).
+
+B1 — masked `geometry` raster variant (alpha-test discard). Files under
+`renderer/src/render_passes/geometry/`:
+- `shader/cache_key.rs` `ShaderCacheKeyGeometry` — add `alpha_test: bool` (or
+  `masked`). Distinct pipeline only for masked meshes (only they pay the cost).
+- `shader/geometry_wgsl/{vertex,fragment}.wgsl` + `shader/template.rs` — masked
+  variant: read UV from the custom-attribute buffer via `triangle_index`+
+  `barycentric` (the visibility vertex stream has NO uv — confirmed), sample
+  base-color `.a` × base-color-factor `.a`, `discard` if `< alpha_cutoff`. MIRROR
+  the opaque compute's `_pbr_material_base_color` in
+  `material_opaque/shader/material_opaque_wgsl/helpers/material_color_calc.wgsl`
+  (uses `attribute_data_offset` + `triangle_indices` + `vertex_attribute_stride` +
+  `material.base_color_tex_info`). Reuse the shared `textures`/material wgsl modules.
+- `bind_group.rs` + `pipeline.rs` — the masked variant binds the MATERIAL buffer +
+  TEXTURE POOL + ATTRIBUTE buffers (which the opaque compute already binds; copy
+  that layout). Opaque variant keeps its cheap no-sampling bind group.
+- Per-mesh pipeline selection: route masked meshes → masked geometry pipeline (see
+  the geometry `render_pass.rs` + how it picks pipelines per mesh; material's
+  `alpha_cutoff()` is the signal).
+- Opaque compute already shades mask (it's now visibility) — verify no change needed
+  (alpha_cutoff is moot in shading; discard happened in raster).
+
+B2 — SHADOW raster alpha-test (`renderer/src/shadows/shader/` — currently NO discard,
+so masked meshes cast SOLID shadows). Add the same UV+base-color-alpha discard to the
+shadow raster's masked variant, else cutout masks cast rectangular shadows.
+
+B3 — dynamic/custom material mask (do WITH B1):
+- `materials/src/materials.rs:~135` `Material::Custom is_transparency_pass` =
+  `matches!(m.alpha_mode, Blend|Mask)` → change to exclude Mask (route Custom mask →
+  visibility, consistent with PBR). Dynamic alpha_mode already exists
+  (`scene/src/dynamic_material.rs:63`, incl `Mask`).
+- The masked geometry variant must alpha-test using the CUSTOM material's alpha
+  output (custom WGSL computes alpha; the variant discards on it + the cutoff). May
+  need the custom fragment's alpha exposed to the geometry masked variant — design
+  this (the custom shading is in `dynamic_materials`/`material_*` — check how custom
+  materials' fragment alpha is available; possibly run the custom alpha calc in the
+  masked geometry variant).
+- Editor: add an alpha_mode=Mask + cutoff toggle to the dynamic-material UI
+  (`frontend/editor` material inspector) + an MCP tool (`set_material_alpha_mode`
+  already exists — check it covers Mask+cutoff for dynamic materials; `mcp/src/mcp.rs`).
+
+KEY ARCH FACTS (verified this session):
+- `opaque_tex` (transmission's background) = opaque RT mip chain built at
+  `renderer/src/render.rs:~917`, BEFORE the transparent pass. Mask must be in the
+  opaque RT by then (Step A achieves this).
+- transmission samples `opaque_tex` in
+  `material_transparent/.../fragment.wgsl` (`sample_transmission_background`).
+- geometry fragment currently writes only visibility data (triangle id, bary,
+  normal/tangent) — `geometry_wgsl/fragment.wgsl`. No texture access today.
+
+DEV STACK / TEST SETUP (this session):
+- Trunk's file-watch went stale mid-session; FIX = restart `task mcp-dev` (kills+
+  restarts trunk:9085 + media:9082/3 + MCP:9086; editor browser reconnects on
+  reload). After a renderer/materials/glb-export change, the NEW trunk DOES rebuild
+  (it watches those); a change to renderer-gltf/gltf-convert/tangents alone is NOT
+  watched → touch a watched file (e.g. `renderer/src/lib.rs`) to trigger.
+- Verify dish: import `http://localhost:9082/glTF-Sample-Assets/Models/IridescentDishWithOlives/glTF/IridescentDishWithOlives.gltf`;
+  `set_environment` skybox/ibl_prefiltered/ibl_irradiance =
+  `https://dakom.github.io/awsm-renderer-assets/photo_studio/{skybox,env,irradiance}.ktx2`;
+  orbit `yaw 0.7 pitch 0.12 radius 0.34 look_at [0,0.03,0]` for the bowl close-up.
+- For B testing: author a custom dynamic material with a cutout alpha pattern via
+  MCP (`add_custom_material` + `set_material_wgsl`), apply to a plane, verify holes
+  see-through + hole-shaped shadows + transmission-through-holes.
+
 ## 3. Dish / KHR-material shading fix (analysis in `docs/iridescence-analysis.md`)
 - [ ] Replace the 3-wavelength two-beam thin-film approx in `brdf.wgsl` with the spec's
   `evalSensitivity` spectral→RGB (Khronos sample-viewer approach). **[browser]**
