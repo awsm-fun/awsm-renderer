@@ -95,7 +95,9 @@ impl GeometryMaskedBindGroup {
             // 3: per-mesh material meta (storage, fragment)
             BindGroupEntry::new(
                 3,
-                BindGroupResource::Buffer(BufferBinding::new(ctx.meshes.meta.material_gpu_buffer())),
+                BindGroupResource::Buffer(BufferBinding::new(
+                    ctx.meshes.meta.material_gpu_buffer(),
+                )),
             ),
             // 4: merged geometry pool / visibility_data (storage, fragment)
             BindGroupEntry::new(
@@ -138,7 +140,9 @@ impl GeometryMaskedBindGroup {
     }
 
     /// Returns the active masked group-0 bind group.
-    pub fn get_bind_group(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+    pub fn get_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
         self._bind_group
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("Geometry masked group 0".to_string()))

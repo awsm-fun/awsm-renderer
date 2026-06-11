@@ -10,8 +10,7 @@ use askama::Template;
 use crate::{
     dynamic_materials::ShadingBase,
     render_passes::geometry::shader::{
-        cache_key::ShaderCacheKeyGeometry,
-        masked_cache_key::ShaderCacheKeyGeometryMasked,
+        cache_key::ShaderCacheKeyGeometry, masked_cache_key::ShaderCacheKeyGeometryMasked,
         template::ShaderTemplateGeometryVertex,
     },
     shaders::{AwsmShaderError, Result},

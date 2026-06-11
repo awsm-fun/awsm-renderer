@@ -1737,10 +1737,9 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         let id = parse_asset(&p.material)?;
         if let Response::Err(e) = self
-            .req(Request::Dispatch(EditorCommand::SetCustomMaterialAlphaWgsl {
-                id,
-                wgsl: p.wgsl,
-            }))
+            .req(Request::Dispatch(
+                EditorCommand::SetCustomMaterialAlphaWgsl { id, wgsl: p.wgsl },
+            ))
             .await?
         {
             return Err(McpError::internal_error(e, None));
@@ -1754,7 +1753,9 @@ impl EditorMcp {
             return Err(McpError::internal_error(e, None));
         }
         match self
-            .req(Request::Query(EditorQuery::MaterialDiagnostics { material: id }))
+            .req(Request::Query(EditorQuery::MaterialDiagnostics {
+                material: id,
+            }))
             .await?
         {
             Response::Query(qr) => match *qr {

@@ -1521,7 +1521,10 @@ impl EditorController {
                         mat.alpha_wgsl.set(wgsl);
                         mark_material_draft(&mat);
                         self.dirty.set_neq(true);
-                        Ok(Some(EditorCommand::SetCustomMaterialAlphaWgsl { id, wgsl: prev }))
+                        Ok(Some(EditorCommand::SetCustomMaterialAlphaWgsl {
+                            id,
+                            wgsl: prev,
+                        }))
                     }
                     None => Ok(None),
                 }

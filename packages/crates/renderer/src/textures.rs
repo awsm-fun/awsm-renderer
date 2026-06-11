@@ -422,7 +422,11 @@ impl AwsmRenderer {
                 .map(|(id, _)| id)
                 .collect::<Vec<_>>()
                 .into_iter()
-                .filter_map(|id| self.dynamic_materials.alpha_info_for(id).map(|info| (id, info)))
+                .filter_map(|id| {
+                    self.dynamic_materials
+                        .alpha_info_for(id)
+                        .map(|info| (id, info))
+                })
                 .collect();
 
             let new_masked_bg = {

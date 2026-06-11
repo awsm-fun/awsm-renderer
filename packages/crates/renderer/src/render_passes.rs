@@ -282,8 +282,11 @@ impl RenderPasses {
         // the texture-finalize flow; custom via the dynamic scheduler).
         let geometry_masked_bg =
             geometry::masked_bind_group::GeometryMaskedBindGroup::new(ctx).await?;
-        let geometry_masked_pipelines =
-            geometry::masked_pipeline::GeometryMaskedPipelines::new(ctx, &geometry_masked_bg, &geometry_bg)?;
+        let geometry_masked_pipelines = geometry::masked_pipeline::GeometryMaskedPipelines::new(
+            ctx,
+            &geometry_masked_bg,
+            &geometry_bg,
+        )?;
         let (coverage_bg_single, coverage_bg_msaa) = if features.coverage_lod {
             (
                 Some(coverage::bind_group::CoverageBindGroups::new(ctx, false).await?),

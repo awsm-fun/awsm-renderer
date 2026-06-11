@@ -62,9 +62,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::Geometry(cache_key) => {
                 Ok(ShaderTemplateRenderPass::Geometry(cache_key.try_into()?))
             }
-            ShaderCacheKeyRenderPass::GeometryMasked(cache_key) => {
-                Ok(ShaderTemplateRenderPass::GeometryMasked(cache_key.try_into()?))
-            }
+            ShaderCacheKeyRenderPass::GeometryMasked(cache_key) => Ok(
+                ShaderTemplateRenderPass::GeometryMasked(cache_key.try_into()?),
+            ),
             ShaderCacheKeyRenderPass::HzbSeed(cache_key) => {
                 Ok(ShaderTemplateRenderPass::HzbSeed(cache_key.try_into()?))
             }
