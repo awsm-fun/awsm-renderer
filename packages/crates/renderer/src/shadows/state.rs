@@ -234,11 +234,20 @@ pub struct Shadows {
     /// Depth-only shadow pipeline used for cube-face passes (instancing).
     /// Deferred — see `shadow_pipeline_no_instancing`.
     shadow_pipeline_cube_instancing: Option<RenderPipelineKey>,
-    /// Cached caster pipeline cache keys (4 entries: `(no_inst, planar)`,
-    /// `(inst, planar)`, `(no_inst, cube)`, `(inst, cube)`). Held only
-    /// while pipelines remain uncompiled — `ensure_pipelines_compiled`
-    /// consumes them and clears the field once the resolved keys are
-    /// installed. Empty Vec means "already compiled".
+    /// Double-sided (`CullMode::None`) counterparts of the four pipelines
+    /// above, selected for casters whose material is double-sided (thin /
+    /// open geometry that has no back face for Front culling to keep). Same
+    /// deferred-compile lifecycle. Order mirrors the single-sided four.
+    shadow_pipeline_no_instancing_ds: Option<RenderPipelineKey>,
+    shadow_pipeline_instancing_ds: Option<RenderPipelineKey>,
+    shadow_pipeline_cube_no_instancing_ds: Option<RenderPipelineKey>,
+    shadow_pipeline_cube_instancing_ds: Option<RenderPipelineKey>,
+    /// Cached caster pipeline cache keys (8 entries: the four
+    /// `(no_inst|inst, planar|cube)` single-sided variants followed by the
+    /// same four double-sided (no-cull) variants). Held only while pipelines
+    /// remain uncompiled — `ensure_pipelines_compiled` consumes them and
+    /// clears the field once the resolved keys are installed. Empty Vec means
+    /// "already compiled".
     pending_caster_cache_keys: Vec<RenderPipelineCacheKey>,
     /// Cached EVSM compute pipeline cache keys (3 entries: moment_write,
     /// blur_h, blur_v). Same lifecycle as `pending_caster_cache_keys`.
@@ -312,7 +321,7 @@ impl PendingResourceRecreate {
 /// Pre-resolved layouts, GPU resource handles, and pipeline cache
 /// keys for the shadow subsystem. Returned by
 /// [`Shadows::build_descriptors`] and consumed by
-/// [`Shadows::from_resolved`]. The 4 caster render-pipeline cache keys
+/// [`Shadows::from_resolved`]. The 8 caster render-pipeline cache keys
 /// fold into the cross-tail `RenderPipelines::ensure_keys` batch; the
 /// EVSM block's 3 inline shaders + 3 compute pipelines fold into the
 /// cross-tail compute pool. See [`EvsmDescriptors`] for the EVSM hand-
@@ -350,8 +359,9 @@ pub struct ShadowsDescriptors {
     pub shadow_view_bind_group: web_sys::GpuBindGroup,
     pub shadow_pipeline_layout_key_storage: PipelineLayoutKey,
     pub shadow_pipeline_layout_key_uniform: PipelineLayoutKey,
-    /// 4 caster pipeline cache keys, in order:
-    /// `(no_inst, planar)`, `(inst, planar)`, `(no_inst, cube)`, `(inst, cube)`.
+    /// 8 caster pipeline cache keys: the four single-sided
+    /// `(no_inst, planar)`, `(inst, planar)`, `(no_inst, cube)`, `(inst, cube)`
+    /// followed by the same four as double-sided (no-cull) variants.
     pub caster_pipeline_cache_keys: Vec<RenderPipelineCacheKey>,
     // ── EVSM ─────────────────────────────────────────────────────────
     pub evsm: EvsmDescriptors,
@@ -743,17 +753,24 @@ impl Shadows {
                 },
             )
             .await?;
+        // 8 caster variants: the four single-sided `(instancing, cube_face)`
+        // combos (indices 0-3) followed by the same four with `double_sided`
+        // (no-cull, indices 4-7). Keep this order in sync with the assignment
+        // in `ensure_pipelines_compiled` / `from_resolved` and the
+        // `shadow_pipeline_key` lookup.
         let caster_pipeline_cache_keys = vec![
             shadow_pipeline_cache_key(
                 shader_no_instancing,
                 shadow_pipeline_layout_key_storage,
                 false,
                 false,
+                false,
             ),
             shadow_pipeline_cache_key(
                 shader_instancing,
                 shadow_pipeline_layout_key_uniform,
                 true,
+                false,
                 false,
             ),
             shadow_pipeline_cache_key(
@@ -761,10 +778,40 @@ impl Shadows {
                 shadow_pipeline_layout_key_storage,
                 false,
                 true,
+                false,
             ),
             shadow_pipeline_cache_key(
                 shader_instancing,
                 shadow_pipeline_layout_key_uniform,
+                true,
+                true,
+                false,
+            ),
+            shadow_pipeline_cache_key(
+                shader_no_instancing,
+                shadow_pipeline_layout_key_storage,
+                false,
+                false,
+                true,
+            ),
+            shadow_pipeline_cache_key(
+                shader_instancing,
+                shadow_pipeline_layout_key_uniform,
+                true,
+                false,
+                true,
+            ),
+            shadow_pipeline_cache_key(
+                shader_no_instancing,
+                shadow_pipeline_layout_key_storage,
+                false,
+                true,
+                true,
+            ),
+            shadow_pipeline_cache_key(
+                shader_instancing,
+                shadow_pipeline_layout_key_uniform,
+                true,
                 true,
                 true,
             ),
@@ -820,7 +867,7 @@ impl Shadows {
     /// Pass empty `caster_resolved` AND empty `evsm_resolved` slices to
     /// defer pipeline compile (Block B.1 + B.2 — lazy until the first
     /// shadow-casting light). In that case `pending_caster_cache_keys`
-    /// MUST hold 4 entries in the same order and `pending_evsm_cache_keys`
+    /// MUST hold 8 entries in the same order and `pending_evsm_cache_keys`
     /// MUST hold 3 entries in moment_write → blur_h → blur_v order;
     /// [`Shadows::ensure_pipelines_compiled`] hands them to `ensure_keys`
     /// when the first shadow-caster lands. Non-pipeline GPU resources
@@ -838,17 +885,17 @@ impl Shadows {
     ) -> Result<Self, AwsmShadowError> {
         let deferred = caster_resolved.is_empty() && evsm_resolved.is_empty();
         debug_assert!(
-            deferred || (caster_resolved.len() == 4 && evsm_resolved.len() == 3),
-            "Shadows::from_resolved: pass either (4 caster + 3 evsm) or (0 + 0); \
+            deferred || (caster_resolved.len() == 8 && evsm_resolved.len() == 3),
+            "Shadows::from_resolved: pass either (8 caster + 3 evsm) or (0 + 0); \
              got ({}, {})",
             caster_resolved.len(),
             evsm_resolved.len(),
         );
         debug_assert!(
             !deferred
-                || (pending_caster_cache_keys.len() == 4
+                || (pending_caster_cache_keys.len() == 8
                     && pending_evsm_cache_keys.len() == 3),
-            "Shadows::from_resolved deferred path requires 4 pending caster + 3 pending evsm cache keys"
+            "Shadows::from_resolved deferred path requires 8 pending caster + 3 pending evsm cache keys"
         );
         let ShadowsDescriptors {
             config,
@@ -964,6 +1011,10 @@ impl Shadows {
             shadow_pipeline_instancing: caster_resolved.get(1).copied(),
             shadow_pipeline_cube_no_instancing: caster_resolved.get(2).copied(),
             shadow_pipeline_cube_instancing: caster_resolved.get(3).copied(),
+            shadow_pipeline_no_instancing_ds: caster_resolved.get(4).copied(),
+            shadow_pipeline_instancing_ds: caster_resolved.get(5).copied(),
+            shadow_pipeline_cube_no_instancing_ds: caster_resolved.get(6).copied(),
+            shadow_pipeline_cube_instancing_ds: caster_resolved.get(7).copied(),
             pending_caster_cache_keys,
             pending_evsm_cache_keys,
             frame_count: 0,
@@ -1333,17 +1384,22 @@ impl Shadows {
         &self,
         instancing: bool,
         cube_face: bool,
+        double_sided: bool,
     ) -> Option<RenderPipelineKey> {
-        match (cube_face, instancing) {
-            (true, true) => self.shadow_pipeline_cube_instancing,
-            (true, false) => self.shadow_pipeline_cube_no_instancing,
-            (false, true) => self.shadow_pipeline_instancing,
-            (false, false) => self.shadow_pipeline_no_instancing,
+        match (double_sided, cube_face, instancing) {
+            (false, true, true) => self.shadow_pipeline_cube_instancing,
+            (false, true, false) => self.shadow_pipeline_cube_no_instancing,
+            (false, false, true) => self.shadow_pipeline_instancing,
+            (false, false, false) => self.shadow_pipeline_no_instancing,
+            (true, true, true) => self.shadow_pipeline_cube_instancing_ds,
+            (true, true, false) => self.shadow_pipeline_cube_no_instancing_ds,
+            (true, false, true) => self.shadow_pipeline_instancing_ds,
+            (true, false, false) => self.shadow_pipeline_no_instancing_ds,
         }
     }
 
     /// `true` once [`Self::ensure_pipelines_compiled`] has run — i.e.,
-    /// the 4 caster render pipelines + 3 EVSM compute pipelines are
+    /// the 8 caster render pipelines + 3 EVSM compute pipelines are
     /// GPU-resident. The first shadow-casting light triggers compile;
     /// subsequent calls are no-ops. Dispatch sites use this to
     /// short-circuit before issuing a warn-skip.
@@ -1356,7 +1412,7 @@ impl Shadows {
     ///
     /// Block B.1 + B.2: this is the lazy-pool trigger point. Cold-boot
     /// constructs the `Shadows` struct with `None` pipeline keys plus
-    /// 4 pending caster + 3 pending EVSM cache keys held on `self`.
+    /// 8 pending caster + 3 pending EVSM cache keys held on `self`.
     /// The first shadow-casting light (`shadows/api.rs::insert_light`,
     /// `set_light_shadow_params`, `update_light_shadow`) calls this to
     /// resolve the pipelines through batched `ensure_keys`.
@@ -1391,7 +1447,7 @@ impl Shadows {
         }
         tracing::info!(
             target: "awsm_renderer::boot_timing",
-            "Shadows::ensure_pipelines_compiled: first shadow-caster — compiling 4 caster + 3 EVSM pipelines"
+            "Shadows::ensure_pipelines_compiled: first shadow-caster — compiling 8 caster + 3 EVSM pipelines"
         );
         // Clone (not `take`) so a fallible `?` on either ensure_keys
         // await leaves the pending vectors intact for the next retry.
@@ -1418,12 +1474,16 @@ impl Shadows {
         let evsm_resolved = compute_pipelines
             .ensure_keys(gpu, shaders, pipeline_layouts, evsm_keys)
             .await?;
-        debug_assert_eq!(caster_resolved.len(), 4);
+        debug_assert_eq!(caster_resolved.len(), 8);
         debug_assert_eq!(evsm_resolved.len(), 3);
         self.shadow_pipeline_no_instancing = Some(caster_resolved[0]);
         self.shadow_pipeline_instancing = Some(caster_resolved[1]);
         self.shadow_pipeline_cube_no_instancing = Some(caster_resolved[2]);
         self.shadow_pipeline_cube_instancing = Some(caster_resolved[3]);
+        self.shadow_pipeline_no_instancing_ds = Some(caster_resolved[4]);
+        self.shadow_pipeline_instancing_ds = Some(caster_resolved[5]);
+        self.shadow_pipeline_cube_no_instancing_ds = Some(caster_resolved[6]);
+        self.shadow_pipeline_cube_instancing_ds = Some(caster_resolved[7]);
         self.evsm_pass.moment_write_pipeline_key = Some(evsm_resolved[0]);
         self.evsm_pass.blur_h_pipeline_key = Some(evsm_resolved[1]);
         self.evsm_pass.blur_v_pipeline_key = Some(evsm_resolved[2]);

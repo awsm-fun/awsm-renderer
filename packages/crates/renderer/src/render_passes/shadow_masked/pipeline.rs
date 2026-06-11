@@ -35,6 +35,10 @@ pub struct MaskedShadowPipelineKeyId {
     pub shader_id: MaterialShaderId,
     pub instancing: bool,
     pub cube_face: bool,
+    /// Double-sided (no-cull) caster variant — a cutout panel / leaf quad casts
+    /// nothing under Front culling, so its masked-shadow pipeline must render
+    /// both faces too (mirrors the plain caster's `double_sided` split).
+    pub double_sided: bool,
 }
 
 /// Inputs describing one masked-shadow variant to (re)compile.
@@ -116,13 +120,25 @@ impl ShadowMaskedPipelines {
                 self.pipeline_layout_key_storage
             };
 
-            // Depth-only, Front-cull, bias-matched pipelines shared with the
-            // plain caster; `with_force_fragment_stage` adds the discard fragment.
-            let cache_keys: Vec<_> = [false, true]
+            // Depth-only, bias-matched pipelines shared with the plain caster;
+            // `with_force_fragment_stage` adds the discard fragment. Four cull
+            // variants per shader: (cube_face × double_sided). Single-sided uses
+            // Front cull; double-sided uses no-cull so thin cutout panels cast.
+            let combos: Vec<(bool, bool)> = [false, true]
+                .into_iter()
+                .flat_map(|cube_face| [false, true].into_iter().map(move |ds| (cube_face, ds)))
+                .collect();
+            let cache_keys: Vec<_> = combos
                 .iter()
-                .map(|&cube_face| {
-                    shadow_pipeline_cache_key(shader_key, layout_key, instancing, cube_face)
-                        .with_force_fragment_stage()
+                .map(|&(cube_face, double_sided)| {
+                    shadow_pipeline_cache_key(
+                        shader_key,
+                        layout_key,
+                        instancing,
+                        cube_face,
+                        double_sided,
+                    )
+                    .with_force_fragment_stage()
                 })
                 .collect();
 
@@ -132,13 +148,13 @@ impl ShadowMaskedPipelines {
                 .ensure_keys(ctx.gpu, ctx.shaders, ctx.pipeline_layouts, cache_keys)
                 .await?;
 
-            // `cache_keys` was built in [planar, cube] order.
-            for (cube_face, key) in [false, true].into_iter().zip(keys) {
+            for ((cube_face, double_sided), key) in combos.into_iter().zip(keys) {
                 self.main.insert(
                     MaskedShadowPipelineKeyId {
                         shader_id: variant.shader_id,
                         instancing,
                         cube_face,
+                        double_sided,
                     },
                     key,
                 );
@@ -160,12 +176,14 @@ impl ShadowMaskedPipelines {
         shader_id: MaterialShaderId,
         instancing: bool,
         cube_face: bool,
+        double_sided: bool,
     ) -> Option<RenderPipelineKey> {
         self.main
             .get(&MaskedShadowPipelineKeyId {
                 shader_id,
                 instancing,
                 cube_face,
+                double_sided,
             })
             .copied()
     }

@@ -230,6 +230,7 @@ pub(crate) fn shadow_pipeline_cache_key(
     pipeline_layout_key: PipelineLayoutKey,
     instancing: bool,
     cube_face: bool,
+    double_sided: bool,
 ) -> RenderPipelineCacheKey {
     let mut vertex_buffer_layouts = vec![VERTEX_BUFFER_LAYOUT.clone()];
     if instancing {
@@ -254,10 +255,22 @@ pub(crate) fn shadow_pipeline_cache_key(
     } else {
         FrontFace::Ccw
     };
+    // Double-sided casters (thin / open geometry like a cutout panel or a
+    // single-quad leaf) have no back face to use as the depth-bias buffer, so
+    // Front culling would drop them entirely — a plane facing the light writes
+    // nothing and casts no shadow. Render both faces (`CullMode::None`); the
+    // slope-scale depth bias above is the acne safety net these surfaces rely on
+    // instead of geometric thickness. `front_face` is irrelevant when nothing is
+    // culled, so the cube Cw/Ccw split below is harmless in this branch.
+    let cull_mode = if double_sided {
+        CullMode::None
+    } else {
+        CullMode::Front
+    };
     let primitive = PrimitiveState::new()
         .with_topology(PrimitiveTopology::TriangleList)
         .with_front_face(front_face)
-        .with_cull_mode(CullMode::Front);
+        .with_cull_mode(cull_mode);
 
     let depth_stencil = DepthStencilState::new(TextureFormat::Depth32float)
         .with_depth_write_enabled(true)
