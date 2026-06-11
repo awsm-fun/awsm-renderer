@@ -14,9 +14,10 @@ use crate::engine::scene::{
 };
 use crate::prelude::*;
 use awsm_editor_protocol::{
-    AssetSource, BillboardMode, CurveDef, DecalConfig, LineDef, MaterialAlphaMode, MaterialDef,
-    MaterialShading, MeshShadowConfig, ParticleEmitterDef, PrimitiveShape, ProceduralTextureDef,
-    SpriteAlphaMode, SpriteDef, TextureDef,
+    AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, EvsmCutoff,
+    FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, MaterialAlphaMode,
+    MaterialDef, MaterialShading, MeshShadowConfig, ParticleEmitterDef, PrimitiveShape,
+    ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef,
 };
 
 /// The right rail shows the **Asset Inspector** when an asset is selected in the
@@ -3031,7 +3032,279 @@ fn light_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
                 .render(),
         ));
     }
+    // Light params (Color/Intensity/Range) + the per-light Shadows section
+    // (cast / hardness-PCSS / cascades / biases / update rates).
+    html!("div", {
+        .child(sec.render())
+        .child(light_shadow_editor(node, cfg))
+    })
+}
+
+/// Per-light shadow settings: cast toggle, filter hardness (Hard / Soft-PCF /
+/// PCSS), map resolution, depth/normal bias, max distance, and — for the kinds
+/// that use them — directional cascade controls (count / split-λ / EVSM cutoff /
+/// far-cascade update rate) and the point-light cube-face update rate. Each
+/// control rewrites the light's `LightShadowConfig` via `SetKind`, which the
+/// node-sync bridge re-applies to the renderer live (`set_light_shadow_params`).
+fn light_shadow_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
+    let shadow = light_shadow(cfg);
+
+    let cast = Mutable::new(shadow.cast);
+    spawn_local(clone!(cast, node => async move {
+        let mut first = true;
+        cast.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if fire { update_shadow(&node, |s| s.cast = on); }
+            })
+        }).await;
+    }));
+
+    let mut sec = Section::new("Shadows").child(row("Cast", toggle(cast)));
+
+    let n = node.clone();
+    sec = sec.child(enum_select_row(
+        "Hardness",
+        hardness_str(shadow.hardness),
+        vec![
+            ("hard".into(), "Hard".into()),
+            ("soft".into(), "Soft (PCF)".into()),
+            ("pcss".into(), "PCSS".into()),
+        ],
+        move |v| update_shadow(&n, |s| s.hardness = hardness_from(&v)),
+    ));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "PCSS Scale",
+        NumField::new(shadow.pcss_penumbra_scale as f64)
+            .min(0.0)
+            .step(0.1)
+            .on_change(move |v| update_shadow(&n, |s| s.pcss_penumbra_scale = v as f32))
+            .render(),
+    ));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Resolution",
+        NumField::new(shadow.resolution as f64)
+            .min(16.0)
+            .step(256.0)
+            .on_change(move |v| update_shadow(&n, |s| s.resolution = (v as u32).max(16)))
+            .render(),
+    ));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Depth Bias",
+        NumField::new(shadow.depth_bias as f64)
+            .step(0.0005)
+            .on_change(move |v| update_shadow(&n, |s| s.depth_bias = v as f32))
+            .render(),
+    ));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Normal Bias",
+        NumField::new(shadow.normal_bias as f64)
+            .min(0.0)
+            .step(0.01)
+            .on_change(move |v| update_shadow(&n, |s| s.normal_bias = v as f32))
+            .render(),
+    ));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Max Distance",
+        NumField::new(shadow.max_distance as f64)
+            .min(0.0)
+            .step(5.0)
+            .on_change(move |v| update_shadow(&n, |s| s.max_distance = v as f32))
+            .render(),
+    ));
+
+    // Directional cascades.
+    if matches!(cfg, LightConfig::Directional { .. }) {
+        let n = node.clone();
+        sec = sec.child(row(
+            "Cascades",
+            NumField::new(shadow.cascade_count as f64)
+                .min(1.0)
+                .max(4.0)
+                .step(1.0)
+                .on_change(move |v| update_shadow(&n, |s| s.cascade_count = (v as u8).clamp(1, 4)))
+                .render(),
+        ));
+        let n = node.clone();
+        sec = sec.child(row(
+            "Split \u{03bb}",
+            NumField::new(shadow.cascade_split_lambda as f64)
+                .min(0.0)
+                .max(1.0)
+                .step(0.05)
+                .on_change(move |v| {
+                    update_shadow(&n, |s| s.cascade_split_lambda = (v as f32).clamp(0.0, 1.0))
+                })
+                .render(),
+        ));
+        let n = node.clone();
+        sec = sec.child(enum_select_row(
+            "EVSM",
+            evsm_str(shadow.evsm_cutoff),
+            vec![
+                ("off".into(), "Off".into()),
+                ("last_cascade".into(), "Last cascade".into()),
+                ("last_two_cascades".into(), "Last 2 cascades".into()),
+            ],
+            move |v| update_shadow(&n, |s| s.evsm_cutoff = evsm_from(&v)),
+        ));
+        let n = node.clone();
+        sec = sec.child(enum_select_row(
+            "Far Update",
+            far_rate_str(shadow.far_cascade_update_rate),
+            rate_opts(),
+            move |v| update_shadow(&n, |s| s.far_cascade_update_rate = far_rate_from(&v)),
+        ));
+    }
+
+    // Point-light cube faces.
+    if matches!(cfg, LightConfig::Point { .. }) {
+        let n = node.clone();
+        sec = sec.child(enum_select_row(
+            "Cube Update",
+            cube_rate_str(shadow.cube_face_update_rate),
+            rate_opts(),
+            move |v| update_shadow(&n, |s| s.cube_face_update_rate = cube_rate_from(&v)),
+        ));
+    }
+
     sec.render()
+}
+
+/// Read the inline shadow config off any light kind.
+fn light_shadow(cfg: &LightConfig) -> LightShadowConfig {
+    match cfg {
+        LightConfig::Directional { shadow, .. }
+        | LightConfig::Point { shadow, .. }
+        | LightConfig::Spot { shadow, .. } => shadow.clone(),
+    }
+}
+
+/// Mutate the selected light's shadow config in place + dispatch the SetKind.
+fn update_shadow(node: &Arc<Node>, f: impl FnOnce(&mut LightShadowConfig)) {
+    if let Some(cur) = current_light(node) {
+        let mut shadow = light_shadow(&cur);
+        f(&mut shadow);
+        dispatch_kind(node.id, NodeKind::Light(with_shadow(cur, shadow)));
+    }
+}
+
+fn with_shadow(cfg: LightConfig, shadow: LightShadowConfig) -> LightConfig {
+    match cfg {
+        LightConfig::Directional {
+            color, intensity, ..
+        } => LightConfig::Directional {
+            color,
+            intensity,
+            shadow,
+        },
+        LightConfig::Point {
+            color,
+            intensity,
+            range,
+            ..
+        } => LightConfig::Point {
+            color,
+            intensity,
+            range,
+            shadow,
+        },
+        LightConfig::Spot {
+            color,
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+            ..
+        } => LightConfig::Spot {
+            color,
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+            shadow,
+        },
+    }
+}
+
+fn hardness_str(h: LightShadowHardness) -> &'static str {
+    match h {
+        LightShadowHardness::Hard => "hard",
+        LightShadowHardness::Soft => "soft",
+        LightShadowHardness::Pcss => "pcss",
+    }
+}
+fn hardness_from(s: &str) -> LightShadowHardness {
+    match s {
+        "hard" => LightShadowHardness::Hard,
+        "pcss" => LightShadowHardness::Pcss,
+        _ => LightShadowHardness::Soft,
+    }
+}
+fn evsm_str(c: EvsmCutoff) -> &'static str {
+    match c {
+        EvsmCutoff::Off => "off",
+        EvsmCutoff::LastCascade => "last_cascade",
+        EvsmCutoff::LastTwoCascades => "last_two_cascades",
+    }
+}
+fn evsm_from(s: &str) -> EvsmCutoff {
+    match s {
+        "off" => EvsmCutoff::Off,
+        "last_two_cascades" => EvsmCutoff::LastTwoCascades,
+        _ => EvsmCutoff::LastCascade,
+    }
+}
+fn rate_opts() -> Vec<(String, String)> {
+    vec![
+        ("every_frame".into(), "Every frame".into()),
+        ("every2_frames".into(), "Every 2".into()),
+        ("every4_frames".into(), "Every 4".into()),
+        ("every8_frames".into(), "Every 8".into()),
+    ]
+}
+fn far_rate_str(r: FarCascadeUpdateRate) -> &'static str {
+    match r {
+        FarCascadeUpdateRate::EveryFrame => "every_frame",
+        FarCascadeUpdateRate::Every2Frames => "every2_frames",
+        FarCascadeUpdateRate::Every4Frames => "every4_frames",
+        FarCascadeUpdateRate::Every8Frames => "every8_frames",
+    }
+}
+fn far_rate_from(s: &str) -> FarCascadeUpdateRate {
+    match s {
+        "every_frame" => FarCascadeUpdateRate::EveryFrame,
+        "every2_frames" => FarCascadeUpdateRate::Every2Frames,
+        "every8_frames" => FarCascadeUpdateRate::Every8Frames,
+        _ => FarCascadeUpdateRate::Every4Frames,
+    }
+}
+fn cube_rate_str(r: CubeFaceUpdateRate) -> &'static str {
+    match r {
+        CubeFaceUpdateRate::EveryFrame => "every_frame",
+        CubeFaceUpdateRate::Every2Frames => "every2_frames",
+        CubeFaceUpdateRate::Every4Frames => "every4_frames",
+        CubeFaceUpdateRate::Every8Frames => "every8_frames",
+    }
+}
+fn cube_rate_from(s: &str) -> CubeFaceUpdateRate {
+    match s {
+        "every2_frames" => CubeFaceUpdateRate::Every2Frames,
+        "every4_frames" => CubeFaceUpdateRate::Every4Frames,
+        "every8_frames" => CubeFaceUpdateRate::Every8Frames,
+        _ => CubeFaceUpdateRate::EveryFrame,
+    }
 }
 
 fn current_light(node: &Arc<Node>) -> Option<LightConfig> {
