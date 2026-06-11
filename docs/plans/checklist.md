@@ -31,22 +31,36 @@ reliable shadow.
 
 ANIMATION-TRACK BUGS found during verification (SEPARATE from cutout/AA — my session never
 touched lights/transforms/animation; these belong to the mesh-authoring animation track):
-1. Animated glTF LIGHTS don't follow their animated nodes on :9080 (firefly meshes move,
-   point-lights stay at bind pose). CORRECTED diagnosis (deeper than a one-liner — the
-   binding is NOT the gap): `populate_gltf` DOES bind each light to its node
-   (`renderer-gltf/src/populate/lights.rs:132 lights.bind_transform`). And the chain is
-   intended to work: `transforms.rs:51` feeds `lights.update_from_transforms` the
-   `take_dirty_meshes()` set, which `update_world` fills for EVERY node whose world matrix
-   changed (`transforms.rs:520`, not mesh-filtered despite the name); `update_from_transforms`
-   (lights.rs:303) re-derives bound lights from it. So the real bug is upstream in the
-   ANIMATION-APPLICATION → transform-dirty path: the :9080 animation that moves the firefly
-   meshes apparently doesn't route those node updates through `set_local`/`update_world`'s
-   dirty-tracking (so the light's bound transform never lands in `dirty_meshes`), OR the
-   light's bound `transform_key` isn't the node the animation drives. NEXT: trace how the
-   model-tests/:9080 animation applies node transforms (does it call `Transforms::set_local`
-   → `update_world`, or write a separate buffer bypassing dirty-tracking?) + confirm the
-   firefly light's bound transform_key vs the animated node. (Editor :9085 doesn't play clips
-   at all — see #2 — so this is only observable on :9080.)
+1. Animated glTF LIGHTS reportedly don't follow their animated nodes on :9080 (firefly
+   meshes move, point-lights stay at bind pose). ▶ TRACE COMPLETE — the renderer chain is
+   CORRECT end-to-end; BOTH prior hypotheses are DISPROVEN, so no code fix was made:
+   - `update_all` (update.rs:15-22) runs `update_animations` (set_local) BEFORE
+     `update_transforms` (update_world → take_dirty_meshes → lights.update_from_transforms) —
+     correct order.
+   - The plant's animation IS registered against the light node: `populate_gltf_node_animation`
+     (`renderer-gltf/.../populate/animation.rs:66-73`) and the light bind
+     (`populate/lights.rs:130`) BOTH resolve via the SAME `key_lookups.node_index_to_transform`
+     map keyed by `node.index()`, so node 3/14 → the same `transform_key` for both. (HYPOTHESIS
+     "bound transform_key ≠ animated node" = FALSE.)
+     loose-player `update_animations` (animations.rs:265-282) calls `set_local(map[node])`,
+     which unconditionally `dirties.insert` → `update_world` recomputes + `dirty_meshes.push`
+     for EVERY recomputed node → `take_dirty_meshes` → `lights.update_from_transforms`
+     (lights.rs:313-322) applies `apply_world_transform` (point pos = `world.w_axis.xyz()`,
+     correct) + sets `punctual_gpu_dirty`; `lights.write_gpu` (render.rs ~390) uploads.
+     (HYPOTHESIS "node updates don't reach the dirty-set" = FALSE.)
+   - CONTENT: glTF nodes 3 & 14 (`pointlight_firefly{1,2}`) DO have translation channels with
+     the SAME 501-key span as the firefly meshes (~[0.49,0.32,0.38]) — the light nodes move as
+     much as the meshes. So it's not subtle/constant content either.
+   ⇒ MOST LIKELY: the June-11 observation was on a STALE :9080 trunk build (this very session
+   hit that exact hazard — trunk served a pre-fix wasm at :9085/:9080 until a renderer file was
+   touched to force a rebuild + wasm-mtime advance). The binding chain landed in `a4eb2bf9`
+   (Jun 3); a :9080 tab open from before that, never hard-reloaded, would still show frozen
+   lights. RE-VERIFY: hard-reload `:9080/app/model/DiffuseTransmissionPlant` on a FRESH build
+   (confirm `dist/*_bg.wasm` mtime is newer than the last renderer edit) and watch a firefly
+   point-light's glow orbit with its mesh. If it STILL freezes on a confirmed-fresh build, the
+   bug is NOT in the populate/transform/light chain (all verified) — look at the animation
+   SAMPLER output values at runtime or the loose-player clock advance. (Editor :9085 uses a
+   different clip path and doesn't play clips — see #2 — so this is only observable on :9080.)
 2. The EDITOR (:9085) doesn't play imported glTF clips at all (set_playing/set_playhead don't
    pose the scene) — the known-pending "animation playback in the loader/editor" wiring.
 
