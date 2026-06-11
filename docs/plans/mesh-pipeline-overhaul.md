@@ -488,3 +488,18 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   (editor engine/query.rs poll_scene_capture) — suspects: copy alignment at this size,
   capture queue wedged by the aborted writes, or capture-canvas re-init after reloads.
   drive.py curl timeout bumped to 150s.
+
+### Overnight run, iteration 8 — capture mystery SOLVED: the display went to sleep
+- scene_png now surfaces the real capture error via console_logs (was swallowed into
+  "no image available"). Reproduced: "scene capture timed out (no frame presented)" —
+  and frame_globals shows frame_count FROZEN at 1 with dt 0.0: **the render loop (RAF)
+  is paused because the Mac's display slept/locked (~00:30). Chrome pauses RAF for
+  occluded windows; Chrome GPU process at 0.4% CPU.** This also retro-explains the
+  night's intermittent "degraded sessions" (canvas freezes that recovered after
+  reloads ≈ display dozing between polls). caffeinate -u fired + `caffeinate -d -t
+  28800` armed (display won't RE-sleep once unlocked), but a LOCKED session keeps
+  Chrome occluded — no remote fix, correctly so.
+- CONSEQUENCE: visual verification is BLOCKED until the user unlocks in the morning.
+  Pivot: build + NUMERICALLY verify animation playback (SampleClipTimeseries is
+  GPU-independent by design), MCP robustness (query-verifiable), and queue all visual
+  confirms (bone icons, skeleton viz when built, fox-framed screenshot) for morning.

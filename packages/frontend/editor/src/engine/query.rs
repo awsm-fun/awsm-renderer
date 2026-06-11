@@ -79,7 +79,15 @@ pub fn poll_scene_capture(renderer: &awsm_renderer::AwsmRenderer) {
 /// GPU-reads the swapchain (a WebGPU canvas isn't `toDataURL`-readable), scaling
 /// to `width`/`height` when given. `None` if no frame could be captured.
 pub async fn scene_png(width: Option<u32>, height: Option<u32>) -> Option<String> {
-    let (rgba, w, h) = capture_scene_rgba().await.ok()?;
+    let (rgba, w, h) = match capture_scene_rgba().await {
+        Ok(frame) => frame,
+        Err(e) => {
+            // Surfaced via console_logs — the relay's "no image available"
+            // otherwise swallows the real failure (timeout vs export error).
+            tracing::warn!("scene_png capture failed: {e}");
+            return None;
+        }
+    };
     rgba_to_png_data_url_scaled(&rgba, w, h, width, height)
 }
 
