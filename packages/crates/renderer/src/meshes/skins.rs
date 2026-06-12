@@ -178,6 +178,30 @@ impl Skins {
     }
 
     /// Returns the number of joints in a skin.
+    /// Raw copy of a skin's packed per-vertex joint/weight stream. Layout per
+    /// ORIGINAL vertex, per set: 4 × (u32 joint index, f32 weight), little-
+    /// endian — 32 bytes per set per vertex (see renderer-gltf buffers/skin.rs,
+    /// which packs it, and shared_wgsl/vertex/skin.wgsl, which consumes it).
+    pub fn read_joint_index_weights(&self, skin_key: SkinKey) -> Result<Vec<u8>> {
+        self.joint_index_weights
+            .get(skin_key)
+            .map(|s| s.to_vec())
+            .ok_or(AwsmSkinError::SkinNotFound(skin_key))
+    }
+
+    /// In-place edit of the packed joint/weight stream (same layout as
+    /// [`Self::read_joint_index_weights`]). Marks the GPU copy dirty — the next
+    /// `write_gpu` uploads it, so live skinned meshes re-deform immediately.
+    pub fn update_joint_index_weights_with(
+        &mut self,
+        skin_key: SkinKey,
+        f: impl FnOnce(&mut [u8]),
+    ) {
+        self.joint_index_weights
+            .update_with_unchecked(skin_key, |_, bytes| f(bytes));
+        self.joint_index_weights_gpu_dirty = true;
+    }
+
     pub fn sets_len(&self, skin_key: SkinKey) -> Result<usize> {
         self.sets_len
             .get(skin_key)

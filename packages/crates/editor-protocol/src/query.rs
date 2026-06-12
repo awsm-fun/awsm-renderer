@@ -237,6 +237,16 @@ pub enum EditorQuery {
         #[serde(default)]
         pole: Option<[f32; 3]>,
     },
+    /// Per-vertex skin weights (set 0) for a skinned node — `{ vertex_count,
+    /// set_count, weights: { "<vertex>": { joints:[u32;4], weights:[f32;4] } } }`
+    /// as a `Map` with `kind = "skin_weights"`. Empty `indices` = every vertex.
+    /// Joint values index the skin's joint ARRAY (the order `get_skin_data`
+    /// lists joints in), not scene nodes. Pairs with `SetSkinWeights`.
+    GetSkinWeights {
+        node: NodeId,
+        #[serde(default)]
+        indices: Vec<u32>,
+    },
     /// The last `limit` editor notices (toasts: info/warning/error) from an
     /// in-process ring buffer — surfaces runtime errors otherwise invisible over
     /// MCP. Material compile errors have a dedicated path (`MaterialDiagnostics`).

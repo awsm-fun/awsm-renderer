@@ -38,7 +38,7 @@ pub use assets::{asset_disk_path, asset_filename, AssetEntry, AssetSource, Asset
 pub use bake::{lower_mesh, project_to_scene};
 pub use command::{
     BuiltinTextureSlot, CameraAxis, CustomAlphaMode, EditorCommand, EditorMode, ProceduralKind,
-    SlotSpec,
+    SkinWeightEntry, SlotSpec,
 };
 pub use mesh_def::{CapturedMesh, CapturedSource, MeshDef, VertexOverrides};
 pub use node_spec::{kind_tag, InsertSpec, NodeQuery, NodeSpec};

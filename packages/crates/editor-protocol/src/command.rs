@@ -94,6 +94,19 @@ pub enum EditorMode {
     Animation,
 }
 
+/// One vertex's skin-weight rewrite for [`EditorCommand::SetSkinWeights`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct SkinWeightEntry {
+    /// ORIGINAL vertex index (the skin stream is per original vertex).
+    pub vertex: u32,
+    /// Joint-array indices (4 influences; pad unused with 0).
+    pub joints: [u32; 4],
+    /// Influence weights (pad unused with 0.0).
+    pub weights: [f32; 4],
+}
+
 /// Every editor mutation, as serializable data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -341,6 +354,19 @@ pub enum EditorCommand {
         node: NodeId,
         index: u32,
         value: f32,
+    },
+
+    /// Rewrite per-vertex skin weights (set 0) on a skinned node's LIVE skin
+    /// buffer — the mesh re-deforms immediately. `joints` index the skin's
+    /// joint ARRAY (the order `get_skin_data` lists joints), weights should sum
+    /// to 1 (`normalize: true` rescales each entry). Undoable: the inverse
+    /// restores the prior values for the touched vertices. Read back via
+    /// `GetSkinWeights`.
+    SetSkinWeights {
+        node: NodeId,
+        entries: Vec<SkinWeightEntry>,
+        #[serde(default)]
+        normalize: bool,
     },
 
     /// Assign a library material (built-in or custom WGSL, by id) to a scene
@@ -958,6 +984,7 @@ impl EditorCommand {
             EditorCommand::SetFrameTime { .. } => "Pin frame time",
             EditorCommand::ClearFrameTime => "Clear frame time",
             EditorCommand::SetMorphWeight { .. } => "Set morph weight",
+            EditorCommand::SetSkinWeights { .. } => "Edit skin weights",
             EditorCommand::AddClip { .. } => "New clip",
             EditorCommand::DeleteClip { .. } => "Delete clip",
             EditorCommand::DuplicateClip { .. } => "Duplicate clip",

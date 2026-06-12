@@ -1869,6 +1869,89 @@ impl EditorController {
                 crate::engine::context::with_renderer_mut(|r| r.clear_time_source()).await;
                 Ok(None)
             }
+            EditorCommand::SetSkinWeights {
+                node,
+                entries,
+                normalize,
+            } => {
+                // Live skin-stream surgery: rewrite set-0 joint/weight pairs for
+                // the given ORIGINAL vertices (layout: per vertex, per set,
+                // 4 × (u32 joint LE, f32 weight LE) — 32 B/set/vertex). The
+                // inverse restores the prior pairs for the touched vertices.
+                let meshes = renderer_meshes_for_node(node);
+                let prior = crate::engine::context::with_renderer_mut(move |r| {
+                    let skin_key = meshes
+                        .iter()
+                        .find_map(|mk| r.meshes.mesh_skin_key(*mk).flatten())?;
+                    let sets = r.meshes.skins.sets_len(skin_key).ok()?;
+                    let stride = sets * 32;
+                    let bytes = r.meshes.skins.read_joint_index_weights(skin_key).ok()?;
+                    let vertex_count = bytes.len().checked_div(stride).unwrap_or(0);
+                    // Capture prior values for the inverse.
+                    let mut prior: Vec<awsm_editor_protocol::SkinWeightEntry> = Vec::new();
+                    for e in &entries {
+                        let v = e.vertex as usize;
+                        if v >= vertex_count {
+                            continue;
+                        }
+                        let off = v * stride;
+                        let mut joints = [0u32; 4];
+                        let mut weights = [0f32; 4];
+                        for i in 0..4 {
+                            let p = off + i * 8;
+                            joints[i] = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+                            weights[i] =
+                                f32::from_le_bytes(bytes[p + 4..p + 8].try_into().unwrap());
+                        }
+                        prior.push(awsm_editor_protocol::SkinWeightEntry {
+                            vertex: e.vertex,
+                            joints,
+                            weights,
+                        });
+                    }
+                    // Write the new values.
+                    r.meshes
+                        .skins
+                        .update_joint_index_weights_with(skin_key, |buf| {
+                            for e in &entries {
+                                let v = e.vertex as usize;
+                                if v >= vertex_count {
+                                    continue;
+                                }
+                                let mut w = e.weights;
+                                if normalize {
+                                    let sum: f32 = w.iter().sum();
+                                    if sum > 1e-6 {
+                                        for x in &mut w {
+                                            *x /= sum;
+                                        }
+                                    }
+                                }
+                                let off = v * stride;
+                                for (i, (joint, weight)) in
+                                    e.joints.iter().zip(w.iter()).enumerate()
+                                {
+                                    let p = off + i * 8;
+                                    buf[p..p + 4].copy_from_slice(&joint.to_le_bytes());
+                                    buf[p + 4..p + 8].copy_from_slice(&weight.to_le_bytes());
+                                }
+                            }
+                        });
+                    Some(prior)
+                })
+                .await;
+                match prior {
+                    Some(prior) if !prior.is_empty() => {
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetSkinWeights {
+                            node,
+                            entries: prior,
+                            normalize: false,
+                        }))
+                    }
+                    _ => Ok(None),
+                }
+            }
             EditorCommand::SetMorphWeight { node, index, value } => {
                 // Live renderer poke (transient — see the protocol doc comment):
                 // node → materialized mesh(es) → geometry AND material morph
@@ -4009,6 +4092,57 @@ impl EditorController {
                         error: "ik solve failed: chain not materialized or degenerate \
                                 (zero-length bones / target at the root)"
                             .to_string(),
+                    },
+                }
+            }
+            EditorQuery::GetSkinWeights { node, indices } => {
+                use serde_json::json;
+                let meshes = renderer_meshes_for_node(node);
+                let data = crate::engine::context::with_renderer_mut(move |r| {
+                    let skin_key = meshes
+                        .iter()
+                        .find_map(|mk| r.meshes.mesh_skin_key(*mk).flatten())?;
+                    let sets = r.meshes.skins.sets_len(skin_key).ok()?;
+                    let stride = sets * 32;
+                    let bytes = r.meshes.skins.read_joint_index_weights(skin_key).ok()?;
+                    let vertex_count = bytes.len().checked_div(stride).unwrap_or(0);
+                    let want: Vec<u32> = if indices.is_empty() {
+                        (0..vertex_count as u32).collect()
+                    } else {
+                        indices
+                    };
+                    let mut weights = serde_json::Map::new();
+                    for v in want {
+                        let vu = v as usize;
+                        if vu >= vertex_count {
+                            continue;
+                        }
+                        let off = vu * stride;
+                        let mut joints = [0u32; 4];
+                        let mut ws = [0f32; 4];
+                        for i in 0..4 {
+                            let p = off + i * 8;
+                            joints[i] = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+                            ws[i] = f32::from_le_bytes(bytes[p + 4..p + 8].try_into().unwrap());
+                        }
+                        weights.insert(v.to_string(), json!({ "joints": joints, "weights": ws }));
+                    }
+                    Some((vertex_count, sets, weights))
+                })
+                .await;
+                match data {
+                    Some((vertex_count, sets, weights)) => {
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("vertex_count".into(), json!(vertex_count));
+                        entries.insert("set_count".into(), json!(sets));
+                        entries.insert("weights".into(), serde_json::Value::Object(weights));
+                        QueryResult::Map(query::MapResult {
+                            kind: "skin_weights".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no materialized skin"),
                     },
                 }
             }

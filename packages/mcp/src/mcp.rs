@@ -542,6 +542,26 @@ fn default_true_param() -> bool {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SkinWeightsGetParams {
+    /// Skinned node UUID.
+    pub node: String,
+    /// ORIGINAL vertex indices to read; empty = every vertex.
+    #[serde(default)]
+    pub indices: Vec<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SkinWeightsSetParams {
+    /// Skinned node UUID.
+    pub node: String,
+    /// Per-vertex rewrites: { vertex, joints:[u32;4], weights:[f32;4] }.
+    pub entries: Vec<awsm_editor_protocol::SkinWeightEntry>,
+    /// Rescale each entry's weights to sum to 1.
+    #[serde(default)]
+    pub normalize: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MorphWeightParams {
     /// Mesh node UUID (a node whose mesh has morph targets).
     pub node: String,
@@ -2115,6 +2135,35 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::SkinData {
             nodes: parse_nodes(&p.nodes)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Per-vertex skin weights (set 0) for a skinned node: { vertex_count, set_count, weights: { \"<vertex>\": { joints:[4], weights:[4] } } }. `joints` index the skin's joint ARRAY (the order get_skin_data lists joints), not scene nodes. Empty indices = all vertices (fox ≈ 1.7k — fine). Pairs with set_skin_weights."
+    )]
+    async fn get_skin_weights(
+        &self,
+        Parameters(p): Parameters<SkinWeightsGetParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetSkinWeights {
+            node: parse_node(&p.node)?,
+            indices: p.indices,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Rewrite per-vertex skin weights (set 0) on a skinned node's LIVE skin — the mesh re-deforms immediately, undoable. entries = [{ vertex, joints:[u32;4], weights:[f32;4] }]; joints index the skin's joint ARRAY (get_skin_data order); normalize rescales each entry to sum 1. Verify by posing the newly-weighted joint."
+    )]
+    async fn set_skin_weights(
+        &self,
+        Parameters(p): Parameters<SkinWeightsSetParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetSkinWeights {
+            node: parse_node(&p.node)?,
+            entries: p.entries,
+            normalize: p.normalize,
         })
         .await
     }
