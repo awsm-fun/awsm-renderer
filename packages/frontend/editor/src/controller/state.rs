@@ -1471,6 +1471,29 @@ impl EditorController {
                 self.dirty.set_neq(true);
                 Ok(None)
             }
+            EditorCommand::UpdateBuiltinMaterial { id, def } => {
+                let Some(mat) = find_material(&self.custom_materials, id) else {
+                    return Err(crate::error::EditorError::msg(format!("no material {id}")));
+                };
+                let Some(prior) = mat.builtin.get_cloned() else {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "material {id} is not a built-in (custom WGSL materials \
+                         use the SetCustomMaterial* commands)"
+                    )));
+                };
+                mat.builtin.set(Some(*def));
+                // Variant changed → refresh its card thumbnail + re-materialize
+                // every assigned mesh (debounced).
+                crate::engine::thumbnail::invalidate(mat.id);
+                crate::engine::thumbnail::request(mat.clone());
+                spawn_builtin_resync(mat);
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::UpdateBuiltinMaterial {
+                    id,
+                    def: Box::new(prior),
+                }))
+            }
             EditorCommand::DeleteCustomMaterial { id } => {
                 self.custom_materials.lock_mut().retain(|m| m.id != id);
                 if self.current_material.get() == Some(id) {

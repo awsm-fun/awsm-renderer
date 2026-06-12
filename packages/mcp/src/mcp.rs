@@ -347,6 +347,15 @@ pub struct ShadingParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UpdateBuiltinParams {
+    /// The built-in material's asset id.
+    pub id: String,
+    /// The FULL MaterialDef as JSON (read the current one from get_snapshot,
+    /// modify, send back). See the tool description for field shapes.
+    pub def: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct AssetArg {
     /// Asset UUID (material / texture / clip).
     pub asset: String,
@@ -887,6 +896,25 @@ impl EditorMcp {
     )]
     async fn get_memory_stats(&self) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::MemoryStats).await
+    }
+
+    #[tool(
+        description = "Replace a built-in library material's VARIANT definition wholesale (idempotent full MaterialDef as JSON, undoable; assigned meshes re-materialize). Key fields: shading ({\"pbr\":null} | {\"unlit\":null} | {\"toon\":{...}} | {\"flip_book\":{\"cols\":2,\"rows\":2,\"frame_count\":4,\"fps\":2.0,\"time_offset\":0.0,\"mode\":\"loop\",\"flip_y\":false}}), alpha_mode ({\"opaque\":null} | {\"mask\":{\"cutoff\":0.5}} | {\"blend\":null}), double_sided, base_color (rgba), base_color_texture ({\"asset\":\"<texture-asset-id>\"} — for a FlipBook this is the ATLAS), label. Read the current def from get_snapshot first and send it back modified. A Mask-mode FlipBook = an ANIMATED CUTOUT (alpha-tested opaque, hole-shaped shadows)."
+    )]
+    async fn update_builtin_material(
+        &self,
+        Parameters(p): Parameters<UpdateBuiltinParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = parse_asset(&p.id)?;
+        let def: awsm_editor_protocol::MaterialDef = serde_json::from_value(p.def.clone())
+            .map_err(|e| {
+                McpError::invalid_params(format!("def does not parse as a MaterialDef: {e}"), None)
+            })?;
+        self.dispatch(EditorCommand::UpdateBuiltinMaterial {
+            id,
+            def: Box::new(def),
+        })
+        .await
     }
 
     #[tool(description = "The current workspace mode (scene | material | animation).")]

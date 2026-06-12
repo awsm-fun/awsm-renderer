@@ -189,13 +189,15 @@ fn status_badge(wgsl: &str, registered: bool) -> Dom {
 /// Mutate the inner `MaterialDef` of a built-in library material + flag dirty.
 /// The `spawn_builtin_resync` observer re-materializes assigned meshes.
 fn edit_builtin(mat: &Arc<CustomMaterial>, f: impl FnOnce(&mut awsm_editor_protocol::MaterialDef)) {
+    // All-via-controller: the edit dispatches `UpdateBuiltinMaterial` (undoable,
+    // cross-tab, MCP-visible) instead of mutating the reactive def directly —
+    // the handler owns the thumbnail refresh + assigned-mesh resync.
     let mut def = mat.builtin.get_cloned().unwrap_or_default();
     f(&mut def);
-    mat.builtin.set(Some(def));
-    // The variant changed → refresh its card thumbnail.
-    crate::engine::thumbnail::invalidate(mat.id);
-    crate::engine::thumbnail::request(mat.clone());
-    controller().dirty.set_neq(true);
+    dispatch(EditorCommand::UpdateBuiltinMaterial {
+        id: mat.id,
+        def: Box::new(def),
+    });
 }
 
 /// A toggle row bound to a built-in material's variant `MaterialDef`.

@@ -12,7 +12,7 @@ use awsm_scene::animation::{
     BuiltinParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc,
     LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
-use awsm_scene::{AssetId, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs};
+use awsm_scene::{AssetId, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind, Trs};
 
 use awsm_meshgen::recipe::{Modifier, ModifierStack};
 
@@ -275,6 +275,16 @@ pub enum EditorCommand {
         id: AssetId,
         shading: MaterialShading,
     },
+
+    /// Replace a built-in library material's VARIANT definition wholesale —
+    /// shading model + its knobs (Toon bands, FlipBook grid/playback), alpha
+    /// mode, double-sided, vertex colours, texture bindings, extensions. The
+    /// full `MaterialDef` is sent (not a delta) so the edit is one idempotent,
+    /// undoable step; assigned meshes re-materialize (debounced). This is the
+    /// ONLY mutation path for built-in variants (the studio UI routes through
+    /// it too — the "all via controller" rule), and the agent path for e.g.
+    /// authoring a Mask-mode FlipBook. Inverse: restore the prior def.
+    UpdateBuiltinMaterial { id: AssetId, def: Box<MaterialDef> },
 
     /// Delete a custom WGSL material.
     DeleteCustomMaterial { id: AssetId },
@@ -948,6 +958,7 @@ impl EditorCommand {
             EditorCommand::SetCustomMaterialWgsl { .. } => "Edit shader",
             EditorCommand::SetCustomMaterialAlphaWgsl { .. } => "Edit alpha shader",
             EditorCommand::AssignMaterial { .. } => "Assign material",
+            EditorCommand::UpdateBuiltinMaterial { .. } => "Edit material variant",
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
             EditorCommand::DropSkinning { .. } => "Drop skinning",
             EditorCommand::ConvertToEditableMesh { .. } => "Convert to editable mesh",
