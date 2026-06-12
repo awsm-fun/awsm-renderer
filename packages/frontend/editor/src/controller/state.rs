@@ -821,6 +821,10 @@ impl EditorController {
                 // Project-level reset (clears the undo log — not itself undoable).
                 self.scene.nodes.lock_mut().clear();
                 self.selected.set(Vec::new());
+                // Transient vertex-selection view state — its viewport markers
+                // otherwise survive the reset (stress-test finding: a ghost
+                // dome of highlight crosses floating in the fresh project).
+                self.vertex_selection.set(None);
                 *self.scene.assets.lock().unwrap() = Default::default();
                 self.scene.bump_revision();
                 // Material library.

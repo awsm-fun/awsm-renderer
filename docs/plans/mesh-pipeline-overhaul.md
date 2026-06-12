@@ -598,3 +598,16 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   top_percent selected 792/825 — semantics worth a doc note). ⑥ ROUND-TRIP PIXELS
   SEEN: authored vs load_player_bundle reload visually identical (sphere+box+PBR
   colors). ⑦ bone icons in outliner = DOM, needs USER EYEBALL.
+
+### Stress battery results (iteration 13b) — ALL PASS, one bug found+fixed
+- S1: 30-mesh scene under a 12-deep Empty chain + 8 shadow-casting point/spot
+  lights → renders, zero errors, 17.1ms frame (~58fps). FOUND+FIXED: transient
+  vertex-selection markers SURVIVED new_project (ghost dome) — NewProject now
+  clears vertex_selection (observer tears markers down).
+- S2: 4-modifier stack (twist/taper/subdivide/inflate) + 48-op undo/redo storm →
+  mesh_stats byte-identical pre/post (undo log sound), mesh renders, zero errors.
+- S3: 18-step reparent storm (3 groups + root, cycles) → node + transforms intact;
+  orthographic projection toggle renders (SEEN); zero errors; 14.8ms frame.
+- Perf eyeball: 14-17ms frames on the stress scenes with 8 shadow lights on a
+  2032×1094 canvas — no regression flags. (Quantitative baselines remain a
+  follow-on; nothing tonight touched render hot paths except logging.)
