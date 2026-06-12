@@ -210,6 +210,9 @@ pub struct Settings {
     pub light_gizmos: Mutable<bool>,
     /// Show the skeleton bone-line overlay on skinned rigs.
     pub skeleton_viz: Mutable<bool>,
+    /// Auto-key: in ANIMATION mode, a gizmo edit on a node that the current
+    /// clip tracks writes keyframe(s) at the playhead automatically.
+    pub auto_key: Mutable<bool>,
     pub msaa: Mutable<bool>,
     pub heatmap: Mutable<bool>,
     pub snap: Mutable<bool>,
@@ -227,6 +230,7 @@ impl Default for Settings {
             gizmo: Mutable::new(true),
             light_gizmos: Mutable::new(true),
             skeleton_viz: Mutable::new(true),
+            auto_key: Mutable::new(false),
             msaa: Mutable::new(true),
             heatmap: Mutable::new(false),
             snap: Mutable::new(false),
@@ -4326,6 +4330,63 @@ fn readback_key(t: &query::ReadbackTarget) -> String {
         R::BuiltinParam { node, param } => format!("builtin/{node}/{param:?}"),
         R::LightParam { node, param } => format!("light/{node}/{param:?}"),
         R::CameraParam { node, param } => format!("camera/{node}/{param:?}"),
+    }
+}
+
+/// The LIVE value for an animation track target — what key-from-pose captures.
+/// Transform targets read the editor node's authored `Trs` signal (the value
+/// the gizmo + inspector write); everything else reads CPU-side renderer /
+/// scene state through the same `read_readback_target` the timeseries query
+/// uses. `None` when the target can't currently resolve — callers fall back
+/// to sampling the track's own curve (the pre-key-from-pose behavior).
+#[cfg_attr(test, allow(dead_code))] // caller (animation_mode UI) isn't built under cfg(test)
+pub(crate) async fn live_track_value(
+    ctrl: &EditorController,
+    target: &TrackTarget,
+) -> Option<TrackValue> {
+    use crate::controller::animation::TransformProp;
+    // Transform: the editor signal IS the live pose — sync, no renderer.
+    if let TrackTarget::Transform { node, prop } = target {
+        let n = mutate::find_by_id(&ctrl.scene, *node)?;
+        let trs = n.transform.get();
+        return Some(match prop {
+            TransformProp::Translation => TrackValue::Vec3(trs.translation),
+            TransformProp::Rotation => TrackValue::Quat(trs.rotation),
+            TransformProp::Scale => TrackValue::Vec3(trs.scale),
+        });
+    }
+    // Everything else: route through the readback machinery.
+    use query::ReadbackTarget as R;
+    let rt = match target.clone() {
+        TrackTarget::Transform { .. } => unreachable!("handled above"),
+        TrackTarget::Morph { node, index } => R::MorphWeight { node, index },
+        TrackTarget::Uniform { material, name } => R::Uniform { material, name },
+        TrackTarget::BuiltinParam { node, param } => R::BuiltinParam { node, param },
+        TrackTarget::Light { node, param } => R::LightParam { node, param },
+        TrackTarget::Camera { node, param } => R::CameraParam { node, param },
+    };
+    let v = crate::engine::context::with_renderer_mut(move |r| read_readback_target(r, &rt)).await;
+    // Shape the JSON by the track's expected kind (vec3 / quat / scalar).
+    let expected = crate::controller::animation::default_value_for(target);
+    match (expected, v) {
+        (TrackValue::Scalar(_), serde_json::Value::Number(n)) => {
+            Some(TrackValue::Scalar(n.as_f64()? as f32))
+        }
+        (TrackValue::Vec3(_), serde_json::Value::Array(a)) if a.len() >= 3 => {
+            let mut out = [0.0f32; 3];
+            for (i, x) in a.iter().take(3).enumerate() {
+                out[i] = x.as_f64()? as f32;
+            }
+            Some(TrackValue::Vec3(out))
+        }
+        (TrackValue::Quat(_), serde_json::Value::Array(a)) if a.len() >= 4 => {
+            let mut out = [0.0f32; 4];
+            for (i, x) in a.iter().take(4).enumerate() {
+                out[i] = x.as_f64()? as f32;
+            }
+            Some(TrackValue::Quat(out))
+        }
+        _ => None,
     }
 }
 
