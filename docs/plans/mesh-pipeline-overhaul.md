@@ -837,3 +837,16 @@ future loops on this project:
 - Untracked test assets for user decision: media/fox-roundtrip.glb (round-trip
   artifact) + media/flipbook-atlas-2x2.png (generated 2×2 RGBA atlas; useful as a
   permanent flipbook test asset — recommend keeping).
+
+### Day-3 scope H (user-extended): shadow correctness + lighting review
+- 5c2b375f SEEN-verified: EVSM atlas auto-grow (2nd+ shadowed sun no longer
+  degrades to PCF — one info log 2048→4096, zero warn spam, two shadow lobes);
+  shadow max_distance <= 0 = AUTO/camera-far and is now the default (the fixed
+  100.0 was a scale trap: cm-scale scenes lost all shadows beyond 100 units of
+  the camera — the root of most of the verification-batch shadow confusion);
+  per-frame warn spam latched to once-per-episode.
+- Lighting application audited CLEAN: IBL/ambient never shadow-attenuated;
+  per-light visibility multiplies the direct term only; receive_shadows gate
+  honored; SSCS applied to directional only (point/spot use their own maps).
+- OVERNIGHT unattended soak launched (8h, 60s cadence) — the multi-hour
+  tab-crash question's definitive instrument; results analyzed on completion.
