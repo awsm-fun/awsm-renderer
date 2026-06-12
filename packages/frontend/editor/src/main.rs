@@ -137,7 +137,17 @@ pub fn main() {
                         }
                         Err(err) => {
                             awsm_web_shared::util::window::remove_boot_loader();
-                            Modal::error(format!("Failed to initialize renderer: {err}"));
+                            let msg = format!("Failed to initialize renderer: {err}");
+                            // Agent observability: a boot failure happens BEFORE
+                            // any MCP attach, so without this beacon the failure
+                            // is invisible outside the browser console (every
+                            // /debug request just times out). Fire-and-forget
+                            // POST to the relay's /boot-error; agents read it
+                            // back via GET /health.
+                            if let Some(origin) = boot_mcp_origin() {
+                                report_boot_error(&origin, &msg);
+                            }
+                            Modal::error(msg);
                         }
                     }
                 }));
@@ -145,6 +155,22 @@ pub fn main() {
             .child_signal(ctx_ready.signal().map(|ready| if ready { Some(app::render()) } else { None }))
         }),
     );
+}
+
+/// Fire-and-forget POST of a boot-failure message to the MCP relay's
+/// `/boot-error` endpoint (see the Err arm above — agent observability).
+fn report_boot_error(origin: &str, msg: &str) {
+    let url = format!("{}/boot-error", origin.trim_end_matches('/'));
+    let opts = web_sys::RequestInit::new();
+    opts.set_method("POST");
+    opts.set_body(&wasm_bindgen::JsValue::from_str(msg));
+    if let (Some(win), Ok(req)) = (
+        web_sys::window(),
+        web_sys::Request::new_with_str_and_init(&url, &opts),
+    ) {
+        // Ignore the response entirely — best-effort beacon.
+        let _ = win.fetch_with_request(&req);
+    }
 }
 
 /// Read a `?load=<base_url>` query parameter (URL-decoded) for the gesture-free

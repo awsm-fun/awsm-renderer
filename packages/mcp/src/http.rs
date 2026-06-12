@@ -29,6 +29,12 @@ struct AppState {
     cert_hash: String,
     quic_port: u16,
     link: EditorLink,
+    /// The most recent editor BOOT error (renderer/init failure reported by
+    /// the page before any MCP attach happened), with a timestamp. Agents
+    /// read it via `GET /health` — without this, a boot-time failure is
+    /// invisible outside the browser console (the editor never attaches, so
+    /// every /debug request just times out with no cause).
+    boot_error: Arc<std::sync::Mutex<Option<(std::time::SystemTime, String)>>>,
 }
 
 /// Serve the control HTTP surface on `addr` until shutdown.
@@ -42,6 +48,7 @@ pub async fn serve(
         cert_hash: cert.hash_base64url(),
         quic_port,
         link: link.clone(),
+        boot_error: Arc::new(std::sync::Mutex::new(None)),
     };
 
     let cors = CorsLayer::new()
@@ -64,6 +71,8 @@ pub async fn serve(
     let app = Router::new()
         .route("/control", get(control))
         .route("/debug", post(debug))
+        .route("/boot-error", post(boot_error))
+        .route("/health", get(health))
         .nest_service("/mcp", mcp_service)
         .layer(cors)
         .with_state(state);
@@ -79,6 +88,25 @@ async fn control(State(s): State<AppState>) -> Json<Value> {
         "quic_url": format!("https://127.0.0.1:{}", s.quic_port),
         "cert_hash": s.cert_hash,
     }))
+}
+
+/// The editor page reports a BOOT failure (renderer init error) here —
+/// fire-and-forget from the browser, before/without any MCP attach.
+async fn boot_error(State(s): State<AppState>, body: String) -> Json<Value> {
+    tracing::error!("editor boot error reported: {body}");
+    *s.boot_error.lock().unwrap() = Some((std::time::SystemTime::now(), body));
+    Json(json!({ "ok": true }))
+}
+
+/// Agent-facing liveness: is an editor attached, and did the last page load
+/// report a boot error? Check THIS when /debug requests go unanswered.
+async fn health(State(s): State<AppState>) -> Json<Value> {
+    let attached = s.link.session().await.is_some();
+    let boot = s.boot_error.lock().unwrap().clone().map(|(t, msg)| {
+        let age = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+        json!({ "age_seconds": age, "message": msg })
+    });
+    Json(json!({ "editor_attached": attached, "last_boot_error": boot }))
 }
 
 /// Relay a raw [`Request`] (JSON body) to the editor and return its [`Response`].

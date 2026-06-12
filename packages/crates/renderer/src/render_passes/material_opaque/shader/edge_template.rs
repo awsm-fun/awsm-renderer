@@ -315,3 +315,84 @@ impl ShaderTemplateMaterialFinalBlend {
         Some("Material Final Blend")
     }
 }
+
+#[cfg(test)]
+mod module_completeness_tests {
+    use super::*;
+    use crate::dynamic_materials::{BucketEntry, ShadingBase};
+    use crate::render_passes::material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialEdgeResolve;
+
+    /// Render the per-base edge_resolve module and assert every
+    /// `<name>_get_material(` CALL has a matching `fn <name>_get_material`
+    /// DEFINITION. Guards the bug class where the templated base branch
+    /// references a material loader that the (skinny-filtered)
+    /// `materials_wgsl` no longer carries — a break that no CPU-side
+    /// materials test can see and that otherwise only surfaces as a WGSL
+    /// validation error at editor boot (day-3 regression: the flipbook
+    /// cell-math extraction dropped `flipbook_get_material`).
+    #[test]
+    fn every_called_material_loader_is_defined_per_base() {
+        let cases = [
+            (
+                awsm_materials::MaterialShaderId::PBR,
+                ShadingBase::Pbr,
+                "pbr",
+            ),
+            (
+                awsm_materials::MaterialShaderId::UNLIT,
+                ShadingBase::Unlit,
+                "unlit",
+            ),
+            (
+                awsm_materials::MaterialShaderId::TOON,
+                ShadingBase::Toon,
+                "toon",
+            ),
+            (
+                awsm_materials::MaterialShaderId::FLIPBOOK,
+                ShadingBase::Flipbook,
+                "flipbook",
+            ),
+        ];
+        for (shader_id, base, name) in cases {
+            let key = ShaderCacheKeyMaterialEdgeResolve {
+                texture_pool_arrays_len: 1,
+                texture_pool_samplers_len: 1,
+                mipmaps: true,
+                shader_id,
+                base,
+                dispatch_hash: 0,
+                dynamic_shader: None,
+                bucket_entries: vec![BucketEntry {
+                    shader_id,
+                    base,
+                    pbr_features: 0,
+                    name: name.to_string(),
+                }],
+                bucket_index: 0,
+            };
+            let tpl = ShaderTemplateMaterialEdgeResolve::try_from(&key)
+                .unwrap_or_else(|e| panic!("{name}: template build failed: {e:?}"));
+            let src = tpl
+                .into_source()
+                .unwrap_or_else(|e| panic!("{name}: render failed: {e:?}"));
+            // Every loader call must have a definition in the same module.
+            for line in src.lines() {
+                let mut rest = line;
+                while let Some(pos) = rest.find("_get_material(") {
+                    let head = &rest[..pos];
+                    let ident_start = head
+                        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                        .map(|i| i + 1)
+                        .unwrap_or(0);
+                    let loader = format!("{}_get_material", &head[ident_start..]);
+                    assert!(
+                        src.contains(&format!("fn {loader}")),
+                        "{name} edge module CALLS `{loader}` but never defines it"
+                    );
+                    rest = &rest[pos + "_get_material(".len()..];
+                }
+            }
+        }
+    }
+}

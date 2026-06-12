@@ -68,6 +68,41 @@ struct FlipBookMaterial {
     flip_y: u32,
 };
 
+fn flipbook_get_material(byte_offset: u32) -> FlipBookMaterial {
+    let base_index = (byte_offset / 4u) + 1u; // skip shader id word
+
+    let alpha_mode = material_load_u32(base_index + 0u);
+    let alpha_cutoff = material_load_f32(base_index + 1u);
+
+    let atlas_tex_raw = material_load_texture_info_raw(base_index + 2u);
+    let tint_r = material_load_f32(base_index + 7u);
+    let tint_g = material_load_f32(base_index + 8u);
+    let tint_b = material_load_f32(base_index + 9u);
+    let tint_a = material_load_f32(base_index + 10u);
+
+    let cols = material_load_u32(base_index + 11u);
+    let rows = material_load_u32(base_index + 12u);
+    let frame_count = material_load_u32(base_index + 13u);
+    let fps = material_load_f32(base_index + 14u);
+    let time_offset = material_load_f32(base_index + 15u);
+    let mode = material_load_u32(base_index + 16u);
+    let flip_y = material_load_u32(base_index + 17u);
+
+    return FlipBookMaterial(
+        alpha_mode,
+        alpha_cutoff,
+        convert_texture_info(atlas_tex_raw),
+        vec4<f32>(tint_r, tint_g, tint_b, tint_a),
+        cols,
+        rows,
+        frame_count,
+        fps,
+        time_offset,
+        mode,
+        flip_y,
+    );
+}
+
 // Map an in-cell UV (the quad's authored UV0) into the atlas-space UV
 // that samples the current cell.
 //
