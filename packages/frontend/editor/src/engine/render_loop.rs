@@ -43,6 +43,16 @@ thread_local! {
     /// the next nonzero frame, so every 0→nonzero transition (first mount, tab
     /// show, reparent) auto-heals — exactly what the manual resize did by hand.
     static DID_REAL_SIZE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// The playhead (as bits) the render loop last pinned the pose at. While
+    /// PAUSED the loop only re-pins when the playhead actually moves — NOT every
+    /// frame — so a gizmo pose on an animated bone HOLDS (DCC semantics: the
+    /// pose persists until you scrub, play, or edit clip data) instead of the
+    /// clip stomping it back one frame later. Clip-DATA edits (keys / tracks /
+    /// mute / solo / current-clip / mixer) re-pin via the bridge re-lower
+    /// (`animation_sync` ends every re-lower with an explicit `pin_pose`), so
+    /// the paused viewport still updates immediately on those.
+    static LAST_PIN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 fn request_frame() {
@@ -216,8 +226,20 @@ fn render_one_frame() {
         // Advance any particle emitters + push their live particles to the GPU.
         super::bridge::particles::tick_all(renderer);
         // Pin the animation pose at the current playhead BEFORE world transforms
-        // are derived (animation writes locals; `update_transforms` derives world).
-        super::bridge::animation_sync::pin_pose(renderer, controller().playhead.get());
+        // are derived (animation writes locals; `update_transforms` derives world)
+        // — but only when the pose could have changed: while playing (the clock
+        // advances) or when the playhead moved (scrub / step). While paused with
+        // the playhead parked we deliberately SKIP the pin so a hand pose holds
+        // (see `LAST_PIN`).
+        {
+            let playing = controller().playing.get();
+            let playhead = controller().playhead.get();
+            let key = playhead.to_bits();
+            if playing || LAST_PIN.with(|c| c.get()) != Some(key) {
+                super::bridge::animation_sync::pin_pose(renderer, playhead);
+                LAST_PIN.with(|c| c.set(Some(key)));
+            }
+        }
         // Skin bridge: copy animated/posed mirror-bone locals onto the baked
         // joint keys the skin reads, BEFORE world matrices are derived — otherwise
         // a skinned glTF's joint data animates but the mesh stays frozen.

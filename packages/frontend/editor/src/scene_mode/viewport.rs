@@ -87,7 +87,10 @@ pub fn render() -> Dom {
     })
 }
 
-fn tool_palette(tool: &Mutable<GizmoMode>) -> Dom {
+/// The Q/W/E/R/T transform-tool palette. `pub(crate)` so the Animation-mode
+/// viewport mounts the SAME palette (one shared `gizmo_mode()` — posing bones
+/// at the playhead shouldn't require a round-trip through Scene mode).
+pub(crate) fn tool_palette(tool: &Mutable<GizmoMode>) -> Dom {
     let entry = |t: GizmoMode, icon: &str, title: &str, tool: &Mutable<GizmoMode>| -> Dom {
         let active = tool.signal().map(move |cur| cur == t);
         html!("button", {
