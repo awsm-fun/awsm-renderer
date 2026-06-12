@@ -51,19 +51,26 @@ allocation + copy per mesh and never carries editing machinery it can't act on.
 ### "Then why does the player 'know about' the packer at all?"
 
 It doesn't know about `MeshData` — both front-ends funnel into **one shared
-packer**, `pack_mesh_buffers`. The player feeds it decoded accessor data; the
-editor feeds it `MeshData`. **Same bytes out either way.** That single shared
-packer is what guarantees an edited mesh in the editor and the exported glb of it
-in the player produce *identical* GPU buffers — so the two paths cannot drift.
+packer**: `awsm_renderer::mesh_pack` (`pack_visibility_bytes` +
+`pack_transparency_bytes`). The raw-mesh path (`add_raw_mesh*`, from
+`MeshData`) calls it directly; the gltf populate path
+(`renderer-gltf::create_visibility_vertices` / `create_transparency_vertices`)
+decodes its accessor byte streams into typed slices (bit-preserving) and
+delegates. **Same bytes out either way.** `pack_visibility_bytes` also owns
+the winding rule: `FrontFace::Cw` sources emit corners in `[0, 2, 1]` order
+with matching barycentrics; `Ccw` is identity.
 
-> Historical note: before the shared packer, the editor packed via
-> `add_raw_mesh` and the player/foreign-glTF via `populate_gltf` — two
-> independent implementations of the same byte layout. They drifted (transmission
-> meshes rendered opaque, tangents went flat). Unifying them on `pack_mesh_buffers`
-> removes the divergence *by construction*; the parity proptest is then just a
-> cheap regression guard.
+> Historical note: before the convergence (Phase 2b, day-3 of the
+> mesh-pipeline overhaul), the editor packed via `add_raw_mesh` and the
+> player/foreign-glTF via hand-rolled writers in `renderer-gltf` — two
+> independent implementations of the same byte layout. They drifted
+> (transmission meshes rendered opaque, tangents went flat). Unifying on
+> `mesh_pack` removes the divergence *by construction*; the pre-unification
+> writers are retained as `#[cfg(test)]` references with byte-identity
+> proptests (`renderer-gltf::buffers::mesh::visibility::parity_tests`) as the
+> regression guard.
 
-## The GPU buffer layout (what `pack_mesh_buffers` produces)
+## The GPU buffer layout (what `mesh_pack` produces)
 
 Two geometry streams, chosen per mesh by its material's pass:
 
