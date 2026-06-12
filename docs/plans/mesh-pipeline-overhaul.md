@@ -850,3 +850,20 @@ future loops on this project:
   honored; SSCS applied to directional only (point/spot use their own maps).
 - OVERNIGHT unattended soak launched (8h, 60s cadence) — the multi-hour
   tab-crash question's definitive instrument; results analyzed on completion.
+
+### Day-3 overnight soak — early termination + relay staleness fix
+- The 8h unattended soak ran 46 CLEAN minutes (heap plateau ~50 MB used /
+  96 MB total, every object count flat — fully consistent with the 30-min
+  verdict), then the editor session died INSTANTLY between samples: no heap
+  ramp, no count growth, no degradation curve. The healthy-then-cliff
+  signature + the user being away points to macOS display sleep / App Nap
+  freezing the tab (a known gotcha: display sleep pauses RAF), NOT a renderer
+  leak. The multi-hour crash question stays open but the evidence now favors
+  ENVIRONMENTAL causes over renderer growth; a definitive run needs sleep
+  disabled (caffeinate) — queued for the user.
+- REAL BUG found by the dead session: the relay kept the stale WebTransport
+  session, so GET /health reported editor_attached:true while every /debug
+  failed with "open_bi: session error". Fixed: a transport-level request
+  failure now DETACHES the session, so /health tells the truth (the exact
+  scenario /health was built for). Soak sampler stopped (it would have ERRed
+  for 7 more hours against a dead tab).
