@@ -4091,20 +4091,17 @@ impl EditorController {
                     let d = dist.clamp((l1 - l2).abs() + 1e-4, l1 + l2 - 1e-4);
                     let dir_t = dvec / dist;
 
-                    // Bend-plane normal: toward the pole when given, else keep
-                    // the chain's current bend plane; fall back to any
-                    // perpendicular for a perfectly straight chain.
-                    let mut n = match pole {
-                        Some(p) => dir_t.cross(glam::Vec3::from_array(p) - a),
-                        None => dir_t.cross(b - a),
-                    };
-                    if n.length_squared() < 1e-8 {
-                        n = dir_t.cross(glam::Vec3::Y);
-                        if n.length_squared() < 1e-8 {
-                            n = dir_t.cross(glam::Vec3::X);
-                        }
-                    }
-                    let n = n.normalize();
+                    // Bend-plane normal: toward the pole when given, else the
+                    // chain's CURRENT bend plane, else character-forward (see
+                    // `ik_bend_plane_normal`).
+                    let n = ik_bend_plane_normal(
+                        a,
+                        b,
+                        c,
+                        dir_t,
+                        pole.map(glam::Vec3::from_array),
+                        q_p * glam::Vec3::NEG_Z,
+                    );
 
                     // Law of cosines: angle at the root between the reach line
                     // and the upper bone.
@@ -4632,6 +4629,62 @@ fn readback_key(t: &query::ReadbackTarget) -> String {
 /// uses. `None` when the target can't currently resolve — callers fall back
 /// to sampling the track's own curve (the pre-key-from-pose behavior).
 #[cfg_attr(test, allow(dead_code))] // caller (animation_mode UI) isn't built under cfg(test)
+/// The two-bone-IK bend-plane normal — which SIDE the knee/elbow goes.
+///
+/// Priority (DCC semantics):
+/// 1. **Pole given**: the plane through the reach line and the pole — the
+///    joint bends toward the pole (`n = dir_t × (pole − a)`; Rodrigues with
+///    `n ⊥ dir_t` rotates `dir_t` toward `n × dir_t`, which is the pole's
+///    perpendicular component).
+/// 2. **Chain already bent**: keep the CURRENT bend plane so the joint stays
+///    on the side it's already on — normal `(c − b) × (b − a)`, sign-matched
+///    to the rotate-toward geometry, orthogonalized against `dir_t`. "Bent"
+///    means the sine of the joint angle clears `1e-3` (scale-free).
+/// 3. **Straight chain**: bias to `forward` (the chain-root parent's −Z — the
+///    character's facing, so a standing leg bends its knee FORWARD). The old
+///    world-Y fallback was ~parallel to a downward reach and cascaded to
+///    world-X: kicking the knee sideways.
+/// 4. Degenerate forward (reach ∥ forward): world Y, then X.
+///
+/// `a`/`b`/`c` are the root/mid/end joint world positions, `dir_t` the
+/// normalized root→target direction. Returns a normalized vector ⊥ `dir_t`.
+fn ik_bend_plane_normal(
+    a: glam::Vec3,
+    b: glam::Vec3,
+    c: glam::Vec3,
+    dir_t: glam::Vec3,
+    pole: Option<glam::Vec3>,
+    forward: glam::Vec3,
+) -> glam::Vec3 {
+    if let Some(p) = pole {
+        let n = dir_t.cross(p - a);
+        if n.length_squared() > 1e-8 {
+            return n.normalize();
+        }
+        // Pole on the reach line — fall through to the heuristics.
+    }
+    let l1 = (b - a).length();
+    let l2 = (c - b).length();
+    // Current bend plane, scale-free bent test: |(c−b)×(b−a)| = l1·l2·sin θ.
+    let chain_n = (c - b).cross(b - a);
+    if chain_n.length_squared() > (l1 * l2 * 1e-3).powi(2) {
+        // Orthogonalize against the reach line (projection keeps the sign,
+        // so the joint stays on its current side).
+        let n = chain_n - dir_t * chain_n.dot(dir_t);
+        if n.length_squared() > 1e-8 {
+            return n.normalize();
+        }
+    }
+    // Straight chain → character-forward, then world Y, then X.
+    for f in [forward, glam::Vec3::Y, glam::Vec3::X] {
+        let n = dir_t.cross(f);
+        if n.length_squared() > 1e-8 {
+            return n.normalize();
+        }
+    }
+    glam::Vec3::X // unreachable in practice (dir_t can't be ∥ Y and X)
+}
+
 pub(crate) async fn live_track_value(
     ctrl: &EditorController,
     target: &TrackTarget,
@@ -6085,5 +6138,80 @@ fn node_index(scene: &Scene, id: NodeId, parent: Option<NodeId>) -> Option<usize
         None => scene.nodes.lock_ref().iter().position(|n| n.id == id),
         Some(pid) => mutate::find_by_id(scene, pid)
             .and_then(|p| p.children.lock_ref().iter().position(|n| n.id == id)),
+    }
+}
+
+#[cfg(test)]
+mod ik_tests {
+    use super::ik_bend_plane_normal;
+    use glam::Vec3;
+
+    /// Rotating `dir_t` about the returned normal moves the joint toward
+    /// `n × dir_t` (Rodrigues, n ⊥ dir_t) — assert that side matches `want`.
+    fn bend_side(n: Vec3, dir_t: Vec3, want: Vec3) -> bool {
+        n.cross(dir_t).dot(want) > 0.0
+    }
+
+    #[test]
+    fn bent_chain_keeps_its_side() {
+        // Leg down (−Y), knee bent FORWARD (+Z). Target straight below.
+        let (a, b, c) = (
+            Vec3::ZERO,
+            Vec3::new(0.0, -1.0, 0.5),
+            Vec3::new(0.0, -2.0, 0.0),
+        );
+        let dir_t = Vec3::NEG_Y;
+        let n = ik_bend_plane_normal(a, b, c, dir_t, None, Vec3::NEG_Z);
+        assert!(bend_side(n, dir_t, Vec3::Z), "knee must stay forward");
+        // Mirrored: knee bent BACKWARD stays backward.
+        let b2 = Vec3::new(0.0, -1.0, -0.5);
+        let n2 = ik_bend_plane_normal(a, b2, c, dir_t, None, Vec3::NEG_Z);
+        assert!(bend_side(n2, dir_t, Vec3::NEG_Z), "knee must stay backward");
+    }
+
+    #[test]
+    fn straight_chain_bends_character_forward() {
+        // Perfectly straight leg pointing down; character faces +Z (forward
+        // here passed as the facing vector directly).
+        let (a, b, c) = (
+            Vec3::ZERO,
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(0.0, -2.0, 0.0),
+        );
+        let dir_t = Vec3::NEG_Y;
+        let n = ik_bend_plane_normal(a, b, c, dir_t, None, Vec3::Z);
+        assert!(
+            bend_side(n, dir_t, Vec3::Z),
+            "straight knee must bend toward facing, not sideways"
+        );
+    }
+
+    #[test]
+    fn pole_wins_over_current_bend() {
+        // Knee currently forward, pole placed BEHIND — pole must win.
+        let (a, b, c) = (
+            Vec3::ZERO,
+            Vec3::new(0.0, -1.0, 0.5),
+            Vec3::new(0.0, -2.0, 0.0),
+        );
+        let dir_t = Vec3::NEG_Y;
+        let n = ik_bend_plane_normal(a, b, c, dir_t, Some(Vec3::new(0.0, -1.0, -5.0)), Vec3::Z);
+        assert!(
+            bend_side(n, dir_t, Vec3::NEG_Z),
+            "joint must bend toward the pole"
+        );
+    }
+
+    #[test]
+    fn normal_is_unit_and_perpendicular() {
+        let (a, b, c) = (
+            Vec3::ZERO,
+            Vec3::new(0.3, -1.0, 0.4),
+            Vec3::new(0.1, -2.0, 0.1),
+        );
+        let dir_t = (Vec3::new(0.5, -1.8, 0.2) - a).normalize();
+        let n = ik_bend_plane_normal(a, b, c, dir_t, None, Vec3::NEG_Z);
+        assert!((n.length() - 1.0).abs() < 1e-5);
+        assert!(n.dot(dir_t).abs() < 1e-5, "normal must be ⊥ the reach line");
     }
 }
