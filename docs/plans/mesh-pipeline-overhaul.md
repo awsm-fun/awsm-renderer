@@ -666,3 +666,21 @@ G. DEFERRED BY DECISION: retargeting — agent-driven over MCP once D+E exist (t
   choice, not padding; cosmetic, deferred). Skeleton root-tether segments (chain depth
   ≤1) dimmed to 0.35 alpha — SEEN VERIFIED on the fox side view: anatomy pops, tether
   reads as a faint drop to the floor origin.
+
+### Day-2 loop, scope C — RIG-PRESERVING SCENE-GLB EXPORT done (parsed + SEEN)
+- Both export paths (export_glb single-node + export_scene_glb whole-scene/MCP) now
+  EMBED cached clean-rig glbs: collect_rig_scenes + append_rigs (IR-level merge with
+  DFS node-offset on skin joints + skin-index bump; appending never shifts existing
+  indices so lowered clip channels stay valid). Editor SkinnedMesh nodes skip their
+  bind-pose static when their rig embeds. Import-side: morph-only files (no skins)
+  now ALSO cache a rig glb (gate widened skins→skins||morphs). glb-export crate:
+  extract carries mesh.extras.targetNames (reader extras on), writer emits them
+  (gltf-json "extras" feature added).
+- PARSED: export of fox+MorphStressTest → SKINS:1 (24 joints + IBM), per-prim
+  targets [0,8], targetNames ["Key 1".."Key 8"]. SEEN: reimporting the export → fox
+  fully intact with skeleton overlay live, 24/24 joints live, 8 named morphs.
+- v1 limitations (logged in code): embedded rigs export at source placement (mirror-
+  hierarchy edits don't retarget into the rig glb); rig materials are source defaults
+  (reimport renders untextured; the bundle path re-applies materials from scene.toml).
+- TOOLING NOTE: trunk's file-watcher silently stopped rebuilding TWICE this scope —
+  symptom: wasm mtime frozen despite touches; fix: full stack restart. Watch for it.

@@ -271,6 +271,20 @@ impl Builder {
                 tangents: None,
             });
         }
+        // glTF's interoperable home for morph names: mesh.extras.targetNames.
+        let mesh_extras: gltf_json::Extras = if n.morph_targets.iter().any(|t| t.name.is_some()) {
+            let names: Vec<String> = n
+                .morph_targets
+                .iter()
+                .map(|t| t.name.clone().unwrap_or_default())
+                .collect();
+            serde_json::value::RawValue::from_string(
+                serde_json::json!({ "targetNames": names }).to_string(),
+            )
+            .ok()
+        } else {
+            Default::default()
+        };
 
         // Indices (u32 SCALAR).
         let idx_bytes: Vec<u8> = m.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
@@ -307,7 +321,7 @@ impl Builder {
 
         let mesh_obj = Mesh {
             extensions: Default::default(),
-            extras: Default::default(),
+            extras: mesh_extras,
             name: Some(name.to_string()),
             primitives: vec![primitive],
             weights: if n.morph_weights.is_empty() {

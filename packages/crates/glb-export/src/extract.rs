@@ -210,14 +210,24 @@ fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>]) -> ExportNode {
                 out.joints = Some(joints);
                 out.weights = Some(weights);
             }
+            // Morph target names ride the glTF `mesh.extras.targetNames`
+            // convention (the reader's `extras` feature is on workspace-wide).
+            let target_names: Vec<Option<String>> = mesh
+                .extras()
+                .as_ref()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.get()).ok())
+                .and_then(|v| {
+                    v.get("targetNames")
+                        .and_then(|a| a.as_array())
+                        .map(|a| a.iter().map(|x| x.as_str().map(str::to_string)).collect())
+                })
+                .unwrap_or_default();
             out.morph_targets = morph_pos
                 .into_iter()
                 .zip(morph_nrm)
-                .map(|(pos, nrm)| MorphTarget {
-                    // Names are cosmetic + the gltf reader's `extras` feature is
-                    // off, so target order (which our clips index by) is what we
-                    // preserve; names can be carried later if needed.
-                    name: None,
+                .enumerate()
+                .map(|(ti, (pos, nrm))| MorphTarget {
+                    name: target_names.get(ti).cloned().flatten(),
                     positions: pos,
                     normals: if nrm.iter().any(|d| *d != [0.0; 3]) {
                         Some(nrm)

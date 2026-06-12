@@ -52,19 +52,24 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
     let scene = &ctrl.scene;
     let roots: Vec<Arc<Node>> = scene.nodes.lock_ref().iter().cloned().collect();
     let (images, tex_index) = resolve_images(scene, &roots).await;
+    // Rig embedding (shared with export_glb): appended AFTER the scene part,
+    // so the clip channels lowered against build_index_map's node indices
+    // stay valid (appending never shifts existing DFS indices).
+    let (rig_scenes, rig_embedded) = collect_rig_scenes(&roots);
     let nodes: Vec<ExportNode> = roots
         .iter()
-        .map(|n| node_to_export(scene, n, &tex_index))
+        .map(|n| node_to_export(scene, n, &tex_index, &rig_embedded))
         .collect();
     let index_map = build_index_map(scene);
     let clips: Vec<_> = ctrl.custom_animations.lock_ref().iter().cloned().collect();
     let animations = lower_clips(&clips, &index_map);
-    let glb = GlbScene {
+    let mut glb = GlbScene {
         nodes,
         animations,
         images,
         ..Default::default()
     };
+    append_rigs(&mut glb, rig_scenes);
     Ok(write_glb(&glb))
 }
 
@@ -330,16 +335,100 @@ pub async fn export_glb(scene: &Scene, node: Option<NodeId>) -> Result<Vec<u8>, 
         None => scene.nodes.lock_ref().iter().cloned().collect(),
     };
     let (images, tex_index) = resolve_images(scene, &roots).await;
+
+    let (rig_scenes, rig_embedded) = collect_rig_scenes(&roots);
     let nodes: Vec<ExportNode> = roots
         .iter()
-        .map(|n| node_to_export(scene, n, &tex_index))
+        .map(|n| node_to_export(scene, n, &tex_index, &rig_embedded))
         .collect();
-    let glb = GlbScene {
+    let mut glb = GlbScene {
         nodes,
         images,
         ..Default::default()
     };
+    append_rigs(&mut glb, rig_scenes);
     Ok(write_glb(&glb))
+}
+
+/// Rig embedding: SkinnedMesh sources whose clean rig glb is cached (built at
+/// import by `reexport_clean_scene`) get the WHOLE rig — skeleton nodes, skin
+/// (joints/IBMs/JOINTS_0/WEIGHTS_0) and morph targets — appended to the
+/// export, so a scene glb round-trips rigs instead of flattening them to
+/// bind-pose statics. The editor-side SkinnedMesh nodes skip their static
+/// bake (see `node_to_export`). v1 limitations (logged): the rig embeds at
+/// its source placement (edits to the mirror hierarchy don't retarget into
+/// the rig), and rig materials are the source defaults (the bundle path
+/// re-applies ours from scene.toml).
+fn collect_rig_scenes(roots: &[Arc<Node>]) -> (Vec<awsm_glb_export::GlbScene>, HashSet<AssetId>) {
+    fn collect(node: &Node, out: &mut Vec<AssetId>, seen: &mut HashSet<AssetId>) {
+        if let NodeKind::SkinnedMesh { skin, .. } = &node.kind.get_cloned() {
+            if seen.insert(skin.source) {
+                out.push(skin.source);
+            }
+        }
+        for c in node.children.lock_ref().iter() {
+            collect(c, out, seen);
+        }
+    }
+    let mut sources = Vec::new();
+    let mut seen = HashSet::new();
+    for n in roots {
+        collect(n, &mut sources, &mut seen);
+    }
+    let mut rig_scenes = Vec::new();
+    let mut rig_embedded = HashSet::new();
+    for src in sources {
+        let Some(bytes) = crate::engine::bridge::skinned_bake_cache::get_rig_glb(src) else {
+            tracing::warn!(
+                "glb export: no cached rig glb for source {src} — its skinned \
+                 nodes export as bind-pose statics"
+            );
+            continue;
+        };
+        match awsm_glb_export::reexport_clean(&bytes) {
+            Some(rig) => {
+                rig_embedded.insert(src);
+                rig_scenes.push(rig);
+            }
+            None => tracing::warn!(
+                "glb export: cached rig glb for {src} failed to re-parse — \
+                 exporting bind-pose statics"
+            ),
+        }
+    }
+    (rig_scenes, rig_embedded)
+}
+
+/// Append each rig with index fixups: skin joints are DFS-flattened node
+/// indices (the writer flattens roots in pre-order), so appending rig roots
+/// after everything flattened so far shifts them by a uniform offset;
+/// node→skin bindings shift by the skins appended so far. Appending never
+/// shifts EXISTING node indices, so animation channels lowered against the
+/// scene part stay valid.
+fn append_rigs(glb: &mut GlbScene, rigs: Vec<awsm_glb_export::GlbScene>) {
+    fn count_nodes(nodes: &[ExportNode]) -> usize {
+        nodes.iter().map(|n| 1 + count_nodes(&n.children)).sum()
+    }
+    fn bump_skin_refs(nodes: &mut [ExportNode], skin_base: usize) {
+        for n in nodes {
+            if let Some(s) = n.skin.as_mut() {
+                *s += skin_base;
+            }
+            bump_skin_refs(&mut n.children, skin_base);
+        }
+    }
+    for mut rig in rigs {
+        let node_offset = count_nodes(&glb.nodes);
+        let skin_base = glb.skins.len();
+        for skin in &mut rig.skins {
+            for j in &mut skin.joints {
+                *j += node_offset;
+            }
+        }
+        bump_skin_refs(&mut rig.nodes, skin_base);
+        glb.skins.extend(rig.skins);
+        glb.nodes.extend(rig.nodes);
+    }
 }
 
 /// Resolve every texture referenced by the exported subtree(s) to embedded PNG
@@ -482,7 +571,12 @@ fn rgba_to_png(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-fn node_to_export(scene: &Scene, node: &Node, tex_index: &TexIndex) -> ExportNode {
+fn node_to_export(
+    scene: &Scene,
+    node: &Node,
+    tex_index: &TexIndex,
+    rig_embedded: &HashSet<AssetId>,
+) -> ExportNode {
     let trs = node.transform.get();
     let mut out = ExportNode {
         name: node.name.get_cloned(),
@@ -501,10 +595,19 @@ fn node_to_export(scene: &Scene, node: &Node, tex_index: &TexIndex) -> ExportNod
     // `out.transform` (the editor node's transform, mirrored from the glTF node's
     // local at import) already places it, so applying any extra matrix here would
     // double-transform.
-    if let Some(mesh) = node_mesh(scene, &kind) {
-        out.mesh = Some(mesh);
-        if let Some(material) = material_slot(&kind) {
-            out.material = Some(map_material(material, tex_index));
+    // A SkinnedMesh whose source rig is embedded wholesale (see export_glb's
+    // rig-embedding pass) must NOT also bake its static bind-pose copy —
+    // geometry would double.
+    let rig_covers_this = matches!(
+        &kind,
+        NodeKind::SkinnedMesh { skin, .. } if rig_embedded.contains(&skin.source)
+    );
+    if !rig_covers_this {
+        if let Some(mesh) = node_mesh(scene, &kind) {
+            out.mesh = Some(mesh);
+            if let Some(material) = material_slot(&kind) {
+                out.material = Some(map_material(material, tex_index));
+            }
         }
     }
     match &kind {
@@ -519,7 +622,7 @@ fn node_to_export(scene: &Scene, node: &Node, tex_index: &TexIndex) -> ExportNod
         .children
         .lock_ref()
         .iter()
-        .map(|c| node_to_export(scene, c, tex_index))
+        .map(|c| node_to_export(scene, c, tex_index, rig_embedded))
         .collect();
     out
 }

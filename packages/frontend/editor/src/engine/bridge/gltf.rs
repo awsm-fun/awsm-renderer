@@ -252,13 +252,18 @@ async fn import_typed(
             Vec::new()
         }
     };
-    // If the import carries skins, ingest the whole rig (geometry + skeleton +
+    // If the import carries skins OR morph targets, ingest the whole rig
+    // (geometry + skeleton +
     // joints/weights + morph) into OUR clean glb — re-exported through our writer
     // (materials/anims/cruft dropped), the same pipeline static meshes use. This
     // is what the player bundle ships for skinned content (the source bytes never
     // need retaining — we have our own re-export). Static imports go through
     // `node_meshes`/`mesh_cache` instead, so we only pay this for skinned files.
-    let skinned_glb = if data.doc.skins().next().is_some() {
+    let has_morphs = data
+        .doc
+        .meshes()
+        .any(|m| m.primitives().any(|p| p.morph_targets().next().is_some()));
+    let skinned_glb = if data.doc.skins().next().is_some() || has_morphs {
         awsm_glb_export::reexport_clean_scene(&data.doc, &data.buffers.raw)
             .map(|scene| awsm_glb_export::write_glb(&scene))
     } else {
