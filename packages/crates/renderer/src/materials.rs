@@ -271,6 +271,16 @@ pub struct Materials {
 }
 
 impl Materials {
+    /// Number of live materials (observability / leak checks).
+    pub fn len(&self) -> usize {
+        self.lookup.len()
+    }
+
+    /// True when no materials exist.
+    pub fn is_empty(&self) -> bool {
+        self.lookup.is_empty()
+    }
+
     /// Creates material storage and GPU buffers.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(

@@ -170,6 +170,18 @@ static BUFFER_USAGE: LazyLock<BufferUsage> =
     LazyLock::new(|| BufferUsage::new().with_storage().with_copy_dst());
 
 impl Transforms {
+    /// Number of live transform slots. Observability (leak/soak checks):
+    /// a steadily climbing count on an idle scene means something is
+    /// inserting transforms per frame without removing them.
+    pub fn len(&self) -> usize {
+        self.locals.len()
+    }
+
+    /// True when no transforms exist.
+    pub fn is_empty(&self) -> bool {
+        self.locals.is_empty()
+    }
+
     /// Initial transform slot capacity.
     pub const INITIAL_CAPACITY: usize = 32; // 32 elements is a good starting point
     /// Byte size of a packed transform entry (Option E — model + normal

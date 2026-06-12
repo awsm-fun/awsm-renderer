@@ -3874,6 +3874,56 @@ impl EditorController {
                     entries,
                 })
             }
+            EditorQuery::MemoryStats => {
+                use serde_json::json;
+                // Renderer-side object counts (under the renderer guard)…
+                let (meshes, transforms, materials, lines, render_pipelines, compute_pipelines) =
+                    crate::engine::context::with_renderer_mut(|r| {
+                        (
+                            r.meshes.len(),
+                            r.transforms.len(),
+                            r.materials.len(),
+                            r.line_count(),
+                            r.pipelines.render.len(),
+                            r.pipelines.compute.len(),
+                        )
+                    })
+                    .await;
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("meshes".to_string(), json!(meshes));
+                entries.insert("transforms".to_string(), json!(transforms));
+                entries.insert("materials".to_string(), json!(materials));
+                entries.insert("lines".to_string(), json!(lines));
+                entries.insert("render_pipelines".to_string(), json!(render_pipelines));
+                entries.insert("compute_pipelines".to_string(), json!(compute_pipelines));
+                // …plus Chrome's non-standard `performance.memory` (zeros
+                // elsewhere). Read via Reflect — web_sys doesn't bind it.
+                let mut heap_used = 0.0f64;
+                let mut heap_total = 0.0f64;
+                let mut heap_limit = 0.0f64;
+                if let Some(perf) = web_sys::window().and_then(|w| w.performance()) {
+                    if let Ok(mem) = js_sys::Reflect::get(&perf, &"memory".into()) {
+                        if !mem.is_undefined() && !mem.is_null() {
+                            let get = |k: &str| {
+                                js_sys::Reflect::get(&mem, &k.into())
+                                    .ok()
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0)
+                            };
+                            heap_used = get("usedJSHeapSize");
+                            heap_total = get("totalJSHeapSize");
+                            heap_limit = get("jsHeapSizeLimit");
+                        }
+                    }
+                }
+                entries.insert("js_heap_used_bytes".to_string(), json!(heap_used));
+                entries.insert("js_heap_total_bytes".to_string(), json!(heap_total));
+                entries.insert("js_heap_limit_bytes".to_string(), json!(heap_limit));
+                QueryResult::Map(query::MapResult {
+                    kind: "memory_stats".to_string(),
+                    entries,
+                })
+            }
             EditorQuery::MorphData { nodes } => {
                 use serde_json::json;
                 // node → first materialized mesh → live geometry morph weights

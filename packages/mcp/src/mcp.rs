@@ -874,6 +874,13 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(
+        description = "Live memory + renderer-object counts for leak detection and soak testing: Chrome JS-heap bytes (used/total/limit; zeros on other browsers) plus renderer counts (meshes, transforms, materials, lines, compiled render/compute pipelines). Sample repeatedly over minutes — flat-ish slopes are healthy; a steady climb on an idle scene is a leak. Pure read."
+    )]
+    async fn get_memory_stats(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MemoryStats).await
+    }
+
     #[tool(description = "The current workspace mode (scene | material | animation).")]
     async fn get_mode(&self) -> Result<CallToolResult, McpError> {
         match self.req(Request::Mode).await? {

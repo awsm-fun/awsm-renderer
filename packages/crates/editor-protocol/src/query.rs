@@ -247,6 +247,13 @@ pub enum EditorQuery {
         #[serde(default)]
         indices: Vec<u32>,
     },
+    /// Live memory + renderer-object counts for leak detection and soak
+    /// testing: Chrome's `performance.memory` JS-heap numbers (zeros on other
+    /// browsers) plus renderer entity counts (meshes / transforms / materials /
+    /// lines / compiled pipelines). Sample repeatedly over minutes — flat-ish
+    /// slopes mean healthy; a steady climb on an idle scene is a leak. A read —
+    /// no mutation.
+    MemoryStats,
     /// The last `limit` editor notices (toasts: info/warning/error) from an
     /// in-process ring buffer — surfaces runtime errors otherwise invisible over
     /// MCP. Material compile errors have a dedicated path (`MaterialDiagnostics`).
