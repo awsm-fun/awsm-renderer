@@ -168,6 +168,43 @@ impl Instances {
         Ok(())
     }
 
+    /// In-place overwrite of ALL of `key`'s instance transforms when the
+    /// COUNT is unchanged — the per-frame particle/instancing refresh path:
+    /// bytes are written straight into the existing buffer slot and the CPU
+    /// mirror is overwritten in place, so a steady-state tick allocates
+    /// NOTHING (vs `transform_insert`'s fresh byte Vec + `to_vec` mirror
+    /// every call). Falls back to the insert path when the count differs
+    /// (shape changes are rare; an alloc there is fine).
+    pub fn transform_write_all(
+        &mut self,
+        key: TransformKey,
+        transforms: &[Transform],
+    ) -> Result<()> {
+        if self.transform_count.get(key).copied() != Some(transforms.len()) {
+            return self.transform_insert(key, transforms);
+        }
+        self.transform_buffer
+            .update_with_unchecked(key, |_, bytes| {
+                for (i, transform) in transforms.iter().enumerate() {
+                    let values = transform.to_matrix().to_cols_array();
+                    let values_u8 = unsafe {
+                        std::slice::from_raw_parts(
+                            values.as_ptr() as *const u8,
+                            INSTANCE_TRANSFORM_BYTE_SIZE,
+                        )
+                    };
+                    let offset = i * INSTANCE_TRANSFORM_BYTE_SIZE;
+                    bytes[offset..offset + INSTANCE_TRANSFORM_BYTE_SIZE].copy_from_slice(values_u8);
+                }
+            });
+        if let Some(list) = self.cpu_transforms.get_mut(key) {
+            list.clone_from_slice(transforms);
+        }
+        self.transform_gpu_dirty = true;
+        self.transform_dirty.insert(key);
+        Ok(())
+    }
+
     /// Updates a single instance transform.
     pub fn transform_update(&mut self, key: TransformKey, index: usize, transform: &Transform) {
         if let Some(list) = self.cpu_transforms.get_mut(key) {
@@ -270,6 +307,32 @@ impl Instances {
         })?;
         self.cpu_attributes.insert(key, attributes.to_vec());
         self.attribute_count.insert(key, attributes.len());
+        self.attribute_gpu_dirty = true;
+        Ok(())
+    }
+
+    /// In-place overwrite of ALL of `key`'s instance attributes when the
+    /// COUNT is unchanged — see [`Self::transform_write_all`] (same per-frame
+    /// zero-alloc rationale). Falls back to the insert path on count change.
+    pub fn attribute_write_all(
+        &mut self,
+        key: TransformKey,
+        attributes: &[InstanceAttr],
+    ) -> Result<()> {
+        if self.attribute_count.get(key).copied() != Some(attributes.len()) {
+            return self.attribute_insert(key, attributes);
+        }
+        self.attribute_buffer
+            .update_with_unchecked(key, |_, bytes| {
+                for (i, attr) in attributes.iter().enumerate() {
+                    let offset = i * InstanceAttr::BYTE_SIZE;
+                    bytes[offset..offset + InstanceAttr::BYTE_SIZE]
+                        .copy_from_slice(&Self::attribute_to_bytes(attr));
+                }
+            });
+        if let Some(list) = self.cpu_attributes.get_mut(key) {
+            list.copy_from_slice(attributes);
+        }
         self.attribute_gpu_dirty = true;
         Ok(())
     }

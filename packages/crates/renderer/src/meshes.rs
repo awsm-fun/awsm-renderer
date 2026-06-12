@@ -394,8 +394,10 @@ impl AwsmRenderer {
             return Err(AwsmMeshError::InstancingNotEnabled(mesh_key).into());
         }
 
+        // In-place when the count is unchanged (the per-frame particle path
+        // allocates nothing); insert on shape changes.
         self.instances
-            .transform_insert(mesh.transform_key, transforms)?;
+            .transform_write_all(mesh.transform_key, transforms)?;
 
         Ok(())
     }
@@ -445,7 +447,7 @@ impl AwsmRenderer {
             }
             .into());
         }
-        self.instances.attribute_insert(transform_key, attrs)?;
+        self.instances.attribute_write_all(transform_key, attrs)?;
 
         let base = self
             .instances
