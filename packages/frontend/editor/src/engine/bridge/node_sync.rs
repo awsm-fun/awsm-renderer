@@ -428,10 +428,12 @@ fn builtin_merged(
         _ => variant.alpha_mode.clone(),
     };
 
-    // Shading MODEL is variant (selects the renderer Material flavour); the Toon
-    // knobs are uniform (one canonical Toon shader_id), so carry them from inline.
+    // Shading MODEL is variant (selects the renderer Material flavour); the
+    // Toon / FlipBook knobs are uniform (one canonical shader_id each), so
+    // carry them from inline.
     let shading = match (variant.shading, inline.shading) {
         (MaterialShading::Toon { .. }, t @ MaterialShading::Toon { .. }) => t,
+        (MaterialShading::FlipBook { .. }, f @ MaterialShading::FlipBook { .. }) => f,
         (v, _) => v,
     };
 

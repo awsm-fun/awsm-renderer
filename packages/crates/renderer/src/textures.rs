@@ -466,12 +466,13 @@ impl AwsmRenderer {
                 &self.render_passes.geometry.masked_bind_group,
                 &self.render_passes.geometry.bind_groups,
             )?;
-            // Built-in MASK materials whose MASK routes opaque: PBR, Unlit, Toon.
-            // All three share the same header prefix (shader_id, alpha_mode,
-            // alpha_cutoff, base_color_tex(5), base_color_factor(4)), so the masked
-            // fragment's base-color path covers them with one WGSL — only the
-            // cache-key shader_id differs. (FlipBook MASK still routes transparent —
-            // its mask alpha is the time-varying atlas cell.)
+            // Built-in MASK materials route alpha-tested-OPAQUE: PBR, Unlit,
+            // Toon share the same header prefix (shader_id, alpha_mode,
+            // alpha_cutoff, base_color_tex(5), base_color_factor(4)), so the
+            // masked fragment's base-color path covers them with one WGSL —
+            // only the cache-key shader_id differs. FlipBook gets its OWN
+            // masked WGSL arm (the mask alpha is the time-varying atlas cell,
+            // evaluated by the shared cell math the shaded material also runs).
             for (shader_id, base) in [
                 (
                     awsm_materials::MaterialShaderId::PBR,
@@ -484,6 +485,10 @@ impl AwsmRenderer {
                 (
                     awsm_materials::MaterialShaderId::TOON,
                     crate::dynamic_materials::ShadingBase::Toon,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::FLIPBOOK,
+                    crate::dynamic_materials::ShadingBase::Flipbook,
                 ),
             ] {
                 let variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
@@ -554,6 +559,10 @@ impl AwsmRenderer {
                 (
                     awsm_materials::MaterialShaderId::TOON,
                     crate::dynamic_materials::ShadingBase::Toon,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::FLIPBOOK,
+                    crate::dynamic_materials::ShadingBase::Flipbook,
                 ),
             ] {
                 let variant = crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {

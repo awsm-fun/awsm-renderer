@@ -3,6 +3,7 @@
 // Used by BOTH the geometry masked fragment (visibility raster cutout) and the
 // shadow masked fragment (hole-shaped shadow cutout). Provides the per-fragment
 // masking alpha at a given barycentric — built-in PBR/Unlit/Toon read base-color
+// alpha, Flipbook reads the CURRENT atlas cell's alpha (time-varying),
 // alpha × factor; a dynamic (custom) material runs the author's alpha-only WGSL.
 //
 // The including template MUST define these context fields:
@@ -10,6 +11,7 @@
 //   base: ShadingBase
 //   dynamic_struct_decl, dynamic_loader_decl, dynamic_texture_helpers,
 //   dynamic_alpha_wgsl: String   (empty unless base == Custom)
+//   flipbook_cell_wgsl: String   (empty unless base == Flipbook)
 //
 // and bind (on whichever group it augments): materials, material_mesh_metas,
 // visibility_data, texture_transforms (storage) + the texture pool arrays/samplers.
@@ -120,6 +122,14 @@ fn custom_alpha_dynamic(input: MaskAlphaInput) -> f32 {
 // fwidth-of-alpha derivative would carry no sub-pixel information. Unified
 // signature across bases (the Custom body loads its own `MaterialData`), so the
 // per-sample call site is identical regardless of material type. ─────────────
+{% if base == ShadingBase::Flipbook %}
+// Shared sprite-sheet CELL math, injected verbatim from the materials crate
+// (`awsm_materials::flipbook::FLIPBOOK_CELL_WGSL`) — the SAME functions the
+// shaded material fragment runs, so the cutout can never disagree with the
+// visible cell.
+{{ flipbook_cell_wgsl }}
+{% endif %}
+
 {% if base == ShadingBase::Custom %}
 fn mask_alpha_at(
     bary: vec3<f32>,
@@ -144,6 +154,46 @@ fn mask_alpha_at(
         material_offset,
         mat,
     ));
+}
+{% else if base == ShadingBase::Flipbook %}
+fn mask_alpha_at(
+    bary: vec3<f32>,
+    triangle_indices: vec3<u32>,
+    attribute_data_offset: u32,
+    vertex_attribute_stride: u32,
+    uv_sets_index: u32,
+    color_sets_index: u32,
+    material_offset: u32,
+) -> f32 {
+    // FlipBook atlas-cell alpha — the TIME-VARYING cutout. Word layout per
+    // `FlipBookMaterial::write_uniform_buffer` (base_index = offset/4 + 1
+    // skips the shader_id word): alpha_mode @+0, alpha_cutoff @+1,
+    // atlas_tex @+2..6, tint @+7..10, cols @+11, rows @+12, frame_count
+    // @+13, fps @+14, time_offset @+15, mode @+16, flip_y @+17. The CPU
+    // writer clamps cols/rows/frame_count >= 1; the max() here is defense
+    // against a stale/zeroed buffer, never a behavior change.
+    let base_index = (material_offset / 4u) + 1u;
+    let atlas_tex = material_load_texture_info(base_index + 2u);
+    let tint_a = material_load_f32(base_index + 10u);
+    let cols = max(material_load_u32(base_index + 11u), 1u);
+    let rows = max(material_load_u32(base_index + 12u), 1u);
+    let frame_count = max(material_load_u32(base_index + 13u), 1u);
+    let fps = material_load_f32(base_index + 14u);
+    let time_offset = material_load_f32(base_index + 15u);
+    let mode = material_load_u32(base_index + 16u);
+    let flip_y = material_load_u32(base_index + 17u);
+    let frame_f = (frame_globals_raw.time + time_offset) * fps;
+    // `Once` past the end: the quad is GONE — fully cut out.
+    if flipbook_is_past_end(frame_f, frame_count, mode) {
+        return 0.0;
+    }
+    var alpha = tint_a;
+    if atlas_tex.exists {
+        let in_uv = mask_texture_uv(attribute_data_offset, triangle_indices, bary, atlas_tex, vertex_attribute_stride, uv_sets_index);
+        let cell_uv = flipbook_cell_uv(in_uv, frame_globals_raw.time, cols, rows, frame_count, fps, time_offset, mode, flip_y);
+        alpha = alpha * mask_texture_pool_sample(atlas_tex, cell_uv).a;
+    }
+    return alpha;
 }
 {% else %}
 fn mask_alpha_at(

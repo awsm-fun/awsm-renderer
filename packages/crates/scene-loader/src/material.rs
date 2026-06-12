@@ -48,6 +48,35 @@ pub fn material_to_renderer(def: &MaterialDef) -> Material {
             Material::Toon(Box::new(m))
         }
         MaterialShading::Pbr => Material::Pbr(Box::new(material_to_pbr(def, alpha_mode, None))),
+        MaterialShading::FlipBook {
+            cols,
+            rows,
+            frame_count,
+            fps,
+            time_offset,
+            mode,
+            flip_y,
+        } => {
+            use awsm_renderer::materials::flipbook::{FlipBookMaterial, FlipBookMode};
+            let mut m = FlipBookMaterial::new(alpha_mode, def.double_sided);
+            m.tint = def.base_color;
+            m.cols = cols;
+            m.rows = rows;
+            m.frame_count = frame_count;
+            m.fps = fps;
+            m.time_offset = time_offset;
+            m.mode = match mode {
+                awsm_scene::FlipBookPlayMode::Loop => FlipBookMode::Loop,
+                awsm_scene::FlipBookPlayMode::PingPong => FlipBookMode::PingPong,
+                awsm_scene::FlipBookPlayMode::Clamp => FlipBookMode::Clamp,
+                awsm_scene::FlipBookPlayMode::Once => FlipBookMode::Once,
+            };
+            m.flip_y = flip_y;
+            // The atlas rides the BASE-COLOR texture slot; binding happens at
+            // the caller (editor session pool / player bundle bytes), exactly
+            // like PBR's texture slots.
+            Material::FlipBook(Box::new(m))
+        }
     }
 }
 

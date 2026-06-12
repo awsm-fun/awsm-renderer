@@ -496,6 +496,7 @@ dependencies = [
  "gltf",
  "indexmap",
  "ordered-float",
+ "proptest",
  "serde",
  "serde-wasm-bindgen",
  "serde_bytes",

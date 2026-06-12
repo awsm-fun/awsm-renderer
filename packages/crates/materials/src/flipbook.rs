@@ -17,13 +17,27 @@ use crate::{
 };
 
 /// WGSL helper module for this material.
-pub const WGSL_FRAGMENT: &str = include_str!("wgsl/flipbook_material.wgsl");
+/// The shared sprite-sheet CELL math (mode consts + `flipbook_apply_mode` +
+/// `flipbook_is_past_end` + the scalar `flipbook_cell_uv`) — scalar-API WGSL
+/// with no material/texture dependencies, so the renderer's masked
+/// (alpha-tested) geometry/shadow templates can inject it verbatim and agree
+/// EXACTLY with the shaded material on which cell is visible.
+pub const FLIPBOOK_CELL_WGSL: &str = include_str!("wgsl/flipbook_cell.wgsl");
+
+/// The full material fragment: the shared cell math followed by the material
+/// struct/loader/shading body (which delegates its cell selection to the
+/// shared scalar function).
+pub const WGSL_FRAGMENT: &str = concat!(
+    include_str!("wgsl/flipbook_cell.wgsl"),
+    "\n",
+    include_str!("wgsl/flipbook_material.wgsl")
+);
 
 /// Playback mode for a [`FlipBookMaterial`].
 ///
 /// The numeric values are written into the material payload as `u32` and
 /// dispatched against by the WGSL `flipbook_apply_mode` function. Keep
-/// in lockstep with the `FLIPBOOK_MODE_*` consts there.
+/// in sync with the `FLIPBOOK_MODE_*` consts there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum FlipBookMode {
     /// Wrap on `frame_count`: `frame = floor(t * fps) mod frame_count`.
@@ -58,7 +72,7 @@ impl FlipBookMode {
 ///
 /// Use `time_offset` to phase per-instance copies of the same material
 /// (smoke / sparks scattered across the scene without all advancing in
-/// lockstep). Setting `fps = 0.0` freezes the material on cell 0,
+/// sync). Setting `fps = 0.0` freezes the material on cell 0,
 /// useful as a static cell-cropper.
 #[derive(Clone, Debug)]
 pub struct FlipBookMaterial {
@@ -144,8 +158,8 @@ impl FlipBookMaterial {
 
 /// CPU-side mirror of the WGSL `flipbook_apply_mode` function. Used by
 /// tests so the PingPong / Loop / Clamp / Once sequences are
-/// exercised without a GPU. The shader version must stay in lockstep
-/// with this — see [`super::wgsl/flipbook_material.wgsl`].
+/// exercised without a GPU. The shader version must stay in sync
+/// with this — see `wgsl/flipbook_cell.wgsl`.
 #[doc(hidden)]
 pub fn apply_mode_for_test(frame_f: f32, count: u32, mode: FlipBookMode) -> u32 {
     if count <= 1 {
@@ -198,7 +212,11 @@ impl MaterialShader for FlipBookMaterial {
     }
 
     fn is_transparency_pass(&self) -> bool {
-        self.has_alpha_blend() || self.alpha_cutoff().is_some()
+        // Blend → transparent pass. MASK routes alpha-tested-OPAQUE (cutout)
+        // like every other built-in: the masked geometry/shadow variants
+        // evaluate the time-varying atlas-cell alpha via the shared cell math
+        // (see FLIPBOOK_CELL_WGSL), so cutouts + hole-shaped shadows animate.
+        self.has_alpha_blend()
     }
 
     fn write_uniform_buffer(&self, ctx: &dyn TextureContext, data: &mut Vec<u8>) {

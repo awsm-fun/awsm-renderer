@@ -773,9 +773,12 @@ fn map_material_def(
             double_sided: def.double_sided,
             base_color_texture: tex_ref(&def.base_color_texture, tex_index),
         }),
-        // Toon isn't glTF-representable → none + the assigned id (if any) for
-        // scene-level re-resolution on import.
-        MaterialShading::Toon { .. } => ExportMaterial::None {
+        // Toon / FlipBook aren't glTF-representable (cel bands; time-driven
+        // atlas cells) → none + the assigned id (if any) for scene-level
+        // re-resolution on import. Deliberately NOT an unlit fallback: a
+        // frozen atlas GRID renders wrong in any viewer — an absent material
+        // is the honest export (the bundle path re-applies from scene.toml).
+        MaterialShading::Toon { .. } | MaterialShading::FlipBook { .. } => ExportMaterial::None {
             id: assigned.map(|a| a.to_string()),
         },
     }

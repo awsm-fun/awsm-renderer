@@ -1460,6 +1460,7 @@ impl EditorController {
                     awsm_editor_protocol::MaterialShading::Pbr => "PBR",
                     awsm_editor_protocol::MaterialShading::Unlit => "Unlit",
                     awsm_editor_protocol::MaterialShading::Toon { .. } => "Toon",
+                    awsm_editor_protocol::MaterialShading::FlipBook { .. } => "FlipBook",
                 };
                 let mat = CM::new_builtin(id, format!("{label} Material {n}"), shading);
                 self.custom_materials.lock_mut().push_cloned(mat.clone());
@@ -6039,6 +6040,7 @@ fn structure_key(kind: &NodeKind) -> String {
                 Some(MaterialShading::Pbr) => "pbr",
                 Some(MaterialShading::Unlit) => "unlit",
                 Some(MaterialShading::Toon { .. }) => "toon",
+                Some(MaterialShading::FlipBook { .. }) => "flipbook",
                 None => "none",
             };
             format!("mesh/{shading}/{}", material.is_some())

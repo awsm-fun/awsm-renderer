@@ -135,6 +135,46 @@ pub enum MaterialShading {
         #[serde(default = "default_rim_power")]
         rim_power: f32,
     },
+    /// Sprite-sheet (atlas) animation — unlit, time-driven cell selection.
+    /// Requires the `flipbook` feature on `awsm-renderer` at build time.
+    /// The material's BASE-COLOR texture slot is the atlas; `base_color`
+    /// is the tint. Cell selection runs on the renderer clock (no keyframes).
+    FlipBook {
+        /// Atlas grid columns (cells per row).
+        cols: u32,
+        /// Atlas grid rows.
+        rows: u32,
+        /// Cells actually used (≤ cols × rows; trailing grid cells unused).
+        frame_count: u32,
+        /// Playback rate, cells per second.
+        fps: f32,
+        /// Seconds added to the clock before cell selection (phase shift).
+        #[serde(default)]
+        time_offset: f32,
+        /// How the running frame index wraps past the end.
+        #[serde(default)]
+        mode: FlipBookPlayMode,
+        /// Row-indexing direction: `true` puts cell 0 on the BOTTOM row
+        /// (texture-V-up authored atlases).
+        #[serde(default)]
+        flip_y: bool,
+    },
+}
+
+/// FlipBook wrap mode — mirrors the renderer's `FlipBookMode` 1:1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlipBookPlayMode {
+    /// `frame % count` — wraps forever.
+    #[default]
+    Loop,
+    /// `0,1,…,N-1,N-2,…,1,0,…` (period `2N − 2`).
+    PingPong,
+    /// Sticks on the last cell.
+    Clamp,
+    /// Like `Clamp`, but past the end alpha = 0 (the quad disappears —
+    /// pairs with Blend or Mask alpha modes).
+    Once,
 }
 
 fn default_specular_steps() -> u32 {

@@ -331,6 +331,14 @@ pub struct BaseUrlParams {
 pub enum ShadingArg {
     Pbr,
     Unlit,
+    /// Cel shading (sensible default knobs; edit via dispatch_command
+    /// UpdateBuiltinMaterial / the studio).
+    Toon,
+    /// Sprite-sheet animation. Defaults: 4×4 grid, 16 frames, 12 fps, loop.
+    /// The atlas image is the material's BASE-COLOR texture slot; grid /
+    /// playback knobs edit via dispatch_command. Mask alpha mode gives an
+    /// animated CUTOUT (alpha-tested opaque, casts hole-shaped shadows).
+    Flipbook,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1432,7 +1440,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Create a fresh built-in material (pbr | unlit). Returns the new material id."
+        description = "Create a fresh built-in material (pbr | unlit | toon | flipbook). Returns the new material id. Flipbook: the atlas is the base-color texture; 4×4/16-frame/12fps/loop defaults — knob edits + Mask (animated cutout) via dispatch_command."
     )]
     async fn add_builtin_material(
         &self,
@@ -1441,6 +1449,22 @@ impl EditorMcp {
         let shading = match p.shading {
             ShadingArg::Pbr => MaterialShading::Pbr,
             ShadingArg::Unlit => MaterialShading::Unlit,
+            ShadingArg::Toon => MaterialShading::Toon {
+                diffuse_bands: 3,
+                rim_strength: 0.4,
+                specular_steps: 2,
+                shininess: 32.0,
+                rim_power: 2.0,
+            },
+            ShadingArg::Flipbook => MaterialShading::FlipBook {
+                cols: 4,
+                rows: 4,
+                frame_count: 16,
+                fps: 12.0,
+                time_offset: 0.0,
+                mode: awsm_editor_protocol::FlipBookPlayMode::Loop,
+                flip_y: false,
+            },
         };
         let id = AssetId::new();
         self.dispatch_echo_asset(EditorCommand::AddBuiltinMaterial { id, shading }, id)

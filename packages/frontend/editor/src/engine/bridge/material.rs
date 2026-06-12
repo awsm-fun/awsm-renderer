@@ -166,6 +166,16 @@ pub fn insert_material_vc(
             apply_extension_textures(renderer, &mut pbr, def);
             Material::Pbr(Box::new(pbr))
         }
+        MaterialShading::FlipBook { .. } => {
+            // The atlas rides the BASE-COLOR texture slot (sRGB albedo).
+            let mut material = material_to_renderer(def);
+            if let Material::FlipBook(m) = &mut material {
+                if let Some(t) = &def.base_color_texture {
+                    m.atlas_tex = resolve_texture(renderer, t, true, MipmapTextureKind::Albedo);
+                }
+            }
+            material
+        }
         // Unlit / Toon don't carry texture slots in the editor yet.
         _ => material_to_renderer(def),
     };

@@ -4226,6 +4226,7 @@ fn material_badge(def: &MaterialDef) -> (String, Tone) {
         MaterialShading::Pbr => ("PBR".to_string(), Tone::Accent),
         MaterialShading::Unlit => ("Unlit".to_string(), Tone::Warn),
         MaterialShading::Toon { .. } => ("Toon".to_string(), Tone::Ok),
+        MaterialShading::FlipBook { .. } => ("FlipBook".to_string(), Tone::Ok),
     }
 }
 

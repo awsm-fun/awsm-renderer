@@ -56,6 +56,10 @@ pub struct ShaderTemplateShadowMaskedFragment {
     dynamic_texture_helpers: String,
     /// The author's alpha-only WGSL fragment body (custom only).
     dynamic_alpha_wgsl: String,
+    /// The shared sprite-sheet cell math (Flipbook only; empty otherwise) —
+    /// `awsm_materials::flipbook::FLIPBOOK_CELL_WGSL`, injected so the masked
+    /// cutout evaluates the SAME cell the shaded material shows.
+    flipbook_cell_wgsl: String,
 }
 
 impl TryFrom<&ShaderCacheKeyShadowMasked> for ShaderTemplateShadowMasked {
@@ -91,6 +95,11 @@ impl TryFrom<&ShaderCacheKeyShadowMasked> for ShaderTemplateShadowMasked {
                 dynamic_loader_decl: loader_decl,
                 dynamic_texture_helpers: texture_helpers,
                 dynamic_alpha_wgsl: alpha_wgsl,
+                flipbook_cell_wgsl: if value.base == ShadingBase::Flipbook {
+                    awsm_materials::flipbook::FLIPBOOK_CELL_WGSL.to_string()
+                } else {
+                    String::new()
+                },
             },
         })
     }

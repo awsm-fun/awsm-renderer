@@ -84,6 +84,19 @@ fn new_material_items(close: Close) -> Vec<Dom> {
             }),
             close.clone(),
         ),
+        mk(
+            "FlipBook",
+            Some(MaterialShading::FlipBook {
+                cols: 4,
+                rows: 4,
+                frame_count: 16,
+                fps: 12.0,
+                time_offset: 0.0,
+                mode: awsm_editor_protocol::FlipBookPlayMode::Loop,
+                flip_y: false,
+            }),
+            close.clone(),
+        ),
         mk("Dynamic (WGSL)", None, close),
     ]
 }
@@ -425,6 +438,141 @@ fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_editor_protocol::MaterialD
         .render()
 }
 
+/// The FlipBook knobs (atlas grid + playback; uniforms on the FlipBook shading
+/// variant — one canonical FLIPBOOK shader, no recompile on edit). Only shown
+/// for FlipBook materials. The atlas image itself is the "Base color map" in
+/// the Textures section.
+fn flipbook_section(mat: &Arc<CustomMaterial>, def: &awsm_editor_protocol::MaterialDef) -> Dom {
+    use awsm_editor_protocol::{FlipBookPlayMode, MaterialShading};
+    let MaterialShading::FlipBook {
+        cols,
+        rows,
+        frame_count,
+        fps,
+        time_offset,
+        mode,
+        flip_y,
+    } = def.shading
+    else {
+        return html!("div", {});
+    };
+    let knob = |label: &str,
+                value: f64,
+                min: f64,
+                max: f64,
+                step: f64,
+                mutate: fn(&mut MaterialShading, f64)| {
+        builtin_num_row(mat, label, value, min, max, step, move |d, v| {
+            mutate(&mut d.shading, v)
+        })
+    };
+    // Playback-mode select (mirrors the alpha-mode select wiring above).
+    let mode_sel = Mutable::new(
+        match mode {
+            FlipBookPlayMode::Loop => "loop",
+            FlipBookPlayMode::PingPong => "ping_pong",
+            FlipBookPlayMode::Clamp => "clamp",
+            FlipBookPlayMode::Once => "once",
+        }
+        .to_string(),
+    );
+    spawn_local({
+        use futures_signals::signal::SignalExt;
+        let mode_sel = mode_sel.clone();
+        let mat = mat.clone();
+        async move {
+            let mut first = true;
+            mode_sel
+                .signal_cloned()
+                .for_each(move |v| {
+                    let fire = !first;
+                    first = false;
+                    let mat = mat.clone();
+                    async move {
+                        if fire {
+                            edit_builtin(&mat, |d| {
+                                if let MaterialShading::FlipBook { mode, .. } = &mut d.shading {
+                                    *mode = match v.as_str() {
+                                        "ping_pong" => FlipBookPlayMode::PingPong,
+                                        "clamp" => FlipBookPlayMode::Clamp,
+                                        "once" => FlipBookPlayMode::Once,
+                                        _ => FlipBookPlayMode::Loop,
+                                    };
+                                }
+                            });
+                        }
+                    }
+                })
+                .await;
+        }
+    });
+    Section::new("FlipBook")
+        .child(knob("Columns", cols as f64, 1.0, 64.0, 1.0, |s, v| {
+            if let MaterialShading::FlipBook { cols, .. } = s {
+                *cols = (v.round() as u32).max(1);
+            }
+        }))
+        .child(knob("Rows", rows as f64, 1.0, 64.0, 1.0, |s, v| {
+            if let MaterialShading::FlipBook { rows, .. } = s {
+                *rows = (v.round() as u32).max(1);
+            }
+        }))
+        .child(knob(
+            "Frame count",
+            frame_count as f64,
+            1.0,
+            4096.0,
+            1.0,
+            |s, v| {
+                if let MaterialShading::FlipBook { frame_count, .. } = s {
+                    *frame_count = (v.round() as u32).max(1);
+                }
+            },
+        ))
+        .child(knob("FPS", fps as f64, 0.0, 120.0, 0.5, |s, v| {
+            if let MaterialShading::FlipBook { fps, .. } = s {
+                *fps = v as f32;
+            }
+        }))
+        .child(knob(
+            "Time offset",
+            time_offset as f64,
+            -60.0,
+            60.0,
+            0.05,
+            |s, v| {
+                if let MaterialShading::FlipBook { time_offset, .. } = s {
+                    *time_offset = v as f32;
+                }
+            },
+        ))
+        .child(row(
+            "Mode",
+            select(
+                mode_sel,
+                vec![
+                    ("loop".into(), "Loop".into()),
+                    ("ping_pong".into(), "Ping-pong".into()),
+                    ("clamp".into(), "Clamp".into()),
+                    ("once".into(), "Once (vanish)".into()),
+                ],
+            ),
+        ))
+        .child(builtin_toggle_row(
+            mat,
+            "Flip rows (V-up atlas)",
+            flip_y,
+            |d, on| {
+                if let awsm_editor_protocol::MaterialShading::FlipBook { flip_y, .. } =
+                    &mut d.shading
+                {
+                    *flip_y = on;
+                }
+            },
+        ))
+        .render()
+}
+
 /// The KHR-extensions panel for a built-in **PBR** material. Each extension has
 /// an enable toggle (flipping it is a *variant* change → assigned meshes recompile
 /// to a distinct shader) and, when enabled, its scalar factor knob(s). Reactive on
@@ -530,6 +678,7 @@ fn builtin_definition(mat: &Arc<CustomMaterial>) -> Dom {
         MaterialShading::Pbr => "PBR (physically based)",
         MaterialShading::Unlit => "Unlit (emissive only)",
         MaterialShading::Toon { .. } => "Toon (cel-shaded)",
+        MaterialShading::FlipBook { .. } => "FlipBook (sprite-sheet animation)",
     };
     // Alpha mode select.
     let alpha = Mutable::new(
@@ -588,6 +737,7 @@ fn builtin_definition(mat: &Arc<CustomMaterial>) -> Dom {
                 .render())
             .child(textures_section(mat, &def))
             .child(toon_section(mat, &def))
+            .child(flipbook_section(mat, &def))
             .child(extensions_section(mat))
             .child(html!("div", {
                 .style("margin", "11px 12px").style("padding", "8px 10px")
