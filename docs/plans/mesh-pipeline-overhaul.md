@@ -621,14 +621,34 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
 - ✅ Pose-vs-clip semantics: USER SIGNED OFF on DCC behavior (clip owns bones/morphs
   while active; pause/delete to hand-pose). Already documented in AGENT_GUIDE §8.
 
-### ▶▶ NEXT LOOP SCOPE (agreed direction: finish skins/morphs first-class + polish)
-A. Robustness quickies: percent-0..1 docs + range warning; demote the overnight
-   diagnostic info! logs (edge breadcrumbs, skin-bridge/skins-update counts) to debug!;
-   frame_node padding on rigs slightly generous (cosmetic).
-B. Rig-preserving scene-glb export (Tier 3 #1): export_glb currently flattens
-   skins/morphs to static — re-export skins (joints/IBMs/weights) + morph targets
-   (+ targetNames extras) so a scene glb round-trips rigs. Headless-verifiable by
-   parsing the exported glb (skins>0, targets>0) + reimport round-trip.
-C. (Stretch, explicitly byte-guarded) Phase 2b: route renderer-gltf vertex builders
-   through the shared mesh_pack packer — byte-identity proptest BEFORE switching.
-D. (Deferred unless asked: per-vertex joint-weight editing; IK/retarget crates.)
+### ▶▶ NEXT LOOP SCOPE (user-agreed 2026-06-12 morning)
+A. Robustness quickies: select_vertices_where percent documented 0..1 in tool desc +
+   WARN on out-of-range input; demote overnight diagnostic info! logs (edge breadcrumbs,
+   skin-bridge/skins-update counts) to debug!; frame_node rig padding slightly generous.
+B. HUMAN KEYING (user priority — the human animation gap): the transport add-key
+   button samples the TRACK's own curve (sample_at(t)) instead of the live scene, so
+   "pose a bone with the gizmo → press key" captures nothing. Build: (1) key-from-pose —
+   add-key reads the LIVE node value (bone transform / morph weight) for the selected
+   track; (2) AUTO-KEY toggle — while on (animation mode), a gizmo edit on a tracked
+   node writes a keyframe at the playhead. Verify in-tab: pose → key → scrub away/back
+   shows the captured pose; auto-key drag creates diamonds in the dope sheet.
+C. Rig-preserving scene-glb export: export_glb flattens skins/morphs — re-export skins
+   (joints/IBMs/JOINTS_0/WEIGHTS_0) + morph targets (+ targetNames). Verify headless
+   (parse: skins>0, per-prim targets>0, names) + reimport round-trip in-tab (fox
+   arrives intact, posable, Walk playable).
+D. TWO-BONE IK for posing: new command/MCP tool (e.g. solve_ik {chain_end_node,
+   target_pos, pole?}) that solves a 2-bone chain (hip→knee→foot etc. discovered via
+   skin_data hierarchy) and writes the joint rotations — agent- AND human-reachable
+   (stretch: a small gizmo affordance). Verify: fox foot pinned to a target while the
+   chain bends naturally (screenshots).
+E. PER-VERTEX JOINT-WEIGHT EDITING: read+write skin JOINTS_0/WEIGHTS_0 on live skinned
+   meshes (renderer storage-buffer surgery): get_skin_weights {node, indices} +
+   set_skin_weights {node, entries:[{vertex, joints[4], weights[4]}]} (+normalize).
+   Verify: reweight a fox region to a different bone, pose that bone, watch the region
+   follow (A/B screenshots).
+F. (Stretch, byte-guarded) Phase 2b: route renderer-gltf vertex builders through the
+   shared mesh_pack packer — byte-identity proptest committed BEFORE the switch; abort
+   + log if identity can't be proven.
+G. DEFERRED BY DECISION: retargeting — agent-driven over MCP once D+E exist (the
+   decision layer is agentic: rig analysis via get_skin_data/get_track_data; the
+   per-keyframe math eventually wants a small deterministic retarget_clip kernel).
