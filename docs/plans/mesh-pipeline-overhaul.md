@@ -760,3 +760,27 @@ future loops on this project:
   EQUALLY critical because the codebase is complex. The editor must be able to
   express all kinds of changes, increasingly via agentic creation — MCP tools
   that only non-humans can drive are a first-class feature surface.
+
+### Day-3 loop — first burst (scopes A-instrument/B/C/D code landed)
+- A: per-frame churn AUDIT done across render_loop callees — light_icons (sig-gated
+  rebuild + in-place reanchor ✓), curve_handles (zoom-only ✓), gizmo (set_hidden/zoom ✓),
+  particles (preallocated bufs; per-frame Vec allocs are CPU-only, scoped to live
+  emitters), skin_bridge (1 small Vec/frame ✓), vertex_highlight (selection-driven ✓),
+  render() preamble (polls/no-ops ✓). NOTABLE: material_opaque edge-resolve creates 3
+  bind groups/frame BY DESIGN (documented tradeoff; bind groups pin no buffer memory —
+  soak arbitrates). MemoryStats instrumentation landed (93e6a805): query + MCP tool
+  get_memory_stats (JS heap + meshes/transforms/materials/lines/pipeline counts).
+  BASELINE soak (empty scene, ~13min): heap sawtooths 7–14MB (healthy GC), all counts
+  rock-flat (/tmp/soak-baseline-empty.csv). Fox-playing soak rescheduled to AFTER all
+  code lands (own rebuilds wiped the staged scene — measurement windows must contain
+  zero trunk rebuilds).
+- B (d4ffbb8c): rig re-exports carry materials+textures per-primitive (ExtraPrimitive
+  IR; per-primitive write; ImagePool original-bytes copy; append_rigs image offsets).
+  Round-trip test contract updated (material PRESERVED). Browser verify queued.
+- C (551a0c4c): IK bend-plane normal extracted pure + 4 unit tests; straight-chain
+  fallback now character-forward (old Y-fallback degenerated to sideways-X on downward
+  reaches — the day-2 "lift/tuck"). Browser verify queued.
+- D (2905d161): vertex highlight CPU-skins selected vertices with the GPU palette
+  (new Skins::read_joint_matrices); posed-surface markers, world-space, set-0.
+  Staleness rule documented. Browser verify queued.
+- Env: stack restart needed run_in_background (nohup alone dies with the sandbox shell).
