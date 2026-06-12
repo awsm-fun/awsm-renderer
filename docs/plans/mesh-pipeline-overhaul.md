@@ -696,3 +696,48 @@ G. DEFERRED BY DECISION: retargeting — agent-driven over MCP once D+E exist (t
   target (reach 1.0); WITH a pole in front of the knee the leg takes a natural
   bent-knee step pose. Undo of the batch restores the stance. NOTE for agents (in
   the tool desc): give a pole for natural knee/elbow direction.
+
+### Day-2 interactive session (after the closing report) — user-verified keying + 4 fixes
+- User retried human keying with their own hands; found the scope-B commit had landed
+  ONLY live_track_value (neither consumer wired — commit message overclaimed; data-path
+  "verification" couldn't catch it). Landed + USER-VERIFIED ("worked perfectly"):
+  b339cbfe (pin_pose gated on playing||playhead-moved → paused hand-poses HOLD, DCC
+  semantics; tool palette mounted in Animation viewport), 7db5dc18 (transport ⬩ wired
+  to live_track_value; auto-key hooked into gizmo commit_drag — gesture-level only,
+  programmatic SetTransform/MCP/IK/undo never auto-keys; dope-sheet geometry now
+  listens to clip duration signal; skeleton overlay update-in-place instead of
+  remove+add per frame — ~300k short-lived GPU objects/idle-hour churn was the prime
+  suspect for the user's Aw-Snap tab crash after 1.5h idle; mesh_pack synthetic-tangent
+  test read offset 32→36 test-bug fix), beb4c72f (auto-key toggle moved Settings →
+  transport bar, record-style).
+- Environment: user's disk hit 100% full mid-session (cargo incremental ballooned;
+  freed ~90GB by deleting target/debug/incremental; target/ still ~149G — deep-clean
+  candidate). Disk-full may have contributed to the crash.
+
+### ▶▶ NEXT LOOP SCOPE (user-agreed 2026-06-12 afternoon) — day-3 loop
+User decisions: IK default-pole heuristic IN; rig-export material preservation IN
+(user chose "fix in this loop" over v1-accept); all four proposed scopes IN; plus an
+open-ended mandate: "anything else you can grok from the docs and/or code that will
+make the library code more performant and the editor+mcp more featureful and usable,
+especially over MCP for agents".
+- A. PERF/STABILITY SWEEP (first — crash-motivated): audit ALL per-frame paths for
+  per-frame alloc/create-destroy churn (gizmo, light_icons, curve_handles, particles,
+  node_sync effects, anything calling add_*/remove_* or creating GPU objects in the
+  render loop); fix in-place-update patterns like the skeleton one; then a soak check
+  (leave renderer running, sample memory via performance.memory over minutes, assert
+  flat-ish slope). Also: deep-clean guidance for the 149G target/ (document, don't
+  surprise-delete).
+- B. RIG-EXPORT MATERIAL PRESERVATION: exported scene-glbs' embedded rigs should carry
+  materials+textures (reimport renders textured). Reuse the existing glb-export
+  material path; the rig merge currently drops to source defaults.
+- C. IK DEFAULT-POLE HEURISTIC: when no pole is passed, bias the bend toward the
+  chain's CURRENT bend plane (preserve existing knee/elbow direction); fall back to
+  character-forward only for a perfectly straight chain.
+- D. VERTEX HIGHLIGHT ON SKINNED MESHES: extend vertex_highlight to skinned/posed
+  meshes (positions must come from the posed/skinned result, not the rest mesh).
+- E. PHASE 4 PARITY VERIFY: byte-identity proof between renderer mesh_pack and the
+  convert crate's packer (the deferred proptest); if identity holds, consider the 2b
+  unification go/no-go with evidence.
+- F. FLIPBOOK MATERIAL (deferred from cutout phase).
+- G. OPEN-ENDED: survey docs/ + code for high-leverage perf or agent-over-MCP
+  usability wins; pitch-then-do the top items within budget (log triage in this doc).
