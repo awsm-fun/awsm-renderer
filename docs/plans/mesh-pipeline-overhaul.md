@@ -741,3 +741,22 @@ especially over MCP for agents".
 - F. FLIPBOOK MATERIAL (deferred from cutout phase).
 - G. OPEN-ENDED: survey docs/ + code for high-leverage perf or agent-over-MCP
   usability wins; pitch-then-do the top items within budget (log triage in this doc).
+
+### ▶▶ DAY-3 STANDING RULE CHANGE (user-directed 2026-06-12): DONE-MEANS-DONE
+User: the "land the safe subset, defer the rest" pattern has caused major prod
+bites before ("I thought something was finished and it slipped through as
+deferred"). New contract, superseding the safe-subset rule for this and all
+future loops on this project:
+- A scope exits ONLY in one of two states: (1) FULLY COMPLETE and verified at
+  the appropriate level (SEEN/parsed/tests), or (2) blocked on something only
+  a human can physically do (real click/drag, eyes-on-taste, hardware) — which
+  goes on the user-judgment queue with EXACT repro steps. There is no third
+  state. "Deferred"/"remaining"/"partial" are not outcomes.
+- Time is explicitly NOT a constraint: hours or days of looping are preferred
+  over a fast pass with gaps. The loop keeps iterating (ScheduleWakeup) until
+  every scope is in state (1) or (2); it does not end after one sweep.
+- Context for the bar: this renderer is meant to power AAA-quality games on
+  the web. Performance and features are critical; code quality and docs are
+  EQUALLY critical because the codebase is complex. The editor must be able to
+  express all kinds of changes, increasingly via agentic creation — MCP tools
+  that only non-humans can drive are a first-class feature surface.
