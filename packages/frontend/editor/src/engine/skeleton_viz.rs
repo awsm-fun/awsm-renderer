@@ -102,15 +102,30 @@ pub fn per_frame_update(renderer: &mut AwsmRenderer) {
         }
     }
 
-    // Replace last frame's overlay wholesale (remove + add). Segment counts
-    // are tiny; correctness-by-reconstruction over diff bookkeeping.
-    if let Some(key) = SKELETON.with(|c| c.take()) {
-        renderer.remove_line(key);
+    // Update the ONE persistent overlay line in place — `update_line_segments`
+    // reuses the GPU segment buffer (reallocating only when the bone count
+    // grows). The previous remove+add-every-frame churned a fresh GPU buffer +
+    // uniform buffer + bind group + uploaders 60×/sec (~hundreds of thousands
+    // of short-lived GPU objects per idle hour — a tab-OOM crash suspect).
+    let key = SKELETON.with(|c| c.get());
+    if positions.is_empty() {
+        if let Some(key) = key {
+            renderer.remove_line(key);
+            SKELETON.with(|c| c.set(None));
+        }
+        return;
     }
-    if !positions.is_empty() {
-        match renderer.add_line_segments(&positions, &colors, BONE_WIDTH, true) {
+    match key {
+        // `has_line` guards the entry having been torn down behind us (e.g. a
+        // renderer rebuild) — fall through to a fresh add when it's gone.
+        Some(key) if renderer.has_line(key) => {
+            if let Err(err) = renderer.update_line_segments(key, &positions, &colors) {
+                tracing::warn!("skeleton_viz: update_line_segments failed: {err}");
+            }
+        }
+        _ => match renderer.add_line_segments(&positions, &colors, BONE_WIDTH, true) {
             Ok(key) => SKELETON.with(|c| c.set(key)),
             Err(err) => tracing::warn!("skeleton_viz: add_line_segments failed: {err}"),
-        }
+        },
     }
 }

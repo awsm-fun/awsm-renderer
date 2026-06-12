@@ -203,6 +203,13 @@ impl AwsmRenderer {
         self.lines.entries.len()
     }
 
+    /// Whether `key` still refers to a registered line. Lets a caller that
+    /// holds a key across frames (e.g. a persistent overlay it updates in
+    /// place) detect that the entry was torn down behind it and re-add.
+    pub fn has_line(&self, key: LineKey) -> bool {
+        self.lines.entries.contains_key(key)
+    }
+
     /// Block B.3: lazily compiles the 4 line pipeline variants on the
     /// transition from "no line primitives" to "first line primitive
     /// inserted". Idempotent — subsequent calls are no-ops once

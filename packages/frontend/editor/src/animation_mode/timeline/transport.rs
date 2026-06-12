@@ -101,10 +101,12 @@ fn transport_btn(
     })
 }
 
-/// Insert a keyframe at the current playhead on the *selected* track. The
-/// inserted value is sampled from the track so it lands on the existing curve
-/// (a fresh track keys its target's default). No-op with a hint if no track is
-/// selected. Delete is in the keyframe inspector.
+/// Insert a keyframe at the current playhead on the *selected* track.
+/// **Key-from-pose**: the inserted value is the LIVE target value (the pose the
+/// user just made with the gizmo / inspector — `live_track_value`), falling
+/// back to the track's own curve sample only when the live value can't resolve
+/// (then a fresh track keys its target's default). No-op with a hint if no
+/// track is selected. Delete is in the keyframe inspector.
 fn add_key_btn() -> Dom {
     transport_btn(
         "Add keyframe at playhead (on the selected track)",
@@ -122,7 +124,8 @@ fn add_key_btn() -> Dom {
                 return;
             };
             let t = ctrl.playhead.get();
-            let value = {
+            // Resolve the target + the curve-sample fallback synchronously…
+            let (target, fallback) = {
                 let Some(clip) = find_clip(&ctrl.custom_animations, clip_id) else {
                     return;
                 };
@@ -130,15 +133,25 @@ fn add_key_btn() -> Dom {
                 let Some(track) = tracks.get(sel.track) else {
                     return;
                 };
-                track
+                let fb = track
                     .sample_at(t)
-                    .unwrap_or_else(|| default_value_for(&track.target))
+                    .unwrap_or_else(|| default_value_for(&track.target));
+                (track.target.clone(), fb)
             };
-            dispatch(EditorCommand::AddKeyframe {
-                clip: clip_id,
-                track: sel.track,
-                t,
-                value,
+            // …then capture the live pose (async: non-transform targets read
+            // through the renderer) and key it.
+            spawn_local(async move {
+                let value = crate::controller::live_track_value(&controller(), &target)
+                    .await
+                    .unwrap_or(fallback);
+                let _ = controller()
+                    .dispatch(EditorCommand::AddKeyframe {
+                        clip: clip_id,
+                        track: sel.track,
+                        t,
+                        value,
+                    })
+                    .await;
             });
         },
     )

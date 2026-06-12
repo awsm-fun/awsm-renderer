@@ -135,10 +135,11 @@ mod tests {
     fn none_tangents_pack_synthetic() {
         let (p, n, _, i) = tri();
         let bytes = pack_visibility_bytes(&p, &n, None, &i);
-        // corner 0 tangent at offset 32..48 == [0,0,0,1]
+        // corner 0 tangent at offset 36..52 == [0,0,0,1]
+        // (pos 12 + triangle_index 4 + barycentric 8 + normal 12 = 36).
         let read_f32 = |off: usize| f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
         assert_eq!(
-            [read_f32(32), read_f32(36), read_f32(40), read_f32(44)],
+            [read_f32(36), read_f32(40), read_f32(44), read_f32(48)],
             [0.0, 0.0, 0.0, 1.0]
         );
     }

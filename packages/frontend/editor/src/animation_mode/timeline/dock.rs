@@ -38,10 +38,19 @@ pub fn render() -> Dom {
         // ── freeze-pane scroller ─────────────────────────────────────────────
         .child(html!("div", {
             .style("flex", "1").style("min-height", "0").style("overflow", "auto").style("position", "relative")
-            // Reactive on (active clip, zoom, unit, fps): rebuild the geometry +
-            // body whenever any changes.
+            // Reactive on (active clip, zoom, unit, fps, clip DURATION): rebuild
+            // the geometry + body whenever any changes. Duration is an inner
+            // signal of the ACTIVE clip, so it's flattened in via `switch` —
+            // without it, editing Duration stretched the transport readout but
+            // the dope-sheet/curve geometry stayed at the old length.
             .child_signal(map_ref! {
                 let clip_id = controller().current_clip.signal(),
+                let _dur = controller().current_clip.signal().switch(|cur| {
+                    match cur.and_then(|id| find_clip(&controller().custom_animations, id)) {
+                        Some(c) => c.duration.signal().boxed_local(),
+                        None => futures_signals::signal::always(0.0f64).boxed_local(),
+                    }
+                }),
                 let px = px_per_sec.signal(),
                 let u = unit.signal(),
                 let fps = controller().anim_fps.signal() => {
