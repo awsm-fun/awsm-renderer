@@ -784,3 +784,56 @@ future loops on this project:
   (new Skins::read_joint_matrices); posed-surface markers, world-space, set-0.
   Staleness rule documented. Browser verify queued.
 - Env: stack restart needed run_in_background (nohup alone dies with the sandbox shell).
+
+### Day-3 loop — verification batch (all browser SEEN evidence collected)
+- E (89b8551f) BROWSER-CONFIRMED: fox imports through the unified mesh_pack gltf
+  path and renders correctly (geometry/texture/skeleton intact — a byte error
+  would corrupt every mesh).
+- C (551a0c4c) SEEN: no-pole solve_ik on the fox hind leg → natural forward step
+  (knee in its anatomical plane, no sideways tuck), foot at target err=0.0.
+  Tooling lesson recorded: node_transforms returns the WHOLE subtree keyed by
+  node id — read entries[<requested-id>], not values()[0] (an early misread
+  cost a debugging round).
+- D (2905d161) SEEN A/B: amber vertex markers on the fox muzzle at rest, then
+  following the muzzle DOWN after a head pose + selection re-emit — markers
+  track the deformed surface via the GPU palette.
+- B (d4ffbb8c) PARSED+SEEN: export_glb carries materials:1 images:2 textures:2
+  skins:1 (fox_material with baseColorTexture); reimported export renders FULLY
+  TEXTURED (orange/white/dark-leg fox). The "reimports render untextured"
+  limitation is closed. Note: image pool carries a scene-level + rig-level copy
+  of the fox texture (2 images for 1 source) — dedup is a known nice-to-have.
+- F (1fc15bd8 + b5ac5236) SEEN: agent-authored Mask FlipBook (atlas import →
+  add_builtin_material flipbook → update_builtin_material Mask+atlas → assign
+  to quad) renders as an ANIMATED CUTOUT — pinned-clock screenshots show
+  circle (t=0.5) → square (t=1.5) → triangle (t=2.5), pure hole-out, no quad
+  silhouette. SHADOW: top-down captures show the hole-shaped shadow MORPH
+  (soft ellipse → soft rectangle) between cells while a control box's shadow
+  stays constant — the masked shadow pass runs the same shared cell math.
+  set_frame_time/clear_frame_time = the deterministic capture instrument.
+- USER-CAUGHT mid-batch regression (b5ac5236): the cell-math extraction dropped
+  flipbook_get_material → WGSL validation killed editor BOOT (flipbook edge/
+  masked variants newly compile at startup). Fixed + permanent per-base
+  module-completeness test (renders edge_resolve for all 4 bases, asserts every
+  *_get_material call is defined). Agent-observability gap closed alongside:
+  editor POSTs boot failures to the relay's new /boot-error; GET /health
+  returns { editor_attached, last_boot_error } — first check when /debug goes
+  quiet.
+- Shadow-debug gotchas recorded: per-light shadow max_distance=100 means
+  shadows only render within ~100 units of the CAMERA (orbit close!); TWO
+  shadowed directional lights overflow the EVSM atlas (warn-spam + shadows
+  degrade) — delete, don't just dim, the spare; consecutive set_transforms on
+  one node COALESCE into one undo entry.
+- UpdateBuiltinMaterial (5a58992a) PROVEN over MCP-path dispatch: the whole
+  flipbook authoring chain above ran through commands an agent can issue.
+- A FINAL SOAK (closes scope A): 30 min, rich scene (Walk-playing fox + live Mask
+  flipbook + shadows + skeleton overlay + textured-reimport fox). 120 samples via
+  get_memory_stats: ALL renderer object counts FLAT the entire run (meshes 16,
+  transforms 232, materials 13, lines 1, render pipelines 160, compute 81 — zero
+  churn-class growth). JS heap: warm-up rise for ~15 min then PLATEAU — quartile
+  floors 15.6/23.5/27.5/25.8 MB, Q3→Q4 mean 41.7→41.5 MB (flat). No leak at
+  steady state. The remaining tab-crash question (multi-hour unattended) gets an
+  overnight soak after the shadow pass. Baselines: /tmp/soak2.csv,
+  /tmp/soak-baseline-empty.csv.
+- Untracked test assets for user decision: media/fox-roundtrip.glb (round-trip
+  artifact) + media/flipbook-atlas-2x2.png (generated 2×2 RGBA atlas; useful as a
+  permanent flipbook test asset — recommend keeping).
