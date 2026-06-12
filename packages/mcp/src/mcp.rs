@@ -522,6 +522,26 @@ pub struct LightScalarParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SolveIkParams {
+    /// Chain TIP joint node UUID (e.g. a foot); the chain is its parent (knee)
+    /// and grandparent (upper leg) from the scene hierarchy.
+    pub end_node: String,
+    /// World-space target position for the tip.
+    pub target: [f32; 3],
+    /// Optional world-space pole hint — the chain bends toward it (e.g. put it
+    /// in front of a knee). Omit to keep the chain's current bend plane.
+    pub pole: Option<[f32; 3]>,
+    /// Apply the solution (default true): one DispatchBatch of two
+    /// SetTransforms = one undo step. False = solve-only (returns rotations).
+    #[serde(default = "default_true_param")]
+    pub apply: bool,
+}
+
+fn default_true_param() -> bool {
+    true
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MorphWeightParams {
     /// Mesh node UUID (a node whose mesh has morph targets).
     pub node: String,
@@ -2097,6 +2117,118 @@ impl EditorMcp {
             nodes: parse_nodes(&p.nodes)?,
         })
         .await
+    }
+
+    #[tool(
+        description = "Two-bone IK: bring a chain TIP (end_node, e.g. a foot joint) to a world-space target, bending at its parent (knee) under its grandparent (upper leg). Solves analytically and (by default) APPLIES the two joint rotations as one undoable batch — auto-key compatible. `pole` biases the bend direction. Returns { root_node, mid_node, root_rotation, mid_rotation, reach } (reach < 1 ⇒ target beyond the chain's span, clamped). Discover chains via get_skin_data; clips OWN bones while active (delete/pause first)."
+    )]
+    async fn solve_ik(
+        &self,
+        Parameters(p): Parameters<SolveIkParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let end_node = parse_node(&p.end_node)?;
+        // 1. Solve (read-only).
+        let sol = match self
+            .req(Request::Query(EditorQuery::SolveIk {
+                end_node,
+                target: p.target,
+                pole: p.pole,
+            }))
+            .await?
+        {
+            Response::Query(q) => *q,
+            Response::Err(e) => return Err(McpError::internal_error(e, None)),
+            other => {
+                return Err(McpError::internal_error(
+                    format!("unexpected response: {other:?}"),
+                    None,
+                ))
+            }
+        };
+        let entries = match &sol {
+            awsm_editor_protocol::QueryResult::Map(m) if m.kind == "ik_solution" => &m.entries,
+            awsm_editor_protocol::QueryResult::Error { error } => {
+                return Err(McpError::internal_error(error.clone(), None))
+            }
+            other => {
+                return Err(McpError::internal_error(
+                    format!("unexpected solve result: {other:?}"),
+                    None,
+                ))
+            }
+        };
+        if !p.apply {
+            return Ok(text(serde_json::to_string(entries).unwrap_or_default()));
+        }
+        // 2. Apply: current locals (translation/scale preserved) + solved
+        // rotations, as ONE batch (one undo step).
+        let get = |k: &str| entries.get(k).cloned().unwrap_or(serde_json::Value::Null);
+        let root = get("root_node")
+            .as_str()
+            .map(parse_node)
+            .transpose()?
+            .ok_or_else(|| McpError::internal_error("bad root_node", None))?;
+        let mid = get("mid_node")
+            .as_str()
+            .map(parse_node)
+            .transpose()?
+            .ok_or_else(|| McpError::internal_error("bad mid_node", None))?;
+        let quat = |k: &str| -> Result<[f32; 4], McpError> {
+            serde_json::from_value(get(k))
+                .map_err(|e| McpError::internal_error(format!("bad {k}: {e}"), None))
+        };
+        let (rq, mq) = (quat("root_rotation")?, quat("mid_rotation")?);
+        // Current locals for translation/scale.
+        let tr = match self
+            .req(Request::Query(EditorQuery::NodeTransforms {
+                nodes: vec![root, mid],
+            }))
+            .await?
+        {
+            Response::Query(q) => *q,
+            other => {
+                return Err(McpError::internal_error(
+                    format!("unexpected transforms response: {other:?}"),
+                    None,
+                ))
+            }
+        };
+        let tmap = match &tr {
+            awsm_editor_protocol::QueryResult::Map(m) => &m.entries,
+            _ => return Err(McpError::internal_error("bad transforms result", None)),
+        };
+        let trs_of = |id: NodeId, rot: [f32; 4]| -> Result<awsm_editor_protocol::Trs, McpError> {
+            let e = tmap
+                .get(&id.to_string())
+                .ok_or_else(|| McpError::internal_error("joint transform missing", None))?;
+            let v3 = |k: &str| -> [f32; 3] {
+                serde_json::from_value(e.get(k).cloned().unwrap_or_default())
+                    .unwrap_or([0.0, 0.0, 0.0])
+            };
+            let mut scale = v3("scale");
+            if scale == [0.0, 0.0, 0.0] {
+                scale = [1.0, 1.0, 1.0];
+            }
+            Ok(awsm_editor_protocol::Trs {
+                translation: v3("translation"),
+                rotation: rot,
+                scale,
+            })
+        };
+        let cmds = vec![
+            EditorCommand::SetTransform {
+                id: root,
+                transform: trs_of(root, rq)?,
+            },
+            EditorCommand::SetTransform {
+                id: mid,
+                transform: trs_of(mid, mq)?,
+            },
+        ];
+        if let Response::Err(e) = self.req(Request::DispatchBatch(cmds)).await? {
+            return Err(McpError::internal_error(e, None));
+        }
+        Ok(text(serde_json::to_string(entries).unwrap_or_default()))
     }
 
     #[tool(

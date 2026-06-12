@@ -684,3 +684,15 @@ G. DEFERRED BY DECISION: retargeting — agent-driven over MCP once D+E exist (t
   (reimport renders untextured; the bundle path re-applies materials from scene.toml).
 - TOOLING NOTE: trunk's file-watcher silently stopped rebuilding TWICE this scope —
   symptom: wasm mtime frozen despite touches; fix: full stack restart. Watch for it.
+
+### Day-2 loop, scope D — TWO-BONE IK landed (SEEN)
+- EditorQuery::SolveIk { end_node, target, pole? }: analytic two-bone solve (law of
+  cosines + sequential rotation-arc deltas) over the renderer mirror hierarchy
+  (end→parent=mid→grandparent=root), returning LOCAL rotations + reach (clamped to
+  the chain span). Application = two SetTransforms in one DispatchBatch (one undo
+  step, auto-key compatible). MCP solve_ik tool wraps solve→fetch-locals→batch-apply
+  with apply:false for solve-only.
+- SEEN VERIFIED on the fox left hind leg: no-pole solve lifts/tucks the leg to the
+  target (reach 1.0); WITH a pole in front of the knee the leg takes a natural
+  bent-knee step pose. Undo of the batch restores the stance. NOTE for agents (in
+  the tool desc): give a pole for natural knee/elbow direction.

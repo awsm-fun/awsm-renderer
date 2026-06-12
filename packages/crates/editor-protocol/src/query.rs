@@ -222,6 +222,21 @@ pub enum EditorQuery {
         #[serde(default)]
         nodes: Vec<NodeId>,
     },
+    /// Analytic two-bone IK solve (read-only). `end_node` is the chain tip (a
+    /// joint scene node, e.g. a foot); the chain is its parent (mid, e.g. knee)
+    /// and grandparent (root, e.g. upper leg) from the scene hierarchy.
+    /// Returns the LOCAL rotations that bring the tip to `target` (world
+    /// space), bending toward `pole` when given — as a `Map` with
+    /// `kind = "ik_solution"`: `{ root_node, mid_node, root_rotation,
+    /// mid_rotation, reach }` (`reach` < 1.0 ⇒ target clamped to the chain's
+    /// span). Apply via SetTransform on the two joints (one DispatchBatch =
+    /// one undo step) — the MCP `solve_ik` tool does exactly that.
+    SolveIk {
+        end_node: NodeId,
+        target: [f32; 3],
+        #[serde(default)]
+        pole: Option<[f32; 3]>,
+    },
     /// The last `limit` editor notices (toasts: info/warning/error) from an
     /// in-process ring buffer — surfaces runtime errors otherwise invisible over
     /// MCP. Material compile errors have a dedicated path (`MaterialDiagnostics`).

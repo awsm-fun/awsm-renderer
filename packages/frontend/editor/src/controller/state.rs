@@ -3904,6 +3904,114 @@ impl EditorController {
                     entries,
                 })
             }
+            EditorQuery::SolveIk {
+                end_node,
+                target,
+                pole,
+            } => {
+                use serde_json::json;
+                // Chain from the renderer's MIRROR hierarchy (bones are scene
+                // nodes; mirrors are parented exactly like the scene tree):
+                // end → parent (mid) → grandparent (root).
+                let (tk_e, tk_to_node) = {
+                    let b = crate::engine::bridge::bridge();
+                    let nodes = b.nodes.lock().unwrap();
+                    let Some(entry) = nodes.get(&end_node) else {
+                        return QueryResult::Error {
+                            error: format!("end_node {end_node} not materialized"),
+                        };
+                    };
+                    let map: std::collections::HashMap<_, _> =
+                        nodes.iter().map(|(id, n)| (n.transform_key, *id)).collect();
+                    (entry.transform_key, map)
+                };
+                let solved = crate::engine::context::with_renderer_mut(move |r| {
+                    let tk_m = r.transforms.get_parent(tk_e).ok()?;
+                    let tk_r = r.transforms.get_parent(tk_m).ok()?;
+                    let mid_id = tk_to_node.get(&tk_m).copied()?;
+                    let root_id = tk_to_node.get(&tk_r).copied()?;
+                    let we = *r.transforms.get_world(tk_e).ok()?;
+                    let wm = *r.transforms.get_world(tk_m).ok()?;
+                    let wr = *r.transforms.get_world(tk_r).ok()?;
+                    let wp = r
+                        .transforms
+                        .get_parent(tk_r)
+                        .ok()
+                        .and_then(|tk| r.transforms.get_world(tk).ok().copied())
+                        .unwrap_or(glam::Mat4::IDENTITY);
+                    let (_, q_r, a) = wr.to_scale_rotation_translation();
+                    let (_, q_m, b) = wm.to_scale_rotation_translation();
+                    let (_, _, c) = we.to_scale_rotation_translation();
+                    let (_, q_p, _) = wp.to_scale_rotation_translation();
+                    let t = glam::Vec3::from_array(target);
+
+                    let l1 = (b - a).length();
+                    let l2 = (c - b).length();
+                    if l1 < 1e-5 || l2 < 1e-5 {
+                        return None;
+                    }
+                    let dvec = t - a;
+                    let dist = dvec.length();
+                    if dist < 1e-5 {
+                        return None;
+                    }
+                    let d = dist.clamp((l1 - l2).abs() + 1e-4, l1 + l2 - 1e-4);
+                    let dir_t = dvec / dist;
+
+                    // Bend-plane normal: toward the pole when given, else keep
+                    // the chain's current bend plane; fall back to any
+                    // perpendicular for a perfectly straight chain.
+                    let mut n = match pole {
+                        Some(p) => dir_t.cross(glam::Vec3::from_array(p) - a),
+                        None => dir_t.cross(b - a),
+                    };
+                    if n.length_squared() < 1e-8 {
+                        n = dir_t.cross(glam::Vec3::Y);
+                        if n.length_squared() < 1e-8 {
+                            n = dir_t.cross(glam::Vec3::X);
+                        }
+                    }
+                    let n = n.normalize();
+
+                    // Law of cosines: angle at the root between the reach line
+                    // and the upper bone.
+                    let cos_a = ((l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * d)).clamp(-1.0, 1.0);
+                    let ang_a = cos_a.acos();
+                    let dir_ab = glam::Quat::from_axis_angle(n, ang_a) * dir_t;
+
+                    // Sequential rotation-arc deltas → new WORLD rotations.
+                    let q_r_new = glam::Quat::from_rotation_arc((b - a).normalize(), dir_ab) * q_r;
+                    let b_new = a + dir_ab * l1;
+                    let dir_bc_new = (t - b_new).normalize();
+                    let q_m_new =
+                        glam::Quat::from_rotation_arc((c - b).normalize(), dir_bc_new) * q_m;
+
+                    // World → LOCAL under the (new) parents.
+                    let local_r = (q_p.inverse() * q_r_new).normalize();
+                    let local_m = (q_r_new.inverse() * q_m_new).normalize();
+                    Some((root_id, mid_id, local_r, local_m, d / dist))
+                })
+                .await;
+                match solved {
+                    Some((root_id, mid_id, lr, lm, reach)) => {
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("root_node".into(), json!(root_id.to_string()));
+                        entries.insert("mid_node".into(), json!(mid_id.to_string()));
+                        entries.insert("root_rotation".into(), json!(lr.to_array()));
+                        entries.insert("mid_rotation".into(), json!(lm.to_array()));
+                        entries.insert("reach".into(), json!(reach.min(1.0)));
+                        QueryResult::Map(query::MapResult {
+                            kind: "ik_solution".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: "ik solve failed: chain not materialized or degenerate \
+                                (zero-length bones / target at the root)"
+                            .to_string(),
+                    },
+                }
+            }
             EditorQuery::ConsoleLogs { limit } => {
                 use serde_json::json;
                 // Editor toasts (info/warning/error notices).
