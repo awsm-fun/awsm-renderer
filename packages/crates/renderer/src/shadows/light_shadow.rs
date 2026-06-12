@@ -32,6 +32,10 @@ pub struct LightShadowParams {
     /// single control drives both.
     pub pcss_penumbra_scale: f32,
     /// Camera-distance fadeout cutoff for this light's shadow.
+    /// Camera-distance cutoff for the cascade span. `<= 0` = AUTO
+    /// (follow the camera far plane) — the scale-safe default; a
+    /// positive value pins the span (tighter cascades, sharper shadows
+    /// up close, none beyond it).
     pub max_distance: f32,
     /// Number of cascades (1..=4). Directional only; ignored otherwise.
     pub cascade_count: u8,
@@ -63,7 +67,7 @@ impl Default for LightShadowParams {
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
-            max_distance: 100.0,
+            max_distance: 0.0,
             cascade_count: 4,
             cascade_split_lambda: 0.5,
             evsm_cutoff: EvsmCutoff::LastCascade,

@@ -261,6 +261,17 @@ pub struct Shadows {
     /// frame's write_gpu grows the atlas (and rebinds the opaque
     /// shadow bind group via `BindGroupCreate::ShadowsResourcesChange`).
     pending_atlas_grow: bool,
+    /// Set when the cascade-placement loop overflowed the EVSM atlas
+    /// (e.g. a SECOND shadowed directional light: the default atlas is
+    /// exactly one default-resolution tile). The next write_gpu doubles
+    /// `config.evsm_atlas_size` (capped at `SHADOW_ATLAS_MAX_SIZE`)
+    /// through the same recreate path `set_config` uses — without this,
+    /// every additional sun degraded to PCF with a per-frame warn.
+    pending_evsm_grow: bool,
+    /// One-shot latch so EVSM-overflow / layer-exhaustion warns fire
+    /// once per episode instead of every frame (60 Hz log spam reaches
+    /// the editor's console ring + tracing mirror).
+    warned_evsm_overflow: bool,
     /// Set by `set_config` when a resource-shape config field changed.
     /// Processed at the top of the next `write_gpu` so users get a
     /// live update from the editor without having to reload the
@@ -1020,6 +1031,8 @@ impl Shadows {
             frame_count: 0,
             dirty: true,
             pending_atlas_grow: false,
+            pending_evsm_grow: false,
+            warned_evsm_overflow: false,
             pending_resource_recreate: PendingResourceRecreate::default(),
             caster_aabbs_scratch: Vec::new(),
             descriptor_bytes_scratch: vec![0u8; *SHADOW_DESCRIPTOR_UNIFORM_BYTES],
@@ -1513,6 +1526,29 @@ impl Shadows {
         lights: &crate::lights::Lights,
         scene_spatial: &crate::scene_spatial::SceneSpatial,
     ) -> Result<(), AwsmShadowError> {
+        // EVSM atlas auto-grow: a prior frame's cascade placement
+        // overflowed (typically a second shadowed directional light —
+        // the default atlas is exactly one default-resolution tile).
+        // Double the size (capped) and ride the same recreate path a
+        // `set_config` edit takes, applied just below.
+        if self.pending_evsm_grow {
+            self.pending_evsm_grow = false;
+            let new_size =
+                (self.config.evsm_atlas_size.saturating_mul(2)).min(SHADOW_ATLAS_MAX_SIZE);
+            if new_size > self.config.evsm_atlas_size {
+                tracing::info!(
+                    "EVSM atlas overflow → growing from {} to {}",
+                    self.config.evsm_atlas_size,
+                    new_size
+                );
+                self.config.evsm_atlas_size = new_size;
+                self.pending_resource_recreate.evsm_atlas = true;
+                self.warned_evsm_overflow = false;
+                // ShadowGlobals carries the EVSM atlas size — re-upload.
+                self.dirty = true;
+            }
+        }
+
         // User-driven resource recreates land first so a fresh
         // `set_config` from the editor takes effect immediately. The
         // auto-grow path below operates on whatever size landed here.
@@ -1769,7 +1805,17 @@ impl Shadows {
                             glam::Vec3::new(0.3, -1.0, 0.3).normalize()
                         },
                         camera_near.max(0.01),
-                        camera_far.min(params.max_distance).max(camera_near + 1.0),
+                        // `max_distance <= 0` = AUTO: follow the camera far
+                        // plane. A fixed default (the old 100.0) silently
+                        // dropped every shadow beyond 100 UNITS of the camera
+                        // — sane for meter-scale worlds, but a cm-scale
+                        // import (e.g. the glTF sample Fox) lost shadows a
+                        // meter out.
+                        if params.max_distance > 0.0 {
+                            camera_far.min(params.max_distance).max(camera_near + 1.0)
+                        } else {
+                            camera_far.max(camera_near + 1.0)
+                        },
                         cascade_count,
                         params.cascade_split_lambda.clamp(0.0, 1.0),
                         params.resolution.max(16),
@@ -1786,11 +1832,14 @@ impl Shadows {
                     };
                     for (cascade_index, (cascade, res, split_far)) in cascades.iter().enumerate() {
                         if cascade_layer_cursor >= cascade_max_layers {
-                            tracing::warn!(
-                                "cascade-array layers exhausted (capacity {}) — cascade {} dropped",
-                                cascade_max_layers,
-                                cascade_index,
-                            );
+                            if !self.warned_evsm_overflow {
+                                self.warned_evsm_overflow = true;
+                                tracing::warn!(
+                                    "cascade-array layers exhausted (capacity {}) — cascade {} dropped                                      (raise ShadowsConfig::cascade_array_max_layers)",
+                                    cascade_max_layers,
+                                    cascade_index,
+                                );
+                            }
                             break;
                         }
                         let cascade_layer = cascade_layer_cursor;
@@ -1836,10 +1885,22 @@ impl Shadows {
                                 evsm_row_h = 0;
                             }
                             if evsm_y + r > evsm_atlas_size {
-                                tracing::warn!(
-                                    "EVSM atlas overflow on cascade res={} — falling back to PCF",
-                                    r
-                                );
+                                // Queue an atlas grow (handled at the top of
+                                // the next write_gpu); warn ONCE per episode,
+                                // and only when no further growth is possible
+                                // — transient pre-grow frames degrade this
+                                // cascade to PCF silently.
+                                self.pending_evsm_grow = true;
+                                if !self.warned_evsm_overflow
+                                    && evsm_atlas_size >= SHADOW_ATLAS_MAX_SIZE
+                                {
+                                    self.warned_evsm_overflow = true;
+                                    tracing::warn!(
+                                        "EVSM atlas at max size {} cannot fit cascade res={} — falling back to PCF",
+                                        evsm_atlas_size,
+                                        r
+                                    );
+                                }
                                 None
                             } else {
                                 let rect = [evsm_x, evsm_y, r, r];

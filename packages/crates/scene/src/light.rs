@@ -90,7 +90,7 @@ impl Default for LightShadowConfig {
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
-            max_distance: 100.0,
+            max_distance: 0.0,
             cascade_count: 4,
             cascade_split_lambda: 0.5,
             evsm_cutoff: EvsmCutoff::LastCascade,
@@ -179,7 +179,9 @@ fn default_pcss_scale() -> f32 {
     1.0
 }
 fn default_max_distance() -> f32 {
-    100.0
+    // <= 0 = AUTO (follow the camera far plane) — scale-safe; see the
+    // renderer's `LightShadow::max_distance`.
+    0.0
 }
 fn default_cascades() -> u8 {
     4
