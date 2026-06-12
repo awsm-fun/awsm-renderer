@@ -68,6 +68,42 @@ fn body(clip: Option<Arc<CustomAnimation>>, unit: Mutable<TimeUnit>) -> Dom {
                 .child(speed_slider(&clip)),
             None => b,
         })
+        // ── auto-key (record) toggle ─────────────────────────────────────────
+        .child(auto_key_btn())
+    })
+}
+
+/// Auto-key toggle — the DCC "record" affordance, living in the transport next
+/// to the playback controls (not buried in Settings). When on, a gizmo
+/// drag-commit in Animation mode writes keyframe(s) at the playhead for every
+/// current-clip track targeting the node. Drives the same
+/// `settings.auto_key` Mutable the gizmo commit checks.
+fn auto_key_btn() -> Dom {
+    let on = controller().settings.auto_key.clone();
+    let hover = Mutable::new(false);
+    html!("button", {
+        .class("t")
+        .class("mono")
+        .attr("title", "Auto-key: a gizmo edit writes keyframes at the playhead")
+        .style("display", "flex").style("align-items", "center").style("gap", "5px")
+        .style("height", "28px").style("padding", "0 9px")
+        .style("border-radius", "var(--r2)").style("cursor", "pointer")
+        .style("font-size", "11px")
+        .style_signal("border", on.signal().map(|v| {
+            if v { "1px solid var(--danger)" } else { "1px solid var(--line-soft)" }
+        }))
+        .style_signal("background", map_ref! {
+            let v = on.signal(), let h = hover.signal() =>
+            if *v { "oklch(0.45 0.16 25 / 0.25)" } else if *h { "var(--bg-hover)" } else { "var(--bg-3)" }
+        })
+        .style_signal("color", on.signal().map(|v| {
+            if v { "oklch(0.78 0.16 25)" } else { "var(--text-1)" }
+        }))
+        .event(clone!(hover => move |_: events::MouseEnter| hover.set_neq(true)))
+        .event(clone!(hover => move |_: events::MouseLeave| hover.set_neq(false)))
+        .event(clone!(on => move |_: events::Click| { on.set_neq(!on.get()); }))
+        .child(glyph_diamond())
+        .child(html!("span", { .text("Auto") }))
     })
 }
 
