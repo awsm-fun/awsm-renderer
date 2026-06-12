@@ -624,7 +624,12 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
 ### ▶▶ NEXT LOOP SCOPE (user-agreed 2026-06-12 morning)
 A. Robustness quickies: select_vertices_where percent documented 0..1 in tool desc +
    WARN on out-of-range input; demote overnight diagnostic info! logs (edge breadcrumbs,
-   skin-bridge/skins-update counts) to debug!; frame_node rig padding slightly generous.
+   skin-bridge/skins-update counts) to debug!; frame_node rig padding slightly generous;
+   skeleton overlay: DIM the root-tether segments (user-agreed) — a bone segment whose
+   PARENT joint sits at/near the rig's scene-origin root (e.g. _rootJoint/b_Root_00 at
+   world origin) renders at reduced alpha (~0.35) so the anatomical skeleton pops and
+   the floor-to-pelvis root-motion tether recedes (it stays visible — it's information).
+   Verify in-tab on the fox: pelvis-to-floor line dimmer than limb/spine bones.
 B. HUMAN KEYING (user priority — the human animation gap): the transport add-key
    button samples the TRACK's own curve (sample_at(t)) instead of the live scene, so
    "pose a bone with the gizmo → press key" captures nothing. Build: (1) key-from-pose —
