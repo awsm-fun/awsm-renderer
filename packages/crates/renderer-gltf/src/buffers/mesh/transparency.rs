@@ -3,14 +3,13 @@ use std::{borrow::Cow, collections::BTreeMap};
 use super::Result;
 use awsm_renderer_core::pipeline::primitive::FrontFace;
 
-use awsm_renderer::meshes::buffer_info::{
-    MeshBufferVertexAttributeInfo, MeshBufferVisibilityVertexAttributeInfo,
-};
+use awsm_renderer::meshes::buffer_info::MeshBufferVertexAttributeInfo;
+#[cfg(test)]
+use awsm_renderer::meshes::buffer_info::MeshBufferVisibilityVertexAttributeInfo;
 
-use crate::{
-    buffers::{mesh::get_vec3_from_buffer, MeshBufferAttributeIndexInfoWithOffset},
-    error::AwsmGltfError,
-};
+#[cfg(test)]
+use crate::buffers::mesh::get_vec3_from_buffer;
+use crate::{buffers::MeshBufferAttributeIndexInfoWithOffset, error::AwsmGltfError};
 
 /// Creates NON-EXPLODED transparency vertices for traditional forward rendering.
 ///
@@ -30,6 +29,53 @@ use crate::{
 /// This is used with the original index buffer (with vertex sharing) for efficient rendering.
 /// Additional attributes (UVs, colors, etc.) can be added to this vertex format in the future.
 pub(super) fn create_transparency_vertices(
+    attribute_data: &BTreeMap<MeshBufferVertexAttributeInfo, Cow<'_, [u8]>>,
+    _index: &MeshBufferAttributeIndexInfoWithOffset,
+    _index_bytes: &[u8],
+    _triangle_count: usize,
+    _front_face: FrontFace,
+    transparency_vertex_bytes: &mut Vec<u8>,
+) -> Result<()> {
+    // Decode + delegate to the renderer's canonical packer (Phase-2b
+    // convergence — same rationale as `create_visibility_vertices`; byte
+    // identity pinned by the proptest against the reference writer below).
+    let (positions, normals, tangents) =
+        super::visibility::resolve_attribute_buffers(attribute_data)?;
+    let positions_t = super::visibility::decode_vec3s(positions);
+    let normals_t = super::visibility::decode_vec3s(normals);
+    let tangents_t = tangents.map(super::visibility::decode_vec4s);
+    let vertex_count = positions_t.len();
+    // The old writer errored when normals/tangents ran short of positions
+    // (the packer would silently truncate / panic instead) — keep that.
+    if normals_t.len() < vertex_count {
+        return Err(AwsmGltfError::AttributeData(format!(
+            "normal count {} < vertex count {vertex_count}",
+            normals_t.len()
+        )));
+    }
+    if let Some(t) = &tangents_t {
+        if t.len() < vertex_count {
+            return Err(AwsmGltfError::AttributeData(format!(
+                "tangent count {} < vertex count {vertex_count}",
+                t.len()
+            )));
+        }
+    }
+    transparency_vertex_bytes.extend_from_slice(
+        &awsm_renderer::mesh_pack::pack_transparency_bytes(
+            &positions_t,
+            &normals_t,
+            tangents_t.as_deref(),
+            vertex_count,
+        ),
+    );
+    Ok(())
+}
+
+/// The pre-Phase-2b hand-rolled writer, kept as the byte-identity REFERENCE
+/// for the proptest. Do not call from live code.
+#[cfg(test)]
+pub(super) fn reference_transparency_vertices(
     attribute_data: &BTreeMap<MeshBufferVertexAttributeInfo, Cow<'_, [u8]>>,
     _index: &MeshBufferAttributeIndexInfoWithOffset,
     _index_bytes: &[u8],

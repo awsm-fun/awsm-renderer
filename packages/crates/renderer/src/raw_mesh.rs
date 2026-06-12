@@ -202,6 +202,7 @@ impl AwsmRenderer {
             normals,
             tangents.as_deref(),
             &data.indices,
+            awsm_renderer_core::pipeline::primitive::FrontFace::Ccw,
         );
 
         // ── Custom attribute index (12 bytes per triangle = 3 * u32) ──────

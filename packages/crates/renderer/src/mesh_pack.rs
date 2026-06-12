@@ -7,6 +7,8 @@
 //! builders (a follow-on; see `docs/plans/mesh-pipeline-overhaul.md`). The byte
 //! layouts here are the canonical definition.
 
+use awsm_renderer_core::pipeline::primitive::FrontFace;
+
 /// Barycentric coords per triangle corner (matches the gltf path's
 /// `buffers/mesh/visibility.rs`).
 const BARYCENTRICS: [[f32; 2]; 3] = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
@@ -22,20 +24,34 @@ const SYNTHETIC_TANGENT: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 ///
 /// `tangents`, when `Some`, is indexed per original vertex; `None` packs the
 /// synthetic fallback.
+///
+/// `front_face`: [`FrontFace::Cw`] emits each triangle's corners in `[0, 2, 1]`
+/// order (with matching barycentrics) so clockwise-authored sources rasterize
+/// with the same facing as the default counter-clockwise convention — the same
+/// swizzle the gltf populate path applies. [`FrontFace::Ccw`] is the identity
+/// order.
 pub fn pack_visibility_bytes(
     positions: &[[f32; 3]],
     normals: &[[f32; 3]],
     tangents: Option<&[[f32; 4]]>,
     indices: &[u32],
+    front_face: FrontFace,
 ) -> Vec<u8> {
+    // Corner emission order per triangle (and the barycentric that rides with
+    // each corner's slot).
+    let corner_order: [usize; 3] = match front_face {
+        FrontFace::Cw => [0, 2, 1],
+        _ => [0, 1, 2],
+    };
     let triangle_count = indices.len() / 3;
     let mut out = Vec::with_capacity(triangle_count * 3 * 56);
     for (triangle_index, tri) in indices.chunks_exact(3).enumerate() {
-        for (corner, &vertex_index) in tri.iter().enumerate() {
+        for (slot, &corner) in corner_order.iter().enumerate() {
+            let vertex_index = tri[corner];
             let v = vertex_index as usize;
             let pos = positions[v];
             let normal = normals[v];
-            let bary = BARYCENTRICS[corner];
+            let bary = BARYCENTRICS[corner_order[slot]];
             let tan = tangents.map(|t| t[v]).unwrap_or(SYNTHETIC_TANGENT);
             // position (12)
             out.extend_from_slice(&pos[0].to_le_bytes());
@@ -107,7 +123,7 @@ mod tests {
     #[test]
     fn visibility_layout_is_56_bytes_per_corner() {
         let (p, n, t, i) = tri();
-        let bytes = pack_visibility_bytes(&p, &n, Some(&t), &i);
+        let bytes = pack_visibility_bytes(&p, &n, Some(&t), &i, FrontFace::Ccw);
         assert_eq!(bytes.len(), 56 * 3, "56 bytes per exploded corner");
         // corner 0: position == p[0]
         let read_f32 = |off: usize| f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
@@ -132,9 +148,21 @@ mod tests {
     }
 
     #[test]
+    fn cw_front_face_swizzles_corners_and_barycentrics() {
+        let (p, n, t, i) = tri();
+        let ccw = pack_visibility_bytes(&p, &n, Some(&t), &i, FrontFace::Ccw);
+        let cw = pack_visibility_bytes(&p, &n, Some(&t), &i, FrontFace::Cw);
+        // Cw corner order is [0, 2, 1]: slot 1 carries vertex 2 (+ its
+        // barycentric), slot 2 carries vertex 1 — i.e. records permuted.
+        assert_eq!(&cw[0..56], &ccw[0..56], "slot 0 identical");
+        assert_eq!(&cw[56..112], &ccw[112..168], "slot 1 = ccw corner 2");
+        assert_eq!(&cw[112..168], &ccw[56..112], "slot 2 = ccw corner 1");
+    }
+
+    #[test]
     fn none_tangents_pack_synthetic() {
         let (p, n, _, i) = tri();
-        let bytes = pack_visibility_bytes(&p, &n, None, &i);
+        let bytes = pack_visibility_bytes(&p, &n, None, &i, FrontFace::Ccw);
         // corner 0 tangent at offset 36..52 == [0,0,0,1]
         // (pos 12 + triangle_index 4 + barycentric 8 + normal 12 = 36).
         let read_f32 = |off: usize| f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
