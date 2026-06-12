@@ -146,6 +146,14 @@ pub struct ExportNode {
     pub morph_targets: Vec<MorphTarget>,
     /// Default morph-target weights (one per [`Self::morph_targets`] entry).
     pub morph_weights: Vec<f32>,
+    /// Additional primitives on this node's mesh, each with its OWN material.
+    /// glTF materials are per-primitive, so a multi-material source mesh
+    /// round-trips as one primitive per material on the SAME node — node count
+    /// untouched, which keeps skin-joint flatten indices (and therefore
+    /// animation-clip bindings) valid. The writer emits these after the main
+    /// primitive in the same glTF mesh. Empty for the common single-material
+    /// case.
+    pub extra_primitives: Vec<ExtraPrimitive>,
     /// Punctual light at this node (`KHR_lights_punctual`).
     pub light: Option<ExportLight>,
     /// Camera at this node.
@@ -165,6 +173,7 @@ impl Default for ExportNode {
             weights: None,
             morph_targets: Vec::new(),
             morph_weights: Vec::new(),
+            extra_primitives: Vec::new(),
             light: None,
             camera: None,
             children: Vec::new(),
@@ -192,6 +201,23 @@ impl ExportNode {
         self.material = Some(material);
         self
     }
+}
+
+/// An additional primitive on an [`ExportNode`]'s mesh — see
+/// [`ExportNode::extra_primitives`]. Carries everything a primitive owns:
+/// geometry, material, skinning attributes, and morph deltas. Its morph-target
+/// COUNT must match the main primitive's (a glTF mesh has one `weights` array
+/// shared by all primitives); a valid source glTF guarantees this.
+#[derive(Clone, Debug, Default)]
+pub struct ExtraPrimitive {
+    pub mesh: MeshData,
+    pub material: Option<ExportMaterial>,
+    /// Per-vertex `JOINTS_0` for THIS primitive's vertices.
+    pub joints: Option<Vec<[u16; 4]>>,
+    /// Per-vertex `WEIGHTS_0` for THIS primitive's vertices.
+    pub weights: Option<Vec<[f32; 4]>>,
+    /// This primitive's morph targets (deltas parallel to its vertices).
+    pub morph_targets: Vec<MorphTarget>,
 }
 
 /// How a material is emitted into the glTF. See the crate-level material policy.

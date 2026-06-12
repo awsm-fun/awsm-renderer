@@ -406,6 +406,7 @@ fn collect_rig_scenes(roots: &[Arc<Node>]) -> (Vec<awsm_glb_export::GlbScene>, H
 /// shifts EXISTING node indices, so animation channels lowered against the
 /// scene part stay valid.
 fn append_rigs(glb: &mut GlbScene, rigs: Vec<awsm_glb_export::GlbScene>) {
+    use awsm_glb_export::ExportMaterial;
     fn count_nodes(nodes: &[ExportNode]) -> usize {
         nodes.iter().map(|n| 1 + count_nodes(&n.children)).sum()
     }
@@ -417,17 +418,59 @@ fn append_rigs(glb: &mut GlbScene, rigs: Vec<awsm_glb_export::GlbScene>) {
             bump_skin_refs(&mut n.children, skin_base);
         }
     }
+    // Rig materials carry TexRefs into the RIG scene's own image pool; after
+    // the pools concatenate, every ref must shift by the outer pool's size.
+    fn bump_mat_images(m: &mut ExportMaterial, image_base: usize) {
+        match m {
+            ExportMaterial::Pbr(p) => {
+                for t in [
+                    p.base_color_texture.as_mut(),
+                    p.metallic_roughness_texture.as_mut(),
+                    p.normal_texture.as_mut(),
+                    p.occlusion_texture.as_mut(),
+                    p.emissive_texture.as_mut(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    t.image += image_base;
+                }
+            }
+            ExportMaterial::Unlit(u) => {
+                if let Some(t) = u.base_color_texture.as_mut() {
+                    t.image += image_base;
+                }
+            }
+            ExportMaterial::None { .. } => {}
+        }
+    }
+    fn bump_image_refs(nodes: &mut [ExportNode], image_base: usize) {
+        for n in nodes {
+            if let Some(m) = n.material.as_mut() {
+                bump_mat_images(m, image_base);
+            }
+            for ep in &mut n.extra_primitives {
+                if let Some(m) = ep.material.as_mut() {
+                    bump_mat_images(m, image_base);
+                }
+            }
+            bump_image_refs(&mut n.children, image_base);
+        }
+    }
     for mut rig in rigs {
         let node_offset = count_nodes(&glb.nodes);
         let skin_base = glb.skins.len();
+        let image_base = glb.images.len();
         for skin in &mut rig.skins {
             for j in &mut skin.joints {
                 *j += node_offset;
             }
         }
         bump_skin_refs(&mut rig.nodes, skin_base);
+        bump_image_refs(&mut rig.nodes, image_base);
         glb.skins.extend(rig.skins);
         glb.nodes.extend(rig.nodes);
+        glb.images.extend(rig.images);
     }
 }
 

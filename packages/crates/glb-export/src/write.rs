@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::{
     AlphaMode, AnimInterp, AnimPath, ExportCamera, ExportLight, ExportMaterial, ExportNode,
-    ExportSkin, GlbScene, PbrMaterial, TexRef, UnlitMaterial, AWSM_MATERIALS_NONE,
+    ExportSkin, GlbScene, MorphTarget, PbrMaterial, TexRef, UnlitMaterial, AWSM_MATERIALS_NONE,
 };
 
 const GLB_VERSION: u32 = 2;
@@ -28,6 +28,17 @@ const MATERIALS_UNLIT: &str = "KHR_materials_unlit";
 /// channels' `node_index` matches the glTF node indices), materials are mapped
 /// per the crate's material policy, and only the images present in
 /// [`GlbScene::images`] are embedded (referenced-only).
+/// Borrowed view of one primitive's payload — what [`build_primitive`] emits.
+/// The main primitive borrows from the [`ExportNode`] itself; extras borrow
+/// from [`crate::ExtraPrimitive`].
+struct PrimSource<'a> {
+    mesh: &'a crate::MeshData,
+    material: Option<&'a ExportMaterial>,
+    joints: Option<&'a [[u16; 4]]>,
+    weights: Option<&'a [[f32; 4]]>,
+    morph_targets: &'a [MorphTarget],
+}
+
 pub fn write_glb(scene: &GlbScene) -> Vec<u8> {
     let mut b = Builder::default();
     b.build(scene);
@@ -130,8 +141,73 @@ impl Builder {
 
     fn build_mesh(&mut self, n: &ExportNode, texture_indices: &[Index<Texture>]) -> Index<Mesh> {
         let m = n.mesh.as_ref().expect("build_mesh requires a mesh");
-        let material = n.material.as_ref();
         let name = n.name.as_str();
+
+        // Main primitive + any extra primitives (per-primitive materials — a
+        // multi-material source mesh round-trips on one node; see
+        // `ExportNode::extra_primitives`).
+        let mut primitives = vec![self.build_primitive(
+            PrimSource {
+                mesh: m,
+                material: n.material.as_ref(),
+                joints: n.joints.as_deref(),
+                weights: n.weights.as_deref(),
+                morph_targets: &n.morph_targets,
+            },
+            texture_indices,
+        )];
+        for ep in &n.extra_primitives {
+            primitives.push(self.build_primitive(
+                PrimSource {
+                    mesh: &ep.mesh,
+                    material: ep.material.as_ref(),
+                    joints: ep.joints.as_deref(),
+                    weights: ep.weights.as_deref(),
+                    morph_targets: &ep.morph_targets,
+                },
+                texture_indices,
+            ));
+        }
+
+        // glTF's interoperable home for morph names: mesh.extras.targetNames
+        // (mesh-level — taken from the MAIN primitive's targets).
+        let mesh_extras: gltf_json::Extras = if n.morph_targets.iter().any(|t| t.name.is_some()) {
+            let names: Vec<String> = n
+                .morph_targets
+                .iter()
+                .map(|t| t.name.clone().unwrap_or_default())
+                .collect();
+            serde_json::value::RawValue::from_string(
+                serde_json::json!({ "targetNames": names }).to_string(),
+            )
+            .ok()
+        } else {
+            Default::default()
+        };
+
+        let mesh_obj = Mesh {
+            extensions: Default::default(),
+            extras: mesh_extras,
+            name: Some(name.to_string()),
+            primitives,
+            weights: if n.morph_weights.is_empty() {
+                None
+            } else {
+                Some(n.morph_weights.clone())
+            },
+        };
+        self.root.push(mesh_obj)
+    }
+
+    /// One glTF primitive from a [`PrimSource`]: attributes (position /
+    /// normal / uv / color / baked tangents / skinning), indices, morph
+    /// targets, and the material per the crate's material policy.
+    fn build_primitive(
+        &mut self,
+        src: PrimSource<'_>,
+        texture_indices: &[Index<Texture>],
+    ) -> mesh::Primitive {
+        let m = src.mesh;
         let vcount = m.positions.len();
         let mut attributes = std::collections::BTreeMap::new();
 
@@ -209,7 +285,7 @@ impl Builder {
 
         // JOINTS_0 / WEIGHTS_0 (skinned meshes). u16 joint indices + f32 weights,
         // one vec4 per vertex.
-        if let (Some(joints), Some(weights)) = (&n.joints, &n.weights) {
+        if let (Some(joints), Some(weights)) = (src.joints, src.weights) {
             if joints.len() == vcount && weights.len() == vcount {
                 let jbytes: Vec<u8> = joints
                     .iter()
@@ -238,7 +314,7 @@ impl Builder {
 
         // Morph targets (position / optional normal deltas).
         let mut targets: Vec<mesh::MorphTarget> = Vec::new();
-        for t in &n.morph_targets {
+        for t in src.morph_targets {
             if t.positions.len() != vcount {
                 continue;
             }
@@ -271,20 +347,6 @@ impl Builder {
                 tangents: None,
             });
         }
-        // glTF's interoperable home for morph names: mesh.extras.targetNames.
-        let mesh_extras: gltf_json::Extras = if n.morph_targets.iter().any(|t| t.name.is_some()) {
-            let names: Vec<String> = n
-                .morph_targets
-                .iter()
-                .map(|t| t.name.clone().unwrap_or_default())
-                .collect();
-            serde_json::value::RawValue::from_string(
-                serde_json::json!({ "targetNames": names }).to_string(),
-            )
-            .ok()
-        } else {
-            Default::default()
-        };
 
         // Indices (u32 SCALAR).
         let idx_bytes: Vec<u8> = m.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
@@ -298,14 +360,14 @@ impl Builder {
         );
 
         // Material → either a glTF material index or the AWSM_materials_none ext.
-        let (material_index, primitive_ext) = match material {
+        let (material_index, primitive_ext) = match src.material {
             Some(ExportMaterial::Pbr(p)) => (Some(self.build_pbr(p, texture_indices)), None),
             Some(ExportMaterial::Unlit(u)) => (Some(self.build_unlit(u, texture_indices)), None),
             Some(ExportMaterial::None { id }) => (None, Some(self.none_extension(id.as_deref()))),
             None => (None, None),
         };
 
-        let primitive = mesh::Primitive {
+        mesh::Primitive {
             attributes,
             extensions: primitive_ext,
             extras: Default::default(),
@@ -317,23 +379,8 @@ impl Builder {
             } else {
                 Some(targets)
             },
-        };
-
-        let mesh_obj = Mesh {
-            extensions: Default::default(),
-            extras: mesh_extras,
-            name: Some(name.to_string()),
-            primitives: vec![primitive],
-            weights: if n.morph_weights.is_empty() {
-                None
-            } else {
-                Some(n.morph_weights.clone())
-            },
-        };
-        self.root.push(mesh_obj)
+        }
     }
-
-    // ───────────────────────── skin ─────────────────────────
 
     fn build_skin(&mut self, s: &ExportSkin) -> Index<Skin> {
         // inverseBindMatrices: one Mat4 (16 f32, column-major) per joint.

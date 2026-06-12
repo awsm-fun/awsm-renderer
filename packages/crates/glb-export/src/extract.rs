@@ -17,14 +17,22 @@
 
 use std::collections::HashMap;
 
-use crate::{ExportNode, ExportSkin, GlbScene, MeshData, MorphTarget, Trs};
+use crate::{
+    AlphaMode, ExportImage, ExportMaterial, ExportNode, ExportSkin, ExtraPrimitive, GlbScene,
+    ImageMime, MeshData, MorphTarget, PbrMaterial, TexRef, Trs, UnlitMaterial,
+};
 
 /// Re-export a source glTF/GLB into a **clean** [`GlbScene`] — geometry + skin rig
-/// (skeleton, joints, inverse-bind, per-vertex JOINTS/WEIGHTS) + morph targets,
-/// with **materials, animations, cameras, lights, and images dropped**. Feed the
+/// (skeleton, joints, inverse-bind, per-vertex JOINTS/WEIGHTS) + morph targets +
+/// **materials and their textures** (core PBR / unlit factors + the referenced
+/// images, copied as their original encoded PNG/JPEG bytes — no re-encode), with
+/// animations, cameras, and lights dropped. Materials stay PER PRIMITIVE: a
+/// multi-material source mesh becomes one primitive per material on the SAME
+/// node (see [`ExportNode::extra_primitives`]), so node counts — and therefore
+/// skin-joint flatten indices and clip bindings — are untouched. Feed the
 /// result to [`write_glb`](crate::write_glb) to produce the bundle's clean
 /// `assets/<id>.glb` (the "re-export everything through our writer" path: uniform
-/// encoding, no source-material/animation cruft, no orphaned accessors).
+/// encoding, no orphaned accessors).
 ///
 /// Node hierarchy + transforms are preserved (so the skin's joint refs + our
 /// clips' joint-node targets stay valid). Returns `None` if the bytes don't parse
@@ -74,9 +82,10 @@ pub fn reexport_clean_scene(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Option
     // so skin joint refs (glTF node indices) become our flat indices.
     let flat_of = scene_node_flat_indices(doc);
 
+    let mut pool = ImagePool::default();
     let nodes: Vec<ExportNode> = scene
         .nodes()
-        .map(|r| build_clean_node(&r, buffers))
+        .map(|r| build_clean_node(&r, buffers, &mut pool))
         .collect();
 
     let skins: Vec<ExportSkin> = doc
@@ -115,12 +124,143 @@ pub fn reexport_clean_scene(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Option
     Some(GlbScene {
         nodes,
         skins,
+        images: pool.images,
         ..Default::default()
     })
 }
 
-/// One node → a clean `ExportNode` (geometry + skin attrs + morph; no material).
-fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>]) -> ExportNode {
+/// Deduplicating image pool for the clean re-export: each SOURCE image index
+/// maps to one [`ExportImage`] holding the original encoded bytes (GLB buffer
+/// view or `data:` URI — external file URIs can't be resolved here and their
+/// textures are skipped).
+#[derive(Default)]
+struct ImagePool {
+    images: Vec<ExportImage>,
+    by_source: HashMap<usize, usize>,
+}
+
+impl ImagePool {
+    /// Pool index for a source texture's image, inserting on first use.
+    /// `None` when the bytes can't be resolved or the mime isn't PNG/JPEG.
+    fn intern(&mut self, texture: &gltf::Texture, buffers: &[Vec<u8>]) -> Option<usize> {
+        let img = texture.source();
+        if let Some(&i) = self.by_source.get(&img.index()) {
+            return Some(i);
+        }
+        let (bytes, mime): (Vec<u8>, &str) = match img.source() {
+            gltf::image::Source::View { view, mime_type } => {
+                let buf = buffers.get(view.buffer().index())?;
+                (
+                    buf.get(view.offset()..view.offset() + view.length())?
+                        .to_vec(),
+                    mime_type,
+                )
+            }
+            gltf::image::Source::Uri { uri, mime_type } => {
+                // Only `data:` URIs are resolvable from bytes alone.
+                let rest = uri.strip_prefix("data:")?;
+                let (header, b64) = rest.split_once(",")?;
+                let mime = mime_type.unwrap_or_else(|| header.split(';').next().unwrap_or(""));
+                use base64::Engine as _;
+                (
+                    base64::engine::general_purpose::STANDARD
+                        .decode(b64.as_bytes())
+                        .ok()?,
+                    mime,
+                )
+            }
+        };
+        let mime = match mime {
+            "image/png" => ImageMime::Png,
+            "image/jpeg" | "image/jpg" => ImageMime::Jpeg,
+            _ => return None,
+        };
+        let i = self.images.len();
+        self.images.push(ExportImage {
+            name: img.name().unwrap_or("").to_string(),
+            bytes,
+            mime,
+        });
+        self.by_source.insert(img.index(), i);
+        Some(i)
+    }
+}
+
+/// A texture slot reference → [`TexRef`] into the pool (with its TEXCOORD set).
+fn tex_ref(
+    texture: &gltf::Texture,
+    tex_coord: u32,
+    buffers: &[Vec<u8>],
+    pool: &mut ImagePool,
+) -> Option<TexRef> {
+    pool.intern(texture, buffers)
+        .map(|image| TexRef { image, tex_coord })
+}
+
+/// Lower a source glTF material into the export IR per the crate's material
+/// policy: `KHR_materials_unlit` → [`ExportMaterial::Unlit`], everything else →
+/// core-PBR [`ExportMaterial::Pbr`] (factors + base-color / metallic-roughness /
+/// normal / occlusion / emissive textures). The glTF DEFAULT material (no
+/// index) returns `None` — an absent material round-trips as absent.
+fn extract_material(
+    mat: &gltf::Material,
+    buffers: &[Vec<u8>],
+    pool: &mut ImagePool,
+) -> Option<ExportMaterial> {
+    mat.index()?; // default material → emit none (same defaults on reimport)
+    let name = mat.name().unwrap_or("").to_string();
+    let alpha_mode = match mat.alpha_mode() {
+        gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+        gltf::material::AlphaMode::Mask => AlphaMode::Mask {
+            cutoff: mat.alpha_cutoff().unwrap_or(0.5),
+        },
+        gltf::material::AlphaMode::Blend => AlphaMode::Blend,
+    };
+    let pbr = mat.pbr_metallic_roughness();
+    if mat.unlit() {
+        return Some(ExportMaterial::Unlit(UnlitMaterial {
+            name,
+            base_color: pbr.base_color_factor(),
+            base_color_texture: pbr
+                .base_color_texture()
+                .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+            alpha_mode,
+            double_sided: mat.double_sided(),
+        }));
+    }
+    Some(ExportMaterial::Pbr(PbrMaterial {
+        name,
+        base_color: pbr.base_color_factor(),
+        metallic: pbr.metallic_factor(),
+        roughness: pbr.roughness_factor(),
+        emissive: mat.emissive_factor(),
+        alpha_mode,
+        double_sided: mat.double_sided(),
+        base_color_texture: pbr
+            .base_color_texture()
+            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+        metallic_roughness_texture: pbr
+            .metallic_roughness_texture()
+            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+        normal_texture: mat
+            .normal_texture()
+            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+        occlusion_texture: mat
+            .occlusion_texture()
+            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+        emissive_texture: mat
+            .emissive_texture()
+            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+    }))
+}
+
+/// One node → a clean `ExportNode`: geometry + skin attrs + morph targets +
+/// per-primitive materials. The FIRST primitive fills the node's own
+/// mesh/material slots; further primitives become
+/// [`ExportNode::extra_primitives`] (glTF materials are per-primitive — never
+/// merge primitives across materials, and never add nodes, so skin-joint
+/// flatten indices stay valid).
+fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>], pool: &mut ImagePool) -> ExportNode {
     let (translation, rotation, scale) = node.transform().decomposed();
     let mut out = ExportNode {
         name: node.name().unwrap_or("").to_string(),
@@ -134,115 +274,91 @@ fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>]) -> ExportNode {
     };
 
     if let Some(mesh) = node.mesh() {
-        let mut positions: Vec<[f32; 3]> = Vec::new();
-        let mut normals: Vec<[f32; 3]> = Vec::new();
-        let mut uvs: Vec<[f32; 2]> = Vec::new();
-        let mut colors: Vec<[f32; 4]> = Vec::new();
-        let mut indices: Vec<u32> = Vec::new();
-        let mut joints: Vec<[u16; 4]> = Vec::new();
-        let mut weights: Vec<[f32; 4]> = Vec::new();
-        // Per-target accumulated deltas (positions/normals), one Vec per target.
-        let mut morph_pos: Vec<Vec<[f32; 3]>> = Vec::new();
-        let mut morph_nrm: Vec<Vec<[f32; 3]>> = Vec::new();
-        let (mut all_n, mut all_uv, mut all_c, mut all_jw) = (true, true, true, true);
-        let mut any = false;
+        // Morph target names ride the glTF `mesh.extras.targetNames`
+        // convention (the reader's `extras` feature is on workspace-wide).
+        let target_names: Vec<Option<String>> = mesh
+            .extras()
+            .as_ref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.get()).ok())
+            .and_then(|v| {
+                v.get("targetNames")
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.iter().map(|x| x.as_str().map(str::to_string)).collect())
+            })
+            .unwrap_or_default();
 
+        let mut first = true;
         for primitive in mesh.primitives() {
             let reader = primitive.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
-            let prim_pos: Vec<[f32; 3]> = match reader.read_positions() {
+            let positions: Vec<[f32; 3]> = match reader.read_positions() {
                 Some(p) => p.collect(),
                 None => continue,
             };
-            let base = positions.len() as u32;
-            let vcount = prim_pos.len();
-            positions.extend(prim_pos);
-            any = true;
-            match reader.read_normals() {
-                Some(n) => normals.extend(n),
-                None => all_n = false,
-            }
-            match reader.read_tex_coords(0) {
-                Some(t) => uvs.extend(t.into_f32()),
-                None => all_uv = false,
-            }
-            match reader.read_colors(0) {
-                Some(c) => colors.extend(c.into_rgba_f32()),
-                None => all_c = false,
-            }
-            match (reader.read_joints(0), reader.read_weights(0)) {
-                (Some(j), Some(w)) => {
-                    joints.extend(j.into_u16());
-                    weights.extend(w.into_f32());
-                }
-                _ => all_jw = false,
-            }
-            match reader.read_indices() {
-                Some(idx) => indices.extend(idx.into_u32().map(|x| x + base)),
-                None => indices.extend((0..vcount as u32).map(|x| x + base)),
-            }
-            // Morph targets: concatenate each target's deltas across primitives.
-            let targets = reader.read_morph_targets();
-            for (ti, (tp, tn, _tt)) in targets.enumerate() {
-                if morph_pos.len() <= ti {
-                    morph_pos.push(Vec::new());
-                    morph_nrm.push(Vec::new());
-                }
-                match tp {
-                    Some(p) => morph_pos[ti].extend(p),
-                    None => morph_pos[ti].extend(std::iter::repeat_n([0.0; 3], vcount)),
-                }
-                match tn {
-                    Some(n) => morph_nrm[ti].extend(n),
-                    None => morph_nrm[ti].extend(std::iter::repeat_n([0.0; 3], vcount)),
-                }
-            }
-        }
-
-        if any {
-            out.mesh = Some(MeshData {
-                positions,
-                normals: all_n.then_some(normals),
-                uvs: all_uv.then_some(uvs),
-                colors: all_c.then_some(colors),
-                indices,
-            });
-            if all_jw && !joints.is_empty() {
-                out.joints = Some(joints);
-                out.weights = Some(weights);
-            }
-            // Morph target names ride the glTF `mesh.extras.targetNames`
-            // convention (the reader's `extras` feature is on workspace-wide).
-            let target_names: Vec<Option<String>> = mesh
-                .extras()
-                .as_ref()
-                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.get()).ok())
-                .and_then(|v| {
-                    v.get("targetNames")
-                        .and_then(|a| a.as_array())
-                        .map(|a| a.iter().map(|x| x.as_str().map(str::to_string)).collect())
-                })
-                .unwrap_or_default();
-            out.morph_targets = morph_pos
-                .into_iter()
-                .zip(morph_nrm)
+            let vcount = positions.len();
+            let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
+            let uvs: Option<Vec<[f32; 2]>> =
+                reader.read_tex_coords(0).map(|t| t.into_f32().collect());
+            let colors: Option<Vec<[f32; 4]>> =
+                reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
+            let indices: Vec<u32> = match reader.read_indices() {
+                Some(idx) => idx.into_u32().collect(),
+                None => (0..vcount as u32).collect(),
+            };
+            let (joints, weights) = match (reader.read_joints(0), reader.read_weights(0)) {
+                (Some(j), Some(w)) => (
+                    Some(j.into_u16().collect::<Vec<_>>()),
+                    Some(w.into_f32().collect::<Vec<_>>()),
+                ),
+                _ => (None, None),
+            };
+            // Morph targets — names only on the main primitive (mesh-level).
+            let morph_targets: Vec<MorphTarget> = reader
+                .read_morph_targets()
                 .enumerate()
-                .map(|(ti, (pos, nrm))| MorphTarget {
-                    name: target_names.get(ti).cloned().flatten(),
-                    positions: pos,
-                    normals: if nrm.iter().any(|d| *d != [0.0; 3]) {
-                        Some(nrm)
+                .map(|(ti, (tp, tn, _tt))| MorphTarget {
+                    name: if first {
+                        target_names.get(ti).cloned().flatten()
                     } else {
                         None
                     },
+                    positions: tp
+                        .map(|p| p.collect())
+                        .unwrap_or_else(|| vec![[0.0; 3]; vcount]),
+                    normals: tn.map(|n| n.collect()),
                 })
                 .collect();
-            out.morph_weights = mesh.weights().map(|w| w.to_vec()).unwrap_or_default();
+            let mesh_data = MeshData {
+                positions,
+                normals,
+                uvs,
+                colors,
+                indices,
+            };
+            let material = extract_material(&primitive.material(), buffers, pool);
+
+            if first {
+                first = false;
+                out.mesh = Some(mesh_data);
+                out.material = material;
+                out.joints = joints;
+                out.weights = weights;
+                out.morph_targets = morph_targets;
+                out.morph_weights = mesh.weights().map(|w| w.to_vec()).unwrap_or_default();
+            } else {
+                out.extra_primitives.push(ExtraPrimitive {
+                    mesh: mesh_data,
+                    material,
+                    joints,
+                    weights,
+                    morph_targets,
+                });
+            }
         }
     }
 
     out.children = node
         .children()
-        .map(|c| build_clean_node(&c, buffers))
+        .map(|c| build_clean_node(&c, buffers, pool))
         .collect();
     out
 }
@@ -461,14 +577,16 @@ mod tests {
         };
         let glb = write_glb(&src);
 
-        // Re-export clean, write again, re-parse: the rig survives, material gone.
+        // Re-export clean, write again, re-parse: rig AND material survive
+        // (materials/textures are preserved since the day-3 rig-material work —
+        // a reimported rig must render textured, not source-default grey).
         let clean = reexport_clean(&glb).expect("reexport");
         assert_eq!(clean.skins.len(), 1);
         assert_eq!(clean.skins[0].joints, vec![1, 2]);
         let glb2 = crate::write_glb(&clean);
         let (doc, buffers, _i) = gltf::import_slice(&glb2).expect("re-parse cleaned");
         assert_eq!(doc.skins().count(), 1, "skin preserved");
-        assert_eq!(doc.materials().count(), 0, "materials dropped");
+        assert_eq!(doc.materials().count(), 1, "material preserved");
         let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
         let r = prim.reader(|b| Some(&buffers[b.index()]));
         assert_eq!(r.read_joints(0).expect("joints").into_u16().count(), 3);
