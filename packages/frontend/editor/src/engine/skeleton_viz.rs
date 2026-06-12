@@ -31,6 +31,10 @@ thread_local! {
 /// the fat-line target clamps per channel, so [6, 2.2, 0.4] turned pale
 /// yellow-white; saturation, not luminance, is what survives.)
 const BONE_COLOR: Vec4 = Vec4::new(0.95, 0.30, 0.05, 1.0);
+/// Root-tether segments (chain depth ≤ 1 — e.g. the floor-origin root joint up
+/// to the pelvis) render dimmed: real root-motion information, but it shouldn't
+/// shout over the anatomical skeleton.
+const BONE_COLOR_ROOT: Vec4 = Vec4::new(0.95, 0.30, 0.05, 0.35);
 const BONE_WIDTH: f32 = 3.0;
 
 /// Per-frame: rebuild the bone-line overlay from the live mirror-bone worlds.
@@ -59,6 +63,20 @@ pub fn per_frame_update(renderer: &mut AwsmRenderer) {
     let mut colors: Vec<Vec4> = Vec::new();
     if !tks.is_empty() {
         let bone_set: std::collections::HashSet<_> = tks.iter().copied().collect();
+        // Chain depth of a bone = how many bone ancestors it has (0 = chain
+        // root). Segments whose PARENT depth ≤ 1 are the root tether (root →
+        // first body joint, typically floor-origin → pelvis) — dimmed.
+        let depth = |mut tk: awsm_renderer::transforms::TransformKey| -> u32 {
+            let mut d = 0u32;
+            while let Ok(p) = renderer.transforms.get_parent(tk) {
+                if !bone_set.contains(&p) || d > 64 {
+                    break;
+                }
+                d += 1;
+                tk = p;
+            }
+            d
+        };
         for tk in &tks {
             let Ok(parent) = renderer.transforms.get_parent(*tk) else {
                 continue;
@@ -72,10 +90,15 @@ pub fn per_frame_update(renderer: &mut AwsmRenderer) {
             ) else {
                 continue;
             };
+            let color = if depth(parent) <= 1 {
+                BONE_COLOR_ROOT
+            } else {
+                BONE_COLOR
+            };
             positions.push(a.w_axis.truncate());
             positions.push(b.w_axis.truncate());
-            colors.push(BONE_COLOR);
-            colors.push(BONE_COLOR);
+            colors.push(color);
+            colors.push(color);
         }
     }
 

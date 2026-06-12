@@ -70,7 +70,7 @@ pub fn sync_bones_to_skin(renderer: &mut AwsmRenderer) {
         // Breadcrumb for the pose-doesn't-deform investigations: proves the
         // mirror→baked copy actually ran this frame (rate-limited by nature —
         // only fires on change).
-        tracing::info!("skin bridge: copied {copied} changed bone local(s) → baked joints");
+        tracing::debug!("skin bridge: copied {copied} changed bone local(s) → baked joints");
     }
 }
 

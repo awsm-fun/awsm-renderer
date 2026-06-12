@@ -699,7 +699,7 @@ impl crate::AwsmRenderer {
                 // A prior launch this window already has this compile in
                 // flight; its single resolution installs for the layout.
                 inflight_skips += 1;
-                tracing::info!(
+                tracing::debug!(
                     target: "awsm_renderer::pipeline_readiness",
                     "launch_edge_resolve_compile: {:?} skipped as in-flight",
                     slot.0,
@@ -713,7 +713,7 @@ impl crate::AwsmRenderer {
             // Every pipeline was a cache hit or already in flight. Logged
             // because a stuck in-flight marker here looks like "settled but
             // frozen" downstream — this line is the breadcrumb.
-            tracing::info!(
+            tracing::debug!(
                 target: "awsm_renderer::pipeline_readiness",
                 "launch_edge_resolve_compile: 0 pushed ({} cache-hit installs, {} in-flight skips)",
                 hits,
@@ -840,7 +840,7 @@ impl crate::AwsmRenderer {
                     // The layout moved on while this compiled. Logged because a
                     // dropped FinalBlend with no follow-up relaunch presents as
                     // the frozen-canvas mode (preamble warn-skip, settled:true).
-                    tracing::info!(
+                    tracing::debug!(
                         target: "awsm_renderer::pipeline_readiness",
                         "apply_compile_resolution: edge resolution no longer desired — dropped (slot {:?})",
                         edge_slot_from_target(&target),

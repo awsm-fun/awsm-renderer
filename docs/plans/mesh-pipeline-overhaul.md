@@ -657,3 +657,12 @@ F. (Stretch, byte-guarded) Phase 2b: route renderer-gltf vertex builders through
 G. DEFERRED BY DECISION: retargeting — agent-driven over MCP once D+E exist (the
    decision layer is agentic: rig analysis via get_skin_data/get_track_data; the
    per-keyframe math eventually wants a small deterministic retarget_clip kernel).
+
+### Day-2 loop, scope A — DONE (all four quickies)
+- percent documented as 0..1 fraction in the select_vertices_where tool desc + WARN on
+  out-of-range input. Overnight diagnostics (skin-bridge copies, skins-update counts,
+  3 edge breadcrumbs) demoted info!→debug!. frame_node live-AABB fit ×1.15 breathing
+  room (note: elongated rigs faced end-on still compose head-on — camera-DIRECTION
+  choice, not padding; cosmetic, deferred). Skeleton root-tether segments (chain depth
+  ≤1) dimmed to 0.35 alpha — SEEN VERIFIED on the fox side view: anatomy pops, tether
+  reads as a faint drop to the floor origin.

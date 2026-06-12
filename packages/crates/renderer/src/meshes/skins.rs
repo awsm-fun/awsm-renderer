@@ -288,7 +288,7 @@ impl Skins {
             //tracing::info!("{:#?}", u8_to_f32_vec(&self.skin_matrices.raw_slice()[self.skin_matrices.offset(skin_key).unwrap()..]).chunks(16).take(2).collect::<Vec<_>>());
         }
         if matched > 0 || skipped_skins > 0 {
-            tracing::info!(
+            tracing::debug!(
                 "skins.update_transforms: {} joint matrices updated, {} skins skipped (dirty set: {})",
                 matched,
                 skipped_skins,

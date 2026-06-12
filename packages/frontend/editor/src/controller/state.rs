@@ -2032,8 +2032,10 @@ impl EditorController {
                             glam::Vec3::from_array(wmax),
                         )
                     });
+                    // Live mesh AABBs are exact, which FEELS tight when framing
+                    // rigs/characters — breathe a little beyond the request.
                     crate::engine::context::try_with_camera_mut(|c| {
-                        c.frame_aabb(aabb, 1.0 + padding.max(0.0))
+                        c.frame_aabb(aabb, (1.0 + padding.max(0.0)) * 1.15)
                     });
                 })
                 .await;
@@ -3536,6 +3538,16 @@ impl EditorController {
                                 select_by_axis(&mesh, axis as usize, Cmp::Less, value)
                             }
                             P::TopPercent { axis, percent } => {
+                                if !(0.0..=1.0).contains(&percent) {
+                                    // percent is a 0..1 FRACTION; out-of-range input
+                                    // silently clamps in the selector, which reads as
+                                    // "selected everything" to a confused caller.
+                                    tracing::warn!(
+                                        "select_vertices_where top_percent: percent {percent} \
+                                         is outside 0..1 (it is a fraction, not a percentage) — \
+                                         clamping"
+                                    );
+                                }
                                 select_top_percent_axis(&mesh, axis as usize, percent)
                             }
                             P::WithinRadius { center, radius } => {
