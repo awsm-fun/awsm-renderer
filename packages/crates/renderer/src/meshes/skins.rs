@@ -189,6 +189,29 @@ impl Skins {
             .ok_or(AwsmSkinError::SkinNotFound(skin_key))
     }
 
+    /// CPU copy of the skin's joint-matrix palette (one `joint_world × IBM`
+    /// `Mat4` per joint, in the skin's joint-array order) — exactly the
+    /// matrices GPU skinning reads. For CPU-side posed-position math: a rest
+    /// vertex's deformed WORLD position is `Σ wᵢ · Mᵢ · rest_p` (skinned
+    /// vertices are world-space; no node model matrix applies — see
+    /// shared_wgsl/vertex/apply_vertex.wgsl).
+    pub fn read_joint_matrices(&self, skin_key: SkinKey) -> Result<Vec<Mat4>> {
+        let bytes = self
+            .skin_matrices
+            .get(skin_key)
+            .ok_or(AwsmSkinError::SkinNotFound(skin_key))?;
+        Ok(bytes
+            .chunks_exact(64)
+            .map(|c| {
+                let mut f = [0.0f32; 16];
+                for (i, ch) in c.chunks_exact(4).enumerate() {
+                    f[i] = f32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]);
+                }
+                Mat4::from_cols_array(&f)
+            })
+            .collect())
+    }
+
     /// In-place edit of the packed joint/weight stream (same layout as
     /// [`Self::read_joint_index_weights`]). Marks the GPU copy dirty — the next
     /// `write_gpu` uploads it, so live skinned meshes re-deform immediately.

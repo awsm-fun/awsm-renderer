@@ -7,11 +7,17 @@
 //! selection share a single fat-line draw, tracked by one `LineKey` so the
 //! previous highlight is torn down before the next is built.
 //!
-//! First-cut limitation: the markers are rebuilt only when `vertex_selection`
-//! changes. If the user later moves/transforms the highlighted node, the
-//! markers go stale (baked at the world matrix observed at selection time)
-//! until the selection is re-emitted. That's acceptable for a transient
-//! "show me what the query matched" overlay.
+//! SKINNED meshes get markers on the POSED (deformed) surface: selected
+//! vertices are CPU-skinned with the same joint-matrix palette GPU skinning
+//! reads (set 0), so the cross lands where the vertex is rendered, not at the
+//! rest pose.
+//!
+//! Staleness rule (deliberate): the markers are rebuilt only when
+//! `vertex_selection` changes. Moving the node — or posing/playing a skinned
+//! rig — leaves them baked at the transform/pose observed at selection time
+//! until the selection is re-emitted. Per-frame re-skinning would put CPU
+//! skinning in the render loop for a transient "show me what the query
+//! matched" overlay; re-emit the selection to refresh instead.
 
 use std::cell::Cell;
 
@@ -73,7 +79,11 @@ async fn rebuild(sel: Option<(NodeId, Vec<u32>)>) {
         if mesh.positions.is_empty() {
             return None;
         }
-        Some((tk, mesh, indices))
+        // Renderer mesh keys (covers both materialization paths — own
+        // model_meshes AND template-baked SkinnedMesh keys) so the skinned
+        // branch below can find the node's skin.
+        let mesh_keys = crate::controller::renderer_meshes_for_node(node);
+        Some((tk, mesh, indices, mesh_keys))
     });
 
     let line_key = with_renderer_mut(move |r| {
@@ -82,7 +92,24 @@ async fn rebuild(sel: Option<(NodeId, Vec<u32>)>) {
             r.remove_line(prev);
         }
 
-        let (tk, mesh, indices) = resolved?;
+        let (tk, mesh, indices, mesh_keys) = resolved?;
+
+        // SKINNED meshes: markers land on the POSED (deformed) surface, not
+        // the rest mesh. CPU-skin each selected vertex with the same palette
+        // GPU skinning reads: posed_world = Σ wᵢ · (joint_world × IBM)ᵢ ·
+        // rest_p — already WORLD space (no node matrix; see
+        // shared_wgsl/vertex/apply_vertex.wgsl). Set 0 only: extra influence
+        // sets refine weights marginally, far below marker size.
+        let skinned: Option<(Vec<u8>, Vec<Mat4>, usize)> = mesh_keys
+            .iter()
+            .find_map(|mk| r.meshes.mesh_skin_key(*mk).flatten())
+            .and_then(|sk| {
+                Some((
+                    r.meshes.skins.read_joint_index_weights(sk).ok()?,
+                    r.meshes.skins.read_joint_matrices(sk).ok()?,
+                    r.meshes.skins.sets_len(sk).ok()?,
+                ))
+            });
 
         let world = r
             .transforms
@@ -99,7 +126,33 @@ async fn rebuild(sel: Option<(NodeId, Vec<u32>)>) {
             let Some(p_local) = mesh.positions.get(i as usize) else {
                 continue; // index out of range — skip, never panic.
             };
-            let p = world.transform_point3(Vec3::from_array(*p_local));
+            let rest = Vec3::from_array(*p_local);
+            let p = match &skinned {
+                Some((jw, mats, sets)) => {
+                    // Per-vertex stride: sets × 4 × (u32 joint, f32 weight).
+                    let off = i as usize * sets * 32;
+                    let mut acc = Mat4::ZERO;
+                    let mut any = false;
+                    for k in 0..4 {
+                        let o = off + k * 8;
+                        let Some(b) = jw.get(o..o + 8) else { break };
+                        let joint = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+                        let weight = f32::from_le_bytes([b[4], b[5], b[6], b[7]]);
+                        if weight != 0.0 {
+                            if let Some(m) = mats.get(joint) {
+                                acc += *m * weight;
+                                any = true;
+                            }
+                        }
+                    }
+                    if any {
+                        acc.transform_point3(rest)
+                    } else {
+                        world.transform_point3(rest)
+                    }
+                }
+                None => world.transform_point3(rest),
+            };
             // Three line *segments* (a 3-axis cross): X, Y, Z through `p`.
             for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
                 positions.push(p - axis * s);

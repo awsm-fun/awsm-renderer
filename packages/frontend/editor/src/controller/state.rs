@@ -4742,7 +4742,7 @@ pub(crate) async fn live_track_value(
 /// `model_meshes`; see `materialize_skinned_mesh`). Morph-bearing imports ride
 /// the SkinnedMesh path, so any morph resolution MUST use this, not
 /// `model_meshes` alone. Empty when the node isn't materialized.
-fn renderer_meshes_for_node(node: NodeId) -> Vec<awsm_renderer::meshes::MeshKey> {
+pub(crate) fn renderer_meshes_for_node(node: NodeId) -> Vec<awsm_renderer::meshes::MeshKey> {
     let b = crate::engine::bridge::bridge();
     let entry = { b.nodes.lock().unwrap().get(&node).cloned() };
     let Some(entry) = entry else {
