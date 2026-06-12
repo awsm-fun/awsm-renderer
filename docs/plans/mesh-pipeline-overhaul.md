@@ -611,3 +611,24 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
 - Perf eyeball: 14-17ms frames on the stress scenes with 8 shadow lights on a
   2032×1094 canvas — no regression flags. (Quantitative baselines remain a
   follow-on; nothing tonight touched render hot paths except logging.)
+
+### Tier-1 verification closed (user-in-the-loop, morning after)
+- ✅ Bone icons in outliner: USER-VERIFIED (joint rows show the bone glyph).
+- ✅ Skeleton overlay: USER-VERIFIED "looks good as-is".
+- ✅ top_percent "selected 96%": NOT a bug — `percent` is 0..1 (I sent 15.0 → clamped
+  to 1.0). ROBUSTNESS TODO: select_vertices_where tool doc must state 0..1 and
+  out-of-range input should warn instead of silently clamping.
+- ✅ Pose-vs-clip semantics: USER SIGNED OFF on DCC behavior (clip owns bones/morphs
+  while active; pause/delete to hand-pose). Already documented in AGENT_GUIDE §8.
+
+### ▶▶ NEXT LOOP SCOPE (agreed direction: finish skins/morphs first-class + polish)
+A. Robustness quickies: percent-0..1 docs + range warning; demote the overnight
+   diagnostic info! logs (edge breadcrumbs, skin-bridge/skins-update counts) to debug!;
+   frame_node padding on rigs slightly generous (cosmetic).
+B. Rig-preserving scene-glb export (Tier 3 #1): export_glb currently flattens
+   skins/morphs to static — re-export skins (joints/IBMs/weights) + morph targets
+   (+ targetNames extras) so a scene glb round-trips rigs. Headless-verifiable by
+   parsing the exported glb (skins>0, targets>0) + reimport round-trip.
+C. (Stretch, explicitly byte-guarded) Phase 2b: route renderer-gltf vertex builders
+   through the shared mesh_pack packer — byte-identity proptest BEFORE switching.
+D. (Deferred unless asked: per-vertex joint-weight editing; IK/retarget crates.)
