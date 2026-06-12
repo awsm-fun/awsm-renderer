@@ -141,10 +141,7 @@ impl RawMeshData {
 fn material_wants_tangents(mat: &Material) -> bool {
     match mat {
         Material::Pbr(m) => {
-            m.normal_tex.is_some()
-                || m.clearcoat
-                    .as_ref()
-                    .is_some_and(|c| c.normal_tex.is_some())
+            m.normal_tex.is_some() || m.clearcoat.as_ref().is_some_and(|c| c.normal_tex.is_some())
         }
         _ => false,
     }
