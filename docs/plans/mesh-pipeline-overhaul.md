@@ -584,3 +584,17 @@ the ready-to-paste overnight `/loop` prompt are in **`docs/plans/OVERNIGHT-HANDO
   channel-race fix (L/R legs verified), NodeBounds+FrameNode live-AABB, bone icons,
   skeleton overlay (built), morph names, docs/recipes, edge breadcrumbs, capture
   error surfacing. All gated (lint+tests); nothing pushed.
+
+### Morning queue results (iteration 13, fresh limits)
+- ① SKELETON OVERLAY SEEN: full fox rig (spine/leg/tail/neck chains) as saturated
+  orange bone-lines through the mesh (HDR colors clamp per-channel in the line
+  target → use saturated LDR; b5b161e0). ③ WALK PLAYBACK SEEN: set_current_clip +
+  set_playing{on} in animation mode → fox walks in viewport, two distinct gait
+  frames, skeleton overlay TRACKS the animation. (Transport only ticks in animation
+  mode; SetPlaying field is `on` — agent-guide-worthy.) ④ MORPH A/B SEEN:
+  MorphStressTest "Key 3" by NAME → blue bar at full height (after delete_clip —
+  clips own weights, as documented). ⑤ VERTEX HIGHLIGHT SEEN: amber cross markers
+  on a sphere (predicate shape: {"kind":"top_percent","axis":N,"percent":P};
+  top_percent selected 792/825 — semantics worth a doc note). ⑥ ROUND-TRIP PIXELS
+  SEEN: authored vs load_player_bundle reload visually identical (sphere+box+PBR
+  colors). ⑦ bone icons in outliner = DOM, needs USER EYEBALL.
