@@ -27,10 +27,11 @@ thread_local! {
     static SKELETON: Cell<Option<LineKey>> = const { Cell::new(None) };
 }
 
-/// Warm orange, distinct from the collider greens/blues and the amber vertex
-/// markers; alpha < 1 so dense rigs don't shout.
-const BONE_COLOR: Vec4 = Vec4::new(1.0, 0.55, 0.15, 0.9);
-const BONE_WIDTH: f32 = 2.0;
+/// Saturated deep orange at full alpha. (HDR values > 1 do NOT work here —
+/// the fat-line target clamps per channel, so [6, 2.2, 0.4] turned pale
+/// yellow-white; saturation, not luminance, is what survives.)
+const BONE_COLOR: Vec4 = Vec4::new(0.95, 0.30, 0.05, 1.0);
+const BONE_WIDTH: f32 = 3.0;
 
 /// Per-frame: rebuild the bone-line overlay from the live mirror-bone worlds.
 /// Called from the render loop (before `update_transforms`, like the other
