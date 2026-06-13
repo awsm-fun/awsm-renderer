@@ -1164,3 +1164,18 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   in docs/time-to-first-render.md. NOT landing the risky/ineffective load-path
   bolt-on. #31 state-1 (runtime verified-optimal); editor-import relocation =
   small documented follow-up, not a queued blocker.
+
+### Loop (2026-06-14) — #32 VERIFIED (alpha-WGSL bundle round-trip, both ends)
+- Browser/MCP-confirmed the EXPORT side of #26: authored a custom material with
+  an alpha-only WGSL window + Mask alpha mode via /debug, called
+  export_player_bundle, and the returned file set contains
+  `…/material.alpha.wgsl` next to `material.wgsl`. The LOAD side is covered by
+  the committed native test (registration_from_definition reads the sidecar →
+  alpha_wgsl). So the round-trip MECHANISM #26 fixed (the alpha window was being
+  dropped) is verified both ends. Masked-cutout *rendering* itself was already
+  SEEN in day-3 (FlipBook Mask). #32 state-1.
+- #33 (custom-material non-zero UV/COLOR set accessor): infra verified complete
+  (day-4); the accessor is genuine shader-codegen design work (WGSL accessor +
+  cache-key thread + GPU verify) — a real multi-step FEATURE the loop will
+  tackle as a proper item, not a checkbox. PBR multi-UV already works via
+  per-texture uv_index.
