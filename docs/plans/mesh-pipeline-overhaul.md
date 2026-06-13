@@ -834,9 +834,15 @@ future loops on this project:
   steady state. The remaining tab-crash question (multi-hour unattended) gets an
   overnight soak after the shadow pass. Baselines: /tmp/soak2.csv,
   /tmp/soak-baseline-empty.csv.
-- Untracked test assets for user decision: media/fox-roundtrip.glb (round-trip
-  artifact) + media/flipbook-atlas-2x2.png (generated 2×2 RGBA atlas; useful as a
-  permanent flipbook test asset — recommend keeping).
+- Test assets RESOLVED (2026-06-13): both moved out of the main repo's `media/`
+  into the sibling LFS assets repo `../awsm-renderer-assets/mesh-authoring-tests/`
+  (Git-LFS, published via GitHub Pages — the established fixture convention; see
+  `taskfiles/config.yml` PATH_MEDIA_ADDITIONAL_ASSETS, served on :9083 in dev).
+  Load from:
+    dev  http://localhost:9083/mesh-authoring-tests/flipbook-atlas-2x2.png
+    prod https://dakom.github.io/awsm-renderer-assets/mesh-authoring-tests/...
+  (the main repo `media/` server on :9082 carries only glTF-Sample-Assets).
+  NOTE: the assets-repo commit is local — push that repo too for GitHub Pages.
 
 ### Day-3 scope H (user-extended): shadow correctness + lighting review
 - 5c2b375f SEEN-verified: EVSM atlas auto-grow (2nd+ shadowed sun no longer
