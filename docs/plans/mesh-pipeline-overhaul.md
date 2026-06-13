@@ -941,3 +941,15 @@ CLOSING: when every elected item is state-1 or state-2, write the closing report
 verdict if one ran, update memory, post a morning status via SendUserMessage, and
 END (no further ScheduleWakeup). Do NOT push (the user pushes / PRs); the
 mesh-authoring PR #119 is already open — note new commits land on that branch.
+
+### Day-4 loop — pillar 1 (correctness), item: shader-module completeness guard
+- Generalized the day-3 edge-resolve completeness test into a centralized native
+  guard (`renderer/src/shader_completeness.rs`) covering ALL material-bearing
+  templates that call `<base>_get_material` — opaque-compute, edge-resolve, AND
+  transparent — for every first-party base (PBR/Unlit/Toon/Flipbook). Each
+  rendered WGSL is scanned: every `<x>_get_material(` call must have a matching
+  `fn` def in the same module (the exact class that took the editor down at boot
+  on the day-3 flipbook cell-math extraction). Inline edge test removed →
+  pointer. Added a scanner SELF-TEST (catch_unwind) proving the guard panics on a
+  missing def + accepts a present one (a guard that can't fail is inert). 4 tests,
+  213 renderer tests green, lint clean. NATIVE — no browser needed. State 1.

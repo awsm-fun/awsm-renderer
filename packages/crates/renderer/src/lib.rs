@@ -85,6 +85,9 @@ pub mod core {
 pub mod animation;
 
 mod renderer;
+
+#[cfg(test)]
+mod shader_completeness;
 pub use renderer::*;
 
 pub use load_phase::LoadPhase;
