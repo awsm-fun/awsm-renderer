@@ -1202,3 +1202,14 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   production code (can pass while prod drifts). Extract a pure
   `period_for_distance(levels, dist)->u8`, call it from
   set_skin_update_periods_by_distance AND the test.
+
+### Loop (2026-06-14) — #36 P1 refactor: skin_lod period_for_distance (96d37554)
+- meshes/skin_lod.rs test re-implemented the period selector inline (could pass
+  while prod drifted). Extracted pure period_for_distance(levels,dist)->u8, now
+  called by both set_skin_update_periods_by_distance AND the test. 1 test → 4:
+  first-match, boundary-inclusive (dist==max_distance), empty-table→1, 0-period
+  floored→1. All over production code now.
+- Gate: fmt ✅, clippy -p awsm-renderer --all-features --tests -D warnings ✅,
+  cargo test -p awsm-renderer skin_lod ✅ (4 passed; 223 compiled+filtered). state-1.
+- NEXT seam candidates (0/thin tests, real logic): meshes/skins.rs (507 lines),
+  mesh_pack.rs layouts, gltf-convert parity, shadow cascade/atlas packing.
