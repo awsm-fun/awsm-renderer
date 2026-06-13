@@ -853,3 +853,132 @@ fn flatten_f32x3(v: &[[f32; 3]]) -> Vec<u8> {
 fn flatten_f32x4(v: &[[f32; 4]]) -> Vec<u8> {
     v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── accessor min/max bounds (glTF requires finite POSITION min/max) ──────
+
+    #[test]
+    fn position_bounds_are_component_wise() {
+        let p = [[1.0, -2.0, 3.0], [-4.0, 5.0, 0.5], [0.0, 0.0, 9.0]];
+        let (min, max) = position_bounds(&p);
+        assert_eq!(min, [-4.0, -2.0, 0.5]);
+        assert_eq!(max, [1.0, 5.0, 9.0]);
+    }
+
+    #[test]
+    fn position_bounds_single_point_is_degenerate() {
+        let (min, max) = position_bounds(&[[7.0, 8.0, 9.0]]);
+        assert_eq!(min, [7.0, 8.0, 9.0]);
+        assert_eq!(max, [7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn position_bounds_empty_is_zero_not_infinity() {
+        // glTF accessor min/max must be finite; an empty stream collapses to 0
+        // rather than leaking the ±INFINITY fold sentinels into the JSON.
+        let (min, max) = position_bounds(&[]);
+        assert_eq!(min, [0.0; 3]);
+        assert_eq!(max, [0.0; 3]);
+    }
+
+    #[test]
+    fn scalar_bounds_basic_single_and_empty() {
+        assert_eq!(scalar_bounds(&[3.0, -1.0, 2.0, 0.0]), (-1.0, 3.0));
+        assert_eq!(scalar_bounds(&[42.0]), (42.0, 42.0));
+        assert_eq!(scalar_bounds(&[]), (0.0, 0.0));
+    }
+
+    // ── alpha mode + cutoff mapping ──────────────────────────────────────────
+
+    #[test]
+    fn alpha_mode_and_cutoff_mapping() {
+        assert!(matches!(
+            gltf_alpha_mode(AlphaMode::Opaque),
+            material::AlphaMode::Opaque
+        ));
+        assert!(matches!(
+            gltf_alpha_mode(AlphaMode::Mask { cutoff: 0.3 }),
+            material::AlphaMode::Mask
+        ));
+        assert!(matches!(
+            gltf_alpha_mode(AlphaMode::Blend),
+            material::AlphaMode::Blend
+        ));
+
+        // Only Mask carries a cutoff; Opaque/Blend emit none.
+        assert_eq!(
+            alpha_cutoff(AlphaMode::Mask { cutoff: 0.25 }).unwrap().0,
+            0.25
+        );
+        assert!(alpha_cutoff(AlphaMode::Opaque).is_none());
+        assert!(alpha_cutoff(AlphaMode::Blend).is_none());
+    }
+
+    // ── little-endian f32 flattening ─────────────────────────────────────────
+
+    #[test]
+    fn flatten_f32_little_endian_layout() {
+        assert_eq!(
+            flatten_f32x2(&[[1.0, 2.0]]),
+            [1.0f32.to_le_bytes(), 2.0f32.to_le_bytes()].concat()
+        );
+        assert_eq!(flatten_f32x3(&[[1.0, 2.0, 3.0]]).len(), 12);
+        assert_eq!(flatten_f32x4(&[[1.0, 2.0, 3.0, 4.0]]).len(), 16);
+
+        // Round-trip decode keeps order + values.
+        let bytes = flatten_f32x3(&[[1.5, -2.5, 3.25]]);
+        let decoded: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded, vec![1.5, -2.5, 3.25]);
+    }
+
+    // ── GLB container byte layout ────────────────────────────────────────────
+
+    fn empty_scene() -> GlbScene {
+        GlbScene {
+            nodes: vec![],
+            animations: vec![],
+            skins: vec![],
+            images: vec![],
+            env: None,
+        }
+    }
+
+    #[test]
+    fn glb_container_header_is_valid() {
+        let out = write_glb(&empty_scene());
+        // 12-byte header: magic, version, total length.
+        assert_eq!(&out[0..4], b"glTF", "GLB magic");
+        assert_eq!(
+            u32::from_le_bytes(out[4..8].try_into().unwrap()),
+            GLB_VERSION
+        );
+        let total = u32::from_le_bytes(out[8..12].try_into().unwrap()) as usize;
+        assert_eq!(total, out.len(), "header total must equal the byte count");
+
+        // First chunk: JSON, length 4-aligned, no BIN for an empty scene.
+        let json_len = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+        assert_eq!(&out[16..20], b"JSON");
+        assert_eq!(json_len % 4, 0, "JSON chunk padded to a 4-byte boundary");
+        assert_eq!(
+            12 + 8 + json_len,
+            out.len(),
+            "empty scene → JSON chunk only, no BIN chunk"
+        );
+    }
+
+    #[test]
+    fn glb_json_chunk_parses() {
+        let out = write_glb(&empty_scene());
+        let json_len = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+        // serde_json tolerates the trailing-space chunk padding (JSON whitespace).
+        let v: serde_json::Value = serde_json::from_slice(&out[20..20 + json_len]).unwrap();
+        assert_eq!(v["asset"]["version"], "2.0", "glTF asset version");
+        assert_eq!(v["asset"]["generator"], "awsm-glb-export");
+    }
+}
