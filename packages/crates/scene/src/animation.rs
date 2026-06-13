@@ -105,7 +105,10 @@ pub enum LightParamKind {
     OuterAngle,
 }
 
-/// Which camera parameter a `Camera` track drives (lowering deferred for now).
+/// Which camera parameter a `Camera` track drives. Lowered end-to-end: the
+/// editor bridge maps this to the renderer's `CameraParam` and
+/// `apply_camera_param` drives the live camera (FovY perspective-only; Near /
+/// Far / Aperture / FocusDistance).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

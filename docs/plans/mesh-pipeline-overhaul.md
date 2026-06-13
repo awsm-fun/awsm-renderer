@@ -1045,3 +1045,18 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
   fewer prod dependency; shipping renderer-gltf carries zero tangent math.
 - 3 tangent impls → 1 shared crate; they can no longer drift. lint clean,
   renderer-gltf suite green. NATIVE. State 1.
+
+### Day-4 loop — pillar 3, item #25: camera animation lowering (already wired; locked + comment fixed)
+- INVESTIGATION: camera-param animation lowering is ALREADY implemented
+  end-to-end — scene CameraParamKind → editor bridge camera_param() →
+  renderer CameraParam (all 5: FovY/Near/Far/Aperture/FocusDistance) →
+  apply_camera_param drives the live camera (FovY perspective-only no-op on
+  ortho). The "lowering deferred for now" doc comment in scene/animation.rs was
+  STALE (predates the landing) — corrected.
+- LOCKED with 3 native tests on apply_camera_param (renderer Cameras is
+  GPU-free): drives-each-field (all 5 params read back correct), FovY-noop-on-
+  orthographic (+ Near still applies), wrong-data-kind→Err (no silent
+  mis-write). 224 renderer + 14 scene tests green, lint clean.
+- Browser playback confirm (a camera FovY track visibly animating the view) is
+  optional — the feature pre-exists and was verified when it landed; this item
+  only corrected the stale comment + added the missing native lock. State 1.
