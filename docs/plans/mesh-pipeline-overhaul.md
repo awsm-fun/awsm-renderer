@@ -973,3 +973,17 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
   lambda1=logarithmic / near0-finite; cascade_resolution min-floor; a
   fit_cascades structural smoke test (count, split ordering, finite matrices).
   221 renderer tests green, lint clean. NATIVE. State 1.
+
+### Day-4 loop — pillar 1, item #21: material packing + MCP-wire correctness
+- Material uniform packing LOCKED (materials/uniform_packing_tests.rs, NullTextureContext
+  stub): shader_id-is-word-0 invariant across PBR/Unlit/Toon/FlipBook (wrong word 0
+  → wrong kernel branch); full FlipBook word layout pinned to wgsl/flipbook_material.wgsl
+  (shader_id, alpha_mode, alpha_cutoff, atlas(5 SkipTexture words), tint(4), cols, rows,
+  frame_count, fps, time_offset, mode, flip_y = 76 bytes) — a silent CPU↔WGSL drift here
+  corrupts shading with no error; + FlipBook clamp behavior (cols/rows floor 1,
+  frame_count clamped to cols*rows).
+- MCP wire round-trip (editor-protocol/transport.rs): serde ser→de→ser idempotence over
+  a representative Request slice (9 commands + 5 queries + envelope variants) incl. an
+  explicit `cmd` tag-drift assertion — guards the agent surface against serde rename
+  drift (silent wire break, no compile error). Truthful-error audit folded into #29.
+- 6 new tests, materials + editor-protocol suites green, lint clean. NATIVE. State 1.
