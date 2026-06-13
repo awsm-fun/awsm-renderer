@@ -1240,3 +1240,15 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
 - scene-loader now 1→21 tests across 3 loop iterations (#37 material conv, #38
   layout_hash). Remaining thin seams: animation.rs expand_descendants (needs
   Scene/EditorNode fixtures), glb-export, gltf-convert parity, geometry.
+
+### Loop (2026-06-14) — #39 P1 tests: glb-export GLB container + bounds (dc33ea8d)
+- glb-export/write.rs (the .glb writer) had ZERO tests. Added 8: position_bounds/
+  scalar_bounds (component-wise, single-point, empty→0 not ±inf — glTF needs
+  finite accessor min/max); gltf_alpha_mode/alpha_cutoff mapping; flatten_f32x2/3/4
+  LE layout + round-trip; write_glb container (glTF magic, version 2, header
+  total==len, JSON 4-byte aligned, empty→JSON-only no BIN, JSON parses). Pins the
+  binary format the round-trip re-imports.
+- Gate: fmt ✅ (needed `cargo fmt` then re-check), clippy -p awsm-glb-export
+  --all-features --tests -D warnings ✅, cargo test -p awsm-glb-export ✅ (25 total). state-1.
+- Remaining thin seams: glb-export/extract.rs (642 LOC), gltf-convert parity
+  (979 LOC, coordinate/Z-up), geometry AABB, animation.rs expand_descendants.
