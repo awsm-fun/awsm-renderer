@@ -29,10 +29,11 @@ use serde_json::Value;
 
 use awsm_editor_protocol::{
     CameraAxis, CompileError, CustomAlphaMode, EditorCommand, EditorMode, EditorQuery, InsertSpec,
-    ProceduralKind, QueryResult, Request, Response, SlotSpec,
+    ProceduralKind, QueryResult, Request, Response, SlotSpec, StepKind,
 };
 use awsm_scene::animation::{
-    BuiltinParamKind, ClipLoop, Interp, LightParamKind, TrackTarget, TrackValue, TransformProp,
+    BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TrackTarget, TrackValue,
+    TransformProp,
 };
 use awsm_scene::{
     AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, NodeId, PrimitiveShape,
@@ -754,6 +755,40 @@ pub struct DeleteKeyframeParams {
 pub struct TrackDataParams {
     pub clip: String,
     pub track: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackIndexParams {
+    pub clip: String,
+    pub track: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackMuteParams {
+    pub clip: String,
+    pub track: u32,
+    pub mute: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackSoloParams {
+    pub clip: String,
+    pub track: u32,
+    pub solo: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackSamplerParams {
+    pub clip: String,
+    pub track: u32,
+    /// step | linear | cubic
+    pub sampler: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StepPlayheadParams {
+    /// home | prev | next | end
+    pub kind: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2683,6 +2718,75 @@ impl EditorMcp {
             index: p.index as usize,
         })
         .await
+    }
+
+    #[tool(
+        description = "Delete a track (by index) from a clip. Undoable. Index is the track's position in the clip's tracks (see get_snapshot / get_track_data)."
+    )]
+    async fn delete_track(
+        &self,
+        Parameters(p): Parameters<TrackIndexParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DeleteTrack {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Mute / unmute a track (muted tracks don't contribute to the pose). Undoable."
+    )]
+    async fn set_track_mute(
+        &self,
+        Parameters(p): Parameters<TrackMuteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetTrackMute {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            mute: p.mute,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Solo / unsolo a track (when any track is soloed, only soloed tracks contribute). Undoable."
+    )]
+    async fn set_track_solo(
+        &self,
+        Parameters(p): Parameters<TrackSoloParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetTrackSolo {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            solo: p.solo,
+        })
+        .await
+    }
+
+    #[tool(description = "Set a track's interpolation sampler: step | linear | cubic. Undoable.")]
+    async fn set_track_sampler(
+        &self,
+        Parameters(p): Parameters<TrackSamplerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let sampler: SamplerKind = parse_enum(&p.sampler, "sampler")?;
+        self.dispatch(EditorCommand::SetTrackSampler {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            sampler,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Step the playhead: home (t=0) | prev (previous keyframe) | next | end (clip duration). Transport — not undoable."
+    )]
+    async fn step_playhead(
+        &self,
+        Parameters(p): Parameters<StepPlayheadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let kind: StepKind = parse_enum(&p.kind, "step kind")?;
+        self.dispatch(EditorCommand::StepPlayhead { kind }).await
     }
 
     #[tool(

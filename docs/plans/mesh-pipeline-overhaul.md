@@ -1106,3 +1106,24 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
   custom-material WGSL contract; bind a texture to set 1; confirm it samples the
   right set on screen. PBR multi-UV needs only a confirmation screenshot (already
   wired). No code landed (honest: infra complete, authoring gap needs eyes).
+
+### Day-4 loop — pillar 3, item #28: NLA/mixer + track-flag MCP coverage + docs
+- AUDIT: the animation EditorCommands all exist + dispatch correctly, but the
+  MCP typed-tool surface stopped at clips/keyframes — track flags, delete_track,
+  step_playhead, and the whole NLA mixer family were only reachable via the raw
+  dispatch_command escape hatch (thin agent ergonomics for a first-class
+  surface).
+- ADDED 5 typed tools (mcp.rs, thin wrappers over existing commands → no
+  protocol change): delete_track, set_track_mute, set_track_solo,
+  set_track_sampler (step|linear|cubic), step_playhead (home|prev|next|end).
+  Completes the everyday animation-authoring surface alongside the existing
+  clip/keyframe tools.
+- The NLA layer/strip family (add_layer/delete_layer/set_layer_mode/weight/mask,
+  add_strip/delete_strip/move_strip/trim_strip/set_strip_repeat) — lower-traffic,
+  richer shapes — DOCUMENTED as dispatch_command recipes in
+  docs/ANIMATION_AUTHORING.md (an awsm:// resource) rather than wrapped, with the
+  track-flag/transport tools documented there too.
+- Wire round-trip test (editor-protocol) extended to cover all 5 newly-typed
+  commands + representative NLA commands (AddLayer/DeleteLayer/SetLayerWeight/
+  AddStrip) so the agent surface is guarded against serde drift. lint clean,
+  editor-protocol green, mcp builds. NATIVE. State 1.

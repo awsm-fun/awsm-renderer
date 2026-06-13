@@ -149,6 +149,63 @@ mod wire_roundtrip_tests {
                     shading: MaterialShading::Pbr,
                 },
             ),
+            // Track flags + transport (newly typed MCP tools — must round-trip).
+            (
+                "delete_track",
+                EditorCommand::DeleteTrack {
+                    clip: AssetId::new(),
+                    track: 0,
+                },
+            ),
+            (
+                "set_track_mute",
+                EditorCommand::SetTrackMute {
+                    clip: AssetId::new(),
+                    track: 1,
+                    mute: true,
+                },
+            ),
+            (
+                "set_track_solo",
+                EditorCommand::SetTrackSolo {
+                    clip: AssetId::new(),
+                    track: 1,
+                    solo: true,
+                },
+            ),
+            (
+                "set_track_sampler",
+                EditorCommand::SetTrackSampler {
+                    clip: AssetId::new(),
+                    track: 0,
+                    sampler: awsm_scene::animation::SamplerKind::Cubic,
+                },
+            ),
+            (
+                "step_playhead",
+                EditorCommand::StepPlayhead {
+                    kind: crate::StepKind::Next,
+                },
+            ),
+            // NLA mixer (dispatch_command surface, documented in ANIMATION_AUTHORING).
+            ("add_layer", EditorCommand::AddLayer),
+            ("delete_layer", EditorCommand::DeleteLayer { layer: 0 }),
+            (
+                "set_layer_weight",
+                EditorCommand::SetLayerWeight {
+                    layer: 0,
+                    weight: 0.5,
+                },
+            ),
+            (
+                "add_strip",
+                EditorCommand::AddStrip {
+                    layer: 0,
+                    clip: AssetId::new(),
+                    start: 0.0,
+                    len: 2.0,
+                },
+            ),
         ];
         for (label, cmd) in cmds {
             // The serde tag must be the snake_case `cmd` discriminator.

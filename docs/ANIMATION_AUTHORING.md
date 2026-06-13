@@ -92,3 +92,39 @@ specific moment: `set_playing { on:false }`, `set_playhead { t:<seconds> }`,
 `get_track_data { clip, track }` returns the keyframes (times, values, interp,
 tangents) so you can confirm what you wrote. `get_snapshot` lists clips + the
 current clip.
+
+## Track flags & transport
+
+Typed tools (each undoable except transport):
+
+```
+delete_track       { "clip":<clip>, "track":0 }
+set_track_mute     { "clip":<clip>, "track":0, "mute":true }   // muted → doesn't contribute to the pose
+set_track_solo     { "clip":<clip>, "track":0, "solo":true }   // any solo → only soloed tracks contribute
+set_track_sampler  { "clip":<clip>, "track":0, "sampler":"linear" }  // step | linear | cubic
+step_playhead      { "kind":"next" }   // home | prev | next | end  (transport, not undoable)
+```
+
+## NLA mixer (layers & strips)
+
+The mixer composes whole clips as time-placed *strips* on weighted *layers* (an
+NLA stack). These are reachable via `dispatch_command` (escape hatch — pass the
+`cmd` tag); each is undoable. Layer/strip indices are positions in the mixer
+(see `get_snapshot`'s animation section).
+
+```
+dispatch_command { "command": { "cmd":"add_layer" } }                 // appends a Replace, weight-1 layer
+dispatch_command { "command": { "cmd":"set_layer_weight", "layer":0, "weight":0.5 } }
+dispatch_command { "command": { "cmd":"set_layer_mode",   "layer":0, "mode":"add" } }   // replace | add
+dispatch_command { "command": { "cmd":"set_layer_mask",   "layer":0, "mask":{ ... } } } // per-bone mask
+dispatch_command { "command": { "cmd":"add_strip",    "layer":0, "clip":<clip>, "start":0.0, "len":2.0 } }
+dispatch_command { "command": { "cmd":"move_strip",   "layer":0, "strip":0, "start":1.0 } }
+dispatch_command { "command": { "cmd":"trim_strip",   "layer":0, "strip":0, "start":0.5, "len":1.0 } }
+dispatch_command { "command": { "cmd":"set_strip_repeat", "layer":0, "strip":0, "repeat":2.0 } }
+dispatch_command { "command": { "cmd":"delete_strip", "layer":0, "strip":0 } }
+dispatch_command { "command": { "cmd":"delete_layer", "layer":0 } }
+```
+
+(The common track-flag + transport ops above have dedicated typed tools; the
+NLA layer/strip family stays on `dispatch_command` — lower-traffic, richer
+shapes. All are validated by the editor-protocol wire round-trip tests.)
