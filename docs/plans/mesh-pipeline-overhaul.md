@@ -953,3 +953,23 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
   pointer. Added a scanner SELF-TEST (catch_unwind) proving the guard panics on a
   missing def + accepts a present one (a guard that can't fail is inert). 4 tests,
   213 renderer tests green, lint clean. NATIVE — no browser needed. State 1.
+
+### Day-4 loop — pillar 1, item #20: shadow×lighting correctness audit
+- AUDIT RESULT: no new bug found; day-3 fixes hold + verified deeper.
+  · max_distance=auto (day-3) verified SAFE against infinite-far cameras:
+    extract_near_far reverses the perspective m22/m23; an infinite-far proj
+    gives m22=-1 → (m22+1)≈0 hits the guard → finite (0.1,100) fallback, so ∞
+    never reaches pssm_splits. Large-world coarseness under auto is the
+    documented quality tradeoff (set explicit max_distance), not a bug.
+  · spot + point/cube shadows derive reach from influence_radius(intensity,
+    range) — NOT max_distance — so the scale-trap was directional-only; they
+    already carry their own range-collapse fix.
+  · lighting application re-confirmed by reading apply_lighting.wgsl: IBL/
+    ambient added BEFORE the punctual loop (never shadow-attenuated); shadow
+    visibility multiplies the DIRECT term only; receive_shadows gates the
+    sample; SSCS directional-only.
+- LOCKED: 8 native tests on the pure cascade math (cascade.rs) — pssm_splits
+  count-clamp / monotonic / last==far / within-range / lambda0=uniform /
+  lambda1=logarithmic / near0-finite; cascade_resolution min-floor; a
+  fit_cascades structural smoke test (count, split ordering, finite matrices).
+  221 renderer tests green, lint clean. NATIVE. State 1.

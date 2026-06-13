@@ -350,3 +350,133 @@ pub fn fit_cascades(
     }
     cascades
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── pssm_splits: the PSSM (parallel-split) cascade boundaries ──────────
+    // These are the far-distances of each cascade; shadow quality depends on
+    // them being well-formed, so lock the invariants.
+
+    #[test]
+    fn pssm_splits_count_is_clamped() {
+        assert_eq!(pssm_splits(0.1, 100.0, 0.5, 3).len(), 3);
+        assert_eq!(pssm_splits(0.1, 100.0, 0.5, 1).len(), 1);
+        // 0 clamps up to 1; above MAX clamps down to MAX.
+        assert_eq!(pssm_splits(0.1, 100.0, 0.5, 0).len(), 1);
+        assert_eq!(
+            pssm_splits(0.1, 100.0, 0.5, 99).len(),
+            MAX_CASCADES,
+            "cascade count clamps to MAX_CASCADES"
+        );
+    }
+
+    #[test]
+    fn pssm_splits_monotonic_increasing_and_last_is_far() {
+        for lambda in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let s = pssm_splits(0.5, 200.0, lambda, 4);
+            for w in s.windows(2) {
+                assert!(
+                    w[1] > w[0],
+                    "splits must strictly increase (lambda={lambda}): {s:?}"
+                );
+            }
+            let last = *s.last().unwrap();
+            assert!(
+                (last - 200.0).abs() < 1e-2,
+                "last split must equal far (lambda={lambda}): got {last}"
+            );
+        }
+    }
+
+    #[test]
+    fn pssm_splits_within_near_far() {
+        let near = 0.3;
+        let far = 150.0;
+        let s = pssm_splits(near, far, 0.5, 4);
+        for v in &s {
+            assert!(
+                *v > near - 1e-3 && *v <= far + 1e-2,
+                "split {v} out of [{near}, {far}]"
+            );
+        }
+    }
+
+    #[test]
+    fn pssm_splits_lambda0_is_uniform() {
+        let (near, far, n) = (1.0_f32, 101.0_f32, 4u32);
+        let s = pssm_splits(near, far, 0.0, n);
+        for (i, v) in s.iter().enumerate() {
+            let p = (i + 1) as f32 / n as f32;
+            let expected = near + (far - near) * p;
+            assert!(
+                (v - expected).abs() < 1e-3,
+                "lambda=0 must be uniform: split[{i}]={v} expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn pssm_splits_lambda1_is_logarithmic() {
+        let (near, far, n) = (1.0_f32, 256.0_f32, 4u32);
+        let s = pssm_splits(near, far, 1.0, n);
+        let ratio = far / near;
+        for (i, v) in s.iter().enumerate() {
+            let p = (i + 1) as f32 / n as f32;
+            let expected = near * ratio.powf(p);
+            assert!(
+                (v - expected).abs() < 1e-2,
+                "lambda=1 must be logarithmic: split[{i}]={v} expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn pssm_splits_near_zero_is_finite() {
+        // near <= 0 takes the `far * p` fallback — must not NaN/inf.
+        let s = pssm_splits(0.0, 100.0, 0.5, 4);
+        assert_eq!(s.len(), 4);
+        for v in &s {
+            assert!(v.is_finite(), "near=0 fallback produced non-finite {v}");
+        }
+        assert!((s.last().unwrap() - 100.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn cascade_resolution_floors_at_min() {
+        assert_eq!(cascade_resolution(2048, 0, 16), 2048);
+        assert_eq!(cascade_resolution(8, 0, 16), 16, "below min floors to min");
+        assert_eq!(cascade_resolution(16, 3, 16), 16);
+    }
+
+    // ── fit_cascades: structural smoke test with real matrices ─────────────
+    #[test]
+    fn fit_cascades_count_ordering_and_far() {
+        let near = 0.1_f32;
+        let far = 100.0_f32;
+        let count = 4u32;
+        let proj = Mat4::perspective_rh(60.0_f32.to_radians(), 16.0 / 9.0, near, far);
+        let view = Mat4::look_at_rh(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, Vec3::Y);
+        let view_proj = proj * view;
+        let dir = Vec3::new(0.3, -1.0, 0.2).normalize();
+        let out = fit_cascades(view_proj, view, dir, near, far, count, 0.5, 2048, 16, &[]);
+        assert_eq!(out.len(), count as usize, "one entry per cascade");
+        // split_far (the f32) must strictly increase and end at far.
+        let fars: Vec<f32> = out.iter().map(|(_, _, f)| *f).collect();
+        for w in fars.windows(2) {
+            assert!(w[1] > w[0], "cascade split_far must increase: {fars:?}");
+        }
+        assert!((fars.last().unwrap() - far).abs() < 1e-1);
+        // Every cascade must produce finite matrices + positive texel size.
+        for (c, res, _) in &out {
+            assert!(*res >= 16);
+            assert!(c.world_per_texel > 0.0 && c.world_per_texel.is_finite());
+            assert!(c
+                .view_projection
+                .to_cols_array()
+                .iter()
+                .all(|v| v.is_finite()));
+        }
+    }
+}
