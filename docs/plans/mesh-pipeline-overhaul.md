@@ -987,3 +987,22 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
   explicit `cmd` tag-drift assertion — guards the agent surface against serde rename
   drift (silent wire break, no compile error). Truthful-error audit folded into #29.
 - 6 new tests, materials + editor-protocol suites green, lint clean. NATIVE. State 1.
+
+### Day-4 loop — pillar 2, item #22: per-frame churn audit + overlay scratch reuse
+- AUDIT: renderer hot path already hardened day-3 (instance writes zero-alloc
+  095b0e9a; skeleton GPU churn → update-in-place). Re-swept render-loop callees:
+  particles tick reuses preallocated transforms_buf/attrs_buf (clean); the only
+  remaining per-frame HEAP churn was on editor debug-overlay paths (skeleton_viz
+  4 allocs/frame, light_icons 1 snapshot Vec/frame) — editor-only, tens of
+  elements, but the editor is a shipped authoring tool so steady-state smoothness
+  counts.
+- FIXED skeleton_viz: per-frame tks/bone_set/positions/colors now REUSED via a
+  thread-local Scratch (cleared, capacity retained) → zero heap alloc per frame
+  at steady state when the overlay is on. Extracted chain_depth into a pure,
+  generic, unit-tested fn (3 tests: ancestor count, stop-at-non-bone, cycle cap)
+  — the honest native perf-regression guard for the logic (the integrated
+  no-alloc property is covered by the MemoryStats soak instrument, not a
+  contrived allocator test on GPU-coupled code).
+- light_icons' per-frame snapshot Vec left as-is (same minor class; the scratch
+  pattern is now established if it ever matters). 10 editor tests green, lint clean.
+  NATIVE. State 1.
