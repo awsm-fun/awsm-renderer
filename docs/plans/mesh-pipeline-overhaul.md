@@ -1127,3 +1127,19 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
   commands + representative NLA commands (AddLayer/DeleteLayer/SetLayerWeight/
   AddStrip) so the agent surface is guarded against serde drift. lint clean,
   editor-protocol green, mcp builds. NATIVE. State 1.
+
+### Day-4 loop — pillar 3, item #29: Phase-7 doc + MCP-fidelity sweep
+- AUDIT (kept bounded — found the surface already in good shape, no churn):
+  · MCP tool descriptions spot-checked — already truthful: select_vertices_where
+    documents percent 0..1 + >1 clamp; solve_ik documents reach-clamp;
+    set_morph_weight documents transient + out-of-range no-op; retired tools say
+    so. The clamps/no-ops are described; the unwrap_or sites are default params.
+  · All tricky seams already carry module docs (mesh_pack, gltf-convert,
+    skin_bridge, animation_sync, cascade, shadows/state, animations) — nothing
+    missing to add.
+- FIXED real drift: MCP.md hadn't caught up with day-3/4 additions — the
+  endpoint table + Connection/health catalog now list /health + /boot-error +
+  get_memory_stats, and the open_bi troubleshooting bullet reflects the relay's
+  new truthful-detach behavior (check GET /health when calls go silent).
+- Docs-only; no code touched. NATIVE. State 1. (Truthful-error audit from #21
+  folded in — no overclaims found to fix.)

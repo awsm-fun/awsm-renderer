@@ -59,7 +59,7 @@ sync, and undo/redo/coalescing all work as in the UI.
    | Service | Address |
    | --- | --- |
    | Editor (Trunk) | `http://localhost:9085` |
-   | MCP + control HTTP (TCP) | `http://127.0.0.1:9086` — `/mcp`, `/control`, `/debug` |
+   | MCP + control HTTP (TCP) | `http://127.0.0.1:9086` — `/mcp`, `/control`, `/debug`, `/health`, `/boot-error` |
    | WebTransport link (UDP) | `9087` |
 
    (Ports live in [`taskfiles/config.yml`](../taskfiles/config.yml):
@@ -114,8 +114,17 @@ and asset references are UUID strings — get them from `get_snapshot`.
 
 **Connection / health**
 - `ping` — confirm an editor is attached (fails fast otherwise).
-- `get_console_logs { limit? }` — recent editor notices (toasts) from a ring
-  buffer; surfaces runtime errors otherwise stuck in the browser.
+- `get_console_logs { limit? }` — recent editor notices (toasts) + raw tracing
+  (WARN/ERROR from the render loop / bridges) from a ring buffer; surfaces
+  runtime errors otherwise stuck in the browser.
+- `get_memory_stats` — JS-heap bytes (Chrome) + renderer object counts (meshes /
+  transforms / materials / lines / compiled render+compute pipelines), for leak
+  / soak observability (sample over time — flat = healthy).
+- `GET /health` (plain HTTP, not an MCP tool) — `{ editor_attached,
+  last_boot_error }`. **Check this first when `/debug` / tool calls go silent**:
+  it truthfully reports a detached/dead session (the relay drops a session on
+  transport failure) and surfaces a renderer boot error the tab POSTed to
+  `/boot-error` before any attach.
 
 **Discover / observe**
 - `get_snapshot` — scene tree (ids/names/kinds + visible/locked), selection,
@@ -297,7 +306,9 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
   in the server log. If you restarted the server, the editor must reconnect
   (reload the tab) because the cert hash changed.
 - **Tool call fails with `open_bi: … closed`** — the editor's session dropped
-  (tab reloaded/closed). Reload the editor tab to re-attach.
+  (tab reloaded/closed/frozen). The relay detaches the dead session, so
+  `GET /health` now reports `editor_attached:false` (and `last_boot_error` if the
+  page failed to init). Reload the editor tab to re-attach.
 - **Black `screenshot_scene`** — `requestAnimationFrame` (and thus the WebGPU
   draw loop) pauses for hidden/background tabs, and a WebGPU `toDataURL` read can
   come back black if it lands between presents. Make sure the editor tab is the
