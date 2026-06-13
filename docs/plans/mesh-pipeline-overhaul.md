@@ -873,3 +873,71 @@ future loops on this project:
   failure now DETACHES the session, so /health tells the truth (the exact
   scenario /health was built for). Soak sampler stopped (it would have ERRed
   for 7 more hours against a dead tab).
+
+### ▶▶ DAY-4 LOOP SCOPE (user-agreed 2026-06-13) — overnight correctness/perf/features
+Standing rules unchanged: DONE-MEANS-DONE (exit only state-1 complete+verified or
+state-2 human-blocked w/ exact repro; no "partial"); honesty bar (claim only what
+was OBSERVED; UI/visual = browser SEEN, never inferred); gates before EVERY commit
+(task lint + cargo test for EVERY touched crate, exit-status checked); grep ADDED
+staged lines for the banned codename; keep the stack DOWN during native gates
+(trunk+cargo artifact-lock fight = exit 143), restart as a TRACKED background task
+for browser verification; GET :9086/health FIRST when /debug goes quiet (now
+truthful — detaches dead sessions); imports via :9082 (glTF samples) / :9083
+(awsm-renderer-assets fixtures incl. mesh-authoring-tests/); node_transforms
+returns the WHOLE subtree — read entries[<id>]; set_frame_time/clear_frame_time for
+deterministic time-varying captures; clips own bones (delete to hand-pose).
+
+OVERNIGHT REALITY: the tab froze ~46min unattended last loop (display sleep / App
+Nap, not a leak). So ORDER the work most-verifiable-first and do NOT let browser-
+only features gate the loop's value: pillar 1 (correctness) + pillar 2 (perf) are
+largely NATIVE-verifiable and come first; pillar 3 (features) comes last, attempts
+browser SEEN when /health says attached, else lands the native-verifiable subset +
+queues the visual confirm with exact repro. A `caffeinate -dis` is running to
+stretch the window — use it, don't rely on it.
+
+PILLAR 1 — CORRECTNESS (native-first; shadow/material/MCP):
+- Shadow: audit the full lighting×shadow matrix for more bugs of the class already
+  fixed (EVSM multi-sun, max_distance scale-trap) — spot lights + point/cube
+  shadows under the new max_distance=auto; cascade-split correctness; bias defaults;
+  receive_shadows gate on every pass; IBL never shadow-attenuated. Add native tests
+  where the logic is pure (cascade fit, atlas packing, descriptor write).
+- Material: extend the per-base shader-module-completeness test (the one that caught
+  the flipbook_get_material boot break) to cover the OPAQUE compute + transparent +
+  masked + shadow-masked templates for ALL bases — any `<x>_get_material`/helper
+  called must be defined. Proptest material uniform-buffer packing round-trips.
+- MCP: dispatch/echo/undo round-trip tests for the command surface; truthful error
+  messages (no silent clamps); schema coverage. Audit every tool description for
+  accuracy against behavior.
+
+PILLAR 2 — PERF (per-frame + time-to-first-render):
+- Per-frame: finish the churn audit (any remaining add_*/remove_* or GPU-object
+  creation in the render loop → in-place update); add a lightweight perf-regression
+  guard (e.g. assert no per-frame allocation on the steady-state paths via counters).
+- TTFR: the "starts black until resize" latch (render_loop.rs DID_REAL_SIZE_SYNC) is
+  a WORKAROUND — find the root cause (surface-config/resize-observer race) and fix it
+  so first paint is correct without the backstop. Audit pipeline PREWARM coverage:
+  which variants compile lazily on first use (first-frame hitches) vs prewarmed at
+  boot — widen prewarm to the common set; parallelize createRenderPipelineAsync where
+  serialized. Native-measure what's countable (prewarmed variant count, compiles per
+  boot); browser-measure wall-clock TTFR when attached.
+
+PILLAR 3 — FEATURES (vetted open backlog; do in value order, finish each to the bar):
+- Tangent-generator consolidation: 3 impls still exist (renderer raw_mesh, glb-export,
+  renderer-gltf) despite the awsm-tangents crate — route all through it, byte-identity
+  proptest. (Also perf/quality.) NATIVE.
+- Camera animation lowering (scene/animation.rs "lowering deferred") — NATIVE + browser.
+- Custom-material alpha-only WGSL round-trip through the player (scene-loader/dynamic.rs
+  TODO) — NATIVE + browser.
+- Multi-UV (TEXCOORD_1+) + COLOR_n attribute wiring (renderer-gltf buffers) — NATIVE + browser.
+- NLA/mixer MCP tool coverage + agent-guide docs (commands exist; MCP surface thin) — NATIVE.
+- Phase-7 sweep: MCP tool/resource fidelity audit + module/doc-comment coverage on the
+  tricky seams (mesh_pack, convert, skinning, animation lowering, shadows). NATIVE.
+EXPLICITLY DEFER (too deep / low value / needs the user): Draco import, exotic KTX
+formats, animation RETARGETING, the intermittent frozen-canvas bug (stateful,
+browser-only, won't repro reliably unattended) — log, don't chase.
+
+CLOSING: when every elected item is state-1 or state-2, write the closing report
+(per item: landed commit + verification evidence, or queued w/ repro) + a soak
+verdict if one ran, update memory, post a morning status via SendUserMessage, and
+END (no further ScheduleWakeup). Do NOT push (the user pushes / PRs); the
+mesh-authoring PR #119 is already open — note new commits land on that branch.
