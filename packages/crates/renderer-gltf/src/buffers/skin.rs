@@ -191,3 +191,121 @@ fn convert_weights_to_f32(
 
     Ok(weights)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gltf::accessor::DataType;
+
+    // ── joint indices: every supported integer width decodes to u32 ──────────
+
+    #[test]
+    fn indices_u8_decode() {
+        // vec4<u8>, stride 4. Two vertices so we also exercise the offset.
+        let data = [1u8, 2, 3, 4, 250, 251, 252, 253];
+        assert_eq!(
+            convert_indices_to_u32(&data, DataType::U8, 0).unwrap(),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(
+            convert_indices_to_u32(&data, DataType::U8, 1).unwrap(),
+            [250, 251, 252, 253],
+            "vertex_index advances by the vec4<u8> stride (4 bytes)"
+        );
+    }
+
+    #[test]
+    fn indices_u16_decode() {
+        // vec4<u16> little-endian, stride 8.
+        let mut data = Vec::new();
+        for v in [10u16, 20, 30, 40, 300, 65535, 1, 0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(
+            convert_indices_to_u32(&data, DataType::U16, 0).unwrap(),
+            [10, 20, 30, 40]
+        );
+        assert_eq!(
+            convert_indices_to_u32(&data, DataType::U16, 1).unwrap(),
+            [300, 65535, 1, 0],
+            "u16 max widens to u32 without truncation"
+        );
+    }
+
+    #[test]
+    fn indices_u32_decode() {
+        // vec4<u32> little-endian, stride 16.
+        let mut data = Vec::new();
+        for v in [7u32, 8, 9, 10, 100_000, 0, 4_000_000_000, 5] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(
+            convert_indices_to_u32(&data, DataType::U32, 0).unwrap(),
+            [7, 8, 9, 10]
+        );
+        assert_eq!(
+            convert_indices_to_u32(&data, DataType::U32, 1).unwrap(),
+            [100_000, 0, 4_000_000_000, 5],
+            "full u32 range preserved (stride 16)"
+        );
+    }
+
+    #[test]
+    fn indices_unsupported_type_errors() {
+        // F32 is not a valid joint-index storage type.
+        let data = [0u8; 16];
+        assert!(convert_indices_to_u32(&data, DataType::F32, 0).is_err());
+    }
+
+    // ── weights: f32 passthrough + normalized-integer → unit-float ───────────
+
+    #[test]
+    fn weights_f32_decode() {
+        // vec4<f32> little-endian, stride 16.
+        let mut data = Vec::new();
+        for v in [0.5f32, 0.25, 0.125, 0.125, 1.0, 0.0, 0.0, 0.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(
+            convert_weights_to_f32(&data, DataType::F32, 0).unwrap(),
+            [0.5, 0.25, 0.125, 0.125]
+        );
+        assert_eq!(
+            convert_weights_to_f32(&data, DataType::F32, 1).unwrap(),
+            [1.0, 0.0, 0.0, 0.0],
+            "second vertex read at stride 16"
+        );
+    }
+
+    #[test]
+    fn weights_u16_normalized() {
+        // KHR normalized u16: value / 65535.
+        let mut data = Vec::new();
+        for v in [65535u16, 0, 32768, 16383] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        let w = convert_weights_to_f32(&data, DataType::U16, 0).unwrap();
+        assert_eq!(w[0], 1.0, "max u16 → 1.0");
+        assert_eq!(w[1], 0.0, "zero → 0.0");
+        assert!((w[2] - 32768.0 / 65535.0).abs() < 1e-7);
+        assert!((w[3] - 16383.0 / 65535.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn weights_u8_normalized() {
+        // KHR normalized u8: value / 255.
+        let data = [255u8, 0, 128, 64];
+        let w = convert_weights_to_f32(&data, DataType::U8, 0).unwrap();
+        assert_eq!(w[0], 1.0, "max u8 → 1.0");
+        assert_eq!(w[1], 0.0, "zero → 0.0");
+        assert!((w[2] - 128.0 / 255.0).abs() < 1e-7);
+        assert!((w[3] - 64.0 / 255.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn weights_unsupported_type_errors() {
+        // U32 is not a valid weight storage type.
+        let data = [0u8; 16];
+        assert!(convert_weights_to_f32(&data, DataType::U32, 0).is_err());
+    }
+}
