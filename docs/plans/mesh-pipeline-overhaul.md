@@ -1060,3 +1060,24 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
 - Browser playback confirm (a camera FovY track visibly animating the view) is
   optional — the feature pre-exists and was verified when it landed; this item
   only corrected the stale comment + added the missing native lock. State 1.
+
+### Day-4 loop — pillar 3, item #26: custom-material alpha-WGSL round-trip through player
+- GAP (real): a custom MASK material's 2nd alpha-only WGSL window round-tripped
+  in the editor's project.json (StoredMaterial.alpha_wgsl) but was DROPPED on
+  the bundle/player path — persistence.rs wrote material.wgsl but no alpha
+  sidecar; scene-loader hardcoded alpha_wgsl: None → the player rendered custom
+  Mask materials SOLID (no cutout).
+- FIXED via a `material.alpha.wgsl` SIDECAR (parallel to material.wgsl, the
+  established pattern — keeps WGSL out of json): persistence.rs::material_files
+  emits it when non-empty; scene-loader reads the optional sidecar and threads
+  Option<String> into registration_from_definition, which sets alpha_wgsl
+  (whitespace-only → None). Additive + back-compat (absent sidecar → no cutout,
+  older bundles unaffected). TODO(round-trip) removed.
+- Native test (scene-loader): registration_from_definition threads a non-empty
+  sidecar into the registration; absent/whitespace → None. lint clean,
+  scene-loader + editor suites green.
+- Browser SEEN confirm QUEUED (#26-browser): export a bundle with a Mask custom
+  material → reload/load it → the cutout renders (not solid). Repro: author a
+  custom material, alpha=Mask + an alpha-only WGSL window, assign to a quad,
+  export player bundle, load it, screenshot. State: code state-1 (logic landed +
+  tested), visual state-2 (queued).

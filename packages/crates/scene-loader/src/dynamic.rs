@@ -60,7 +60,12 @@ pub fn register_custom_materials(
             continue;
         };
         let wgsl = String::from_utf8_lossy(wgsl).into_owned();
-        let reg = registration_from_definition(&cm.id, &def, wgsl);
+        // Optional 2nd alpha-only WGSL window (masked cutouts). Absent for
+        // opaque/blend materials and older bundles → no cutout (back-compat).
+        let alpha_wgsl = assets
+            .get(&format!("{folder}/material.alpha.wgsl"))
+            .map(|b| String::from_utf8_lossy(b).into_owned());
+        let reg = registration_from_definition(&cm.id, &def, wgsl, alpha_wgsl);
         if let Ok(shader_id) = renderer.register_material(reg) {
             out.insert(cm.id, shader_id);
         }
@@ -189,6 +194,7 @@ fn registration_from_definition(
     id: &AssetId,
     def: &MaterialDefinition,
     wgsl: String,
+    alpha_wgsl: Option<String>,
 ) -> MaterialRegistration {
     let layout = MaterialLayout {
         uniforms: def
@@ -234,10 +240,12 @@ fn registration_from_definition(
         uniform_defaults,
         shader_includes: includes_from_keys(&def.shader_includes),
         fragment_inputs: inputs_from_keys(&def.fragment_inputs),
-        // TODO(round-trip): thread the 2nd alpha-only WGSL window through the
-        // scene `MaterialDefinition` so the player rebuilds masked cutouts too.
-        // For now the player renders custom MASK materials solid (no cutout).
-        alpha_wgsl: None,
+        // 2nd alpha-only WGSL window for masked cutouts, loaded from the
+        // `material.alpha.wgsl` sidecar (parallel to `material.wgsl`). Empty /
+        // whitespace-only → None (no cutout); a non-empty window compiles into
+        // the masked visibility-raster variant so the player rebuilds the
+        // cutout just like the editor.
+        alpha_wgsl: alpha_wgsl.filter(|s| !s.trim().is_empty()),
     }
 }
 
@@ -362,4 +370,54 @@ fn hash_str(s: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_def() -> MaterialDefinition {
+        MaterialDefinition {
+            name: "m".into(),
+            version: 1,
+            alpha_mode: SAlphaMode::Mask { cutoff: 0.5 },
+            double_sided: false,
+            uniforms: vec![],
+            textures: vec![],
+            buffers: vec![],
+            shader_includes: vec![],
+            fragment_inputs: vec![],
+        }
+    }
+
+    /// The `material.alpha.wgsl` sidecar threads into the rebuilt registration:
+    /// a non-empty window survives (the player can rebuild the masked cutout),
+    /// while absent / whitespace-only collapses to `None` (no cutout) — the
+    /// round-trip the player previously dropped (TODO removed).
+    #[test]
+    fn alpha_wgsl_sidecar_threads_into_registration() {
+        let id = AssetId::new();
+        let wgsl = "fn frag() {}".to_string();
+
+        let present = registration_from_definition(
+            &id,
+            &minimal_def(),
+            wgsl.clone(),
+            Some("fn custom_alpha() -> f32 { return 1.0; }".into()),
+        );
+        assert_eq!(
+            present.alpha_wgsl.as_deref(),
+            Some("fn custom_alpha() -> f32 { return 1.0; }"),
+            "non-empty alpha sidecar must reach the registration"
+        );
+
+        let absent = registration_from_definition(&id, &minimal_def(), wgsl.clone(), None);
+        assert!(absent.alpha_wgsl.is_none(), "no sidecar → no cutout");
+
+        let blank = registration_from_definition(&id, &minimal_def(), wgsl, Some("  \n\t ".into()));
+        assert!(
+            blank.alpha_wgsl.is_none(),
+            "whitespace-only sidecar collapses to None"
+        );
+    }
 }

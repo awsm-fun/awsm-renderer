@@ -178,6 +178,14 @@ pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
         }
         let folder = material_folder_path(m.id, &m.name.get_cloned());
         out.push((format!("{folder}/material.wgsl"), m.wgsl.get_cloned()));
+        // 2nd alpha-only WGSL window (masked cutouts) as a sidecar parallel to
+        // material.wgsl — only when non-empty, so opaque/blend materials + the
+        // common case keep clean bundles. The loader reads it back (absent →
+        // no cutout). Closes the round-trip the player previously dropped.
+        let alpha_wgsl = m.alpha_wgsl.get_cloned();
+        if !alpha_wgsl.trim().is_empty() {
+            out.push((format!("{folder}/material.alpha.wgsl"), alpha_wgsl));
+        }
         // The full serde `MaterialDefinition` — the player parses this +
         // `material.wgsl` to rebuild the `MaterialRegistration`.
         let def = crate::engine::bridge::dynamic::material_definition(m);
