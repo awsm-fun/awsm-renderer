@@ -1213,3 +1213,17 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   cargo test -p awsm-renderer skin_lod ✅ (4 passed; 223 compiled+filtered). state-1.
 - NEXT seam candidates (0/thin tests, real logic): meshes/skins.rs (507 lines),
   mesh_pack.rs layouts, gltf-convert parity, shadow cascade/atlas packing.
+
+### Loop (2026-06-14) — #37 P1 tests: scene-loader material conversion (90499a27)
+- scene-loader/material.rs (the SHARED MaterialDef→renderer Material lowering
+  used by both editor live-render and player bundle load) had ZERO tests. Added
+  13: alpha_mode_of legacy heuristic + exact 0.999 threshold + Mask preservation
+  + Blend passthrough; material_to_renderer dispatch (Unlit/Toon/Pbr/FlipBook) +
+  Toon band/step flooring + FlipBook mode/grid/tint; material_to_pbr factor copy
+  + vertex-color set selection; apply_extensions off-by-default + factor
+  passthrough. Pins editor/player lowering PARITY (the round-trip's whole point).
+- Gate: fmt ✅, clippy -p awsm-scene-loader --all-features --tests -D warnings ✅,
+  cargo test -p awsm-scene-loader ✅ (14 passed). state-1.
+- scene-loader now 1→14 tests. Other thin seams remain: dynamic.rs layout_hash/
+  mapping fns, animation.rs resolve_target/expand_descendants, glb-export,
+  gltf-convert parity.
