@@ -1227,3 +1227,16 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
 - scene-loader now 1→14 tests. Other thin seams remain: dynamic.rs layout_hash/
   mapping fns, animation.rs resolve_target/expand_descendants, glb-export,
   gltf-convert parity.
+
+### Loop (2026-06-14) — #38 P1 tests: dynamic-material layout_hash boundary (561cf24f)
+- scene-loader/dynamic.rs layout_hash gates pipeline-registration idempotency
+  (one dim of (shader_id,name,layout_hash,wgsl_hash)). Added 7 tests pinning the
+  binding-layout boundary: determinism; tracks name/uniform-presence/uniform-
+  name/uniform-TYPE + texture/buffer adds; IGNORES uniform VALUE (cheap no-
+  recompile update), render-state (alpha_mode/double_sided), shader_includes
+  (those live in wgsl_hash). + default_value_for zero/identity table.
+- Gate: fmt ✅, clippy -p awsm-scene-loader --all-features --tests -D warnings ✅,
+  cargo test -p awsm-scene-loader ✅ (21 passed; scene-loader 14→21). state-1.
+- scene-loader now 1→21 tests across 3 loop iterations (#37 material conv, #38
+  layout_hash). Remaining thin seams: animation.rs expand_descendants (needs
+  Scene/EditorNode fixtures), glb-export, gltf-convert parity, geometry.
