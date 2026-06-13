@@ -1081,3 +1081,28 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
   custom material, alpha=Mask + an alpha-only WGSL window, assign to a quad,
   export player bundle, load it, screenshot. State: code state-1 (logic landed +
   tested), visual state-2 (queued).
+
+### Day-4 loop — pillar 3, item #27: multi-UV / COLOR_n — investigated; infra DONE, gap queued
+- INVESTIGATION (the heavy lifting is already built, end-to-end multi-set):
+  · import: renderer-gltf attributes.rs preserves arbitrary TexCoords(index) /
+    Colors(index) — NOT capped at 0.
+  · buffers: MeshBufferCustomVertexAttributeInfo carries `index`; the custom-
+    attribute interleaved buffer packs ALL sets (stride "across all custom
+    vertex attributes").
+  · specialization: ShaderMaterialVertexAttributes counts uv_sets / color_sets
+    = max(index)+1, UNBOUNDED (no MAX cap); the shader indexes via
+    uv_sets_index / color_sets_index.
+  · PBR textures already sample a chosen set today — TextureRef.uv_index /
+    KHR_texture_transform carries per-texture tex_coord, honored by the bridge.
+- PRECISE REMAINING GAP (narrow, GPU-verification-bound, no current consumer):
+  the custom-material authoring API (FragmentInputs) exposes a single `UV`
+  concept + vertex-color set 0 — an author can't yet request a SPECIFIC
+  non-zero UV/color set in custom WGSL. Closing it is shader-codegen
+  (per-set accessor + cache-key thread) whose correctness is GPU-only; landing
+  it unverified overnight would be a risky half-change against the byte-packed
+  attribute layout. → STATE-2 QUEUED (#33).
+- Repro to build+verify (browser, with the user): import a glTF with TEXCOORD_1
+  (or author COLOR_1); expose `uv(set)` / `vertex_color(set)` accessors in the
+  custom-material WGSL contract; bind a texture to set 1; confirm it samples the
+  right set on screen. PBR multi-UV needs only a confirmation screenshot (already
+  wired). No code landed (honest: infra complete, authoring gap needs eyes).
