@@ -1143,3 +1143,13 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
   new truthful-detach behavior (check GET /health when calls go silent).
 - Docs-only; no code touched. NATIVE. State 1. (Truthful-error audit from #21
   folded in — no overclaims found to fix.)
+
+### ▶▶ DAY-4 CLOSING REPORT (2026-06-14) — native work COMPLETE, browser batch handed to final wake
+15 commits tonight on mesh-authoring (PR #119), all gated (lint + per-crate tests), nothing pushed.
+PILLAR 1 (correctness): #19 shader-module completeness guard (1158af99) · #20 shadow×lighting audit + 8 cascade-math tests (b1c036d6) · #21 material-uniform layout + MCP-wire round-trip locks (b29ecb5d).
+PILLAR 2 (perf): #22 zero-alloc skeleton overlay + pure chain_depth tests (c2f7059e) · #23 TTFR architecture audit + docs/time-to-first-render.md (5fa9a378).
+PILLAR 3 (features): #24 tangent consolidation, 3 impls→awsm-tangents, byte-identity proptest, −1 prod dep (e0de252a) · #25 camera-anim lowering locked + stale comment fixed (c0473e2a) · #26 alpha-WGSL bundle round-trip via material.alpha.wgsl sidecar (91abeb35) · #27 multi-UV investigated→infra already complete, authoring-API gap queued (61375ce6) · #28 NLA/track MCP typed tools + agent-guide docs + wire coverage (6c5a864a) · #29 MCP.md fidelity drift fix (5eaa96ae).
+REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NOT leave queued per user):
+  · #31 TTFR: IMPLEMENT renderer.prewarm_pipelines().await after the editor load+finalize path (site/risk in docs/time-to-first-render.md), verify warm pipeline counts at first draw via get_memory_stats + no "destroyed texture" in get_console_logs; gate (stack DOWN for cargo) + commit if clean.
+  · #32: author custom Mask material + alpha-only WGSL → assign quad → export_player_bundle → load_player_bundle → screenshot cutout renders (not solid).
+  · #33: confirm PBR multi-UV renders (import a TEXCOORD_1 model if handy); the custom-material non-zero-set ACCESSOR is design+shader-codegen — if not landable safely, that sub-piece stays a documented follow-up (infra is done).
