@@ -420,4 +420,145 @@ mod tests {
             "whitespace-only sidecar collapses to None"
         );
     }
+
+    // ── layout_hash: identity of the BINDING layout only ─────────────────────
+    //
+    // layout_hash is one dimension of the registry's
+    // `(shader_id, name, layout_hash, wgsl_hash)` idempotency key. It captures
+    // what the auto-generated `MaterialData` struct looks like — uniform
+    // names+types, texture slot names, buffer slot names — NOT uniform values,
+    // render-state (alpha_mode / double_sided), or the WGSL source (those live
+    // in other key dimensions, chiefly wgsl_hash). These tests pin exactly that
+    // boundary, so an authored uniform-value tweak stays a cheap no-recompile
+    // update while a real layout change forces a distinct registration.
+
+    fn uni(name: &str, ty: SFieldType, default: SUniformValue) -> awsm_scene::UniformField {
+        awsm_scene::UniformField {
+            name: name.into(),
+            ty,
+            default,
+        }
+    }
+
+    #[test]
+    fn layout_hash_is_deterministic() {
+        assert_eq!(
+            layout_hash(&minimal_def()),
+            layout_hash(&minimal_def()),
+            "same definition must hash identically"
+        );
+    }
+
+    #[test]
+    fn layout_hash_tracks_material_name() {
+        let mut renamed = minimal_def();
+        renamed.name = "other".into();
+        assert_ne!(layout_hash(&minimal_def()), layout_hash(&renamed));
+    }
+
+    #[test]
+    fn layout_hash_ignores_uniform_value_but_tracks_type() {
+        let mut base = minimal_def();
+        base.uniforms = vec![uni("k", SFieldType::F32, SUniformValue::F32(1.0))];
+
+        // Same name+type, different default VALUE → layout unchanged (a uniform
+        // edit is a no-recompile uniform update, not a pipeline rebuild).
+        let mut val_changed = minimal_def();
+        val_changed.uniforms = vec![uni("k", SFieldType::F32, SUniformValue::F32(9.0))];
+        assert_eq!(
+            layout_hash(&base),
+            layout_hash(&val_changed),
+            "uniform value edit must NOT change the layout hash"
+        );
+
+        // Same name, different TYPE → layout changed (recompile).
+        let mut ty_changed = minimal_def();
+        ty_changed.uniforms = vec![uni("k", SFieldType::Vec4, SUniformValue::Vec4([0.0; 4]))];
+        assert_ne!(
+            layout_hash(&base),
+            layout_hash(&ty_changed),
+            "uniform type change MUST change the layout hash"
+        );
+    }
+
+    #[test]
+    fn layout_hash_tracks_uniform_presence_and_name() {
+        let mut added = minimal_def();
+        added.uniforms = vec![uni("k", SFieldType::F32, SUniformValue::F32(0.0))];
+        assert_ne!(
+            layout_hash(&minimal_def()),
+            layout_hash(&added),
+            "adding a uniform changes the layout"
+        );
+
+        let mut renamed = minimal_def();
+        renamed.uniforms = vec![uni("k2", SFieldType::F32, SUniformValue::F32(0.0))];
+        assert_ne!(
+            layout_hash(&added),
+            layout_hash(&renamed),
+            "renaming a uniform changes the layout"
+        );
+    }
+
+    #[test]
+    fn layout_hash_tracks_textures_and_buffers() {
+        use awsm_scene::{BufferSlot, TextureSlot};
+
+        let mut with_tex = minimal_def();
+        with_tex.textures = vec![TextureSlot {
+            name: "albedo".into(),
+            default: None,
+        }];
+        assert_ne!(
+            layout_hash(&minimal_def()),
+            layout_hash(&with_tex),
+            "adding a texture slot changes the layout"
+        );
+
+        let mut with_buf = minimal_def();
+        with_buf.buffers = vec![BufferSlot {
+            name: "data".into(),
+            default: None,
+        }];
+        assert_ne!(
+            layout_hash(&minimal_def()),
+            layout_hash(&with_buf),
+            "adding a buffer slot changes the layout"
+        );
+    }
+
+    #[test]
+    fn layout_hash_ignores_render_state_and_includes() {
+        // alpha_mode / double_sided / shader_includes are not part of the
+        // binding layout (they affect routing + WGSL, captured elsewhere).
+        let mut changed = minimal_def();
+        changed.alpha_mode = SAlphaMode::Blend;
+        changed.double_sided = true;
+        changed.shader_includes = vec!["brdf".into(), "shadows".into()];
+        assert_eq!(
+            layout_hash(&minimal_def()),
+            layout_hash(&changed),
+            "render-state / include changes do not alter the layout hash"
+        );
+    }
+
+    // ── default_value_for: the zero/identity table ───────────────────────────
+
+    #[test]
+    fn default_value_for_is_zeroed_per_type() {
+        assert_eq!(default_value_for(FieldType::F32), UniformValue::F32(0.0));
+        assert_eq!(default_value_for(FieldType::U32), UniformValue::U32(0));
+        assert_eq!(
+            default_value_for(FieldType::Vec4),
+            UniformValue::Vec4([0.0; 4])
+        );
+        assert_eq!(
+            default_value_for(FieldType::Mat4),
+            UniformValue::Mat4([0.0; 16])
+        );
+        assert_eq!(
+            default_value_for(FieldType::Bool),
+            UniformValue::Bool(false)
+        );
+    }
 }
