@@ -1188,3 +1188,17 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   Fixed the stale skeleton_viz doc claim that light icons already did this.
 - Gate: wasm build ✅ (trunk), fmt ✅, clippy --all-features --tests -D warnings
   ✅, cargo test -p awsm-editor ✅ (10 passed). state-1.
+
+### Loop (2026-06-14) — #35 P1 tests: skin joint/weight decode (d279ae64)
+- renderer-gltf buffers/skin.rs had ZERO tests over two correctness-critical
+  decoders. Added 8: convert_indices_to_u32 (U8/U16/U32 stride+offset, full-range
+  widening, F32→err) and convert_weights_to_f32 (F32 passthrough, KHR normalized
+  u16 /65535 + u8 /255, U32→err). Pins the per-width stride math + normalization
+  constants that underlie all skinned playback.
+- Gate: fmt ✅, clippy --all-features --tests -D warnings ✅, cargo test
+  -p awsm-renderer-gltf ✅ (tangent proptest ran fast — finite-range fix in). state-1.
+- NOTED for next iteration: meshes/skin_lod.rs test `lod_levels_pick_first_match`
+  RE-IMPLEMENTS the period-selection closure inside the test instead of calling
+  production code (can pass while prod drifts). Extract a pure
+  `period_for_distance(levels, dist)->u8`, call it from
+  set_skin_update_periods_by_distance AND the test.
