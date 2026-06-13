@@ -80,3 +80,25 @@ no change.**
 `get_memory_stats` (day-3) reports live `render_pipelines` + `compute_pipelines`
 counts — sample before/after first draw to observe lazy compiles. Wall-clock
 TTFR needs a browser `performance.now()` probe (queued with the fix above).
+
+## UPDATE (2026-06-14, browser-verified) — runtime load already prewarms
+
+Re-investigated with the live editor. The earlier "queued fix" was over-stated:
+
+- **Runtime / player / bundle load (`populate_awsm_scene`) ALREADY prewarms** —
+  its Phase 4 calls `wait_for_pipelines_ready_with_progress`, driving every
+  material + shadow pipeline to ready (one batch) BEFORE returning, reporting
+  `LoadPhase::CompilingPipelines`. So the path that actually ships in a game
+  has no first-frame pipeline hitch. ✓ No change needed.
+- **Editor interactive import** (`import_model_from_url` → async bridge
+  materialization) is the only path that compiles lazily on first draw.
+  MEASURED on the live tab: importing the Fox jumps render pipelines 13→107
+  (+94) and compute 23→50, settling in <1s on a warm GPU cache; the editor's
+  activity pill already covers this window. The cold-cache cost is the
+  multi-hundred-ms relocate-able tax.
+- **Verdict:** the runtime TTFR is already optimal; the editor-import lazy burst
+  is an editor-only UX nicety. A clean prewarm there needs a
+  post-materialization-settle hook in the async bridge (not the load handler) —
+  a small, non-urgent follow-up, NOT the risky load-path bolt-on first imagined.
+  A naive prewarm would be compile-only + lock-serialized (no destroyed-texture
+  risk) but ineffective if it runs before the debounced materialization settles.

@@ -1153,3 +1153,14 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   · #31 TTFR: IMPLEMENT renderer.prewarm_pipelines().await after the editor load+finalize path (site/risk in docs/time-to-first-render.md), verify warm pipeline counts at first draw via get_memory_stats + no "destroyed texture" in get_console_logs; gate (stack DOWN for cargo) + commit if clean.
   · #32: author custom Mask material + alpha-only WGSL → assign quad → export_player_bundle → load_player_bundle → screenshot cutout renders (not solid).
   · #33: confirm PBR multi-UV renders (import a TEXCOORD_1 model if handy); the custom-material non-zero-set ACCESSOR is design+shader-codegen — if not landable safely, that sub-piece stays a documented follow-up (infra is done).
+
+### Loop (2026-06-14) — #31 TTFR RESOLVED (runtime path already prewarms; verified)
+- Browser-verified: populate_awsm_scene (runtime/player/bundle load) Phase 4
+  already drives wait_for_pipelines_ready — the SHIPPING path has no first-frame
+  pipeline hitch. The only lazy-compile path is the editor's interactive
+  import_model_from_url (measured: Fox import → render pipelines 13→107, settles
+  <1s warm; activity-pill-covered). Prewarming that cleanly needs an async-
+  bridge post-materialization-settle hook — minor editor-UX follow-up, documented
+  in docs/time-to-first-render.md. NOT landing the risky/ineffective load-path
+  bolt-on. #31 state-1 (runtime verified-optimal); editor-import relocation =
+  small documented follow-up, not a queued blocker.
