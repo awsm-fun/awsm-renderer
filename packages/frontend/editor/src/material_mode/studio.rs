@@ -306,10 +306,16 @@ fn builtin_texture_row(
 /// normal and occlusion maps are PBR-only.
 fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_editor_protocol::MaterialDef) -> Dom {
     use awsm_editor_protocol::MaterialShading;
+    let is_flipbook = matches!(def.shading, MaterialShading::FlipBook { .. });
     let mut sec = Section::new("Textures");
+    // For FlipBook the base-color slot IS the sprite-sheet atlas — label it so.
     sec = sec.child(builtin_texture_row(
         mat,
-        "Base color map",
+        if is_flipbook {
+            "Atlas (sprite sheet)"
+        } else {
+            "Base color map"
+        },
         def.base_color_texture,
         |d, t| {
             d.base_color_texture = t;
@@ -341,14 +347,19 @@ fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_editor_protocol::Mater
             },
         ));
     }
-    sec = sec.child(builtin_texture_row(
-        mat,
-        "Emissive map",
-        def.emissive_texture,
-        |d, t| {
-            d.emissive_texture = t;
-        },
-    ));
+    // Emissive map: PBR / Unlit / Toon sample an emissive texture; FlipBook
+    // does NOT (its only texture slot is the atlas, bound from base-color), so
+    // an emissive map there would be a dead control the bridge silently drops.
+    if !is_flipbook {
+        sec = sec.child(builtin_texture_row(
+            mat,
+            "Emissive map",
+            def.emissive_texture,
+            |d, t| {
+                d.emissive_texture = t;
+            },
+        ));
+    }
     sec.render()
 }
 
