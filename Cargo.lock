@@ -489,6 +489,7 @@ dependencies = [
  "awsm-materials",
  "awsm-renderer",
  "awsm-renderer-core",
+ "awsm-tangents",
  "bevy_mikktspace",
  "futures",
  "glam 0.32.1",

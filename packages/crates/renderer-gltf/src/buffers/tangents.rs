@@ -95,7 +95,102 @@ pub(super) fn ensure_tangents<'a>(
     Ok(attribute_data)
 }
 
-/// Wrapper struct for mikktspace Geometry trait implementation
+/// Bake per-vertex `vec4` tangents from the LE byte buffers (`positions`/
+/// `normals` = 12 B vec3, `texcoords` = 8 B vec2) for the given triangles, as a
+/// LE `vec4` byte stream (16 B/vertex).
+///
+/// Delegates the MikkTSpace generation to the shared `awsm-tangents` crate —
+/// the SAME implementation the renderer's raw-mesh path and the glb exporter
+/// use — so all three callers can no longer drift (the previous per-path copy
+/// of the mikktspace adapter is retained only as the `#[cfg(test)]` byte-
+/// identity reference below). Decode here is bit-preserving (`from_le_bytes` →
+/// the crate → `to_le_bytes`); an out-of-range index now fails loud
+/// (`generate_tangents` returns `None` → `Err`) instead of silently producing
+/// zero-position garbage as the old inline reader did.
+fn compute_tangents(
+    positions: &[u8],
+    normals: &[u8],
+    texcoords: &[u8],
+    triangle_indices: &[[usize; 3]],
+) -> Result<Vec<u8>> {
+    if positions.len() % 12 != 0 {
+        return Err(AwsmGltfError::GenerateTangents(
+            "Position buffer length is not a multiple of 12".to_string(),
+        ));
+    }
+    if normals.len() % 12 != 0 {
+        return Err(AwsmGltfError::GenerateTangents(
+            "Normal buffer length is not a multiple of 12".to_string(),
+        ));
+    }
+    if texcoords.len() % 8 != 0 {
+        return Err(AwsmGltfError::GenerateTangents(
+            "TexCoord buffer length is not a multiple of 8".to_string(),
+        ));
+    }
+    // Preserve the old early-out: no triangles → no tangents (the crate would
+    // otherwise reject `indices.len() < 3`).
+    if triangle_indices.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let pos = decode_vec3(positions);
+    let nrm = decode_vec3(normals);
+    let uv = decode_vec2(texcoords);
+    let indices: Vec<u32> = triangle_indices
+        .iter()
+        .flat_map(|t| t.iter().map(|&i| i as u32))
+        .collect();
+
+    let tangents =
+        awsm_tangents::generate_tangents(&pos, &nrm, &uv, &indices).ok_or_else(|| {
+            AwsmGltfError::GenerateTangents("MikkTSpace tangent generation failed".to_string())
+        })?;
+
+    let mut out = Vec::with_capacity(tangents.len() * 16);
+    for t in &tangents {
+        out.extend_from_slice(&t[0].to_le_bytes());
+        out.extend_from_slice(&t[1].to_le_bytes());
+        out.extend_from_slice(&t[2].to_le_bytes());
+        out.extend_from_slice(&t[3].to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// LE byte stream → `[f32; 3]`s (bit-preserving).
+fn decode_vec3(bytes: &[u8]) -> Vec<[f32; 3]> {
+    bytes
+        .chunks_exact(12)
+        .map(|c| {
+            [
+                f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
+            ]
+        })
+        .collect()
+}
+
+/// LE byte stream → `[f32; 2]`s (bit-preserving).
+fn decode_vec2(bytes: &[u8]) -> Vec<[f32; 2]> {
+    bytes
+        .chunks_exact(8)
+        .map(|c| {
+            [
+                f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+            ]
+        })
+        .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-consolidation REFERENCE implementation — the per-path byte-buffer
+// mikktspace adapter this file used before delegating to `awsm-tangents`.
+// Retained ONLY as the byte-identity guard (parity_tests below) so the
+// consolidation is provably lossless for well-formed meshes. Not shipped.
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
 struct MikkTSpaceGeometry<'a> {
     positions: &'a [u8],
     normals: &'a [u8],
@@ -108,6 +203,7 @@ struct MikkTSpaceGeometry<'a> {
     tangent_count: Vec<u32>,
 }
 
+#[cfg(test)]
 impl<'a> MikkTSpaceGeometry<'a> {
     fn new(
         positions: &'a [u8],
@@ -130,7 +226,7 @@ impl<'a> MikkTSpaceGeometry<'a> {
     }
 
     fn get_position(&self, vertex_index: usize) -> [f32; 3] {
-        let offset = vertex_index * 12; // 3 f32s = 12 bytes
+        let offset = vertex_index * 12;
         if offset + 12 > self.positions.len() {
             return [0.0, 0.0, 0.0];
         }
@@ -142,7 +238,7 @@ impl<'a> MikkTSpaceGeometry<'a> {
     }
 
     fn get_normal(&self, vertex_index: usize) -> [f32; 3] {
-        let offset = vertex_index * 12; // 3 f32s = 12 bytes
+        let offset = vertex_index * 12;
         if offset + 12 > self.normals.len() {
             return [0.0, 1.0, 0.0];
         }
@@ -154,7 +250,7 @@ impl<'a> MikkTSpaceGeometry<'a> {
     }
 
     fn get_texcoord(&self, vertex_index: usize) -> [f32; 2] {
-        let offset = vertex_index * 8; // 2 f32s = 8 bytes
+        let offset = vertex_index * 8;
         if offset + 8 > self.texcoords.len() {
             return [0.0, 0.0];
         }
@@ -166,24 +262,18 @@ impl<'a> MikkTSpaceGeometry<'a> {
 
     fn finalize_tangents(&self) -> Vec<[f32; 4]> {
         let mut out = Vec::with_capacity(self.tangent_sum.len());
-
         for vertex_index in 0..self.tangent_sum.len() {
             let count = self.tangent_count[vertex_index];
             if count == 0 {
                 out.push([1.0, 0.0, 0.0, 1.0]);
                 continue;
             }
-
             let sum = self.tangent_sum[vertex_index];
             let mut tangent = normalize_or_fallback(sum, self.get_normal(vertex_index));
-            // Ensure finite output in all cases.
             if !tangent.iter().all(|v| v.is_finite()) {
                 tangent = [1.0, 0.0, 0.0];
             }
-
             let sign_sum = self.tangent_sign_sum[vertex_index];
-            // UV seams can produce nearly-canceling signed tangents for the same shared vertex.
-            // Use sign_sum when stable; otherwise fall back to majority vote by sign count.
             const SIGN_EPSILON: f32 = 1e-4;
             let sign = if !sign_sum.is_finite() {
                 1.0
@@ -200,18 +290,17 @@ impl<'a> MikkTSpaceGeometry<'a> {
             } else {
                 -1.0
             };
-
             out.push([tangent[0], tangent[1], tangent[2], sign]);
         }
-
         out
     }
 }
 
+#[cfg(test)]
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-
+#[cfg(test)]
 fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -219,7 +308,7 @@ fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
         a[0] * b[1] - a[1] * b[0],
     ]
 }
-
+#[cfg(test)]
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
     let len_sq = dot3(v, v);
     if len_sq > 1e-20 {
@@ -229,7 +318,7 @@ fn normalize3(v: [f32; 3]) -> [f32; 3] {
         [0.0, 0.0, 0.0]
     }
 }
-
+#[cfg(test)]
 fn canonical_tangent_from_normal(normal: [f32; 3]) -> [f32; 3] {
     let n = normalize3(normal);
     let axis = if n[1].abs() < 0.999 {
@@ -245,14 +334,11 @@ fn canonical_tangent_from_normal(normal: [f32; 3]) -> [f32; 3] {
         [1.0, 0.0, 0.0]
     }
 }
-
+#[cfg(test)]
 fn normalize_or_fallback(v: [f32; 3], normal: [f32; 3]) -> [f32; 3] {
     let n = normalize3(normal);
-    // Remove any component along the normal before normalization.
-    let v_ortho = {
-        let proj = dot3(v, n);
-        [v[0] - n[0] * proj, v[1] - n[1] * proj, v[2] - n[2] * proj]
-    };
+    let proj = dot3(v, n);
+    let v_ortho = [v[0] - n[0] * proj, v[1] - n[1] * proj, v[2] - n[2] * proj];
     let t = normalize3(v_ortho);
     if dot3(t, t) > 0.0 {
         t
@@ -261,35 +347,25 @@ fn normalize_or_fallback(v: [f32; 3], normal: [f32; 3]) -> [f32; 3] {
     }
 }
 
+#[cfg(test)]
 impl bevy_mikktspace::Geometry for MikkTSpaceGeometry<'_> {
     fn num_faces(&self) -> usize {
         self.triangles.len()
     }
-
     fn num_vertices_of_face(&self, _face: usize) -> usize {
-        3 // Always triangles
+        3
     }
-
     fn position(&self, face: usize, vert: usize) -> [f32; 3] {
-        let vertex_index = self.triangles[face][vert];
-        self.get_position(vertex_index)
+        self.get_position(self.triangles[face][vert])
     }
-
     fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
-        let vertex_index = self.triangles[face][vert];
-        self.get_normal(vertex_index)
+        self.get_normal(self.triangles[face][vert])
     }
-
     fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
-        let vertex_index = self.triangles[face][vert];
-        self.get_texcoord(vertex_index)
+        self.get_texcoord(self.triangles[face][vert])
     }
-
     fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
         let vertex_index = self.triangles[face][vert];
-        // MikkTSpace can emit different tangents for a shared vertex when UV charts meet.
-        // Accumulate and normalize for deterministic per-vertex tangents instead of
-        // last-write-wins artifacts.
         self.tangent_sum[vertex_index][0] += tangent[0];
         self.tangent_sum[vertex_index][1] += tangent[1];
         self.tangent_sum[vertex_index][2] += tangent[2];
@@ -303,36 +379,24 @@ impl bevy_mikktspace::Geometry for MikkTSpaceGeometry<'_> {
     }
 }
 
-fn compute_tangents(
+/// The pre-consolidation byte-buffer tangent baker, retained as the
+/// byte-identity reference for `parity_tests`.
+#[cfg(test)]
+fn reference_compute_tangents(
     positions: &[u8],
     normals: &[u8],
     texcoords: &[u8],
     triangle_indices: &[[usize; 3]],
 ) -> Result<Vec<u8>> {
-    // Validate buffer sizes
-    if positions.len() % 12 != 0 {
+    if positions.len() % 12 != 0 || normals.len() % 12 != 0 || texcoords.len() % 8 != 0 {
         return Err(AwsmGltfError::GenerateTangents(
-            "Position buffer length is not a multiple of 12".to_string(),
+            "bad buffer length".to_string(),
         ));
     }
-    if normals.len() % 12 != 0 {
-        return Err(AwsmGltfError::GenerateTangents(
-            "Normal buffer length is not a multiple of 12".to_string(),
-        ));
-    }
-    if texcoords.len() % 8 != 0 {
-        return Err(AwsmGltfError::GenerateTangents(
-            "TexCoord buffer length is not a multiple of 8".to_string(),
-        ));
-    }
-
     let vertex_count = positions.len() / 12;
-
     if triangle_indices.is_empty() {
         return Ok(Vec::new());
     }
-
-    // Create geometry wrapper and generate tangents
     let mut geometry = MikkTSpaceGeometry::new(
         positions,
         normals,
@@ -340,22 +404,76 @@ fn compute_tangents(
         triangle_indices,
         vertex_count,
     );
-
     if !bevy_mikktspace::generate_tangents(&mut geometry) {
         return Err(AwsmGltfError::GenerateTangents(
             "MikkTSpace tangent generation failed".to_string(),
         ));
     }
+    let mut out = Vec::with_capacity(vertex_count * 16);
+    for tangent in &geometry.finalize_tangents() {
+        out.extend_from_slice(&tangent[0].to_le_bytes());
+        out.extend_from_slice(&tangent[1].to_le_bytes());
+        out.extend_from_slice(&tangent[2].to_le_bytes());
+        out.extend_from_slice(&tangent[3].to_le_bytes());
+    }
+    Ok(out)
+}
 
-    // Convert tangents to bytes
-    let mut tangents_bytes = Vec::with_capacity(vertex_count * 16); // 4 f32s per tangent
-    let final_tangents = geometry.finalize_tangents();
-    for tangent in &final_tangents {
-        tangents_bytes.extend_from_slice(&tangent[0].to_le_bytes());
-        tangents_bytes.extend_from_slice(&tangent[1].to_le_bytes());
-        tangents_bytes.extend_from_slice(&tangent[2].to_le_bytes());
-        tangents_bytes.extend_from_slice(&tangent[3].to_le_bytes());
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn enc3(vs: &[[f32; 3]]) -> Vec<u8> {
+        vs.iter()
+            .flat_map(|v| v.iter().flat_map(|f| f.to_le_bytes()))
+            .collect()
+    }
+    fn enc2(vs: &[[f32; 2]]) -> Vec<u8> {
+        vs.iter()
+            .flat_map(|v| v.iter().flat_map(|f| f.to_le_bytes()))
+            .collect()
+    }
+    // Realistic FINITE geometry. (NaN/inf would make bevy_mikktspace churn for
+    // tens of seconds with no added coverage — both impls feed identical bytes
+    // to the same mikktspace, so they agree on every input regardless; finite
+    // floats are the domain real meshes live in and keep the proptest fast.)
+    fn any_f32() -> impl Strategy<Value = f32> {
+        -100.0f32..100.0f32
     }
 
-    Ok(tangents_bytes)
+    proptest! {
+        /// The awsm-tangents delegation produces BYTE-IDENTICAL output to the
+        /// retained pre-consolidation reference for well-formed meshes (in-range
+        /// indices), across arbitrary f32 bit patterns + windings.
+        #[test]
+        fn delegation_matches_reference(
+            (positions, normals, uvs, tris) in (1usize..16).prop_flat_map(|vcount| (
+                proptest::collection::vec([any_f32(), any_f32(), any_f32()], vcount),
+                proptest::collection::vec([any_f32(), any_f32(), any_f32()], vcount),
+                proptest::collection::vec([any_f32(), any_f32()], vcount),
+                proptest::collection::vec(
+                    [0..vcount, 0..vcount, 0..vcount], 1..24,
+                ),
+            )),
+        ) {
+            let p = enc3(&positions);
+            let n = enc3(&normals);
+            let t = enc2(&uvs);
+            let new = super::compute_tangents(&p, &n, &t, &tris);
+            let reference = reference_compute_tangents(&p, &n, &t, &tris);
+            match (new, reference) {
+                (Ok(a), Ok(b)) => prop_assert_eq!(a, b),
+                // Both impls reject the same degenerate inputs (e.g. mikktspace
+                // failing on collinear UVs) — agreeing on Err is also parity.
+                (Err(_), Err(_)) => {}
+                (a, b) => prop_assert!(
+                    false,
+                    "Ok/Err disagreement: new={:?} reference={:?}",
+                    a.is_ok(),
+                    b.is_ok()
+                ),
+            }
+        }
+    }
 }

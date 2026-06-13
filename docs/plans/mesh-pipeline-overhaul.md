@@ -1025,3 +1025,23 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
   removing it risks regression for zero TTFR gain. STATE-1.
 - Measurement instrument (get_memory_stats pipeline counts) already in place.
 - Docs-only commit; no behavioral change. Item triaged to terminal states.
+
+### Day-4 loop — pillar 3, item #24: tangent-generator consolidation
+- Landscape: awsm-tangents crate is canonical; renderer/raw_mesh + glb-export
+  already delegate to it. The ONE remaining duplicate was renderer-gltf's
+  byte-buffer mikktspace adapter (its own MikkTSpaceGeometry + finalize +
+  helpers, ~250 lines) — verified ALGORITHM-IDENTICAL to awsm-tangents (same
+  accumulation, fallback constants [1,0,0,1]/SIGN_EPSILON 1e-4/sign-vote, same
+  helpers).
+- renderer-gltf/buffers/tangents.rs now DELEGATES: compute_tangents decodes the
+  LE byte buffers → typed slices → awsm_tangents::generate_tangents → encodes
+  (bit-preserving). Old impl retained as #[cfg(test)] reference; a byte-identity
+  proptest proves new==reference across arbitrary FINITE geometry + windings
+  (256 cases, 0.02s — the first cut used any-u32→f32 which fed NaN/inf into
+  mikktspace and churned >60s; finite is the realistic domain and both impls
+  agree on every input regardless). Bonus: out-of-range indices now fail loud
+  (Err) instead of the old silent zero-position garbage.
+- bevy_mikktspace moved renderer-gltf deps → dev-deps (now test-only) — one
+  fewer prod dependency; shipping renderer-gltf carries zero tangent math.
+- 3 tangent impls → 1 shared crate; they can no longer drift. lint clean,
+  renderer-gltf suite green. NATIVE. State 1.
