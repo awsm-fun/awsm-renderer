@@ -14,6 +14,11 @@
 //! pick handler can both reach it. The glyph geometry is built once per icon (only
 //! rebuilt when the live light set / kinds change); every frame just re-anchors
 //! the transforms and rescales them to a constant pixel size.
+//!
+//! The per-frame CPU gather buffers (the light-id list, the pose snapshot, and
+//! the signature) are REUSED across frames via a thread-local `Scratch` (cleared,
+//! capacity retained) so an on-screen light-icon set allocates nothing at steady
+//! state — the same zero-alloc rationale as `skeleton_viz`'s `Scratch`.
 
 use std::cell::RefCell;
 
@@ -31,6 +36,37 @@ use crate::engine::scene::{LightConfig, NodeId, NodeKind};
 
 thread_local! {
     static ICONS: RefCell<Option<LightIcons>> = const { RefCell::new(None) };
+    /// Per-frame gather buffers, reused across frames (cleared, capacity
+    /// retained) so an on-screen light-icon set does zero heap allocation at
+    /// steady state. Mirrors `skeleton_viz`'s `Scratch`.
+    static SCRATCH: RefCell<Scratch> = const { RefCell::new(Scratch::new()) };
+}
+
+/// Reused per-frame working set for the light-icon rebuild/re-anchor.
+struct Scratch {
+    /// Live light node ids (collected so the `light_node_ids` lock releases
+    /// before the `nodes` lock is taken — avoids holding both at once).
+    light_ids: Vec<NodeId>,
+    /// One snapshot per light, sorted by node id for a stable icon order.
+    lights: Vec<LightSnapshot>,
+    /// `(node_id, has_ray)` per light — compared against the icon set's
+    /// signature to decide rebuild-vs-reanchor.
+    sig: Vec<(NodeId, bool)>,
+}
+
+impl Scratch {
+    const fn new() -> Self {
+        Self {
+            light_ids: Vec::new(),
+            lights: Vec::new(),
+            sig: Vec::new(),
+        }
+    }
+    fn clear(&mut self) {
+        self.light_ids.clear();
+        self.lights.clear();
+        self.sig.clear();
+    }
 }
 
 /// Desired on-screen radius of the bulb glass in CSS pixels (the whole glyph,
@@ -349,59 +385,70 @@ pub fn per_frame_update(renderer: &mut AwsmRenderer, camera_matrices: &CameraMat
         return;
     }
 
-    // Snapshot the live light nodes: world pose (position + rotation) + kind.
-    // Sorted by node id so the icon set has a stable order (the bridge tracks
-    // ids in a HashSet, whose iteration order is not stable frame-to-frame).
-    let mut lights: Vec<LightSnapshot> = Vec::new();
-    {
-        let b = bridge();
-        let light_ids: Vec<NodeId> = b.light_node_ids.lock().unwrap().iter().copied().collect();
-        let nodes = b.nodes.lock().unwrap();
-        for id in light_ids {
-            if let Some(entry) = nodes.get(&id) {
-                let Ok(world) = renderer.transforms.get_world(entry.transform_key) else {
-                    continue;
-                };
-                let shape = match entry.node.kind.get_cloned() {
-                    NodeKind::Light(LightConfig::Directional { .. }) => LightShape::Directional,
-                    NodeKind::Light(LightConfig::Spot { .. }) => LightShape::Spot,
-                    NodeKind::Light(LightConfig::Point { .. }) => LightShape::Point,
-                    _ => continue,
-                };
-                let (_s, rot, trans) = world.to_scale_rotation_translation();
-                lights.push(LightSnapshot {
-                    node_id: id,
-                    pos: trans,
-                    rot,
-                    shape,
-                });
-            }
-        }
-    }
-    lights.sort_by_key(|l| l.node_id.0);
+    // Snapshot the live light nodes into the reused scratch: world pose
+    // (position + rotation) + kind. Sorted by node id so the icon set has a
+    // stable order (the bridge tracks ids in a HashSet, whose iteration order
+    // is not stable frame-to-frame).
+    SCRATCH.with(|s| {
+        let s = &mut *s.borrow_mut();
+        s.clear();
+        // Disjoint field borrows so the gather loop can read `light_ids` while
+        // writing `lights`.
+        let Scratch {
+            light_ids,
+            lights,
+            sig,
+        } = s;
 
-    ICONS.with(|c| {
-        let mut guard = c.borrow_mut();
-        let Some(icons) = guard.as_mut() else {
-            return;
-        };
-        if lights.is_empty() {
-            if !icons.icons.is_empty() {
-                icons.clear(renderer);
+        {
+            let b = bridge();
+            // Collect ids first so the `light_node_ids` lock releases before the
+            // `nodes` lock is taken (never hold both at once).
+            light_ids.extend(b.light_node_ids.lock().unwrap().iter().copied());
+            let nodes = b.nodes.lock().unwrap();
+            for id in light_ids.iter().copied() {
+                if let Some(entry) = nodes.get(&id) {
+                    let Ok(world) = renderer.transforms.get_world(entry.transform_key) else {
+                        continue;
+                    };
+                    let shape = match entry.node.kind.get_cloned() {
+                        NodeKind::Light(LightConfig::Directional { .. }) => LightShape::Directional,
+                        NodeKind::Light(LightConfig::Spot { .. }) => LightShape::Spot,
+                        NodeKind::Light(LightConfig::Point { .. }) => LightShape::Point,
+                        _ => continue,
+                    };
+                    let (_s, rot, trans) = world.to_scale_rotation_translation();
+                    lights.push(LightSnapshot {
+                        node_id: id,
+                        pos: trans,
+                        rot,
+                        shape,
+                    });
+                }
             }
-            return;
         }
-        let sig: Vec<(NodeId, bool)> = lights
-            .iter()
-            .map(|l| (l.node_id, l.shape.has_ray()))
-            .collect();
-        if sig != icons.signature {
-            icons.rebuild(renderer, &lights);
-        }
-        icons.reanchor(renderer, &lights, camera_matrices);
-        if !icons.visible {
-            icons.show(renderer, true);
-        }
+        lights.sort_by_key(|l| l.node_id.0);
+
+        ICONS.with(|c| {
+            let mut guard = c.borrow_mut();
+            let Some(icons) = guard.as_mut() else {
+                return;
+            };
+            if lights.is_empty() {
+                if !icons.icons.is_empty() {
+                    icons.clear(renderer);
+                }
+                return;
+            }
+            sig.extend(lights.iter().map(|l| (l.node_id, l.shape.has_ray())));
+            if *sig != icons.signature {
+                icons.rebuild(renderer, lights);
+            }
+            icons.reanchor(renderer, lights, camera_matrices);
+            if !icons.visible {
+                icons.show(renderer, true);
+            }
+        });
     });
 }
 
