@@ -1179,3 +1179,12 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   cache-key thread + GPU verify) — a real multi-step FEATURE the loop will
   tackle as a proper item, not a checkbox. PBR multi-UV already works via
   per-texture uv_index.
+
+### Loop (2026-06-14) — #34 P2 perf: light_icons zero-alloc (fe057968)
+- light_icons::per_frame_update allocated 3 Vecs/frame (light_ids, lights, sig).
+  Moved to a thread-local Scratch (clear + retain capacity), mirroring
+  skeleton_viz (#22). On-screen light-icon set now allocates nothing at steady
+  state. Behavior-preserving — same lock ordering, stable sort, signature check.
+  Fixed the stale skeleton_viz doc claim that light icons already did this.
+- Gate: wasm build ✅ (trunk), fmt ✅, clippy --all-features --tests -D warnings
+  ✅, cargo test -p awsm-editor ✅ (10 passed). state-1.
