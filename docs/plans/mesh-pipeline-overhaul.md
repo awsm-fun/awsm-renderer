@@ -1006,3 +1006,22 @@ mesh-authoring PR #119 is already open — note new commits land on that branch.
 - light_icons' per-frame snapshot Vec left as-is (same minor class; the scratch
   pattern is now established if it ever matters). 10 editor tests green, lint clean.
   NATIVE. State 1.
+
+### Day-4 loop — pillar 2, item #23: time-to-first-render audit
+- Full TTFR architecture mapped in docs/time-to-first-render.md (NEW). Boot
+  prewarm is parallel + drains correctly; first-party material compile is
+  lazy BY DESIGN (specialize-only — widening boot prewarm would regress it).
+- RESIDUAL HITCH identified + precise: prewarm_pipelines is called only at
+  boot (empty pool → material prewarm no-op); the editor load/import paths
+  finalize textures but never prewarm after, so the first render of a loaded
+  scene lazily compiles its material pipelines (grey/fallback for a few frames).
+- Candidate fix (call prewarm_pipelines after the load+finalize path) is
+  QUEUED, not landed: it's in the texture-pool/destroyed-texture race area
+  with scar tissue, and its value + non-regression are browser-measurable
+  only — landing it unverified overnight violates the honesty bar. Exact
+  browser repro recorded in the doc. → STATE-2 (browser-blocked).
+- black-until-resize: AUDITED → no change. The per-frame surface reconcile is
+  the correct pattern for non-deterministic reparent-after-layout web timing;
+  removing it risks regression for zero TTFR gain. STATE-1.
+- Measurement instrument (get_memory_stats pipeline counts) already in place.
+- Docs-only commit; no behavioral change. Item triaged to terminal states.
