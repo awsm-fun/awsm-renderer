@@ -243,6 +243,69 @@ where
     }
 }
 
+/// Filename for an imported skinned source's clean rig glb side file
+/// (`assets/<id>.rig.glb`). Sibling of [`mesh_asset_filename`]'s `.mesh.bin`.
+fn rig_glb_filename(id: AssetId) -> String {
+    format!("{}.rig.glb", id.0)
+}
+
+/// The set of imported-skinned-model source ids referenced by the live scene's
+/// `SkinnedMesh` nodes (one rig per source, shared across its instances).
+fn skinned_sources(ctrl: &EditorController) -> std::collections::HashSet<AssetId> {
+    use crate::engine::scene::NodeKind;
+    fn walk(node: &Arc<Node>, out: &mut std::collections::HashSet<AssetId>) {
+        if let NodeKind::SkinnedMesh { skin, .. } = node.kind.get_cloned() {
+            out.insert(skin.source);
+        }
+        for c in node.children.lock_ref().iter() {
+            walk(c, out);
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    for n in ctrl.scene.nodes.lock_ref().iter() {
+        walk(n, &mut out);
+    }
+    out
+}
+
+/// Per-imported-skinned-source side files (`assets/<id>.rig.glb`) — the clean rig
+/// glb (skeleton + skin + morph, built at import via `reexport_clean_scene`) for
+/// every source a live `SkinnedMesh` node references. Binary, like the
+/// captured-mesh `.mesh.bin`. Closes a session-local persistence gap: the rig glb
+/// lives only in the `skinned_bake_cache` thread-local, so without this a cold
+/// reload couldn't ship a working player bundle for a skinned model
+/// (`bake_player_bundle` re-reads `get_rig_glb` per source — see `export.rs`).
+pub fn rig_glb_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
+    use crate::engine::bridge::skinned_bake_cache;
+    let mut out = Vec::new();
+    for src in skinned_sources(ctrl) {
+        if let Some(bytes) = skinned_bake_cache::get_rig_glb(src) {
+            out.push((format!("assets/{}", rig_glb_filename(src)), bytes));
+        }
+    }
+    out
+}
+
+/// Restore each skinned source's rig glb (`assets/<id>.rig.glb`) into the
+/// [`skinned_bake_cache`] thread-local from a loaded project, reading via `read`.
+/// Walks the LIVE scene (so call AFTER [`apply_project`]) — the rig is keyed by
+/// `skin.source`, which the just-applied `SkinnedMesh` nodes carry. Missing files
+/// are skipped (older projects, or a non-skinned project). This makes a skinned
+/// model's player-bundle export survive a cold project reload.
+async fn restore_rig_glb<F, Fut>(ctrl: &EditorController, mut read: F)
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    use crate::engine::bridge::skinned_bake_cache;
+    for src in skinned_sources(ctrl) {
+        let path = format!("assets/{}", rig_glb_filename(src));
+        if let Ok(bytes) = read(path).await {
+            skinned_bake_cache::store_rig_glb(src, bytes);
+        }
+    }
+}
+
 /// Per-clip animation side files — the full authored model serialized as TOML
 /// (mirrors `material_files`). Each path matches the `CustomAnimationRef.file` in
 /// `project.toml` via the shared [`animation_file_path`] (so the writer can't
@@ -371,6 +434,11 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
             .await
             .map_err(|e| EditorError::Msg(e.to_string()))?;
     }
+    for (name, bytes) in rig_glb_files(ctrl) {
+        dir.write_bytes(&name, &bytes)
+            .await
+            .map_err(|e| EditorError::Msg(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -392,6 +460,13 @@ pub async fn load_from_dir(
     })
     .await;
     apply_project(ctrl, project);
+    // Restore each skinned source's rig glb AFTER apply_project (walks the
+    // now-live SkinnedMesh nodes for `skin.source`), so a skinned model's
+    // player-bundle export survives a cold reload.
+    restore_rig_glb(ctrl, |path| async move {
+        dir.read_bytes(&path).await.map_err(|e| e.to_string())
+    })
+    .await;
     ctrl.reset_history();
     ctrl.dirty.set_neq(false);
     Ok(())
@@ -408,9 +483,12 @@ pub fn serialize_inmem(
     ctrl: &EditorController,
 ) -> EditorResult<(String, std::collections::HashMap<String, Vec<u8>>)> {
     let toml = project_to_toml(ctrl)?;
-    let mesh_map: std::collections::HashMap<String, Vec<u8>> =
+    // Both captured-mesh `.mesh.bin` and skinned-rig `.rig.glb` side files live
+    // under `assets/` with distinct names, so they share one byte map.
+    let mut byte_files: std::collections::HashMap<String, Vec<u8>> =
         mesh_files(ctrl).into_iter().collect();
-    Ok((toml, mesh_map))
+    byte_files.extend(rig_glb_files(ctrl));
+    Ok((toml, byte_files))
 }
 
 /// Reload a project from its in-memory persisted form (the output of
@@ -424,16 +502,24 @@ pub fn serialize_inmem(
 pub async fn apply_inmem(
     ctrl: &EditorController,
     toml: String,
-    mesh_map: std::collections::HashMap<String, Vec<u8>>,
+    byte_files: std::collections::HashMap<String, Vec<u8>>,
 ) -> EditorResult<()> {
     let project: EditorProject =
         toml::from_str(&toml).map_err(|e| EditorError::Msg(format!("parse project.toml: {e}")))?;
     restore_mesh_bytes(&project, |path| {
-        let bytes = mesh_map.get(&path).cloned();
+        let bytes = byte_files.get(&path).cloned();
         async move { bytes.ok_or_else(|| format!("missing in-memory mesh file: {path}")) }
     })
     .await;
     apply_project(ctrl, project);
+    // Restore each skinned source's rig glb AFTER apply_project (walks the
+    // now-live SkinnedMesh nodes), so a skinned model's player-bundle export
+    // survives the round-trip.
+    restore_rig_glb(ctrl, |path| {
+        let bytes = byte_files.get(&path).cloned();
+        async move { bytes.ok_or_else(|| format!("missing in-memory rig glb: {path}")) }
+    })
+    .await;
     ctrl.reset_history();
     ctrl.dirty.set_neq(false);
     Ok(())
