@@ -56,6 +56,9 @@ struct TransparentShadingInput {
     surface_to_camera: vec3<f32>,     // normalized
     front_facing: bool,
     material_offset: u32,             // byte offset for material_load_* calls
+    // Forwarded interpolated attribute sets (one field per set the mesh carries):
+    color_0: vec4<f32>, color_1: vec4<f32>, …   // COLOR_n  (read via material_vertex_color)
+    uv_0: vec2<f32>,    uv_1: vec2<f32>,    …   // TEXCOORD_n (read via material_uv)
     material: MaterialData,           // your auto-generated struct (see opaque docs)
 }
 ```
@@ -72,16 +75,22 @@ space, w is the bitangent sign (`±1`); reconstruct the bitangent via
 for the field order + alignment rules. The shape is identical across both
 alpha modes.
 
-**What the wrapper does NOT pre-materialize** (vs. an earlier
-draft of this contract):
+**Per-vertex UVs + colours.** Any `TEXCOORD_n` / `COLOR_n` the mesh carries is
+forwarded as an interpolated field and read with the same accessors as the opaque
+path — declare the matching `fragment_inputs` (`["uv"]` / `["vertex_color"]`):
 
-- `uv0` / `uv1` — the wrapper has no UV gradients pre-computed.
-  Authors that need UVs reconstruct from the vertex-attribute
-  fetch via the per-mesh attribute helpers (see `vertex_attribute`
-  in `material_transparent_wgsl/includes.wgsl`).
-- `COLOR_0` vertex attribute — same: fetch it explicitly if the
-  mesh has one; the wrapper trades the cost-per-pixel of always
-  loading optional attributes for keeping the common case cheap.
+```wgsl
+let uv1 = material_uv(input, 1u);            // interpolated TEXCOORD_1
+let c0  = material_vertex_color(input, 0u);  // interpolated COLOR_0
+```
+
+A set the mesh lacks returns a benign default (`vec2(0)` / `vec4(1)`) — there is
+no presence guard on the custom path, so author against a mesh that has the set.
+
+**What the wrapper does NOT pre-materialize:**
+
+- UV *gradients* (ddx/ddy) — not pre-computed; `material_uv` returns the
+  interpolated coordinate, not derivatives.
 - `opaque_background` texture + sampler — bound on the transparent
   pass globally (not on the wrapper struct). Authors sample it via
   `sample_transmission_background(uv, ...)` (see Helpers in

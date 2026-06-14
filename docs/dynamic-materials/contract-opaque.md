@@ -153,8 +153,8 @@ the custom path, so author against a mesh that has the set (paint it with
 `paint_vertex_colors`, or import geometry with `TEXCOORD_1`). Any set index works
 (`COLOR_1+`, `TEXCOORD_1+`); future named per-vertex streams beyond the glTF
 vocabulary land on this same machinery once the runtime mesh format owns its
-attribute table. (Both helpers are opaque-path accessors — the transparent
-forward path doesn't expose them yet.)
+attribute table. (Both helpers exist on the transparent path too — see the
+transparent contract — so the same custom fragment compiles either way.)
 
 `MaterialData` is **auto-generated** from your `material.json` layout — see
 "Per-material data" below.
