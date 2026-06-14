@@ -1701,3 +1701,24 @@ documented ceiling, no code change. (Light insert spec for future profiling: {"l
 | "directional" | "spot" — UNIT variants; position via SetTransform {id, transform:{translation,
 rotation:[0,0,0,1], scale:[1,1,1]}}.) FOLLOW-UP if ever needed: static-shadow caching (skip
 re-recording shadow views whose light+casters didn't move) for static scenes.
+
+### Loop (2026-06-14 cont.) — glTF clip playback: bug found+fixed (e5bd346d), browser-verify PENDING
+Scoped "editor doesn't play imported glTF clips". Findings (via /debug + Fox import):
+- Imported glTF clips ARE converted to custom_animations + load correctly (Fox → Survey/Walk/Run
+  clips, real `transform:rotation` bone tracks; transforms 9→693 = skeleton). The agent's
+  "loose-player duplication" theory was NOT the cause.
+- REAL bug: animation bridge re-lowers only on `anim_revision`; the relower CLEARS all renderer
+  clip groups and lowers ONLY the active clip (+ mixer refs). `SetCurrentClip` (state.rs:2279)
+  set current_clip but never bumped anim_revision → selecting/switching a clip never lowered it →
+  pin_pose had no clip group → no pose. Authoring edits bumped the revision, so freshly-authored
+  clips played but switched/imported ones didn't. FIX: SetCurrentClip bumps anim_revision.
+- VERIFICATION BLOCKED (human): editor tab was BACKGROUNDED this session → RAF paused
+  (memory_stats render_cpu_ms=0/frame_dt_ms=0), and pin_pose + canvas render are RAF-driven;
+  node_transforms/skin_data read editor-side TRS (NOT the renderer's animated skeleton) so they
+  can't confirm the pose programmatically. ▶ FINISH-VERIFY on a FOREGROUND tab (frame_dt_ms>0):
+  import Fox glb (:9082/glTF-Sample-Assets/Models/Fox/glTF-Binary/Fox.glb), set_camera_orbit
+  look_at[0,39,-11] radius~230, set_current_clip <Fox clip>, ScenePng at playhead 0.0 vs 1.7 →
+  must DIFFER. If it still doesn't pose, the next suspects are: (a) does the relower actually
+  lower glTF-imported clips' tracks (track target resolution to the imported bone nodes), and
+  (b) the loose-player from populate_gltf_node_animation double-driving (agent's theory) — but
+  the SetCurrentClip bump is necessary regardless.
