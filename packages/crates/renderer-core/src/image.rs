@@ -83,9 +83,16 @@ impl ImageData {
     /// Returns whether the image is premultiplied.
     pub fn premultiplied_alpha(&self) -> bool {
         match self {
-            // TODO - is this right?
+            // EXR uploads go through the SAME `copy_external_image_to_texture`
+            // path as bitmaps (see `create_texture`), so this flag is live for
+            // EXR. `true` is a no-op for the dominant EXR use — opaque HDR
+            // environment/IBL maps have alpha = 1 everywhere, so premultiplied
+            // vs straight is identical. It is UNVERIFIED for an EXR carrying
+            // meaningful alpha (would need such an asset + a visual A/B to
+            // confirm the loader's `js_obj()` hands the browser straight,
+            // not-premultiplied, RGBA). Revisit if a non-opaque EXR ever ships.
             #[cfg(feature = "exr")]
-            Self::Exr(_) => true, // EXR images are typically premultiplied
+            Self::Exr(_) => true,
 
             Self::Bitmap { options, .. } => options
                 .as_ref()
