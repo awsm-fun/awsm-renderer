@@ -1269,3 +1269,10 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
 - ACTION: a red test lurking on the branch means the full suite may not have been
   green recently → running a full-workspace `cargo test` audit (this iteration's
   background task) to surface any OTHER stale/red tests for triage next iter.
+
+### Loop (2026-06-14) — full-workspace test audit: GREEN (post-#40)
+- `cargo test --workspace` ran to completion: 437 tests passed, 0 failed, 0
+  compile errors across 42 test binaries (all "test result: ok"). The #40
+  gltf-convert stale assertion was the ONLY red test on the branch — the suite is
+  now fully green end-to-end. No other stale/red tests lurking. (Audit log:
+  /tmp/full_suite_audit.log.) Branch test-health verified.
