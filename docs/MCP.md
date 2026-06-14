@@ -99,10 +99,12 @@ sync, and undo/redo/coalescing all work as in the UI.
 
 ## Tool catalog
 
-~90 typed tools plus MCP **resources** (the docs below) and **prompts** (workflow
+~130 typed tools plus MCP **resources** (the docs below) and **prompts** (workflow
 templates). Each tool is a thin wrapper that builds an `EditorCommand` /
 `EditorQuery` from typed (schema'd) parameters and relays it to the editor. Node
-and asset references are UUID strings — get them from `get_snapshot`.
+and asset references are UUID strings — get them from `get_snapshot`. This catalog
+groups the tools by area; it isn't exhaustive — the escape hatches (bottom) reach
+every command/query, and each tool self-describes over the MCP schema.
 
 > **New to driving this over MCP?** Read the [Agent Guide](AGENT_GUIDE.md)
 > (`awsm://docs/agent-guide`) first — it covers the mutate→settle→screenshot
@@ -139,6 +141,8 @@ and asset references are UUID strings — get them from `get_snapshot`.
   set is a transient preview, tracks own the weights during playback.
 - `get_node_transforms { nodes? }` — local TRS + world matrix per node (empty = all).
 - `get_node_details { nodes? }` — full per-kind config + material assignment.
+- `resolve_node_material { node }` — the material a node actually RENDERS with
+  (the direct answer, vs parsing the `NodeKind` blob).
 - `get_node_bounds { nodes? }` — world-space AABB per node (for framing/sizing).
 - `get_material_wgsl { asset }` — a custom material's WGSL source.
 - `get_material_diagnostics { asset }` — `{ registered, ok, errors }` (tell a
@@ -160,7 +164,8 @@ and asset references are UUID strings — get them from `get_snapshot`.
   quaternion `[x,y,z,w]`), plus convenience: `set_translation`, `translate_by`,
   `set_scale`, `set_rotation_euler { euler, order? }`.
 - `rename_node`, `delete_node`, `duplicate_node`, `reparent_node`,
-  `set_node_visible`, `set_node_locked`, `set_selection`.
+  `set_node_visible`, `set_node_locked`, `set_selection`, `set_prefab` (mark/clear
+  a node as a prefab root).
 
 **Project / import / history**
 - `new_project` (seeds a key light + IBL), `load_project_from_url { base_url }`,
@@ -169,7 +174,8 @@ and asset references are UUID strings — get them from `get_snapshot`.
 **Materials**
 - `add_builtin_material { shading }` (pbr/unlit), `add_custom_material` — **return
   the new id.** `register_material`, `assign_material { node, material? }`,
-  `delete_custom_material`, `copy_material_instance { from, to }`.
+  `delete_custom_material`, `copy_material_instance { from, to }`,
+  `update_builtin_material` (replace a built-in's variant `MaterialDef` wholesale).
 - `set_material_wgsl { material, wgsl }` — replace source + synchronous recompile;
   **answers truthfully** (errors carry the compiler diagnostics, no silent `ok`).
 - Authoring: `set_material_alpha_mode`, `set_material_double_sided`,
@@ -185,7 +191,9 @@ and asset references are UUID strings — get them from `get_snapshot`.
 **Textures**
 - `add_texture_asset { proc }` (checker/gradient/noise) and
   `import_texture_from_url { url }` (PNG/JPEG/WebP, fetched + uploaded to the GPU)
-  — both return the new id; bind with `set_material_texture`.
+  — both return the new id; bind with `set_material_texture`, or
+  `set_node_texture { node, slot, texture? }` for a mesh node's built-in (inline
+  PBR) slot (base_color | metallic_roughness | normal | occlusion | emissive).
 
 **View / camera / time**
 - `switch_mode { mode }`, `snap_camera_to_axis { axis }`, `reset_camera`.
@@ -199,7 +207,39 @@ and asset references are UUID strings — get them from `get_snapshot`.
   `set_clip_duration`, `set_clip_speed`, `set_clip_loop`, `set_current_clip`,
   `set_playhead { t }`, `set_playing { on }`.
 - Typed tracks/keys: `add_track { clip, target }`, `add_keyframe`, `set_keyframe`,
-  `delete_keyframe`.
+  `delete_keyframe`, `delete_track { clip, index }`.
+- Track flags + transport: `set_track_mute`, `set_track_solo` (any solo ⇒ only
+  soloed tracks pose), `set_track_sampler { sampler: step|linear|cubic }`,
+  `step_playhead { to: home|prev|next|end }`.
+
+**Mesh editing (procedural stacks + raw vertices)**
+- Every procedural node is an editable `Mesh` backed by a `ModifierStack`
+  (`MeshDef`). `get_mesh_modifiers { mesh }` reads the recipe `{ base, modifiers }`
+  (null if none yet); `set_mesh_modifiers { mesh, stack }` replaces it;
+  `add_modifier` / `set_modifier { index }` / `remove_modifier { index }` edit it
+  incrementally (mesh refs are **asset UUIDs**, not node ids).
+- `collapse_mesh_stack { mesh }` bakes the stack to frozen-topology raw triangles
+  (undoable); `bake_all` does it project-wide (finalize). `get_mesh_layers` shows
+  live-vs-locked layers; `get_mesh_stats` / `get_node_bounds` / `get_mesh_cross_section`
+  measure resolved geometry.
+- Raw-vertex editing (after collapse, or on captured meshes):
+  `get_vertex_data { node, indices }`, `select_vertices_where { node, predicate }`
+  → indices, `set_vertex_positions`, `set_vertex_normals`, `paint_vertex_colors`,
+  `soft_transform_vertices { falloff }` (radial falloff), `set_vertex_selection`
+  (viewport highlight).
+
+**Rig / skin**
+- `get_skin_data` (joints as node ids — see Discover), `get_skin_weights { node }`
+  / `set_skin_weights { node, entries }` (per-vertex joints+weights, live re-deform),
+  `solve_ik { end_node, target }` (analytic two-bone IK), `drop_skinning { node }`
+  (bake a skinned mesh to a static editable Mesh).
+
+**Bake / export / bundle**
+- `export_scene_glb` / `export_node_glb` — bake to binary glTF (base64); PBR→glTF
+  PBR, Unlit→`KHR_materials_unlit`, custom/Toon→`AWSM_materials_none`.
+- `export_player_bundle` — bake the project to a runtime bundle dir (`scene.toml`
+  + `assets/`). `load_player_bundle` — round-trip self-test: bundle the current
+  project in-memory, reset, reload through `populate_awsm_scene`.
 
 **Batch + generic escape hatches — full coverage**
 - `dispatch_batch { commands }` — a list of raw `EditorCommand`s applied
