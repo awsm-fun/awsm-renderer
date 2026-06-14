@@ -383,4 +383,33 @@ mod tests {
         // Pass-through returns the same bytes.
         assert_eq!(twice.glb, once.glb);
     }
+
+    #[test]
+    fn foreign_glb_is_not_canonical_and_has_no_version() {
+        // A plain (unstamped) glb must read as non-canonical with no version —
+        // the precondition that makes `convert` re-export it instead of passing
+        // it through.
+        let (_m, glb) = cube_glb();
+        let g = gltf::Gltf::from_slice(&glb).expect("parse");
+        assert!(!is_canonical(&g));
+        assert_eq!(awsm_format_version(&g), None);
+    }
+
+    #[test]
+    fn stamp_is_idempotent_no_duplicate_extension() {
+        // Stamping an already-stamped glb must NOT append a second AWSM_format to
+        // extensionsUsed (the `if !arr.contains` guard) — otherwise repeated
+        // convert/export cycles would grow the array unboundedly.
+        let (_m, glb) = cube_glb();
+        let once = stamp_awsm_format(glb).expect("stamp 1");
+        let twice = stamp_awsm_format(once).expect("stamp 2 (idempotent)");
+        let g = gltf::Gltf::from_slice(&twice).expect("parse");
+        assert!(is_canonical(&g));
+        assert_eq!(awsm_format_version(&g), Some(AWSM_FORMAT_VERSION));
+        let count = g.extensions_used().filter(|e| *e == AWSM_FORMAT).count();
+        assert_eq!(
+            count, 1,
+            "re-stamping duplicated AWSM_format in extensionsUsed"
+        );
+    }
 }
