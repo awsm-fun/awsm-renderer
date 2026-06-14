@@ -153,11 +153,34 @@ SAME tools as everything else.
   without pixels via `sample_clip_timeseries` (pins the playhead, reads
   NodeLocalTrs / MorphWeight back — GPU-independent).
 
-## 9. What's in scope
+## 9. Editing geometry & vertices
 
-This is a **renderer + scene/material/animation editor**. In scope: meshes,
-primitives, glTF import, transforms/hierarchy, PBR + custom-WGSL materials,
-textures, lights, IBL/skybox, cameras, keyframe animation, screenshots. **Out of
-scope** (no engine for them here): physics/collision, input handling, audio,
-gameplay scripting, 2D UI/text. Build the *look* and *content* of a game here;
-wire behavior/physics in your host engine.
+Beyond importing/placing meshes you can author + edit geometry (full typed-tool
+list grouped by task in [`docs/MCP.md`](MCP.md) § Tool catalog):
+
+- **Procedural meshes** are a modifier stack — `set_mesh_modifiers { mesh, stack }`
+  (`mesh` = the asset UUID; `stack` = `{ base, modifiers }`), or edit incrementally
+  with `add_modifier` / `set_modifier { index }` / `remove_modifier { index }`.
+  `get_mesh_modifiers { mesh }` reads the recipe; `get_mesh_stats` /
+  `get_mesh_layers` / `get_node_bounds` measure the result.
+- **Raw-vertex editing** — after `collapse_mesh_stack { mesh }` (or on a captured
+  mesh): `select_vertices_where { node, predicate }` → indices, then
+  `set_vertex_positions`, `set_vertex_normals`, `paint_vertex_colors`,
+  `soft_transform_vertices { falloff }`; `get_vertex_data { node, indices }` reads
+  resolved per-vertex data back, `set_vertex_selection` highlights in-viewport.
+- **Rig editing** — `get_skin_weights` / `set_skin_weights`,
+  `solve_ik { end_node, target }`, `drop_skinning { node }` (bake a skinned mesh
+  to a static editable Mesh).
+- **Custom materials read attributes** — a custom-WGSL fragment can sample any
+  vertex set via `material_uv(input, n)` / `material_vertex_color(input, n)` (see
+  the material contract, `awsm://docs/material-contract-opaque`).
+
+## 10. What's in scope
+
+This is a **renderer + scene/material/animation editor**. In scope: meshes
+(import + procedural modifier stacks + raw per-vertex editing), primitives, glTF
+import, transforms/hierarchy, PBR + custom-WGSL materials, textures, lights,
+IBL/skybox, cameras, keyframe animation, skins/morphs/IK, screenshots, and
+glTF/player-bundle export. **Out of scope** (no engine for them here):
+physics/collision, input handling, audio, gameplay scripting, 2D UI/text. Build
+the *look* and *content* of a game here; wire behavior/physics in your host engine.
