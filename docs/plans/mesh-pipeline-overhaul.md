@@ -2170,3 +2170,25 @@ scene_png tool on a real textured/cutout feature. No-code verification iteration
 
 Remaining P3: more native-testable fixes; #31 TTFR prewarm (timing, not visual);
 code-quality/docs.
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-3: tangent mirrored-UV handedness test + TTFR triage (82602244)
+
+Code review pass (no bugs found in already-reviewed solid code): transform_aabb
+(8-corner, correct), tangents generator (Gram-Schmidt + mikktspace, correct).
+Added a regression-guard test for tangent mirrored-UV handedness (w-sign must
+flip for negative-UV-determinant charts — critical for symmetric character normal
+mapping; was untested). 3 awsm-tangents tests pass.
+
+#31 TTFR prewarm RE-TRIAGED with scene_png available: the residual hitch
+(prewarm_pipelines only runs at boot → loaded/imported scenes lazily compile
+pipelines → a few grey frames) candidate fix (prewarm after load) remains
+deferred — even with scene_png the value is a SUB-FRAME-TRANSIENT hitch I can't
+measure (settled by the time I capture), and it's in the flagged-fragile
+texture-pool race area. Respecting the prior loop's sound deferral; non-regression
+is now verifiable but value isn't → not worth landing autonomously. STATE-2
+(needs a human wall-clock TTFR measurement to justify).
+
+Codebase is in excellent shape; Priority-3 returns diminishing. Remaining: more
+coverage hardening, code-quality/docs, or human-directed work.
