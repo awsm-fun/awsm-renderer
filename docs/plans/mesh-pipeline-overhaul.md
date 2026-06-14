@@ -1670,3 +1670,15 @@ slot in `r.transforms` was never removed. Fix: `remove_node` now `r.transforms.r
 transform_key)` after teardown (children removed first by recursion). Verified FLAT across x20
 box churn + x8 light-node churn; live node still renders. Both churn leaks (custom-material
 pipelines + node transforms) are now clean.
+
+### Loop (2026-06-14 cont.) — leak sweep CLEAN + perf observability added (e0afe2b5)
+- Full churn leak sweep (memory_stats): box/sphere/cylinder/plane, line/curve/camera/empty,
+  point-light, custom-material, builtin-material insert+delete — ALL flat (one-time +4
+  render_pipelines from first line/curve compile is cached, not a leak). No leaks remain.
+- Added per-frame timing to memory_stats: `render_cpu_ms` (EMA of the CPU span in
+  render_one_frame) + `frame_dt_ms` (wall-clock frame period). Baseline measured: 9 meshes
+  1.02ms, 69+4lights 1.15ms, 469 meshes 1.41ms (~0.7µs/mesh, frame_dt ~8.3ms = huge 60fps
+  headroom). The visibility-buffer renderer batches very efficiently — no CPU offender at
+  moderate scale. FOLLOW-UP for real perf work: push to thousands of meshes and/or a
+  directional light with shadow cascades + many point lights (shadow passes are the likely
+  first cost), now measurable via render_cpu_ms.
