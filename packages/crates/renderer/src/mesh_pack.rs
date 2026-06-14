@@ -171,4 +171,108 @@ mod tests {
             [0.0, 0.0, 0.0, 1.0]
         );
     }
+
+    // ── parity: every field decodes per-corner, and the two packers agree ──────
+    //
+    // The single-triangle tests above use identical normals/tangents on every
+    // vertex, so they can't catch a per-vertex ATTRIBUTE-INDEXING bug (reading
+    // the wrong vertex's normal/tangent) or a barycentric mix-up. This uses a
+    // 2-triangle quad with DISTINCT per-vertex attributes and decodes every
+    // field at every corner, then asserts the visibility + transparency packers
+    // produce the SAME (pos, normal, tangent) for each original vertex — the
+    // "both front-ends pack through one source" parity the module promises.
+
+    fn rf(b: &[u8], off: usize) -> f32 {
+        f32::from_le_bytes(b[off..off + 4].try_into().unwrap())
+    }
+    fn ru(b: &[u8], off: usize) -> u32 {
+        u32::from_le_bytes(b[off..off + 4].try_into().unwrap())
+    }
+    // Decode one 56-byte visibility corner.
+    fn vis_corner(b: &[u8], rec: usize) -> ([f32; 3], u32, [f32; 2], [f32; 3], [f32; 4], u32) {
+        let o = rec * 56;
+        (
+            [rf(b, o), rf(b, o + 4), rf(b, o + 8)],        // position
+            ru(b, o + 12),                                 // triangle_index
+            [rf(b, o + 16), rf(b, o + 20)],                // barycentric
+            [rf(b, o + 24), rf(b, o + 28), rf(b, o + 32)], // normal
+            [rf(b, o + 36), rf(b, o + 40), rf(b, o + 44), rf(b, o + 48)], // tangent
+            ru(b, o + 52),                                 // original_vertex_index
+        )
+    }
+
+    #[test]
+    fn pack_field_decode_and_visibility_transparency_parity() {
+        // Quad: 4 distinct vertices, 2 triangles [0,1,2] + [0,2,3].
+        let positions = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let normals = vec![
+            [0.1, 0.2, 0.3],
+            [0.4, 0.5, 0.6],
+            [0.7, 0.8, 0.9],
+            [-0.1, -0.2, -0.3],
+        ];
+        let tangents = vec![
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.5, 0.5, 0.0, -1.0],
+        ];
+        let indices = vec![0u32, 1, 2, 0, 2, 3];
+
+        let vis = pack_visibility_bytes(
+            &positions,
+            &normals,
+            Some(&tangents),
+            &indices,
+            FrontFace::Ccw,
+        );
+        assert_eq!(vis.len(), 56 * 6, "2 tris × 3 corners");
+
+        // Every corner: position/normal/tangent come from its ORIGINAL vertex,
+        // barycentric matches the slot, triangle_index increments.
+        for (rec, (tri, corner)) in [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
+            .into_iter()
+            .enumerate()
+        {
+            let orig = indices[tri * 3 + corner] as usize;
+            let (pos, tri_idx, bary, normal, tangent, ovi) = vis_corner(&vis, rec);
+            assert_eq!(pos, positions[orig], "corner {rec} position");
+            assert_eq!(
+                normal, normals[orig],
+                "corner {rec} normal (per-vertex index)"
+            );
+            assert_eq!(
+                tangent, tangents[orig],
+                "corner {rec} tangent (per-vertex index)"
+            );
+            assert_eq!(bary, BARYCENTRICS[corner], "corner {rec} barycentric");
+            assert_eq!(tri_idx, tri as u32, "corner {rec} triangle_index");
+            assert_eq!(ovi, orig as u32, "corner {rec} original_vertex_index");
+        }
+
+        // Transparency packs per ORIGINAL vertex; same pos/normal/tangent.
+        let tr = pack_transparency_bytes(&positions, &normals, Some(&tangents), positions.len());
+        assert_eq!(tr.len(), 40 * 4);
+        for v in 0..positions.len() {
+            let o = v * 40;
+            let pos = [rf(&tr, o), rf(&tr, o + 4), rf(&tr, o + 8)];
+            let normal = [rf(&tr, o + 12), rf(&tr, o + 16), rf(&tr, o + 20)];
+            let tangent = [
+                rf(&tr, o + 24),
+                rf(&tr, o + 28),
+                rf(&tr, o + 32),
+                rf(&tr, o + 36),
+            ];
+            // PARITY: the transparency record matches the inputs (and therefore
+            // any visibility corner referencing the same original vertex).
+            assert_eq!(pos, positions[v], "transparency v{v} position");
+            assert_eq!(normal, normals[v], "transparency v{v} normal");
+            assert_eq!(tangent, tangents[v], "transparency v{v} tangent");
+        }
+    }
 }
