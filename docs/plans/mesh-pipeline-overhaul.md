@@ -2100,3 +2100,23 @@ accessors 5448a504, #2 persistence). NEXT: Priority 3 — correctness / perf /
 polish (#31 TTFR / #32 cutout browser confirms, native-testable renderer fixes +
 tests, perf via memory_stats render_cpu_ms on DamagedHelmet / many instances,
 code-quality + docs).
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-3: SkinnedMesh frame_node/node_bounds (0cef89e0)
+
+First Priority-3 (polish) win. local_aabb gave SkinnedMesh nodes a unit box →
+frame_node + node_bounds missed imported characters (the frame_node discrepancy
+seen during persistence slice 3 was THIS, not a render bug). Fixed: local_aabb's
+new SkinnedMesh arm computes the true AABB from the bind-pose bake
+(skinned_bake_cache, persisted across reload by slice 2); shared
+`aabb_from_positions` helper across the Mesh + SkinnedMesh arms. Verified: Fox
+node_bounds real extent (not unit box) + frame_node centers it (framed min_luma
+~75-97 vs ~207 unit-box miss), fresh AND post-reload.
+
+Perf note: DamagedHelmet (single textured PBR) profiled HEALTHY — render_cpu_ms
+~1.0-1.2, frame_dt ~8.3ms (vsync), no hotspot. Renderer perf remains clean on a
+normal scene; a real perf hunt would need a many-instance/heavy scene.
+
+Priority 3 continues: native-testable correctness fixes+tests, remaining browser
+confirms (#31 TTFR/#32 cutout), MCP/agent-surface diagnostics, code-quality/docs.
