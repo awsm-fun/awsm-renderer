@@ -576,7 +576,8 @@ Visualization (Phase 6, editor UI **[browser]**):
 - [ ] Vertex colors, tangents, all UV sets.
 
 ## 6. Testing to 100%
-- [ ] Editor/player **mapping** proptests + **mesh_pack parity** test (after Phase 2b). **[cargo]**
+- [~] Editor/player **mapping** proptests + **mesh_pack parity** test (after Phase 2b). **[cargo]**
+      — mesh_pack parity DONE (b57d05d0: per-vertex field decode + visibility↔transparency); mapping proptests still pending.
 - [ ] **Golden-image / GPU-readback** verification for a model matrix through the new
   unified path (certifies "renders correctly", not just "round-trips"). **[browser]**
 - [ ] **In-browser round-trip harness** — import → export → re-import → second render
