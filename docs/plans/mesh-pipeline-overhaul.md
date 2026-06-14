@@ -1377,3 +1377,22 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
 - #33 status: opaque+edge codegen DONE+live-verified (fe83ef28) + now DOCUMENTED.
   Remaining: transparent-path accessors (forward/interpolant arch — bigger);
   GPU visual confirm (state-2, needs a multi-UV asset the repo lacks).
+
+### Loop (2026-06-14) — #33 transparent-path accessors + parity (6712142e, 7cdbe292)
+- material_uv + material_vertex_color now exist on the TRANSPARENT path too,
+  achieving full opaque+edge+transparent parity (material_vertex_color was
+  previously opaque-only — a latent variant asymmetry, now fixed). Transparent is
+  forward-rendered: FragmentInput already interpolates uv_N/color_N, so
+  TransparentShadingInput forwards them (templated fields + constructor) and the
+  accessors are templated switches (mirror texture_uv/vertex_color).
+- Native: transparent_dynamic_template_renders_valid_wgsl extended (uv_sets=2/
+  color_sets=2 + references both accessors). LIVE-VERIFIED: a Blend custom
+  material calling material_uv(input,1u)+material_vertex_color(input,1u)
+  registered ok:true/errors:[] (naga-validates at transparent pipeline creation).
+- Docs: both contracts (opaque + transparent) now document both accessors; the
+  stale "transparent doesn't expose them" / "wrapper doesn't pre-materialize UVs"
+  notes corrected.
+- #33 NEAR-COMPLETE: opaque+edge+transparent codegen DONE+live-verified+documented.
+  ONLY REMAINING: GPU VISUAL confirm that a non-zero set shows DIFFERENT data
+  (state-2 — needs a multi-UV/multi-COLOR mesh asset the repo lacks; compile is
+  proven, value-correctness is not).
