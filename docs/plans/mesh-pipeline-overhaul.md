@@ -1870,3 +1870,28 @@ channels → `write_anim_target` writes mirror-bone renderer locals →
 library + silently fail. Options for a follow-up: free a model's imported clips
 on its last-instance delete (tie into the template-instance refcount from
 8593ed6c), or a UX toast when a current clip resolves 0 channels.
+
+---
+
+## CHECKPOINT — 2026-06-14 — orphaned-clip warning (6a0d4a5d)
+
+Addressed the orphaned-clip residual from the skinned-clip-playback checkpoint.
+Chose the non-destructive WARNING path (auto-deleting a model's clips on delete
+is opinionated — the user may want to retarget them; only-delete-if-untouched
+needs edit tracking that doesn't exist).
+
+`animation_sync::relower` emits a one-shot `Toast::warning` when the ACTIVE clip
+has authored tracks but ZERO resolved channels (all target nodes/materials
+gone). Deduped by active-clip id; cleared when the active clip resolves cleanly
+so a later re-orphaning warns again. The toast mirrors into the MCP console-log
+ring (agent-visible).
+
+Verified (CesiumMan, via console_logs + animation_runtime): healthy clip →
+no warning; orphan (resolved 0 / authored 57) → 1 warning; 3 re-lowers → still
+1 (dedupe); select healthy clip (clears) → no new warning; re-select orphan →
+2 (re-warns). Gates green; editor-only.
+
+If a future iteration wants the DESTRUCTIVE path too: track imported clip
+AssetIds per template (alongside Bridge.template_instances from 8593ed6c) and
+free purely-imported-untouched clips on last-instance reclaim — but the warning
+already removes the silent-failure footgun.
