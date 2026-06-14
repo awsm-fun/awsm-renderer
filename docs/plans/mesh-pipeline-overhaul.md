@@ -2241,3 +2241,34 @@ NOTE: "black sky on the fresh empty editor" = the known black-on-start (skybox
 draws black on the first frames of an empty project; self-heals on any
 import/resize/interaction — confirmed: importing a model brought back the pale-
 blue sky). Cosmetic startup artifact, not a content/render bug.
+
+---
+
+## CHECKPOINT — 2026-06-15 — Multi-UV capture slice 1/foundation (a77e83bb)
+
+Ship-blocker loop, Item A (multi-UV capture). Design: route the 2nd UV set on a
+PARALLEL channel (RawMeshData/CapturedMesh) NOT MeshData (57 construction sites).
+Slice 1 DONE: RawMeshData.uvs1 + add_raw_mesh/add_raw_mesh_transparent declare
+TexCoords{index:1} contiguous after set 0 + interleave it (uv_sets_index→set0,
+set1 at +2 floats, matching WGSL + populate layout). Additive (uvs1=None at ~11
+sites; single-UV byte-identical). Gated (clippy + 236 renderer tests). No
+Some-caller yet.
+
+REMAINING (next iterations):
+- Slice 2: glb-export extract_node_mesh reads read_tex_coords(1) aligned with the
+  vertex order, returned alongside MeshData WITHOUT touching MeshData's 57 sites —
+  change extract_node_mesh's RETURN (only ~3 callers: gltf.rs x2 +
+  extract_node_mesh_from_bytes) to carry uvs1 (e.g. a small wrapper or tuple).
+  Mirror in the MERGE loop (extract.rs ~403) + the per-prim path (~291) so uvs1
+  lines up with positions/uvs.
+- Slice 3: editor capture wiring — CapturedMesh gains uvs1 (editor-protocol
+  mesh_def.rs; 5 sites); gltf.rs feeds extract's uvs1 into the captured mesh; the
+  controller minting path (state.rs build_editor_subtree / mint_imported_mesh)
+  sets CapturedMesh.uvs1; mesh_cache::from_mesh_data/get_raw/to_mesh_data carry it
+  (get_raw currently hardcodes uvs1:None → change to m.uvs1.clone()). End-to-end
+  connects here → BROWSER VERIFY: import TextureCoordinateTest → uv_set_count==2
+  (probe: green if input.uv_set_count>=2) + material_uv(in,1u) DISTINCT from
+  material_uv(in,0u) (two scene_png that differ) → Read both.
+- Slice 4: persistence — CapturedMesh.uvs1 auto-rides .mesh.bin bitcode; verify
+  via reload_project_in_memory the 2nd set survives.
+Then Item B (black-on-start). Then STOP.
