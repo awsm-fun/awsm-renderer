@@ -639,4 +639,66 @@ mod tests {
             "child hierarchy preserved"
         );
     }
+
+    // scene_node_flat_indices maps each SOURCE glTF node index to its index in
+    // the depth-first re-export — the basis for retargeting skin joints + clip
+    // bone channels. A source whose `nodes` array order differs from the scene's
+    // DFS order is the case that actually exercises the mapping (a foreign glTF).
+    #[test]
+    fn flat_indices_follow_depth_first_not_source_order() {
+        // Tree (scene root = node 2):
+        //   2 "root"  ── children [1, 3]
+        //   1 "child" ── children [0]
+        //   0 "grandchild"
+        //   3 "sibling"
+        // DFS (root-first, children in order): 2, 1, 0, 3.
+        const GLTF: &str = r#"{
+            "asset": {"version": "2.0"},
+            "scene": 0,
+            "scenes": [{"nodes": [2]}],
+            "nodes": [
+                {"name": "grandchild"},
+                {"name": "child", "children": [0]},
+                {"name": "root", "children": [1, 3]},
+                {"name": "sibling"}
+            ]
+        }"#;
+        let doc = gltf::Gltf::from_slice(GLTF.as_bytes()).expect("parse");
+        let flat = scene_node_flat_indices(&doc);
+        assert_eq!(flat.get(&2), Some(&0), "root visited first");
+        assert_eq!(flat.get(&1), Some(&1), "child second");
+        assert_eq!(flat.get(&0), Some(&2), "grandchild third (depth-first)");
+        assert_eq!(flat.get(&3), Some(&3), "sibling last");
+        assert_eq!(flat.len(), 4);
+    }
+
+    #[test]
+    fn flat_indices_exclude_nodes_outside_the_scene() {
+        // Node 1 ("orphan") is in `nodes` but unreferenced by the scene/children.
+        const GLTF: &str = r#"{
+            "asset": {"version": "2.0"},
+            "scene": 0,
+            "scenes": [{"nodes": [0]}],
+            "nodes": [
+                {"name": "root"},
+                {"name": "orphan"}
+            ]
+        }"#;
+        let doc = gltf::Gltf::from_slice(GLTF.as_bytes()).expect("parse");
+        let flat = scene_node_flat_indices(&doc);
+        assert_eq!(flat.get(&0), Some(&0));
+        assert!(!flat.contains_key(&1), "node outside the scene is absent");
+        assert_eq!(flat.len(), 1);
+    }
+
+    #[test]
+    fn flat_indices_empty_when_no_scene() {
+        // Nodes present but no scenes → nothing to flatten.
+        const GLTF: &str = r#"{
+            "asset": {"version": "2.0"},
+            "nodes": [{"name": "lonely"}]
+        }"#;
+        let doc = gltf::Gltf::from_slice(GLTF.as_bytes()).expect("parse");
+        assert!(scene_node_flat_indices(&doc).is_empty());
+    }
 }
