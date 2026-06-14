@@ -1994,3 +1994,28 @@ REMAINING persistence slices (ordered by value/risk):
   import — needs a GltfImport/loader change) and replay populate (no remap). (a)
   reuses the already-persisted rig glb + a small map; (b) is simplest-correct but
   retains bigger bytes + a loader change. Investigate which on the next slice 3.
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-2 persistence slice 2: drop_skinning survives reload (0fc315f2)
+
+Second persistence slice. Per-node bind-pose bakes (skinned_bake_cache
+SKINNED_BAKES, MeshData keyed by (source,node_index,prim)) were session-local →
+drop_skinning errored after a cold reload. Fixed by persisting each live
+SkinnedMesh node's bind-pose as `assets/<source>.<node>.<prim>.bake.bin` (bitcode
+CapturedMesh, reusing .mesh.bin form; MeshData<->CapturedMesh via
+mesh_cache::from_mesh_data/to_mesh_data), restored into skinned_bake_cache after
+apply_project. Wired into all 4 paths. Verified via reload_project_in_memory:
+Fox → reload → drop_skinning → "Ok", node kind skinned_mesh→mesh, 0 errors.
+
+Persistence now: slice 1 (rig glb → bundle export survives) + slice 2 (bind-pose
+→ drop_skinning survives). REMAINING slice 3: editor VIEWPORT renders the
+SkinnedMesh after reload (re-populate the renderer template from the rig glb on
+load). First step next iteration: it's cheap to TEST whether the index mismatch
+is even real — persist node_flat_indices, re-populate the rig glb on apply_inmem,
+build_from_context → insert_template BEFORE apply_project, and check if
+find_by_node_index(skin.node_index) resolves directly (if reexport_clean_scene
+preserves indices / node_flat_indices is identity for Fox, no remap needed).
+If it mismatches, re-key the rebuilt template's gltf_node_index clean→original via
+the persisted node_flat_indices inverse. Verify: Fox → reload → meshes STAYS 10,
+no "no import template" warning, skin renders (canvas luma).
