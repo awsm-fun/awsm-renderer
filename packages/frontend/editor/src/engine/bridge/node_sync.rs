@@ -844,6 +844,7 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
         positions: mesh.positions,
         normals: mesh.normals,
         uvs: mesh.uvs,
+        uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,
     };
@@ -1098,6 +1099,7 @@ async fn materialize_instances(
         positions: mesh.positions,
         normals: mesh.normals,
         uvs: mesh.uvs,
+        uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,
     };

@@ -58,6 +58,12 @@ pub struct RawMeshData {
     pub normals: Option<Vec<[f32; 3]>>,
     /// Optional UV-set 0.
     pub uvs: Option<Vec<[f32; 2]>>,
+    /// Optional UV-set 1 (`TEXCOORD_1`). Packed contiguously right after set 0 so
+    /// `material_mesh_meta.uv_sets_index` points at set 0 and set 1 reads at
+    /// `+2` floats (matching the WGSL `_texture_uv_per_vertex` `set_index*2`
+    /// layout + the glTF populate path). Only meaningful when `uvs` is also set;
+    /// `uv_set_count` becomes 2 so custom materials can read `material_uv(in,1u)`.
+    pub uvs1: Option<Vec<[f32; 2]>>,
     /// Optional per-vertex RGBA colors.
     pub colors: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
@@ -220,12 +226,25 @@ impl AwsmRenderer {
         let has_uvs = data.uvs.is_some();
         let has_colors = data.colors.is_some();
 
+        // A 2nd UV set is only valid alongside set 0 (it's contiguous after it).
+        let has_uvs1 = has_uvs && data.uvs1.is_some();
         if has_uvs {
             custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
                 MeshBufferCustomVertexAttributeInfo::TexCoords {
                     index: 0,
                     data_size: 4,     // f32 → 4 bytes per component
                     component_len: 2, // u, v
+                },
+            ));
+        }
+        // TEXCOORD_1 — declared right after set 0 (before colors) so the UV sets
+        // are contiguous (uv_sets_index → set 0, set 1 at +2 floats).
+        if has_uvs1 {
+            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: 1,
+                    data_size: 4,
+                    component_len: 2,
                 },
             ));
         }
@@ -246,6 +265,11 @@ impl AwsmRenderer {
                 let uv = uvs[v];
                 custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
                 custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            if has_uvs1 {
+                let uv1 = data.uvs1.as_ref().unwrap()[v];
+                custom_attribute_bytes.extend_from_slice(&uv1[0].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&uv1[1].to_le_bytes());
             }
             if let Some(colors) = data.colors.as_ref() {
                 let c = colors[v];
@@ -401,10 +425,20 @@ impl AwsmRenderer {
         let mut custom_attribute_bytes: Vec<u8> = Vec::new();
         let has_uvs = data.uvs.is_some();
         let has_colors = data.colors.is_some();
+        let has_uvs1 = has_uvs && data.uvs1.is_some();
         if has_uvs {
             custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
                 MeshBufferCustomVertexAttributeInfo::TexCoords {
                     index: 0,
+                    data_size: 4,
+                    component_len: 2,
+                },
+            ));
+        }
+        if has_uvs1 {
+            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: 1,
                     data_size: 4,
                     component_len: 2,
                 },
@@ -424,6 +458,11 @@ impl AwsmRenderer {
                 let uv = uvs[v];
                 custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
                 custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            if has_uvs1 {
+                let uv1 = data.uvs1.as_ref().unwrap()[v];
+                custom_attribute_bytes.extend_from_slice(&uv1[0].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&uv1[1].to_le_bytes());
             }
             if let Some(colors) = data.colors.as_ref() {
                 let c = colors[v];

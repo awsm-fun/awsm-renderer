@@ -438,6 +438,7 @@ fn mesh_data_to_raw(md: awsm_meshgen::MeshData) -> RawMeshData {
         positions: md.positions,
         normals: md.normals,
         uvs: md.uvs,
+        uvs1: None,
         colors: md.colors,
         indices: md.indices,
     }

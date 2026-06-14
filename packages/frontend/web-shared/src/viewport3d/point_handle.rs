@@ -111,6 +111,7 @@ impl PointHandleSet {
                 positions: mesh.positions,
                 normals: mesh.normals,
                 uvs: mesh.uvs,
+                uvs1: None,
                 colors: mesh.colors,
                 indices: mesh.indices,
             };

@@ -130,6 +130,7 @@ fn build_runtime(
         positions: m.positions,
         normals: m.normals,
         uvs: m.uvs,
+        uvs1: None,
         colors: m.colors,
         indices: m.indices,
     };
