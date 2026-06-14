@@ -1460,3 +1460,17 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
 - #33 now FULLY value-verified on opaque (both accessors): material_uv (UV checker,
   a1d3fc74) + material_vertex_color (green). Only residual = non-zero SET value
   (set 1+) which needs a multi-set asset; set 0 + compile-for-set-N already proven.
+
+### Loop (2026-06-14) — #49 resolve EXR premultiplied_alpha TODO (d4bca1d4) + survey
+- Broad TODO/FIXME survey across all crates → the well is dry (only real one was
+  image.rs:86). Traced the EXR upload path: EXR DOES flow through
+  copy_external_image_to_texture (create_texture/exr.js_obj()), so
+  premultiplied_alpha() is live; `true` is a no-op for opaque HDR IBL (alpha=1),
+  unverified only for an alpha-bearing EXR. Replaced the vague "is this right?"
+  with that verified note. No behavior change.
+- DIMINISHING RETURNS: #33 done+value-verified; suite green; coverage broad across
+  round-trip crates; agent docs accurate; TODOs dry. Remaining clean items are
+  marginal. Higher-value next directions need a human steer: open PR #119 / write
+  the PR summary; real perf profiling (numbers, not guesses); a NEW feature; or
+  the genuinely-hard browser confirms (double_sided, multi-UV-set value — need
+  assets). Loop continues per standing order but flagged for redirection.
