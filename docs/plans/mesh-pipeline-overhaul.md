@@ -2154,3 +2154,19 @@ still correct, single-key no-panic); 236 renderer tests green. Native-only.
 
 Priority 3 continues: more native-testable fixes, #31 TTFR/#32 cutout visual
 confirms (via scene_png), code-quality/docs.
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-3: #32 alpha-cutout MASK VISUALLY CONFIRMED (via scene_png)
+
+Used the new scene_png /debug screenshot to definitively confirm #32 (the only
+status conflict: memory said done+verified, plan listed it pending). Imported the
+canonical glTF AlphaBlendModeTest (meshes TestCutoff25/50/75 = MASK materials,
+TestOpaque, DecalBlend), framed a cutoff mesh, captured + viewed the PNG:
+hard-edged ALPHA-TESTED stripes at the .25/.50/.75 rows (a broken MASK would be
+fully opaque; BLEND would be a smooth gradient) — correct MASK cutout behavior,
+0 console errors. #32 CONFIRMED WORKING (no code change). Also validates the
+scene_png tool on a real textured/cutout feature. No-code verification iteration.
+
+Remaining P3: more native-testable fixes; #31 TTFR prewarm (timing, not visual);
+code-quality/docs.
