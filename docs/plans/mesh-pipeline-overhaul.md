@@ -2067,3 +2067,36 @@ Persistence net so far: slice 1 (rig glb → export survives) ✅, slice 2
 (bind-pose → drop_skinning survives) ✅, slice 3 (viewport render) blocked-with-
 design. The DATA fully survives reload (rig + bind-pose persisted); only the
 in-editor live re-render of skinned meshes after an in-session reload is pending.
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-2 PERSISTENCE COMPLETE (slice 3 landed, cf3b84d4)
+
+Slice 3 (editor viewport renders SkinnedMesh after reload) DONE — closes the
+prior-iteration blocker. Two parts:
+1. repopulate_skinned_template (gltf.rs): re-run populate_gltf on the persisted
+   rig glb → build_from_context → hide → insert_template, BEFORE apply_project
+   (persistence::restore_skinned_templates, sources from parsed EditorProject).
+   Wired into apply_inmem + load_from_dir + load_project_from_url (last also
+   gained the slice-1/2 rig+bind restore it was missing).
+2. RECLAIM FIX: the template-instance reclaim (8593ed6c) was freeing the
+   re-populated template during apply_project's async old-node teardown. Fixed by
+   adding a controller-SCENE check to the reclaim guard
+   (node_sync::scene_has_skinned_from) — apply_project updates the scene
+   synchronously, so the new same-id SkinnedMesh is present → reclaim skips on
+   reload; on a real delete the scene node is gone → reclaim still proceeds.
+
+Verified (reload_project_in_memory): Fox import meshes 10/transforms 66 → reload
+→ STAYS 10/66, 0 warnings, whole-canvas render IDENTICAL to import (mean 180.3,
+min 99.91; empty scene min 207). No regressions: leak fix intact (import+delete
+x2 → baseline), drop_skinning post-reload works (node→mesh). NOTE: frame_node on
+a reloaded skinned node frames wrong (node-bounds estimate differs) — cosmetic,
+not a render issue; the render itself is correct.
+
+PERSISTENCE (Priority 2) COMPLETE — skinned models fully survive save→reload:
+slice 1 (rig glb → bundle export), slice 2 (bind-pose → drop_skinning), slice 3
+(viewport render). BOTH user-directed feature gaps now closed (#1 attribute
+accessors 5448a504, #2 persistence). NEXT: Priority 3 — correctness / perf /
+polish (#31 TTFR / #32 cutout browser confirms, native-testable renderer fixes +
+tests, perf via memory_stats render_cpu_ms on DamagedHelmet / many instances,
+code-quality + docs).
