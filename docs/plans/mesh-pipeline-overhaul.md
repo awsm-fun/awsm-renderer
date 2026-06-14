@@ -1276,3 +1276,19 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   gltf-convert stale assertion was the ONLY red test on the branch — the suite is
   now fully green end-to-end. No other stale/red tests lurking. (Audit log:
   /tmp/full_suite_audit.log.) Branch test-health verified.
+
+### Loop (2026-06-14) — #41 frustum culling tests + clip-Z doc guard (9f2aeb48, 3026f298)
+- geometry/frustum.rs had 1 test; aabb_in_frustum (the per-object cull) was
+  untested. Added 6 deterministic identity-clip ([-1,1]^3, convention-agnostic)
+  cases: fully-inside/outside/straddling(conservatively-visible)/beyond-far +
+  point near/far + signed_distance↔membership.
+- FOUND (latent, not a live bug): from_proj_view extracts near/far with the GL
+  clip-Z convention (row3±row2), but the renderer builds projections via
+  Mat4::perspective_rh (wgpu [0,1] clip-Z, near=row2 alone). awsm-geometry's
+  frustum is UNWIRED (no consumers — particles/meshgen use only aabb/ray; the
+  renderer culls via its OWN separate Frustum::from_view_projection), so it's a
+  footgun for a future consumer, not a current defect. Documented the convention
+  + [0,1] caveat at the extraction site (comment-only) rather than changing
+  behavior with no consumer to verify against.
+- Gate: fmt ✅, clippy -p awsm-geometry --all-features --tests -D warnings ✅,
+  cargo test -p awsm-geometry ✅ (13 passed). state-1.
