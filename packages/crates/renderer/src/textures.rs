@@ -872,6 +872,20 @@ impl TextureTransform {
 }
 
 impl Textures {
+    /// Live GPU-texture-resource counts `(pool_textures, cubemaps, samplers)` for
+    /// leak diagnostics (surfaced via `memory_stats`). `memory_stats` historically
+    /// counted only pipelines/shaders/transforms/meshes — textures were a blind
+    /// spot, yet "Destroyed texture" GPU-validation spam + Chrome "aw snap" point
+    /// at texture/sampler accumulation. A growing count under add/delete churn of
+    /// textured materials / imported models signals a leak.
+    pub fn resource_counts(&self) -> (usize, usize, usize) {
+        (
+            self.pool_textures.len(),
+            self.cubemaps.len(),
+            self.samplers.len(),
+        )
+    }
+
     /// Creates texture storage and GPU buffers.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let samplers = SlotMap::with_key();

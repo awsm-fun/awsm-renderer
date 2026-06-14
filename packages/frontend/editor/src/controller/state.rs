@@ -3943,8 +3943,12 @@ impl EditorController {
                     )
                 })
                 .await;
-                let dynamic_materials =
-                    crate::engine::context::with_renderer_mut(|r| r.dynamic_materials.len()).await;
+                let (dynamic_materials, tex_pool, cubemaps, samplers) =
+                    crate::engine::context::with_renderer_mut(|r| {
+                        let (tp, cm, sm) = r.textures.resource_counts();
+                        (r.dynamic_materials.len(), tp, cm, sm)
+                    })
+                    .await;
                 let mut entries = std::collections::BTreeMap::new();
                 entries.insert("meshes".to_string(), json!(meshes));
                 entries.insert("transforms".to_string(), json!(transforms));
@@ -3961,6 +3965,12 @@ impl EditorController {
                 entries.insert("edge_per_shader_keys".to_string(), json!(edge_per_shader));
                 entries.insert("classify_dynamic_keys".to_string(), json!(classify_dynamic));
                 entries.insert("dynamic_materials".to_string(), json!(dynamic_materials));
+                // GPU texture-resource counts (leak diagnostics — the "Destroyed
+                // texture"/"aw snap" blind spot). Growth under textured-material /
+                // imported-model add+delete churn signals a texture/sampler leak.
+                entries.insert("pool_textures".to_string(), json!(tex_pool));
+                entries.insert("cubemaps".to_string(), json!(cubemaps));
+                entries.insert("samplers".to_string(), json!(samplers));
                 // Per-frame timing (rolling EMA, perf diagnostics): wall-clock frame
                 // period (vsync-capped ~16.6ms at 60fps) + the CPU span building &
                 // submitting the frame (the actionable "how heavy is this scene" number).
