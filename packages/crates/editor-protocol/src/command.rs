@@ -179,6 +179,17 @@ pub enum EditorCommand {
     /// editor's authored render against the runtime reload over MCP.
     LoadPlayerBundle,
 
+    /// Round-trip self-test on the EDITOR path: serialize the CURRENT project to
+    /// an in-memory representation (`project.toml` + captured-mesh `.mesh.bin`),
+    /// reset, then reload it through `apply_project` — the same path as
+    /// `load_from_dir`, but with no filesystem directory picker (so it's
+    /// scriptable over MCP). Unlike `LoadPlayerBundle` (which uses the runtime
+    /// `populate_awsm_scene` path and leaves the editor tree EMPTY), this rebuilds
+    /// the editor scene tree, so an agent can verify what survives a project
+    /// save→reload (captured meshes / materials / clips) and what doesn't.
+    /// Destructive (replaces the open project with the reloaded one); not undoable.
+    ReloadProjectInMemory,
+
     /// Insert a fresh node (from a ribbon Insert action) under `parent` (root
     /// when `None`). **Carries its `id`** (minted by the dispatcher, not in
     /// `apply`) so the command is deterministic data — the MCP path can echo the
@@ -929,6 +940,7 @@ impl EditorCommand {
             EditorCommand::Batch(_) => "Batch edit",
             EditorCommand::NewProject => "New project",
             EditorCommand::LoadPlayerBundle => "Load player bundle",
+            EditorCommand::ReloadProjectInMemory => "Reload project (round-trip)",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",

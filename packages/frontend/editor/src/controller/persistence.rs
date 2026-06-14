@@ -397,6 +397,48 @@ pub async fn load_from_dir(
     Ok(())
 }
 
+/// Serialize the current project to its in-memory persisted form — exactly what
+/// [`save_to_dir`] writes that [`load_from_dir`] reads back: `project.toml`
+/// (materials/clips/nodes inline) + the captured-mesh `.mesh.bin` side files
+/// keyed by path. The editor-path round-trip half of `ReloadProjectInMemory`;
+/// call BEFORE clearing any session state, then feed the result to
+/// [`apply_inmem`]. (Player-bundle side files — material.wgsl etc. — are NOT
+/// needed: `apply_project` rebuilds from the inline `EditorProject`.)
+pub fn serialize_inmem(
+    ctrl: &EditorController,
+) -> EditorResult<(String, std::collections::HashMap<String, Vec<u8>>)> {
+    let toml = project_to_toml(ctrl)?;
+    let mesh_map: std::collections::HashMap<String, Vec<u8>> =
+        mesh_files(ctrl).into_iter().collect();
+    Ok((toml, mesh_map))
+}
+
+/// Reload a project from its in-memory persisted form (the output of
+/// [`serialize_inmem`]) through the SAME path as [`load_from_dir`]
+/// (`restore_mesh_bytes` + [`apply_project`]) — but reading captured-mesh bytes
+/// from the map instead of a directory. Rebuilds the editor scene tree (unlike
+/// `LoadPlayerBundle`'s runtime `populate_awsm_scene` path, which leaves the tree
+/// empty), so a driver can verify over MCP exactly what a project save→reload
+/// preserves. The caller drops session-local caches (templates / skinned bakes /
+/// skin joints) between serialize + apply to faithfully model a cold load.
+pub async fn apply_inmem(
+    ctrl: &EditorController,
+    toml: String,
+    mesh_map: std::collections::HashMap<String, Vec<u8>>,
+) -> EditorResult<()> {
+    let project: EditorProject =
+        toml::from_str(&toml).map_err(|e| EditorError::Msg(format!("parse project.toml: {e}")))?;
+    restore_mesh_bytes(&project, |path| {
+        let bytes = mesh_map.get(&path).cloned();
+        async move { bytes.ok_or_else(|| format!("missing in-memory mesh file: {path}")) }
+    })
+    .await;
+    apply_project(ctrl, project);
+    ctrl.reset_history();
+    ctrl.dirty.set_neq(false);
+    Ok(())
+}
+
 /// Fetch + parse a `project.toml` from `<base_url>/project.toml`.
 pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> EditorResult<()> {
     let base = base_url.trim_end_matches('/');

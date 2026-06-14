@@ -971,6 +971,27 @@ impl EditorController {
                 Toast::info("Round-trip: reloaded via populate_awsm_scene");
                 Ok(None)
             }
+            EditorCommand::ReloadProjectInMemory => {
+                use crate::controller::persistence;
+                // Editor-path round-trip self-test (no dir picker). Serialize the
+                // open project to its persisted form BEFORE clearing anything.
+                let (toml, mesh_map) = persistence::serialize_inmem(self)?;
+                // Faithfully model a COLD load: drop the session-local caches a
+                // fresh page wouldn't have — imported-glTF templates + their
+                // renderer meshes, the skinned bind-pose/rig cache, and skin-joint
+                // mappings. Without this a skinned model's stale template would
+                // survive and mask the real save→reload gap (skinned data is held
+                // only in these session-local caches, not in project.toml). The
+                // captured-mesh `mesh_cache` is intentionally NOT cleared — its
+                // bytes ARE persisted (`.mesh.bin`) and `apply_inmem` restores them.
+                crate::engine::bridge::bridge().clear_skin_joints();
+                clear_untracked_renderer_resources().await;
+                crate::engine::bridge::bridge().clear_templates();
+                crate::engine::bridge::skinned_bake_cache::clear();
+                persistence::apply_inmem(self, toml, mesh_map).await?;
+                Toast::info("Round-trip: project reloaded in-memory (cold caches)");
+                Ok(None)
+            }
             EditorCommand::Insert { id, spec, parent } => {
                 // Idempotent (apply-when-absent): a cross-tab replay or a
                 // duplicate caller-minted id is a no-op, so the id stays stable.
