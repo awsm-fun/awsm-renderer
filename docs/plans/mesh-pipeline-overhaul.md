@@ -2192,3 +2192,16 @@ is now verifiable but value isn't → not worth landing autonomously. STATE-2
 
 Codebase is in excellent shape; Priority-3 returns diminishing. Remaining: more
 coverage hardening, code-quality/docs, or human-directed work.
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-3: get_animation_runtime first-class MCP tool (9414d17b)
+
+EditorQuery::AnimationRuntime was reachable by MCP clients only via the generic
+escape hatch (undiscoverable). Added a dedicated get_animation_runtime tool
+(thin wrapper, mirrors get_memory_stats) → first-class. scene_png already has
+screenshot_scene. Native MCP rebuilt; non-regression confirmed. Investigated
+uniform-packing (well-tested already) before settling on this.
+
+(Diminishing-returns territory: codebase excellent; recent iterations are
+hardening/surface polish. Higher-value would be human-directed work.)
