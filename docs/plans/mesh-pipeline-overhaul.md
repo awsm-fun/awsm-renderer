@@ -1308,3 +1308,13 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   gated on a multi-UV test asset the repo LACKS (state-2 dependency).
 - Not landed autonomously: would be an unverified partial (no multi-UV asset for
   the visual confirm; 3 shader variants). Spec is the concrete progress.
+
+### Loop (2026-06-14) — #42 P1 tests: scene_node_flat_indices DFS map (77abd073)
+- glb-export/extract.rs scene_node_flat_indices (source glTF node index → DFS
+  re-export index; skin joints + clip bone channels retarget through it — wrong
+  map silently mis-binds rigs/anims) was only exercised on our own DFS-ordered
+  writer output (identity map). Added 3 inline-JSON cases that actually exercise
+  it: foreign non-DFS node array (root=idx2/child=1/grandchild=0/sibling=3 →
+  flat 0,1,2,3), nodes outside the scene excluded, empty when no scene.
+- Gate: fmt ✅, clippy -p awsm-glb-export --all-features --tests -D warnings ✅,
+  cargo test -p awsm-glb-export ✅ (extract binary 17 passed). state-1.
