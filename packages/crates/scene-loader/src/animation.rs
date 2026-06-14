@@ -261,3 +261,89 @@ fn camera_param(p: CameraParamKind) -> CameraParam {
         CameraParamKind::FocusDistance => CameraParam::FocusDistance,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::expand_descendants;
+    use awsm_scene::{EditorNode, NodeId, NodeKind, Scene};
+
+    fn node(id: NodeId, children: Vec<EditorNode>) -> EditorNode {
+        EditorNode {
+            id,
+            name: String::new(),
+            transform: Default::default(),
+            kind: NodeKind::Group,
+            locked: false,
+            visible: true,
+            prefab: false,
+            children,
+        }
+    }
+
+    fn scene_with(nodes: Vec<EditorNode>) -> Scene {
+        Scene {
+            nodes,
+            ..Default::default()
+        }
+    }
+
+    // expand_descendants is the include-descendants bone mask: a root expands to
+    // ITSELF plus every descendant (depth-first), so a clip targeting a skeleton
+    // root drives the whole limb, not just the root joint.
+
+    #[test]
+    fn expands_root_and_all_descendants_depth_first() {
+        // root ── child1 ── grandchild
+        //      └─ child2
+        let (root, child1, grandchild, child2) =
+            (NodeId::new(), NodeId::new(), NodeId::new(), NodeId::new());
+        let scene = scene_with(vec![node(
+            root,
+            vec![
+                node(child1, vec![node(grandchild, vec![])]),
+                node(child2, vec![]),
+            ],
+        )]);
+        assert_eq!(
+            expand_descendants(&scene, &[root]),
+            vec![root, child1, grandchild, child2],
+            "root first, then depth-first descendants"
+        );
+    }
+
+    #[test]
+    fn unknown_root_yields_only_itself() {
+        // A root id absent from the scene is still emitted (the caller's mask
+        // entry), just with no descendants to add.
+        let ghost = NodeId::new();
+        let scene = scene_with(vec![node(NodeId::new(), vec![])]);
+        assert_eq!(expand_descendants(&scene, &[ghost]), vec![ghost]);
+    }
+
+    #[test]
+    fn mid_tree_root_expands_only_its_subtree() {
+        // Selecting a non-top-level node expands that node's subtree (find is
+        // recursive), not the whole scene.
+        let (root, child1, grandchild, child2) =
+            (NodeId::new(), NodeId::new(), NodeId::new(), NodeId::new());
+        let scene = scene_with(vec![node(
+            root,
+            vec![
+                node(child1, vec![node(grandchild, vec![])]),
+                node(child2, vec![]),
+            ],
+        )]);
+        assert_eq!(
+            expand_descendants(&scene, &[child1]),
+            vec![child1, grandchild],
+            "child1's subtree only"
+        );
+    }
+
+    #[test]
+    fn multiple_roots_expand_in_order() {
+        let (a, a_kid, b) = (NodeId::new(), NodeId::new(), NodeId::new());
+        let scene = scene_with(vec![node(a, vec![node(a_kid, vec![])]), node(b, vec![])]);
+        assert_eq!(expand_descendants(&scene, &[a, b]), vec![a, a_kid, b]);
+    }
+}
