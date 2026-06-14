@@ -26,6 +26,19 @@ use crate::engine::context::renderer_handle;
 use crate::engine::scene::AssetId;
 
 thread_local! {
+    /// Serializes the WHOLE of [`register`] / [`unregister`] so their thread-local
+    /// bookkeeping (REGISTRY / LAST_HASH / DELETED) and renderer mutations can't
+    /// interleave across the multiple `await`s each holds (renderer lock,
+    /// `finalize_gpu_textures`, …). The renderer's own `AsyncMutex` only serializes
+    /// the renderer ops, not the bookkeeping around them — e.g. `register` inserts
+    /// into REGISTRY only AFTER `finalize_gpu_textures().await`, so a delete that
+    /// runs during that await found no REGISTRY entry to unregister and left a
+    /// permanent orphan (the sub-second-churn "aw snap" tail + "duplicate name"
+    /// errors). Holding this guard for the entire op closes every such window.
+    /// Always acquired BEFORE the renderer lock — consistent ordering, no deadlock.
+    static BRIDGE_OP_LOCK: std::sync::Arc<xutex::AsyncMutex<()>> =
+        std::sync::Arc::new(xutex::AsyncMutex::new(()));
+
     /// `material id → registered shader id`, populated by [`register`]. Keyed by
     /// the material's **stable id** (not its display name) so renaming a material
     /// never orphans an assigned mesh's resolution.
@@ -93,6 +106,10 @@ pub(crate) fn buffer_words_for(path: &str) -> Option<Vec<u32>> {
 /// Returns the assigned shader id, or an error string on failure.
 pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> {
     let mat_id = mat.id;
+    // Serialize the whole op against any concurrent register/unregister (see
+    // BRIDGE_OP_LOCK) — held until this fn returns.
+    let op_lock = BRIDGE_OP_LOCK.with(|l| l.clone());
+    let _op_guard = op_lock.lock().await;
     // Lost-the-race guard: a debounced register that fires after the material was
     // deleted must NOT re-register it (see DELETED). Without this the orphaned
     // registration leaks its GPU pipelines forever under sub-second churn.
@@ -113,13 +130,8 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
     }
     let handle = renderer_handle();
     let mut r = handle.lock().await;
-    // Re-check the tombstone AFTER acquiring the renderer lock: the `is_deleted`
-    // guard above runs before this `await`, so a delete that lands while we wait
-    // for the lock would otherwise slip through (TOCTOU) and register an orphan
-    // under sub-second churn. This second check closes that window.
-    if is_deleted(mat_id) {
-        return Err("custom material was deleted".to_string());
-    }
+    // (No second is_deleted re-check needed: BRIDGE_OP_LOCK is held for the whole
+    // op, so no `unregister`/delete can run between the check above and here.)
     // Recompile: the renderer rejects re-registering a key whose content changed,
     // so drop this material's previous registration first (the editor's
     // edit→re-register cycle `unregister_material` expects). Keyed by id, so a
@@ -143,6 +155,12 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
 /// also evicts the material's pipelines from the shared caches (the
 /// pipeline-leak fix). No-op if the material was never registered.
 pub async fn unregister(mat_id: AssetId) {
+    // Serialize against any concurrent register/unregister (see BRIDGE_OP_LOCK):
+    // notably this blocks until an in-flight `register` for the SAME id finishes
+    // inserting into REGISTRY, so the remove below actually finds + drops it
+    // (otherwise the registration completes after us → permanent orphan).
+    let op_lock = BRIDGE_OP_LOCK.with(|l| l.clone());
+    let _op_guard = op_lock.lock().await;
     // Tombstone the id so a debounced `register` that fires after this delete
     // (create→edit→delete faster than the ~400ms debounce) can't re-register the
     // now-deleted material into a permanent orphan. See DELETED.
