@@ -1500,6 +1500,10 @@ impl EditorController {
                     let next = self.custom_materials.lock_ref().first().map(|m| m.id);
                     self.current_material.set(next);
                 }
+                // Drop the renderer-side registration too, else its compiled GPU
+                // compute pipelines + shader modules leak forever (the pipeline-
+                // leak / "aw snap" fix). No-op if it was never registered.
+                crate::engine::bridge::dynamic::unregister(id).await;
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(None)

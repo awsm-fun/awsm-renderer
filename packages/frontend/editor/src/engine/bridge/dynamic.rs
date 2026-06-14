@@ -104,6 +104,24 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
     Ok(shader_id)
 }
 
+/// Drop a custom material's renderer registration when it's DELETED. Without
+/// this the renderer keeps the dynamic registration — and its compiled GPU
+/// compute pipelines + shader modules — forever, so repeated create/delete
+/// editing churns GPU memory until Chrome OOMs ("aw snap"). `unregister_material`
+/// also evicts the material's pipelines from the shared caches (the
+/// pipeline-leak fix). No-op if the material was never registered.
+pub async fn unregister(mat_id: AssetId) {
+    let shader_id = REGISTRY.with(|reg| reg.borrow_mut().remove(&mat_id));
+    LAST_HASH.with(|h| {
+        h.borrow_mut().remove(&mat_id);
+    });
+    if let Some(shader_id) = shader_id {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
+        let _ = r.unregister_material(shader_id);
+    }
+}
+
 /// Build + insert a `Material::Custom` for an assigned custom material `name`,
 /// returning its `MaterialKey`. `None` if `name` isn't registered (the caller
 /// falls back to the mesh's inline material). Mirrors `material::insert_material`'s

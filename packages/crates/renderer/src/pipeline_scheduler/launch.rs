@@ -849,6 +849,15 @@ impl crate::AwsmRenderer {
                 }
                 match result {
                     Ok(pipeline) => {
+                        // Record per-shader edge pipelines for dynamic-material
+                        // eviction (pipeline-leak fix); record_dynamic_pipeline_key
+                        // ignores first-party shader_ids.
+                        if let CompileInstallTarget::EdgeResolvePerShader { shader_id, .. } =
+                            &target
+                        {
+                            self.pipeline_scheduler
+                                .record_dynamic_pipeline_key(*shader_id, cache_key.clone());
+                        }
                         let pipeline_key = self
                             .pipelines
                             .compute
@@ -966,10 +975,20 @@ impl crate::AwsmRenderer {
         // early-return branch at the top of this fn. The per-pass install is
         // GLOBAL (keyed by shader_id / msaa / mipmaps), so the single
         // install covers every waiter material.
+        // Record opaque dynamic-material pipelines for eviction (pipeline-leak
+        // fix). ONLY OpaqueDynamic carries a real per-material shader_id;
+        // ClassifyDynamic is shared infrastructure (sentinel shader_id), so it
+        // must NOT be recorded/evicted per-material.
+        let opaque_dynamic_key = matches!(target, CompileInstallTarget::OpaqueDynamic { .. })
+            .then(|| (shader_id_from_target(&target), cache_key.clone()));
         let pipeline_key = self
             .pipelines
             .compute
             .install_resolved_pipeline(pipeline, cache_key);
+        if let Some((sid, key)) = opaque_dynamic_key {
+            self.pipeline_scheduler
+                .record_dynamic_pipeline_key(sid, key);
+        }
         match &target {
             CompileInstallTarget::ClassifyDynamic { .. }
             | CompileInstallTarget::OpaqueDynamic { .. } => {
