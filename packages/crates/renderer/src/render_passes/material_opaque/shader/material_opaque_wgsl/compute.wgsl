@@ -327,6 +327,7 @@ fn main(
             attribute_data_offset,
             vertex_attribute_stride,
             color_sets_index,
+            uv_sets_index,
             material_offset,
             dyn_material,
         );

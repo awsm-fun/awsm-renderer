@@ -149,6 +149,7 @@ struct OpaqueShadingInput {
     attribute_data_offset: u32,     // base offset into the packed per-vertex attr stream
     vertex_attribute_stride: u32,   // floats per vertex in that stream
     color_sets_index: u32,          // float offset to COLOR_0 within that stream
+    uv_sets_index: u32,             // float offset to TEXCOORD_0 within that stream
     material_offset: u32,
     material: MaterialData,
 };
@@ -171,6 +172,19 @@ fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32>
         input.vertex_attribute_stride,
         input.color_sets_index,
     );
+}
+
+// Interpolated `TEXCOORD_<set_index>` at this pixel (barycentric-blended across
+// the triangle) — the raw-attribute companion to `material_vertex_color`. Lets a
+// custom material read a NON-ZERO UV set directly, the same multi-set data the
+// built-in PBR `uv_index` samples. Declare `fragment_inputs: ["uv"]`. As with
+// `material_vertex_color`, there is no presence guard on the custom path — only
+// meaningful when the mesh actually carries that UV set.
+fn material_uv(input: OpaqueShadingInput, set_index: u32) -> vec2<f32> {
+    let uv0 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.x, input.vertex_attribute_stride, input.uv_sets_index);
+    let uv1 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.y, input.vertex_attribute_stride, input.uv_sets_index);
+    let uv2 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.z, input.vertex_attribute_stride, input.uv_sets_index);
+    return input.barycentric.x * uv0 + input.barycentric.y * uv1 + input.barycentric.z * uv2;
 }
 
 fn custom_shade_dynamic(input: OpaqueShadingInput) -> OpaqueShadingOutput {

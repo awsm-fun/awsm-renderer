@@ -138,6 +138,7 @@ struct OpaqueShadingInput {
     attribute_data_offset: u32,
     vertex_attribute_stride: u32,
     color_sets_index: u32,
+    uv_sets_index: u32,
     material_offset: u32,
     material: MaterialData,
 };
@@ -158,6 +159,15 @@ fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32>
         input.vertex_attribute_stride,
         input.color_sets_index,
     );
+}
+
+// Mirror of the primary-kernel `material_uv` so the SAME author fragment resolves
+// in both contexts (the dual-context invariant) — see opaque_kernel_includes.wgsl.
+fn material_uv(input: OpaqueShadingInput, set_index: u32) -> vec2<f32> {
+    let uv0 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.x, input.vertex_attribute_stride, input.uv_sets_index);
+    let uv1 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.y, input.vertex_attribute_stride, input.uv_sets_index);
+    let uv2 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.z, input.vertex_attribute_stride, input.uv_sets_index);
+    return input.barycentric.x * uv0 + input.barycentric.y * uv1 + input.barycentric.z * uv2;
 }
 
 fn custom_shade_dynamic(input: OpaqueShadingInput) -> OpaqueShadingOutput {
@@ -377,6 +387,7 @@ fn shade_sample(
             sample_data_off,
             sample_stride,
             sample_color_sets_idx,
+            sample_uv_sets_idx,
             sample_mat_offset,
             dyn_material,
         );

@@ -571,8 +571,39 @@ mod empty_registry_tests {
     use crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque;
     use awsm_materials::MaterialShaderId;
 
-    /// Build a first-party-only opaque cache key, render the WGSL,
-    /// and return the source.
+    // Dual-context invariant: the custom author accessors must exist IDENTICALLY
+    // in BOTH the primary opaque-compute kernel AND the edge-resolve kernel (a
+    // custom fragment is compiled into both — an accessor present in one but not
+    // the other fails pipeline compile only in the missing variant). These
+    // assert against the source WGSL directly (include_str!) so the guard can't
+    // drift from the rendered templates. (Whether a non-zero set visually differs
+    // is a separate GPU state-2 confirm — needs a multi-UV asset the repo lacks.)
+    const OPAQUE_KERNEL_WGSL: &str =
+        include_str!("material_opaque_wgsl/opaque_kernel_includes.wgsl");
+    const EDGE_RESOLVE_WGSL: &str = include_str!("material_opaque_wgsl/edge_resolve.wgsl");
+
+    #[test]
+    fn custom_attribute_accessors_exist_in_both_opaque_kernels() {
+        for (name, src) in [
+            ("opaque_kernel_includes", OPAQUE_KERNEL_WGSL),
+            ("edge_resolve", EDGE_RESOLVE_WGSL),
+        ] {
+            assert!(
+                src.contains("fn material_uv(input: OpaqueShadingInput"),
+                "{name}.wgsl missing material_uv(input, set) accessor (dual-context invariant)"
+            );
+            assert!(
+                src.contains("fn material_vertex_color(input: OpaqueShadingInput"),
+                "{name}.wgsl missing material_vertex_color(input, set) accessor"
+            );
+            // material_uv reads `input.uv_sets_index`, so the struct must carry it.
+            assert!(
+                src.contains("uv_sets_index"),
+                "{name}.wgsl OpaqueShadingInput missing uv_sets_index — material_uv can't reach set N"
+            );
+        }
+    }
+
     fn render_first_party_wgsl(shader_id: MaterialShaderId, msaa: Option<u32>) -> String {
         let key = ShaderCacheKeyMaterialOpaque {
             texture_pool_arrays_len: 1,
