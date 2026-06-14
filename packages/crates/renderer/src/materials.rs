@@ -58,9 +58,13 @@ pub mod writer {
 }
 
 use awsm_materials::{
-    dynamic::DynamicMaterial, flipbook::FlipBookMaterial, pbr::PbrMaterial, toon::ToonMaterial,
+    dynamic::{DynamicMaterial, DynamicTextureBinding},
+    flipbook::FlipBookMaterial,
+    pbr::PbrMaterial,
+    toon::ToonMaterial,
     unlit::UnlitMaterial,
 };
+use awsm_renderer_core::keys::{TextureKey, TextureTransformKey};
 
 impl AwsmRenderer {
     /// Updates a material in place.
@@ -83,7 +87,45 @@ impl AwsmRenderer {
     /// (e.g. tear down meshes first). Returns `true` if the material
     /// existed; `false` if it was already gone.
     pub fn remove_material(&mut self, key: MaterialKey) -> bool {
-        self.materials.remove(key)
+        // Texture-leak fix: reclaim this material's pooled GPU textures + their
+        // texture-transforms when NO OTHER live material still references them.
+        // Imported-model textures were never freed (`remove_texture` was dead
+        // code) → unbounded GPU-texture growth under model import/delete churn,
+        // an "aw snap" contributor. A scan-on-remove (rather than refcounting the
+        // insert path) keeps every insert site untouched, and freeing only
+        // unreferenced keys is dangle-free — a texture shared by another live
+        // material is kept. See docs/plans/mesh-pipeline-overhaul.md.
+        let handles = self
+            .materials
+            .get(key)
+            .map(|m| m.texture_handles())
+            .unwrap_or_default();
+        let removed = self.materials.remove(key);
+        if removed && !handles.is_empty() {
+            let mut live_tex: std::collections::HashSet<TextureKey> =
+                std::collections::HashSet::new();
+            let mut live_tt: std::collections::HashSet<TextureTransformKey> =
+                std::collections::HashSet::new();
+            for (_, m) in self.materials.iter() {
+                for (tk, ttk) in m.texture_handles() {
+                    live_tex.insert(tk);
+                    if let Some(tt) = ttk {
+                        live_tt.insert(tt);
+                    }
+                }
+            }
+            for (tk, ttk) in handles {
+                if !live_tex.contains(&tk) {
+                    self.textures.remove(tk);
+                }
+                if let Some(tt) = ttk {
+                    if !live_tt.contains(&tt) {
+                        self.textures.remove_texture_transform(tt);
+                    }
+                }
+            }
+        }
+        removed
     }
 }
 
@@ -117,6 +159,84 @@ impl Material {
             Material::FlipBook(_) => MaterialShaderId::FLIPBOOK,
             Material::Custom(m) => m.shader_id,
         }
+    }
+
+    /// Every `(texture, optional texture-transform)` handle this material
+    /// references — across all PBR slots incl. KHR extensions, Unlit/Toon,
+    /// the FlipBook atlas, and Custom (dynamic) pooled bindings.
+    ///
+    /// Used by [`crate::AwsmRenderer::remove_material`] to reclaim a deleted
+    /// material's pooled GPU textures (the texture-leak fix). The SAME enumerator
+    /// gates both the freed set and the "still-referenced by another live
+    /// material" scan, so the two can never disagree: under-enumerating a slot
+    /// would merely leak it (safe), never free a still-referenced texture.
+    pub fn texture_handles(&self) -> Vec<(TextureKey, Option<TextureTransformKey>)> {
+        fn push(
+            out: &mut Vec<(TextureKey, Option<TextureTransformKey>)>,
+            t: &Option<MaterialTexture>,
+        ) {
+            if let Some(t) = t {
+                out.push((t.key, t.transform_key));
+            }
+        }
+        let mut out = Vec::new();
+        match self {
+            Material::Pbr(m) => {
+                push(&mut out, &m.base_color_tex);
+                push(&mut out, &m.metallic_roughness_tex);
+                push(&mut out, &m.normal_tex);
+                push(&mut out, &m.occlusion_tex);
+                push(&mut out, &m.emissive_tex);
+                if let Some(x) = &m.specular {
+                    push(&mut out, &x.tex);
+                    push(&mut out, &x.color_tex);
+                }
+                if let Some(x) = &m.transmission {
+                    push(&mut out, &x.tex);
+                }
+                if let Some(x) = &m.diffuse_transmission {
+                    push(&mut out, &x.tex);
+                    push(&mut out, &x.color_tex);
+                }
+                if let Some(x) = &m.volume {
+                    push(&mut out, &x.thickness_tex);
+                }
+                if let Some(x) = &m.clearcoat {
+                    push(&mut out, &x.tex);
+                    push(&mut out, &x.roughness_tex);
+                    push(&mut out, &x.normal_tex);
+                }
+                if let Some(x) = &m.sheen {
+                    push(&mut out, &x.roughness_tex);
+                    push(&mut out, &x.color_tex);
+                }
+                if let Some(x) = &m.anisotropy {
+                    push(&mut out, &x.tex);
+                }
+                if let Some(x) = &m.iridescence {
+                    push(&mut out, &x.tex);
+                    push(&mut out, &x.thickness_tex);
+                }
+            }
+            Material::Unlit(m) => {
+                push(&mut out, &m.base_color_tex);
+                push(&mut out, &m.emissive_tex);
+            }
+            Material::Toon(m) => {
+                push(&mut out, &m.base_color_tex);
+                push(&mut out, &m.emissive_tex);
+            }
+            Material::FlipBook(m) => {
+                push(&mut out, &m.atlas_tex);
+            }
+            Material::Custom(m) => {
+                for binding in m.textures.iter().flatten() {
+                    let DynamicTextureBinding::Pooled { texture, .. } = binding;
+                    out.push((*texture, None));
+                }
+            }
+        }
+        out
     }
 
     /// Returns true if the material renders in the transparency pass.
