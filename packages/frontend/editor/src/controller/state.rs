@@ -4742,27 +4742,52 @@ async fn clear_untracked_renderer_resources() {
 /// A coarse local-space AABB for a node kind (half-extents from primitive dims;
 /// a unit box for anything without obvious bounds). Used only to frame the
 /// camera + report approximate size — not a tight collision bound.
-fn local_aabb(kind: &NodeKind) -> Aabb3 {
-    // A Mesh's true bounds come from its baked geometry in the mesh cache; every
-    // procedural node (box / sphere / sweep / …) is a Mesh now.
-    if let NodeKind::Mesh { mesh, .. } = kind {
-        if let Some(raw) = crate::engine::bridge::mesh_cache::get_raw(mesh.0) {
-            if !raw.positions.is_empty() {
-                let mut min = [f32::INFINITY; 3];
-                let mut max = [f32::NEG_INFINITY; 3];
-                for p in &raw.positions {
-                    for i in 0..3 {
-                        min[i] = min[i].min(p[i]);
-                        max[i] = max[i].max(p[i]);
-                    }
-                }
-                return (min, max);
-            }
+/// AABB of a set of local-space positions, or `None` when empty.
+fn aabb_from_positions(positions: &[[f32; 3]]) -> Option<Aabb3> {
+    if positions.is_empty() {
+        return None;
+    }
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for p in positions {
+        for i in 0..3 {
+            min[i] = min[i].min(p[i]);
+            max[i] = max[i].max(p[i]);
         }
     }
-    // Lights / cameras / empties / models / un-baked meshes: a small unit box
-    // centered on the node (a glTF model's true bounds aren't cheaply available
-    // CPU-side).
+    Some((min, max))
+}
+
+fn local_aabb(kind: &NodeKind) -> Aabb3 {
+    match kind {
+        // A Mesh's true bounds come from its baked geometry in the mesh cache;
+        // every procedural node (box / sphere / sweep / …) is a Mesh now.
+        NodeKind::Mesh { mesh, .. } => {
+            if let Some(raw) = crate::engine::bridge::mesh_cache::get_raw(mesh.0) {
+                if let Some(b) = aabb_from_positions(&raw.positions) {
+                    return b;
+                }
+            }
+        }
+        // A SkinnedMesh's bounds come from its bind-pose bake (cached at import +
+        // persisted across reload), keyed by the same (source, node, primitive)
+        // triple `drop_skinning` uses — so `frame_node` centers an imported
+        // character instead of a unit box at its origin.
+        NodeKind::SkinnedMesh { skin, .. } => {
+            if let Some(md) = crate::engine::bridge::skinned_bake_cache::get(
+                skin.source,
+                skin.node_index,
+                skin.primitive_index,
+            ) {
+                if let Some(b) = aabb_from_positions(&md.positions) {
+                    return b;
+                }
+            }
+        }
+        _ => {}
+    }
+    // Lights / cameras / empties / un-baked meshes: a small unit box centered on
+    // the node.
     ([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5])
 }
 
