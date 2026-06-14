@@ -1474,3 +1474,26 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   the PR summary; real perf profiling (numbers, not guesses); a NEW feature; or
   the genuinely-hard browser confirms (double_sided, multi-UV-set value — need
   assets). Loop continues per standing order but flagged for redirection.
+
+### Loop (2026-06-14) — 🔴 LEAK FOUND: custom-material delete leaks compute pipelines ("aw snap" cause)
+- PERF DIRECTION (user-chosen) + user reported a 2nd Chrome "aw snap" crash.
+- MEASURED (churn soak via /debug, 10× add_custom_material+set_wgsl+insert box+
+  assign+delete-both, sampling memory_stats): compute_pipelines 23→143(×5)→278(×10),
+  GROWING ~25/cycle, never returns to baseline. transforms 14→24 (~1/cycle leak too).
+  render_pipelines 13→57 then PLATEAUS (deduped). materials/meshes flat (high-level
+  objects freed). JS heap 14→29MB. ⇒ deleting a custom material leaks its compiled
+  GPU compute pipelines (+ shader modules) → unbounded GPU memory → Chrome OOM crash.
+- ROOT CAUSE: ComputePipelines (pipelines/compute_pipeline.rs) = lookup:SlotMap +
+  cache:HashMap<ComputePipelineCacheKey,Key> — has len()/ensure_keys* but NO
+  remove/evict/clear. unregister_material (dynamic_materials/registry.rs:1367) drops
+  extras-pool + scheduler GROUP (drop_material_group = just self.materials.remove(id))
+  + the registration — but NEVER evicts the compiled compute/render pipelines or the
+  shader modules. ComputePipelineCacheKey is keyed by shader_key (unique per custom
+  WGSL) so each deleted material's pipelines orphan forever. (render plateaus =
+  reusable layout keys; compute grows = unique shader_key per material.)
+- FIX (substantial, next iters — verify via re-running the churn soak: 278→~baseline):
+  add eviction to ComputePipelines + RenderPipelines + shader-module cache, hooked
+  from unregister_material/drop_material_group. Cleanest hook candidate: the
+  scheduler MaterialGroup likely tracks the pipeline keys it submitted → on drop,
+  remove them from the caches. MUST NOT free a pipeline still referenced by another
+  live material (share by cache key). Also chase the small per-cycle transforms leak.
