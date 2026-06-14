@@ -88,6 +88,21 @@ impl RenderPipelines {
         self.lookup.is_empty()
     }
 
+    /// Evict the render pipelines for these cache keys (counterpart of
+    /// [`crate::pipelines::compute_pipeline::ComputePipelines::remove_cache_keys`]).
+    /// Removes each from both the cache map and the slotmap; dropping the
+    /// `GpuRenderPipeline` releases the GPU object. Returns how many were freed.
+    pub fn remove_cache_keys(&mut self, keys: &[RenderPipelineCacheKey]) -> usize {
+        let mut removed = 0;
+        for key in keys {
+            if let Some(slot) = self.cache.remove(key) {
+                self.lookup.remove(slot);
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Returns a pipeline key, creating the pipeline if needed.
     ///
     /// Thin wrapper over [`Self::ensure_keys`] — funnelling the

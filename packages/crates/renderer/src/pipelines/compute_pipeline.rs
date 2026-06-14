@@ -96,6 +96,24 @@ impl ComputePipelines {
         self.lookup.len()
     }
 
+    /// Evict the compute pipelines for these cache keys. Removes each from both
+    /// the cache map and the slotmap; dropping the `GpuComputePipeline` releases
+    /// the GPU object. Returns how many were freed. Used by `unregister_material`
+    /// to reclaim a deleted custom material's pipelines (the pipeline-leak fix —
+    /// see docs/plans/mesh-pipeline-overhaul.md). The caller must only pass keys
+    /// no LIVE material still references (custom-material cache keys are unique
+    /// per WGSL, so a deleted material's keys are exclusively its own).
+    pub fn remove_cache_keys(&mut self, keys: &[ComputePipelineCacheKey]) -> usize {
+        let mut removed = 0;
+        for key in keys {
+            if let Some(slot) = self.cache.remove(key) {
+                self.lookup.remove(slot);
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// True when no compute pipelines exist.
     pub fn is_empty(&self) -> bool {
         self.lookup.is_empty()

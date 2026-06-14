@@ -44,6 +44,17 @@ impl Shaders {
         self.lookup.insert(shader_module)
     }
 
+    /// Evict a shader module by key — drops the slotmap entry (releasing the
+    /// `GpuShaderModule`) AND removes any cache entry pointing at it. Used by
+    /// `unregister_material` to reclaim a deleted custom material's shader
+    /// modules (the pipeline-leak fix — see docs/plans/mesh-pipeline-overhaul.md).
+    /// Returns true if a module was removed.
+    pub fn remove(&mut self, shader_key: ShaderKey) -> bool {
+        let existed = self.lookup.remove(shader_key).is_some();
+        self.cache.retain(|_, v| *v != shader_key);
+        existed
+    }
+
     /// Sync cache-only lookup: returns the key iff the shader is already
     /// compiled + cached (e.g. pre-warmed at boot), otherwise `None`.
     /// Never compiles. Lets sync per-frame paths (e.g. the lazy line
