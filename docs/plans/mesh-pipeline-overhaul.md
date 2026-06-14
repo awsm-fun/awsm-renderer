@@ -1895,3 +1895,32 @@ If a future iteration wants the DESTRUCTIVE path too: track imported clip
 AssetIds per template (alongside Bridge.template_instances from 8593ed6c) and
 free purely-imported-untouched clips on last-instance reclaim — but the warning
 already removes the silent-failure footgun.
+
+---
+
+## CHECKPOINT — 2026-06-14 — #33 attribute accessors COMPLETE (5448a504)
+
+Priority-1 feature gap closed. On investigation, `material_uv(input, set)` /
+`material_vertex_color(input, set)` were ALREADY implemented in all 3 custom-
+fragment kernels (opaque-compute + edge-resolve + transparent), native-tested
+(template.rs naga-structural), documented (contract-{opaque,transparent}.md via
+get_material_contract), and browser-confirmed in prior loops — the design doc
+`custom-material-attribute-accessors.md` was just stale ("not yet implemented").
+
+The one genuine remaining gap was the OOB clamp (spec step 2): the opaque +
+edge kernels fetched the set index-driven from the shared `visibility_data`
+pool with no range guard, so an out-of-range set read an adjacent vertex's
+floats (silent garbage). Fixed: carry `uv_set_count`/`color_set_count` in
+`OpaqueShadingInput` (from material_mesh_meta at both splice sites) + guard the
+accessors → benign default (uv vec2(0) / color vec4(1)). Transparent already
+clamped via its templated switch.
+
+Verified: native 232 pass (clamp-presence assertions added); GPU compile
+(material_uv(input,7u)+material_vertex_color(input,9u) on a 1-set sphere →
+diagnostics ok=true errors=[] — confirms struct/constructor match in opaque +
+edge on the device); GPU value (material_uv(input,0u) → gradient min_luma 98.85;
+material_uv(input,7u) → black min_luma 0.00 = clamp returns vec2(0)).
+
+Design doc marked IMPLEMENTED. The two-real-feature-gaps directive's #1 is done;
+NEXT is Priority 2 (persistence: skinned bind-pose bakes + rig glb session-local;
+model-source disk persistence; reusable non-editor scene materialization path).
