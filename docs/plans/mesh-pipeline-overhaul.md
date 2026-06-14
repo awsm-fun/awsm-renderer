@@ -1450,3 +1450,13 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   consumed in a tangled renderables/ctx/self borrow scope, so a self-field scratch
   fights the borrow checker (why it's a local) + a thread_local is hacky for the
   hot core path; one Vec/frame is low value vs that risk. Documented + skipped.
+
+### Loop (2026-06-14) — #33 material_vertex_color VALUE confirmed (browser SEEN)
+- Closed #33's last value-residual on the opaque path: collapsed a box, painted
+  all 24 verts green via paint_vertex_colors, assigned a custom material returning
+  material_vertex_color(input,0u).rgb → box rendered GREEN (screenshot SEEN;
+  canvas_pixels (100,248,100) = painted green + the ambient/tonemap floor on R/B).
+  Proves the accessor reads real per-vertex COLOR_0.
+- #33 now FULLY value-verified on opaque (both accessors): material_uv (UV checker,
+  a1d3fc74) + material_vertex_color (green). Only residual = non-zero SET value
+  (set 1+) which needs a multi-set asset; set 0 + compile-for-set-N already proven.
