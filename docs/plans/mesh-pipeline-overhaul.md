@@ -1550,3 +1550,20 @@ pipeline-leak-aw-snap.md). Findings:
   self.pipelines/self.shaders) for the unregistered shader_id's tracked keys, with
   the uniqueness-safety guard. step 4 = browser churn soak (compute_pipelines must
   return to ~baseline, was 23→278). Don't claim fixed until the soak is flat.
+
+### Loop (2026-06-14) — pipeline-leak fix STEPS 2-3 + delete-wire (WIP, NOT firing) a81a74ec
+- Implemented: scheduler per-shader_id install-key tracking + recording at
+  OpaqueDynamic/EdgeResolvePerShader installs; unregister_material eviction (with
+  in-use guard); editor DeleteCustomMaterial now calls bridge::dynamic::unregister
+  (it previously NEVER told the renderer to unregister — a real gap).
+- VERIFIED NOT WORKING: re-ran churn soak → compute_pipelines STILL 23→263; the
+  eviction tracing::debug NEVER logs (DEBUG is captured, confirmed) ⇒ eviction
+  path not reached. Step 1 primitives (742935b6) are fine; the trigger is broken.
+- NEXT (debug): add temp debug at (a) DeleteCustomMaterial handler entry — does
+  /debug delete_custom_material even reach it? (b) bridge::dynamic::unregister —
+  REGISTRY hit/miss for the id? (c) record_dynamic_pipeline_key — are keys
+  recorded, under which shader_id? + at unregister, is evictable empty? Pin which
+  link is broken, fix, re-soak until compute_pipelines flat. (Hypotheses:
+  /debug→handler routing; or registration shader_id ≠ the id REGISTRY stores; or
+  recording shader_id ≠ unregister shader_id.) Also: render_pl plateaus at 57 +
+  transforms ~1/cycle still leak — secondary.
