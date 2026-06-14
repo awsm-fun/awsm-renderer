@@ -124,9 +124,16 @@ impl<T: Animatable> AnimationSampler<T> {
             Ok(i) => BinaryBounds::ExactHit(i),
             Err(i) => {
                 if i == 0 {
-                    BinaryBounds::Between(0, 1)
+                    // `time` is before the first keyframe. glTF holds sampler
+                    // output constant outside the keyframe range, so CLAMP to the
+                    // first keyframe (mirrors the `i >= len` after-last clamp
+                    // below). The old `Between(0, 1)` extrapolated a negative
+                    // interpolation factor below the first value — wrong for a
+                    // track whose first key starts after the clip's t=0 — and
+                    // panicked (`times[1]` OOB) for a single-keyframe track.
+                    BinaryBounds::ExactHit(0)
                 } else if i >= times.len() {
-                    // This shouldn't really happen, but just in case, clamp to the end
+                    // `time` is after the last keyframe — clamp to the end.
                     BinaryBounds::ExactHit(times.len() - 1)
                 } else {
                     BinaryBounds::Between(i - 1, i)
@@ -139,4 +146,84 @@ impl<T: Animatable> AnimationSampler<T> {
 enum BinaryBounds {
     ExactHit(usize),
     Between(usize, usize),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::animation::Animatable;
+
+    // Scalar test type: sampling is index/clamp logic independent of the value
+    // type, so a plain f64 keeps the keyframe-selection assertions readable.
+    impl Animatable for f64 {
+        fn interpolate_linear(first: &Self, second: &Self, t: f64) -> Self {
+            first + (second - first) * t
+        }
+        fn interpolate_cubic_spline(
+            first_value: &Self,
+            _first_tangent: &Self,
+            second_value: &Self,
+            _second_tangent: &Self,
+            _delta_time: f64,
+            t: f64,
+        ) -> Self {
+            // Tangents irrelevant for these index-selection tests.
+            first_value + (second_value - first_value) * t
+        }
+    }
+
+    #[test]
+    fn linear_interpolates_between_and_clamps_outside() {
+        let s = AnimationSampler::new_linear(vec![1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0]);
+        // Exact hits.
+        assert_eq!(s.sample(1.0), 10.0);
+        assert_eq!(s.sample(2.0), 20.0);
+        assert_eq!(s.sample(3.0), 30.0);
+        // Between.
+        assert_eq!(s.sample(1.5), 15.0);
+        assert_eq!(s.sample(2.25), 22.5);
+        // BEFORE first → clamp to first (was extrapolated to a negative factor).
+        assert_eq!(s.sample(0.0), 10.0);
+        assert_eq!(s.sample(-100.0), 10.0);
+        // AFTER last → clamp to last.
+        assert_eq!(s.sample(3.0001), 30.0);
+        assert_eq!(s.sample(99.0), 30.0);
+    }
+
+    #[test]
+    fn step_holds_left_and_clamps() {
+        let s = AnimationSampler::new_step(vec![1.0, 2.0], vec![10.0, 20.0]);
+        assert_eq!(s.sample(1.4), 10.0); // holds left value
+        assert_eq!(s.sample(0.0), 10.0); // before first → first
+        assert_eq!(s.sample(9.0), 20.0); // after last → last
+    }
+
+    #[test]
+    fn single_keyframe_never_panics_and_holds() {
+        // A constant (one-keyframe) track: sampling before/at/after its time must
+        // return that value with NO out-of-bounds panic (the old before-first
+        // `Between(0, 1)` indexed `times[1]`).
+        for s in [
+            AnimationSampler::new_linear(vec![0.5], vec![42.0]),
+            AnimationSampler::new_step(vec![0.5], vec![42.0]),
+        ] {
+            assert_eq!(s.sample(0.0), 42.0); // before the only key
+            assert_eq!(s.sample(0.5), 42.0); // exact
+            assert_eq!(s.sample(5.0), 42.0); // after
+        }
+    }
+
+    #[test]
+    fn cubic_spline_endpoints_clamp() {
+        let s = AnimationSampler::new_cubic_spline(
+            vec![1.0, 2.0],
+            vec![10.0, 20.0],
+            vec![0.0, 0.0],
+            vec![0.0, 0.0],
+        );
+        assert_eq!(s.sample(1.0), 10.0);
+        assert_eq!(s.sample(2.0), 20.0);
+        assert_eq!(s.sample(0.0), 10.0); // before first → clamp
+        assert_eq!(s.sample(9.0), 20.0); // after last → clamp
+    }
 }
