@@ -1438,3 +1438,15 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   drop_skinning), or custom-material attribute reads — agents couldn't discover
   them. Added a "Editing geometry & vertices" section + scope fidelity, pointer to
   MCP.md catalog. All cited tool names verified vs the live #[tool] set. Docs-only.
+
+### Loop (2026-06-14) — #48 P1 tests: Curve1 clamping/single-key/multi-component (57068393)
+- curves/curve1.rs (particle color/size/alpha over-life) tested only happy-path
+  f32 in [0,1]. Added the untested edges: LinearCurve1 t-clamp (t<0→start,
+  t>1→end); KeyedCurve1 endpoint-clamp (no extrapolation past first/last key) +
+  single-key constant; Vec3 + [f32;4] Lerp1 impls per-component.
+- Gate: fmt ✅, clippy -p awsm-curves --all-features --tests -D warnings ✅,
+  cargo test -p awsm-curves ✅ (3 new, 13 total). state-1.
+- NOTE: evaluated perf (render.rs opaque_snapshots per-frame Vec) — NOT worth it:
+  consumed in a tangled renderables/ctx/self borrow scope, so a self-field scratch
+  fights the borrow checker (why it's a local) + a thread_local is hacky for the
+  hot core path; one Vec/frame is low value vs that risk. Documented + skipped.
