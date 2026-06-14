@@ -30,6 +30,20 @@ pub fn from_mesh_data(m: MeshData) -> CapturedMesh {
     }
 }
 
+/// Inverse of [`from_mesh_data`]: a `CapturedMesh` (the bitcode-serializable
+/// persisted form) back into a `MeshData`. Used by `persistence` to restore
+/// skinned bind-pose bakes (which `skinned_bake_cache` stores as `MeshData`)
+/// from their persisted `.bake.bin` side files.
+pub fn to_mesh_data(c: CapturedMesh) -> MeshData {
+    MeshData {
+        positions: c.positions,
+        normals: c.normals,
+        uvs: c.uvs,
+        colors: c.colors,
+        indices: c.indices,
+    }
+}
+
 /// Store (or replace) a captured mesh under a **known** id — the Load path
 /// restoring `assets/<id>.mesh.bin`, and the raw-edit command path
 /// (`SetMeshData`) overwriting an editable mesh in place.

@@ -306,6 +306,78 @@ where
     }
 }
 
+/// Filename for a skinned node's bind-pose bake side file
+/// (`assets/<source>.<node>.<prim>.bake.bin`). `prim = None` (whole-node merge)
+/// → `all`. Sibling of the captured-mesh `.mesh.bin`.
+fn bind_pose_filename(source: AssetId, node_index: u32, prim: Option<u32>) -> String {
+    let p = prim
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "all".to_string());
+    format!("{}.{}.{}.bake.bin", source.0, node_index, p)
+}
+
+/// The `(source, node_index, primitive_index)` bind-pose-bake keys every live
+/// `SkinnedMesh` node carries (the same triple `skinned_bake_cache` is keyed by).
+fn skinned_bake_keys(ctrl: &EditorController) -> Vec<(AssetId, u32, Option<u32>)> {
+    use crate::engine::scene::NodeKind;
+    fn walk(node: &Arc<Node>, out: &mut Vec<(AssetId, u32, Option<u32>)>) {
+        if let NodeKind::SkinnedMesh { skin, .. } = node.kind.get_cloned() {
+            out.push((skin.source, skin.node_index, skin.primitive_index));
+        }
+        for c in node.children.lock_ref().iter() {
+            walk(c, out);
+        }
+    }
+    let mut out = Vec::new();
+    for n in ctrl.scene.nodes.lock_ref().iter() {
+        walk(n, &mut out);
+    }
+    out
+}
+
+/// Per-skinned-node bind-pose bake side files (`assets/<source>.<node>.<prim>.bake.bin`)
+/// — the no-JOINTS/WEIGHTS geometry `drop_skinning` bakes into a static editable
+/// Mesh. Stored at import in the session-local `skinned_bake_cache` (MeshData),
+/// serialized here as the bitcode `CapturedMesh` (reusing the `.mesh.bin` form).
+/// Without this a cold reload loses the bind pose → `drop_skinning` errors.
+pub fn bind_pose_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
+    use crate::engine::bridge::{mesh_cache, skinned_bake_cache};
+    let mut out = Vec::new();
+    for (src, node, prim) in skinned_bake_keys(ctrl) {
+        if let Some(md) = skinned_bake_cache::get(src, node, prim) {
+            let captured = mesh_cache::from_mesh_data(md);
+            if let Ok(bytes) = bitcode::serialize(&captured) {
+                out.push((
+                    format!("assets/{}", bind_pose_filename(src, node, prim)),
+                    bytes,
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Restore each live `SkinnedMesh` node's bind-pose bake into the
+/// [`skinned_bake_cache`] from a loaded project (via `read`). Call AFTER
+/// [`apply_project`] (it walks the now-live SkinnedMesh nodes). Makes
+/// `drop_skinning` survive a cold reload.
+async fn restore_bind_poses<F, Fut>(ctrl: &EditorController, mut read: F)
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    use crate::engine::bridge::{mesh_cache, skinned_bake_cache};
+    for (src, node, prim) in skinned_bake_keys(ctrl) {
+        let path = format!("assets/{}", bind_pose_filename(src, node, prim));
+        if let Ok(bytes) = read(path).await {
+            match bitcode::deserialize::<CapturedMesh>(&bytes) {
+                Ok(c) => skinned_bake_cache::store(src, node, prim, mesh_cache::to_mesh_data(c)),
+                Err(e) => tracing::warn!("skinned bind-pose {src:?}/{node}: bad .bake.bin ({e})"),
+            }
+        }
+    }
+}
+
 /// Per-clip animation side files — the full authored model serialized as TOML
 /// (mirrors `material_files`). Each path matches the `CustomAnimationRef.file` in
 /// `project.toml` via the shared [`animation_file_path`] (so the writer can't
@@ -439,6 +511,11 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
             .await
             .map_err(|e| EditorError::Msg(e.to_string()))?;
     }
+    for (name, bytes) in bind_pose_files(ctrl) {
+        dir.write_bytes(&name, &bytes)
+            .await
+            .map_err(|e| EditorError::Msg(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -467,6 +544,10 @@ pub async fn load_from_dir(
         dir.read_bytes(&path).await.map_err(|e| e.to_string())
     })
     .await;
+    restore_bind_poses(ctrl, |path| async move {
+        dir.read_bytes(&path).await.map_err(|e| e.to_string())
+    })
+    .await;
     ctrl.reset_history();
     ctrl.dirty.set_neq(false);
     Ok(())
@@ -488,6 +569,7 @@ pub fn serialize_inmem(
     let mut byte_files: std::collections::HashMap<String, Vec<u8>> =
         mesh_files(ctrl).into_iter().collect();
     byte_files.extend(rig_glb_files(ctrl));
+    byte_files.extend(bind_pose_files(ctrl));
     Ok((toml, byte_files))
 }
 
@@ -518,6 +600,11 @@ pub async fn apply_inmem(
     restore_rig_glb(ctrl, |path| {
         let bytes = byte_files.get(&path).cloned();
         async move { bytes.ok_or_else(|| format!("missing in-memory rig glb: {path}")) }
+    })
+    .await;
+    restore_bind_poses(ctrl, |path| {
+        let bytes = byte_files.get(&path).cloned();
+        async move { bytes.ok_or_else(|| format!("missing in-memory bind-pose: {path}")) }
     })
     .await;
     ctrl.reset_history();
