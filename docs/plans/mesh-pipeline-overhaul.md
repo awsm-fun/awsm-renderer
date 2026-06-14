@@ -1682,3 +1682,22 @@ pipelines + node transforms) are now clean.
   moderate scale. FOLLOW-UP for real perf work: push to thousands of meshes and/or a
   directional light with shadow cascades + many point lights (shadow passes are the likely
   first cost), now measurable via render_cpu_ms.
+
+### Loop (2026-06-14 cont.) — perf profiling: renderer HEALTHY, no offender (documented ceiling)
+Used the new render_cpu_ms metric to profile heavy/shadowed scenes (worst case = all casters
+overlapping at origin, so zero shadow-cull benefit — the upper bound):
+- 9 meshes, no extra lights ............ render_cpu_ms 1.1ms, frame_dt 8.3ms
+- 309 meshes, no extra lights .......... 1.5ms
+- 311 meshes + 1 directional (shadow) .. 1.7ms
+- 317 meshes + 6 point lights (shadow) . 5.1ms
+- 323 meshes + 12 point lights (shadow)  6.4ms  ← still frame_dt 8.3ms = 60fps held
+Point-light cube-shadow recording dominates CPU (6 faces × casters × lights), but the shadow
+render pass ALREADY frustum-culls casters per view against a BVH (`shadows/render_pass.rs`
+query_frustum + NodeFilter::shadow_caster; meshes carry world_aabb) — so a REALISTIC spread
+scene culls most casters out of each shadow frustum. The measured numbers are the degenerate
+all-overlapping worst case and STILL hold 60fps. Conclusion: renderer is well-architected
+(visibility buffer + BVH shadow culling + world_aabb), no CPU perf offender at tested scale —
+documented ceiling, no code change. (Light insert spec for future profiling: {"light":"point"}
+| "directional" | "spot" — UNIT variants; position via SetTransform {id, transform:{translation,
+rotation:[0,0,0,1], scale:[1,1,1]}}.) FOLLOW-UP if ever needed: static-shadow caching (skip
+re-recording shadow views whose light+casters didn't move) for static scenes.
