@@ -1639,3 +1639,23 @@ human-paced residual; traced the sub-second-churn tail to a deeper editor-bridge
   make the bridge's per-material register/unregister fully atomic (single async guard around the whole
   op so the thread_local bookkeeping can't interleave), or reconcile the renderer's dynamic_materials
   against the editor's live custom_materials set after a churn settles. Memory: [[pipeline-leak-aw-snap]].
+
+### Loop (2026-06-14 cont.) — aw-snap leak FULLY RESOLVED (bridge op-lock closes the tail)
+Third + final commit db8a9255. The sub-second-churn residual was the editor bridge
+(`bridge/dynamic.rs`) register()/unregister() interleaving across their `await`s: register
+inserts into REGISTRY only AFTER `finalize_gpu_textures().await`, so a delete landing during
+that await found no REGISTRY entry to drop → permanent orphan ("duplicate name" + opaque/edge
+buckets recompiling on every later edit). Fix = a bridge-level `xutex::AsyncMutex`
+(BRIDGE_OP_LOCK) held across the ENTIRE register/unregister op (acquired before the renderer
+lock — consistent order, no deadlock); removed the now-redundant post-lock is_deleted recheck.
+
+VERIFIED FLAT at baseline under every churn rate (memory_stats):
+- x24 add+setwgsl+delete @0.45/0.35s → 23/0 (flat even mid-churn)
+- x40 add+setwgsl+delete NO sleeps → 23/0, **0 "duplicate name" errors**
+- x15+x12 full mat+box+assign+delete → dynamic_materials→0 (no orphans), compute bounded
+  (one-time +4 box geometry, reused)
+- live material renders correctly (luma high, 0 missing-pipeline)
+
+Three commits total: 99b6fd37 (relayout reclaim) + 6345dc11 (drain-on-delete + observability)
++ db8a9255 (bridge op-lock). The "aw snap" GPU-pipeline-leak crash is DONE. Memory:
+[[pipeline-leak-aw-snap]].
