@@ -934,6 +934,13 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Renderer-side animation runtime state — the 'why doesn't my clip pose the rig' probe. Returns the lowered clip_groups, RESOLVED channel count, per_clip channel counts, rest_entries, mixer_layers, plus the controller's current_clip / authored_tracks / playing / playhead. If resolved_channels < authored_tracks, some tracks failed to resolve (target node/material pending or deleted); resolved_channels == 0 with a live current_clip means every track targets a node that no longer exists (e.g. an orphaned clip left after its imported model was deleted). Pure read."
+    )]
+    async fn get_animation_runtime(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::AnimationRuntime).await
+    }
+
+    #[tool(
         description = "Replace a built-in library material's VARIANT definition wholesale (idempotent full MaterialDef as JSON, undoable; assigned meshes re-materialize). Key fields: shading ({\"pbr\":null} | {\"unlit\":null} | {\"toon\":{...}} | {\"flip_book\":{\"cols\":2,\"rows\":2,\"frame_count\":4,\"fps\":2.0,\"time_offset\":0.0,\"mode\":\"loop\",\"flip_y\":false}}), alpha_mode ({\"opaque\":null} | {\"mask\":{\"cutoff\":0.5}} | {\"blend\":null}), double_sided, base_color (rgba), base_color_texture ({\"asset\":\"<texture-asset-id>\"} — for a FlipBook this is the ATLAS), label. Read the current def from get_snapshot first and send it back modified. A Mask-mode FlipBook = an ANIMATED CUTOUT (alpha-tested opaque, hole-shaped shadows)."
     )]
     async fn update_builtin_material(
