@@ -1659,3 +1659,14 @@ VERIFIED FLAT at baseline under every churn rate (memory_stats):
 Three commits total: 99b6fd37 (relayout reclaim) + 6345dc11 (drain-on-delete + observability)
 + db8a9255 (bridge op-lock). The "aw snap" GPU-pipeline-leak crash is DONE. Memory:
 [[pipeline-leak-aw-snap]].
+
+### Loop (2026-06-14 cont.) — secondary `transforms` leak FIXED (5fde0620)
+The other leak flagged in session 1: node insert+delete leaked +1 transform/cycle
+(memory_stats transforms 14→34 over 20 churns; meshes stayed flat — mesh freed, transform
+not). Cause: editor `bridge/node_sync.rs::remove_node` → `teardown` frees a node's meshes +
+sub-transforms but deliberately leaves the node's OWN `transform_key` (so a kind-change keeps
+a stable transform); its comment wrongly claimed dropping the Arc frees it, but the SlotMap
+slot in `r.transforms` was never removed. Fix: `remove_node` now `r.transforms.remove(entry.
+transform_key)` after teardown (children removed first by recursion). Verified FLAT across x20
+box churn + x8 light-node churn; live node still renders. Both churn leaks (custom-material
+pipelines + node transforms) are now clean.
