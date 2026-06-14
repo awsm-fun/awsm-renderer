@@ -268,6 +268,47 @@ fn skinned_sources(ctrl: &EditorController) -> std::collections::HashSet<AssetId
     out
 }
 
+/// The imported-skinned-model source ids referenced by a PARSED project's
+/// `SkinnedMesh` nodes (before the scene is applied) — so their templates can be
+/// rebuilt from the rig glb BEFORE the nodes materialize. Mirror of
+/// [`skinned_sources`] but over the serialized `EditorNode` tree.
+fn skinned_sources_from_project(project: &EditorProject) -> std::collections::HashSet<AssetId> {
+    use crate::engine::scene::NodeKind;
+    fn walk(node: &awsm_editor_protocol::EditorNode, out: &mut std::collections::HashSet<AssetId>) {
+        if let NodeKind::SkinnedMesh { skin, .. } = &node.kind {
+            out.insert(skin.source);
+        }
+        for c in &node.children {
+            walk(c, out);
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    for n in &project.nodes {
+        walk(n, &mut out);
+    }
+    out
+}
+
+/// Rebuild every skinned source's renderer template from its persisted rig glb
+/// (slice-3), reading the rig bytes via `read`. Call BEFORE `apply_project` so
+/// the SkinnedMesh nodes find their template when they materialize.
+async fn restore_skinned_templates<F, Fut>(project: &EditorProject, mut read: F)
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    for src in skinned_sources_from_project(project) {
+        let path = format!("assets/{}", rig_glb_filename(src));
+        if let Ok(bytes) = read(path).await {
+            if let Err(e) =
+                crate::engine::bridge::gltf::repopulate_skinned_template(src, bytes).await
+            {
+                tracing::warn!("reload: rebuild skinned template {src:?}: {e}");
+            }
+        }
+    }
+}
+
 /// Per-imported-skinned-source side files (`assets/<id>.rig.glb`) — the clean rig
 /// glb (skeleton + skin + morph, built at import via `reexport_clean_scene`) for
 /// every source a live `SkinnedMesh` node references. Binary, like the
@@ -536,6 +577,12 @@ pub async fn load_from_dir(
         dir.read_bytes(&path).await.map_err(|e| e.to_string())
     })
     .await;
+    // Slice 3: rebuild skinned templates from the persisted rig glb BEFORE
+    // apply_project, so SkinnedMesh nodes render after a cold reload.
+    restore_skinned_templates(&project, |path| async move {
+        dir.read_bytes(&path).await.map_err(|e| e.to_string())
+    })
+    .await;
     apply_project(ctrl, project);
     // Restore each skinned source's rig glb AFTER apply_project (walks the
     // now-live SkinnedMesh nodes for `skin.source`), so a skinned model's
@@ -593,6 +640,13 @@ pub async fn apply_inmem(
         async move { bytes.ok_or_else(|| format!("missing in-memory mesh file: {path}")) }
     })
     .await;
+    // Slice 3: rebuild skinned templates from the persisted rig glb BEFORE
+    // apply_project, so SkinnedMesh nodes render after the round-trip reload.
+    restore_skinned_templates(&project, |path| {
+        let bytes = byte_files.get(&path).cloned();
+        async move { bytes.ok_or_else(|| format!("missing in-memory rig glb: {path}")) }
+    })
+    .await;
     apply_project(ctrl, project);
     // Restore each skinned source's rig glb AFTER apply_project (walks the
     // now-live SkinnedMesh nodes), so a skinned model's player-bundle export
@@ -647,7 +701,31 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
         }
     })
     .await;
+    // Fetch a binary side file over HTTP (rig glb / bind pose). Inlined per call
+    // since each `restore_*` consumes its reader.
+    macro_rules! http_bytes {
+        () => {
+            |path: String| {
+                let file_url = format!("{base}/{path}");
+                async move {
+                    let resp = gloo_net::http::Request::get(&file_url)
+                        .send()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if !resp.ok() {
+                        return Err(format!("HTTP {}", resp.status()));
+                    }
+                    resp.binary().await.map_err(|e| e.to_string())
+                }
+            }
+        };
+    }
+    // Rebuild skinned templates BEFORE apply_project (so SkinnedMesh nodes render).
+    restore_skinned_templates(&project, http_bytes!()).await;
     apply_project(ctrl, project);
+    // Restore rig glb (bundle export) + bind poses (drop_skinning) AFTER apply.
+    restore_rig_glb(ctrl, http_bytes!()).await;
+    restore_bind_poses(ctrl, http_bytes!()).await;
     Ok(())
 }
 

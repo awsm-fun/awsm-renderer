@@ -312,6 +312,40 @@ async fn import_typed(
     })
 }
 
+/// Rebuild an imported skinned source's renderer **template** from its persisted
+/// clean rig glb (slice-3 persistence). A cold project reload has no template
+/// (session-local), so its `SkinnedMesh` nodes render empty + log "no import
+/// template cached". Re-running `populate_gltf` on the rig + snapshotting the
+/// template (then hiding non-skinned copies, as import does) makes
+/// `materialize_skinned_mesh` resolve them again. Call BEFORE the SkinnedMesh
+/// nodes materialize (i.e. before `apply_project` sets the scene). The
+/// reclaim-guard's scene check (`node_sync::scene_has_skinned_from`) keeps this
+/// template alive through the reload's old-node teardown.
+pub async fn repopulate_skinned_template(
+    source: awsm_editor_protocol::AssetId,
+    rig_bytes: Vec<u8>,
+) -> Result<(), String> {
+    let loader = GltfLoader::from_glb_bytes(&rig_bytes)
+        .await
+        .map_err(|e| format!("rig load: {e}"))?;
+    let data = loader
+        .into_data(None)
+        .map_err(|e| format!("rig decode: {e}"))?;
+    let template = {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
+        let ctx = r
+            .populate_gltf(data, None)
+            .await
+            .map_err(|e| format!("rig populate: {e}"))?;
+        let template = asset_template::build_from_context(&r, &ctx);
+        asset_template::hide_template_meshes(&mut r, &template);
+        template
+    };
+    super::bridge().insert_template(source, std::sync::Arc::new(template));
+    Ok(())
+}
+
 /// Read each glTF material's editable factors + its slot texture indices.
 type MatSpec = (
     MaterialDef,

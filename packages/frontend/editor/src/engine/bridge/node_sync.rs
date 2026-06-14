@@ -269,6 +269,28 @@ async fn remove_node(node_id: NodeId) {
 /// instance just got deleted. Dangle-free: a template is freed only when no
 /// tracked instance remains AND no live `SkinnedMesh` (e.g. a duplicate) still
 /// renders from it (`Bridge::any_live_skinned_from`).
+/// Whether the AUTHORED scene (controller, updated synchronously by mutations +
+/// `apply_project`) still has a `SkinnedMesh` referencing `aid`. Used by template
+/// reclamation as a reload-safe guard (see `reclaim_templates_for_removed`):
+/// during a project reload the bridge nodes lag (async re-materialize) but the
+/// scene already holds the new SkinnedMesh nodes.
+fn scene_has_skinned_from(aid: AssetId) -> bool {
+    fn walk(node: &Arc<crate::engine::scene::node::Node>, aid: AssetId) -> bool {
+        if let NodeKind::SkinnedMesh { skin, .. } = node.kind.get_cloned() {
+            if skin.source == aid {
+                return true;
+            }
+        }
+        node.children.lock_ref().iter().any(|c| walk(c, aid))
+    }
+    controller()
+        .scene
+        .nodes
+        .lock_ref()
+        .iter()
+        .any(|n| walk(n, aid))
+}
+
 async fn reclaim_templates_for_removed(entry: &Arc<RendererNode>, node_id: NodeId) {
     let mut candidates: Vec<AssetId> = Vec::new();
     if let Some(aid) = bridge().untrack_template_node(node_id) {
@@ -280,7 +302,19 @@ async fn reclaim_templates_for_removed(entry: &Arc<RendererNode>, node_id: NodeI
         }
     }
     for aid in candidates {
-        if bridge().template_instance_count(aid) > 0 || bridge().any_live_skinned_from(aid) {
+        // Don't reclaim a template anything still references. Three checks:
+        //  - tracked instances (import-time registration),
+        //  - a live materialized SkinnedMesh in the bridge,
+        //  - a SkinnedMesh in the AUTHORED SCENE referencing it. The scene check
+        //    is what keeps a project RELOAD safe: `apply_project` swaps the scene
+        //    nodes SYNCHRONOUSLY (old removed → this async teardown's reclaim runs,
+        //    but the new same-id SkinnedMesh is already in `controller().scene`),
+        //    so the freshly re-populated template (slice-3 persistence) survives.
+        //    On a genuine DELETE the scene node is already gone → reclaim proceeds.
+        if bridge().template_instance_count(aid) > 0
+            || bridge().any_live_skinned_from(aid)
+            || scene_has_skinned_from(aid)
+        {
             continue;
         }
         let Some(template) = bridge().get_template(aid) else {
