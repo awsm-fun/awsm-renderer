@@ -1431,3 +1431,10 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   vertex (visibility↔transparency parity).
 - Gate: fmt ✅, clippy -p awsm-renderer --all-features --tests -D warnings ✅,
   cargo test -p awsm-renderer mesh_pack ✅ (5 passed). state-1.
+
+### Loop (2026-06-14) — #47 docs: AGENT_GUIDE geometry/vertex/rig editing section
+- AGENT_GUIDE surfaced custom-WGSL materials but not mesh editing (modifier
+  stacks/collapse/bake), raw-vertex editing, rig editing (skin weights/IK/
+  drop_skinning), or custom-material attribute reads — agents couldn't discover
+  them. Added a "Editing geometry & vertices" section + scope fidelity, pointer to
+  MCP.md catalog. All cited tool names verified vs the live #[tool] set. Docs-only.
