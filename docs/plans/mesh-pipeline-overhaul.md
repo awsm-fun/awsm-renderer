@@ -1366,3 +1366,14 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   separate follow-up); (b) GPU VISUAL that a non-zero set differs (state-2, needs
   a multi-UV asset the repo lacks); (c) document material_uv in the author
   contract (get_material_contract / AGENT_GUIDE).
+
+### Loop (2026-06-14) — #33 material_uv documented in author contract (cb9cb964)
+- contract-opaque.md (served by get_material_contract / awsm://docs/material-
+  contract-opaque) now documents material_uv(input,set) beside
+  material_vertex_color, and its OpaqueShadingInput struct is synced to the real
+  emitted shape (added color_sets_index + uv_sets_index, which were missing).
+  Signatures verified against opaque_kernel_includes.wgsl. recipes.md needed no
+  change (only lists vertex_color as a fragment-input key, no accessor recipe).
+- #33 status: opaque+edge codegen DONE+live-verified (fe83ef28) + now DOCUMENTED.
+  Remaining: transparent-path accessors (forward/interpolant arch — bigger);
+  GPU visual confirm (state-2, needs a multi-UV asset the repo lacks).
