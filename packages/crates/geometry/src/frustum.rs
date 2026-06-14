@@ -27,6 +27,15 @@ pub struct Frustum {
 
 impl Frustum {
     /// Extract a frustum from a projection-view matrix (Gribb-Hartmann).
+    ///
+    /// CLIP-Z CONVENTION: the near/far planes are extracted for OpenGL clip
+    /// space (NDC z in `[-1, 1]`) — near = `row3 + row2`, far = `row3 - row2`.
+    /// A projection built for wgpu/D3D/Vulkan clip space (z in `[0, 1]`, e.g.
+    /// `glam::Mat4::perspective_rh`) needs the near plane as `row2` alone, so
+    /// feeding one here yields a too-permissive near plane. Pass a GL-convention
+    /// projection (`perspective_rh_gl` / `orthographic_rh_gl`), or special-case
+    /// the near plane, before using this for `[0,1]`-clip culling. The four side
+    /// planes (left/right/top/bottom) are identical under both conventions.
     pub fn from_proj_view(m: Mat4) -> Self {
         let r0 = Vec4::new(m.x_axis.x, m.y_axis.x, m.z_axis.x, m.w_axis.x);
         let r1 = Vec4::new(m.x_axis.y, m.y_axis.y, m.z_axis.y, m.w_axis.y);
