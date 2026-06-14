@@ -239,13 +239,25 @@ async fn remove_node(node_id: NodeId) {
     };
     if let Some(entry) = entry {
         teardown(&entry).await;
+        // Free the node's OWN transform. `teardown` only frees sub-transforms
+        // (`model_transforms`); the node's `transform_key` is a SlotMap key into
+        // `r.transforms`, and dropping the `Arc<RendererNode>` below does NOT free
+        // that renderer slot — so without this the transform leaked (+1 per
+        // inserted-then-deleted node, verified via memory_stats). Children were
+        // already removed by the recursion above, so nothing still parents off it.
+        let tk = entry.transform_key;
+        with_renderer_mut(move |r| {
+            r.transforms.remove(tk);
+        })
+        .await;
         // Dropping the entry (and its loaders) cancels the observers.
     }
 }
 
 /// Tear down a node's GPU resources (meshes / sub-transforms / owned materials /
-/// light). Leaves the node's own `transform_key` alone unless the node itself is
-/// being removed (handled by the caller dropping the entry — we also free it).
+/// light). Deliberately leaves the node's own `transform_key` alone so a kind
+/// change (re-materialize) keeps a stable transform; when the node is actually
+/// deleted, `remove_node` frees that `transform_key` explicitly after this.
 async fn teardown(entry: &Arc<RendererNode>) {
     let meshes: Vec<_> = entry.model_meshes.lock().unwrap().drain(..).collect();
     let transforms: Vec<_> = entry.model_transforms.lock().unwrap().drain(..).collect();
