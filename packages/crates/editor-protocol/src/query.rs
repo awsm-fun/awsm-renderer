@@ -166,6 +166,18 @@ pub enum EditorQuery {
     CanvasPixels { coords: Vec<(u32, u32)> },
     /// Mean / min / max luma over a region (or the whole canvas when `None`).
     CanvasStats { region: Option<[u32; 4]> },
+    /// A full PNG screenshot of the scene viewport as a `data:image/png;base64,…`
+    /// URL (GPU-read from the swapchain — a WebGPU canvas isn't `toDataURL`-able).
+    /// `width`/`height` optionally scale; `None` = native size. The same capture
+    /// the MCP `screenshot_scene` tool uses, surfaced over the `/debug` Query
+    /// channel so a driver without the image-typed MCP tool can still SEE the
+    /// render (decode the base64 → PNG). Needs a live (foregrounded) tab — the
+    /// capture polls on the render-loop frame cadence; returns an error string if
+    /// no frame arrives.
+    ScenePng {
+        width: Option<u32>,
+        height: Option<u32>,
+    },
     /// The WGSL source of a custom (dynamic) material. Dedicated query (not a
     /// snapshot field) so potentially-large shader bodies stay out of every
     /// snapshot.

@@ -3555,6 +3555,20 @@ impl EditorController {
                     Err(e) => QueryResult::Error { error: e },
                 }
             }
+            EditorQuery::ScenePng { width, height } => {
+                // GPU-read the swapchain → PNG data URL (the same capture the MCP
+                // screenshot_scene tool uses), returned as Text so the /debug
+                // Query channel can surface it. `None` ⇒ the tab isn't presenting
+                // frames (backgrounded / not yet rendered).
+                match crate::engine::query::scene_png(width, height).await {
+                    Some(data_url) => QueryResult::Text(data_url),
+                    None => QueryResult::Error {
+                        error: "scene_png: no frame captured (tab not presenting? \
+                                foreground the editor + retry)"
+                            .to_string(),
+                    },
+                }
+            }
             EditorQuery::CustomMaterialWgsl { material } => {
                 match find_material(&self.custom_materials, material) {
                     Some(mat) => QueryResult::Text(mat.wgsl.get_cloned()),
