@@ -2278,6 +2278,15 @@ impl EditorController {
             }
             EditorCommand::SetCurrentClip { id } => {
                 self.current_clip.set(id);
+                // Bump anim_revision so the bridge RE-LOWERS the now-active clip.
+                // The relower clears all renderer clip groups and lowers only the
+                // active clip (+ mixer refs), so switching clips MUST re-lower —
+                // otherwise the newly-selected clip has no clip group and `pin_pose`
+                // can't pose it. This is what made IMPORTED glTF clips (and any
+                // clip-switch) not play: selecting them never triggered a re-lower,
+                // since only authoring edits (SetKeyframe/SetTrackSampler/…) bumped
+                // anim_revision.
+                self.anim_revision.replace_with(|v| v.wrapping_add(1));
                 Ok(None)
             }
             // ───────────────────── Animation: clip props ─────────────────────
