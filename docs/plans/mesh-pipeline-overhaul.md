@@ -1960,3 +1960,37 @@ from the rig glb (rebuild renderer skinned meshes + skinned_bake_cache) so
 SkinnedMesh nodes re-resolve + drop_skinning works. VERIFY with
 ReloadProjectInMemory: Fox should then stay at meshes 10 (skinned mesh survives)
 with no template-loss warning.
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-2 persistence slice 1: rig glb survives reload (a503a2a6)
+
+First complete+verified persistence slice. An imported skinned model's clean rig
+glb was session-local (skinned_bake_cache SOURCE_RIG_GLB) → after a cold reload,
+bake_player_bundle (export.rs:167 get_rig_glb) couldn't ship assets/<source>.glb,
+so player-bundle export of a skinned model was broken post-save→reload.
+
+Fixed: persist each skinned source's rig glb as `assets/<id>.rig.glb` (mirrors
+.mesh.bin), restored on load into skinned_bake_cache. Wired into save_to_dir/
+load_from_dir + serialize_inmem/apply_inmem. Sources found by walking the live
+scene's SkinnedMesh nodes (no schema change); restore_rig_glb runs AFTER
+apply_project. Verified via reload_project_in_memory: import Fox (meshes 10) →
+reload → LoadPlayerBundle → meshes back to 10, 0 errors (rig survived).
+
+REMAINING persistence slices (ordered by value/risk):
+- Slice 2 (drop_skinning after reload): persist per-node bind-pose bakes
+  (skinned_bake_cache SKINNED_BAKES, MeshData keyed by (source,node_index,prim),
+  ORIGINAL gltf indices) as side files + restore on load. drop_skinning reads
+  skinned_bake_cache::get for the bind-pose → converts SkinnedMesh to editable
+  Mesh. Self-contained + verifiable (drop_skinning is a /debug cmd). Same
+  persist+restore pattern as slice 1 (bitcode the MeshData like .mesh.bin).
+- Slice 3 (editor VIEWPORT renders skinned after reload): re-populate the
+  template from the rig glb on load. BLOCKER: the rig glb has CLEAN/remapped node
+  indices (node_flat_indices src→clean) but the editor SkinnedMesh nodes'
+  skin.node_index + the template keys are ORIGINAL indices. Re-populating the rig
+  glb yields clean-keyed templates → find_by_node_index(original) misses. Options:
+  (a) re-key the rebuilt template clean→original via a persisted node_flat_indices
+  inverse; or (b) persist the ORIGINAL source glb (retain raw bytes through
+  import — needs a GltfImport/loader change) and replay populate (no remap). (a)
+  reuses the already-persisted rig glb + a small map; (b) is simplest-correct but
+  retains bigger bytes + a loader change. Investigate which on the next slice 3.
