@@ -3952,6 +3952,18 @@ impl EditorController {
                 entries.insert("edge_per_shader_keys".to_string(), json!(edge_per_shader));
                 entries.insert("classify_dynamic_keys".to_string(), json!(classify_dynamic));
                 entries.insert("dynamic_materials".to_string(), json!(dynamic_materials));
+                // Per-frame timing (rolling EMA, perf diagnostics): wall-clock frame
+                // period (vsync-capped ~16.6ms at 60fps) + the CPU span building &
+                // submitting the frame (the actionable "how heavy is this scene" number).
+                let (frame_dt_ms, render_cpu_ms) = crate::engine::render_loop::frame_stats();
+                entries.insert(
+                    "frame_dt_ms".to_string(),
+                    json!((frame_dt_ms * 100.0).round() / 100.0),
+                );
+                entries.insert(
+                    "render_cpu_ms".to_string(),
+                    json!((render_cpu_ms * 100.0).round() / 100.0),
+                );
                 // …plus Chrome's non-standard `performance.memory` (zeros
                 // elsewhere). Read via Reflect — web_sys doesn't bind it.
                 let mut heap_used = 0.0f64;

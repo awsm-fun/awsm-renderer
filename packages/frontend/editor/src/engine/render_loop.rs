@@ -62,10 +62,61 @@ fn request_frame() {
             prev.map(|p| (ts - p).max(0.0)).unwrap_or(0.0)
         });
         tick_animation_clock(dt_ms);
+        // Time the CPU cost of building + submitting the frame (perf diagnostics,
+        // surfaced via memory_stats). `ts` is the rAF DOMHighResTimeStamp; a second
+        // `performance.now()` after render gives the in-frame CPU span. `dt_ms` is
+        // the wall-clock frame period (vsync-capped ~16.6ms at 60fps); the CPU span
+        // is the actionable "how heavy is our frame" number.
         render_one_frame();
+        let cpu_ms = now_ms().map(|end| (end - ts).max(0.0));
+        record_frame_stats(dt_ms, cpu_ms);
         request_frame();
     });
     context::set_raf(raf);
+}
+
+thread_local! {
+    /// Rolling (EMA) per-frame timing for perf diagnostics, read by the
+    /// `memory_stats` query. `(frame_dt_ms, render_cpu_ms)` — the wall-clock frame
+    /// period and the CPU span spent in `render_one_frame`. EMA smooths the jitter
+    /// so a single sampled query reflects the steady-state cost.
+    static FRAME_STATS: std::cell::Cell<(f64, f64)> = const { std::cell::Cell::new((0.0, 0.0)) };
+}
+
+/// `performance.now()` in ms, if a window/performance is available.
+fn now_ms() -> Option<f64> {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+}
+
+/// Fold this frame's timing into the rolling EMA (α=0.1).
+fn record_frame_stats(dt_ms: f64, cpu_ms: Option<f64>) {
+    let cpu_ms = match cpu_ms {
+        Some(c) => c,
+        None => return,
+    };
+    FRAME_STATS.with(|s| {
+        let (dt_ema, cpu_ema) = s.get();
+        // Seed on first sample so the EMA converges from the real value, not 0.
+        let dt_ema = if dt_ema == 0.0 {
+            dt_ms
+        } else {
+            dt_ema * 0.9 + dt_ms * 0.1
+        };
+        let cpu_ema = if cpu_ema == 0.0 {
+            cpu_ms
+        } else {
+            cpu_ema * 0.9 + cpu_ms * 0.1
+        };
+        s.set((dt_ema, cpu_ema));
+    });
+}
+
+/// Rolling `(frame_dt_ms, render_cpu_ms)` EMA for the perf section of
+/// `memory_stats`. `(0.0, 0.0)` before the first frame.
+pub fn frame_stats() -> (f64, f64) {
+    FRAME_STATS.with(|s| s.get())
 }
 
 /// Advance the animation transport while playing. The editor owns the clock:
