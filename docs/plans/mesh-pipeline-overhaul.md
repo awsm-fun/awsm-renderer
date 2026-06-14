@@ -2120,3 +2120,22 @@ normal scene; a real perf hunt would need a many-instance/heavy scene.
 
 Priority 3 continues: native-testable correctness fixes+tests, remaining browser
 confirms (#31 TTFR/#32 cutout), MCP/agent-surface diagnostics, code-quality/docs.
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-3: scene_png screenshot over /debug (e2c881da)
+
+Agent-surface win: visual verification is now first-class over /debug. scene_png
+(GPU swapchain → base64 PNG) existed but was only on the MCP screenshot_scene
+tool's image-typed Request channel, not the EditorQuery channel /debug relays —
+so a /debug driver was blind (only canvas_stats luma). Added
+`EditorQuery::ScenePng { width, height }` → QueryResult::Text(data_url). Usage:
+`/debug {"Query":{"query":"scene_png","width":512,"height":512}}` → decode the
+base64 → view the PNG (needs a live foregrounded tab; errors otherwise).
+Verified: DamagedHelmet captured + viewed (full PBR detail when framed) — also
+re-confirms the frame_node bounds fix.
+
+FUTURE ITERATIONS: use scene_png for real visual confirms (not just luma).
+Priority 3 continues: native-testable correctness fixes+tests, remaining browser
+confirms (#31 TTFR/#32 cutout — now visually verifiable via scene_png),
+code-quality/docs.
