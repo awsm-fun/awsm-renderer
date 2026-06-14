@@ -212,6 +212,38 @@ mod tests {
     }
 
     #[test]
+    fn mirrored_uv_flips_handedness() {
+        // Handedness (`w`) encodes the bitangent direction B = w·(N×T). A UV
+        // chart whose winding is REVERSED relative to the geometry (negative UV
+        // determinant — the common case for mirrored/symmetric character assets)
+        // must flip `w`, or normal mapping reads inside-out on the mirrored half.
+        // Convention-independent assertion: the two layouts produce OPPOSITE signs.
+        let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let normals = [[0.0, 0.0, 1.0]; 3];
+        let indices = [0u32, 1, 2];
+
+        // Standard UVs: positive UV area.
+        let uvs_normal = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        // Mirrored UVs: swap verts 1↔2 in UV space → reversed winding → negative
+        // UV area → flipped handedness (positions/normals unchanged).
+        let uvs_mirror = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]];
+
+        let tn = generate_tangents(&positions, &normals, &uvs_normal, &indices).expect("normal");
+        let tm = generate_tangents(&positions, &normals, &uvs_mirror, &indices).expect("mirror");
+
+        for v in 0..3 {
+            assert!((tn[v][3].abs() - 1.0).abs() < 1e-3, "normal w is ±1");
+            assert!((tm[v][3].abs() - 1.0).abs() < 1e-3, "mirror w is ±1");
+            assert!(
+                tn[v][3] * tm[v][3] < 0.0,
+                "mirrored UVs must flip handedness (v{v}: normal w={}, mirror w={})",
+                tn[v][3],
+                tm[v][3],
+            );
+        }
+    }
+
+    #[test]
     fn rejects_bad_inputs() {
         assert!(generate_tangents(&[], &[], &[], &[]).is_none());
         // Mismatched normals length.
