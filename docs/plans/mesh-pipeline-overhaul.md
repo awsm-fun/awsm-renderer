@@ -1536,3 +1536,17 @@ pipeline-leak-aw-snap.md). Findings:
   install-time tracking map. (3) wire eviction into unregister_material. (4) soak.
   Also: small transforms leak ~1/cycle (deleted node's transform not fully freed)
   — separate, smaller; chase after the pipeline leak.
+
+### Loop (2026-06-14) — pipeline-leak fix STEP 1/3 done (742935b6)
+- Added cache-eviction primitives (the caches had only insert/ensure):
+  ComputePipelines::remove_cache_keys, RenderPipelines::remove_cache_keys,
+  Shaders::remove(ShaderKey) — each removes from cache map + slotmap, dropping the
+  wasm GPU handle. pub (no dead_code), gate-green, no regression (229 tests).
+- REMAINING: step 2 = install-time per-shader_id key tracking (record at the
+  pipeline install site — find apply_compile_resolution in pipeline_scheduler;
+  associate each installed ComputePipelineCacheKey/RenderPipelineCacheKey +
+  ShaderKey to its owning dynamic shader_id in a HashMap on the scheduler/renderer).
+  step 3 = call the primitives from unregister_material (AwsmRenderer; has
+  self.pipelines/self.shaders) for the unregistered shader_id's tracked keys, with
+  the uniqueness-safety guard. step 4 = browser churn soak (compute_pipelines must
+  return to ~baseline, was 23→278). Don't claim fixed until the soak is flat.
