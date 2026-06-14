@@ -131,6 +131,8 @@ fn main(
     let visibility_geometry_data_offset = material_mesh_meta.visibility_geometry_data_offset / 4;
     let uv_sets_index = material_mesh_meta.uv_sets_index;
     let color_sets_index = material_mesh_meta.color_sets_index;
+    let uv_set_count = material_mesh_meta.uv_set_count;
+    let color_set_count = material_mesh_meta.color_set_count;
 
     let base_triangle_index = attribute_indices_offset + (triangle_index * 3u);
     let triangle_indices = vec3<u32>(
@@ -328,6 +330,8 @@ fn main(
             vertex_attribute_stride,
             color_sets_index,
             uv_sets_index,
+            color_set_count,
+            uv_set_count,
             material_offset,
             dyn_material,
         );

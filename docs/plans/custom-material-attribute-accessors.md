@@ -1,6 +1,15 @@
 # Custom-material attribute accessors (non-zero UV / COLOR sets) — #33
 
-Status: **scoped, not yet implemented** (design artifact for the loop / the user).
+Status: **IMPLEMENTED + verified.** `material_uv(input, set)` /
+`material_vertex_color(input, set)` are emitted in all three custom-fragment
+kernels (opaque-compute + edge-resolve + transparent forward), native-tested
+(naga-validated in every variant — see `material_opaque/shader/template.rs`),
+documented in `docs/dynamic-materials/contract-{opaque,transparent}.md` (served
+via MCP `get_material_contract`), and the per-set VALUE was browser-confirmed
+(plan-doc tail). The out-of-range CLAMP (step 2 below) landed last — opaque +
+edge now carry `uv_set_count`/`color_set_count` in `OpaqueShadingInput` and
+guard against them (the transparent path already clamped via its templated
+set switch). The notes below are the original design artifact, kept for context.
 Branch: `mesh-authoring`. Companion to #27 (multi-UV import/pack infra — DONE).
 
 ## Goal

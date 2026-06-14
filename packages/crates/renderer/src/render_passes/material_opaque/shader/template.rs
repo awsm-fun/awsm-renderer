@@ -601,6 +601,23 @@ mod empty_registry_tests {
                 src.contains("uv_sets_index"),
                 "{name}.wgsl OpaqueShadingInput missing uv_sets_index — material_uv can't reach set N"
             );
+            // Out-of-range clamp: the struct must carry the per-mesh set COUNTS and
+            // the accessors must guard against them, so sampling a set the mesh
+            // lacks returns a benign default instead of reading an adjacent
+            // vertex's floats from the shared attribute pool (no auto bounds guard
+            // on the index-driven `visibility_data` fetch).
+            assert!(
+                src.contains("uv_set_count") && src.contains("color_set_count"),
+                "{name}.wgsl OpaqueShadingInput missing uv_set_count/color_set_count for the OOB clamp"
+            );
+            assert!(
+                src.contains("set_index >= input.uv_set_count"),
+                "{name}.wgsl material_uv missing the out-of-range clamp"
+            );
+            assert!(
+                src.contains("set_index >= input.color_set_count"),
+                "{name}.wgsl material_vertex_color missing the out-of-range clamp"
+            );
         }
     }
 

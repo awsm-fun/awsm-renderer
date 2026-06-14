@@ -150,6 +150,8 @@ struct OpaqueShadingInput {
     vertex_attribute_stride: u32,   // floats per vertex in that stream
     color_sets_index: u32,          // float offset to COLOR_0 within that stream
     uv_sets_index: u32,             // float offset to TEXCOORD_0 within that stream
+    color_set_count: u32,           // number of COLOR sets present (out-of-range clamp)
+    uv_set_count: u32,              // number of UV sets present (out-of-range clamp)
     material_offset: u32,
     material: MaterialData,
 };
@@ -164,6 +166,10 @@ struct OpaqueShadingOutput {
 // `fragment_inputs: ["vertex_color"]` and author against a painted mesh; on a
 // mesh without the set there is no presence guard on the custom path.
 fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32> {
+    // Out-of-range clamp: a set the mesh lacks reads a benign default rather than
+    // an adjacent vertex's floats from the shared attribute pool (index-driven
+    // fetch — no automatic bounds guard).
+    if (set_index >= input.color_set_count) { return vec4<f32>(1.0); }
     return vertex_color(
         input.attribute_data_offset,
         input.triangle_indices,
@@ -181,6 +187,7 @@ fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32>
 // `material_vertex_color`, there is no presence guard on the custom path — only
 // meaningful when the mesh actually carries that UV set.
 fn material_uv(input: OpaqueShadingInput, set_index: u32) -> vec2<f32> {
+    if (set_index >= input.uv_set_count) { return vec2<f32>(0.0); }
     let uv0 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.x, input.vertex_attribute_stride, input.uv_sets_index);
     let uv1 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.y, input.vertex_attribute_stride, input.uv_sets_index);
     let uv2 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.z, input.vertex_attribute_stride, input.uv_sets_index);

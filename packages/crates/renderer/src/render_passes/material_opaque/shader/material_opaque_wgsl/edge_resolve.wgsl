@@ -139,6 +139,8 @@ struct OpaqueShadingInput {
     vertex_attribute_stride: u32,
     color_sets_index: u32,
     uv_sets_index: u32,
+    color_set_count: u32,
+    uv_set_count: u32,
     material_offset: u32,
     material: MaterialData,
 };
@@ -151,6 +153,7 @@ struct OpaqueShadingOutput {
 // primary-kernel helper so an author's `material_vertex_color(...)` call resolves
 // identically in both contexts.
 fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32> {
+    if (set_index >= input.color_set_count) { return vec4<f32>(1.0); }
     return vertex_color(
         input.attribute_data_offset,
         input.triangle_indices,
@@ -164,6 +167,7 @@ fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32>
 // Mirror of the primary-kernel `material_uv` so the SAME author fragment resolves
 // in both contexts (the dual-context invariant) — see opaque_kernel_includes.wgsl.
 fn material_uv(input: OpaqueShadingInput, set_index: u32) -> vec2<f32> {
+    if (set_index >= input.uv_set_count) { return vec2<f32>(0.0); }
     let uv0 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.x, input.vertex_attribute_stride, input.uv_sets_index);
     let uv1 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.y, input.vertex_attribute_stride, input.uv_sets_index);
     let uv2 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.z, input.vertex_attribute_stride, input.uv_sets_index);
@@ -222,6 +226,8 @@ fn shade_sample(
     let sample_data_off = sample_mesh_meta.vertex_attribute_data_offset / 4;
     let sample_uv_sets_idx = sample_mesh_meta.uv_sets_index;
     let sample_color_sets_idx = sample_mesh_meta.color_sets_index;
+    let sample_uv_set_count = sample_mesh_meta.uv_set_count;
+    let sample_color_set_count = sample_mesh_meta.color_set_count;
 
     let base_tri = sample_indices_off + (tri_id * 3u);
     let sample_tri_indices = vec3<u32>(
@@ -388,6 +394,8 @@ fn shade_sample(
             sample_stride,
             sample_color_sets_idx,
             sample_uv_sets_idx,
+            sample_color_set_count,
+            sample_uv_set_count,
             sample_mat_offset,
             dyn_material,
         );
