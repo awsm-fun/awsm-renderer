@@ -340,22 +340,38 @@ pub fn remove_template_lights(renderer: &mut AwsmRenderer, ctx: &GltfPopulateCon
     }
 }
 
-/// Teardown counterpart to [`hide_template_meshes`]: remove EVERY mesh this
-/// import's `populate_gltf` baked — skinned copies AND hidden static copies
-/// alike — from the renderer.
+/// Teardown counterpart to [`hide_template_meshes`]: remove EVERY renderer
+/// resource this import's `populate_gltf` baked — skinned copies AND hidden
+/// static copies alike — from the renderer: the GPU meshes, their materials
+/// (which, via [`crate::AwsmRenderer::remove_material`], also reclaims the
+/// pooled TEXTURES + texture-transforms when no other live material references
+/// them), and the per-node baked transforms.
 ///
-/// `clear_templates` only drops the template *metadata*; the skinned populate
-/// copies are template-owned, so `remove_node`/`teardown` deliberately leave
-/// them rendering. Without removing them here on a project reset they linger as
-/// ghosts (a flat bind-pose blob) after New Project / a round-trip reload.
-/// Orphaned baked transforms are left (invisible without a mesh) — `remove_mesh`
-/// is the visible-resource cleanup.
+/// `clear_templates` only drops the template *metadata*; the populate copies are
+/// template-owned, so `remove_node`/`teardown` deliberately leave them. Without
+/// reclaiming them here on a project reset they linger as ghosts (a flat
+/// bind-pose blob) AND their pooled textures/transforms leak across project
+/// loads (a Chrome "aw snap" contributor). Freeing the material here is safe:
+/// `remove_material`'s scan keeps any texture a still-live material references,
+/// and this only runs on reset/clear where the template is definitively gone.
+/// (NOTE: this is the RESET/clear path; mid-session import+delete of a model
+/// still accumulates its template until the next load — that per-instance free
+/// needs a node→template refcount; see docs/plans/mesh-pipeline-overhaul.md.)
 pub fn remove_template_meshes(renderer: &mut AwsmRenderer, template: &AssetTemplate) {
     fn walk(renderer: &mut AwsmRenderer, nodes: &[AssetTemplateNode]) {
         for n in nodes {
             for mk in &n.mesh_keys {
+                // Capture the mesh's material BEFORE removing the mesh, then free
+                // both (material removal reclaims the material's pooled textures).
+                let material_key = renderer.meshes.get(*mk).ok().map(|m| m.material_key);
                 renderer.remove_mesh(*mk);
+                if let Some(material_key) = material_key {
+                    renderer.remove_material(material_key);
+                }
             }
+            // Reclaim the node's baked transform (template-owned; previously left
+            // as an orphan even on reset).
+            renderer.transforms.remove(n.baked_transform_key);
             walk(renderer, &n.children);
         }
     }
