@@ -2019,3 +2019,51 @@ preserves indices / node_flat_indices is identity for Fox, no remap needed).
 If it mismatches, re-key the rebuilt template's gltf_node_index clean→original via
 the persisted node_flat_indices inverse. Verify: Fox → reload → meshes STAYS 10,
 no "no import template" warning, skin renders (canvas luma).
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-2 slice 3 (viewport skinned render after reload): BLOCKED, design found, WIP reverted
+
+Attempted slice 3 (editor viewport renders SkinnedMesh after reload by
+re-populating the template from the persisted rig glb on load). Built + tested,
+hit a real ordering blocker, REVERTED the WIP (no broken partial committed;
+slices 1+2 intact at 5a740430).
+
+WHAT WORKED: `engine::bridge::gltf::repopulate_skinned_template(source, rig_bytes)`
+— GltfLoader::from_glb_bytes → into_data → r.populate_gltf → build_from_context →
+hide_template_meshes → bridge().insert_template. Wired into apply_inmem +
+load_from_dir BEFORE apply_project, sources via skinned_sources_from_project
+(walk parsed EditorProject nodes for SkinnedMesh.skin.source). It RAN cleanly
+(no error logged, template inserted).
+
+THE BLOCKER (verified via reload_project_in_memory: meshes stayed 9, "no import
+template cached" warning still fired): the template-instance RECLAIM from
+8593ed6c frees the freshly re-populated template during apply_project's OLD-node
+teardown. Sequence: re-populate inserts template → apply_project replace_cloned
+diffs old→new nodes → old SkinnedMesh removed → reclaim_templates_for_removed
+sees skin.source has no live instance (new node not materialized yet) +
+any_live_skinned_from false → frees the template → new node materializes empty.
+
+KEY INSIGHT: this is a reload_project_in_memory TEST-HARNESS artifact (it has old
+nodes to tear down). A REAL cold load_from_dir (fresh page, empty bridge, no old
+nodes) would apply_project as pure ADDs → no reclaim → the re-populated template
+would survive → SkinnedMesh renders. But that path isn't /debug-scriptable (dir
+picker), so it's unverifiable autonomously — hence not landed (done-means-done).
+
+FIX OPTIONS for next iteration (pick one, must keep reload_project_in_memory
+faithful + verifiable):
+1. In reload_project_in_memory's handler, fully tear down old nodes + AWAIT it
+   (mirror LoadPlayerBundle: clear scene.nodes + clear_untracked, await) BEFORE
+   apply_inmem re-populates, so apply_project is pure-adds (no reclaim). Watch the
+   async teardown vs re-populate ordering (same-id node re-add).
+2. Re-populate the template AFTER apply_project, then re-materialize the
+   SkinnedMesh nodes (find/confirm a node re-materialize trigger — node_sync has
+   no template-pending-retry; may need to re-emit node.kind or add a nudge).
+3. Make reclaim_templates_for_removed skip during a reload (a reload-in-progress
+   guard flag) — least invasive but a special-case.
+Recommend option 1 (faithful + reuses LoadPlayerBundle's proven teardown order).
+
+Persistence net so far: slice 1 (rig glb → export survives) ✅, slice 2
+(bind-pose → drop_skinning survives) ✅, slice 3 (viewport render) blocked-with-
+design. The DATA fully survives reload (rig + bind-pose persisted); only the
+in-editor live re-render of skinned meshes after an in-session reload is pending.
