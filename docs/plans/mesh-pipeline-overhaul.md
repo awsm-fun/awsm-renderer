@@ -1497,3 +1497,42 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   scheduler MaterialGroup likely tracks the pipeline keys it submitted → on drop,
   remove them from the caches. MUST NOT free a pipeline still referenced by another
   live material (share by cache key). Also chase the small per-cycle transforms leak.
+
+### Loop (2026-06-14) — pipeline-leak fix ARCHITECTED (impl next)
+Mapped the full fix for the custom-material compute-pipeline leak (memory
+pipeline-leak-aw-snap.md). Findings:
+- OWNERSHIP (good news): `unregister_material` is an `impl AwsmRenderer` method
+  (dynamic_materials/registry.rs ~L1367; called as `r.unregister_material(old)`
+  from editor preview.rs / bridge/dynamic.rs). So `self` reaches self.pipelines
+  (Pipelines{compute:ComputePipelines, render:RenderPipelines}), self.shaders
+  (Shaders{lookup:SlotMap<ShaderKey,GpuShaderModule>, cache:HashMap<ShaderCacheKey,
+  ShaderKey>}), self.dynamic_materials, self.pipeline_scheduler — eviction wires
+  ENTIRELY inside unregister_material, no cross-ownership problem.
+- ALL THREE caches lack removal: ComputePipelines (lookup SlotMap + cache HashMap),
+  RenderPipelines, Shaders — only insert/ensure/len, no remove/evict. Shader
+  modules leak too, not just pipelines.
+- THE CRUX = find a material's keys at unregister. ComputePipelineCacheKey =
+  {shader_key, layout_key, constant_overrides, entry_point}; a custom material
+  spans MULTIPLE shader_keys (opaque-compute + edge-resolve kernels are separate
+  modules). MaterialState (scheduler) tracks only def/status/generation — NOT its
+  installed keys. ShaderCacheKey enum (RenderPass/Picker/Shadow/ShadowMasked/Line)
+  doesn't obviously expose shader_id for the material compute kernels → scan-by-
+  shader_id is uncertain. ⇒ ROBUST PATH: add install-time tracking — at the
+  pipeline install site (apply_compile_resolution, which has the
+  ComputePipelineCacheKey + the owning MaterialId/shader_id) record
+  HashMap<MaterialShaderId, {compute_cache_keys, render_cache_keys, shader_keys}>;
+  on unregister_material, evict those from all three caches.
+- SAFETY: custom-material shader_keys/cache_keys are unique per WGSL, so no LIVE
+  material shares them (first-party shaders are never unregistered) — simple
+  removal is safe; still guard by "only evict a key absent from every other live
+  material's set" (cheap refcount) to be defensive.
+- CANNOT native-test (caches hold wasm-bindgen GpuComputePipeline/GpuShaderModule
+  — unconstructable off-GPU). VERIFICATION = the browser churn soak: re-run 10×
+  add_custom_material+set_wgsl+insert+assign+delete-both sampling memory_stats →
+  compute_pipelines must return to ~baseline (was 23→278). Do NOT claim fixed
+  until the soak is flat.
+- IMPL ORDER (next iters): (1) ComputePipelines::remove_cache_keys + Shaders::
+  remove(shader_key) + RenderPipelines::remove_cache_keys primitives. (2)
+  install-time tracking map. (3) wire eviction into unregister_material. (4) soak.
+  Also: small transforms leak ~1/cycle (deleted node's transform not fully freed)
+  — separate, smaller; chase after the pipeline leak.
