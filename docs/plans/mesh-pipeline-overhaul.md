@@ -1824,3 +1824,49 @@ roots to trigger reclaim. Deleting one-of-many correctly KEEPS the template
 
 Both "aw snap" leak families (custom-material pipeline churn + imported-model
 import/delete churn) are now resolved and browser-verified.
+
+---
+
+## CHECKPOINT — 2026-06-14 — skinned-clip playback VERIFIED WORKING (063b20b6)
+
+Investigated the deferred "imported skinned glTF (Fox/CesiumMan) renders but
+stays in BIND POSE across animation playheads" report. **It works.** The
+symptom did not reproduce on a clean import.
+
+**New diagnostic (the tool that cracked it):** `animation_runtime` editor query
+(MCP `/debug` `{"Query":{"query":"animation_runtime"}}`). Reports renderer-side
+lowered state — `clip_groups`, `resolved_channels`, `per_clip[]`,
+`rest_entries`, `mixer_layers` — plus controller `current_clip`,
+`authored_tracks`, `playing`, `playhead`. The decisive numerator/denominator:
+`resolved_channels` vs `authored_tracks`.
+
+**Verification (clean CesiumMan import):**
+- animation_runtime: clip_groups 1, resolved_channels 57 == authored_tracks 57,
+  mixer_layers 0 (single-clip fallback), rest_entries 19.
+- sample_clip_timeseries (NodeLocalTrs, all nodes): 19 of 22 bones change
+  rotation across playheads (0, ¼, ½, ¾ duration).
+- skin_data (GPU joint matrices): hash differs t=0 vs t=1 → the skin deforms.
+- canvas_stats (model framed via frame_node): whole-frame mean luma varies
+  233.52–233.69 across playheads (above the ~0.001 noise floor seen when the
+  model is small in frame).
+- set_playing advances + loops the playhead.
+
+**Root cause of the original report — ORPHANED CLIPS.** A clip imported with a
+skinned model stays in `custom_animations` after the model's nodes are deleted;
+its tracks bind to now-deleted NodeIds, so `resolve_target` returns None →
+0 lowered channels → silent bind-pose hold. The earlier "broken" probe was
+testing such an orphan (a Walk clip from a prior CesiumMan import, after Fox
+churn had deleted/replaced nodes). `animation_runtime` now exposes this exactly
+(`resolved_channels` 0 with `authored_tracks` > 0).
+
+**Chain confirmed end to end** (all correct):
+SetPlayhead → playhead signal → render_loop `pin_pose` (set clip-group +
+mixer local time, `update_animations(0.0)`) → single-clip fallback samples
+channels → `write_anim_target` writes mirror-bone renderer locals →
+`skin_bridge::sync_bones_to_skin` copies mirror local → baked joint key →
+`update_transforms` → skin deforms.
+
+**RESIDUAL (separate, lower priority):** orphaned imported clips clutter the
+library + silently fail. Options for a follow-up: free a model's imported clips
+on its last-instance delete (tie into the template-instance refcount from
+8593ed6c), or a UX toast when a current clip resolves 0 channels.
