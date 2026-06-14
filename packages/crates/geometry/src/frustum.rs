@@ -103,4 +103,68 @@ mod tests {
         assert!(point_in_frustum(Vec3::ZERO, &f));
         assert!(!point_in_frustum(Vec3::splat(5.0), &f));
     }
+
+    // The identity proj-view's frustum is exactly the clip cube [-1,1]^3, which
+    // is the same under either clip-Z convention — so these AABB-culling cases
+    // are deterministic and convention-agnostic.
+    fn unit_frustum() -> Frustum {
+        Frustum::from_proj_view(Mat4::IDENTITY)
+    }
+
+    #[test]
+    fn aabb_fully_inside_is_visible() {
+        let a = Aabb::new(Vec3::splat(-0.5), Vec3::splat(0.5));
+        assert!(aabb_in_frustum(&a, &unit_frustum()));
+    }
+
+    #[test]
+    fn aabb_fully_outside_is_culled() {
+        // Entirely beyond the +X plane (x in [2, 3]).
+        let a = Aabb::new(Vec3::new(2.0, -0.5, -0.5), Vec3::new(3.0, 0.5, 0.5));
+        assert!(!aabb_in_frustum(&a, &unit_frustum()));
+    }
+
+    #[test]
+    fn aabb_straddling_plane_is_conservatively_visible() {
+        // Crosses the +X = 1 boundary (x in [0.5, 1.5]); the positive-vertex test
+        // must keep a partially-inside box visible (a false-negative would pop
+        // geometry out of view at the screen edge).
+        let a = Aabb::new(Vec3::new(0.5, -0.5, -0.5), Vec3::new(1.5, 0.5, 0.5));
+        assert!(aabb_in_frustum(&a, &unit_frustum()));
+    }
+
+    #[test]
+    fn aabb_just_beyond_far_plane_is_culled() {
+        // z in [1.5, 2.0], past the far plane at z = 1.
+        let a = Aabb::new(Vec3::new(-0.2, -0.2, 1.5), Vec3::new(0.2, 0.2, 2.0));
+        assert!(!aabb_in_frustum(&a, &unit_frustum()));
+    }
+
+    #[test]
+    fn point_beyond_near_and_far_is_outside() {
+        let f = unit_frustum();
+        assert!(
+            !point_in_frustum(Vec3::new(0.0, 0.0, 2.0), &f),
+            "beyond far z = 1"
+        );
+        assert!(
+            !point_in_frustum(Vec3::new(0.0, 0.0, -2.0), &f),
+            "before near z = -1"
+        );
+    }
+
+    #[test]
+    fn signed_distance_agrees_with_membership() {
+        let f = unit_frustum();
+        // An inside point is on the inward side of every plane.
+        assert!(f
+            .planes
+            .iter()
+            .all(|p| p.signed_distance(Vec3::ZERO) >= 0.0));
+        // An outside point fails at least one plane.
+        assert!(f
+            .planes
+            .iter()
+            .any(|p| p.signed_distance(Vec3::new(5.0, 0.0, 0.0)) < 0.0));
+    }
 }
