@@ -106,6 +106,38 @@ unconditionally in every kernel a custom fragment is spliced into.
   2-UV primitive in `awsm-meshgen` for tests, or add one to
   `awsm-renderer-assets`.
 
+## Concrete implementation pointers (investigated 2026-06-14)
+
+The earlier "needs the kernel locals in scope" worry is resolved — the context is
+already bundled and handed to the author wrapper, so the accessors are plain
+helpers, no `var<private>` promotion:
+
+- **Splice point**: the opaque compute kernel
+  (`material_opaque_wgsl/compute.wgsl`, ~L315-333) builds a dynamic shading-input
+  struct from the per-invocation locals (`barycentric`, `triangle_indices`,
+  `attribute_data_offset`, `vertex_attribute_stride`) and calls
+  `custom_shade_dynamic(dyn_input)`. The edge-resolve kernel and the transparent
+  fragment (`custom_shade_transparent_dynamic`) have the analogous wrappers.
+- **Author context**: the author fragment already receives that input struct, so
+  `material_uv(in, set)` / `material_vertex_color(in, set)` just need
+  `(input_struct, set_index)` — the fetch math is the existing
+  `_texture_uv_per_vertex` / `_vertex_color_per_vertex` (both already
+  set-parameterized) + `material_mesh_meta.uv_set_count` / `color_set_count` for
+  the clamp. Confirm the input struct carries (or add) `attribute_data_offset` +
+  `vertex_attribute_stride` + the `uv_sets_index`/`color_sets_index` (or read the
+  latter from `material_mesh_meta`).
+- **Emission site**: `awsm_materials::registry::build_materials_wgsl[_filtered]`
+  assembles the author fragment + the always-present custom helpers (the
+  `texture_pool_sample` precedent). Emit the two accessors there so they exist in
+  every variant the author compiles into.
+- **Native test harness ALREADY EXISTS**:
+  `material_opaque/shader/template.rs` has `transparent_dynamic_template_renders_valid_wgsl`
+  + `empty_registry_emits_no_dynamic_wrapper` (render the dynamic template + naga-
+  validate). Extend: render a dynamic material referencing `material_uv(in, 1u)` /
+  `material_vertex_color(in, 1u)` and assert it validates in opaque-compute, edge,
+  AND transparent variants. That makes the codegen layer state-1 (the historically
+  tricky "resolves in every variant" property); only the GPU visual stays state-2.
+
 ## Why not landed autonomously this pass
 
 Correct end-to-end delivery touches 3 kernel variants of shader codegen and
