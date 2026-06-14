@@ -1350,3 +1350,19 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   GPU visual (multi-UV asset) = state-2.
 - Docs-only; stack left UP. NEXT ITERATION: IMPLEMENT #33's codegen layer (it's
   fully specified now) — don't scope again.
+
+### Loop (2026-06-14) — #33 IMPLEMENTED (opaque+edge material_uv, live-verified) (fe83ef28)
+- Shipped material_uv(input, set) for custom (dynamic-WGSL) materials, the UV
+  companion to the existing material_vertex_color(input, set). Added uv_sets_index
+  to OpaqueShadingInput (primary + edge kernels, populated from existing locals)
+  + emitted material_uv in both (dual-context invariant). Native dual-context
+  include_str! test (template.rs) + shader_completeness green.
+- LIVE-VERIFIED via /debug: a custom material calling material_uv(input,1u) +
+  material_vertex_color(input,1u) registered ok:true/errors:[] and the
+  edge-resolve sub-pipelines compiled (no naga error) — naga-validates at pipeline
+  creation in opaque-compute AND edge-resolve. state-1 for the codegen layer.
+- REMAINING for full #33: (a) transparent path (forward/interpolant arch — lacks
+  the triangle-fetch context; material_vertex_color is ALSO missing there — a
+  separate follow-up); (b) GPU VISUAL that a non-zero set differs (state-2, needs
+  a multi-UV asset the repo lacks); (c) document material_uv in the author
+  contract (get_material_contract / AGENT_GUIDE).
