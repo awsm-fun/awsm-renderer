@@ -18,6 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use awsm_renderer::materials::MaterialKey;
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::AwsmRenderer;
@@ -50,6 +51,14 @@ pub struct AssetTemplateNode {
     /// Renderer mesh keys for this node's primitives (the template copies; hidden
     /// after import so they don't double-render with the captured Mesh nodes).
     pub mesh_keys: Vec<MeshKey>,
+    /// One entry per `mesh_keys[i]`: the renderer material `populate_gltf`
+    /// originally assigned to that mesh (captured at snapshot, i.e. before any
+    /// editor reassignment). Static (hidden) meshes still carry it as their
+    /// current material; **skinned** meshes get a node-owned material reassigned
+    /// at materialize time ([`super::node_sync::materialize_skinned_mesh`]),
+    /// orphaning this populate one — so it is recorded here and freed explicitly
+    /// on teardown ([`remove_template_meshes`]) to reclaim its pooled textures.
+    pub mesh_material_keys: Vec<MaterialKey>,
     /// One entry per `mesh_keys[i]`: the originating glTF material index
     /// (`None` ⇒ the primitive had no material, i.e. glTF's default). Used by
     /// the controller to assign each captured Mesh node its imported material and
@@ -267,6 +276,19 @@ fn snapshot(
         .iter()
         .map(|mk| lk.mesh_mat.get(mk).copied().unwrap_or(None))
         .collect();
+    // Captured BEFORE any editor reassignment (snapshot runs right after
+    // `populate_gltf`): the populate material per primitive. Needed so a skinned
+    // mesh's orphaned populate material is reclaimable on teardown.
+    let mesh_material_keys = mesh_keys
+        .iter()
+        .map(|mk| {
+            renderer
+                .meshes
+                .get(*mk)
+                .map(|m| m.material_key)
+                .unwrap_or_default()
+        })
+        .collect();
     let mesh_is_skinned = mesh_keys
         .iter()
         .map(|mk| renderer.meshes.mesh_is_skinned(*mk))
@@ -291,6 +313,7 @@ fn snapshot(
         label: lk.key_to_label.get(&key).cloned(),
         local,
         mesh_keys,
+        mesh_material_keys,
         mesh_gltf_material_indices,
         mesh_is_skinned,
         mesh_has_morphs,
@@ -353,20 +376,32 @@ pub fn remove_template_lights(renderer: &mut AwsmRenderer, ctx: &GltfPopulateCon
 /// bind-pose blob) AND their pooled textures/transforms leak across project
 /// loads (a Chrome "aw snap" contributor). Freeing the material here is safe:
 /// `remove_material`'s scan keeps any texture a still-live material references,
-/// and this only runs on reset/clear where the template is definitively gone.
-/// (NOTE: this is the RESET/clear path; mid-session import+delete of a model
-/// still accumulates its template until the next load — that per-instance free
-/// needs a node→template refcount; see docs/plans/mesh-pipeline-overhaul.md.)
+/// so it is safe whenever the template is definitively gone. Called on project
+/// reset/clear AND mid-session when the last instance of an import is deleted
+/// (`node_sync::remove_node`, gated by `Bridge::template_instances` refcount +
+/// a live-`SkinnedMesh` guard so a template another node still renders from is
+/// never freed). See docs/plans/mesh-pipeline-overhaul.md.
 pub fn remove_template_meshes(renderer: &mut AwsmRenderer, template: &AssetTemplate) {
     fn walk(renderer: &mut AwsmRenderer, nodes: &[AssetTemplateNode]) {
         for n in nodes {
-            for mk in &n.mesh_keys {
-                // Capture the mesh's material BEFORE removing the mesh, then free
-                // both (material removal reclaims the material's pooled textures).
-                let material_key = renderer.meshes.get(*mk).ok().map(|m| m.material_key);
+            for (i, mk) in n.mesh_keys.iter().enumerate() {
+                // Free the mesh's CURRENT material (static: the populate material;
+                // skinned: a node-owned material already freed by teardown → a
+                // stale-key no-op) AND the ORIGINAL populate material recorded at
+                // snapshot. Skinned meshes reassign their material at materialize,
+                // orphaning the populate one, so freeing the current key alone
+                // leaks it (+ its pooled textures). `remove_material` is idempotent
+                // (slotmap versioned keys), so freeing both — even when they
+                // coincide (static) — is a safe double-free + dangle-free
+                // (`remove_material`'s scan keeps any texture a live material
+                // still references).
+                let current = renderer.meshes.get(*mk).ok().map(|m| m.material_key);
                 renderer.remove_mesh(*mk);
-                if let Some(material_key) = material_key {
-                    renderer.remove_material(material_key);
+                if let Some(current) = current {
+                    renderer.remove_material(current);
+                }
+                if let Some(orig) = n.mesh_material_keys.get(i).copied() {
+                    renderer.remove_material(orig);
                 }
             }
             // Reclaim the node's baked transform (template-owned; previously left

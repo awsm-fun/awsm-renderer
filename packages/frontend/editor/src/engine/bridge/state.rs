@@ -77,6 +77,15 @@ pub struct Bridge {
     /// (see `node_sync::materialize_skinned_mesh` + `AssetTemplate`). Only
     /// skinned imports need this; static geometry bakes to captured meshes.
     pub templates: Mutex<HashMap<AssetId, Arc<AssetTemplate>>>,
+    /// Live editor nodes minted for each import, keyed by the import's template
+    /// `AssetId` — the refcount that lets a template's populate-baked renderer
+    /// resources be reclaimed mid-session when its LAST instance is deleted
+    /// (not just at project reset). Populated at import
+    /// (`finish_model_import`), drained per-node in `node_sync::remove_node`.
+    pub template_instances: Mutex<HashMap<AssetId, HashSet<NodeId>>>,
+    /// Reverse of [`Self::template_instances`]: editor node → its origin import
+    /// template, so a removed node can be untracked in O(1).
+    pub node_to_template: Mutex<HashMap<NodeId, AssetId>>,
     /// Skin bridge: editor bone `NodeId` → the baked joint `TransformKey` the
     /// renderer's skin reads. A skinned glTF renders from its baked
     /// `populate_gltf` copy, but the editor drives a *separate* mirror-bone
@@ -93,6 +102,8 @@ impl Bridge {
             child_order: Mutex::new(HashMap::new()),
             mesh_to_node: Mutex::new(HashMap::new()),
             templates: Mutex::new(HashMap::new()),
+            template_instances: Mutex::new(HashMap::new()),
+            node_to_template: Mutex::new(HashMap::new()),
             skin_joint_baked: Mutex::new(HashMap::new()),
         }
     }
@@ -107,6 +118,63 @@ impl Bridge {
         self.templates.lock().unwrap().get(&id).cloned()
     }
 
+    /// Track every editor node minted for an import against its template id, so
+    /// the template's renderer resources can be freed when the last instance is
+    /// deleted mid-session. Called once at import with the whole minted subtree.
+    pub fn register_template_instances(
+        &self,
+        id: AssetId,
+        nodes: impl IntoIterator<Item = NodeId>,
+    ) {
+        let mut inst = self.template_instances.lock().unwrap();
+        let mut rev = self.node_to_template.lock().unwrap();
+        let set = inst.entry(id).or_default();
+        for n in nodes {
+            set.insert(n);
+            rev.insert(n, id);
+        }
+    }
+
+    /// Drop a node from template tracking (called for every removed node).
+    /// Returns the template id the node belonged to, if any — the caller then
+    /// checks [`Self::template_instance_count`] to decide whether to reclaim.
+    pub fn untrack_template_node(&self, node: NodeId) -> Option<AssetId> {
+        let id = self.node_to_template.lock().unwrap().remove(&node)?;
+        if let Some(set) = self.template_instances.lock().unwrap().get_mut(&id) {
+            set.remove(&node);
+        }
+        Some(id)
+    }
+
+    /// How many tracked instances of this template remain live.
+    pub fn template_instance_count(&self, id: AssetId) -> usize {
+        self.template_instances
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map_or(0, |s| s.len())
+    }
+
+    /// Remove a template's metadata + instance tracking (after its renderer
+    /// resources have been freed). Counterpart to [`Self::insert_template`].
+    pub fn remove_template(&self, id: AssetId) {
+        self.templates.lock().unwrap().remove(&id);
+        self.template_instances.lock().unwrap().remove(&id);
+    }
+
+    /// Whether any live `SkinnedMesh` node still renders from this import's
+    /// template (its baked meshes). A duplicated skinned node carries the same
+    /// `skin.source` but is NOT in `template_instances`, so this scan — not the
+    /// refcount alone — is what keeps template reclamation dangle-free.
+    pub fn any_live_skinned_from(&self, id: AssetId) -> bool {
+        self.nodes.lock().unwrap().values().any(|n| {
+            matches!(
+                n.node.kind.get_cloned(),
+                NodeKind::SkinnedMesh { skin, .. } if skin.source == id
+            )
+        })
+    }
+
     /// Register a skinned-model bone: editor `NodeId` → baked joint key (#2).
     pub fn register_skin_joint(&self, node: NodeId, baked: TransformKey) {
         self.skin_joint_baked.lock().unwrap().insert(node, baked);
@@ -115,9 +183,16 @@ impl Bridge {
     pub fn clear_skin_joints(&self) {
         self.skin_joint_baked.lock().unwrap().clear();
     }
-    /// Drop all cached import templates (project reset).
+    /// Drop a single skin-joint mapping (a skinned-model bone node deleted).
+    pub fn unregister_skin_joint(&self, node: NodeId) {
+        self.skin_joint_baked.lock().unwrap().remove(&node);
+    }
+
+    /// Drop all cached import templates + their instance tracking (project reset).
     pub fn clear_templates(&self) {
         self.templates.lock().unwrap().clear();
+        self.template_instances.lock().unwrap().clear();
+        self.node_to_template.lock().unwrap().clear();
     }
 
     /// Register a materialized mesh so a GPU pick can resolve it to its node.

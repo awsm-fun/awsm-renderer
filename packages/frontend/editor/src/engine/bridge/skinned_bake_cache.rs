@@ -67,6 +67,15 @@ pub fn get(source: AssetId, node_index: u32, primitive_index: Option<u32>) -> Op
     })
 }
 
+/// Drop one import's cached bakes + rig glb (its last scene instance deleted
+/// mid-session). Counterpart to [`store`]/[`store_rig_glb`].
+pub fn remove(source: AssetId) {
+    SKINNED_BAKES.with(|c| c.borrow_mut().retain(|(s, _, _), _| *s != source));
+    SOURCE_RIG_GLB.with(|c| {
+        c.borrow_mut().remove(&source);
+    });
+}
+
 /// Drop every cached bake + rig glb (project reset).
 pub fn clear() {
     SKINNED_BAKES.with(|c| c.borrow_mut().clear());

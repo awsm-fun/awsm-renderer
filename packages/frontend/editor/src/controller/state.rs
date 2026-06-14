@@ -3086,6 +3086,26 @@ impl EditorController {
                 patch_skin_joints(root, &skin_joints);
             }
         }
+        // Track every minted node against this import's template so the
+        // template's populate-baked renderer resources (meshes / materials →
+        // pooled textures / baked transforms) are reclaimed when the LAST
+        // instance is deleted mid-session — not only at project reset. Walk the
+        // whole subtree (not just `node_map`, which omits per-primitive
+        // destructured children) so the refcount counts every deletable node.
+        {
+            fn collect_ids(node: &crate::engine::scene::node::Node, out: &mut Vec<NodeId>) {
+                out.push(node.id);
+                for c in node.children.lock_ref().iter() {
+                    collect_ids(c, out);
+                }
+            }
+            let mut ids = Vec::new();
+            for root in &roots {
+                collect_ids(root, &mut ids);
+            }
+            crate::engine::bridge::bridge().register_template_instances(asset_id, ids);
+        }
+
         for root in roots {
             mutate::insert_under(&self.scene, None, root);
         }

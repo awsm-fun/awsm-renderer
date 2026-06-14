@@ -17,7 +17,7 @@ use glam::{Quat, Vec3, Vec4};
 
 use super::{bridge, material, RendererNode};
 use crate::engine::context::{renderer_handle, with_renderer_mut};
-use crate::engine::scene::{LightConfig, Node, NodeId, NodeKind, Trs};
+use crate::engine::scene::{AssetId, LightConfig, Node, NodeId, NodeKind, Trs};
 use crate::prelude::*;
 
 /// Begin mirroring the controller's scene root onto the renderer.
@@ -250,7 +250,49 @@ async fn remove_node(node_id: NodeId) {
             r.transforms.remove(tk);
         })
         .await;
+        // Skin-bridge cleanup: drop any baked-joint mapping this node had (no-op
+        // for non-bone nodes) so a deleted skinned-model bone doesn't linger.
+        bridge().unregister_skin_joint(node_id);
+        // Template reclamation (mid-session leak fix): node teardown deliberately
+        // leaves an import's populate-baked resources alone (skinned meshes are
+        // template-owned + deform live; static hidden copies survive their
+        // captured siblings). Reclaim them — meshes, their materials → pooled
+        // textures, baked transforms — once the LAST instance of an import is
+        // gone. Candidate templates: this node's tracked import id, and (for a
+        // skinned node) the template it renders from.
+        reclaim_templates_for_removed(&entry, node_id).await;
         // Dropping the entry (and its loaders) cancels the observers.
+    }
+}
+
+/// Free the populate-baked renderer resources of any import whose **last**
+/// instance just got deleted. Dangle-free: a template is freed only when no
+/// tracked instance remains AND no live `SkinnedMesh` (e.g. a duplicate) still
+/// renders from it (`Bridge::any_live_skinned_from`).
+async fn reclaim_templates_for_removed(entry: &Arc<RendererNode>, node_id: NodeId) {
+    let mut candidates: Vec<AssetId> = Vec::new();
+    if let Some(aid) = bridge().untrack_template_node(node_id) {
+        candidates.push(aid);
+    }
+    if let NodeKind::SkinnedMesh { skin, .. } = entry.node.kind.get_cloned() {
+        if !candidates.contains(&skin.source) {
+            candidates.push(skin.source);
+        }
+    }
+    for aid in candidates {
+        if bridge().template_instance_count(aid) > 0 || bridge().any_live_skinned_from(aid) {
+            continue;
+        }
+        let Some(template) = bridge().get_template(aid) else {
+            continue;
+        };
+        with_renderer_mut(move |r| {
+            super::asset_template::remove_template_meshes(r, &template);
+        })
+        .await;
+        bridge().remove_template(aid);
+        super::skinned_bake_cache::remove(aid);
+        tracing::debug!("reclaimed import template {aid:?} (last instance deleted)");
     }
 }
 
