@@ -1772,3 +1772,55 @@ Fresh-tab session findings (editor healthy after user resize):
   clear. Read asset_template.rs (AssetTemplateNode mesh_keys ~line 52, remove_template_meshes
   ~353, clear_templates) + how populate transforms are tracked (they currently live only in
   GltfPopulateContext, never mirrored to the template → orphaned even on clear). Multi-iteration.
+
+---
+
+## CHECKPOINT — 2026-06-14 — imported-model MID-SESSION leak FIXED (8593ed6c)
+
+The headline texture/transform "aw snap" contributor is resolved. Deleting an
+imported glTF mid-session now reclaims its populate-baked renderer resources;
+previously the template lingered in `bridge().templates` until the next project
+load, so import+delete churn leaked meshes + materials (→ pooled textures) +
+baked transforms unbounded (Fox: +27 baked transforms + 1 texture per cycle).
+
+**Design — template-instance refcount (dangle-free):**
+- `Bridge.template_instances: HashMap<AssetId, HashSet<NodeId>>` (+ reverse
+  `node_to_template`) tracks every editor node minted for an import, registered
+  for the whole minted subtree at `finish_model_import` (walks the inserted
+  `roots`, not just `node_map`, to count per-primitive destructured children).
+- `node_sync::remove_node` → `reclaim_templates_for_removed`: untracks each
+  removed node; when a template's LAST tracked instance is gone AND
+  `Bridge::any_live_skinned_from(aid)` is false (a duplicated `SkinnedMesh`
+  carries the same `skin.source` but isn't a tracked instance — this scan, not
+  the refcount alone, is the dangle guard), frees the template via
+  `remove_template_meshes`, drops the metadata (`remove_template`), clears the
+  CPU bake cache (`skinned_bake_cache::remove`), and unregisters skin joints.
+- `AssetTemplateNode.mesh_material_keys` records each mesh's ORIGINAL populate
+  material (captured at snapshot, before skinned meshes reassign theirs at
+  materialize). `remove_template_meshes` frees both the current and the
+  recorded populate material, so a skinned mesh's orphaned populate material
+  (+ its pooled textures) is reclaimed. `remove_material` is idempotent
+  (slotmap versioned keys) → freeing both, even when they coincide (static), is
+  a safe double-free; its texture scan keeps any texture a live material uses.
+
+**Verification (in-browser via `/debug` memory_stats — counts valid on a black
+tab):**
+- BoxTextured (static) import+delete x4 → FLAT at baseline every cycle
+  (meshes 9, transforms 14, materials 3, pool_textures 0, samplers 2).
+- Fox (skinned) import+delete x4 (deleting ALL import roots) → FLAT at baseline
+  every cycle (meshes 9, transforms 14, materials 3, pool_textures 0). Was
+  +27 transforms + 1 texture/cycle before.
+- Coexistence: import Box + Fox, delete Box only → pool_textures 2→1, Fox's
+  texture KEPT, Fox still renders (canvas_stats mean_luma 180), 0 console
+  errors → dangle-free confirmed.
+- samplers are a BOUNDED descriptor-keyed dedup cache (settle at 2/4), NOT a
+  per-import leak.
+
+**Testing gotcha:** Fox imports as MULTIPLE sibling top-level roots (`root`
+skeleton group + `fox` skinned_mesh, not one wrapper) — must delete ALL import
+roots to trigger reclaim. Deleting one-of-many correctly KEEPS the template
+(the `any_live_skinned_from` guard); an early measurement that deleted only
+`scene_tree[0]` looked like a leak but was a test artifact.
+
+Both "aw snap" leak families (custom-material pipeline churn + imported-model
+import/delete churn) are now resolved and browser-verified.
