@@ -1292,3 +1292,19 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   behavior with no consumer to verify against.
 - Gate: fmt ✅, clippy -p awsm-geometry --all-features --tests -D warnings ✅,
   cargo test -p awsm-geometry ✅ (13 passed). state-1.
+
+### Loop (2026-06-14) — #33 SCOPED (code-grounded spec, not yet implemented) (2114abe5)
+- Investigated the highest-value backlog feature (custom-material non-zero
+  UV/COLOR-set accessor). Wrote docs/plans/custom-material-attribute-accessors.md.
+- KEY FINDING (corrects earlier framing): this is a VISIBILITY-BUFFER renderer —
+  UV/COLOR sets are fetched from the packed attribute buffer by index +
+  barycentric (material_mesh_meta.uv_sets_index/uv_set_count/color_sets_index/
+  color_set_count + _texture_uv_per_vertex), NOT interpolated varyings. So
+  FragmentInputs' single UV/VERTEX_COLOR flags are NOT a blocker; the multi-set
+  DATA + FETCH already exist. The gap is two always-emitted author accessors
+  (material_uv(set)/material_vertex_color(set)) mirroring the existing
+  variant-agnostic texture_pool_sample, with OOB clamping, across 3 kernel
+  variants. Native naga-compile test is completable; GPU visual confirm is
+  gated on a multi-UV test asset the repo LACKS (state-2 dependency).
+- Not landed autonomously: would be an unverified partial (no multi-UV asset for
+  the visual confirm; 3 shader variants). Spec is the concrete progress.
