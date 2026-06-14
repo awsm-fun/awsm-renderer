@@ -1252,3 +1252,20 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   --all-features --tests -D warnings ✅, cargo test -p awsm-glb-export ✅ (25 total). state-1.
 - Remaining thin seams: glb-export/extract.rs (642 LOC), gltf-convert parity
   (979 LOC, coordinate/Z-up), geometry AABB, animation.rs expand_descendants.
+
+### Loop (2026-06-14) — #40 gltf-convert: stale-test FIX + KHR extraction tests (6d6187b9, 682b5ad9)
+- FOUND A PRE-EXISTING RED TEST: extracts_source_material_factors asserted the
+  canonical glb was geometry-only (materials().count()==0) — stale since d4ffbb8c
+  (rig re-exports now carry per-primitive materials). Suite has been red on this
+  branch since. Fixed: positive round-trip assertion (carried material keeps name/
+  double_sided/alpha+cutoff/factors) + corrected module-doc diagram (self-contained
+  glb: geometry+materials+textures + extracted specs).
+- Added import-side KHR coverage for the extensions GLASS didn't carry:
+  emissive_strength/specular/diffuse_transmission/clearcoat/sheen/dispersion/
+  anisotropy + direct ext_f32/ext_color3 fallback edge cases. Completes the
+  round-trip test trifecta: export(#39 glb-export) + import(#40 gltf-convert) +
+  load(#37 scene-loader).
+- Gate: fmt ✅, clippy ✅, cargo test -p awsm-gltf-convert ✅ (was 1 RED → all green). state-1.
+- ACTION: a red test lurking on the branch means the full suite may not have been
+  green recently → running a full-workspace `cargo test` audit (this iteration's
+  background task) to surface any OTHER stale/red tests for triage next iter.
