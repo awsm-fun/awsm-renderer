@@ -1608,3 +1608,34 @@ misses them — their shader signature is current-ish, just no typed-cache refer
 Proper fix = scheduler-integrated eviction: when an async compile resolution's typed-cache
 install is superseded, free the pool entry it would have replaced. Not a human-editing path;
 12-22× smaller than the original crash. Memory: [[pipeline-leak-aw-snap]].
+
+### Loop (2026-06-14 cont.) — leak residual: human-paced churn now FLAT; sub-second tail traced to editor-bridge race
+Follow-up on the aw-snap fix (99b6fd37). Added permanent leak observability + closed the
+human-paced residual; traced the sub-second-churn tail to a deeper editor-bridge concurrency bug.
+
+- **Observability (memory_stats):** added `shaders`, `opaque_main_keys`, `edge_per_shader_keys`,
+  `classify_dynamic_keys`, `dynamic_materials` to the editor's `memory_stats` query (reliable,
+  unlike console_logs which keeps first-N + floods). `compute_pipelines` == `pipelines.compute.len()`;
+  the breakdown lets you see pool = sum(typed caches) + globals(~14) and spot where growth lives.
+- **Human-paced churn now PERFECTLY FLAT** (verified 23→25→23, dynamic_materials 0→1→0): the fix was
+  `unregister_material` calling `materials.mark_variants_dirty()` (it only set `masked_dynamic_dirty`),
+  so a DELETE now drives `ensure_scene_pipelines → relayout_bucket_buffers` and drains the deleted
+  material's per-bucket opaque/edge pipelines immediately instead of lingering until the next edit.
+- **Install guard:** `install_per_pass` (opaque) + `install_edge_per_pass` (per-shader) now drop a
+  late resolution whose `shader_id` is no longer a live bucket (`is_live_bucket`) — a material deleted
+  between compile-launch and resolution. Prevents stranding a stale entry the clear can't reach.
+- **Editor-bridge tombstone + TOCTOU recheck:** `bridge::dynamic` now tombstones deleted ids
+  (DELETED set) and `register` bails for a tombstoned id BOTH before and after `handle.lock().await`
+  (the pre-lock check alone was TOCTOU — a delete during the await slipped through).
+
+- **REMAINING (sub-second machine-gun churn only — exact repro):** MCP add+setwgsl+delete at
+  <0.8s/cycle still orphans ~0.7/cycle in the renderer's `dynamic_materials` registry (x24 → ~17
+  orphans; `dynamic_materials` grows, `materials` stays 3). Root cause is the editor bridge's
+  register/unregister bookkeeping (REGISTRY / LAST_HASH / DELETED thread_locals updated around the
+  renderer-lock + finalize + compile-status awaits) racing when many register/unregister ops for
+  distinct materials interleave faster than the ~400ms debounce — surfaces as "duplicate name … already
+  registered" + orphaned registrations whose opaque/edge buckets recompile on every later edit. NOT a
+  renderer-cache problem and NOT reachable at human editing pace (humans can't churn sub-second). Fix =
+  make the bridge's per-material register/unregister fully atomic (single async guard around the whole
+  op so the thread_local bookkeeping can't interleave), or reconcile the renderer's dynamic_materials
+  against the editor's live custom_materials set after a churn settles. Memory: [[pipeline-leak-aw-snap]].

@@ -1371,6 +1371,14 @@ impl crate::AwsmRenderer {
         // The masked pool may hold a now-stale variant for this id; flag a
         // rebuild so the next finalize clears + recompiles the live set.
         self.masked_dynamic_dirty = true;
+        // Flag the variant reconcile so THIS delete (not just the next register)
+        // drives `ensure_scene_pipelines` → `relayout_bucket_buffers` on the next
+        // render. Without it the bucket-SET shrank but no reconcile ran, so the
+        // deleted material's per-bucket opaque/edge pipelines lingered in the typed
+        // caches until some later edit happened to mark variants dirty — the
+        // pipeline-leak residual (it never self-cleaned under delete-only or
+        // faster-than-compile churn). Mirrors `register_material`'s dirty flag.
+        self.materials.mark_variants_dirty();
         let dropped = self.extras_pool.drop_shader(shader_id);
         if dropped > 0 {
             tracing::debug!(

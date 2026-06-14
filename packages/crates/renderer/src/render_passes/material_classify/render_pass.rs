@@ -41,6 +41,12 @@ pub struct MaterialClassifyRenderPass {
 }
 
 impl MaterialClassifyRenderPass {
+    /// Number of cached dynamic classify pipeline keys, keyed by
+    /// `(dispatch_hash, msaa)` (leak/observability diagnostics — see `memory_stats`).
+    pub fn dynamic_cache_len(&self) -> usize {
+        self.dynamic_pipeline_cache.borrow().len()
+    }
+
     /// Prune `dynamic_pipeline_cache` entries whose `dispatch_hash` no longer
     /// matches `current_dispatch_hash` — a bucket-SET change orphaned them and
     /// the dispatch path (keyed on the live `dispatch_hash`) will never look them

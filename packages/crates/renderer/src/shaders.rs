@@ -44,6 +44,16 @@ impl Shaders {
         self.lookup.insert(shader_module)
     }
 
+    /// Number of live shader modules in the slotmap (leak diagnostics).
+    pub fn len(&self) -> usize {
+        self.lookup.len()
+    }
+
+    /// True when no shader modules are cached.
+    pub fn is_empty(&self) -> bool {
+        self.lookup.is_empty()
+    }
+
     /// Evict a shader module by key — drops the slotmap entry (releasing the
     /// `GpuShaderModule`) AND removes any cache entry pointing at it. Used by
     /// `unregister_material` to reclaim a deleted custom material's shader

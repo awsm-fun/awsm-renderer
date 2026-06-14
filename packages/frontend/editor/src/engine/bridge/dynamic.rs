@@ -37,6 +37,25 @@ thread_local! {
     /// shader_id (drop + re-add → a fresh id) out from under an in-flight
     /// compile-status poll, which would otherwise race the diagnostics.
     static LAST_HASH: RefCell<HashMap<AssetId, (u64, u64)>> = RefCell::new(HashMap::new());
+
+    /// Tombstones for DELETED material ids. The auto-register is debounced
+    /// (~400ms), so a create→edit→delete faster than the debounce fires the
+    /// pending `register` AFTER `unregister` — re-registering a material the
+    /// editor already deleted. That orphan never gets unregistered again, so its
+    /// shader_id stays a live bucket forever (its opaque/edge pipelines recompile
+    /// on every later edit → unbounded GPU growth, the sub-second-churn tail of
+    /// the "aw snap" leak). [`register`] consults this set and bails for a
+    /// tombstoned id. Asset ids are unique (never reused), so tombstones never
+    /// need clearing.
+    static DELETED: RefCell<std::collections::HashSet<AssetId>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Whether `mat_id` has been deleted (see [`DELETED`]). The debounced
+/// auto-register call site checks this to skip a register that lost the race
+/// with a delete.
+pub fn is_deleted(mat_id: AssetId) -> bool {
+    DELETED.with(|d| d.borrow().contains(&mat_id))
 }
 
 fn registered_shader_id(id: AssetId) -> Option<MaterialShaderId> {
@@ -73,8 +92,14 @@ pub(crate) fn buffer_words_for(path: &str) -> Option<Vec<u32>> {
 /// Register a custom material with the renderer (locks it, finalizes textures).
 /// Returns the assigned shader id, or an error string on failure.
 pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> {
-    let reg = build_registration(mat);
     let mat_id = mat.id;
+    // Lost-the-race guard: a debounced register that fires after the material was
+    // deleted must NOT re-register it (see DELETED). Without this the orphaned
+    // registration leaks its GPU pipelines forever under sub-second churn.
+    if is_deleted(mat_id) {
+        return Err("custom material was deleted".to_string());
+    }
+    let reg = build_registration(mat);
     let hashes = (reg.layout_hash, reg.wgsl_hash);
     // No-op when the content is byte-identical to the last successful register
     // (same layout + wgsl) and we still hold its shader id. Avoids the debounced
@@ -88,6 +113,13 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
     }
     let handle = renderer_handle();
     let mut r = handle.lock().await;
+    // Re-check the tombstone AFTER acquiring the renderer lock: the `is_deleted`
+    // guard above runs before this `await`, so a delete that lands while we wait
+    // for the lock would otherwise slip through (TOCTOU) and register an orphan
+    // under sub-second churn. This second check closes that window.
+    if is_deleted(mat_id) {
+        return Err("custom material was deleted".to_string());
+    }
     // Recompile: the renderer rejects re-registering a key whose content changed,
     // so drop this material's previous registration first (the editor's
     // edit→re-register cycle `unregister_material` expects). Keyed by id, so a
@@ -111,6 +143,12 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
 /// also evicts the material's pipelines from the shared caches (the
 /// pipeline-leak fix). No-op if the material was never registered.
 pub async fn unregister(mat_id: AssetId) {
+    // Tombstone the id so a debounced `register` that fires after this delete
+    // (create→edit→delete faster than the ~400ms debounce) can't re-register the
+    // now-deleted material into a permanent orphan. See DELETED.
+    DELETED.with(|d| {
+        d.borrow_mut().insert(mat_id);
+    });
     let shader_id = REGISTRY.with(|reg| reg.borrow_mut().remove(&mat_id));
     LAST_HASH.with(|h| {
         h.borrow_mut().remove(&mat_id);

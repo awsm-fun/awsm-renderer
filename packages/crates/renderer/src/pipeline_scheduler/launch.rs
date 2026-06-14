@@ -1139,6 +1139,21 @@ fn dispatch_hash_from_target(t: &CompileInstallTarget) -> u64 {
     }
 }
 
+/// True when `shader_id` is still a live bucket in the current registered set
+/// (first-party ids are always present). A resolution for a shader_id that's NOT
+/// live — a dynamic material deleted between compile-launch and resolution —
+/// must NOT be installed into the per-bucket typed caches: it would strand a
+/// stale `(…, shader_id)` entry that the bucket-set clear can't reach (the clear
+/// re-fills only live buckets), leaking it permanently. Part of the pipeline-leak
+/// fix; see docs/plans/mesh-pipeline-overhaul.md.
+fn is_live_bucket(renderer: &crate::AwsmRenderer, shader_id: MaterialShaderId) -> bool {
+    renderer
+        .dynamic_materials
+        .bucket_entries_cached()
+        .iter()
+        .any(|e| e.shader_id == shader_id)
+}
+
 fn install_per_pass(
     renderer: &mut crate::AwsmRenderer,
     slot: &LaunchSlot,
@@ -1147,6 +1162,13 @@ fn install_per_pass(
     pipeline_key: crate::pipelines::compute_pipeline::ComputePipelineKey,
 ) {
     use crate::render_passes::material_opaque::pipeline::PipelineKeyId;
+    // Drop a late opaque resolution for a now-deleted bucket (see is_live_bucket).
+    // Classify is shared infra keyed on a sentinel (always-live) shader_id, so it
+    // is exempt — only the per-bucket opaque install is guarded.
+    if matches!(slot, LaunchSlot::Opaque { .. }) && !is_live_bucket(renderer, shader_id) {
+        free_displaced_compute_pipeline(renderer, pipeline_key);
+        return;
+    }
     // Free the pool pipeline displaced by this install, if any — re-installing a
     // typed-cache slot under a new bucket layout used to silently orphan the
     // previous `GpuComputePipeline` (part of the pipeline-leak fix). The
@@ -1203,6 +1225,15 @@ fn install_edge_per_pass(
     slot: &EdgePipelineSlot,
     pipeline_key: crate::pipelines::compute_pipeline::ComputePipelineKey,
 ) {
+    // Drop a late per-shader edge resolution for a now-deleted bucket — same
+    // rationale as install_per_pass. Skybox / final-blend are global (no
+    // per-bucket key) so they're always installed.
+    if let EdgePipelineSlot::PerShader(id) = slot {
+        if !is_live_bucket(renderer, id.shader_id) {
+            free_displaced_compute_pipeline(renderer, pipeline_key);
+            return;
+        }
+    }
     let edge = &mut renderer.render_passes.material_opaque.edge_pipelines;
     // Capture any pool key displaced by this install so we can free the orphaned
     // pipeline (part of the pipeline-leak fix — see install_per_pass).

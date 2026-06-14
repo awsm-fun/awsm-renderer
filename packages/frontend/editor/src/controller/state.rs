@@ -3905,18 +3905,37 @@ impl EditorController {
             EditorQuery::MemoryStats => {
                 use serde_json::json;
                 // Renderer-side object counts (under the renderer guard)…
-                let (meshes, transforms, materials, lines, render_pipelines, compute_pipelines) =
-                    crate::engine::context::with_renderer_mut(|r| {
-                        (
-                            r.meshes.len(),
-                            r.transforms.len(),
-                            r.materials.len(),
-                            r.line_count(),
-                            r.pipelines.render.len(),
-                            r.pipelines.compute.len(),
-                        )
-                    })
-                    .await;
+                let (
+                    meshes,
+                    transforms,
+                    materials,
+                    lines,
+                    render_pipelines,
+                    compute_pipelines,
+                    shaders,
+                    opaque_main,
+                    edge_per_shader,
+                    classify_dynamic,
+                ) = crate::engine::context::with_renderer_mut(|r| {
+                    (
+                        r.meshes.len(),
+                        r.transforms.len(),
+                        r.materials.len(),
+                        r.line_count(),
+                        r.pipelines.render.len(),
+                        r.pipelines.compute.len(),
+                        r.shaders.len(),
+                        r.render_passes.material_opaque.pipelines.main_len(),
+                        r.render_passes
+                            .material_opaque
+                            .edge_pipelines
+                            .per_shader_len(),
+                        r.render_passes.material_classify.dynamic_cache_len(),
+                    )
+                })
+                .await;
+                let dynamic_materials =
+                    crate::engine::context::with_renderer_mut(|r| r.dynamic_materials.len()).await;
                 let mut entries = std::collections::BTreeMap::new();
                 entries.insert("meshes".to_string(), json!(meshes));
                 entries.insert("transforms".to_string(), json!(transforms));
@@ -3924,6 +3943,15 @@ impl EditorController {
                 entries.insert("lines".to_string(), json!(lines));
                 entries.insert("render_pipelines".to_string(), json!(render_pipelines));
                 entries.insert("compute_pipelines".to_string(), json!(compute_pipelines));
+                // Compute-pipeline-pool breakdown (dynamic-material leak diagnostics):
+                // total shader modules + the per-pass typed caches that hold pool keys.
+                // A `compute_pipelines` that exceeds `shaders` + the typed-cache sums
+                // by a growing margin signals detached pool orphans.
+                entries.insert("shaders".to_string(), json!(shaders));
+                entries.insert("opaque_main_keys".to_string(), json!(opaque_main));
+                entries.insert("edge_per_shader_keys".to_string(), json!(edge_per_shader));
+                entries.insert("classify_dynamic_keys".to_string(), json!(classify_dynamic));
+                entries.insert("dynamic_materials".to_string(), json!(dynamic_materials));
                 // …plus Chrome's non-standard `performance.memory` (zeros
                 // elsewhere). Read via Reflect — web_sys doesn't bind it.
                 let mut heap_used = 0.0f64;
@@ -5340,6 +5368,12 @@ async fn await_dynamic_compile(
 }
 
 async fn register_material(mat: &Arc<CM>) -> bool {
+    // A debounced register that lost the race with a delete (create→edit→delete
+    // faster than the ~400ms debounce) must not re-register the deleted material —
+    // it would leak its GPU pipelines forever (sub-second-churn "aw snap" tail).
+    if crate::engine::bridge::dynamic::is_deleted(mat.id) {
+        return false;
+    }
     // Lightweight, author-relative syntax pre-check — its line numbers index the
     // author's WGSL body (the GPU/naga pass can't, since it sees the assembled
     // module). Record these as diagnostics so MCP callers see them.

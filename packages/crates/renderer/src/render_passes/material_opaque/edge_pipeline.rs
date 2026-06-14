@@ -239,6 +239,12 @@ impl MaterialEdgePipelines {
         dropped
     }
 
+    /// Number of per-shader edge-resolve pipeline keys held (leak/observability
+    /// diagnostics — see `memory_stats`).
+    pub fn per_shader_len(&self) -> usize {
+        self.per_shader.len()
+    }
+
     /// Build the descriptor list for the current bucket entries +
     /// AA config + color format. Sync — caller drives the actual
     /// shader/pipeline compile (either async via

@@ -495,4 +495,10 @@ impl MaterialOpaquePipelines {
     pub fn clear_dynamic_pipelines(&mut self) -> Vec<ComputePipelineKey> {
         self.main.drain().map(|(_, key)| key).collect()
     }
+
+    /// Number of per-bucket opaque pipeline keys currently held (leak/observability
+    /// diagnostics — see `memory_stats`).
+    pub fn main_len(&self) -> usize {
+        self.main.len()
+    }
 }
