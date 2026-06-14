@@ -2139,3 +2139,18 @@ FUTURE ITERATIONS: use scene_png for real visual confirms (not just luma).
 Priority 3 continues: native-testable correctness fixes+tests, remaining browser
 confirms (#31 TTFR/#32 cutout — now visually verifiable via scene_png),
 code-quality/docs.
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-3: animation sampler before-first clamp bug (f76ff1b8)
+
+Native correctness fix. AnimationSampler::binary_search_bounds clamped after the
+last keyframe but EXTRAPOLATED before the first (i==0 → Between(0,1)): (a) a track
+whose first key starts after t=0 got a negative interp factor below values[0]
+(glTF holds endpoints constant → should clamp); (b) a single-keyframe track
+sampled before its time indexed times[1] → OOB PANIC. Fix: i==0 → ExactHit(0)
+(symmetric clamp). +4 sampler tests (linear/step/cubic clamp both ends, between
+still correct, single-key no-panic); 236 renderer tests green. Native-only.
+
+Priority 3 continues: more native-testable fixes, #31 TTFR/#32 cutout visual
+confirms (via scene_png), code-quality/docs.
