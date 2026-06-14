@@ -2205,3 +2205,39 @@ uniform-packing (well-tested already) before settling on this.
 
 (Diminishing-returns territory: codebase excellent; recent iterations are
 hardening/surface polish. Higher-value would be human-directed work.)
+
+---
+
+## CHECKPOINT — 2026-06-15 — #33 multi-UV VALUE: blocked by single-UV CAPTURE (not an accessor bug)
+
+User-requested multi-UV test. RESULT: the #33 accessors (material_uv/
+material_vertex_color for non-zero sets) are CORRECT — compile in all variants
+(native-tested), clamp out-of-range sets to a benign default (browser-verified:
+set 7 → black on a sphere, 5448a504). BUT a DISTINCT non-zero-UV-set VALUE
+cannot be exercised in the editor today, because the editor's mesh-capture
+pipeline is SINGLE-UV end to end:
+- awsm_meshgen::MeshData has one `uvs: Option<Vec<[f32;2]>>`.
+- awsm_glb_export::extract_node_mesh (extract.rs:299) reads `read_tex_coords(0)`
+  ONLY — glTF TEXCOORD_1 is dropped at import.
+- raw_mesh/renderer upload from MeshData carries the single set.
+So every editor STATIC mesh (imported-captured OR primitive) has uv_set_count==1,
+and material_uv(input,1u) correctly returns vec2(0). Importing a multi-UV asset
+(TextureCoordinateTest, which HAS TEXCOORD_1) does NOT help — the 2nd set is
+dropped at extract. (Confirmed empirically: imported TextureCoordinateTest +
+custom material; renderer mesh is single-UV.)
+
+The renderer's POPULATE path supports multi-UV (#27, packs >1 UV set) +
+material_mesh_meta.uv_set_count + the accessors all support it — only the
+editor's CAPTURE path is single-UV. So a populate-baked mesh with TEXCOORD_1
+would exercise material_uv(1u), but the repo's skinned samples are single-UV.
+
+FOLLOW-UP FEATURE (not landed — multi-layer, user chose to stop the loop):
+multi-UV CAPTURE = MeshData carries a 2nd uv set + extract_node_mesh reads
+TEXCOORD_1 + RawMeshData/renderer attribute packing carries it + uv_set_count
+reflects it. Then custom materials reading material_uv(1u) work on imported
+static meshes. Documented as the precise gap; the accessor side is DONE.
+
+NOTE: "black sky on the fresh empty editor" = the known black-on-start (skybox
+draws black on the first frames of an empty project; self-heals on any
+import/resize/interaction — confirmed: importing a model brought back the pale-
+blue sky). Cosmetic startup artifact, not a content/render bug.
