@@ -1326,3 +1326,13 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   itself; mid-tree root expands just its subtree; multiple roots in order.
 - Gate: fmt ✅, clippy -p awsm-scene-loader --all-features --tests -D warnings ✅,
   cargo test -p awsm-scene-loader ✅ (25 passed; scene-loader 21→25). state-1.
+
+### Loop (2026-06-14) — #44 docs: MCP.md tool catalog refresh (c56b5b57)
+- MCP.md claimed ~90 tools (actually 128) and was missing whole categories an
+  agent can't discover from the doc: mesh editing (modifier stacks + collapse/
+  bake), raw-vertex editing, rig/skin (skin weights + IK + drop_skinning),
+  bake/export/bundle (export_scene_glb/node_glb/player_bundle/load_player_bundle),
+  track-flag/transport tools. Added those + resolve_node_material/set_node_texture/
+  set_prefab/update_builtin_material; count → ~130; noted grouped-not-exhaustive.
+  Every added tool name verified against the live #[tool] set in mcp.rs.
+- Docs-only (no cargo gate); stack left UP (not taken down this iter). state-1.
