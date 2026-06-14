@@ -6,8 +6,9 @@
 //! editor and the player call [`convert`] before any population:
 //!
 //! ```text
-//! foreign glTF ──convert──▶ canonical glb (geometry-only, AWSM_format-stamped)
-//!                           + extracted materials + animations
+//! foreign glTF ──convert──▶ self-contained canonical glb (geometry + materials
+//!                           + textures, AWSM_format-stamped)
+//!                           + extracted material / animation specs (for the bridge)
 //! our own glb (AWSM_format) ──convert──▶ passed through unchanged
 //! ```
 //!
@@ -263,9 +264,24 @@ mod tests {
         assert!(m.double_sided);
         assert_eq!(m.alpha_mode, crate::AlphaMode::Mask { cutoff: 0.4 });
 
-        // The canonical glb itself is geometry-only (material stripped).
+        // The canonical glb is now SELF-CONTAINED: per `d4ffbb8c` the re-export
+        // carries per-primitive materials through (in addition to the neutral
+        // specs asserted above), so the glb renders standalone. Pin the round-trip.
         let (doc, _, _) = gltf::import_slice(&out.glb).unwrap();
-        assert_eq!(doc.materials().count(), 0);
+        assert_eq!(
+            doc.materials().count(),
+            1,
+            "source material is carried into the canonical glb"
+        );
+        let carried = doc.materials().next().unwrap();
+        assert_eq!(carried.name(), Some("brass"));
+        assert!(carried.double_sided());
+        assert_eq!(carried.alpha_mode(), gltf::material::AlphaMode::Mask);
+        assert_eq!(carried.alpha_cutoff(), Some(0.4));
+        let pbr = carried.pbr_metallic_roughness();
+        assert_eq!(pbr.base_color_factor(), [0.1, 0.2, 0.3, 1.0]);
+        assert_eq!(pbr.metallic_factor(), 0.25);
+        assert_eq!(pbr.roughness_factor(), 0.75);
     }
 
     /// A source glTF animation is lifted into a neutral AnimationSpec (name,
