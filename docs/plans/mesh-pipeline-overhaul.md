@@ -1751,3 +1751,24 @@ Fresh-tab session findings (editor healthy after user resize):
    transform_key actually drives the skin joints (vs skin-internal). NEXT: instrument lower_clip
    (channels resolved count) + pin_pose (clip-group count) — but a rebuild reloads the tab→black→
    needs resize, so batch the real fix with the instrumentation. Multi-iteration.
+
+### Loop (2026-06-14 cont.) — texture leak: per-material cleanup landed (368aca11); HEADLINE = template lifecycle (next)
+- LANDED (368aca11): `remove_material` now frees the removed material's pooled textures +
+  texture-transforms when no other live material references them (dead `Textures::remove` API
+  wired; new `Material::texture_handles` enumerator covers PBR+KHR-ext/Unlit/Toon/FlipBook/Custom;
+  scan-based, dangle-free). Native-gated (232 tests). Covers editor-created/particle/icon materials.
+- HEADLINE STILL OPEN — imported-model texture/mesh/transform leak is TEMPLATE-lifecycle, NOT
+  per-node teardown: glTF import builds an AssetTemplate (meshes/materials/textures via
+  populate_gltf); node instances reference it; node DELETE → teardown finds RendererNode
+  .material_keys/model_meshes EMPTY for template instances → frees nothing; AND no template dedup.
+  Live proof: import+delete BoxTextured x4 → pool_textures 0→4, meshes 9→13, while scene_tree
+  empties (renderer resources orphaned). Also: skinned-mesh node delete is partial (mesh+some
+  transforms not freed) — same template-ownership root cause.
+  FIX (next, count-verifiable via pool_textures/meshes returning to baseline over import/delete
+  cycles): in editor `engine/bridge/asset_template.rs` — (a) REFCOUNT template instances (incr on
+  materialize/instantiate, decr on teardown) and on last-instance-drop free the template's meshes
+  (r.remove_mesh) + materials (r.remove_material → now frees textures via 368aca11) + populate
+  transforms; OR (b) dedup templates by source URL so re-import reuses (bounds the leak) + free on
+  clear. Read asset_template.rs (AssetTemplateNode mesh_keys ~line 52, remove_template_meshes
+  ~353, clear_templates) + how populate transforms are tracked (they currently live only in
+  GltfPopulateContext, never mirrored to the template → orphaned even on clear). Multi-iteration.
