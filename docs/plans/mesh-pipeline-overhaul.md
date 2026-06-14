@@ -1420,3 +1420,14 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   vs unbounded array growth across convert/export cycles).
 - Gate: fmt ✅, clippy -p awsm-gltf-convert --all-features --tests -D warnings ✅,
   cargo test -p awsm-gltf-convert ✅ (2 new). state-1.
+
+### Loop (2026-06-14) — #46 P1 tests: mesh_pack parity (b57d05d0)
+- Closed the checklist's "mesh_pack parity test" [cargo]. Existing tests used a
+  1-tri mesh w/ identical normals/tangents → couldn't catch per-vertex
+  attribute-indexing or barycentric bugs. Added a 2-tri quad w/ DISTINCT
+  per-vertex normals/tangents: decodes every visibility field at all 6 corners
+  (pos/tri_idx/bary/normal/tangent/orig_vidx, each from the corner's ORIGINAL
+  vertex) + asserts the transparency packer emits matching pos/normal/tangent per
+  vertex (visibility↔transparency parity).
+- Gate: fmt ✅, clippy -p awsm-renderer --all-features --tests -D warnings ✅,
+  cargo test -p awsm-renderer mesh_pack ✅ (5 passed). state-1.
