@@ -19,14 +19,26 @@ thread_local! {
     static CAPTURED: RefCell<HashMap<AssetId, CapturedMesh>> = RefCell::new(HashMap::new());
 }
 
-/// Freeze a generated mesh into a `CapturedMesh`.
+/// Freeze a generated mesh into a `CapturedMesh`. Procedural meshes are single-UV
+/// (`MeshData` carries no 2nd set), so `uvs1` is `None`.
 pub fn from_mesh_data(m: MeshData) -> CapturedMesh {
     CapturedMesh {
         positions: m.positions,
         normals: m.normals,
         uvs: m.uvs,
+        uvs1: None,
         colors: m.colors,
         indices: m.indices,
+    }
+}
+
+/// Like [`from_mesh_data`] but with an explicit 2nd UV set (`TEXCOORD_1`) — the
+/// imported-mesh capture path (the 2nd set rides a parallel channel beside
+/// `MeshData`; see `gltf::extract_node_meshes`).
+pub fn from_mesh_data_with_uvs1(m: MeshData, uvs1: Option<Vec<[f32; 2]>>) -> CapturedMesh {
+    CapturedMesh {
+        uvs1,
+        ..from_mesh_data(m)
     }
 }
 
@@ -64,7 +76,7 @@ pub fn get_raw(id: AssetId) -> Option<RawMeshData> {
             positions: m.positions.clone(),
             normals: m.normals.clone(),
             uvs: m.uvs.clone(),
-            uvs1: None,
+            uvs1: m.uvs1.clone(),
             colors: m.colors.clone(),
             indices: m.indices.clone(),
         })

@@ -108,6 +108,12 @@ pub struct CapturedMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Option<Vec<[f32; 3]>>,
     pub uvs: Option<Vec<[f32; 2]>>,
+    /// Optional 2nd UV set (`TEXCOORD_1`), vertex-aligned with `uvs`. Lets a
+    /// captured (imported static) mesh feed the renderer's UV set 1 so custom
+    /// materials can read `material_uv(in, 1u)`. `#[serde(default)]` so the field
+    /// is omitted from existing single-UV captures.
+    #[serde(default)]
+    pub uvs1: Option<Vec<[f32; 2]>>,
     pub colors: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
 }

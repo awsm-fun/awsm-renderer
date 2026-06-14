@@ -1165,7 +1165,8 @@ impl EditorController {
                 // the node's kind. Reuses the import bake path (deterministic id =
                 // node id), so it persists like any captured mesh.
                 let label = n.name.get_cloned();
-                let mesh_ref = mint_imported_mesh(node, &label, &mesh, skin.source);
+                // drop_skinning bakes the single-UV bind pose (no 2nd UV set).
+                let mesh_ref = mint_imported_mesh(node, &label, &mesh, None, skin.source);
                 // Hide the now-orphaned skinned populate copy so it stops rendering
                 // (the node now renders its captured bind-pose Mesh instead).
                 if let Some(template) = crate::engine::bridge::bridge().get_template(skin.source) {
@@ -3089,6 +3090,7 @@ impl EditorController {
                 &mat_ids,
                 default_mat_id,
                 &import.node_meshes,
+                &import.node_uvs1,
                 Some(&import.display_name),
                 &mut node_map,
             ));
@@ -5855,6 +5857,7 @@ fn mint_imported_mesh(
     node_id: NodeId,
     label: &str,
     mesh: &awsm_glb_export::MeshData,
+    uvs1: Option<Vec<[f32; 2]>>,
     source_asset: AssetId,
 ) -> awsm_editor_protocol::MeshRef {
     use crate::engine::bridge::mesh_cache;
@@ -5862,7 +5865,10 @@ fn mint_imported_mesh(
     use awsm_editor_protocol::{MeshBase, ModifierStack};
 
     let mesh_id = AssetId(node_id.0);
-    mesh_cache::store_with_id(mesh_id, mesh_cache::from_mesh_data(mesh.clone()));
+    mesh_cache::store_with_id(
+        mesh_id,
+        mesh_cache::from_mesh_data_with_uvs1(mesh.clone(), uvs1),
+    );
     let stack = ModifierStack {
         base: MeshBase::Captured(MeshRef(mesh_id)),
         modifiers: vec![],
@@ -5944,12 +5950,14 @@ fn patch_skin_joints(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_editor_subtree(
     tn: &crate::engine::bridge::asset_template::AssetTemplateNode,
     asset_id: AssetId,
     mat_ids: &[AssetId],
     default_mat_id: Option<AssetId>,
     node_meshes: &std::collections::HashMap<(u32, Option<u32>), awsm_glb_export::MeshData>,
+    node_uvs1: &std::collections::HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
     fallback_name: Option<&str>,
     node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
@@ -6105,7 +6113,8 @@ fn build_editor_subtree(
             // The whole-node merged geometry (every primitive concatenated).
             let mesh_node = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
             if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, None)) {
-                let mesh_ref = mint_imported_mesh(mesh_node.id, &name, mesh, asset_id);
+                let uvs1 = node_uvs1.get(&(tn.gltf_node_index, None)).cloned();
+                let mesh_ref = mint_imported_mesh(mesh_node.id, &name, mesh, uvs1, asset_id);
                 mesh_node.kind.set(NodeKind::Mesh {
                     mesh: mesh_ref,
                     material,
@@ -6139,7 +6148,10 @@ fn build_editor_subtree(
                     NodeKind::Group,
                 );
                 if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32))) {
-                    let mesh_ref = mint_imported_mesh(part.id, &part_label, mesh, asset_id);
+                    let uvs1 = node_uvs1
+                        .get(&(tn.gltf_node_index, Some(i as u32)))
+                        .cloned();
+                    let mesh_ref = mint_imported_mesh(part.id, &part_label, mesh, uvs1, asset_id);
                     part.kind.set(NodeKind::Mesh {
                         mesh: mesh_ref,
                         material,
@@ -6172,6 +6184,7 @@ fn build_editor_subtree(
             mat_ids,
             default_mat_id,
             node_meshes,
+            node_uvs1,
             None,
             node_map,
         ));

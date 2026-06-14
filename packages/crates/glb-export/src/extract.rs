@@ -378,18 +378,29 @@ fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>], pool: &mut ImagePool
 ///
 /// Positions/normals/uvs are the **raw** accessor values (the node's own local
 /// space); see the module docs on why no transform is applied.
+/// One node's extracted geometry plus its optional **second** UV set
+/// (`TEXCOORD_1`), read in the SAME merge pass as the primary [`MeshData`] so it
+/// stays vertex-aligned. `uvs1` rides a parallel channel (not [`MeshData`], whose
+/// many construction sites would churn) up to the editor's captured mesh, where
+/// it becomes the renderer's UV set 1 (`material_uv(in, 1u)`).
+pub struct ExtractedNodeMesh {
+    pub mesh: MeshData,
+    pub uvs1: Option<Vec<[f32; 2]>>,
+}
+
 pub fn extract_node_mesh(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
     node_index: u32,
     primitive_index: Option<u32>,
-) -> Option<MeshData> {
+) -> Option<ExtractedNodeMesh> {
     let node = doc.nodes().find(|n| n.index() == node_index as usize)?;
     let mesh = node.mesh()?;
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut normals: Vec<[f32; 3]> = Vec::new();
     let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut uvs1: Vec<[f32; 2]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     // Track whether *every* read primitive supplied normals/uvs/colors; if any
@@ -398,6 +409,7 @@ pub fn extract_node_mesh(
     let mut any_primitive = false;
     let mut all_have_normals = true;
     let mut all_have_uvs = true;
+    let mut all_have_uvs1 = true;
     let mut all_have_colors = true;
 
     for (i, primitive) in mesh.primitives().enumerate() {
@@ -424,6 +436,10 @@ pub fn extract_node_mesh(
             Some(t) => uvs.extend(t.into_f32()),
             None => all_have_uvs = false,
         }
+        match reader.read_tex_coords(1) {
+            Some(t) => uvs1.extend(t.into_f32()),
+            None => all_have_uvs1 = false,
+        }
         match reader.read_colors(0) {
             Some(c) => colors.extend(c.into_rgba_f32()),
             None => all_have_colors = false,
@@ -440,12 +456,20 @@ pub fn extract_node_mesh(
         return None;
     }
 
-    Some(MeshData {
-        positions,
-        normals: all_have_normals.then_some(normals),
-        uvs: all_have_uvs.then_some(uvs),
-        colors: all_have_colors.then_some(colors),
-        indices,
+    // A 2nd UV set is only meaningful alongside set 0 (it's packed contiguously
+    // after it); drop it if set 0 is absent so the renderer's `has_uvs1 =
+    // has_uvs && …` guard never sees a dangling set.
+    let uvs1 = (all_have_uvs && all_have_uvs1).then_some(uvs1);
+
+    Some(ExtractedNodeMesh {
+        mesh: MeshData {
+            positions,
+            normals: all_have_normals.then_some(normals),
+            uvs: all_have_uvs.then_some(uvs),
+            colors: all_have_colors.then_some(colors),
+            indices,
+        },
+        uvs1,
     })
 }
 
@@ -463,7 +487,8 @@ pub fn extract_node_mesh_from_bytes(
 ) -> Option<MeshData> {
     let (doc, buffers, _images) = gltf::import_slice(bytes).ok()?;
     let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
-    extract_node_mesh(&doc, &buffers, node_index, primitive_index)
+    // The bytes path (editor export) only needs the primary geometry.
+    extract_node_mesh(&doc, &buffers, node_index, primitive_index).map(|e| e.mesh)
 }
 
 #[cfg(test)]

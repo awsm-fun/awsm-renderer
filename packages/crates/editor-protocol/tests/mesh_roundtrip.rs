@@ -35,6 +35,8 @@ fn sample_captured_mesh() -> CapturedMesh {
             [0.0, 0.0, 1.0],
         ]),
         uvs: Some(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+        // 2nd UV set (TEXCOORD_1) — distinct from set 0 so a "drop uvs1" regression diverges.
+        uvs1: Some(vec![[0.0, 1.0], [0.5, 0.5], [1.0, 0.0], [0.25, 0.75]]),
         colors: Some(vec![
             [1.0, 0.0, 0.0, 1.0],
             [0.0, 1.0, 0.0, 1.0],
@@ -111,6 +113,10 @@ fn captured_mesh_bitcode_roundtrip() {
     assert_eq!(back.indices, vec![0, 1, 2, 0, 2, 3]);
     assert!(back.normals.is_some());
     assert!(back.uvs.is_some());
+    assert_eq!(
+        back.uvs1,
+        Some(vec![[0.0, 1.0], [0.5, 0.5], [1.0, 0.0], [0.25, 0.75]])
+    );
     assert!(back.colors.is_some());
 }
 
@@ -122,6 +128,7 @@ fn captured_mesh_handles_optional_attrs() {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         normals: None,
         uvs: None,
+        uvs1: None,
         colors: None,
         indices: vec![0, 1, 2],
     };

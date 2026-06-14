@@ -54,6 +54,11 @@ pub struct GltfImport {
     /// so the geometry is used as-is (no extra matrix). Skinned meshes bake to
     /// their bind pose (JOINTS/WEIGHTS are not read).
     pub node_meshes: HashMap<(u32, Option<u32>), MeshData>,
+    /// Optional 2nd UV set (`TEXCOORD_1`) per `(node_index, primitive_index)`,
+    /// vertex-aligned with `node_meshes`. Parallel to `node_meshes` so a captured
+    /// static mesh can carry UV set 1 (`material_uv(in, 1u)`) without bloating
+    /// `MeshData`. Absent key = that mesh has only UV set 0.
+    pub node_uvs1: HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
     /// `Some` when the import carries skins: the whole rig (geometry + skeleton +
     /// joints/weights + morph) re-exported through our writer into a clean glb
     /// (materials/animations dropped). This is what the player bundle ships for
@@ -200,30 +205,49 @@ pub async fn import_file(name: &str, url: &str) -> Result<GltfImport, String> {
 /// single Mesh node or destructure a multi-material node per-primitive — exactly
 /// the cases the old `Model` path covered. Positions are raw local accessor values
 /// (see [`awsm_glb_export::extract_node_mesh`] on the no-double-transform rule).
-fn extract_node_meshes(data: &GltfData) -> HashMap<(u32, Option<u32>), MeshData> {
+/// Both the per-node primary geometry AND the optional 2nd UV set
+/// (`TEXCOORD_1`), keyed by `(node_index, primitive_index)`. `uvs1` rides this
+/// parallel map (not `MeshData`) so it reaches the editor's captured mesh →
+/// renderer UV set 1 without churning `MeshData`'s many construction sites.
+type NodeMeshMaps = (
+    HashMap<(u32, Option<u32>), MeshData>,
+    HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
+);
+
+fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
     let buffers = &data.buffers.raw;
     let mut out = HashMap::new();
+    let mut uvs1 = HashMap::new();
+    let insert = |key: (u32, Option<u32>),
+                  ex: awsm_glb_export::ExtractedNodeMesh,
+                  out: &mut HashMap<_, _>,
+                  uvs1: &mut HashMap<_, _>| {
+        if let Some(u1) = ex.uvs1 {
+            uvs1.insert(key, u1);
+        }
+        out.insert(key, ex.mesh);
+    };
     for node in data.doc.nodes() {
         let Some(mesh) = node.mesh() else { continue };
         let node_index = node.index() as u32;
         // Whole-node merge (the common, single-material case).
-        if let Some(m) = awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None) {
-            out.insert((node_index, None), m);
+        if let Some(ex) = awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None) {
+            insert((node_index, None), ex, &mut out, &mut uvs1);
         }
         // Per-primitive (used when a node's primitives carry different materials
         // and the controller destructures it into one Mesh child per primitive).
         let prim_count = mesh.primitives().count();
         if prim_count > 1 {
             for i in 0..prim_count as u32 {
-                if let Some(m) =
+                if let Some(ex) =
                     awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, Some(i))
                 {
-                    out.insert((node_index, Some(i)), m);
+                    insert((node_index, Some(i)), ex, &mut out, &mut uvs1);
                 }
             }
         }
     }
-    out
+    (out, uvs1)
 }
 
 async fn import_typed(
@@ -239,7 +263,7 @@ async fn import_typed(
     // `data` is moved into `populate_gltf` — this is what becomes each editor
     // node's captured Mesh asset (the renderer's own meshes are only kept for
     // material/texture extraction, then hidden).
-    let node_meshes = extract_node_meshes(&data);
+    let (node_meshes, node_uvs1) = extract_node_meshes(&data);
     // Read material factors + texture indices from the document before it's moved
     // into `populate_gltf`; the indices are resolved to baked texture keys after.
     let mat_specs = extract_material_specs(&data);
@@ -307,6 +331,7 @@ async fn import_typed(
         materials,
         animations,
         node_meshes,
+        node_uvs1,
         skinned_glb,
         node_flat_indices,
     })
