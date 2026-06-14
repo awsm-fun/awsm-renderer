@@ -1318,3 +1318,11 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   flat 0,1,2,3), nodes outside the scene excluded, empty when no scene.
 - Gate: fmt ✅, clippy -p awsm-glb-export --all-features --tests -D warnings ✅,
   cargo test -p awsm-glb-export ✅ (extract binary 17 passed). state-1.
+
+### Loop (2026-06-14) — #43 P1 tests: expand_descendants anim bone-mask (1b24da26)
+- scene-loader/animation.rs expand_descendants (include-descendants bone mask:
+  a clip targeting a skeleton root must drive root + all descendants) was
+  untested. Added 4: root+all descendants depth-first; unknown root emits only
+  itself; mid-tree root expands just its subtree; multiple roots in order.
+- Gate: fmt ✅, clippy -p awsm-scene-loader --all-features --tests -D warnings ✅,
+  cargo test -p awsm-scene-loader ✅ (25 passed; scene-loader 21→25). state-1.
