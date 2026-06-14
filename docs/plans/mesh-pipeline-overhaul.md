@@ -1924,3 +1924,39 @@ material_uv(input,7u) → black min_luma 0.00 = clamp returns vec2(0)).
 Design doc marked IMPLEMENTED. The two-real-feature-gaps directive's #1 is done;
 NEXT is Priority 2 (persistence: skinned bind-pose bakes + rig glb session-local;
 model-source disk persistence; reusable non-editor scene materialization path).
+
+---
+
+## CHECKPOINT — 2026-06-14 — Priority-2 persistence: verifiability primitive + gap mapped (45d25df5)
+
+Investigated the persistence gaps. Findings:
+- Gap #3 (reusable non-editor loader) ALREADY EXISTS + WORKS: `populate_awsm_scene`
+  is the runtime loader; `LoadPlayerBundle` round-trips through it. Verified a
+  skinned Fox survives the BUNDLE round-trip (bake_player_bundle re-exports each
+  skinned source's rig glb to assets/<source>.glb; populate re-loads it) —
+  memory_stats post-load showed the full Fox (meshes 10, transforms 66,
+  materials 5, 0 errors).
+- The OPEN gap is the EDITOR's own project save/load (save_to_dir/load_from_dir):
+  skinned data (templates + bind-pose bakes + rig glb) lives ONLY in session-local
+  thread-locals (skinned_bake_cache + bridge templates), NOT in project.toml, so a
+  cold reload loses it → SkinnedMesh renders empty + drop_skinning errors.
+- VERIFICATION BLOCKER (now solved): editor save/load used a browser dir picker →
+  not /debug-scriptable; LoadPlayerBundle empties the editor tree (no bridge nodes
+  to query). So the gap was unverifiable autonomously.
+
+Shipped `ReloadProjectInMemory` (45d25df5): serialize project in-memory → drop
+cold caches (templates+renderer meshes, skinned_bake_cache, skin joints) → reload
+via apply_project (editor path, rebuilds the tree). Now save→reload is
+/debug-testable. Verified: sphere+material PRESERVED (render-identical); Fox cold
+round-trip reproduces the gap deterministically (meshes 10→9, skinned mesh gone +
+"no import template cached" warning). skin_data still reads 24 (authored joint-ref
+count from project.toml — a measurement caveat, NOT a render signal; use
+memory_stats meshes + the warning).
+
+NEXT (the actual fix, now verifiable): persist each imported skinned source's
+rig glb into the project (project.toml ref + the bytes as a side file / inline)
+so save→reload survives; on apply_inmem/apply_project, re-populate the template
+from the rig glb (rebuild renderer skinned meshes + skinned_bake_cache) so
+SkinnedMesh nodes re-resolve + drop_skinning works. VERIFY with
+ReloadProjectInMemory: Fox should then stay at meshes 10 (skinned mesh survives)
+with no template-loss warning.
