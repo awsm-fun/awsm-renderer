@@ -415,4 +415,84 @@ mod tests {
         assert_eq!(ir.thickness_min, 500.0);
         assert_eq!(ir.thickness_max, 550.0);
     }
+
+    // The KHR extensions GLASS_GLTF doesn't carry: emissive_strength + specular
+    // (typed accessors) and diffuse_transmission / clearcoat / sheen / dispersion
+    // / anisotropy (raw-JSON via ext_f32 / ext_color3). Together with the GLASS
+    // test this pins import-side extraction for every extension the renderer
+    // lowers — the import half of the author→export→import→load round-trip.
+    const FULL_EXT_GLTF: &str = r#"{
+        "asset": {"version": "2.0"},
+        "extensionsUsed": [
+            "KHR_materials_emissive_strength","KHR_materials_specular",
+            "KHR_materials_diffuse_transmission","KHR_materials_clearcoat",
+            "KHR_materials_sheen","KHR_materials_dispersion","KHR_materials_anisotropy"
+        ],
+        "materials": [{
+            "name": "kitchen-sink",
+            "extensions": {
+                "KHR_materials_emissive_strength": {"emissiveStrength": 2.5},
+                "KHR_materials_specular": {"specularFactor": 0.8, "specularColorFactor": [1.0, 0.5, 0.25]},
+                "KHR_materials_diffuse_transmission": {"diffuseTransmissionFactor": 0.6, "diffuseTransmissionColorFactor": [0.1, 0.2, 0.3]},
+                "KHR_materials_clearcoat": {"clearcoatFactor": 0.7, "clearcoatRoughnessFactor": 0.2},
+                "KHR_materials_sheen": {"sheenRoughnessFactor": 0.4, "sheenColorFactor": [0.9, 0.8, 0.7]},
+                "KHR_materials_dispersion": {"dispersion": 0.05},
+                "KHR_materials_anisotropy": {"anisotropyStrength": 0.3, "anisotropyRotation": 1.2}
+            }
+        }]
+    }"#;
+
+    #[test]
+    fn extracts_remaining_khr_extension_factors() {
+        let (doc, _, _) = gltf::import_slice(FULL_EXT_GLTF.as_bytes()).expect("parse gltf");
+        let specs = extract_materials(&doc);
+        let x = &specs[0].extensions;
+
+        assert_eq!(x.emissive_strength, Some(2.5));
+        assert_eq!(x.specular, Some((0.8, [1.0, 0.5, 0.25])));
+        assert_eq!(x.diffuse_transmission, Some((0.6, [0.1, 0.2, 0.3])));
+
+        let cc = x.clearcoat.expect("clearcoat");
+        assert_eq!(cc.factor, 0.7);
+        assert_eq!(cc.roughness_factor, 0.2);
+        assert_eq!(
+            cc.normal_scale, 1.0,
+            "absent clearcoatNormalTexture → default scale 1.0"
+        );
+
+        let sh = x.sheen.expect("sheen");
+        assert_eq!(sh.roughness_factor, 0.4);
+        assert_eq!(sh.color_factor, [0.9, 0.8, 0.7]);
+
+        assert_eq!(x.dispersion, Some(0.05));
+        assert_eq!(x.anisotropy, Some((0.3, 1.2)));
+    }
+
+    #[test]
+    fn ext_f32_falls_back_on_missing_or_wrong_type() {
+        let v = serde_json::json!({ "a": 1.5, "s": "nope", "n": null });
+        assert_eq!(ext_f32(&v, "a", 9.0), 1.5, "present number is read");
+        assert_eq!(ext_f32(&v, "missing", 9.0), 9.0, "absent key → default");
+        assert_eq!(ext_f32(&v, "s", 9.0), 9.0, "non-number → default");
+        assert_eq!(ext_f32(&v, "n", 9.0), 9.0, "null → default");
+    }
+
+    #[test]
+    fn ext_color3_requires_a_len3_numeric_array() {
+        let def = [1.0, 1.0, 1.0];
+        let v = serde_json::json!({
+            "ok": [0.1, 0.2, 0.3],
+            "short": [0.1, 0.2],
+            "long": [0.1, 0.2, 0.3, 0.4],
+            "scalar": 0.5
+        });
+        assert_eq!(ext_color3(&v, "ok", def), [0.1, 0.2, 0.3]);
+        assert_eq!(ext_color3(&v, "missing", def), def, "absent → default");
+        assert_eq!(ext_color3(&v, "short", def), def, "len != 3 → default");
+        assert_eq!(ext_color3(&v, "long", def), def, "len != 3 → default");
+        assert_eq!(ext_color3(&v, "scalar", def), def, "non-array → default");
+        // A non-numeric element inside a len-3 array reads as 0.0 (not the default).
+        let bad = serde_json::json!({ "c": [0.5, "x", 0.7] });
+        assert_eq!(ext_color3(&bad, "c", def), [0.5, 0.0, 0.7]);
+    }
 }
