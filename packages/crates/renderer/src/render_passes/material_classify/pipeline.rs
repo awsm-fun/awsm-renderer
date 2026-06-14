@@ -175,4 +175,17 @@ impl MaterialClassifyPipelines {
             }
         }
     }
+
+    /// Drop the cached pipeline-key references (the classify shader is keyed on
+    /// the bucket set, so a bucket-SET change makes both stale). Called from
+    /// `relayout_bucket_buffers` BEFORE the pipeline-pool sweep so the evicted
+    /// pool entries aren't left dangling here — the next render recompiles the
+    /// classify pipeline for the new bucket layout. Part of the dynamic-material
+    /// pipeline-leak fix; see docs/plans/mesh-pipeline-overhaul.md.
+    pub fn clear_dynamic_pipelines(&mut self) -> Vec<ComputePipelineKey> {
+        let mut dropped = Vec::new();
+        dropped.extend(self.multisampled_pipeline_key.take());
+        dropped.extend(self.singlesampled_pipeline_key.take());
+        dropped
+    }
 }

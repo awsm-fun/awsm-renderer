@@ -1394,34 +1394,17 @@ impl crate::AwsmRenderer {
             self.pipeline_scheduler.drop_material_group(mid);
         }
 
-        // Evict this material's compiled GPU compute pipelines + shader modules
-        // from the shared caches — the pipeline-leak fix ("aw snap" crash). The
-        // caches had no removal, so a deleted custom material's per-shader_id
-        // opaque + edge-resolve pipelines accumulated unbounded under editing
-        // churn → GPU OOM. Only evict cache keys no OTHER live dynamic material
-        // still references (custom keys are unique per WGSL, so the guard is
-        // normally a no-op but prevents freeing a shared pipeline). Removing a
-        // shader module is always safe: live pipelines hold their own JS ref, so
-        // worst case is a future identical material recompiles it.
-        let keys = self
-            .pipeline_scheduler
-            .take_dynamic_pipeline_keys(shader_id);
-        let evictable: Vec<_> = keys
-            .into_iter()
-            .filter(|k| !self.pipeline_scheduler.dynamic_pipeline_key_in_use(k))
-            .collect();
-        if !evictable.is_empty() {
-            let shader_keys: std::collections::HashSet<_> =
-                evictable.iter().map(|k| k.shader_key).collect();
-            let freed = self.pipelines.compute.remove_cache_keys(&evictable);
-            for shader_key in shader_keys {
-                self.shaders.remove(shader_key);
-            }
-            tracing::debug!(
-                target: "awsm_renderer::pipeline_readiness",
-                "unregister_material({shader_id:?}): evicted {freed} compute pipeline(s) + their shader modules",
-            );
-        }
+        // NOTE: the deleted material's compiled GPU pipelines + shader modules are
+        // reclaimed by `relayout_bucket_buffers` on the next render, NOT here. The
+        // remove() below drops it from the registry, which changes `dispatch_hash`
+        // + the bucket count → the render preamble's `ensure_scene_pipelines`
+        // detects the bucket-SET change, clears the layout-keyed typed caches, and
+        // sweeps the shader + compute-pipeline pools for every entry whose cache
+        // key carries the now-stale set signature (the deleted material's opaque /
+        // edge / classify variants among them). Doing the sweep there — after the
+        // typed caches are cleared — is what keeps it free of dangling pool
+        // references. This is the pipeline-leak fix ("aw snap" crash); see
+        // docs/plans/mesh-pipeline-overhaul.md.
 
         self.dynamic_materials.remove(shader_id)
     }

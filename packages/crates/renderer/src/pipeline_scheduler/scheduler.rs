@@ -249,16 +249,6 @@ pub struct PipelineScheduler {
     /// `set_render_pipeline_keys_batched`'s within-batch dedup).
     inflight_compute_cache_waiters:
         HashMap<crate::pipelines::compute_pipeline::ComputePipelineCacheKey, Vec<MaterialId>>,
-    /// Per-DYNAMIC-shader_id set of the compute-pipeline cache keys installed for
-    /// it (opaque + per-shader edge-resolve — both keyed by shader_id). Populated
-    /// at install time; consulted by `unregister_material` to evict a deleted
-    /// custom material's pipelines from the shared `ComputePipelines` cache (the
-    /// pipeline-leak / "aw snap" fix — see docs/plans/mesh-pipeline-overhaul.md).
-    /// First-party shader_ids are never recorded (never unregistered).
-    dynamic_pipeline_keys: HashMap<
-        awsm_materials::MaterialShaderId,
-        std::collections::HashSet<crate::pipelines::compute_pipeline::ComputePipelineCacheKey>,
-    >,
     events: Vec<StatusEvent>,
 }
 
@@ -278,48 +268,8 @@ impl PipelineScheduler {
             inflight_compile: FuturesUnordered::new(),
             pending_subcompiles: HashMap::new(),
             inflight_compute_cache_waiters: HashMap::new(),
-            dynamic_pipeline_keys: HashMap::new(),
             events: Vec::new(),
         }
-    }
-
-    /// Record that compute pipeline `key` was installed for dynamic material
-    /// `shader_id` (pipeline-leak fix — enables eviction on unregister). No-op
-    /// for first-party ids (never unregistered, so never evicted).
-    pub(crate) fn record_dynamic_pipeline_key(
-        &mut self,
-        shader_id: awsm_materials::MaterialShaderId,
-        key: crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
-    ) {
-        if shader_id.is_dynamic() {
-            self.dynamic_pipeline_keys
-                .entry(shader_id)
-                .or_default()
-                .insert(key);
-        }
-    }
-
-    /// Remove + return the compute-pipeline cache keys recorded for `shader_id`
-    /// (called by `unregister_material`).
-    pub(crate) fn take_dynamic_pipeline_keys(
-        &mut self,
-        shader_id: awsm_materials::MaterialShaderId,
-    ) -> Vec<crate::pipelines::compute_pipeline::ComputePipelineCacheKey> {
-        self.dynamic_pipeline_keys
-            .remove(&shader_id)
-            .map(|s| s.into_iter().collect())
-            .unwrap_or_default()
-    }
-
-    /// True if `key` is still recorded for some (other) live dynamic material —
-    /// the eviction guard so a shared cache key isn't freed while in use. (Custom
-    /// keys are unique per WGSL so this is normally false, but the guard is cheap
-    /// insurance.)
-    pub(crate) fn dynamic_pipeline_key_in_use(
-        &self,
-        key: &crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
-    ) -> bool {
-        self.dynamic_pipeline_keys.values().any(|s| s.contains(key))
     }
 
     /// Register material `mid` as a waiter for the compute pipeline

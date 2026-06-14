@@ -204,12 +204,19 @@ impl MaterialEdgePipelines {
 
     /// Inserts a compiled per-shader-id pipeline. Called from the
     /// scheduler resolution path.
+    /// Returns the DISPLACED pool key when this insert overwrote a different
+    /// existing per-shader entry, so the caller can free the orphaned pipeline
+    /// from the shared pool (the leak fix — re-installs under a new bucket layout
+    /// used to silently orphan the previous one). `None` when the slot was empty
+    /// or re-installed the identical key. See docs/plans/mesh-pipeline-overhaul.md.
     pub fn insert_per_shader_pipeline(
         &mut self,
         key_id: EdgeResolvePipelineKeyId,
         pipeline_key: ComputePipelineKey,
-    ) {
-        self.per_shader.insert(key_id, pipeline_key);
+    ) -> Option<ComputePipelineKey> {
+        self.per_shader
+            .insert(key_id, pipeline_key)
+            .filter(|displaced| *displaced != pipeline_key)
     }
 
     /// Clear every per-shader-id edge_resolve pipeline entry, plus
@@ -220,10 +227,16 @@ impl MaterialEdgePipelines {
     /// the full rationale. The dispatch site's `Option` guards in
     /// `get_per_shader_pipeline_key` / `render_edge_resolve` skip
     /// the affected work until the new compiles land.
-    pub fn clear_dynamic_pipelines(&mut self) {
-        self.per_shader.clear();
-        self.skybox_edge_resolve_pipeline_key = None;
-        self.final_blend_pipeline_key = None;
+    /// Returns the dropped pool keys (per-shader + skybox + final-blend) so the
+    /// caller can free them from the shared compute-pipeline pool — the leak fix
+    /// (these references were dropped while the GPU pipelines lingered in the pool
+    /// forever). See docs/plans/mesh-pipeline-overhaul.md.
+    pub fn clear_dynamic_pipelines(&mut self) -> Vec<ComputePipelineKey> {
+        let mut dropped: Vec<ComputePipelineKey> =
+            self.per_shader.drain().map(|(_, k)| k).collect();
+        dropped.extend(self.skybox_edge_resolve_pipeline_key.take());
+        dropped.extend(self.final_blend_pipeline_key.take());
+        dropped
     }
 
     /// Build the descriptor list for the current bucket entries +

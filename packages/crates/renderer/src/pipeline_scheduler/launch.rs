@@ -258,15 +258,78 @@ impl crate::AwsmRenderer {
             }
         }
 
-        // Clear layout-keyed typed pipeline caches (opaque `main` + edge).
-        self.render_passes
+        // Clear the layout-keyed typed pipeline caches (opaque `main` + edge +
+        // classify) AND free the GPU pipelines they were holding — the
+        // pipeline-leak fix ("aw snap" crash). Each cache holds
+        // `ComputePipelineKey`s into the shared `self.pipelines.compute` pool; a
+        // bucket-set change makes them stale, so they're cleared here before the
+        // new layout compiles. Historically `clear_dynamic_pipelines` only
+        // dropped these KEYS — the `GpuComputePipeline` objects lingered in the
+        // pool forever (the classify/edge keys are self-invalidating, minting a
+        // fresh pool entry on every registry change and orphaning the old), which
+        // accumulated unbounded under editing churn → GPU OOM. Now the clears
+        // RETURN the dropped keys and we free exactly those from the pool (plus
+        // the shader modules they were built from).
+        //
+        // Freeing precisely the just-dropped keys is dangle-free by construction:
+        // nothing references them anymore (the typed caches are now empty and the
+        // per-frame `collect_renderables` rebuilds from them, so the dispatch
+        // sites' `Option` guard skips the draw until the new layout's pipelines
+        // land). See docs/plans/mesh-pipeline-overhaul.md.
+        let mut dropped_keys = self
+            .render_passes
             .material_opaque
             .pipelines
             .clear_dynamic_pipelines();
-        self.render_passes
-            .material_opaque
-            .edge_pipelines
-            .clear_dynamic_pipelines();
+        dropped_keys.extend(
+            self.render_passes
+                .material_opaque
+                .edge_pipelines
+                .clear_dynamic_pipelines(),
+        );
+        dropped_keys.extend(
+            self.render_passes
+                .material_classify
+                .pipelines
+                .clear_dynamic_pipelines(),
+        );
+        // The classify pass keeps a SECOND cache — `dynamic_pipeline_cache`,
+        // keyed by `(dispatch_hash, msaa)` and populated by the async install
+        // path — that the clear above doesn't touch. It accumulates a fresh
+        // entry on every registry edit (each mints a new dispatch_hash) and
+        // never drops the old ones, so prune everything that isn't the live
+        // dispatch_hash and free those pool pipelines too.
+        let current_dispatch_hash = self.dynamic_materials.dispatch_hash_cached();
+        dropped_keys.extend(
+            self.render_passes
+                .material_classify
+                .prune_dynamic_pipeline_cache(current_dispatch_hash),
+        );
+        let freed_shaders = self.pipelines.compute.remove_pipeline_keys(&dropped_keys);
+        for shader_key in &freed_shaders {
+            self.shaders.remove(*shader_key);
+        }
+
+        // The clears above free only what the typed caches still REFERENCE. Rapid
+        // churn also strands DETACHED orphans in the pool — pipelines created via
+        // `ensure_keys` whose resolution was later dropped (stale generation) or
+        // whose typed-cache slot was replaced before this clear ran. They're no
+        // longer reachable through any typed cache, so the only handle on them is
+        // their shader: every set-specialized pipeline (opaque / edge / classify /
+        // skybox-edge / final-blend) is built from a shader whose cache key
+        // carries the now-stale dispatch_hash / bucket set. Sweep the shader cache
+        // for those stale modules and free them + every pool pipeline built from
+        // them. This is dangle-free now that the typed caches were cleared/pruned
+        // above: no live cache (nor the per-frame renderables) references a
+        // stale-signature pipeline anymore. Together the two passes return the
+        // pool to baseline under unbounded editing churn (the "aw snap" fix).
+        let current_bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
+        let stale_shaders = self
+            .shaders
+            .take_stale_dynamic_set_shader_keys(current_dispatch_hash, &current_bucket_entries);
+        if !stale_shaders.is_empty() {
+            self.pipelines.compute.remove_by_shader_keys(&stale_shaders);
+        }
 
         Ok(())
     }
@@ -849,15 +912,6 @@ impl crate::AwsmRenderer {
                 }
                 match result {
                     Ok(pipeline) => {
-                        // Record per-shader edge pipelines for dynamic-material
-                        // eviction (pipeline-leak fix); record_dynamic_pipeline_key
-                        // ignores first-party shader_ids.
-                        if let CompileInstallTarget::EdgeResolvePerShader { shader_id, .. } =
-                            &target
-                        {
-                            self.pipeline_scheduler
-                                .record_dynamic_pipeline_key(*shader_id, cache_key.clone());
-                        }
                         let pipeline_key = self
                             .pipelines
                             .compute
@@ -975,20 +1029,10 @@ impl crate::AwsmRenderer {
         // early-return branch at the top of this fn. The per-pass install is
         // GLOBAL (keyed by shader_id / msaa / mipmaps), so the single
         // install covers every waiter material.
-        // Record opaque dynamic-material pipelines for eviction (pipeline-leak
-        // fix). ONLY OpaqueDynamic carries a real per-material shader_id;
-        // ClassifyDynamic is shared infrastructure (sentinel shader_id), so it
-        // must NOT be recorded/evicted per-material.
-        let opaque_dynamic_key = matches!(target, CompileInstallTarget::OpaqueDynamic { .. })
-            .then(|| (shader_id_from_target(&target), cache_key.clone()));
         let pipeline_key = self
             .pipelines
             .compute
             .install_resolved_pipeline(pipeline, cache_key);
-        if let Some((sid, key)) = opaque_dynamic_key {
-            self.pipeline_scheduler
-                .record_dynamic_pipeline_key(sid, key);
-        }
         match &target {
             CompileInstallTarget::ClassifyDynamic { .. }
             | CompileInstallTarget::OpaqueDynamic { .. } => {
@@ -1103,29 +1147,47 @@ fn install_per_pass(
     pipeline_key: crate::pipelines::compute_pipeline::ComputePipelineKey,
 ) {
     use crate::render_passes::material_opaque::pipeline::PipelineKeyId;
-    match slot {
-        LaunchSlot::Classify { msaa } => {
-            renderer
-                .render_passes
-                .material_classify
-                .dynamic_pipeline_cache
-                .borrow_mut()
-                .insert((dispatch_hash, *msaa), pipeline_key);
-        }
-        LaunchSlot::Opaque { msaa, mipmaps } => {
-            renderer
-                .render_passes
-                .material_opaque
-                .pipelines
-                .insert_dynamic_pipeline(
-                    PipelineKeyId {
-                        msaa_sample_count: *msaa,
-                        mipmaps: *mipmaps,
-                        shader_id,
-                    },
-                    pipeline_key,
-                );
-        }
+    // Free the pool pipeline displaced by this install, if any — re-installing a
+    // typed-cache slot under a new bucket layout used to silently orphan the
+    // previous `GpuComputePipeline` (part of the pipeline-leak fix). The
+    // displaced key is no longer referenced by anything, so freeing it is safe.
+    let displaced = match slot {
+        LaunchSlot::Classify { msaa } => renderer
+            .render_passes
+            .material_classify
+            .dynamic_pipeline_cache
+            .borrow_mut()
+            .insert((dispatch_hash, *msaa), pipeline_key)
+            .filter(|old| *old != pipeline_key),
+        LaunchSlot::Opaque { msaa, mipmaps } => renderer
+            .render_passes
+            .material_opaque
+            .pipelines
+            .insert_dynamic_pipeline(
+                PipelineKeyId {
+                    msaa_sample_count: *msaa,
+                    mipmaps: *mipmaps,
+                    shader_id,
+                },
+                pipeline_key,
+            ),
+    };
+    if let Some(old) = displaced {
+        free_displaced_compute_pipeline(renderer, old);
+    }
+}
+
+/// Free a single displaced compute pipeline (and its shader module) from the
+/// shared pool — used by the install sites when a typed-cache slot is
+/// overwritten under a new bucket layout. Part of the pipeline-leak fix; see
+/// docs/plans/mesh-pipeline-overhaul.md.
+fn free_displaced_compute_pipeline(
+    renderer: &mut crate::AwsmRenderer,
+    key: crate::pipelines::compute_pipeline::ComputePipelineKey,
+) {
+    let freed_shaders = renderer.pipelines.compute.remove_pipeline_keys(&[key]);
+    for shader_key in &freed_shaders {
+        renderer.shaders.remove(*shader_key);
     }
 }
 
@@ -1142,16 +1204,21 @@ fn install_edge_per_pass(
     pipeline_key: crate::pipelines::compute_pipeline::ComputePipelineKey,
 ) {
     let edge = &mut renderer.render_passes.material_opaque.edge_pipelines;
-    match slot {
-        EdgePipelineSlot::PerShader(id) => {
-            edge.insert_per_shader_pipeline(*id, pipeline_key);
-        }
-        EdgePipelineSlot::Skybox => {
-            edge.skybox_edge_resolve_pipeline_key = Some(pipeline_key);
-        }
-        EdgePipelineSlot::FinalBlend => {
-            edge.final_blend_pipeline_key = Some(pipeline_key);
-        }
+    // Capture any pool key displaced by this install so we can free the orphaned
+    // pipeline (part of the pipeline-leak fix — see install_per_pass).
+    let displaced = match slot {
+        EdgePipelineSlot::PerShader(id) => edge.insert_per_shader_pipeline(*id, pipeline_key),
+        EdgePipelineSlot::Skybox => edge
+            .skybox_edge_resolve_pipeline_key
+            .replace(pipeline_key)
+            .filter(|old| *old != pipeline_key),
+        EdgePipelineSlot::FinalBlend => edge
+            .final_blend_pipeline_key
+            .replace(pipeline_key)
+            .filter(|old| *old != pipeline_key),
+    };
+    if let Some(old) = displaced {
+        free_displaced_compute_pipeline(renderer, old);
     }
 }
 

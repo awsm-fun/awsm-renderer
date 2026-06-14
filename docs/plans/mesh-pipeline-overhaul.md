@@ -1567,3 +1567,44 @@ pipeline-leak-aw-snap.md). Findings:
   /debug→handler routing; or registration shader_id ≠ the id REGISTRY stores; or
   recording shader_id ≠ unregister shader_id.) Also: render_pl plateaus at 57 +
   transforms ~1/cycle still leak — secondary.
+
+### Loop (2026-06-14) — pipeline-leak FIXED (real root cause; WIP eviction abandoned)
+The WIP above (track install keys → evict in unregister_material) was the WRONG
+model and is removed. **Real root cause:** the leak is not in unregister — it's the
+bucket-SET-change recompile path. Register/unregister ANY dynamic material changes
+`dispatch_hash` + the bucket list, so opaque / edge-resolve / classify / skybox-edge
+/ final-blend recompile under a NEW shader cache key. The typed per-pass caches hold
+`ComputePipelineKey`s into the shared `self.pipelines.compute` pool; `relayout_bucket_buffers`
+(launch.rs) `clear_dynamic_pipelines()` merely DROPPED those keys — the GPU pipelines
+lingered in the pool forever. (`memory_stats.compute_pipelines` == `r.pipelines.compute.len()`,
+NOT the small typed caches — that mismatch misled the first diagnosis.)
+
+**Fix (renderer):**
+- `clear_dynamic_pipelines()` on `material_opaque.pipelines` / `.edge_pipelines` /
+  `material_classify.pipelines` now RETURN their dropped pool keys; `relayout_bucket_buffers`
+  frees exactly those (`ComputePipelines::remove_pipeline_keys`) + their shader modules.
+  Dangle-free: only frees what the just-cleared caches held; per-frame `collect_renderables`
+  rebuilds from the empty caches and dispatch `Option`-guards skip until recompile lands.
+- `material_classify::dynamic_pipeline_cache` (keyed `(dispatch_hash,msaa)`, never pruned)
+  → new `prune_dynamic_pipeline_cache(current_hash)` frees stale-hash entries.
+- Free-on-overwrite at install sites: `insert_dynamic_pipeline` / `insert_per_shader_pipeline`
+  + skybox/final-blend `replace()` return the displaced key → `free_displaced_compute_pipeline`.
+- Catch-all: `Shaders::take_stale_dynamic_set_shader_keys` + `ComputePipelines::remove_by_shader_keys`
+  sweep the pool by stale set-signature (`ShaderCacheKey::is_stale_dynamic_set`).
+- `unregister_material` does NO eviction (relayout handles the deleted material). Dead WIP
+  scheduler machinery (`dynamic_pipeline_keys`/record/take/in_use) + step-1 `remove_cache_keys`
+  removed.
+
+**VERIFIED (browser via /debug + screenshots):** compute_pipelines FLAT at ~25 under
+human-paced (≥1s) add/setwgsl/delete churn (was 23→263 at +22/cycle); custom materials
+render correctly (luma high, 0 "missing pipeline" errors); rapid churn spikes transiently
+(in-flight compiles) then settles, no unbounded growth. Gates green (fmt + clippy
+-p awsm-renderer -p awsm-editor + 229 renderer tests).
+
+**RESIDUAL / FOLLOW-UP (exact repro):** sub-second machine-gun churn (MCP add+setwgsl+delete
+at <0.8s/cycle, faster than GPU compile latency) leaves ~+1-2/cycle DETACHED orphans no
+relayout reclaims (slow cycles drain ~half then stick; `stale_swept=0` so the shader-sweep
+misses them — their shader signature is current-ish, just no typed-cache references them).
+Proper fix = scheduler-integrated eviction: when an async compile resolution's typed-cache
+install is superseded, free the pool entry it would have replaced. Not a human-editing path;
+12-22× smaller than the original crash. Memory: [[pipeline-leak-aw-snap]].

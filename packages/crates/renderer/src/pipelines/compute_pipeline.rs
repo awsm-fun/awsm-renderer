@@ -96,22 +96,68 @@ impl ComputePipelines {
         self.lookup.len()
     }
 
-    /// Evict the compute pipelines for these cache keys. Removes each from both
-    /// the cache map and the slotmap; dropping the `GpuComputePipeline` releases
-    /// the GPU object. Returns how many were freed. Used by `unregister_material`
-    /// to reclaim a deleted custom material's pipelines (the pipeline-leak fix —
-    /// see docs/plans/mesh-pipeline-overhaul.md). The caller must only pass keys
-    /// no LIVE material still references (custom-material cache keys are unique
-    /// per WGSL, so a deleted material's keys are exclusively its own).
-    pub fn remove_cache_keys(&mut self, keys: &[ComputePipelineCacheKey]) -> usize {
-        let mut removed = 0;
-        for key in keys {
-            if let Some(slot) = self.cache.remove(key) {
-                self.lookup.remove(slot);
-                removed += 1;
-            }
+    /// Evict the specific pool entries named by their `ComputePipelineKey`s
+    /// (the slotmap keys a typed per-pass cache was holding). Drops the slotmap
+    /// entries (releasing the `GpuComputePipeline`s) AND the reverse cache rows
+    /// that pointed at them, and returns the [`ShaderKey`]s those pipelines were
+    /// built from so the caller can free the matching shader modules.
+    ///
+    /// This is the core of the dynamic-material pipeline-leak fix: the typed
+    /// per-pass caches (opaque / edge / classify) used to DROP these references
+    /// on a bucket-set change while the GPU pipelines lingered in this pool
+    /// forever. Freeing exactly the keys a typed cache just dropped is
+    /// dangle-free by construction — nothing references them anymore (the typed
+    /// cache is empty and the per-frame renderables rebuild from it). See
+    /// docs/plans/mesh-pipeline-overhaul.md.
+    pub fn remove_pipeline_keys(
+        &mut self,
+        keys: &[ComputePipelineKey],
+    ) -> std::collections::HashSet<ShaderKey> {
+        if keys.is_empty() {
+            return std::collections::HashSet::new();
         }
-        removed
+        let keyset: std::collections::HashSet<ComputePipelineKey> = keys.iter().copied().collect();
+        let mut shader_keys = std::collections::HashSet::new();
+        self.cache.retain(|cache_key, slot| {
+            if keyset.contains(slot) {
+                shader_keys.insert(cache_key.shader_key);
+                false
+            } else {
+                true
+            }
+        });
+        for key in keys {
+            self.lookup.remove(*key);
+        }
+        shader_keys
+    }
+
+    /// Evict every cached compute pipeline built from one of `shader_keys`.
+    /// Drops the reverse cache rows and the slotmap entries (releasing the
+    /// `GpuComputePipeline`s); returns how many were freed. Used by the
+    /// dynamic-material pipeline-leak fix to reclaim DETACHED orphans — pool
+    /// pipelines no longer referenced by any typed cache (their reservation's
+    /// resolution was dropped, or the slot was replaced before a clear ran).
+    /// Their only handle is the shader they were built from. The caller MUST
+    /// have already cleared/pruned every typed cache that could reference these
+    /// (so nothing dangles). See docs/plans/mesh-pipeline-overhaul.md.
+    pub fn remove_by_shader_keys(
+        &mut self,
+        shader_keys: &std::collections::HashSet<ShaderKey>,
+    ) -> usize {
+        let mut removed_slots = Vec::new();
+        self.cache.retain(|cache_key, slot| {
+            if shader_keys.contains(&cache_key.shader_key) {
+                removed_slots.push(*slot);
+                false
+            } else {
+                true
+            }
+        });
+        for slot in &removed_slots {
+            self.lookup.remove(*slot);
+        }
+        removed_slots.len()
     }
 
     /// True when no compute pipelines exist.

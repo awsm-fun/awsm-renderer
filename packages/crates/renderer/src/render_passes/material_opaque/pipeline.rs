@@ -456,12 +456,20 @@ impl MaterialOpaquePipelines {
     /// Inserts a compiled opaque-compute pipeline for a dynamic
     /// shader_id. Called from `AwsmRenderer::prewarm_pipelines` after
     /// compiling a registered material's per-shader-id pipeline.
+    /// Returns the DISPLACED pool key when this insert overwrote a different
+    /// existing entry for `key_id`, so the caller can free the orphaned
+    /// `GpuComputePipeline` from the shared pool (the leak fix — re-installs for
+    /// the same `(shader_id, msaa, mipmaps)` under a new bucket layout used to
+    /// silently orphan the previous pipeline). `None` when the slot was empty or
+    /// re-installed the identical key. See docs/plans/mesh-pipeline-overhaul.md.
     pub fn insert_dynamic_pipeline(
         &mut self,
         key_id: PipelineKeyId,
         pipeline_key: ComputePipelineKey,
-    ) {
-        self.main.insert(key_id, pipeline_key);
+    ) -> Option<ComputePipelineKey> {
+        self.main
+            .insert(key_id, pipeline_key)
+            .filter(|displaced| *displaced != pipeline_key)
     }
 
     /// Clear every per-shader-id opaque pipeline entry. The empty-slot
@@ -480,7 +488,11 @@ impl MaterialOpaquePipelines {
     /// After clearing, `get_compute_pipeline_key` returns `None` for
     /// those entries and the dispatch site's `Option` guard skips
     /// the draw until the new pipeline lands.
-    pub fn clear_dynamic_pipelines(&mut self) {
-        self.main.clear();
+    /// Returns the dropped pool keys so the caller can free them from the
+    /// shared compute-pipeline pool (the leak fix — the typed cache used to drop
+    /// these references while the `GpuComputePipeline`s lingered in the pool
+    /// forever). See docs/plans/mesh-pipeline-overhaul.md.
+    pub fn clear_dynamic_pipelines(&mut self) -> Vec<ComputePipelineKey> {
+        self.main.drain().map(|(_, key)| key).collect()
     }
 }

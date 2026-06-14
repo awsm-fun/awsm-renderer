@@ -417,6 +417,17 @@ impl MaterialTransparentPipelines {
     pub fn remove_render_pipeline_key(&mut self, mesh_key: MeshKey) -> Option<RenderPipelineKey> {
         self.render_pipeline_keys.remove(mesh_key)
     }
+
+    /// Drop every cached per-mesh render-pipeline-key reference. The transparent
+    /// shader is keyed on the dynamic-material set (`dispatch_hash`), so a
+    /// bucket-SET change makes the cached keys stale. Called from
+    /// `relayout_bucket_buffers` BEFORE the pipeline-pool sweep so evicted pool
+    /// entries aren't left dangling here — each transparent mesh recompiles its
+    /// pipeline on the next transparent pass (normal cache-miss path). Part of
+    /// the dynamic-material pipeline-leak fix; see docs/plans/mesh-pipeline-overhaul.md.
+    pub fn clear_dynamic_pipelines(&mut self) {
+        self.render_pipeline_keys.clear();
+    }
 }
 
 /// Build (do not create) a transparent-pipeline cache key. The

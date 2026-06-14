@@ -41,6 +41,32 @@ pub struct MaterialClassifyRenderPass {
 }
 
 impl MaterialClassifyRenderPass {
+    /// Prune `dynamic_pipeline_cache` entries whose `dispatch_hash` no longer
+    /// matches `current_dispatch_hash` — a bucket-SET change orphaned them and
+    /// the dispatch path (keyed on the live `dispatch_hash`) will never look them
+    /// up again. Returns the dropped pool keys so the caller frees them from the
+    /// shared compute-pipeline pool. Without this the cache (and the pool it
+    /// references) grew unbounded on every registry edit → GPU OOM ("aw snap").
+    /// Pruning only non-current entries is dangle-free: nothing dispatches them.
+    /// Part of the pipeline-leak fix; see docs/plans/mesh-pipeline-overhaul.md.
+    pub fn prune_dynamic_pipeline_cache(
+        &mut self,
+        current_dispatch_hash: u64,
+    ) -> Vec<ComputePipelineKey> {
+        let mut dropped = Vec::new();
+        self.dynamic_pipeline_cache
+            .borrow_mut()
+            .retain(|(hash, _msaa), key| {
+                if *hash == current_dispatch_hash {
+                    true
+                } else {
+                    dropped.push(*key);
+                    false
+                }
+            });
+        dropped
+    }
+
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = MaterialClassifyBindGroups::new(ctx).await?;
         let first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
