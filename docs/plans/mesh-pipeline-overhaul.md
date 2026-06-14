@@ -1722,3 +1722,32 @@ Scoped "editor doesn't play imported glTF clips". Findings (via /debug + Fox imp
   lower glTF-imported clips' tracks (track target resolution to the imported bone nodes), and
   (b) the loose-player from populate_gltf_node_animation double-driving (agent's theory) — but
   the SetCurrentClip bump is necessary regardless.
+
+### Loop (2026-06-14 cont.) — diagnosis: black-screen (not a bug), texture leak (REAL), glTF clip playback (deeper gap)
+Fresh-tab session findings (editor healthy after user resize):
+1. BLACK SCREEN on reload = the canvas/WebGPU device re-sync artifact ("Destroyed texture [Effects]
+   used in a submit" spam); RESIZE healed it (render_loop DID_REAL_SIZE_SYNC backstop). Confirmed
+   NOT a code bug (matches prior note). No fix.
+2. TEXTURE + SAMPLER LEAK on model delete — REAL, confirmed two ways:
+   - Code: `Textures::remove`/`remove_texture` exists but is NEVER called from the editor;
+     `node_sync.rs::teardown` frees meshes/transforms/materials/lights but NOT textures;
+     RendererNode has no texture-key tracking.
+   - Live (memory_stats pool_textures/samplers, added in cee97fc9): import Fox → pool_textures
+     0→1, samplers 1→3; delete → stays 1/3. BoxTextured → 2→3 / 3→4; delete → stays 3/4. Never freed.
+   ⇒ importing+deleting textured models accumulates GPU textures unbounded → an "aw snap" contributor
+   (separate from THIS session's textureless churn, which was the pipeline leak — already fixed).
+   FIX (next, count-verifiable on any tab via pool_textures/samplers): track texture+sampler keys
+   created per import (on RendererNode or a per-import owner map) and free them in teardown, with
+   shared-texture REFCOUNTING (a texture may back multiple materials; only free at refcount 0).
+   Also seen: skinned-mesh node delete is PARTIAL (mesh + some transforms not freed) — investigate
+   the SkinnedMesh teardown path too.
+3. glTF CLIP PLAYBACK (e5bd346d) — necessary but NOT sufficient. Verified on healthy tab: imported
+   Fox renders perfectly but stays in BIND POSE across set_playhead 0.0/1.2/2.5 (screenshot md5
+   identical). Clips load + tracks target the right bone NodeIds (import_animations node_map) + skin
+   is fully live (24/24 joints). So the gap is the lowering/resolve/pin path for IMPORTED skinned
+   clips: resolve_target (animation_sync.rs:285) maps a track's bone node → bridge().nodes[node]
+   .transform_key, but imported skeleton bones come from renderer populate_gltf (node_sync.rs:361
+   "deforms via the joints") — need to confirm those bones are bridged RendererNodes whose
+   transform_key actually drives the skin joints (vs skin-internal). NEXT: instrument lower_clip
+   (channels resolved count) + pin_pose (clip-group count) — but a rebuild reloads the tab→black→
+   needs resize, so batch the real fix with the instrumentation. Multi-iteration.
