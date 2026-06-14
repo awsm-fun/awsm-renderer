@@ -254,6 +254,14 @@ pub enum EditorQuery {
     /// slopes mean healthy; a steady climb on an idle scene is a leak. A read —
     /// no mutation.
     MemoryStats,
+    /// Renderer-side animation runtime state (clip/channel lowering diagnostics):
+    /// how many clip groups + RESOLVED channels actually lowered into the
+    /// renderer, the rest-cache size, and the mixer layer count — plus the
+    /// controller's current-clip id + its authored track count. The decisive
+    /// "why doesn't my clip pose the rig" probe: authored tracks > 0 but resolved
+    /// channels == 0 means every track's target was pending/invalid at lower
+    /// time. A read — no mutation.
+    AnimationRuntime,
     /// The last `limit` editor notices (toasts: info/warning/error) from an
     /// in-process ring buffer — surfaces runtime errors otherwise invisible over
     /// MCP. Material compile errors have a dedicated path (`MaterialDiagnostics`).

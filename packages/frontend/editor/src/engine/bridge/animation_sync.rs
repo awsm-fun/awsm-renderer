@@ -124,6 +124,16 @@ async fn relower() {
             .iter()
             .map(|(id, clip)| (*id, lower_clip(r, clip, solo_root)))
             .collect();
+        // Breadcrumb for the pose-doesn't-deform investigations: how many clips +
+        // resolved channels actually lowered. 0 channels with non-zero authored
+        // tracks ⇒ every track's target was pending/invalid at lower time.
+        let total_channels: usize = groups.iter().map(|(_, g)| g.channels.len()).sum();
+        tracing::debug!(
+            "anim relower: {} clip(s), {} resolved channel(s), mixer_doc_layers={}",
+            groups.len(),
+            total_channels,
+            mixer_doc.layers.len()
+        );
         let mixer = lower_mixer(&mixer_doc, &clip_ids, &groups);
 
         r.animations.clear_clips();

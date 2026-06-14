@@ -137,6 +137,12 @@ impl Animations {
         !self.clips.is_empty()
     }
 
+    /// Number of cached rest-pose entries (animation diagnostics): one per
+    /// distinct target any lowered channel has contributed to.
+    pub fn rest_len(&self) -> usize {
+        self.rest.len()
+    }
+
     /// Drops the entire rest-pose cache. The editor calls this when authored
     /// defaults may have changed wholesale (e.g. a new scene loaded); the
     /// next mixer frame re-captures rest for every contributing target.

@@ -4031,6 +4031,58 @@ impl EditorController {
                     entries,
                 })
             }
+            EditorQuery::AnimationRuntime => {
+                use serde_json::json;
+                // Renderer-side lowered state: clip groups, resolved channels per
+                // clip, rest-cache size, mixer layers.
+                let (clip_count, total_channels, per_clip, rest_len, mixer_layers) =
+                    crate::engine::context::with_renderer_mut(|r| {
+                        let per_clip: Vec<serde_json::Value> = r
+                            .animations
+                            .clips_iter()
+                            .map(|(_, g)| json!({"name": g.name, "channels": g.channels.len()}))
+                            .collect();
+                        let total: usize = r
+                            .animations
+                            .clips_iter()
+                            .map(|(_, g)| g.channels.len())
+                            .sum();
+                        (
+                            per_clip.len(),
+                            total,
+                            per_clip,
+                            r.animations.rest_len(),
+                            r.animations.mixer.layers.len(),
+                        )
+                    })
+                    .await;
+                // Controller-side: current clip + its authored track count (the
+                // numerator the resolved channels should match).
+                let current_clip = self.current_clip.get();
+                let authored_tracks = current_clip
+                    .and_then(|id| {
+                        crate::controller::animation::find_clip(&self.custom_animations, id)
+                    })
+                    .map(|c| c.tracks.lock_ref().len())
+                    .unwrap_or(0);
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("clip_groups".to_string(), json!(clip_count));
+                entries.insert("resolved_channels".to_string(), json!(total_channels));
+                entries.insert("per_clip".to_string(), json!(per_clip));
+                entries.insert("rest_entries".to_string(), json!(rest_len));
+                entries.insert("mixer_layers".to_string(), json!(mixer_layers));
+                entries.insert(
+                    "current_clip".to_string(),
+                    json!(current_clip.map(|id| id.to_string())),
+                );
+                entries.insert("authored_tracks".to_string(), json!(authored_tracks));
+                entries.insert("playing".to_string(), json!(self.playing.get()));
+                entries.insert("playhead".to_string(), json!(self.playhead.get()));
+                QueryResult::Map(query::MapResult {
+                    kind: "animation_runtime".to_string(),
+                    entries,
+                })
+            }
             EditorQuery::MorphData { nodes } => {
                 use serde_json::json;
                 // node → first materialized mesh → live geometry morph weights
