@@ -1396,3 +1396,19 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   ONLY REMAINING: GPU VISUAL confirm that a non-zero set shows DIFFERENT data
   (state-2 — needs a multi-UV/multi-COLOR mesh asset the repo lacks; compile is
   proven, value-correctness is not).
+
+### Loop (2026-06-14) — #33 material_uv VALUE confirmed (browser SEEN)
+- GPU value-confirm (state-2 → state-1 for the primary case): assigned a custom
+  opaque material `step(0.5, fract(material_uv(input,0u)*3.0))` per UV axis to a
+  box → rendered a clean red/green/yellow/black CHECKER pattern following both UV
+  axes (screenshot SEEN + canvas_pixels vary by position: top R=1/G=0, bottom
+  R=1/G=1, center 0,0,0). Proves material_uv(input,0u) returns real per-fragment
+  UV on the opaque path — not a constant.
+- Note: the renderer adds an ambient/tonemap floor to custom opaque output
+  (constant vec3(1,0,0) → ~(248,100,100)); a raw vec3(uv,0) looked flat blue-grey
+  because small UV values sit under that floor + blue IBL tint. NOT a bug — the
+  step-amplified test makes the UV signal unmistakable.
+- #33 status: opaque+edge+transparent COMPILE-verified + documented; material_uv
+  VALUE now browser-SEEN (opaque set 0). Remaining state-2: non-zero UV set value
+  (needs a TEXCOORD_1 mesh; set 0 + compile-for-set-N proven) + vertex-color value
+  (delegates to the proven built-in vertex_color path). #33 effectively done.
