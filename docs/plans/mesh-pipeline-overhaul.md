@@ -1412,3 +1412,11 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   VALUE now browser-SEEN (opaque set 0). Remaining state-2: non-zero UV set value
   (needs a TEXCOORD_1 mesh; set 0 + compile-for-set-N proven) + vertex-color value
   (delegates to the proven built-in vertex_color path). #33 effectively done.
+
+### Loop (2026-06-14) — #45 P1 tests: gltf-convert stamp/canonical idempotency (f44319df)
+- Covered the convert idempotency machinery edges: foreign glb reads
+  !is_canonical + version None (re-export precondition); re-stamping an
+  already-stamped glb doesn't duplicate AWSM_format in extensionsUsed (the guard
+  vs unbounded array growth across convert/export cycles).
+- Gate: fmt ✅, clippy -p awsm-gltf-convert --all-features --tests -D warnings ✅,
+  cargo test -p awsm-gltf-convert ✅ (2 new). state-1.
