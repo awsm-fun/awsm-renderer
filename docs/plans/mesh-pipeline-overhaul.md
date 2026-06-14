@@ -1336,3 +1336,17 @@ REMAINING (browser-only, tab now RE-ATTACHED — finish in the final wake, do NO
   set_prefab/update_builtin_material; count → ~130; noted grouped-not-exhaustive.
   Every added tool name verified against the live #[tool] set in mcp.rs.
 - Docs-only (no cargo gate); stack left UP (not taken down this iter). state-1.
+
+### Loop (2026-06-14) — #33 implementation pointers (fad6db67)
+- Deepened the #33 scope doc from architecture → ready-to-implement: splice =
+  custom_shade_dynamic wrapper (compute.wgsl ~L315 bundles barycentric/
+  triangle_indices/attribute_data_offset/stride into a shading-input struct +
+  calls it; edge + transparent have analogues); accessors are plain helpers
+  taking (input, set) — no var<private> promotion; emit in
+  awsm_materials::registry::build_materials_wgsl alongside texture_pool_sample;
+  the NATIVE verify harness already exists (template.rs dynamic render+naga
+  tests) — extend to assert material_uv(in,1u)/material_vertex_color(in,1u)
+  validate across opaque/edge/transparent. Codegen layer = completable+state-1;
+  GPU visual (multi-UV asset) = state-2.
+- Docs-only; stack left UP. NEXT ITERATION: IMPLEMENT #33's codegen layer (it's
+  fully specified now) — don't scope again.
