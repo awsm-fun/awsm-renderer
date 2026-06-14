@@ -149,4 +149,71 @@ mod tests {
         assert!((c.sample(0.75) - 5.0).abs() < 1.0e-6);
         assert!((c.sample(1.0) - 0.0).abs() < 1.0e-6);
     }
+
+    #[test]
+    fn linear_curve1_clamps_out_of_range() {
+        // `t` outside [0,1] saturates to the endpoints (particle "over life"
+        // sampling can be handed a slightly-out-of-range t at the boundaries).
+        let c = LinearCurve1 {
+            start: 2.0_f32,
+            end: 8.0,
+        };
+        assert!((c.sample(-1.0) - 2.0).abs() < 1.0e-6, "t<0 → start");
+        assert!((c.sample(5.0) - 8.0).abs() < 1.0e-6, "t>1 → end");
+    }
+
+    #[test]
+    fn keyed_curve1_clamps_to_endpoints_and_handles_single_key() {
+        let c = KeyedCurve1 {
+            keys: vec![
+                Curve1Key {
+                    t: 0.2,
+                    value: 3.0_f32,
+                },
+                Curve1Key { t: 0.8, value: 9.0 },
+            ],
+        };
+        // Before the first / after the last key → that endpoint's value (no
+        // extrapolation past the key range).
+        assert!(
+            (c.sample(0.0) - 3.0).abs() < 1.0e-6,
+            "t before first key → first value"
+        );
+        assert!(
+            (c.sample(1.0) - 9.0).abs() < 1.0e-6,
+            "t after last key → last value"
+        );
+        // Midway between the two keys (t=0.5 of [0.2,0.8]) → halfway value.
+        assert!((c.sample(0.5) - 6.0).abs() < 1.0e-6);
+
+        // A single-key curve is constant at that key's value for any t.
+        let one = KeyedCurve1 {
+            keys: vec![Curve1Key {
+                t: 0.5,
+                value: 7.0_f32,
+            }],
+        };
+        assert_eq!(one.sample(0.0), 7.0);
+        assert_eq!(one.sample(1.0), 7.0);
+    }
+
+    #[test]
+    fn lerp1_vec3_and_vec4_components() {
+        // The Vec3 / [f32;4] Lerp1 impls (only f32 was covered above).
+        let v = LinearCurve1 {
+            start: Vec3::new(0.0, 2.0, 4.0),
+            end: Vec3::new(10.0, 6.0, 0.0),
+        };
+        assert_eq!(v.sample(0.5), Vec3::new(5.0, 4.0, 2.0));
+
+        let c = LinearCurve1 {
+            start: [0.0_f32, 0.0, 0.0, 1.0],
+            end: [1.0, 0.5, 0.25, 0.0],
+        };
+        let mid = c.sample(0.5);
+        assert!((mid[0] - 0.5).abs() < 1e-6);
+        assert!((mid[1] - 0.25).abs() < 1e-6);
+        assert!((mid[2] - 0.125).abs() < 1e-6);
+        assert!((mid[3] - 0.5).abs() < 1e-6);
+    }
 }
