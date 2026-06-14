@@ -793,11 +793,17 @@ mod transparent_dynamic_tests {
         );
 
         // Soft-glass-style fragment — references TransparentShadingInput's
-        // actual fields + input.material.<field>.
+        // actual fields + input.material.<field>, AND the per-vertex attribute
+        // accessors (material_uv / material_vertex_color) so we assert they
+        // resolve on the transparent path too (multiplied by 0 to keep the
+        // visual unchanged while still forcing the references into the module).
         let wgsl_fragment = r#"
 let cos_theta = clamp(dot(input.world_normal, input.surface_to_camera), 0.0, 1.0);
 let alpha = mix(0.85, 0.25, cos_theta);
-let color = input.material.tint * (1.0 - input.material.refraction_strength);
+let uv1 = material_uv(input, 1u);
+let c1 = material_vertex_color(input, 1u);
+let color = input.material.tint * (1.0 - input.material.refraction_strength)
+    + vec3<f32>(uv1, 0.0) * 0.0 + c1.rgb * 0.0;
 return TransparentShadingOutput(vec4<f32>(color, alpha));
 "#
         .to_string();
@@ -812,7 +818,12 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
 
         let key = ShaderCacheKeyMaterialTransparent {
             instancing_transforms: false,
-            attributes: ShaderMaterialVertexAttributes::default(),
+            // 2 UV + 2 COLOR sets so the templated accessors emit real branches.
+            attributes: ShaderMaterialVertexAttributes {
+                color_sets: Some(2),
+                uv_sets: Some(2),
+                ..ShaderMaterialVertexAttributes::default()
+            },
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
@@ -846,6 +857,17 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
         assert!(
             source.contains("struct MaterialData"),
             "transparent template missing auto-generated MaterialData struct"
+        );
+        // Per-vertex attribute accessors must exist on the transparent path too
+        // (parity with the opaque kernels) so the same custom fragment compiles
+        // whether the material is opaque or transparent.
+        assert!(
+            source.contains("fn material_uv(input: TransparentShadingInput"),
+            "transparent template missing material_uv accessor"
+        );
+        assert!(
+            source.contains("fn material_vertex_color(input: TransparentShadingInput"),
+            "transparent template missing material_vertex_color accessor"
         );
         let _ = dyn_id;
     }
