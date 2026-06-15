@@ -138,8 +138,15 @@ tasks:
           git commit -m "Release v{{.VERSION}}"
         fi
       # 3. Tag (annotated). Pushing this tag triggers the cargo-dist MCP-server
-      #    release on CI (.github/workflows/release.yml).
-      - git tag -a "v{{.VERSION}}" -m "v{{.VERSION}}"
+      #    release on CI (.github/workflows/release.yml). Idempotent like the
+      #    commit above: if the tag already exists (a re-run after a partial
+      #    release — e.g. crates.io rate-limited mid-publish), keep it and move on.
+      - |
+        if git rev-parse -q --verify "refs/tags/v{{.VERSION}}" >/dev/null; then
+          echo "  Tag v{{.VERSION}} already exists — keeping it (resuming a partial release)."
+        else
+          git tag -a "v{{.VERSION}}" -m "v{{.VERSION}}"
+        fi
       # 4. Publish the library crates to crates.io (the explicit, ordered set).
       - task: crates-publish
       # 5. Deploy both frontends to Cloudflare Pages (scene editor + model tester).
