@@ -114,7 +114,7 @@ tasks:
       - cargo check --workspace --quiet
 
   publish:
-    desc: "Release <version> end-to-end: bump → commit (only if needed) → tag → publish crates → deploy editor → push. Pushing the tag triggers the cargo-dist awsm-scene-mcp release on CI. Usage: task publish -- <version>"
+    desc: "Release <version> end-to-end: bump → commit (only if needed) → tag → publish the library crates → deploy both frontends → push branch + tag. Pushing the tag triggers the cargo-dist awsm-scene-mcp binary release on CI. Usage: task publish -- <version>"
     vars:
       VERSION: "{{.CLI_ARGS}}"
     preconditions:
@@ -140,24 +140,24 @@ tasks:
       # 3. Tag (annotated). Pushing this tag triggers the cargo-dist MCP-server
       #    release on CI (.github/workflows/release.yml).
       - git tag -a "v{{.VERSION}}" -m "v{{.VERSION}}"
-      # 4. Publish the library crates to crates.io.
+      # 4. Publish the library crates to crates.io (the explicit, ordered set).
       - task: crates-publish
-      # 5. Deploy the editor frontend to Cloudflare Pages.
-      - task: editor:deploy
+      # 5. Deploy both frontends to Cloudflare Pages (scene editor + model tester).
+      - task: deploy
       # 6. Push the branch (no-op if up to date) + the new tag.
       - git push
       - git push origin "v{{.VERSION}}"
-      - echo "✅ v{{.VERSION}} — crates published, editor deployed, tag pushed (MCP release building on CI)."
+      - echo "✅ v{{.VERSION}} — crates published, frontends deployed, tag pushed (MCP binary release building on CI)."
 
   crates-publish:
-    desc: "Publish all awsm library crates to crates.io"
+    desc: "Publish the 14 awsm-renderer library crates to crates.io (dependency-ordered)."
     cmds:
       - task: _crates-publish
         vars:
           PUBLISH_ARGS: ""
 
   crates-publish-dry-run:
-    desc: "Dry-run the crates.io publish — packages + verifies every crate, uploads nothing"
+    desc: "Dry-run the crates.io publish — packages + verifies every crate, uploads nothing."
     cmds:
       - task: _crates-publish
         vars:
@@ -166,12 +166,33 @@ tasks:
 
   _crates-publish:
     internal: true
-    # Single code path for `crates-publish` and `crates-publish-dry-run`;
-    # PUBLISH_ARGS is the only difference. `--workspace` publishes every member in
-    # dependency order, resolving the inter-crate version requirements against the
-    # sibling crates in this same run (so unpublished deps don't break the dry
-    # run), and skips the `publish = false` members (frontends, examples,
-    # debugging, web-shared, the MCP server). Crates target wasm32 (WebGPU via
-    # web-sys), hence --target on the verify build.
+    # Explicit `-p` list (NOT `--workspace`) so ONLY the intended creator-facing
+    # library crates ever go out — a frontend/example/internal member added later
+    # can't accidentally publish itself by forgetting `publish = false`. These are
+    # every workspace member that is NOT `publish = false`; the excluded ones are
+    # the two frontends (awsm-editor, awsm-model-tests), awsm-web-shared, the
+    # awsm-render-worker-example, awsm-debugging, and the awsm-scene-mcp binary
+    # (it ships via cargo-dist, not crates.io).
+    #
+    # Listed dependency-leaf-first; cargo also orders a multi-`-p` publish by
+    # dependency and waits for crates.io to index each crate before its dependents.
+    # The crates target wasm32 (WebGPU via web-sys), hence --target on the verify.
     cmds:
-      - cargo publish --workspace {{.PUBLISH_ARGS}} --target wasm32-unknown-unknown
+      - >
+        cargo publish
+        -p awsm-curves
+        -p awsm-geometry
+        -p awsm-tangents
+        -p awsm-scene
+        -p awsm-renderer-core
+        -p awsm-materials
+        -p awsm-particles
+        -p awsm-meshgen
+        -p awsm-renderer
+        -p awsm-glb-export
+        -p awsm-editor-protocol
+        -p awsm-renderer-gltf
+        -p awsm-gltf-convert
+        -p awsm-scene-loader
+        --target wasm32-unknown-unknown
+        {{.PUBLISH_ARGS}}
