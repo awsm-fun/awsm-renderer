@@ -173,7 +173,7 @@ tasks:
 
   _crates-publish:
     internal: true
-    # Explicit `-p` list (NOT `--workspace`) so ONLY the intended creator-facing
+    # Explicit list (NOT `--workspace`) so ONLY the intended creator-facing
     # library crates ever go out — a frontend/example/internal member added later
     # can't accidentally publish itself by forgetting `publish = false`. These are
     # exactly the contents of packages/crates/ (all public); everything excluded is
@@ -182,24 +182,39 @@ tasks:
     # (ships via cargo-dist, not crates.io), and awsm-editor-protocol (internal
     # editor↔server glue under packages/mcp/).
     #
-    # Listed dependency-leaf-first; cargo also orders a multi-`-p` publish by
-    # dependency and waits for crates.io to index each crate before its dependents.
-    # The crates target wasm32 (WebGPU via web-sys), hence --target on the verify.
+    # Published one crate at a time, dependency-leaf-first. `cargo publish` waits
+    # for crates.io to index each crate before returning, so a dependent's verify
+    # always sees its just-published deps. The crates target wasm32 (WebGPU via
+    # web-sys), hence --target on the verify.
+    #
+    # Resumable: before each crate we check the sparse index and SKIP any version
+    # already published. A real release can fail partway (crates.io rate-limits new
+    # crates), and `cargo publish` itself errors hard on an already-published
+    # version rather than skipping it — so re-running `task publish` would otherwise
+    # die on the first already-up crate. The skip is disabled under --dry-run so the
+    # dry run still packages + verifies every crate.
     cmds:
-      - >
-        cargo publish
-        -p awsm-curves
-        -p awsm-geometry
-        -p awsm-tangents
-        -p awsm-scene
-        -p awsm-renderer-core
-        -p awsm-materials
-        -p awsm-particles
-        -p awsm-meshgen
-        -p awsm-renderer
-        -p awsm-glb-export
-        -p awsm-renderer-gltf
-        -p awsm-gltf-convert
-        -p awsm-scene-loader
-        --target wasm32-unknown-unknown
-        {{.PUBLISH_ARGS}}
+      - |
+        set -eu
+        CRATES="awsm-curves awsm-geometry awsm-tangents awsm-scene awsm-renderer-core awsm-materials awsm-particles awsm-meshgen awsm-renderer awsm-glb-export awsm-renderer-gltf awsm-gltf-convert awsm-scene-loader"
+        # Workspace version (first `version = "…"` inside [workspace.package]).
+        VERSION="$(awk '/^\[workspace\.package\]/{f=1} f&&/^version = /{gsub(/[",]/,"");print $3;exit}' Cargo.toml)"
+        case "{{.PUBLISH_ARGS}}" in *--dry-run*) DRY=1;; *) DRY=0;; esac
+        # Sparse-index path for a crate name (awsm-* → aw/sm/<name>).
+        idx_path() {
+          n="$1"
+          case ${#n} in
+            1) printf '1/%s' "$n";;
+            2) printf '2/%s' "$n";;
+            3) printf '3/%s/%s' "$(printf '%s' "$n" | cut -c1)" "$n";;
+            *) printf '%s/%s/%s' "$(printf '%s' "$n" | cut -c1-2)" "$(printf '%s' "$n" | cut -c3-4)" "$n";;
+          esac
+        }
+        for c in $CRATES; do
+          if [ "$DRY" = 0 ] && curl -sf "https://index.crates.io/$(idx_path "$c")" 2>/dev/null | grep -qF "\"vers\":\"$VERSION\""; then
+            echo "  ✓ $c@$VERSION already on crates.io — skipping."
+            continue
+          fi
+          echo "  ▶ publishing $c@$VERSION …"
+          cargo publish -p "$c" --target wasm32-unknown-unknown {{.PUBLISH_ARGS}}
+        done
