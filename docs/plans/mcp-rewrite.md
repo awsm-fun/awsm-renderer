@@ -263,31 +263,53 @@ Phase 1). Adopt audio's per-tab binding so multiple tabs never cross streams.
 
 ## Phase 4 — UI improvements
 
-- [ ] Extract the MCP modal out of `app.rs` into `ui/mcp_modal.rs` (adapt audio).
-      When **connected**, the MCP button **opens the modal** (showing Disconnect),
-      not an immediate disconnect.
-- [ ] Modal contents: live status banner, origin input, **pair-code field** (only
-      when pairing needed), **TLS checkbox** (`wss`/`&tls=true` for remote
-      servers), **Help button** that opens the help modal at the MCP tab, and a
-      **"Live work display"** section with toggles: *show action label*,
-      *auto-follow + spotlight*, *show activity feed* — persisted per tab in
-      `localStorage` (audio keys: `awsm.mcp.show_action_label`, `.auto_follow`,
-      `.show_feed`).
-- [ ] `mcp_activity.rs` (new, adapt audio): action-label state, working pulse,
-      auto-follow/spotlight, rolling feed. Reconcile with the existing
-      `engine::activity_feed` + the chip in `app.rs` (extend, don't duplicate).
-- [ ] Activity chip (🤖 + current action) sits next to the MCP button when
-      connected and pulses while the agent works.
-- [ ] **Help modal** (`help_modal.rs`, adapt audio): add a top-bar **Help button**
-      and an MCP section — what it is, install the server, run it, connect this
-      editor (`?mcp=`/`?pair=`/`&tls=`), point your agent at `…/mcp` (Claude
-      Code/Codex/Cursor), watch it work. Tab is deep-linkable from the modal's
-      Help button. Adapt copy/sections to the scene editor (not audio).
-- [ ] **Notifications**: add a Settings toggle **"Show MCP notifications"**
-      (default on) that gates the MCP `Toast::*` calls in `remote.rs`; add a
-      **dismiss-all** control for visible toasts (check `awsm_web_shared`'s Toast
-      API for a clear-all; extend the shared crate if it lacks one).
-- [ ] Verify in-browser (Phase 6). Commit: `editor: MCP modal, activity, help, notification controls`.
+**Findings that reshaped this phase (split into 4a + 4b):**
+- The renderer **already** has the "watch-it-work" layer — `engine::activity_feed`
+  (narrate → feed + spotlight, with a Settings toggle) and the 🤖 activity chip
+  with the working pulse (`app.rs`). So audio's `mcp_activity.rs` is **not ported**;
+  the existing system already covers action narration + auto-spotlight + the feed.
+  Audio's finer 3-way split (show-label / auto-follow / show-feed, per-tab
+  `localStorage`) is **deliberately not adopted** — the renderer's single unified
+  "Agent activity feed" toggle is simpler and already shipped. (Revisit only if a
+  user actually wants the finer controls.)
+- The renderer's `Toast` is a **singleton** (one notice at a time, each replacing
+  the last) with an existing `×` dismiss — there is no stack, so "dismiss-all"
+  reduces to that `×` plus a new programmatic `Toast::clear()`. The substantive
+  notification feature is the Settings **gate**.
+- The MCP modal is kept **inline in `app.rs`** (expanded), not extracted to a new
+  `ui/mcp_modal.rs` — extraction is cosmetic churn in a 1135-line file; deferred.
+
+### Phase 4a — MCP modal, pairing UI & notification gate
+
+- [x] MCP button: the **Connected** state now **opens the modal** (to manage /
+      disconnect) instead of disconnecting immediately. (Disconnected/Connecting
+      already opened it / were inert.)
+- [x] Modal additions: a **TLS checkbox** (`remote::tls()` → `wss`/`https`) and a
+      **pair-code field** revealed only when `remote::pairing_needed()` is true
+      (seeded from `remote::pair()`, submits via `remote::submit_pair_code()`).
+      Live status banner + origin input already present.
+- [x] `remote.rs` (interactive pairing deferred from Phase 2): `pair()`,
+      `tls()`, `pairing_needed()`, `submit_pair_code()` (sends `Pair` over the live
+      socket or stashes + connects), `show_notifications()`. `PairingRequired`
+      frame now sets `pairing_needed`; cleared on connect/disconnect.
+      `ws_url`/`http_base` honor the TLS flag (the `/png` side-channel too).
+- [x] **Notifications**: `remote::show_notifications()` (default on) gates every
+      MCP toast via `notify_info`/`notify_error`; a **"Show MCP notifications"**
+      Settings row binds it. Added `Toast::clear()` to `awsm-web-shared` (singleton
+      dismiss) — the per-toast `×` is the existing dismiss affordance.
+- [x] Verified: `clippy --all --all-features --tests -D warnings` + `test
+      --all-features` + `fmt` green; grep guard clean. Live in-browser check is
+      **manual** (Phase 6). Commit: `editor: MCP modal, pairing UI & notification gate`.
+
+### Phase 4b — Help modal
+
+- [ ] **Help modal** (`help_modal.rs`, adapt audio): a top-bar **Help button** and
+      an MCP section — what it is, install the server, run it, connect this editor
+      (`?mcp=`/`?pair=`, TLS), point your agent at `…/mcp` (Claude Code/Codex/
+      Cursor), watch it work. Deep-linkable from a **Help button added to the MCP
+      modal**. Adapt copy to the scene editor (not audio). (The MCP-modal Help
+      button is added here, with 4b, since it targets this modal.)
+- [ ] Verify in-browser (Phase 6). Commit: `editor: help modal + MCP help section`.
 
 ## Phase 5 — MCP server best-practices pass (judgment)
 

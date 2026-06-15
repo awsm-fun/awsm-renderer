@@ -498,6 +498,10 @@ fn settings_drawer() -> Dom {
                     "Agent activity feed",
                     toggle(crate::engine::activity_feed::enabled()),
                 ))
+                .child(row(
+                    "Show MCP notifications",
+                    toggle(crate::remote::show_notifications()),
+                ))
                 .render(),
         )
         .child(
@@ -778,8 +782,8 @@ fn mcp_status_button(status: crate::remote::RemoteStatus) -> Dom {
             .label("MCP \u{2713}")
             .variant(BtnVariant::Primary)
             .size(BtnSize::Sm)
-            .title("Connected \u{2014} click to disconnect")
-            .on_click(crate::remote::disconnect)
+            .title("Connected \u{2014} click to manage the MCP connection")
+            .on_click(open_mcp_modal)
             .render(),
     }
 }
@@ -830,6 +834,8 @@ fn open_mcp_modal() {
         // Seeded once per open from the current/last-used origin (the `?mcp=` value
         // or the build default); edits feed straight into `connect`.
         let addr = Mutable::new(crate::remote::origin().get_cloned());
+        // Pair-code input — revealed only when the server asked for one.
+        let pair_code = Mutable::new(crate::remote::pair().get_cloned());
 
         html!("div", {
             .style("display", "flex")
@@ -886,6 +892,46 @@ fn open_mcp_modal() {
                 .placeholder(crate::remote::default_origin())
                 .mono(true)
                 .render())
+            // TLS toggle — for a remote server behind https/wss (off for the
+            // usual local server).
+            .child(row("Use TLS (wss / https)", toggle(crate::remote::tls())))
+            // Pair-code field — revealed only when the server asked for one
+            // (multiple tabs/agents connected); the agent prints the code.
+            .child_signal(crate::remote::pairing_needed().signal().map(clone!(pair_code => move |needed| {
+                needed.then(|| html!("div", {
+                    .style("display", "flex")
+                    .style("flex-direction", "column")
+                    .style("gap", "6px")
+                    .child(html!("label", {
+                        .style("font-size", "11px")
+                        .style("color", "var(--text-3)")
+                        .style("text-transform", "uppercase")
+                        .style("letter-spacing", "0.04em")
+                        .text("Pairing code")
+                    }))
+                    .child(html!("div", {
+                        .style("display", "flex")
+                        .style("gap", "8px")
+                        .style("align-items", "center")
+                        .child(html!("div", {
+                            .style("flex", "1 1 auto")
+                            .style("min-width", "0")
+                            .child(TextInput::new(pair_code.clone())
+                                .placeholder("e.g. 3K9J")
+                                .mono(true)
+                                .render())
+                        }))
+                        .child(Btn::new()
+                            .label("Pair")
+                            .variant(BtnVariant::Primary)
+                            .size(BtnSize::Md)
+                            .on_click(clone!(pair_code => move || {
+                                crate::remote::submit_pair_code(pair_code.get_cloned());
+                            }))
+                            .render())
+                    }))
+                }))
+            })))
             // Action: Connect / Connecting… / Disconnect, by live status.
             .child(html!("div", {
                 .style("display", "flex")
