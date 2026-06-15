@@ -12,8 +12,6 @@ includes:
     taskfile: ./taskfiles/frontend/editor.yml
   model-tests:
     taskfile: ./taskfiles/frontend/model-tests.yml
-  site-index:
-    taskfile: ./taskfiles/frontend/site-index.yml
   mcp:
     taskfile: ./taskfiles/mcp.yml
   debug-mobile:
@@ -30,7 +28,6 @@ tasks:
     deps:
       - editor:dev
       - model-tests:dev
-      - site-index:dev
       - media-local
       - media-additional-assets
 
@@ -61,14 +58,18 @@ tasks:
     cmds:
       - task: editor:build
       - task: model-tests:build
-      - task: site-index:build
+
+  deploy:
+    desc: "Deploy both frontends to Cloudflare Pages (scene editor → scene.awsm.fun, model tester → model-tests.awsm.fun)"
+    cmds:
+      - task: editor:deploy
+      - task: model-tests:deploy
 
   clean:
     desc: "Remove every frontend's dist + .build-artifacts output"
     cmds:
       - task: editor:clean
       - task: model-tests:clean
-      - task: site-index:clean
 
   media-local:
     internal: true

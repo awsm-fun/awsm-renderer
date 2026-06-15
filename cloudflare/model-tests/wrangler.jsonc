@@ -1,0 +1,5 @@
+{
+  "name": "awsm-model-tests",
+  "pages_build_output_dir": "../../.build-artifacts/model-tests",
+  "compatibility_date": "2026-06-09"
+}
