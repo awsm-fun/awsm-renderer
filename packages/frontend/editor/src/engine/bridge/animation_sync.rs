@@ -117,13 +117,21 @@ async fn relower() {
         })
         .collect();
 
-    // Authored track count of the ACTIVE clip (the numerator the resolved channel
-    // count should match) — read before the clips move into the renderer closure.
-    let active_authored: Option<usize> = active_id.and_then(|aid| {
-        clips
-            .iter()
-            .find(|(id, _)| *id == aid)
-            .map(|(_, c)| c.tracks.lock_ref().len())
+    // KEYED track count of the ACTIVE clip — the numerator the resolved channel
+    // count should match. Only tracks that actually carry keyframes can lower to
+    // a channel (`Track::lower` returns `None` for an empty track), so the
+    // orphaned-clip check must compare against *keyed* tracks, NOT the raw track
+    // count: a freshly-added, not-yet-keyed track is normal authoring, not a clip
+    // bound to deleted nodes. Counting raw tracks here produced a false "this clip
+    // targets deleted nodes" toast the instant you added a track before keying it.
+    let active_keyed: Option<usize> = active_id.and_then(|aid| {
+        clips.iter().find(|(id, _)| *id == aid).map(|(_, c)| {
+            c.tracks
+                .lock_ref()
+                .iter()
+                .filter(|t| !t.times.lock_ref().is_empty())
+                .count()
+        })
     });
 
     let playhead = ctrl.playhead.get();
@@ -185,7 +193,7 @@ async fn relower() {
     // mirror into the MCP console-log ring, so a driver sees it too. Deduped by
     // active-clip id; cleared when the active clip resolves cleanly so a later
     // re-orphaning warns again.
-    warn_if_orphaned_clip(active_id, active_authored, active_resolved);
+    warn_if_orphaned_clip(active_id, active_keyed, active_resolved);
 }
 
 thread_local! {
@@ -195,13 +203,16 @@ thread_local! {
     static LAST_ORPHAN_WARN: std::cell::Cell<Option<AssetId>> = const { std::cell::Cell::new(None) };
 }
 
-/// Toast once when the active clip authored tracks but resolved no channels.
+/// Toast once when the active clip has *keyed* tracks but resolved no channels —
+/// i.e. every keyframed track binds to a target that no longer exists. Tracks
+/// without keyframes are excluded by the caller (`active_keyed`), so adding a
+/// track before keying it never trips this.
 fn warn_if_orphaned_clip(
     active_id: Option<AssetId>,
-    active_authored: Option<usize>,
+    active_keyed: Option<usize>,
     active_resolved: Option<usize>,
 ) {
-    let orphaned = matches!((active_authored, active_resolved), (Some(a), Some(0)) if a > 0);
+    let orphaned = matches!((active_keyed, active_resolved), (Some(a), Some(0)) if a > 0);
     if orphaned {
         if LAST_ORPHAN_WARN.with(|c| c.get()) != active_id {
             LAST_ORPHAN_WARN.with(|c| c.set(active_id));

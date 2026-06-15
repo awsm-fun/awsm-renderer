@@ -254,7 +254,6 @@ pub enum GltfId {
     PlaysetLightTest,
     LightsPunctualLamp,
     DirectionalLight,
-    AwsmTransformGizmo,
     IorTestGrid,
 }
 
@@ -324,10 +323,7 @@ impl std::fmt::Display for GltfId {
 
 impl GltfId {
     pub fn url(&self) -> String {
-        let base_url = match self {
-            Self::AwsmTransformGizmo => &CONFIG.media_base_url_additional_assets,
-            _ => &CONFIG.media_base_url_gltf_samples,
-        };
+        let base_url = &CONFIG.media_base_url_gltf_samples;
 
         format!("{}/{}", base_url, self.filepath())
     }
@@ -459,7 +455,6 @@ impl GltfId {
             Self::EnvironmentTest => "EnvironmentTest/glTF/EnvironmentTest.gltf",
             Self::EnvironmentIblTest => "EnvironmentTest/glTF-IBL/EnvironmentTest.gltf",
             Self::EmissiveStrength => "EmissiveStrengthTest/glTF/EmissiveStrengthTest.gltf",
-            Self::AwsmTransformGizmo => "gizmo/gizmo.glb",
         }
     }
 
@@ -556,7 +551,6 @@ impl GltfId {
             Self::EnvironmentTest => "Environment test",
             Self::EnvironmentIblTest => "Environment ibl test",
             Self::EmissiveStrength => "Emissive strength",
-            Self::AwsmTransformGizmo => "Awsm Transform Gizmo",
         }
     }
 }

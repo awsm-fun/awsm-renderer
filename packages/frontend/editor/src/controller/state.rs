@@ -211,7 +211,11 @@ pub struct Settings {
     /// Show the skeleton bone-line overlay on skinned rigs.
     pub skeleton_viz: Mutable<bool>,
     /// Auto-key: in ANIMATION mode, a gizmo edit on a node that the current
-    /// clip tracks writes keyframe(s) at the playhead automatically.
+    /// clip tracks writes keyframe(s) at the playhead automatically. **On by
+    /// default** — DCC users expect dragging the gizmo to record a key without
+    /// hunting for a toggle (the toggle still lives in the transport so it can be
+    /// turned off). Only ever fires in Animation mode, so a default-on value is
+    /// inert in Scene/Material modes.
     pub auto_key: Mutable<bool>,
     pub msaa: Mutable<bool>,
     pub heatmap: Mutable<bool>,
@@ -230,7 +234,7 @@ impl Default for Settings {
             gizmo: Mutable::new(true),
             light_gizmos: Mutable::new(true),
             skeleton_viz: Mutable::new(true),
-            auto_key: Mutable::new(false),
+            auto_key: Mutable::new(true),
             msaa: Mutable::new(true),
             heatmap: Mutable::new(false),
             snap: Mutable::new(false),
@@ -2389,6 +2393,27 @@ impl EditorController {
             }
             // ───────────────────── Animation: tracks ─────────────────────────
             EditorCommand::AddTrack { clip, target } => {
+                // Validate the target references a live object BEFORE creating the
+                // track, so an invalid pick surfaces a user-facing error instead of
+                // failing only via a silent `tracing::error` during lowering (the
+                // add-track "doesn't exist" report). A node-bound target is valid
+                // when the node is still in the scene; a Uniform target when its
+                // material still exists. (A node that's in the scene but not yet
+                // GPU-materialized is *pending*, not invalid — it resolves once
+                // materialized — so we check scene membership, not the bridge.)
+                if let Some(node) = animation::target_node(&target) {
+                    if mutate::find_by_id(&self.scene, node).is_none() {
+                        Toast::error("Can't add that track — its target node no longer exists.");
+                        return Ok(None);
+                    }
+                } else if let animation::TrackTarget::Uniform { material, .. } = &target {
+                    if find_material(&self.custom_materials, *material).is_none() {
+                        Toast::error(
+                            "Can't add that track — its target material no longer exists.",
+                        );
+                        return Ok(None);
+                    }
+                }
                 match find_clip(&self.custom_animations, clip) {
                     Some(c) => {
                         let key = animation::target_key(&target);
