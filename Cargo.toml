@@ -35,6 +35,31 @@ authors = ["David Komer"]
 rust-version = "1.85.0"
 repository = "https://github.com/awsm-fun/awsm-renderer"
 
+### Distribution
+
+# The `awsm-scene-mcp` binary ships as prebuilt GitHub Releases artifacts via
+# cargo-dist (the `dist` CLI). Pushing a `v<version>` tag builds every platform +
+# the curl/PowerShell installers. See docs/RELEASING.md. Regenerate the CI
+# workflow after editing this block: `dist generate`.
+[workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax).
+cargo-dist-version = "0.32.0"
+# CI backends to support.
+ci = "github"
+# The installers to generate for each app.
+installers = ["shell", "powershell"]
+# Target platforms to build apps for (Rust target-triple syntax).
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Which actions to run on pull requests.
+pr-run-mode = "plan"
+# Build only the `awsm-scene-mcp` package (with `-p`), not the whole workspace —
+# the workspace also holds wasm-only crates (the editor) that can't host-compile.
+precise-builds = true
+# Path that installers should place binaries in.
+install-path = "CARGO_HOME"
+# Whether to install an updater program.
+install-updater = false
+
 ### Patches
 
 # dominator 0.5.38 on crates.io is incompatible with web_sys_unstable_apis (mouse/scroll types became f64).

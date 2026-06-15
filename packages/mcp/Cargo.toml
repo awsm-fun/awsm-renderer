@@ -6,7 +6,15 @@ version.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+repository.workspace = true
 publish = false
+
+# Opt this crate into cargo-dist: it's `publish = false` (never goes to
+# crates.io), which dist otherwise reads as "don't ship", but we DO want its
+# prebuilt binary on GitHub Releases. The wasm-only editor crate stays opted-out
+# by default; `precise-builds = true` (root) keeps dist off the rest.
+[package.metadata.dist]
+dist = true
 
 [[bin]]
 name = "awsm-scene-mcp"

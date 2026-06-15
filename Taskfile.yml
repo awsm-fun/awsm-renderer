@@ -93,28 +93,85 @@ tasks:
       - cargo fmt --all -- --check
       - cargo clippy --all --all-features --tests -- -D warnings
 
+  bump:
+    desc: "Set [workspace.package].version + the internal awsm-* dep version reqs to <version>, then refresh Cargo.lock — files only, NO git/tag/publish. Idempotent: re-running at the same version makes no diff (safe to call from `publish`). Usage: task bump -- <version>"
+    vars:
+      VERSION: "{{.CLI_ARGS}}"
+    preconditions:
+      - sh: 'test -n "{{.VERSION}}"'
+        msg: "No version given. Usage: task bump -- <version>   (e.g. task bump -- 0.3.0)"
+    cmds:
+      # 1. The package version (members inherit it via `version.workspace = true`).
+      #    Scoped to the [workspace.package] block so it never touches another
+      #    section's `version` (the range ends at the next `[`-header).
+      - sed -i.bak -E '/^\[workspace\.package\]/,/^\[/ s/^version = "[^"]*"/version = "{{.VERSION}}"/' Cargo.toml
+      # 2. The internal awsm-* dependency version reqs in [workspace.dependencies],
+      #    kept in lockstep so the published crates require each other at the
+      #    matching version (crates.io rejects path-only deps).
+      - sed -i.bak -E '/^awsm-[a-z-]+ = \{ path =/ s/version = "[^"]*"/version = "{{.VERSION}}"/' Cargo.toml
+      - rm -f Cargo.toml.bak
+      # Refresh Cargo.lock so members' recorded versions match (and sanity-build).
+      - cargo check --workspace --quiet
+
   publish:
+    desc: "Release <version> end-to-end: bump → commit (only if needed) → tag → publish crates → deploy editor → push. Pushing the tag triggers the cargo-dist awsm-scene-mcp release on CI. Usage: task publish -- <version>"
+    vars:
+      VERSION: "{{.CLI_ARGS}}"
+    preconditions:
+      - sh: 'test -n "{{.VERSION}}"'
+        msg: "No version given. Usage: task publish -- <version>   (e.g. task publish -- 0.3.0)"
+      - sh: "git diff --quiet && git diff --cached --quiet"
+        msg: "Working tree is dirty — commit or stash before releasing."
+    cmds:
+      - echo "▶ Releasing v{{.VERSION}} …"
+      # 1. Ensure the version is set (idempotent — no-op if a PR already bumped it).
+      - task: bump
+        vars:
+          VERSION: "{{.VERSION}}"
+      # 2. Commit the bump ONLY if it changed anything (a tree already at this
+      #    version produces no diff → no release commit).
+      - |
+        if git diff --quiet -- Cargo.toml Cargo.lock; then
+          echo "  Already at v{{.VERSION}} (bumped earlier) — no release commit needed."
+        else
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release v{{.VERSION}}"
+        fi
+      # 3. Tag (annotated). Pushing this tag triggers the cargo-dist MCP-server
+      #    release on CI (.github/workflows/release.yml).
+      - git tag -a "v{{.VERSION}}" -m "v{{.VERSION}}"
+      # 4. Publish the library crates to crates.io.
+      - task: crates-publish
+      # 5. Deploy the editor frontend to Cloudflare Pages.
+      - task: editor:deploy
+      # 6. Push the branch (no-op if up to date) + the new tag.
+      - git push
+      - git push origin "v{{.VERSION}}"
+      - echo "✅ v{{.VERSION}} — crates published, editor deployed, tag pushed (MCP release building on CI)."
+
+  crates-publish:
     desc: "Publish all awsm library crates to crates.io"
     cmds:
-      - task: _publish
+      - task: _crates-publish
         vars:
           PUBLISH_ARGS: ""
 
-  publish-dry-run:
+  crates-publish-dry-run:
     desc: "Dry-run the crates.io publish — packages + verifies every crate, uploads nothing"
     cmds:
-      - task: _publish
+      - task: _crates-publish
         vars:
           # --allow-dirty tolerates an uncommitted working tree during the dry run.
           PUBLISH_ARGS: "--dry-run --allow-dirty"
 
-  _publish:
+  _crates-publish:
     internal: true
-    # Single code path for `publish` and `publish-dry-run`; PUBLISH_ARGS is the
-    # only difference. `--workspace` publishes every member in dependency order,
-    # resolving the inter-crate version requirements against the sibling crates
-    # in this same run (so unpublished deps don't break the dry run), and skips
-    # the `publish = false` members (frontends, examples, debugging, web-shared).
-    # Crates target wasm32 (WebGPU via web-sys), hence --target on the verify build.
+    # Single code path for `crates-publish` and `crates-publish-dry-run`;
+    # PUBLISH_ARGS is the only difference. `--workspace` publishes every member in
+    # dependency order, resolving the inter-crate version requirements against the
+    # sibling crates in this same run (so unpublished deps don't break the dry
+    # run), and skips the `publish = false` members (frontends, examples,
+    # debugging, web-shared, the MCP server). Crates target wasm32 (WebGPU via
+    # web-sys), hence --target on the verify build.
     cmds:
       - cargo publish --workspace {{.PUBLISH_ARGS}} --target wasm32-unknown-unknown

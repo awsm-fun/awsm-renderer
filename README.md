@@ -109,15 +109,32 @@ screenshots**. Useful for agent-in-the-loop scene authoring and visual checks.
 ## How it works
 
 ```
-agent (MCP client) ──HTTP /mcp──▶ awsm-scene-mcp ──WebTransport/QUIC──▶ editor (browser tab)
+agent (MCP client) ──HTTP /mcp──▶ awsm-scene-mcp ──WebSocket /editor──▶ editor (browser tab)
                                   (packages/mcp)      editor dials out    → EditorController
 ```
 
 A native server ([`packages/mcp`](packages/mcp), `awsm-scene-mcp`) exposes MCP
 tools over streamable-HTTP and relays each one to a running editor tab over a
-WebTransport (QUIC) link that the **editor dials out to** (a browser tab can't be
-a server). Every mutation flows through the editor's single command/query
-authority, so the agent and a human watching the same tab stay in sync.
+WebSocket the **editor dials out to** (a browser tab can't be a server). Every
+mutation flows through the editor's single command/query authority, so the agent
+and a human watching the same tab stay in sync.
+
+## Install the MCP server
+
+Prebuilt `awsm-scene-mcp` binaries are published on GitHub Releases for macOS
+(arm64 + x86_64), Linux (x86_64), and Windows (x86_64):
+
+```bash
+# macOS / Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.ps1 | iex"
+```
+
+From source (needs Rust): `cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-scene-mcp`, or `task mcp:install` from a local clone. Then run it — bare `awsm-scene-mcp` listens on `http://127.0.0.1:9086`.
 
 ## Quick start
 
@@ -130,8 +147,7 @@ authority, so the agent and a human watching the same tab stay in sync.
    | Service | Address |
    | --- | --- |
    | Editor (Trunk) | `http://localhost:9085` |
-   | MCP + control HTTP | `http://127.0.0.1:9086` (`/mcp`, `/control`) |
-   | WebTransport link | UDP `9087` |
+   | MCP server (HTTP + WebSocket) | `http://127.0.0.1:9086` (`/mcp`, `/editor`, `/png`) |
 
 2. Attach the editor to the server — click the **link icon** ("Connect to MCP
    server") in the editor's top bar, or load it with the `?mcp=` param to
