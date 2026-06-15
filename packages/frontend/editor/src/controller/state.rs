@@ -1067,6 +1067,9 @@ impl EditorController {
                     Some(node) => {
                         let spec = spec_from_node(&node);
                         self.selected.lock_mut().retain(|x| *x != id);
+                        // Free any clips left fully orphaned by this delete (e.g.
+                        // every animation of a just-deleted imported model).
+                        self.prune_orphaned_clips();
                         self.scene.bump_revision();
                         Ok(Some(EditorCommand::InsertTree {
                             node: Box::new(spec),
@@ -3176,6 +3179,58 @@ impl EditorController {
         } else {
             Toast::info(format!("Imported {}", import.display_name));
         }
+    }
+
+    /// Remove animation clips that are now FULLY orphaned — every track targets
+    /// a node no longer in the scene (e.g. all clips of a just-deleted imported
+    /// model). Returns the count freed. Kept: clips with any still-present node
+    /// target, any material (`Uniform`) target, or no tracks. `animation_sync`
+    /// re-lowers off `custom_animations`, so the freed clips also drop from the
+    /// renderer; a toast surfaces the cleanup.
+    ///
+    /// NOT recorded in undo — an orphaned clip can't animate anything (all its
+    /// targets are gone), so this is a one-way cleanup of dead data: undoing the
+    /// delete restores the nodes, and the (re-importable) clips stay freed. This
+    /// matches standard DCC behavior — deleting an imported model frees its
+    /// imported animations.
+    fn prune_orphaned_clips(&self) -> usize {
+        use super::animation::TrackTarget;
+        let mut removed = 0usize;
+        self.custom_animations.lock_mut().retain(|clip| {
+            let tracks = clip.tracks.lock_ref();
+            if tracks.is_empty() {
+                return true;
+            }
+            let all_orphaned = tracks.iter().all(|t| match &t.target {
+                TrackTarget::Transform { node, .. }
+                | TrackTarget::Morph { node, .. }
+                | TrackTarget::BuiltinParam { node, .. }
+                | TrackTarget::Light { node, .. }
+                | TrackTarget::Camera { node, .. } => {
+                    mutate::find_by_id(&self.scene, *node).is_none()
+                }
+                // A material-targeted track isn't node-orphaned — keep the clip.
+                TrackTarget::Uniform { .. } => false,
+            });
+            if all_orphaned {
+                removed += 1;
+            }
+            !all_orphaned
+        });
+        if removed > 0 {
+            if let Some(cur) = self.current_clip.get() {
+                if find_clip(&self.custom_animations, cur).is_none() {
+                    let next = self.custom_animations.lock_ref().first().map(|c| c.id);
+                    self.current_clip.set(next);
+                }
+            }
+            self.dirty.set_neq(true);
+            Toast::info(format!(
+                "Freed {removed} orphaned clip{}",
+                if removed == 1 { "" } else { "s" }
+            ));
+        }
+        removed
     }
 
     /// Convert extracted glTF animations into library [`CustomAnimation`] clips
