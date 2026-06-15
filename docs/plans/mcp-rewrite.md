@@ -325,19 +325,40 @@ genuinely helps the scene editor and record what you adopted/rejected. Candidate
 observed in audio (keep, drop, or improve per judgment — and fix `audio` later if
 the scene editor finds a better pattern):
 
-- [ ] **Errors never silent**: tools that act by id error clearly when the id
-      exists nowhere, instead of a silent ok.
-- [ ] **Atomic batches with symbolic refs**: renderer already has
-      `DispatchBatch`; consider audio's `ref`/`$ref` symbolic ids so a multi-step
-      build is one undo entry and later commands reference just-created ids.
-- [ ] **`Flexible<T>` params**: accept a bare string *or* a full typed object for
-      common tool args, to cut agent ceremony.
-- [ ] **`detail:"ids"` snapshot slimming**: let the agent ask for a light scene
-      snapshot (ids/kinds/wires, counts) vs the full tree, to control payload size.
-- [ ] **Tool docs**: ensure each tool's description states what it does, args +
-      defaults, return shape, caveats, and cross-tool guidance.
-- [ ] Write down what was adopted/rejected and why (short note here or in
-      `docs/`). Commit: `mcp: adopt tool-layer best practices`.
+**Audit result — the renderer's tool layer was already best-practice on most
+counts; the one clear gap (read-only annotations) was closed.**
+
+- [x] **Errors never silent** — ALREADY DONE. Every tool returns
+      `Result<_, McpError>`; `dispatch`/`query`/`png` map `Response::Err` → an
+      McpError (never a silent ok), and creation tools echo the minted id
+      (`insert()` returns `id.to_string()`). Kept as-is.
+- [x] **Atomic batches with symbolic refs** — NOT NEEDED. `DispatchBatch` is
+      already one atomic undo entry (`controller::dispatch_batch`). Audio's
+      `ref`/`$ref` symbolic ids exist because node ids are server-minted there;
+      here ids are **client-minted UUIDs** the agent generates, so it can already
+      reference a just-created node across batch commands without a symbol table.
+      Rejected (would add ceremony for no gain).
+- [x] **`Flexible<T>` params** — ALREADY DONE. `CommandJsonParams` /
+      `QueryJsonParams` already wrap `Flexible<EditorCommand>` / `Flexible<EditorQuery>`
+      (bare-string-or-object). Kept.
+- [x] **`detail:"ids"` snapshot slimming** — ALREADY EFFECTIVELY DONE.
+      `EditorSnapshot` is *already* the slim ids/structure projection (scene_tree =
+      `Vec<NodeQuery>` of id/name/kind/children; materials/textures are id/name/kind
+      summaries). Heavy payloads (mesh geometry, full material defs) are fetched via
+      targeted `get_*` queries. No separate detail mode needed. Rejected (redundant).
+- [x] **Tool docs** — ALREADY rich (args + defaults + return shape + caveats +
+      cross-tool guidance throughout). Kept.
+- [x] **ADOPTED — read-only tool annotations** (the one real gap): rmcp 1.7's
+      `#[tool]` macro supports `annotations(read_only_hint = true)`. Added it to the
+      **32** tools whose sole action is a read (`self.query`/`self.png` delegators —
+      every `get_*`/`screenshot_*`/`export_*`/`run_query`/`select_vertices_where`/
+      `wait_render_settled`/`canvas_stats`/`resolve_node_material`, plus `ping` +
+      `pairing_status`). Lets MCP clients know which tools are side-effect-free
+      (safe to call freely / auto-approve). Mutation tools intentionally left
+      unannotated (default = not read-only).
+- [x] Verified: `cargo build -p awsm-scene-mcp` + `clippy --all --all-features
+      --tests -D warnings` + `test --all-features` + `fmt` green; grep guard clean.
+      Commit: `mcp: read-only tool annotations + tool-layer audit`.
 
 ## Phase 6 — Verification (run after each major phase, and a full pass at the end)
 

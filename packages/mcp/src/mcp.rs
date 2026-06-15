@@ -906,6 +906,7 @@ impl EditorMcp {
     // ── discovery / read ────────────────────────────────────────────────────
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Snapshot the editor state: scene tree (node ids/names/kinds), selection, mode, undo/redo depth, animation library, custom materials. Start here to discover ids."
     )]
     async fn get_snapshot(&self) -> Result<CallToolResult, McpError> {
@@ -913,6 +914,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Health check: confirms an editor is attached (fails fast with 'no editor attached' if not). Returns the current mode."
     )]
     async fn ping(&self) -> Result<CallToolResult, McpError> {
@@ -923,6 +925,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Report this session's editor pairing state WITHOUT performing an editor operation: whether an editor tab is bound (or would auto-bind), this session's pairing code, and how many tabs/agents are connected. Call this first — or after a 'No editor is paired' error — to know whether to wait or surface the pairing code, instead of issuing doomed editor calls."
     )]
     async fn pairing_status(&self) -> Result<CallToolResult, McpError> {
@@ -960,6 +963,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "The last `limit` log entries: `logs` = editor toasts (info/warning/error notices), and `tracing` = raw `tracing` events (WARN/ERROR/etc. from the render loop, bridges, loader — the same lines you'd see in the browser devtools console, otherwise invisible over MCP). For material compile errors prefer get_material_diagnostics."
     )]
     async fn get_console_logs(
@@ -973,6 +977,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Live memory + renderer-object counts for leak detection and soak testing: Chrome JS-heap bytes (used/total/limit; zeros on other browsers) plus renderer counts (meshes, transforms, materials, lines, compiled render/compute pipelines). Sample repeatedly over minutes — flat-ish slopes are healthy; a steady climb on an idle scene is a leak. Pure read."
     )]
     async fn get_memory_stats(&self) -> Result<CallToolResult, McpError> {
@@ -980,6 +985,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Renderer-side animation runtime state — the 'why doesn't my clip pose the rig' probe. Returns the lowered clip_groups, RESOLVED channel count, per_clip channel counts, rest_entries, mixer_layers, plus the controller's current_clip / authored_tracks / playing / playhead. If resolved_channels < authored_tracks, some tracks failed to resolve (target node/material pending or deleted); resolved_channels == 0 with a live current_clip means every track targets a node that no longer exists (e.g. an orphaned clip left after its imported model was deleted). Pure read."
     )]
     async fn get_animation_runtime(&self) -> Result<CallToolResult, McpError> {
@@ -1013,7 +1019,10 @@ impl EditorMcp {
         }
     }
 
-    #[tool(description = "Read a custom (dynamic-WGSL) material's shader source.")]
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Read a custom (dynamic-WGSL) material's shader source."
+    )]
     async fn get_material_wgsl(
         &self,
         Parameters(p): Parameters<AssetArg>,
@@ -1040,6 +1049,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Compile diagnostics for a custom (dynamic-WGSL) material: { registered, ok, errors:[{line?,message}] }. A black mesh + ok:false means the WGSL failed to compile (the error is in `errors`); ok:true + black means a successful-but-dark shader (check lighting/inputs)."
     )]
     async fn get_material_diagnostics(
@@ -1053,6 +1063,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Local TRS + world matrix for each node (pass node UUIDs, or empty for all nodes). Reads the live scene — no animation-clip hack."
     )]
     async fn get_node_transforms(
@@ -1066,6 +1077,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Full per-kind config (primitive shape, light/camera config, assigned + inline material) for each node, as serialized NodeKind. Pass node UUIDs, or empty for all."
     )]
     async fn get_node_details(
@@ -1079,6 +1091,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "World-space AABB { min, max } for each node (CPU-estimated; pass node UUIDs, or empty for all). Use to frame the camera or size objects."
     )]
     async fn get_node_bounds(
@@ -1092,6 +1105,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Bake the whole scene to a binary glTF and return the .glb bytes base64-encoded. Built-in PBR → glTF PBR; Unlit → KHR_materials_unlit; custom/Toon → AWSM_materials_none (no embedded material). Textures are referenced-only."
     )]
     async fn export_scene_glb(&self) -> Result<CallToolResult, McpError> {
@@ -1099,6 +1113,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Bake one node (and its subtree) to a binary glTF and return the .glb bytes base64-encoded. Same material mapping as export_scene_glb."
     )]
     async fn export_node_glb(
@@ -1112,6 +1127,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Geometry stats for a node's resolved mesh (Primitive/Mesh/Sweep): vertex+triangle counts, bbox, centroid, surface area, volume, watertight. The perceive half of a measure→adjust loop."
     )]
     async fn get_mesh_stats(
@@ -1125,6 +1141,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Resolve the material a node actually RENDERS with — the direct answer to 'what material is on this node?' (otherwise only reachable by parsing the opaque NodeKind blob from get_node_details). Returns { assigned, kind: builtin|custom|unassigned|none, asset (material UUID), name, shading, base_color }. `unassigned` = a geometry node with no material (renders magenta); `none` = not a geometry node."
     )]
     async fn resolve_node_material(
@@ -1138,6 +1155,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Silhouette radius profile of a node's mesh along an axis (0=X,1=Y,2=Z) in `samples` bins, as [[height,radius],…]. Pairs with a lathe (height,radius) profile — measure the tip radius, adjust, re-measure."
     )]
     async fn get_mesh_cross_section(
@@ -1153,6 +1171,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Bake the whole project to a player runtime bundle DIRECTORY: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory: one geometry-only `assets/<id>.glb` per non-primitive mesh (bare primitives stay procedural in scene.toml), custom-material wgsl folders, and referenced textures. Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips). A read; returns the file set `{name, files:[{path, base64 bytes}]}` (result kind `player_bundle`). Skinned/morph meshes' glb re-export from source is a follow-on (static geometry for now)."
     )]
     async fn export_player_bundle(
@@ -1163,7 +1182,10 @@ impl EditorMcp {
             .await
     }
 
-    #[tool(description = "Mean/min/max luma over a canvas region (or the whole canvas).")]
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Mean/min/max luma over a canvas region (or the whole canvas)."
+    )]
     async fn canvas_stats(
         &self,
         Parameters(p): Parameters<RegionParams>,
@@ -1173,6 +1195,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Run a raw EditorQuery (escape hatch for queries without a dedicated tool, e.g. canvas_pixels, sample_clip_timeseries). `query` is internally tagged by \"query\"."
     )]
     async fn run_query(
@@ -1185,6 +1208,7 @@ impl EditorMcp {
     // ── screenshots ─────────────────────────────────────────────────────────
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Block until the scene has settled — no material recompile pending, the renderer's pipeline scheduler drained, and a fresh frame presented — or max_ms elapses. Call between an edit and screenshot_scene so the image reflects the edit, not a mid-recompile frame. Returns { settled, waited_ms }."
     )]
     async fn wait_render_settled(
@@ -1198,6 +1222,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "PNG screenshot of the scene viewport (through the active camera). Optional width/height scale the output (one given preserves aspect). Frame a subject first with frame_node / set_camera_orbit."
     )]
     async fn screenshot_scene(
@@ -1212,6 +1237,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "PNG of the material-mode preview sphere. Optional width/height scale the output (e.g. 512 for a readable preview)."
     )]
     async fn screenshot_material(
@@ -1225,7 +1251,10 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "PNG thumbnail of a texture asset (by UUID).")]
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "PNG thumbnail of a texture asset (by UUID)."
+    )]
     async fn screenshot_texture(
         &self,
         Parameters(p): Parameters<AssetArg>,
@@ -1684,6 +1713,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Read a mesh's current modifier-stack recipe ({ base, modifiers }) as JSON. `mesh` is the mesh asset UUID. Returns `null` when the mesh has no recipe yet (a raw captured/converted mesh — call set_mesh_modifiers to give it a base before add_/set_/remove_modifier). The read half of incremental modifier editing: read the stack, find the index you want, then add_/set_/remove_modifier."
     )]
     async fn get_mesh_modifiers(
@@ -1741,6 +1771,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON, e.g. {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} (percent is a 0..1 FRACTION of the axis extent — 0.2 = top 20%; values >1 are clamped to 1.0 = everything) or {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection)."
     )]
     async fn select_vertices_where(
@@ -1792,6 +1823,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Read the FINAL (post-eval + override) per-vertex data for specific indices of a node's resolved mesh: returns `{ vertex_count, vertices: [{ index, position, normal, color, uv }] }` (color/uv null when the mesh has no such channel). The read counterpart to paint_vertex_colors / set_vertex_normals / set_vertex_positions — confirm what your last authoring op actually produced. `node` is the node UUID; `indices` the verts to read."
     )]
     async fn get_vertex_data(
@@ -1806,6 +1838,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Read a node mesh's LAYER SUMMARY — what's live (still procedural) vs locked (frozen-topology authoring): `{ base, modifiers, modifier_count, frozen_topology, has_overrides, override_counts:{positions,colors,normals,uvs} }`. `base` is primitive/lathe/superquadric/sweep/sdf/captured; `frozen_topology` true means per-vertex authoring already collapsed the stack (terminal). The perceive for deciding whether to edit modifiers (still procedural) or author per-vertex (terminal). `node` is the node UUID."
     )]
     async fn get_mesh_layers(
@@ -2261,6 +2294,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Live morph data per node: { target_count, weights, names } from the renderer's morph buffer (names from the glTF mesh.extras.targetNames convention; empty when the source had none) (what set_morph_weight writes and morph animation tracks drive). Pass node UUIDs, or empty for all. Nodes without MATERIALIZED morphs are omitted — empty on a morph-bearing scene means not-yet-materialized, not no-morphs."
     )]
     async fn get_morph_data(
@@ -2274,6 +2308,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Rig discovery per skinned node: { source, primitive_index, joints:[{node,index,name,translation,rotation,scale}] }. Joints ARE ordinary scene nodes — POSE one with set_node_transform on its `node` id (the skin deforms live), ANIMATE one with add_track targeting it (transform). Pass node UUIDs, or empty for all skinned nodes."
     )]
     async fn get_skin_data(
@@ -2287,6 +2322,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Per-vertex skin weights (set 0) for a skinned node: { vertex_count, set_count, weights: { \"<vertex>\": { joints:[4], weights:[4] } } }. `joints` index the skin's joint ARRAY (the order get_skin_data lists joints), not scene nodes. Empty indices = all vertices (fox ≈ 1.7k — fine). Pairs with set_skin_weights."
     )]
     async fn get_skin_weights(
@@ -2680,6 +2716,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Read the renderer's current frame globals: time, delta_time, frame_count, resolution. Reflects a set_frame_time pin."
     )]
     async fn get_frame_globals(&self) -> Result<CallToolResult, McpError> {
@@ -2843,6 +2880,7 @@ impl EditorMcp {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Read a track's full stored data (target, sampler, mute/solo, times, keyframes incl. interp/tangents) — to verify what you authored."
     )]
     async fn get_track_data(
