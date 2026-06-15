@@ -27,8 +27,9 @@ Currently, these need to be manually cloned/downloaded (not via git submodules):
 
 1. https://github.com/KhronosGroup/glTF-Sample-Assets.git
   - cloned into media/glTF-Sample-Assets
-2. https://github.com/dakom/awsm-renderer-assets.git
-  - assumed to exist in ../awsm-renderer-assets
+2. https://github.com/awsm-fun/awsm-test-assets.git
+  - assumed to exist in ../test-assets
+  - served from https://cdn.awsm.fun/test-assets in release builds
 
 ## Prerequisites 
 
@@ -73,9 +74,8 @@ Everything lives under `packages/`:
 
 **Frontends** (`packages/frontend/`, WASM via Trunk)
 
-* [editor](../packages/frontend/editor): the unified scene / material / animation editor (`awsm-editor`). Absorbs what used to be the separate `scene-editor` + `material-editor` + `awsm-renderer-editor` gizmo/grid crate.
-* [model-tests](../packages/frontend/model-tests): the glTF feature-test viewer
-* [site-index](../packages/frontend/site-index): the landing page
+* [editor](../packages/frontend/editor): the unified scene / material / animation editor (`awsm-editor`). Absorbs what used to be the separate `scene-editor` + `material-editor` + `awsm-renderer-editor` gizmo/grid crate. Deployed to https://scene.awsm.fun.
+* [model-tests](../packages/frontend/model-tests): the glTF feature-test viewer. Deployed to https://model-tests.awsm.fun.
 * [web-shared](../packages/frontend/web-shared): shared UI / theme primitives + the viewport gizmo / grid / free-camera helpers
 
 **Native tooling**

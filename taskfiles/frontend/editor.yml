@@ -12,10 +12,10 @@ vars:
 tasks:
   dev:
     desc: "editor: trunk serve (unified scene + material editor)"
-    # MEDIA_BASE_URL_ADDITIONAL_ASSETS points at the awsm-renderer-assets
-    # repo (port 9083 in dev, github.io in prod). The debug-only
-    # `load_external_test_scene` wasm export fetches scenes from this
-    # URL so test fixtures live in one canonical place.
+    # MEDIA_BASE_URL_ADDITIONAL_ASSETS points at the awsm-test-assets
+    # repo (port 9083 in dev, cdn.awsm.fun/test-assets in prod). The
+    # debug-only `load_external_test_scene` wasm export fetches scenes
+    # from this URL so test fixtures live in one canonical place.
     env:
       ROOT_BASE_URI_PATH: "{{.DEV_ROOT_BASE_URI_PATH}}"
       MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
@@ -38,15 +38,15 @@ tasks:
         --watch "{{joinPath .PATH_CRATES "renderer-gltf"}}"
 
   build:
-    desc: "editor: production build"
+    desc: "editor: production build (scene editor, served at the root of scene.awsm.fun)"
     env:
-      ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}/editor"
+      ROOT_BASE_URI_PATH: "{{.PROD_ROOT_BASE_URI_PATH}}"
       MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_PROD_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
       MCP_DEFAULT_ORIGIN: "{{.URL_MCP_DEFAULT}}"
     cmds:
       - rm -rf {{joinPath .PATH_CRATE "dist"}}
       - rm -rf {{.PATH_DIST}}
-      - cd {{.PATH_CRATE}} && trunk build --release --public-url "{{.URL_PROD_EDITOR}}"
+      - cd {{.PATH_CRATE}} && trunk build --release --public-url "/"
       # `index.html` unconditionally `copy-dir`s the repo-root
       # `assets/world/` tuning scenes (~20 MB) into the dist so the
       # debug-only `load_scene_by_path` helper can fetch them. The
@@ -57,6 +57,44 @@ tasks:
       - mkdir -p {{.PATH_DIST}}
       - cp -r {{joinPath .PATH_CRATE "dist"}}/* {{.PATH_DIST}}/
       - cp {{.PATH_DIST}}/index.html {{.PATH_DIST}}/404.html
+
+  deploy:
+    desc: "Build the scene editor and deploy it to Cloudflare Pages (project: awsm-scene-editor → scene.awsm.fun)"
+    deps: ["build"]
+    requires:
+      vars:
+        [
+          CLOUDFLARE_DEPLOY_WORKERS_TOKEN,
+          CLOUDFLARE_PAGES_PROJECT_EDITOR,
+          CLOUDFLARE_PAGES_BRANCH,
+        ]
+    env:
+      CLOUDFLARE_API_TOKEN: "{{.CLOUDFLARE_DEPLOY_WORKERS_TOKEN}}"
+    cmds:
+      - task: _cloudflare-ensure-project
+        vars:
+          CLOUDFLARE_PAGES_PROJECT: "{{.CLOUDFLARE_PAGES_PROJECT_EDITOR}}"
+      - >
+        wrangler pages deploy "{{.PATH_DIST}}"
+        --project-name="{{.CLOUDFLARE_PAGES_PROJECT_EDITOR}}"
+        --branch "{{.CLOUDFLARE_PAGES_BRANCH}}"
+
+  _cloudflare-ensure-project:
+    desc: "Ensure the editor Cloudflare Pages project exists"
+    internal: true
+    requires:
+      vars: [CLOUDFLARE_DEPLOY_WORKERS_TOKEN, CLOUDFLARE_PAGES_PROJECT, CLOUDFLARE_PAGES_BRANCH]
+    env:
+      CLOUDFLARE_API_TOKEN: "{{.CLOUDFLARE_DEPLOY_WORKERS_TOKEN}}"
+    cmds:
+      - |
+        set -euo pipefail
+        PROJECT="{{.CLOUDFLARE_PAGES_PROJECT}}"
+        if wrangler pages project list --json | jq -e --arg project "$PROJECT" '.[] | select(."Project Name" == $project)' >/dev/null; then
+          echo "Cloudflare Pages project exists: $PROJECT"
+        else
+          wrangler pages project create "$PROJECT" --production-branch "{{.CLOUDFLARE_PAGES_BRANCH}}"
+        fi
 
   clean:
     desc: "editor: remove dist + .build-artifacts output"

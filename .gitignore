@@ -13,6 +13,10 @@ awsm-renderer-assets
 debug
 target
 
+####### Node / Cloudflare tooling
+node_modules
+.wrangler
+
 ## Claude/AI
 .claude
 
