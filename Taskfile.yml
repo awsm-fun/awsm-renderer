@@ -150,7 +150,7 @@ tasks:
       - echo "✅ v{{.VERSION}} — crates published, frontends deployed, tag pushed (MCP binary release building on CI)."
 
   crates-publish:
-    desc: "Publish the 14 awsm-renderer library crates to crates.io (dependency-ordered)."
+    desc: "Publish the 13 awsm-renderer library crates to crates.io (dependency-ordered)."
     cmds:
       - task: _crates-publish
         vars:
@@ -169,10 +169,11 @@ tasks:
     # Explicit `-p` list (NOT `--workspace`) so ONLY the intended creator-facing
     # library crates ever go out — a frontend/example/internal member added later
     # can't accidentally publish itself by forgetting `publish = false`. These are
-    # every workspace member that is NOT `publish = false`; the excluded ones are
-    # the two frontends (awsm-editor, awsm-model-tests), awsm-web-shared, the
-    # awsm-render-worker-example, awsm-debugging, and the awsm-scene-mcp binary
-    # (it ships via cargo-dist, not crates.io).
+    # exactly the contents of packages/crates/ (all public); everything excluded is
+    # `publish = false`: the two frontends (awsm-editor, awsm-model-tests),
+    # awsm-web-shared, awsm-render-worker-example, awsm-debugging, awsm-scene-mcp
+    # (ships via cargo-dist, not crates.io), and awsm-editor-protocol (internal
+    # editor↔server glue under packages/mcp/).
     #
     # Listed dependency-leaf-first; cargo also orders a multi-`-p` publish by
     # dependency and waits for crates.io to index each crate before its dependents.
@@ -190,7 +191,6 @@ tasks:
         -p awsm-meshgen
         -p awsm-renderer
         -p awsm-glb-export
-        -p awsm-editor-protocol
         -p awsm-renderer-gltf
         -p awsm-gltf-convert
         -p awsm-scene-loader

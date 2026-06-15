@@ -34,7 +34,7 @@ Three pieces:
 
 | Piece | Where | Role |
 |---|---|---|
-| `awsm-editor-protocol` | [`packages/crates/editor-protocol`](../packages/crates/editor-protocol) | The serializable wire vocabulary — `EditorCommand` / `EditorQuery` / `EditorSnapshot` / `QueryResult` + the `Request` / `Response` envelope and the `WsServerMsg` / `WsClientMsg` WebSocket frames. Compiles for both wasm and native. |
+| `awsm-editor-protocol` | [`packages/mcp/editor-protocol`](../packages/mcp/editor-protocol) | The serializable wire vocabulary — `EditorCommand` / `EditorQuery` / `EditorSnapshot` / `QueryResult` + the `Request` / `Response` envelope and the `WsServerMsg` / `WsClientMsg` WebSocket frames. Compiles for both wasm and native. |
 | `awsm-scene-mcp` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the `/editor` WebSocket link + the `/png` side-channel. Per-tab isolation via pairing codes. `publish = false`. |
 | editor remote module | [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs) | The WebSocket client: parse `?mcp=`/`?pair=`, dial `ws://<origin>/editor`, read `Request` frames → call `EditorController` → reply with `Response` frames; POST screenshots to `/png/<id>`. |
 
@@ -384,7 +384,7 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
 
 ## Source anchors
 
-- Protocol crate: [`packages/crates/editor-protocol/src`](../packages/crates/editor-protocol/src)
+- Protocol crate: [`packages/mcp/editor-protocol/src`](../packages/mcp/editor-protocol/src)
   (`command.rs`, `query.rs`, `node_spec.rs`, `anim_ui.rs`, `transport.rs`).
 - Server: [`packages/mcp/src`](../packages/mcp/src) — `mcp.rs` (tools), `ws.rs`
   (`/editor` WebSocket, single-writer), `link.rs` (connections / agents / pairing),

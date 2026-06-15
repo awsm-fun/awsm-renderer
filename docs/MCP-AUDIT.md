@@ -3,11 +3,11 @@
 Audit of the awsm-renderer editor's MCP surface for AI-agent drivability.
 
 - Tools: `packages/mcp/src/mcp.rs` (~111 `#[tool]` wrappers).
-- Underlying protocol: `packages/crates/editor-protocol/src/{command.rs,query.rs}`
+- Underlying protocol: `packages/mcp/editor-protocol/src/{command.rs,query.rs}`
   (`EditorCommand` = mutation, `EditorQuery` = read).
 - Handlers: `packages/frontend/editor/src/controller/state.rs` (`dispatch` / `query`).
 - Bundle bake: `packages/frontend/editor/src/controller/export.rs`,
-  `packages/crates/editor-protocol/src/bake.rs`, `packages/crates/glb-export/`.
+  `packages/mcp/editor-protocol/src/bake.rs`, `packages/crates/glb-export/`.
 - User-facing doc: `docs/MCP.md`.
 
 Every `EditorCommand` / `EditorQuery` variant is reachable through the generic

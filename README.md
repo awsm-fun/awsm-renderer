@@ -84,6 +84,53 @@ It's de-facto _the_ format for AwsmRenderer assets, and extensions are used wher
 
 Because the geometry pass writes out unique identifiers per-mesh, picking opaque meshes is as simple as reading back the pixel under the mouse cursor from that target, and mapping it back to the corresponding mesh. This makes picking opaque meshes extremely fast and efficient, even with complex scenes, without significant overhead during rendering.
 
+# LIBRARY CRATES
+
+`packages/crates/` is a modular WebGPU renderer + scene toolkit — 13 single-purpose
+crates published to crates.io. The pure-CPU ones (curves, geometry, tangents,
+meshgen, particles, glb-export, gltf-convert, scene) have no GPU or browser
+dependencies and are usable in any Rust project; the rest are the engine you'd
+build a WebGPU app on. Publishing the whole graph lets a downstream user write
+`awsm-renderer = "…"` and pull the rest from crates.io (the crates reference each
+other by version, kept in lockstep by `task bump`).
+
+Everything **outside** `packages/crates/` is `publish = false`: the two frontends,
+the `awsm-web-shared` glue, the render-worker example, the `awsm-debugging`
+binaries, the `awsm-scene-mcp` server (ships as a binary via cargo-dist), and
+`awsm-editor-protocol` (the internal editor↔server wire types, kept under
+`packages/mcp/`).
+
+Crates publish bottom-up (`→` = depends on; cargo orders the release so a crate is
+on crates.io before anything that needs it).
+
+### Foundations (pure, no internal deps)
+
+| Crate | Depends on | What it is |
+|---|---|---|
+| **awsm-curves** | — | Pure-CPU curve math (3D paths + 1D parameter curves) |
+| **awsm-geometry** | — | Pure-CPU geometry utils (AABB, ray/triangle, frustum) |
+| **awsm-tangents** | — | MikkTSpace tangent generation over plain geometry arrays (no GPU) |
+| **awsm-scene** | — | The lean canonical runtime scene schema (`scene.toml` + `assets/`) |
+| **awsm-renderer-core** | — | The WebGPU renderer's core layer (a nicer Rust API over WebGPU) |
+
+### Built on the foundations
+
+| Crate | Depends on | What it is |
+|---|---|---|
+| **awsm-materials** | renderer-core | Pluggable material shaders behind a `MaterialShader` trait |
+| **awsm-particles** | curves, geometry | Pure-CPU particle simulator (struct-of-arrays, GPU-shape-compatible) |
+| **awsm-meshgen** | scene, curves, geometry | Pure-CPU mesh generators (primitives + sweep + procedural textures) |
+
+### Renderer + IO
+
+| Crate | Depends on | What it is |
+|---|---|---|
+| **awsm-renderer** | renderer-core, materials, scene, tangents | The WebGPU renderer engine |
+| **awsm-glb-export** | meshgen, tangents | Scene-complete glTF/GLB export IR + writer (no GPU) |
+| **awsm-gltf-convert** | glb-export, meshgen | Pure-data glTF → canonical-format normalizer (the shared import path) |
+| **awsm-renderer-gltf** | renderer, renderer-core, materials | glTF ingestion into the live renderer |
+| **awsm-scene-loader** | renderer, renderer-gltf, materials, meshgen, scene | Loads an awsm-scene bundle into the renderer (the player path) |
+
 # DEVELOPMENT
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for details on setting up the development environment, building, and running the examples.

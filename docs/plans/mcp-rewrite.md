@@ -65,7 +65,7 @@ MCP client (Claude/Codex/Cursor)  --rmcp /mcp (HTTP)-->  native MCP server  <--/
 - Two ports today: `9086` (HTTP) + `9087` (QUIC/UDP). Collapse to **one port
   `9086`** (HTTP + `/editor` ws). `taskfiles/config.yml` holds
   `PORT_MCP_HTTP_DEV`/`PORT_MCP_QUIC_DEV`.
-- Protocol `packages/crates/editor-protocol/src/transport.rs`: `Request` has
+- Protocol `packages/mcp/editor-protocol/src/transport.rs`: `Request` has
   `Dispatch`, `DispatchBatch(Vec<EditorCommand>)`, `Query`, `ScenePng`,
   `MaterialPng`, `TexturePng`; `Response::Png(Vec<u8>)` (→ becomes a handle).
   Encoding: `serde_json` + `bitcode`. Move the WS control link to **JSON text**
@@ -142,7 +142,7 @@ the link with pairing + the frontend pairing UI.
 - [x] Idle session timeout: **day-long** rmcp `session_config.keep_alive` so a
       live-but-idle agent isn't reaped (audio's lesson).
 
-**Protocol (`packages/crates/editor-protocol/src/transport.rs`)**
+**Protocol (`packages/mcp/editor-protocol/src/transport.rs`)**
 - [x] Added `WsServerMsg::Request{id,req}` + `WsClientMsg::{Response{id,resp},
       Event(EditorEvent)}` (exported from `lib.rs`). `Pair`/`PairingRequired`/
       `Detached` deferred to Phase 2 (see split decision).
