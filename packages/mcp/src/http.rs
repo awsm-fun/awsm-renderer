@@ -131,7 +131,7 @@ async fn editor_ws(ws: WebSocketUpgrade, State(s): State<AppState>) -> impl Into
 /// as JSON. A PNG request returns the `PngHandle` JSON; the bytes are at
 /// `/png/<id>`.
 async fn debug(State(s): State<AppState>, Json(req): Json<Request>) -> Json<Value> {
-    match s.link.request(&req).await {
+    match s.link.debug_request(&req).await {
         Ok(resp) => Json(
             serde_json::to_value(&resp)
                 .unwrap_or_else(|e| json!({ "encode_error": e.to_string() })),
@@ -151,7 +151,7 @@ async fn boot_error(State(s): State<AppState>, body: String) -> Json<Value> {
 /// Agent-facing liveness: is an editor attached, and did the last page load
 /// report a boot error? Check THIS when requests go unanswered.
 async fn health(State(s): State<AppState>) -> Json<Value> {
-    let attached = s.link.is_attached();
+    let attached = s.link.connection_count() > 0;
     let boot = s.boot_error.lock().unwrap().clone().map(|(t, msg)| {
         let age = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
         json!({ "age_seconds": age, "message": msg })

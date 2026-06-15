@@ -192,27 +192,37 @@ the link with pairing + the frontend pairing UI.
 Today the server holds a single editor session (last-connect-wins, established in
 Phase 1). Adopt audio's per-tab binding so multiple tabs never cross streams.
 
-- [ ] **Envelope extension (deferred from Phase 1):** add `WsServerMsg::{PairingRequired,
-      Detached}` and `WsClientMsg::Pair{code}` to `transport.rs` (+ exports), and
-      handle them in server `ws.rs` and frontend `remote.rs`.
-- [ ] `link.rs`: model `Connection` (one `/editor` ws = one tab, own request-id
-      space + pending map) and `AgentSession` (one MCP client, own 4-char
-      **Crockford base32** pair code), bound to each other via **`Weak`** pointers
-      (a dropped agent auto-frees its tab — self-healing).
-- [ ] `resolve(agent)`: return the live binding; else **auto-bind** when exactly
-      one unbound tab **and** one unbound agent exist; else
-      `Err(PairingRequired(code))`.
-- [ ] `bind_by_code(conn, code)`: tab claims a specific agent; case-insensitive;
-      frees any prior binding.
-- [ ] Events are tagged with their originating connection id so only the bound
-      agent receives them. On tab drop, drain pending requests so awaits resolve.
-- [ ] rmcp layer surfaces `PairingRequired` to the agent (clear message telling it
-      a code is needed) and shows the code so the human can type it.
-- [ ] Frontend: per-tab id in `sessionStorage`; honor `?pair=<code>` URL param and
-      a modal pair-code field; `submit_pair_code()` sends `Pair{code}` on the live
-      socket (or stashes + connects). Show the pair-code field only when
-      `pairing_needed`.
-- [ ] Verify two-tab disambiguation (Phase 6). Commit:
+- [x] **Envelope extension (deferred from Phase 1):** added `WsServerMsg::{PairingRequired,
+      Detached}` and `WsClientMsg::Pair{code}` to `transport.rs` (the existing
+      glob export already covers them); extended `ws_envelope_roundtrips`. Handled
+      in server `ws.rs` + frontend `remote.rs`. NOTE: `Detached` is defined +
+      frontend-handled but **not server-sent** yet (mirrors audio — forward-compat
+      for an explicit-takeover notification).
+- [x] `link.rs`: ported audio's model — `Connection` (one `/editor` ws = one tab,
+      own request-id space + pending map) and `AgentSession` (one MCP client, own
+      4-char **Crockford base32** pair code), bound via mutual **`Weak`** pointers
+      (a dropped agent auto-frees its tab). Dropped audio's `/assets` hosting (not
+      needed); kept `self_origin` for the pairing hint.
+- [x] `resolve(agent)`: live binding → **auto-bind** when exactly one unbound tab
+      **and** one unbound agent → else `Err(LinkError::PairingRequired(code))`.
+- [x] `bind_by_code(conn, code)`: case-insensitive; binds the matching agent
+      (server `ws.rs` replies `PairingRequired` when no agent owns the code).
+- [x] Events now carry `(conn_id, EditorEvent)`; `on_initialized` forwards only
+      events whose `conn_id` matches `agent.bound_conn_id()`. Tab drop drains
+      pending requests (in `remove_connection` → `Connection::drain`).
+- [x] rmcp layer: `req()` maps `PairingRequired(code)` → a clear
+      `invalid_request` McpError naming the code + `?pair=` instructions; added a
+      `pairing_status` tool (paired? code? tab/agent counts? how-to-pair hint).
+- [x] Frontend: `?pair=<code>` boot param → `remote::set_pair_code()` (stashes
+      `PAIR`), sent as the first frame on attach; `PairingRequired`/`Detached`
+      frames handled (toast; `Detached` stops reconnect). DEFERRED to **Phase 4**
+      (no consumer yet → would be dead code): the interactive modal pair-code
+      field + reactive `pairing_needed()` + `submit_pair_code()` over a live
+      socket, and the per-tab `sessionStorage` id (used to key Phase 4's per-tab
+      settings, not needed for pairing itself).
+- [x] Verified: `cargo build -p awsm-scene-mcp` + `clippy --all --all-features
+      --tests -D warnings` + `test --all-features` all green. Two-tab live
+      disambiguation is **manual** (Phase 6). Commit:
       `mcp: per-tab isolation via pairing codes`.
 
 ## Phase 3 — CI / release (cargo-dist), installable binaries

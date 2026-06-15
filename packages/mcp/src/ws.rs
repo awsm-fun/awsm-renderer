@@ -43,7 +43,15 @@ pub async fn handle_socket(socket: WebSocket, link: EditorLink) {
         match msg {
             Message::Text(txt) => match serde_json::from_str::<WsClientMsg>(txt.as_str()) {
                 Ok(WsClientMsg::Response { id, resp }) => conn.complete(id, resp),
-                Ok(WsClientMsg::Event(ev)) => link.publish_event(ev),
+                Ok(WsClientMsg::Event(ev)) => link.publish_event(conn.id, ev),
+                Ok(WsClientMsg::Pair { code }) => {
+                    if link.bind_by_code(&conn, &code) {
+                        tracing::info!("connection {} paired with code {code}", conn.id);
+                    } else {
+                        tracing::warn!("connection {}: no agent for pair code {code}", conn.id);
+                        conn.send(WsServerMsg::PairingRequired);
+                    }
+                }
                 Err(e) => tracing::warn!("connection {}: bad ws frame: {e}", conn.id),
             },
             Message::Close(_) => break,

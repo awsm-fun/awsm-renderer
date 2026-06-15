@@ -67,19 +67,28 @@ pub struct EditorEvent {
 }
 
 /// Server → browser WebSocket frame.
-// `Request` is the dominant (and only) variant today; boxing it to shrink the
-// envelope would just add an allocation to the hot path.
+// `Request` is the dominant variant (one per editor request); boxing it to shrink
+// the rarely-used unit variants would just add an allocation to the hot path.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WsServerMsg {
     /// Serve this request and reply with [`WsClientMsg::Response`] carrying the
     /// same `id`.
     Request { id: u64, req: Request },
+    /// The agent that wants this editor is ambiguous and supplied no pairing
+    /// code — the editor should prompt for one and send [`WsClientMsg::Pair`].
+    PairingRequired,
+    /// This socket's binding was taken over (another tab/agent paired) — the
+    /// editor should show itself disconnected.
+    Detached,
 }
 
 /// Browser → server WebSocket frame.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WsClientMsg {
+    /// Claim a binding to the agent holding this pairing code. Optional first
+    /// frame; unnecessary in the unambiguous 1:1 auto-bind case.
+    Pair { code: String },
     /// Reply to a [`WsServerMsg::Request`] with the matching `id`.
     Response { id: u64, resp: Response },
     /// An unsolicited editor push event.
@@ -328,5 +337,19 @@ mod wire_roundtrip_tests {
         let j = serde_json::to_string(&event).unwrap();
         let back: WsClientMsg = serde_json::from_str(&j).unwrap();
         assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        // Pairing frames (Phase 2 isolation).
+        let pair = WsClientMsg::Pair {
+            code: "3K9J".to_string(),
+        };
+        let j = serde_json::to_string(&pair).unwrap();
+        let back: WsClientMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        for msg in [WsServerMsg::PairingRequired, WsServerMsg::Detached] {
+            let j = serde_json::to_string(&msg).unwrap();
+            let back: WsServerMsg = serde_json::from_str(&j).unwrap();
+            assert_eq!(j, serde_json::to_string(&back).unwrap());
+        }
     }
 }

@@ -58,6 +58,10 @@ pub enum RemoteStatus {
 thread_local! {
     static STATUS: Mutable<RemoteStatus> = Mutable::new(RemoteStatus::Disconnected);
     static ORIGIN: Mutable<String> = Mutable::new(default_origin().to_string());
+    /// Pairing code to claim a specific agent (from `?pair=`). Empty unless the
+    /// server needs disambiguation between multiple tabs/agents; sent as the first
+    /// frame on attach. The interactive (modal) entry path lands in Phase 4.
+    static PAIR: Mutable<String> = Mutable::new(String::new());
     /// Outbound frame sender for the live link; `None` when disconnected. Kept so
     /// the UI can `disconnect()` (drop it) and `notify_event()` over the socket.
     static SESSION: RefCell<Option<LinkTx>> = const { RefCell::new(None) };
@@ -129,6 +133,14 @@ fn activity_reset() {
 /// overwritten by `?mcp=` or the last connect attempt).
 pub fn origin() -> Mutable<String> {
     ORIGIN.with(|s| s.clone())
+}
+
+/// Stash a pairing code to claim a specific agent on the next connect (from the
+/// `?pair=` URL param). It's sent as the first frame once the link attaches; the
+/// auto-pairing 1-tab-1-agent case needs no code. The interactive modal entry
+/// path is added in Phase 4.
+pub fn set_pair_code(code: String) {
+    PAIR.with(|p| p.set(code.trim().to_string()));
 }
 
 /// Connect to the MCP server at `control_origin`, **staying connected**: if the
@@ -249,11 +261,30 @@ async fn run(control_origin: String) -> Result<(), String> {
     Toast::info("MCP connected");
     tracing::info!("mcp: attached");
 
+    // If a pairing code is set (`?pair=…`), claim our agent up front.
+    let pair_code = PAIR.with(|p| p.get_cloned());
+    if !pair_code.is_empty() {
+        send_frame(WsClientMsg::Pair { code: pair_code });
+    }
+
     loop {
         futures::select! {
             inbound = stream.next().fuse() => match inbound {
                 Some(Ok(Message::Text(txt))) => match serde_json::from_str::<WsServerMsg>(&txt) {
                     Ok(WsServerMsg::Request { id, req }) => spawn_local(serve_one(id, req)),
+                    Ok(WsServerMsg::PairingRequired) => {
+                        Toast::info(
+                            "MCP: a pairing code is required — append ?pair=<code> \
+                             (shown by your agent) to the editor URL",
+                        );
+                    }
+                    Ok(WsServerMsg::Detached) => {
+                        // Another tab took over this binding — don't fight for it
+                        // by reconnecting.
+                        RECONNECT.with(|r| r.set(false));
+                        Toast::info("MCP: detached (another tab paired)");
+                        return Ok(());
+                    }
                     Err(e) => tracing::warn!("mcp: bad frame: {e}"),
                 },
                 Some(Ok(_)) => {} // non-text frame; ignore

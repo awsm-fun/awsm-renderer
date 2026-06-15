@@ -11,6 +11,8 @@
 //! `EditorQuery` variant is reachable even when its payload references
 //! scene-schema types without a JSON schema.
 
+use std::sync::Arc;
+
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -40,12 +42,17 @@ use awsm_scene::{
     SkyboxConfig, Trs,
 };
 
-use crate::link::EditorLink;
+use crate::link::{AgentSession, EditorLink, LinkError};
 
-/// The MCP tool provider. Cheap to clone (the link is an `Arc` handle).
+/// The MCP tool provider — one per MCP session. Cheap to clone (handles are
+/// `Arc`s); clones share the same [`AgentSession`], so a session's editor binding
+/// is stable across clones.
 #[derive(Clone)]
 pub struct EditorMcp {
     link: EditorLink,
+    /// This session's identity + editor binding. Every request routes only to the
+    /// bound editor tab.
+    agent: Arc<AgentSession>,
     // Populated by `Self::tool_router()` and consumed by the `#[tool_handler]`
     // generated routing; rmcp 1.7's macro reads it through a trait impl the
     // dead-code lint can't see, hence the allow.
@@ -888,8 +895,10 @@ pub struct QueryJsonParams {
 #[tool_router]
 impl EditorMcp {
     pub fn new(link: EditorLink) -> Self {
+        let agent = link.register_agent();
         Self {
             link,
+            agent,
             tool_router: Self::tool_router(),
         }
     }
@@ -911,6 +920,43 @@ impl EditorMcp {
             Response::Mode(m) => Ok(text(format!("pong — editor attached (mode={m:?})"))),
             other => Err(unexpected(other)),
         }
+    }
+
+    #[tool(
+        description = "Report this session's editor pairing state WITHOUT performing an editor operation: whether an editor tab is bound (or would auto-bind), this session's pairing code, and how many tabs/agents are connected. Call this first — or after a 'No editor is paired' error — to know whether to wait or surface the pairing code, instead of issuing doomed editor calls."
+    )]
+    async fn pairing_status(&self) -> Result<CallToolResult, McpError> {
+        let editors = self.link.connection_count();
+        let agents = self.link.agent_count();
+        let bound = self.agent.bound_conn_id().is_some();
+        // Mirrors `resolve`'s auto-bind rule: 1 unbound tab + 1 agent binds on the
+        // next request, so report that as ready-to-pair.
+        let will_auto_bind = !bound && editors == 1 && agents == 1;
+        let origin = self.link.self_origin();
+        let status = if bound {
+            "paired"
+        } else if will_auto_bind {
+            "ready (auto-binds on the next editor operation)"
+        } else if editors == 0 {
+            "waiting for an editor tab to connect"
+        } else {
+            "ambiguous — pairing code required"
+        };
+        Ok(text(
+            serde_json::json!({
+                "status": status,
+                "paired": bound,
+                "editors_connected": editors,
+                "agents_connected": agents,
+                "pair_code": self.agent.pair_code,
+                "how_to_pair": format!(
+                    "open the editor with ?mcp={origin}&pair={} appended to its URL, \
+                     or enter the code in its MCP connect modal",
+                    self.agent.pair_code
+                ),
+            })
+            .to_string(),
+        ))
     }
 
     #[tool(
@@ -2848,9 +2894,20 @@ impl EditorMcp {
 impl EditorMcp {
     async fn req(&self, r: Request) -> Result<Response, McpError> {
         self.link
-            .request(&r)
+            .request(&self.agent, &r)
             .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))
+            .map_err(|e| match e {
+                LinkError::PairingRequired(code) => McpError::invalid_request(
+                    format!(
+                        "No editor is paired with this MCP session. Ask the user to open the \
+                         awsm-renderer editor with `?pair={code}` appended to its URL, or to enter \
+                         pairing code `{code}` in the editor's MCP connect modal. (Auto-pairs when \
+                         exactly one editor tab and one agent are connected.)"
+                    ),
+                    None,
+                ),
+                LinkError::Transport(msg) => McpError::internal_error(msg, None),
+            })
     }
 
     async fn dispatch(&self, cmd: EditorCommand) -> Result<CallToolResult, McpError> {
@@ -3011,14 +3068,19 @@ impl ServerHandler for EditorMcp {
         info
     }
 
-    // ── push channel: forward editor events as MCP logging notifications ─────
+    // ── push channel: forward this session's editor events as MCP logging ────
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
         let mut rx = self.link.subscribe_events();
         let peer = context.peer;
+        let agent = self.agent.clone();
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(ev) => {
+                    Ok((conn_id, ev)) => {
+                        // Only forward events from the tab this agent is bound to.
+                        if agent.bound_conn_id() != Some(conn_id) {
+                            continue;
+                        }
                         let level = match ev.level.as_deref() {
                             Some("error") => LoggingLevel::Error,
                             Some("warning") => LoggingLevel::Warning,
