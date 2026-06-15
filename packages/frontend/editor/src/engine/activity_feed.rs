@@ -13,7 +13,7 @@
 
 use std::cell::Cell;
 
-use awsm_editor_protocol::{EditorCommand, InsertSpec};
+use awsm_editor_protocol::{EditorCommand, EditorMode, InsertSpec};
 use awsm_editor_protocol::{LightKind, Modifier, PrimitiveShape};
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 use wasm_bindgen_futures::spawn_local;
@@ -128,6 +128,92 @@ pub fn narrate(cmd: &EditorCommand) {
 pub fn narrate_batch(cmds: &[EditorCommand]) {
     if let Some(cmd) = pick_batch_child(cmds) {
         emit(cmd);
+    }
+}
+
+/// Which editor workspace (`Scene` / `Material` / `Animation`) a command "happens
+/// in", so the app shell can **follow the agent** to the tab it's working in (you
+/// can't watch a material edit while looking at the Scene). `None` for
+/// mode-agnostic commands (selection, camera, transport, project-level
+/// load/import) — those must NOT yank the view. Best-effort: an unmapped command
+/// returns `None` (stay put) rather than guess.
+pub fn command_mode(cmd: &EditorCommand) -> Option<EditorMode> {
+    use EditorCommand as C;
+    match cmd {
+        // The agent's own explicit mode switch.
+        C::SwitchMode { mode } => Some(*mode),
+
+        // Material authoring (the Material workspace).
+        C::AssignMaterial { .. }
+        | C::CopyMaterialInstance { .. }
+        | C::AddMaterialAsset { .. }
+        | C::AddBuiltinMaterial { .. }
+        | C::AddCustomMaterial { .. }
+        | C::DeleteCustomMaterial { .. }
+        | C::RegisterMaterial { .. }
+        | C::SetCustomMaterialWgsl { .. }
+        | C::SetCustomMaterialAlphaMode { .. }
+        | C::SetCustomMaterialDoubleSided { .. }
+        | C::SetCustomMaterialDebugColor { .. }
+        | C::SetCustomMaterialLayout { .. }
+        | C::SetCustomMaterialShaderIncludes { .. }
+        | C::SetCustomMaterialFragmentInputs { .. }
+        | C::SetMaterialUniform { .. }
+        | C::SetBuiltinParam { .. }
+        | C::SetBuiltinTexture { .. }
+        | C::SetMaterialTexture { .. }
+        | C::ImportTextureFromUrl { .. }
+        | C::AddTextureAsset { .. } => Some(EditorMode::Material),
+
+        // Animation authoring (the Animation workspace) — clip/track/key/layer
+        // edits only (the project-level loads that `affects_animation` also covers
+        // are mode-agnostic and fall through to `None`).
+        C::AddClip { .. }
+        | C::DuplicateClip { .. }
+        | C::DeleteClip { .. }
+        | C::RenameClip { .. }
+        | C::AddTrack { .. }
+        | C::DeleteTrack { .. }
+        | C::RestoreTrack { .. }
+        | C::AddKeyframe { .. }
+        | C::DeleteKeyframe { .. }
+        | C::InsertKeyframe { .. }
+        | C::SetKeyframe { .. }
+        | C::AddLayer
+        | C::AddStrip { .. } => Some(EditorMode::Animation),
+
+        // Scene / mesh / transform work (the default workspace).
+        C::Insert { .. }
+        | C::InsertTree { .. }
+        | C::Delete { .. }
+        | C::Duplicate { .. }
+        | C::Reparent { .. }
+        | C::Rename { .. }
+        | C::SetVisible { .. }
+        | C::SetLocked { .. }
+        | C::SetPrefab { .. }
+        | C::SetTransform { .. }
+        | C::SetKind { .. }
+        | C::SetLightParam { .. }
+        | C::SetMeshData { .. }
+        | C::SetMeshModifiers { .. }
+        | C::AddModifier { .. }
+        | C::SetModifier { .. }
+        | C::RemoveModifier { .. }
+        | C::SetVertexPositions { .. }
+        | C::SetVertexNormals { .. }
+        | C::PaintVertexColors { .. }
+        | C::SoftTransformVertices { .. }
+        | C::SetVertexOverrides { .. }
+        | C::CollapseMeshStack { .. }
+        | C::BakeAll {}
+        | C::DropSkinning { .. }
+        | C::ConvertToEditableMesh { .. }
+        | C::SetEnvironment { .. }
+        | C::ImportKtxEnvFromUrl { .. } => Some(EditorMode::Scene),
+
+        // Selection, camera, transport, project-level loads → stay put.
+        _ => None,
     }
 }
 
@@ -442,5 +528,38 @@ fn modifier_label(m: &Modifier) -> &'static str {
         Modifier::Mirror { .. } => "mirror",
         Modifier::Array { .. } => "array",
         Modifier::Displace { .. } => "displace",
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+    use awsm_editor_protocol::{AssetId, NodeId};
+
+    #[test]
+    fn command_mode_follows_the_workspace() {
+        use EditorCommand as C;
+        assert_eq!(
+            command_mode(&C::Delete { id: NodeId::new() }),
+            Some(EditorMode::Scene)
+        );
+        assert_eq!(
+            command_mode(&C::AddClip { id: AssetId::new() }),
+            Some(EditorMode::Animation)
+        );
+        assert_eq!(command_mode(&C::AddLayer), Some(EditorMode::Animation));
+        assert_eq!(
+            command_mode(&C::DeleteCustomMaterial { id: AssetId::new() }),
+            Some(EditorMode::Material)
+        );
+        assert_eq!(
+            command_mode(&C::SwitchMode {
+                mode: EditorMode::Material
+            }),
+            Some(EditorMode::Material)
+        );
+        // Mode-agnostic — never yank the view.
+        assert_eq!(command_mode(&C::SetSelection { ids: vec![] }), None);
+        assert_eq!(command_mode(&C::ResetCamera), None);
     }
 }

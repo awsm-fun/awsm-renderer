@@ -226,7 +226,7 @@ fn agent_feed() -> Dom {
 }
 
 /// Small "✕ clear" chip above the feed rows — empties the narration strip. Mute
-/// (stop narrating entirely) lives in Settings → "Agent activity feed".
+/// (stop narrating entirely) lives in Settings → "Follow agent activity".
 fn agent_feed_clear_btn() -> Dom {
     html!("button", {
         .style("align-self", "flex-start")
@@ -495,7 +495,7 @@ fn settings_drawer() -> Dom {
                 .child(row("MSAA", toggle(s.msaa.clone())))
                 .child(row("Light heatmap", toggle(s.heatmap.clone())))
                 .child(row(
-                    "Agent activity feed",
+                    "Follow agent activity",
                     toggle(crate::engine::activity_feed::enabled()),
                 ))
                 .child(row(
@@ -938,7 +938,7 @@ fn open_mcp_modal() {
             }))))
             // Live work display — the activity feed (narration + panel spotlight)
             // that lets you watch the agent build. Also under Settings.
-            .child(row("Agent activity feed", toggle(crate::engine::activity_feed::enabled())))
+            .child(row("Follow agent activity", toggle(crate::engine::activity_feed::enabled())))
             // Action: Help on the left; Connect / Connecting… / Disconnect on the
             // right, by live status.
             .child(html!("div", {

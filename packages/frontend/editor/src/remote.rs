@@ -400,6 +400,25 @@ async fn serve_one(id: u64, req: Request) {
     activity_end().await;
 }
 
+/// Follow the agent to the workspace it's editing: when "Follow agent activity"
+/// is on and the command belongs to a different mode than the one on screen,
+/// switch to it so the work happens in view (you can't watch a material or
+/// animation edit while looking at the Scene tab). No-op for mode-agnostic
+/// commands (`None`) or when already there. Gated by the same activity toggle, so
+/// a user who finds the switching distracting turns it off with the feed.
+fn follow_agent_mode(mode: Option<awsm_editor_protocol::EditorMode>) {
+    let Some(m) = mode else {
+        return;
+    };
+    if !crate::engine::activity_feed::enabled().get() {
+        return;
+    }
+    let ctrl = controller();
+    if ctrl.mode.get() != m {
+        ctrl.mode.set_neq(m);
+    }
+}
+
 /// Interpret a request against the live controller. All editor mutation flows
 /// through `EditorController` (the "all via controller" rule).
 async fn dispatch(req: Request) -> Response {
@@ -408,9 +427,12 @@ async fn dispatch(req: Request) -> Response {
         Request::Mode => Response::Mode(ctrl.mode.get()),
         Request::Dispatch(cmd) => {
             // "Watch-it-work": narrate the agent's command into the activity
-            // feed + spotlight the focus panel. Read-only/informational — never
-            // mutates state; derived from the command alone.
+            // feed + spotlight the focus panel, and FOLLOW the agent to the
+            // workspace it's editing (so a material/animation edit doesn't happen
+            // off-screen while you're on the Scene tab). Read-only/informational —
+            // never mutates the document; derived from the command alone.
             crate::engine::activity_feed::narrate(&cmd);
+            follow_agent_mode(crate::engine::activity_feed::command_mode(&cmd));
             match ctrl.dispatch(cmd).await {
                 Ok(()) => Response::Ok,
                 Err(e) => Response::Err(format!("{e}")),
@@ -418,6 +440,10 @@ async fn dispatch(req: Request) -> Response {
         }
         Request::DispatchBatch(cmds) => {
             crate::engine::activity_feed::narrate_batch(&cmds);
+            follow_agent_mode(
+                cmds.iter()
+                    .find_map(crate::engine::activity_feed::command_mode),
+            );
             match ctrl.dispatch_batch(cmds).await {
                 Ok(()) => Response::Ok,
                 Err(e) => Response::Err(format!("{e}")),
