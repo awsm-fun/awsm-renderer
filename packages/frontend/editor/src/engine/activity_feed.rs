@@ -66,6 +66,16 @@ thread_local! {
     /// spotlight) so the feed never crowds the screen. Bound to a Settings
     /// toggle; defaults on. Session-only (editor chrome, not project state).
     static ENABLED: Mutable<bool> = Mutable::new(true);
+    /// The agent's CURRENT action phrase (the latest narration) — shown on the 🤖
+    /// chip while the agent works ("added a box" beats a bare "working…").
+    /// `None` = nothing narrated yet / idle.
+    static CURRENT_ACTION: Mutable<Option<String>> = Mutable::new(None);
+}
+
+/// The agent's current action phrase, for the 🤖 chip label. Updated on each
+/// narrated command; cleared when the feed clears.
+pub fn current_action() -> Mutable<Option<String>> {
+    CURRENT_ACTION.with(|a| a.clone())
 }
 
 /// The reactive feed for the app shell to render.
@@ -107,6 +117,7 @@ pub fn enabled() -> Mutable<bool> {
 pub fn clear() {
     FEED.with(|f| f.lock_mut().clear());
     FOCUS.with(|f| f.set(None));
+    CURRENT_ACTION.with(|a| a.set(None));
 }
 
 /// Narrate one inbound agent command: push a feed entry + arm the panel
@@ -224,6 +235,7 @@ fn emit(cmd: &EditorCommand) {
     let Some((target, phrase)) = describe(cmd) else {
         return; // purely-transient/no-op chatter we don't surface
     };
+    CURRENT_ACTION.with(|a| a.set(Some(phrase.clone())));
     push_entry(phrase);
     if target != FocusTarget::None {
         arm_focus(target);

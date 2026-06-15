@@ -822,7 +822,21 @@ fn mcp_activity_chip(working: bool) -> Dom {
                 .attr("title", "Agent idle \u{2014} safe to edit / export.")
         })
         .child(html!("span", { .text("\u{1F916}") }))
-        .child(html!("span", { .text(if working { "working\u{2026}" } else { "idle" }) }))
+        // Name the current action ("added a box") instead of a bare "working…",
+        // pulled from the live narration; falls back to "working…" before the
+        // first command (or when the feed/follow toggle is off).
+        .child(html!("span", {
+            .style("max-width", "240px")
+            .style("overflow", "hidden")
+            .style("text-overflow", "ellipsis")
+            .text_signal(crate::engine::activity_feed::current_action().signal_cloned().map(move |action| {
+                if working {
+                    action.unwrap_or_else(|| "working\u{2026}".to_string())
+                } else {
+                    "idle".to_string()
+                }
+            }))
+        }))
     })
 }
 
