@@ -101,16 +101,16 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// PBR-only includes (brdf / apply_lighting) behind these so non-PBR
     /// pipelines don't compile them.
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
-    /// Whether this pipeline owns the skybox write (only the canonical
-    /// PBR bucket; see [`ShaderCacheKeyMaterialOpaque::owns_skybox`]).
+    /// Whether this pipeline owns the skybox write (only the dedicated SKYBOX
+    /// bucket; see [`ShaderCacheKeyMaterialOpaque::owns_skybox`]).
     pub owns_skybox: bool,
     /// PBR feature set this specialized pipeline is compiled for. The
     /// compute template + `material_color_calc.wgsl` gate per-feature code
     /// behind `{% if pbr_features.<x> %}`, so an unused feature (no
     /// clearcoat in the scene, etc.) emits no code.
-    /// The empty set for non-PBR ids and the canonical PBR (skybox-owner)
-    /// bucket — inert for the former (their body doesn't read it) and the
-    /// minimal shader for the latter. Never the full "uber" set.
+    /// The empty set for non-PBR ids and the SKYBOX bucket — inert for the
+    /// former (their body doesn't read it) and the minimal skybox-only shader
+    /// for the latter. Never the full "uber" set.
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
     /// For dynamic shader ids: the auto-generated `struct
     /// MaterialData { ... }` declaration emitted above the author's
@@ -629,7 +629,7 @@ mod empty_registry_tests {
             mipmaps: true,
             shader_id,
             base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
-            owns_skybox: shader_id == MaterialShaderId::PBR,
+            owns_skybox: shader_id == MaterialShaderId::SKYBOX,
             // Canonical first-party buckets carry the empty feature-set
             // (the minimal shader, never the uber `all()`).
             pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),

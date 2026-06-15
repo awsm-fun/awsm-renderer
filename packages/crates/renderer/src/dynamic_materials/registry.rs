@@ -206,7 +206,13 @@ impl ShadingBase {
     /// first-party variant launch sites pass their `base` explicitly
     /// instead of deriving it here.
     pub fn for_shader_id(shader_id: MaterialShaderId) -> Self {
-        if shader_id == MaterialShaderId::PBR {
+        if shader_id == MaterialShaderId::SKYBOX {
+            // The skybox bucket shades no geometry; its pipeline is the
+            // `skybox_primary` writer (gated to `skybox_only` includes via
+            // `owns_skybox`). `Pbr` is just the base it nominally carries — the
+            // owns_skybox path overrides the include set regardless.
+            ShadingBase::Pbr
+        } else if shader_id == MaterialShaderId::PBR {
             ShadingBase::Pbr
         } else if shader_id == MaterialShaderId::UNLIT {
             ShadingBase::Unlit
@@ -415,23 +421,39 @@ fn fp_variant_bucket_entry(id: MaterialShaderId, base: ShadingBase, features: u3
 /// registrations produce a different list (via [`bucket_entries`]) and
 /// trigger a recompile via the dispatch-hash on affected cache keys.
 pub fn first_party_bucket_entries() -> Vec<BucketEntry> {
-    awsm_materials::registry::enabled_materials()
-        .iter()
-        .map(|e| BucketEntry {
-            shader_id: e.shader_id,
-            base: ShadingBase::for_shader_id(e.shader_id),
-            // EMPTY feature-set for the canonical base bucket. The canonical
-            // PBR bucket (index 0) is only ever the skybox owner — every real
-            // PBR material routes to its own per-feature-set variant bucket,
-            // so nothing shades here but `sample_skybox` (gated by
-            // `owns_skybox`, independent of `pbr_features`). Compiling it with
-            // the full feature set would be an "uber" shader that never runs —
-            // exactly what specialize-only eliminates; the empty set compiles
-            // the minimal shader instead. Inert anyway for Unlit/Flipbook
-            // (their bodies don't read `pbr_features`).
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
-            name: e.name.to_string(),
-        })
+    // Bucket 0 is the dedicated SKYBOX bucket — NOT a material. classify routes
+    // every fully-uncovered ("sky") pixel here, and its opaque pipeline is the
+    // `skybox_primary` writer (owns_skybox → `skybox_only` includes; shades no
+    // geometry). Reserved by TYPE at index 0 (its id is 0, which sorts ahead of
+    // every real material) instead of the old "the empty-feature PBR bucket is
+    // secretly the skybox" convention — so no real PBR material can ever collide
+    // with the sky slot. It rides a `Pbr` base purely so it shares the opaque
+    // kernel preamble; `owns_skybox` overrides the include set regardless.
+    let skybox = BucketEntry {
+        shader_id: MaterialShaderId::SKYBOX,
+        base: ShadingBase::Pbr,
+        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        name: "skybox".to_string(),
+    };
+    std::iter::once(skybox)
+        .chain(
+            awsm_materials::registry::enabled_materials()
+                .iter()
+                .map(|e| {
+                    BucketEntry {
+                        shader_id: e.shader_id,
+                        base: ShadingBase::for_shader_id(e.shader_id),
+                        // EMPTY feature-set for the canonical base bucket. Every real
+                        // first-party material routes to its own per-feature-set variant
+                        // bucket, so these canonical buckets shade nothing — the empty
+                        // set compiles the minimal shader (never an "uber" all-features
+                        // one). Inert anyway for Unlit/Flipbook (their bodies don't read
+                        // `pbr_features`).
+                        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                        name: e.name.to_string(),
+                    }
+                }),
+        )
         .collect()
 }
 
@@ -1196,9 +1218,8 @@ impl crate::AwsmRenderer {
     ///
     /// Only PBR specializes per feature-set; Toon/Unlit/Flipbook render as
     /// single canonical buckets (no compile-gateable shading paths today).
-    /// The canonical PBR bucket (`MaterialShaderId::PBR`, index 0) always
-    /// stays present as the skybox owner even when every PBR material routes
-    /// to a specialized variant.
+    /// The dedicated SKYBOX bucket (index 0) always stays present as the skybox
+    /// writer, independent of any material.
     pub(crate) fn reconcile_material_variants(&mut self) -> Result<(), crate::error::AwsmError> {
         // ── Warm-path fast-out: ONE consuming bool check. Drives BOTH the
         //    PBR feature-set variant resolution below AND the render-driven
@@ -1317,8 +1338,8 @@ impl crate::AwsmRenderer {
         // Submitting the canonical first-party ids matters because the
         // variant reconcile clears `main` (all opaque pipelines) on a
         // bucket-list change and relaunches only scheduler-registered
-        // materials — without an entry, the canonical PBR skybox-owner +
-        // the Unlit/Toon/Flipbook buckets would never recompile (black).
+        // materials — without an entry, the SKYBOX bucket + the
+        // PBR/Unlit/Toon/Flipbook canonical buckets would never recompile.
         let is_first_party = !shader_id.is_dynamic()
             || self
                 .dynamic_materials
@@ -1805,10 +1826,12 @@ mod tests {
 
         let entries = dm.bucket_entries_cached();
         assert_eq!(entries.len(), fp + 2);
-        // Index 0 stays the canonical PBR bucket (classify routes skybox
-        // to bit 0 → it must remain the PBR skybox-owner).
-        assert_eq!(entries[0].shader_id, MaterialShaderId::PBR);
-        assert_eq!(entries[0].base, ShadingBase::Pbr);
+        // Index 0 is the dedicated SKYBOX bucket (classify routes sky pixels to
+        // bit 0); the canonical PBR bucket follows at index 1.
+        assert_eq!(entries[0].shader_id, MaterialShaderId::SKYBOX);
+        assert_eq!(entries[0].name, "skybox");
+        assert_eq!(entries[1].shader_id, MaterialShaderId::PBR);
+        assert_eq!(entries[1].base, ShadingBase::Pbr);
         // The fp variant comes after the defaults, the custom last.
         assert_eq!(entries[fp].shader_id, var);
         assert_eq!(entries[fp].base, ShadingBase::Pbr);

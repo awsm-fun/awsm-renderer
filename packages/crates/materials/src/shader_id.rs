@@ -26,6 +26,16 @@
 pub struct MaterialShaderId(u32);
 
 impl MaterialShaderId {
+    /// The skybox-only bucket (id 0). **Not a material** — no mesh ever writes
+    /// this id into a material slot. It exists purely as the canonical bucket
+    /// the classify pass routes fully-uncovered ("sky") pixels to, and whose
+    /// opaque pipeline is the dedicated `skybox_primary` writer (it shades no
+    /// geometry). Kept out of [`registry::enabled_materials`](crate::registry)
+    /// for that reason; the renderer reserves its bucket entry directly
+    /// (`first_party_bucket_entries`). Id 0 sorts ahead of every real material
+    /// so it lands at bucket index 0 by type, not by the old "PBR is the
+    /// skybox owner" convention.
+    pub const SKYBOX: Self = Self(0);
     /// Physically based rendering. See `awsm-materials::pbr`.
     pub const PBR: Self = Self(1);
     /// Unlit (constant emissive surface). See `awsm-materials::unlit`.
@@ -88,7 +98,9 @@ impl MaterialShaderId {
     /// `None` for dynamic ids — those carry the registered material's name
     /// instead, formatted by the renderer's WGSL emitter.
     pub fn wgsl_const_name(self) -> Option<&'static str> {
-        if self == Self::PBR {
+        if self == Self::SKYBOX {
+            Some("SHADER_ID_SKYBOX")
+        } else if self == Self::PBR {
             Some("SHADER_ID_PBR")
         } else if self == Self::UNLIT {
             Some("SHADER_ID_UNLIT")

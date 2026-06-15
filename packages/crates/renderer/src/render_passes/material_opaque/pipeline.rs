@@ -69,11 +69,12 @@ pub struct MaterialOpaquePipelines {
     singlesampled_empty_compute_pipeline_key: Option<ComputePipelineKey>,
 }
 
-/// Every opaque-rendering material shader the renderer supports.
-/// Mirror of the `MaterialShaderId` variant set in
-/// `awsm_materials::shader_id`. Used at construction time to enumerate
-/// the pipelines we need to build.
+/// Every opaque-compute pipeline the renderer can build per config. `SKYBOX` is
+/// the dedicated skybox-writer bucket (index 0; `owns_skybox` → `skybox_primary`
+/// kernel, shades no geometry); the rest are the first-party material families.
+/// Used by the AA/mipmap-recompile descriptor build to enumerate variants.
 const OPAQUE_SHADER_IDS: &[MaterialShaderId] = &[
+    MaterialShaderId::SKYBOX,
     MaterialShaderId::PBR,
     MaterialShaderId::UNLIT,
     MaterialShaderId::TOON,
@@ -251,7 +252,7 @@ impl MaterialOpaquePipelines {
                         mipmaps: active_mipmaps,
                         shader_id,
                         base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
-                        owns_skybox: shader_id == MaterialShaderId::PBR,
+                        owns_skybox: shader_id == MaterialShaderId::SKYBOX,
                         // Per-bucket feature-set from the bucket entry (never
                         // the full "uber" set). At build() only the canonical
                         // buckets exist, so this is the empty set for PBR /

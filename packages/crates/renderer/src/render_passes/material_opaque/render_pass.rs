@@ -1,18 +1,18 @@
 //! Opaque material render pass execution.
 //!
-//! Each shader_id-specialized pipeline (PBR / Unlit / Toon)
-//! dispatches *indirectly* — the
-//! material classify pass already produced per-bucket
-//! `(workgroup_count, 1, 1)` indirect args + a per-bucket tile list
-//! the shader reads to map `workgroup_id.x → (tile_x, tile_y)`. So
-//! each pipeline's dispatch only covers tiles its shader_id touches.
+//! Each bucket's specialized pipeline (the SKYBOX writer + the per-feature-set
+//! material families) dispatches *indirectly* — the material classify pass
+//! already produced per-bucket `(workgroup_count, 1, 1)` indirect args + a
+//! per-bucket tile list the shader reads to map `workgroup_id.x →
+//! (tile_x, tile_y)`. So each pipeline's dispatch only covers tiles its bucket
+//! touches.
 //!
-//! Three pipelines are always recorded (PBR / Unlit / Toon) regardless
-//! of whether the scene has meshes of each flavour. Indirect dispatch
-//! with `workgroup_count = 0` is a documented no-op, so empty buckets
-//! pay only the dispatch-record overhead. The PBR pipeline is the
-//! designated skybox owner — see compute.wgsl — so it's the one
-//! pipeline that *must* dispatch even when no PBR meshes are present.
+//! Every registered bucket is recorded regardless of whether the scene has
+//! meshes of that flavour. Indirect dispatch with `workgroup_count = 0` is a
+//! documented no-op, so empty buckets pay only the dispatch-record overhead.
+//! The dedicated SKYBOX bucket (index 0; `owns_skybox` → the `skybox_primary`
+//! kernel — see skybox_primary.wgsl) is the one pipeline that *must* dispatch
+//! even on an empty scene, since classify routes all uncovered pixels to it.
 
 // MaterialShaderId no longer needed in this file — the dispatch loop now
 // iterates registry bucket entries instead of hard-coded ids.
@@ -390,11 +390,11 @@ impl MaterialOpaqueRenderPass {
         let classify_buffer = &ctx.material_classify_buffers.buffer;
 
         // Iterate the same bucket list the classify shader was
-        // compiled against (first-party + currently-registered
-        // dynamic materials). PBR is at index 0 by convention so
-        // skybox routing lands cleanly. For each bucket, dispatch
-        // its specialized opaque-compute pipeline at the indirect-
-        // args offset classify wrote to.
+        // compiled against (SKYBOX at index 0 + the first-party material
+        // families + currently-registered dynamic materials). The SKYBOX
+        // bucket at index 0 is where classify routes uncovered pixels. For
+        // each bucket, dispatch its specialized opaque-compute pipeline at
+        // the indirect-args offset classify wrote to.
         //
         // Reads from the registry's cached slice — refreshed on
         // register / unregister, so no per-frame alloc + sort.

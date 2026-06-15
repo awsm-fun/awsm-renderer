@@ -175,7 +175,7 @@ impl crate::AwsmRenderer {
         //    The classify cache key is shared across buckets (keyed on
         //    `(msaa, bucket_entries)`, not shader_id); the per-bucket
         //    compile helper's cross-call waiter dedup issues it once (on
-        //    the first bucket, always the canonical PBR skybox owner) and
+        //    the first bucket, always the SKYBOX bucket at index 0) and
         //    makes every later bucket wait on it. So classify lands even on
         //    a Blend-only custom scene whose own opaque compile is skipped.
         let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
@@ -1063,12 +1063,12 @@ impl crate::AwsmRenderer {
 /// Resolve a first-party bucket's `(base, pbr_features, owns_skybox)` for
 /// the opaque cache key from its registry bucket entry. A per-feature-set
 /// PBR/Toon variant reports its specialized family + feature mask; the
-/// canonical first-party buckets carry the EMPTY feature-set (the canonical
-/// PBR bucket is the skybox owner — it shades no material geometry, so it
-/// compiles the minimal shader, never an "uber" all-features one). Only the
-/// canonical `MaterialShaderId::PBR` bucket owns the skybox write (classify
-/// routes skybox pixels to bit 0 / index 0 → that bucket), so every
-/// specialized PBR variant gets `owns_skybox = false`.
+/// canonical first-party buckets carry the EMPTY feature-set (the minimal
+/// shader, never an "uber" all-features one). Only the dedicated
+/// `MaterialShaderId::SKYBOX` bucket (index 0) owns the skybox write — classify
+/// routes every uncovered pixel to bit 0, and its pipeline is the
+/// `skybox_primary` writer (it shades no geometry); every material bucket gets
+/// `owns_skybox = false`.
 fn opaque_variant_params(
     entries: &[crate::dynamic_materials::BucketEntry],
     shader_id: MaterialShaderId,
@@ -1084,7 +1084,7 @@ fn opaque_variant_params(
     let pbr_features = entry
         .map(|e| e.pbr_features)
         .unwrap_or_else(|| awsm_materials::pbr::PbrFeatures::default().bits());
-    let owns_skybox = shader_id == MaterialShaderId::PBR;
+    let owns_skybox = shader_id == MaterialShaderId::SKYBOX;
     (base, pbr_features, owns_skybox)
 }
 

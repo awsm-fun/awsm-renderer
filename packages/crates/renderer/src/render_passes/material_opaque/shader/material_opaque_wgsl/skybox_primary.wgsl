@@ -1,11 +1,11 @@
 // skybox_primary.wgsl — dedicated skybox writer for the canonical skybox bucket.
 //
-// The canonical "PBR" bucket (bucket 0) is, in practice, the skybox-only bucket:
-// classify routes skybox/uncovered pixels to it, and real PBR materials route to
-// their own feature-variant buckets. So this pipeline reuses that bucket's tile
-// list + indirect args + bind groups (no classify change), but does ONLY the
-// skybox write — no material shading. It replaces the former `owns_skybox` path
-// that was tangled into compute.wgsl, leaving the material kernel pure.
+// The SKYBOX bucket (index 0; MaterialShaderId::SKYBOX) is a dedicated bucket,
+// NOT a material: classify routes every fully-uncovered ("sky") pixel to it.
+// This pipeline is dispatched over that bucket's tile list + indirect args +
+// bind groups and does ONLY the skybox write — no material shading. (Real
+// materials route to their own feature-variant buckets.) `owns_skybox` selects
+// this kernel over the material `compute.wgsl`, keeping the material kernel pure.
 //
 // Shares the kernel preamble with compute.wgsl; `inc = skybox_only` gates out all
 // the heavy PBR shading includes, so this compiles to a tiny shader.

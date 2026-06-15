@@ -7,12 +7,11 @@
 // each bucket bit is set in. The total atomic traffic is ~1 per
 // workgroup-bit, regardless of the 64 threads inside.
 //
-// Skybox pixels (`triangle_index == U32_MAX`) are routed to bucket 0 (the
-// canonical "PBR" bucket, which in practice is the skybox-only bucket — real
-// PBR materials route to their feature-variant buckets). The dedicated
-// skybox_primary.wgsl pipeline is dispatched over that bucket's tiles and
-// writes the skybox; the material kernels (compute.wgsl) just skip skybox
-// pixels. See material_opaque/.../skybox_primary.wgsl.
+// Skybox pixels (`triangle_index == U32_MAX`) are routed to the dedicated
+// SKYBOX bucket (index 0). Its opaque pipeline is the `skybox_primary.wgsl`
+// writer, dispatched over that bucket's tiles; the material kernels
+// (compute.wgsl) shade real geometry only. See
+// material_opaque/.../skybox_primary.wgsl.
 //
 // The bit constants + the shader_id → bit dispatch chain + the
 // per-bucket extract block are all walked from the same
@@ -42,9 +41,10 @@ fn view_space_depth(camera: Camera, depth: f32, pixel_coords: vec2<f32>, screen_
 {% endif %}
 
 // Bits in the workgroup-shared mask. One per registered bucket; the
-// PBR bit is at index 0 by convention so the skybox-fallback routing
-// (which assigns the PBR bit unconditionally for skybox pixels) maps
-// cleanly. Each bucket lives in word `index / 32` at bit `index % 32`;
+// SKYBOX bucket is at index 0 (its id is 0, sorting ahead of every real
+// material) so the skybox routing (which assigns `BUCKET_BIT_SKYBOX` for
+// fully-uncovered pixels) maps cleanly to word 0, bit 0.
+// Each bucket lives in word `index / 32` at bit `index % 32`;
 // `tile_mask` is `array<atomic<u32>, n_words>` so the bucket budget can
 // exceed 32 by raising `MAX_BUCKET_WORDS` (n_words). At n_words == 1
 // this is equivalent to the original single-word `1u << index`.
@@ -83,11 +83,11 @@ fn cs_main(
         let vis = textureLoad(visibility_data_tex, coords, 0);
         let tri = join32(vis.x, vis.y);
         if tri == U32_MAX {
-            // Skybox — handled by the PBR pipeline (it retains the
-            // `triangle_index == U32_MAX → sample_skybox` fallback).
-            // PBR is bucket index 0 → word 0.
+            // Fully-uncovered ("sky") pixel → the dedicated SKYBOX bucket
+            // (index 0 → word 0), whose opaque pipeline is the
+            // `skybox_primary` writer. See material_opaque/.../skybox_primary.wgsl.
             local_word = 0u;
-            local_bit = BUCKET_BIT_PBR;
+            local_bit = BUCKET_BIT_SKYBOX;
         } else {
             let meta_offset = join32(vis.z, vis.w);
             let mesh_meta = material_mesh_metas[meta_offset / 256u];
