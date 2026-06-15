@@ -53,7 +53,7 @@ impl MaterialClassifyRenderPass {
     /// shared compute-pipeline pool. Without this the cache (and the pool it
     /// references) grew unbounded on every registry edit → GPU OOM ("aw snap").
     /// Pruning only non-current entries is dangle-free: nothing dispatches them.
-    /// Part of the pipeline-leak fix; see docs/plans/mesh-pipeline-overhaul.md.
+    /// Part of the pipeline-leak fix.
     pub fn prune_dynamic_pipeline_cache(
         &mut self,
         current_dispatch_hash: u64,

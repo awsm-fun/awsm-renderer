@@ -275,7 +275,7 @@ impl crate::AwsmRenderer {
         // nothing references them anymore (the typed caches are now empty and the
         // per-frame `collect_renderables` rebuilds from them, so the dispatch
         // sites' `Option` guard skips the draw until the new layout's pipelines
-        // land). See docs/plans/mesh-pipeline-overhaul.md.
+        // land).
         let mut dropped_keys = self
             .render_passes
             .material_opaque
@@ -1138,7 +1138,7 @@ fn dispatch_hash_from_target(t: &CompileInstallTarget) -> u64 {
 /// must NOT be installed into the per-bucket typed caches: it would strand a
 /// stale `(…, shader_id)` entry that the bucket-set clear can't reach (the clear
 /// re-fills only live buckets), leaking it permanently. Part of the pipeline-leak
-/// fix; see docs/plans/mesh-pipeline-overhaul.md.
+/// fix.
 fn is_live_bucket(renderer: &crate::AwsmRenderer, shader_id: MaterialShaderId) -> bool {
     renderer
         .dynamic_materials
@@ -1194,8 +1194,7 @@ fn install_per_pass(
 
 /// Free a single displaced compute pipeline (and its shader module) from the
 /// shared pool — used by the install sites when a typed-cache slot is
-/// overwritten under a new bucket layout. Part of the pipeline-leak fix; see
-/// docs/plans/mesh-pipeline-overhaul.md.
+/// overwritten under a new bucket layout. Part of the pipeline-leak fix.
 fn free_displaced_compute_pipeline(
     renderer: &mut crate::AwsmRenderer,
     key: crate::pipelines::compute_pipeline::ComputePipelineKey,

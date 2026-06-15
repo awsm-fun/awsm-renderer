@@ -424,7 +424,7 @@ impl MaterialTransparentPipelines {
     /// `relayout_bucket_buffers` BEFORE the pipeline-pool sweep so evicted pool
     /// entries aren't left dangling here — each transparent mesh recompiles its
     /// pipeline on the next transparent pass (normal cache-miss path). Part of
-    /// the dynamic-material pipeline-leak fix; see docs/plans/mesh-pipeline-overhaul.md.
+    /// the dynamic-material pipeline-leak fix.
     pub fn clear_dynamic_pipelines(&mut self) {
         self.render_pipeline_keys.clear();
     }

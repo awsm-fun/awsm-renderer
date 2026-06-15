@@ -380,7 +380,7 @@ pub fn remove_template_lights(renderer: &mut AwsmRenderer, ctx: &GltfPopulateCon
 /// reset/clear AND mid-session when the last instance of an import is deleted
 /// (`node_sync::remove_node`, gated by `Bridge::template_instances` refcount +
 /// a live-`SkinnedMesh` guard so a template another node still renders from is
-/// never freed). See docs/plans/mesh-pipeline-overhaul.md.
+/// never freed).
 pub fn remove_template_meshes(renderer: &mut AwsmRenderer, template: &AssetTemplate) {
     fn walk(renderer: &mut AwsmRenderer, nodes: &[AssetTemplateNode]) {
         for n in nodes {

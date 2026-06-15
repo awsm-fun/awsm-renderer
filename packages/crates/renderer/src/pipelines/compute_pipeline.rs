@@ -107,8 +107,7 @@ impl ComputePipelines {
     /// on a bucket-set change while the GPU pipelines lingered in this pool
     /// forever. Freeing exactly the keys a typed cache just dropped is
     /// dangle-free by construction — nothing references them anymore (the typed
-    /// cache is empty and the per-frame renderables rebuild from it). See
-    /// docs/plans/mesh-pipeline-overhaul.md.
+    /// cache is empty and the per-frame renderables rebuild from it).
     pub fn remove_pipeline_keys(
         &mut self,
         keys: &[ComputePipelineKey],
@@ -140,7 +139,7 @@ impl ComputePipelines {
     /// resolution was dropped, or the slot was replaced before a clear ran).
     /// Their only handle is the shader they were built from. The caller MUST
     /// have already cleared/pruned every typed cache that could reference these
-    /// (so nothing dangles). See docs/plans/mesh-pipeline-overhaul.md.
+    /// (so nothing dangles).
     pub fn remove_by_shader_keys(
         &mut self,
         shader_keys: &std::collections::HashSet<ShaderKey>,

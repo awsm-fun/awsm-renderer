@@ -208,7 +208,7 @@ impl MaterialEdgePipelines {
     /// existing per-shader entry, so the caller can free the orphaned pipeline
     /// from the shared pool (the leak fix — re-installs under a new bucket layout
     /// used to silently orphan the previous one). `None` when the slot was empty
-    /// or re-installed the identical key. See docs/plans/mesh-pipeline-overhaul.md.
+    /// or re-installed the identical key.
     pub fn insert_per_shader_pipeline(
         &mut self,
         key_id: EdgeResolvePipelineKeyId,
@@ -230,7 +230,7 @@ impl MaterialEdgePipelines {
     /// Returns the dropped pool keys (per-shader + skybox + final-blend) so the
     /// caller can free them from the shared compute-pipeline pool — the leak fix
     /// (these references were dropped while the GPU pipelines lingered in the pool
-    /// forever). See docs/plans/mesh-pipeline-overhaul.md.
+    /// forever).
     pub fn clear_dynamic_pipelines(&mut self) -> Vec<ComputePipelineKey> {
         let mut dropped: Vec<ComputePipelineKey> =
             self.per_shader.drain().map(|(_, k)| k).collect();

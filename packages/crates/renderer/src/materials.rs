@@ -94,7 +94,7 @@ impl AwsmRenderer {
         // an "aw snap" contributor. A scan-on-remove (rather than refcounting the
         // insert path) keeps every insert site untouched, and freeing only
         // unreferenced keys is dangle-free — a texture shared by another live
-        // material is kept. See docs/plans/mesh-pipeline-overhaul.md.
+        // material is kept.
         let handles = self
             .materials
             .get(key)

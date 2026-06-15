@@ -1,7 +1,6 @@
 //! Pure-data glTF → canonical AWSM-format conversion.
 //!
-//! This is the single import/convert path (see `docs/buffers.md` +
-//! `docs/plans/mesh-pipeline-overhaul.md`). It runs entirely on bytes — no GPU,
+//! This is the single import/convert path (see `docs/buffers.md`). It runs entirely on bytes — no GPU,
 //! no browser, no renderer — so it's exhaustively property-testable. Both the
 //! editor and the player call [`convert`] before any population:
 //!

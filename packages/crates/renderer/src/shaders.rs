@@ -57,7 +57,7 @@ impl Shaders {
     /// Evict a shader module by key — drops the slotmap entry (releasing the
     /// `GpuShaderModule`) AND removes any cache entry pointing at it. Used by
     /// `unregister_material` to reclaim a deleted custom material's shader
-    /// modules (the pipeline-leak fix — see docs/plans/mesh-pipeline-overhaul.md).
+    /// modules (the pipeline-leak fix).
     /// Returns true if a module was removed.
     pub fn remove(&mut self, shader_key: ShaderKey) -> bool {
         let existed = self.lookup.remove(shader_key).is_some();
@@ -71,7 +71,7 @@ impl Shaders {
     /// the caller can sweep the pipeline pools by shader key. This reclaims the
     /// opaque / edge / classify / transparent pipelines orphaned when a bucket-set
     /// change forces a recompile under a new cache key — the core of the
-    /// dynamic-material pipeline-leak fix. See docs/plans/mesh-pipeline-overhaul.md.
+    /// dynamic-material pipeline-leak fix.
     pub fn take_stale_dynamic_set_shader_keys(
         &mut self,
         current_dispatch_hash: u64,
@@ -368,7 +368,6 @@ impl ShaderCacheKey {
     /// the shader cache by this predicate after a bucket-set change reclaims them.
     /// Set-independent keys (picker, line, shadow, masked geometry/shadow — which
     /// key on their own `shader_id`, not the registered set) return false.
-    /// See docs/plans/mesh-pipeline-overhaul.md.
     pub fn is_stale_dynamic_set(
         &self,
         current_dispatch_hash: u64,

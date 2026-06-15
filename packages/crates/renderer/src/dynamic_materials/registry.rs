@@ -1432,9 +1432,7 @@ impl crate::AwsmRenderer {
         // key carries the now-stale set signature (the deleted material's opaque /
         // edge / classify variants among them). Doing the sweep there — after the
         // typed caches are cleared — is what keeps it free of dangling pool
-        // references. This is the pipeline-leak fix ("aw snap" crash); see
-        // docs/plans/mesh-pipeline-overhaul.md.
-
+        // references. This is the pipeline-leak fix ("aw snap" crash).
         self.dynamic_materials.remove(shader_id)
     }
 
