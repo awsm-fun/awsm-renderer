@@ -96,7 +96,8 @@ pub fn select_by_axis(mesh: &MeshData, axis: usize, cmp: Cmp, value: f32) -> Vec
         .collect()
 }
 
-/// Select the top `percent` (0..1) of vertices along `axis` (highest coordinate).
+/// Select every vertex within the top `percent` (0..1) of the axis **extent**
+/// along `axis` — a height band (the count depends on tessellation, not `percent`).
 pub fn select_top_percent_axis(mesh: &MeshData, axis: usize, percent: f32) -> Vec<u32> {
     if axis > 2 || mesh.positions.is_empty() {
         return Vec::new();
@@ -109,6 +110,27 @@ pub fn select_top_percent_axis(mesh: &MeshData, axis: usize, percent: f32) -> Ve
     }
     let cutoff = hi - (hi - lo) * percent.clamp(0.0, 1.0);
     select_by_axis(mesh, axis, Cmp::Greater, cutoff)
+}
+
+/// Select the `count` vertices with the GREATEST value along `axis` (a count, not
+/// a height band; ties broken by ascending index). Returned in ascending index
+/// order, like the other selectors. The count-based companion to
+/// [`select_top_percent_axis`].
+pub fn select_top_count_axis(mesh: &MeshData, axis: usize, count: u32) -> Vec<u32> {
+    if axis > 2 || mesh.positions.is_empty() || count == 0 {
+        return Vec::new();
+    }
+    let mut idx: Vec<u32> = (0..mesh.positions.len() as u32).collect();
+    // Highest axis value first; stable by index so ties are deterministic.
+    idx.sort_by(|&a, &b| {
+        mesh.positions[b as usize][axis]
+            .partial_cmp(&mesh.positions[a as usize][axis])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    idx.truncate(count as usize);
+    idx.sort_unstable();
+    idx
 }
 
 /// Select vertices within `radius` of `center`.
@@ -195,6 +217,27 @@ mod tests {
         for &i in &sel {
             assert!(m.positions[i as usize][1] > 1.0);
         }
+    }
+
+    #[test]
+    fn select_top_count_grabs_exactly_n_highest() {
+        // 5 verts stacked along Y at y = 0..4. Top 2 by count = the two highest.
+        let m = MeshData {
+            positions: (0..5).map(|i| [0.0, i as f32, 0.0]).collect(),
+            normals: None,
+            uvs: None,
+            colors: None,
+            indices: vec![],
+        };
+        let sel = select_top_count_axis(&m, 1, 2);
+        assert_eq!(
+            sel,
+            vec![3, 4],
+            "exactly the 2 highest verts, in index order"
+        );
+        // count 0 selects nothing; count beyond the vertex count clamps to all.
+        assert!(select_top_count_axis(&m, 1, 0).is_empty());
+        assert_eq!(select_top_count_axis(&m, 1, 99).len(), 5);
     }
 
     #[test]

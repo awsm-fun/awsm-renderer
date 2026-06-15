@@ -1772,7 +1772,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON, e.g. {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} (percent is a 0..1 FRACTION of the axis extent — 0.2 = top 20%; values >1 are clamped to 1.0 = everything) or {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection)."
+        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON. For \"the top of the mesh\" pick the right notion: {\"kind\":\"top_count\",\"axis\":1,\"count\":40} = the 40 HIGHEST verts by count (use get_mesh_stats for the total to turn a fraction into a count); {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} = every vert in the top 20% of the axis EXTENT (a height band — the count it returns depends on tessellation, not 0.2). Others: {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection)."
     )]
     async fn select_vertices_where(
         &self,

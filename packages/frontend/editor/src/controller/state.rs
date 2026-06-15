@@ -3823,8 +3823,8 @@ impl EditorController {
             EditorQuery::SelectVerticesWhere { node, predicate } => {
                 use awsm_editor_protocol::VertexPredicate as P;
                 use awsm_meshgen::edit::{
-                    select_by_axis, select_by_normal_dir, select_top_percent_axis,
-                    select_within_aabb, select_within_radius, Cmp,
+                    select_by_axis, select_by_normal_dir, select_top_count_axis,
+                    select_top_percent_axis, select_within_aabb, select_within_radius, Cmp,
                 };
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
@@ -3859,6 +3859,9 @@ impl EditorController {
                                     );
                                 }
                                 select_top_percent_axis(&mesh, axis as usize, percent)
+                            }
+                            P::TopCount { axis, count } => {
+                                select_top_count_axis(&mesh, axis as usize, count)
                             }
                             P::WithinRadius { center, radius } => {
                                 select_within_radius(&mesh, center, radius)
