@@ -1,15 +1,23 @@
 [package]
-name = "awsm-renderer-mcp"
-description = "Native MCP server that drives the awsm-renderer editor over a WebTransport (QUIC) link."
+name = "awsm-scene-mcp"
+description = "Native MCP server that drives the awsm-renderer editor over a WebSocket link."
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+repository.workspace = true
 publish = false
 
+# Opt this crate into cargo-dist: it's `publish = false` (never goes to
+# crates.io), which dist otherwise reads as "don't ship", but we DO want its
+# prebuilt binary on GitHub Releases. The wasm-only editor crate stays opted-out
+# by default; `precise-builds = true` (root) keeps dist off the rest.
+[package.metadata.dist]
+dist = true
+
 [[bin]]
-name = "awsm-renderer-mcp"
+name = "awsm-scene-mcp"
 path = "src/main.rs"
 
 [dependencies]
@@ -24,19 +32,14 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Single-writer / reader split over the editor WebSocket (SinkExt / StreamExt).
+futures = { workspace = true }
 
-# WebTransport (QUIC) — quinn on native, with a self-signed dev cert the browser
-# pins via serverCertificateHashes.
-web-transport = "0.10.5"
-rustls = "0.23"
-rcgen = "0.14"
-sha2 = "0.10"
+# base64-encode the .glb export + PNG bytes returned to the agent.
 base64 = "0.22"
-time = { version = "0.3", features = ["formatting"] }
-bytes = "1"
 
-# HTTP control surface (cert-hash discovery) + the rmcp /mcp endpoint.
-axum = "0.8"
+# HTTP control surface + the editor WebSocket link + the rmcp /mcp endpoint.
+axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
 rmcp = { version = "1", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
 uuid = { version = "1.11", features = ["v4"] }

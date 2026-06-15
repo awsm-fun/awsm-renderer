@@ -63,14 +63,17 @@ Use the releases: https://github.com/KhronosGroup/KTX-Software/releases
 
 Everything lives under `packages/`:
 
-**Library crates** (`packages/crates/`)
+**Library crates** (`packages/crates/`) — the public, crates.io-published suite (13 crates)
 
 * [awsm-renderer](../packages/crates/renderer): the renderer in all its glory
 * [awsm-renderer-core](../packages/crates/renderer-core): wraps the WebGPU API with very little opinion — just a nicer Rust API
 * [awsm-renderer-gltf](../packages/crates/renderer-gltf): glTF loading on top of the renderer
-* [awsm-scene-schema](../packages/crates/scene-schema): the authored scene / project schema (pure data; shared by the editor + any runtime)
-* [awsm-editor-protocol](../packages/crates/editor-protocol): the serializable command / query / transport types the editor and the MCP server share
-* [awsm-materials](../packages/crates/materials), [awsm-meshgen](../packages/crates/meshgen), [awsm-curves](../packages/crates/curves), [awsm-geometry](../packages/crates/geometry), [awsm-particles](../packages/crates/particles): supporting libraries
+* [awsm-scene](../packages/crates/scene): the lean canonical runtime scene schema (`scene.toml` + `assets/`; pure data, shared by the player + any runtime)
+* [awsm-scene-loader](../packages/crates/scene-loader): load an awsm-scene bundle into the renderer
+* [awsm-glb-export](../packages/crates/glb-export) / [awsm-gltf-convert](../packages/crates/gltf-convert): glTF/GLB export IR + the pure-data glTF → canonical-format normalizer
+* [awsm-materials](../packages/crates/materials), [awsm-meshgen](../packages/crates/meshgen), [awsm-curves](../packages/crates/curves), [awsm-geometry](../packages/crates/geometry), [awsm-particles](../packages/crates/particles), [awsm-tangents](../packages/crates/tangents): supporting libraries
+
+See the README's "Library crates" section for the full breakdown + dependency graph.
 
 **Frontends** (`packages/frontend/`, WASM via Trunk)
 
@@ -80,7 +83,7 @@ Everything lives under `packages/`:
 
 **Native tooling**
 
-* [mcp](../packages/mcp): the `awsm-renderer-mcp` that drives the editor from an AI agent (see below)
+* [mcp](../packages/mcp): the `awsm-scene-mcp` that drives the editor from an AI agent (see below). Its [`editor-protocol/`](../packages/mcp/editor-protocol) sub-crate (`awsm-editor-protocol`) is the **internal** editor↔server wire vocabulary (`EditorCommand` / `EditorQuery` + the WebSocket transport types) shared only by the editor frontend and this binary — `publish = false`.
 * [debugging](../packages/debugging): native debugging binaries
 
 **Other**

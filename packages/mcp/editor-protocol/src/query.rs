@@ -1,5 +1,5 @@
 //! `EditorQuery` / `EditorSnapshot` — a serializable read of editor state for
-//! external inspection + headless tests. The MCP/WebTransport transport
+//! external inspection + headless tests. The MCP WebSocket transport
 //! `serde`-encodes these back to the caller. A flat, view-agnostic projection of
 //! the controller's state, not the live model.
 
@@ -143,7 +143,7 @@ fn default_units() -> String {
 // ─────────────────────────────── query surface ──────────────────────────────
 // The READ half of the controller — serializable, read-only (never mutates
 // persisted state, never records undo, never broadcasts; any handler that pins
-// the playhead saves + restores the transport). The MCP/WebTransport transport
+// the playhead saves + restores the transport). The MCP WebSocket transport
 // `serde`-decodes a query → `query()` → encodes the result.
 
 /// A read/verification query against editor + renderer state.
@@ -391,8 +391,15 @@ pub enum VertexPredicate {
     AxisGreater { axis: u8, value: f32 },
     /// Component `axis` less than `value`.
     AxisLess { axis: u8, value: f32 },
-    /// Top `percent` (0..1) along `axis`.
+    /// Top `percent` (0..1) of the axis **extent** along `axis` — a height band
+    /// (e.g. 0.2 = everything in the top 20% of the bounding span). The vertex
+    /// *count* it returns depends on tessellation density, not on `percent`. Use
+    /// [`Self::TopCount`] when you want a fixed number of vertices.
     TopPercent { axis: u8, percent: f32 },
+    /// The `count` vertices with the **greatest** value along `axis` (a count, not
+    /// a height band — "the top N verts"). Get a mesh's total vertex count from
+    /// `get_mesh_stats` to pick a count from a fraction.
+    TopCount { axis: u8, count: u32 },
     /// Within `radius` of `center`.
     WithinRadius { center: [f32; 3], radius: f32 },
     /// Inside the axis-aligned box `[min, max]` (inclusive), in the mesh's local

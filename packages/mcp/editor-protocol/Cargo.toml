@@ -1,11 +1,14 @@
 [package]
 name = "awsm-editor-protocol"
-description = "Shared, serializable command/query wire types for driving the awsm-renderer editor remotely (MCP/WebTransport transport) and from headless tests."
+description = "Internal editor↔MCP wire types (EditorCommand/EditorQuery + the WebSocket transport envelope). Shared only by the awsm-editor frontend and the awsm-scene-mcp binary — not a public library; lives under packages/mcp/ alongside its server."
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+# Internal glue between our own binaries (the editor + the MCP server), not a
+# creator-facing library — never goes to crates.io.
+publish = false
 
 [dependencies]
 awsm-scene = { workspace = true }

@@ -12,6 +12,7 @@ mod controller;
 mod engine;
 mod error;
 mod fs;
+mod help_modal;
 mod material_mode;
 mod prelude;
 mod remote;
@@ -134,9 +135,13 @@ pub fn main() {
                                 });
                             }
                             // Remote MCP control: `?mcp=<control-origin>` auto-dials
-                            // the native server over WebTransport. Absent → the
-                            // top-bar MCP button connects on demand (to the dev
-                            // default origin).
+                            // the native server over a WebSocket, optionally with
+                            // `&pair=<code>` to claim a specific agent when more
+                            // than one tab/agent is connected. Absent → the top-bar
+                            // MCP button connects on demand (to the dev default).
+                            if let Some(pair) = boot_mcp_pair() {
+                                remote::set_pair_code(pair);
+                            }
                             if let Some(origin) = boot_mcp_origin() {
                                 remote::connect(origin);
                             }
@@ -202,10 +207,22 @@ fn boot_load_url() -> Option<String> {
 /// server's HTTP control origin (e.g. `http://127.0.0.1:9086`). Returns `None`
 /// when absent (remote control disabled).
 fn boot_mcp_origin() -> Option<String> {
+    boot_query_param("mcp")
+}
+
+/// Read a `?pair=<code>` query parameter (URL-decoded) — the pairing code that
+/// claims a specific MCP agent when more than one tab/agent is connected.
+fn boot_mcp_pair() -> Option<String> {
+    boot_query_param("pair")
+}
+
+/// Read a `<key>=<value>` query parameter (URL-decoded) from the page URL.
+fn boot_query_param(key: &str) -> Option<String> {
     let search = web_sys::window()?.location().search().ok()?;
     let q = search.strip_prefix('?').unwrap_or(&search);
+    let prefix = format!("{key}=");
     for pair in q.split('&') {
-        if let Some(val) = pair.strip_prefix("mcp=") {
+        if let Some(val) = pair.strip_prefix(&prefix) {
             let decoded = js_sys::decode_uri_component(val)
                 .ok()
                 .and_then(|v| v.as_string())

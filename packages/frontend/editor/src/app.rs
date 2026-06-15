@@ -226,7 +226,7 @@ fn agent_feed() -> Dom {
 }
 
 /// Small "✕ clear" chip above the feed rows — empties the narration strip. Mute
-/// (stop narrating entirely) lives in Settings → "Agent activity feed".
+/// (stop narrating entirely) lives in Settings → "Follow agent activity".
 fn agent_feed_clear_btn() -> Dom {
     html!("button", {
         .style("align-self", "flex-start")
@@ -495,8 +495,12 @@ fn settings_drawer() -> Dom {
                 .child(row("MSAA", toggle(s.msaa.clone())))
                 .child(row("Light heatmap", toggle(s.heatmap.clone())))
                 .child(row(
-                    "Agent activity feed",
+                    "Follow agent activity",
                     toggle(crate::engine::activity_feed::enabled()),
+                ))
+                .child(row(
+                    "Show MCP notifications",
+                    toggle(crate::remote::show_notifications()),
                 ))
                 .render(),
         )
@@ -778,8 +782,8 @@ fn mcp_status_button(status: crate::remote::RemoteStatus) -> Dom {
             .label("MCP \u{2713}")
             .variant(BtnVariant::Primary)
             .size(BtnSize::Sm)
-            .title("Connected \u{2014} click to disconnect")
-            .on_click(crate::remote::disconnect)
+            .title("Connected \u{2014} click to manage the MCP connection")
+            .on_click(open_mcp_modal)
             .render(),
     }
 }
@@ -818,7 +822,21 @@ fn mcp_activity_chip(working: bool) -> Dom {
                 .attr("title", "Agent idle \u{2014} safe to edit / export.")
         })
         .child(html!("span", { .text("\u{1F916}") }))
-        .child(html!("span", { .text(if working { "working\u{2026}" } else { "idle" }) }))
+        // Name the current action ("added a box") instead of a bare "working…",
+        // pulled from the live narration; falls back to "working…" before the
+        // first command (or when the feed/follow toggle is off).
+        .child(html!("span", {
+            .style("max-width", "240px")
+            .style("overflow", "hidden")
+            .style("text-overflow", "ellipsis")
+            .text_signal(crate::engine::activity_feed::current_action().signal_cloned().map(move |action| {
+                if working {
+                    action.unwrap_or_else(|| "working\u{2026}".to_string())
+                } else {
+                    "idle".to_string()
+                }
+            }))
+        }))
     })
 }
 
@@ -830,6 +848,8 @@ fn open_mcp_modal() {
         // Seeded once per open from the current/last-used origin (the `?mcp=` value
         // or the build default); edits feed straight into `connect`.
         let addr = Mutable::new(crate::remote::origin().get_cloned());
+        // Pair-code input — revealed only when the server asked for one.
+        let pair_code = Mutable::new(crate::remote::pair().get_cloned());
 
         html!("div", {
             .style("display", "flex")
@@ -845,7 +865,7 @@ fn open_mcp_modal() {
                 .style("font-size", "12.5px")
                 .style("color", "var(--text-2)")
                 .style("line-height", "1.5")
-                .text("Run awsm-renderer-mcp locally, then connect — the editor dials out to \
+                .text("Run awsm-scene-mcp locally, then connect — the editor dials out to \
                        this address. An MCP agent (Claude, Codex, \u{2026}) drives the editor \
                        through that same server.")
             }))
@@ -886,11 +906,68 @@ fn open_mcp_modal() {
                 .placeholder(crate::remote::default_origin())
                 .mono(true)
                 .render())
-            // Action: Connect / Connecting… / Disconnect, by live status.
+            // TLS toggle — for a remote server behind https/wss (off for the
+            // usual local server).
+            .child(row("Use TLS (wss / https)", toggle(crate::remote::tls())))
+            // Pairing code — ALWAYS shown (optional). Blank = auto-pair, which
+            // works when exactly one tab + one agent are connected. When more than
+            // one is connected the server needs a code: the agent prints it (its
+            // `pairing_status` tool); type it here + Pair to claim this tab.
+            .child(html!("label", {
+                .style("font-size", "11px")
+                .style("color", "var(--text-3)")
+                .style("text-transform", "uppercase")
+                .style("letter-spacing", "0.04em")
+                .text("Pairing code (optional)")
+            }))
             .child(html!("div", {
                 .style("display", "flex")
-                .style("justify-content", "flex-end")
+                .style("gap", "8px")
+                .style("align-items", "center")
+                .child(html!("div", {
+                    .style("flex", "1 1 auto")
+                    .style("min-width", "0")
+                    .child(TextInput::new(pair_code.clone())
+                        .placeholder("auto-pairs if blank \u{2014} e.g. 3K9J")
+                        .mono(true)
+                        .render())
+                }))
+                .child(Btn::new()
+                    .label("Pair")
+                    .variant(BtnVariant::Ghost)
+                    .size(BtnSize::Md)
+                    .title("Claim this tab for the agent holding this code")
+                    .on_click(clone!(pair_code => move || {
+                        crate::remote::submit_pair_code(pair_code.get_cloned());
+                    }))
+                    .render())
+            }))
+            // Highlighted prompt when the server actually asked for a code.
+            .child_signal(crate::remote::pairing_needed().signal().map(|needed| needed.then(|| html!("div", {
+                .style("font-size", "11.5px")
+                .style("color", "var(--warn)")
+                .style("line-height", "1.4")
+                .text("This server has multiple tabs/agents connected \u{2014} enter the pairing \
+                       code your agent printed (its pairing_status) to bind it to this tab.")
+            }))))
+            // Live work display — the activity feed (narration + panel spotlight)
+            // that lets you watch the agent build. Also under Settings.
+            .child(row("Follow agent activity", toggle(crate::engine::activity_feed::enabled())))
+            // Action: Help on the left; Connect / Connecting… / Disconnect on the
+            // right, by live status.
+            .child(html!("div", {
+                .style("display", "flex")
+                .style("justify-content", "space-between")
+                .style("align-items", "center")
                 .style("margin-top", "4px")
+                .child(Btn::new()
+                    .label("Help")
+                    .icon("help")
+                    .variant(BtnVariant::Ghost)
+                    .size(BtnSize::Md)
+                    .title("How the MCP works — open the guide")
+                    .on_click(|| { Modal::close(); crate::help_modal::open_help_mcp(); })
+                    .render())
                 .child_signal(crate::remote::status().signal().map(clone!(addr => move |st| {
                     Some(match st {
                         RemoteStatus::Connected => Btn::new()
@@ -998,6 +1075,8 @@ fn top_bar(ctrl: &EditorController) -> Dom {
         ], false, false))
         .child(IconBtn::new("settings").title("Settings")
             .on_click(|| controller().settings_open.set_neq(true)).render())
+        .child(IconBtn::new("help").title("Help")
+            .on_click(crate::help_modal::open_help).render())
         .child(cmdk_button())
         .child(mcp_button())
         .child(html!("div", { .style("flex", "1") }))

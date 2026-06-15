@@ -438,11 +438,12 @@ impl EditorController {
     /// geometry). Every `MeshDef` carries a mandatory `stack`, so the prior recipe
     /// always exists. The shared body of `SetMeshModifiers` and the incremental
     /// modifier commands. Returns `None` (not undoable) if the asset isn't a mesh.
-    fn apply_mesh_stack(&self, mesh: AssetId, stack: ModifierStack) -> Option<EditorCommand> {
+    fn apply_mesh_stack(&self, mesh: AssetId, mut stack: ModifierStack) -> Option<EditorCommand> {
         use crate::engine::bridge::mesh_cache;
-        // Capture the prior recipe for the inverse, and bail if this asset isn't a
-        // mesh.
-        let prior_stack = match self
+        use awsm_editor_protocol::{MeshBase, MeshRef};
+        // Capture the prior recipe + overrides + baked bytes for the inverse, and
+        // bail if this asset isn't a mesh.
+        let (prior_stack, prior_overrides) = match self
             .scene
             .assets
             .lock()
@@ -450,33 +451,81 @@ impl EditorController {
             .get(mesh)
             .map(|e| &e.source)
         {
-            Some(SceneAssetSource::Mesh(def)) => def.stack.clone(),
+            Some(SceneAssetSource::Mesh(def)) => (def.stack.clone(), def.overrides.clone()),
             _ => return None,
         };
-        // Store the new recipe on the asset (the recipe lives in the
-        // project; the .mesh.bin is a regenerable cache). Snapshot the full def
-        // (incl. any authoring overrides) so the re-bake layers them back on.
+        let prior_bytes = mesh_cache::get_captured(mesh);
+        let requested_base = stack.base.clone();
+
+        // Relocate a self-aliasing `Captured(mesh)` base the moment it gains
+        // modifiers. The render bake writes `mesh_cache[mesh]`, so a `Captured(mesh)`
+        // base would read its OWN previous output (modifiers already baked in) and
+        // re-apply the stack — compounding geometry (the 4096 → ×256 field report).
+        // Copy the frozen bytes to a distinct snapshot id ONCE and point the base
+        // there; from then on the bake reads the immutable snapshot.
+        if let MeshBase::Captured(MeshRef(r)) = requested_base {
+            if r == mesh && !stack.modifiers.is_empty() {
+                let snap = captured_snapshot_id(mesh);
+                if mesh_cache::get_captured(snap).is_none() {
+                    if let Some(frozen) = mesh_cache::get_captured(mesh) {
+                        mesh_cache::store_with_id(snap, frozen);
+                    }
+                }
+                stack.base = MeshBase::Captured(MeshRef(snap));
+            }
+        }
+
+        // A genuine base change (a different generator) invalidates the
+        // index-keyed overrides — they reference the prior topology. Drop them so
+        // the new recipe regenerates clean (the stale-ghost-tip field report).
+        // AddModifier/SetModifier/RemoveModifier keep the base, so this only fires
+        // on a `SetMeshModifiers` that swaps the base.
+        let base_changed = requested_base != prior_stack.base;
+        let clear_overrides = base_changed && !prior_overrides.is_empty();
+
         let def = {
             let mut assets = self.scene.assets.lock().unwrap();
             match assets.entries.get_mut(&mesh).map(|e| &mut e.source) {
                 Some(SceneAssetSource::Mesh(def)) => {
-                    def.stack = stack.clone();
+                    def.stack = stack;
                     def.editable = true;
+                    if clear_overrides {
+                        def.overrides = Default::default();
+                    }
                     def.clone()
                 }
                 _ => return None,
             }
         };
-        // Re-evaluate → re-bake the cache (the bridge re-materializes via
-        // the mesh-revision bump in `apply`).
+        // Re-evaluate → re-bake the cache (the bridge re-materializes via the
+        // mesh-revision bump in `apply`).
         let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
         mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
         self.scene.bump_revision();
-        // Inverse: restore the prior stack (re-evaluates to prior geometry).
-        Some(EditorCommand::SetMeshModifiers {
+
+        // Inverse. The frozen snapshot id is never clobbered, so restoring a
+        // `Captured(snapshot)` recipe re-bakes correctly on its own — but a
+        // `Captured(mesh)`-self prior recipe read the now-overwritten cache, and a
+        // base swap dropped overrides, so those restore the exact prior bytes +
+        // overrides explicitly (SetMeshData → SetVertexOverrides re-bake last).
+        let prior_self_captured =
+            matches!(prior_stack.base, MeshBase::Captured(MeshRef(r)) if r == mesh);
+        let restore_stack = EditorCommand::SetMeshModifiers {
             mesh,
             stack: prior_stack,
-        })
+        };
+        if !clear_overrides && !prior_self_captured {
+            return Some(restore_stack);
+        }
+        let mut inv = vec![restore_stack];
+        if let Some(bytes) = prior_bytes {
+            inv.push(EditorCommand::SetMeshData { mesh, data: bytes });
+        }
+        inv.push(EditorCommand::SetVertexOverrides {
+            mesh,
+            overrides: prior_overrides,
+        });
+        Some(EditorCommand::Batch(inv))
     }
 
     /// Collapse-before-authoring: make `mesh` *authorable* (index-based per-vertex
@@ -3774,8 +3823,8 @@ impl EditorController {
             EditorQuery::SelectVerticesWhere { node, predicate } => {
                 use awsm_editor_protocol::VertexPredicate as P;
                 use awsm_meshgen::edit::{
-                    select_by_axis, select_by_normal_dir, select_top_percent_axis,
-                    select_within_aabb, select_within_radius, Cmp,
+                    select_by_axis, select_by_normal_dir, select_top_count_axis,
+                    select_top_percent_axis, select_within_aabb, select_within_radius, Cmp,
                 };
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
@@ -3810,6 +3859,9 @@ impl EditorController {
                                     );
                                 }
                                 select_top_percent_axis(&mesh, axis as usize, percent)
+                            }
+                            P::TopCount { axis, count } => {
+                                select_top_count_axis(&mesh, axis as usize, count)
                             }
                             P::WithinRadius { center, radius } => {
                                 select_within_radius(&mesh, center, radius)
@@ -6449,6 +6501,20 @@ fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
     }
 }
 
+/// A distinct, deterministic cache id for a mesh's frozen `Captured` snapshot,
+/// kept separate from the asset id. The asset id is the **render-bake** target
+/// (`mesh_cache[mesh]`, what `node_mesh` reads); the snapshot id holds the
+/// immutable frozen geometry a `Captured` base evaluates from. Keeping them
+/// distinct is what stops a collapsed mesh's re-bake from reading its own output
+/// and compounding. Derived from the mesh id (deterministic for replay /
+/// persistence) but XOR-salted so it can never collide with it.
+fn captured_snapshot_id(mesh: AssetId) -> AssetId {
+    // Arbitrary fixed 128-bit salt; non-zero so the result differs from `mesh`,
+    // and effectively collision-free against random v4 asset ids.
+    const SNAPSHOT_SALT: u128 = 0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835;
+    AssetId(uuid::Uuid::from_u128(mesh.0.as_u128() ^ SNAPSHOT_SALT))
+}
+
 /// Index of `id` within its parent's children (or the scene root when `parent`
 /// is `None`). Used to capture a node's position before deletion so undo can
 /// restore it in place.
@@ -6532,5 +6598,279 @@ mod ik_tests {
         let n = ik_bend_plane_normal(a, b, c, dir_t, None, Vec3::NEG_Z);
         assert!((n.length() - 1.0).abs() < 1e-5);
         assert!(n.dot(dir_t).abs() < 1e-5, "normal must be ⊥ the reach line");
+    }
+}
+
+#[cfg(test)]
+mod mesh_rebake_tests {
+    use super::*;
+    use crate::engine::bridge::mesh_cache;
+    use awsm_editor_protocol::{InsertSpec, MeshBase, Modifier, PrimitiveShape};
+    use futures::executor::block_on;
+
+    fn tris(mesh: AssetId) -> usize {
+        mesh_cache::get_captured(mesh)
+            .map(|c| c.indices.len() / 3)
+            .unwrap_or(0)
+    }
+
+    fn surface_area(mesh: AssetId) -> f32 {
+        let Some(c) = mesh_cache::get_captured(mesh) else {
+            return 0.0;
+        };
+        let p = &c.positions;
+        c.indices
+            .chunks_exact(3)
+            .map(|t| {
+                let (a, b, d) = (
+                    glam::Vec3::from(p[t[0] as usize]),
+                    glam::Vec3::from(p[t[1] as usize]),
+                    glam::Vec3::from(p[t[2] as usize]),
+                );
+                (b - a).cross(d - a).length() * 0.5
+            })
+            .sum()
+    }
+
+    fn sphere() -> InsertSpec {
+        InsertSpec::Primitive(PrimitiveShape::Sphere {
+            radius: 0.5,
+            segments_long: 16,
+            segments_lat: 12,
+        })
+    }
+
+    fn base_of(ctrl: &EditorController, mesh: AssetId) -> MeshBase {
+        let assets = ctrl.scene.assets.lock().unwrap();
+        match assets.get(mesh).map(|e| &e.source) {
+            Some(SceneAssetSource::Mesh(def)) => def.stack.base.clone(),
+            _ => panic!("not a mesh"),
+        }
+    }
+
+    /// Adding procedural modifiers to a collapsed (`Captured`-base) mesh must apply
+    /// each one ONCE — not re-read its own bake output and re-apply the stack
+    /// (which compounded geometry: 4096 → ×256 in the field report).
+    #[test]
+    fn modifiers_on_captured_base_do_not_compound() {
+        let ctrl = EditorController::new();
+        let node = NodeId::new();
+        let mesh = AssetId(node.0);
+        block_on(ctrl.apply(EditorCommand::Insert {
+            id: node,
+            spec: sphere(),
+            parent: None,
+        }))
+        .unwrap();
+        let base = tris(mesh);
+        assert!(base > 0, "sphere baked");
+
+        // Collapse to a Captured base by sculpting a vertex.
+        block_on(ctrl.apply(EditorCommand::SoftTransformVertices {
+            mesh,
+            indices: vec![0],
+            translation: [0.0, 0.2, 0.0],
+            falloff: 0.3,
+        }))
+        .unwrap();
+        assert!(
+            matches!(base_of(&ctrl, mesh), MeshBase::Captured(_)),
+            "collapsed"
+        );
+
+        // subdivide(1) → exactly ×4.
+        block_on(ctrl.apply(EditorCommand::AddModifier {
+            mesh,
+            modifier: Modifier::Subdivide { iterations: 1 },
+        }))
+        .unwrap();
+        assert_eq!(tris(mesh), base * 4, "subdivide once = ×4");
+
+        // smooth keeps the tri count — subdivide must NOT re-apply (no compounding).
+        block_on(ctrl.apply(EditorCommand::AddModifier {
+            mesh,
+            modifier: Modifier::Smooth {
+                iterations: 1,
+                factor: 0.5,
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            tris(mesh),
+            base * 4,
+            "no compounding — subdivide stayed applied once"
+        );
+    }
+
+    /// Replacing the recipe with a fresh primitive base must regenerate from
+    /// scratch — not re-apply the stale soft-transform overrides (which left a
+    /// ghost tip at y ≈ 0.5 + 0.45 in the field report).
+    #[test]
+    fn set_mesh_modifiers_with_new_base_clears_stale_overrides() {
+        let ctrl = EditorController::new();
+        let node = NodeId::new();
+        let mesh = AssetId(node.0);
+        block_on(ctrl.apply(EditorCommand::Insert {
+            id: node,
+            spec: sphere(),
+            parent: None,
+        }))
+        .unwrap();
+        // Pull the top way up (collapses + records an override).
+        block_on(ctrl.apply(EditorCommand::SoftTransformVertices {
+            mesh,
+            indices: vec![0],
+            translation: [0.0, 5.0, 0.0],
+            falloff: 0.2,
+        }))
+        .unwrap();
+        let pulled_max_y = mesh_cache::get_captured(mesh)
+            .unwrap()
+            .positions
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::MIN, f32::max);
+        assert!(pulled_max_y > 1.0, "override pulled the tip up");
+
+        // Replace the whole recipe with a clean unit sphere (radius 0.5).
+        block_on(ctrl.apply(EditorCommand::SetMeshModifiers {
+            mesh,
+            stack: ModifierStack {
+                base: MeshBase::Primitive(PrimitiveShape::Sphere {
+                    radius: 0.5,
+                    segments_long: 24,
+                    segments_lat: 16,
+                }),
+                modifiers: vec![],
+            },
+        }))
+        .unwrap();
+        let new_max_y = mesh_cache::get_captured(mesh)
+            .unwrap()
+            .positions
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::MIN, f32::max);
+        assert!(
+            new_max_y < 0.6,
+            "recipe replaced → clean sphere (max y ≈ 0.5), not a ghost tip (got {new_max_y})"
+        );
+        let _ = surface_area(mesh);
+    }
+
+    fn max_y(mesh: AssetId) -> f32 {
+        mesh_cache::get_captured(mesh)
+            .unwrap()
+            .positions
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::MIN, f32::max)
+    }
+
+    /// Undo must walk back cleanly through collapse → add modifier → add modifier,
+    /// restoring tri counts and erasing the sculpt — the inverses can't leave the
+    /// frozen snapshot or the cache in a stale state.
+    #[test]
+    fn undo_walks_back_through_collapse_and_modifiers() {
+        let ctrl = EditorController::new();
+        let node = NodeId::new();
+        let mesh = AssetId(node.0);
+        block_on(ctrl.apply(EditorCommand::Insert {
+            id: node,
+            spec: sphere(),
+            parent: None,
+        }))
+        .unwrap();
+        let base = tris(mesh);
+        let base_max_y = max_y(mesh);
+
+        let inv_sculpt = block_on(ctrl.apply(EditorCommand::SoftTransformVertices {
+            mesh,
+            indices: vec![0],
+            translation: [0.0, 3.0, 0.0],
+            falloff: 0.25,
+        }))
+        .unwrap()
+        .expect("sculpt records an inverse");
+        assert!(max_y(mesh) > 1.0, "sculpt raised the tip");
+
+        let inv_subdiv = block_on(ctrl.apply(EditorCommand::AddModifier {
+            mesh,
+            modifier: Modifier::Subdivide { iterations: 1 },
+        }))
+        .unwrap()
+        .expect("add modifier records an inverse");
+        assert_eq!(tris(mesh), base * 4);
+
+        let inv_smooth = block_on(ctrl.apply(EditorCommand::AddModifier {
+            mesh,
+            modifier: Modifier::Smooth {
+                iterations: 1,
+                factor: 0.5,
+            },
+        }))
+        .unwrap()
+        .expect("add modifier records an inverse");
+        assert_eq!(tris(mesh), base * 4);
+
+        // Undo, newest first.
+        block_on(ctrl.apply(inv_smooth)).unwrap();
+        assert_eq!(tris(mesh), base * 4, "undo smooth: still subdivided once");
+        block_on(ctrl.apply(inv_subdiv)).unwrap();
+        assert_eq!(
+            tris(mesh),
+            base,
+            "undo subdivide: back to the collapsed base"
+        );
+        assert!(
+            max_y(mesh) > 1.0,
+            "sculpt still present after undoing modifiers"
+        );
+        block_on(ctrl.apply(inv_sculpt)).unwrap();
+        assert_eq!(tris(mesh), base, "undo sculpt: tri count unchanged");
+        assert!(
+            (max_y(mesh) - base_max_y).abs() < 0.02,
+            "undo sculpt: tip back to the original sphere (got {}, want {base_max_y})",
+            max_y(mesh)
+        );
+    }
+
+    /// A collapsed-then-modified mesh's frozen snapshot lives under a distinct id;
+    /// it's non-regenerable, so Save must include it (else editing breaks after a
+    /// reload).
+    #[test]
+    fn snapshot_id_is_saved_for_collapsed_meshes() {
+        use awsm_editor_protocol::mesh_asset_filename;
+        let ctrl = EditorController::new();
+        let node = NodeId::new();
+        let mesh = AssetId(node.0);
+        block_on(ctrl.apply(EditorCommand::Insert {
+            id: node,
+            spec: sphere(),
+            parent: None,
+        }))
+        .unwrap();
+        block_on(ctrl.apply(EditorCommand::SoftTransformVertices {
+            mesh,
+            indices: vec![0],
+            translation: [0.0, 0.3, 0.0],
+            falloff: 0.25,
+        }))
+        .unwrap();
+        block_on(ctrl.apply(EditorCommand::AddModifier {
+            mesh,
+            modifier: Modifier::Subdivide { iterations: 1 },
+        }))
+        .unwrap();
+
+        let snap = super::captured_snapshot_id(mesh);
+        assert_ne!(snap, mesh, "snapshot id is distinct from the asset id");
+        let files = crate::controller::persistence::mesh_files(&ctrl);
+        let want = format!("assets/{}", mesh_asset_filename(snap));
+        assert!(
+            files.iter().any(|(p, _)| *p == want),
+            "snapshot {snap} must be in the saved mesh files: {:?}",
+            files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
     }
 }

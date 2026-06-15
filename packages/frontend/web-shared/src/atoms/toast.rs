@@ -62,6 +62,14 @@ impl Toast {
     pub fn render() -> Dom {
         TOAST.with(|t| t.render())
     }
+
+    /// Dismiss the currently-shown toast, if any. The toast is a singleton (one
+    /// notice at a time, each replacing the last), so this clears whatever is
+    /// visible — a programmatic "dismiss all" for hosts that want to clear the
+    /// corner on demand (e.g. the editor's "dismiss MCP notifications").
+    pub fn clear() {
+        TOAST.with(|t| t.message.set(None));
+    }
 }
 
 struct ToastInstance {

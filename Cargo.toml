@@ -13,7 +13,7 @@ members = [
     "packages/crates/renderer-gltf",
     "packages/crates/scene",
     "packages/crates/scene-loader",
-    "packages/crates/editor-protocol",
+    "packages/mcp/editor-protocol",
     "packages/frontend/web-shared",
     "packages/frontend/editor",
     "packages/frontend/model-tests",
@@ -26,15 +26,39 @@ resolver = "2"
 [workspace.package]
 description = "awsm renderer"
 edition = "2021"
-version = "0.2.0"
+version = "0.3.0"
 license = "MIT OR Apache-2.0"
 authors = ["David Komer"]
 # 1.85 floor: rmcp 1.x (the MCP server SDK) is edition-2024, which requires
 # Rust 1.85+. Keeping the MSRV here lets dependency specs stay simple (`rmcp = "1"`)
 # instead of pinning around the resolver.
 rust-version = "1.85.0"
-repository = "https://github.com/dakom/awsm-renderer"
-homepage = "https://dakom.github.io/awsm-renderer/"
+repository = "https://github.com/awsm-fun/awsm-renderer"
+
+### Distribution
+
+# The `awsm-scene-mcp` binary ships as prebuilt GitHub Releases artifacts via
+# cargo-dist (the `dist` CLI). Pushing a `v<version>` tag builds every platform +
+# the curl/PowerShell installers. See docs/RELEASING.md. Regenerate the CI
+# workflow after editing this block: `dist generate`.
+[workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax).
+cargo-dist-version = "0.32.0"
+# CI backends to support.
+ci = "github"
+# The installers to generate for each app.
+installers = ["shell", "powershell"]
+# Target platforms to build apps for (Rust target-triple syntax).
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Which actions to run on pull requests.
+pr-run-mode = "plan"
+# Build only the `awsm-scene-mcp` package (with `-p`), not the whole workspace —
+# the workspace also holds wasm-only crates (the editor) that can't host-compile.
+precise-builds = true
+# Path that installers should place binaries in.
+install-path = "CARGO_HOME"
+# Whether to install an updater program.
+install-updater = false
 
 ### Patches
 
@@ -82,22 +106,22 @@ opt-level = 1
 # `workspace.package.version` so the published crates carry concrete
 # version requirements on each other (crates.io rejects path-only deps).
 # Bump this block together with the version above on every release.
-awsm-curves = { path = "packages/crates/curves", version = "0.2.0" }
-awsm-geometry = { path = "packages/crates/geometry", version = "0.2.0" }
-awsm-scene = { path = "packages/crates/scene", version = "0.2.0" }
-awsm-scene-loader = { path = "packages/crates/scene-loader", version = "0.2.0" }
-awsm-editor-protocol = { path = "packages/crates/editor-protocol", version = "0.2.0" }
-awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.2.0" }
-awsm-meshgen = { path = "packages/crates/meshgen", version = "0.2.0" }
-awsm-glb-export = { path = "packages/crates/glb-export", version = "0.2.0" }
-awsm-gltf-convert = { path = "packages/crates/gltf-convert", version = "0.2.0" }
-awsm-tangents = { path = "packages/crates/tangents", version = "0.2.0" }
-awsm-particles = { path = "packages/crates/particles", version = "0.2.0" }
-awsm-materials = { path = "packages/crates/materials", version = "0.2.0" }
-awsm-renderer = { path = "packages/crates/renderer", version = "0.2.0" }
-awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.2.0" }
+awsm-curves = { path = "packages/crates/curves", version = "0.3.0" }
+awsm-geometry = { path = "packages/crates/geometry", version = "0.3.0" }
+awsm-scene = { path = "packages/crates/scene", version = "0.3.0" }
+awsm-scene-loader = { path = "packages/crates/scene-loader", version = "0.3.0" }
+awsm-editor-protocol = { path = "packages/mcp/editor-protocol", version = "0.3.0" }
+awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.3.0" }
+awsm-meshgen = { path = "packages/crates/meshgen", version = "0.3.0" }
+awsm-glb-export = { path = "packages/crates/glb-export", version = "0.3.0" }
+awsm-gltf-convert = { path = "packages/crates/gltf-convert", version = "0.3.0" }
+awsm-tangents = { path = "packages/crates/tangents", version = "0.3.0" }
+awsm-particles = { path = "packages/crates/particles", version = "0.3.0" }
+awsm-materials = { path = "packages/crates/materials", version = "0.3.0" }
+awsm-renderer = { path = "packages/crates/renderer", version = "0.3.0" }
+awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.3.0" }
 # Frontend-only (not published); workspace dep keeps consumers path-agnostic.
-awsm-web-shared = { path = "packages/frontend/web-shared", version = "0.2.0" }
+awsm-web-shared = { path = "packages/frontend/web-shared", version = "0.3.0" }
 
 # Misc
 cfg-if = "1.0.4"

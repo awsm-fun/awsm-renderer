@@ -1,6 +1,6 @@
 //! The editor's **authoring** layer + the serializable command/query wire types
-//! for driving the awsm-renderer editor remotely (the MCP / WebTransport
-//! transport) and from headless tests.
+//! for driving the awsm-renderer editor remotely (the MCP WebSocket transport)
+//! and from headless tests.
 //!
 //! Pure data — no rendering, DOM, async, or reactive deps — so it compiles for
 //! both the editor's wasm target and the native MCP server. It depends on
@@ -49,7 +49,7 @@ pub use query::{
     SettledResult, StatsResult, TextureSnapshot, TimeseriesFrame, TimeseriesResult, TrackSnapshot,
     VertexPredicate,
 };
-pub use transport::{EditorEvent, Request, Response};
+pub use transport::{EditorEvent, PngHandle, Request, Response, WsClientMsg, WsServerMsg};
 
 // Re-export the meshgen recipe types so editor + mcp callers that build/send a
 // modifier stack have a single import path alongside the commands that carry it.

@@ -1,12 +1,12 @@
-//! The request/response envelope exchanged over the WebTransport link between
-//! the native MCP server and the in-browser editor.
+//! The request/response vocabulary exchanged over the editor link between the
+//! native MCP server and the in-browser editor, plus the [`WsServerMsg`] /
+//! [`WsClientMsg`] frames that carry it over the WebSocket.
 //!
-//! One request travels per server-initiated bidirectional stream (the server
-//! `open_bi`s, the editor `accept_bi`s) and the editor replies on the same
-//! stream — so there is no request-id correlation: stream identity *is* the
-//! correlation, and framing is by stream-finish (write the whole message, then
-//! `finish()`; read to end, then decode). Encoded with `bitcode` at the
-//! transport edges (PNG bytes stay raw).
+//! The link is one ordered WebSocket channel: the server tags each [`Request`]
+//! with an `id` and the editor replies with a [`Response`] carrying the same id
+//! (so ids correlate request↔response — there is no per-stream identity). Frames
+//! are JSON text. Large PNG bytes never ride the link — the editor POSTs them to
+//! the server's `/png/<id>` side-channel and returns a small [`PngHandle`] here.
 
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +66,51 @@ pub struct EditorEvent {
     pub nodes: Option<Vec<String>>,
 }
 
+/// Server → browser WebSocket frame.
+// `Request` is the dominant variant (one per editor request); boxing it to shrink
+// the rarely-used unit variants would just add an allocation to the hot path.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WsServerMsg {
+    /// Serve this request and reply with [`WsClientMsg::Response`] carrying the
+    /// same `id`.
+    Request { id: u64, req: Request },
+    /// The agent that wants this editor is ambiguous and supplied no pairing
+    /// code — the editor should prompt for one and send [`WsClientMsg::Pair`].
+    PairingRequired,
+    /// This socket's binding was taken over (another tab/agent paired) — the
+    /// editor should show itself disconnected.
+    Detached,
+}
+
+/// Browser → server WebSocket frame.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WsClientMsg {
+    /// Claim a binding to the agent holding this pairing code. Optional first
+    /// frame; unnecessary in the unambiguous 1:1 auto-bind case.
+    Pair { code: String },
+    /// Reply to a [`WsServerMsg::Request`] with the matching `id`.
+    Response { id: u64, resp: Response },
+    /// An unsolicited editor push event.
+    Event(EditorEvent),
+}
+
+/// A reference to a PNG the editor uploaded out-of-band. The image bytes do
+/// **not** ride the control link — the editor POSTs them to the server's
+/// `/png/<id>` HTTP route and returns this small handle here instead. Keeps the
+/// link byte-light (a multi-MiB render never blocks small frames).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PngHandle {
+    /// Opaque id (uuid v4) the editor minted and POSTed the bytes under; the
+    /// server stores them at a temp path keyed by this id.
+    pub id: String,
+    /// Size of the uploaded PNG in bytes.
+    pub byte_len: usize,
+    /// Pixel dimensions of the encoded image.
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Editor → server. The reply to a [`Request`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
@@ -74,8 +119,9 @@ pub enum Response {
     /// A query result (boxed — `QueryResult::Snapshot` is large, and serde boxes
     /// transparently so the JSON wire form is unchanged).
     Query(Box<QueryResult>),
-    /// Raw PNG bytes.
-    Png(Vec<u8>),
+    /// A rendered PNG, uploaded out-of-band (see [`PngHandle`]); only this handle
+    /// crosses the control link.
+    Png(PngHandle),
     /// The current workspace mode.
     Mode(EditorMode),
     /// The request failed; the string is a human-readable reason.
@@ -250,5 +296,60 @@ mod wire_roundtrip_tests {
             "scene_png",
         );
         assert_roundtrips(&Request::Mode, "mode");
+    }
+
+    /// The WebSocket envelope + the out-of-band PNG handle must round-trip too:
+    /// the server serializes `WsServerMsg`, the editor deserializes it (and
+    /// vice-versa for `WsClientMsg`/`Response`). A drift here breaks the link
+    /// itself, not just one tool.
+    #[test]
+    fn ws_envelope_roundtrips() {
+        let server = WsServerMsg::Request {
+            id: 7,
+            req: Request::ScenePng {
+                width: Some(800),
+                height: None,
+            },
+        };
+        let j = serde_json::to_string(&server).unwrap();
+        let back: WsServerMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        let client = WsClientMsg::Response {
+            id: 7,
+            resp: Response::Png(PngHandle {
+                id: "abc".to_string(),
+                byte_len: 1234,
+                width: 800,
+                height: 600,
+            }),
+        };
+        let j = serde_json::to_string(&client).unwrap();
+        let back: WsClientMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        let event = WsClientMsg::Event(EditorEvent {
+            kind: "toast".to_string(),
+            level: Some("info".to_string()),
+            message: Some("hi".to_string()),
+            nodes: None,
+        });
+        let j = serde_json::to_string(&event).unwrap();
+        let back: WsClientMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        // Pairing frames (Phase 2 isolation).
+        let pair = WsClientMsg::Pair {
+            code: "3K9J".to_string(),
+        };
+        let j = serde_json::to_string(&pair).unwrap();
+        let back: WsClientMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        for msg in [WsServerMsg::PairingRequired, WsServerMsg::Detached] {
+            let j = serde_json::to_string(&msg).unwrap();
+            let back: WsServerMsg = serde_json::from_str(&j).unwrap();
+            assert_eq!(j, serde_json::to_string(&back).unwrap());
+        }
     }
 }

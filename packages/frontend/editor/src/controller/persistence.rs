@@ -204,13 +204,23 @@ pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
 /// persistence gap: captured/editable meshes now survive Save → reload.
 pub fn mesh_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
     use crate::engine::bridge::mesh_cache;
+    use awsm_editor_protocol::{MeshBase, MeshRef};
+    let mesh_bin = |id: AssetId| -> Option<(String, Vec<u8>)> {
+        let captured = mesh_cache::get_captured(id)?;
+        let bytes = bitcode::serialize(&captured).ok()?;
+        Some((format!("assets/{}", mesh_asset_filename(id)), bytes))
+    };
     let mut out = Vec::new();
     let assets = ctrl.scene.assets.lock().unwrap();
     for (id, entry) in assets.entries.iter() {
-        if matches!(entry.source, AssetSource::Mesh(_)) {
-            if let Some(captured) = mesh_cache::get_captured(*id) {
-                if let Ok(bytes) = bitcode::serialize(&captured) {
-                    out.push((format!("assets/{}", mesh_asset_filename(*id)), bytes));
+        if let AssetSource::Mesh(def) = &entry.source {
+            out.extend(mesh_bin(*id));
+            // A collapsed/sculpted mesh's frozen snapshot lives under a distinct
+            // id (see `captured_snapshot_id`) and is non-regenerable — save it too,
+            // or post-reload editing would read empty bytes for the `Captured` base.
+            if let MeshBase::Captured(MeshRef(snap)) = def.stack.base {
+                if snap != *id {
+                    out.extend(mesh_bin(snap));
                 }
             }
         }
@@ -229,15 +239,30 @@ where
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
     use crate::engine::bridge::mesh_cache;
+    use awsm_editor_protocol::{MeshBase, MeshRef};
     for (id, entry) in project.assets.entries.iter() {
-        if !matches!(entry.source, AssetSource::Mesh(_)) {
+        let AssetSource::Mesh(def) = &entry.source else {
             continue;
-        }
+        };
         let path = format!("assets/{}", mesh_asset_filename(*id));
         if let Ok(bytes) = read(path).await {
             match bitcode::deserialize::<CapturedMesh>(&bytes) {
                 Ok(captured) => mesh_cache::store_with_id(*id, captured),
                 Err(e) => tracing::warn!("mesh {id}: bad .mesh.bin ({e})"),
+            }
+        }
+        // Restore the frozen snapshot a collapsed/sculpted mesh's `Captured` base
+        // points at (a distinct id; see `captured_snapshot_id`) — non-regenerable,
+        // so without it post-reload editing reads empty bytes.
+        if let MeshBase::Captured(MeshRef(snap)) = def.stack.base {
+            if snap != *id {
+                let p = format!("assets/{}", mesh_asset_filename(snap));
+                if let Ok(bytes) = read(p).await {
+                    match bitcode::deserialize::<CapturedMesh>(&bytes) {
+                        Ok(captured) => mesh_cache::store_with_id(snap, captured),
+                        Err(e) => tracing::warn!("snapshot {snap}: bad .mesh.bin ({e})"),
+                    }
+                }
             }
         }
     }

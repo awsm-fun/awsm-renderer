@@ -7,7 +7,6 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 [dependencies]
 # The pure-data glb IR + reader/writer (reexport_clean_scene, write_glb,
