@@ -112,10 +112,13 @@ by these changes — a hot-reload/resize artifact) that blanked the editor view;
 page load to verify. Verify in the :9080 model viewer (model-tests, populate_gltf) at
 /app/model/DiffuseTransmissionPlant after it rebuilds — undersides should glow.
 
-REMAINING: FlipBook masked (atlas-cell alpha, DEFERRED — mask alpha is the time-varying
-sprite cell; flipbook.rs left transparent-routed); textured-CUSTOM cutout browser test
-(material_sample_<name> path — PBR-textured already verified); scene-loader player round-trip
-of alpha_wgsl (currently None); editor Mask contract docs (main WGSL now OpaqueShadingOutput).
+FlipBook masked: ✅ DONE + browser-verified (2026-06-15). `alpha_mode=Mask` flipbook routes
+through the masked alpha-tested path (NOT transparent — `is_transparency_pass` returns
+`has_alpha_blend()`); the time-varying atlas cell is the cutout. masked_alpha.wgsl has the
+`ShadingBase::Flipbook` arm (cell-alpha via FLIPBOOK_CELL_WGSL); geometry+shadow masked
+variants compiled (textures.rs). Verified via flipbook-atlas-2x2.png + alpha_mode Mask:
+animated hard-edged cutout (cell 0 = circle, cell 2 = triangle). Shadow path reuses the same
+snippet + the cutout-phase-verified masked-shadow infra.
 
 DEV STACK: `task mcp-dev` runs in a background Bash task (id bf79wbng1) — trunk:9085 (editor,
 auto-rebuilds on renderer/editor save + live-reloads browser), MCP:9086 (`cargo run`, rebuilds

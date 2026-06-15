@@ -738,7 +738,12 @@ especially over MCP for agents".
 - E. PHASE 4 PARITY VERIFY: byte-identity proof between renderer mesh_pack and the
   convert crate's packer (the deferred proptest); if identity holds, consider the 2b
   unification go/no-go with evidence.
-- F. FLIPBOOK MATERIAL (deferred from cutout phase).
+- F. FLIPBOOK MATERIAL — ✅ DONE + browser-verified (2026-06-15). The masked
+  (alpha-tested) flipbook was already code-complete (the "deferred" note was
+  stale): `alpha_mode=Mask` routes opaque/masked, `masked_alpha.wgsl` has the
+  `ShadingBase::Flipbook` arm evaluating the time-varying atlas-cell alpha,
+  geometry+shadow masked variants compiled. Browser-verified: animated
+  hard-edged cutout (cell 0 circle → cell 2 triangle) via flipbook-atlas-2x2.png.
 - G. OPEN-ENDED: survey docs/ + code for high-leverage perf or agent-over-MCP
   usability wins; pitch-then-do the top items within budget (log triage in this doc).
 
