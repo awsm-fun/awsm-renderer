@@ -1,5 +1,5 @@
 //! The rmcp tool layer. Each tool is a thin typed wrapper that builds a protocol
-//! [`Request`] and relays it to the attached editor over the WebTransport link,
+//! [`Request`] and relays it to the attached editor over the WebSocket link,
 //! then shapes the [`Response`] into an MCP result. All editor mutation flows
 //! through `EditorController` on the far side (the "all via controller" rule);
 //! this layer only translates.
@@ -2971,10 +2971,17 @@ impl EditorMcp {
 
     async fn png(&self, r: Request) -> Result<CallToolResult, McpError> {
         match self.req(r).await? {
-            Response::Png(bytes) => Ok(CallToolResult::success(vec![Content::image(
-                STANDARD.encode(bytes),
-                "image/png".to_string(),
-            )])),
+            // The bytes rode the `/png/<id>` side-channel, not the link — read
+            // them back from the temp file the editor uploaded them to.
+            Response::Png(handle) => {
+                let bytes = std::fs::read(crate::http::png_path(&handle.id)).map_err(|e| {
+                    McpError::internal_error(format!("read png {}: {e}", handle.id), None)
+                })?;
+                Ok(CallToolResult::success(vec![Content::image(
+                    STANDARD.encode(bytes),
+                    "image/png".to_string(),
+                )]))
+            }
             Response::Err(e) => Err(McpError::internal_error(e, None)),
             other => Err(unexpected(other)),
         }

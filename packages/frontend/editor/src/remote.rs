@@ -1,5 +1,5 @@
-//! Remote-control link: the editor dials *out* to the native MCP server over
-//! WebTransport (QUIC) and serves its requests by calling the
+//! Remote-control link: the editor dials *out* to the native MCP server over a
+//! WebSocket (`<origin>/editor`) and serves its requests by calling the
 //! [`EditorController`](crate::controller) directly.
 //!
 //! Started two ways: automatically when the page is loaded with
@@ -8,26 +8,31 @@
 //! the `?mcp=` origin if one was supplied, and editable there). Connect /
 //! disconnect surface as toasts and a reactive [`status`] signal the UI reflects.
 //!
-//! Flow: fetch `<control-origin>/control` → `{ quic_url, cert_hash }` → open a
-//! WebTransport session pinning that self-signed cert hash → loop accepting
-//! server-initiated bidirectional streams, one [`Request`] each, replying with a
-//! [`Response`] on the same stream (framing by stream-finish).
+//! The link is one ordered WebSocket. The server sends [`WsServerMsg::Request`]
+//! frames; we serve each and reply with a [`WsClientMsg::Response`] carrying the
+//! same `id`. Editor push events go up as [`WsClientMsg::Event`]. All outbound
+//! frames funnel through a single writer (an mpsc drained in [`run`]) so
+//! concurrent replies/events never interleave a half-written frame. Rendered PNGs
+//! ride a `/png/<id>` HTTP side-channel (the bytes never cross the link); only a
+//! small [`PngHandle`] comes back over the socket.
 
 use std::cell::{Cell, RefCell};
 
 use awsm_web_shared::prelude::{Mutable, Toast};
 use base64::Engine;
-use serde::Deserialize;
+use futures::channel::mpsc;
+use futures::{FutureExt, SinkExt, StreamExt};
+use gloo_net::websocket::futures::WebSocket;
+use gloo_net::websocket::Message;
 use wasm_bindgen_futures::spawn_local;
-use web_transport::{ClientBuilder, RecvStream, SendStream, Session};
 
-use awsm_editor_protocol::{EditorEvent, Request, Response};
+use awsm_editor_protocol::{EditorEvent, PngHandle, Request, Response, WsClientMsg, WsServerMsg};
 
 use crate::controller::controller;
 
-/// Cap on a single inbound request (bounds memory if a peer streams without
-/// finishing). Requests are small; 16 MiB is far outside the legitimate range.
-const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+/// Outbound-frame sender: every reply / event funnels through this to the single
+/// writer in [`run`].
+type LinkTx = mpsc::UnboundedSender<WsClientMsg>;
 
 /// How long the "agent working" pulse lingers after the last in-flight request
 /// finishes, so a burst of quick mutations doesn't flicker the indicator on/off.
@@ -53,8 +58,9 @@ pub enum RemoteStatus {
 thread_local! {
     static STATUS: Mutable<RemoteStatus> = Mutable::new(RemoteStatus::Disconnected);
     static ORIGIN: Mutable<String> = Mutable::new(default_origin().to_string());
-    /// The live session, kept so the UI can `disconnect()` it.
-    static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+    /// Outbound frame sender for the live link; `None` when disconnected. Kept so
+    /// the UI can `disconnect()` (drop it) and `notify_event()` over the socket.
+    static SESSION: RefCell<Option<LinkTx>> = const { RefCell::new(None) };
     /// True while the MCP agent is actively serving requests (drives the UI pulse).
     static WORKING: Mutable<bool> = Mutable::new(false);
     /// Count of in-flight requests (a long render keeps the pulse lit).
@@ -125,12 +131,6 @@ pub fn origin() -> Mutable<String> {
     ORIGIN.with(|s| s.clone())
 }
 
-#[derive(Deserialize)]
-struct ControlInfo {
-    quic_url: String,
-    cert_hash: String,
-}
-
 /// Connect to the MCP server at `control_origin`, **staying connected**: if the
 /// link drops (e.g. the server restarts), re-dial with backoff until
 /// [`disconnect`] is called. No-op if a connect/reconnect task is already active.
@@ -169,8 +169,8 @@ pub fn connect(control_origin: String) {
                 backoff_ms = 500; // a live link dropped; retry promptly
                 toasted_failure = false;
             } else if let Err(e) = &result {
-                // Connect attempt failed (server not up yet / bad cert). Toast
-                // once, then retry quietly so we don't spam while it comes up.
+                // Connect attempt failed (server not up yet). Toast once, then
+                // retry quietly so we don't spam while it comes up.
                 if !toasted_failure {
                     Toast::error(format!("MCP connect failed (retrying): {e}"));
                     toasted_failure = true;
@@ -189,134 +189,97 @@ pub fn connect(control_origin: String) {
     });
 }
 
-/// Push an editor → agent event over the link (compile/runtime toast, selection
-/// change). No-op when no link is attached. Each event rides its own
-/// unidirectional stream (framed by stream-finish); the MCP server relays it to
-/// the agent as a logging notification. Best-effort — failures are logged, never
-/// surfaced (the editor must not block on the agent being connected).
-pub fn notify_event(event: EditorEvent) {
-    let session = SESSION.with(|s| s.borrow().clone());
-    let Some(session) = session else {
-        return;
-    };
-    spawn_local(async move {
-        if let Err(e) = send_event(session, &event).await {
-            tracing::debug!("mcp notify failed: {e}");
-        }
-    });
-}
-
-async fn send_event(session: Session, ev: &EditorEvent) -> Result<(), String> {
-    let mut send = session
-        .open_uni()
-        .await
-        .map_err(|e| format!("open_uni: {e}"))?;
-    let bytes = serde_json::to_vec(ev).map_err(|e| format!("encode event: {e}"))?;
-    let mut buf = bytes.as_slice();
-    while !buf.is_empty() {
-        let n = send.write(buf).await.map_err(|e| format!("write: {e}"))?;
-        buf = &buf[n..];
-    }
-    send.finish().map_err(|e| format!("finish: {e}"))?;
-    Ok(())
-}
-
-/// Disconnect the live link and **stop reconnecting** (clears the reconnect
-/// flag, then closes the WebTransport session). The connect task sees the flag
-/// cleared and exits instead of re-dialing. The "MCP disconnected" toast is
+/// Disconnect the live link and **stop reconnecting** (clears the reconnect flag,
+/// then drops the outbound sender, which ends [`run`]). The connect task sees the
+/// flag cleared and exits instead of re-dialing. The "MCP disconnected" toast is
 /// emitted by that task as it unwinds.
 pub fn disconnect() {
     RECONNECT.with(|r| r.set(false));
+    SESSION.with(|s| *s.borrow_mut() = None);
+}
+
+/// Push an editor → agent event over the link (compile/runtime toast, selection
+/// change). No-op when no link is attached. The MCP server relays it to the
+/// connected agent as a logging notification. Best-effort — failures are silent
+/// (the editor must not block on the agent being connected).
+pub fn notify_event(event: EditorEvent) {
     SESSION.with(|s| {
-        if let Some(session) = s.borrow().as_ref() {
-            session.close(0, "client disconnect");
+        if let Some(tx) = s.borrow().as_ref() {
+            let _ = tx.unbounded_send(WsClientMsg::Event(event));
         }
     });
 }
 
+/// Queue an outbound frame on the live link (best-effort).
+fn send_frame(frame: WsClientMsg) {
+    SESSION.with(|s| {
+        if let Some(tx) = s.borrow().as_ref() {
+            let _ = tx.unbounded_send(frame);
+        }
+    });
+}
+
+/// Derive the `/editor` WebSocket URL from a control origin: map `http(s)` →
+/// `ws(s)` (and pass through an already-`ws`/`wss` origin), then append `/editor`.
+fn ws_url(origin: &str) -> String {
+    let o = origin.trim().trim_end_matches('/');
+    let base = if o.starts_with("ws://") || o.starts_with("wss://") {
+        o.to_string()
+    } else if let Some(rest) = o.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = o.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        format!("ws://{o}")
+    };
+    format!("{base}/editor")
+}
+
 async fn run(control_origin: String) -> Result<(), String> {
-    let control_url = format!("{}/control", control_origin.trim_end_matches('/'));
-    tracing::info!("mcp: fetching control info from {control_url}");
-
-    let info: ControlInfo = gloo_net::http::Request::get(&control_url)
-        .send()
-        .await
-        .map_err(|e| format!("control fetch: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("control decode: {e}"))?;
-
-    let cert_hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(info.cert_hash.as_bytes())
-        .map_err(|e| format!("bad cert hash: {e}"))?;
-
-    let client = ClientBuilder::new()
-        .with_server_certificate_hashes(vec![cert_hash])
-        .map_err(|e| format!("client builder: {e}"))?;
-
-    let url: url::Url = info
-        .quic_url
-        .parse()
-        .map_err(|e| format!("bad quic url {}: {e}", info.quic_url))?;
-
+    let url = ws_url(&control_origin);
     tracing::info!("mcp: connecting to {url}");
-    let session = client
-        .connect(url)
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
+    let ws = WebSocket::open(&url).map_err(|e| format!("ws open: {e}"))?;
+    let (mut sink, mut stream) = ws.split();
 
-    SESSION.with(|s| *s.borrow_mut() = Some(session.clone()));
+    // Outbound frames funnel through one writer (drained below) so concurrent
+    // replies/events never interleave a half-written frame.
+    let (out_tx, mut out_rx) = mpsc::unbounded::<WsClientMsg>();
+    SESSION.with(|s| *s.borrow_mut() = Some(out_tx));
     status().set(RemoteStatus::Connected);
     Toast::info("MCP connected");
     tracing::info!("mcp: attached");
 
     loop {
-        let (send, recv) = session
-            .clone()
-            .accept_bi()
-            .await
-            .map_err(|e| format!("accept_bi: {e}"))?;
-        spawn_local(serve_one(send, recv));
-    }
-}
-
-/// Read one request off a stream, dispatch it, and write the response back.
-async fn serve_one(mut send: SendStream, mut recv: RecvStream) {
-    activity_begin();
-    let resp = match read_request(&mut recv).await {
-        Ok(req) => dispatch(req).await,
-        Err(e) => Response::Err(e),
-    };
-    if let Err(e) = reply(&mut send, &resp).await {
-        tracing::warn!("mcp: reply failed: {e}");
-    }
-    activity_end().await;
-}
-
-async fn read_request(recv: &mut RecvStream) -> Result<Request, String> {
-    let mut buf = Vec::new();
-    while let Some(chunk) = recv
-        .read(64 * 1024)
-        .await
-        .map_err(|e| format!("read: {e}"))?
-    {
-        buf.extend_from_slice(&chunk);
-        if buf.len() > MAX_REQUEST_BYTES {
-            return Err(format!("request exceeded {MAX_REQUEST_BYTES} bytes"));
+        futures::select! {
+            inbound = stream.next().fuse() => match inbound {
+                Some(Ok(Message::Text(txt))) => match serde_json::from_str::<WsServerMsg>(&txt) {
+                    Ok(WsServerMsg::Request { id, req }) => spawn_local(serve_one(id, req)),
+                    Err(e) => tracing::warn!("mcp: bad frame: {e}"),
+                },
+                Some(Ok(_)) => {} // non-text frame; ignore
+                Some(Err(e)) => return Err(format!("ws read: {e}")),
+                None => return Ok(()), // socket closed by server
+            },
+            outbound = out_rx.next().fuse() => match outbound {
+                Some(frame) => {
+                    let txt = serde_json::to_string(&frame)
+                        .map_err(|e| format!("encode frame: {e}"))?;
+                    sink.send(Message::Text(txt))
+                        .await
+                        .map_err(|e| format!("ws send: {e}"))?;
+                }
+                None => return Ok(()), // outbound sender dropped → disconnect()
+            },
         }
     }
-    serde_json::from_slice(&buf).map_err(|e| format!("decode request: {e}"))
 }
 
-async fn reply(send: &mut SendStream, resp: &Response) -> Result<(), String> {
-    let bytes = serde_json::to_vec(resp).map_err(|e| format!("encode response: {e}"))?;
-    let mut buf = bytes.as_slice();
-    while !buf.is_empty() {
-        let n = send.write(buf).await.map_err(|e| format!("write: {e}"))?;
-        buf = &buf[n..];
-    }
-    send.finish().map_err(|e| format!("finish: {e}"))?;
-    Ok(())
+/// Serve one decoded request and reply with the matching `id`.
+async fn serve_one(id: u64, req: Request) {
+    activity_begin();
+    let resp = dispatch(req).await;
+    send_frame(WsClientMsg::Response { id, resp });
+    activity_end().await;
 }
 
 /// Interpret a request against the live controller. All editor mutation flows
@@ -352,32 +315,80 @@ async fn dispatch(req: Request) -> Response {
             Response::Ok
         }
         Request::ScenePng { width, height } => {
-            png_response(crate::engine::query::scene_png(width, height).await)
+            png_response(crate::engine::query::scene_png(width, height).await).await
         }
         Request::MaterialPng { width, height } => {
-            png_response(crate::engine::query::material_png(width, height))
+            png_response(crate::engine::query::material_png(width, height)).await
         }
         Request::TexturePng(id) => match crate::engine::query::texture_png(id).await {
-            Ok(data_url) => png_from_data_url(&data_url),
+            Ok(data_url) => png_from_data_url(&data_url).await,
             Err(e) => Response::Err(e),
         },
     }
 }
 
-fn png_response(opt: Option<String>) -> Response {
+/// Turn an optional `data:image/png;base64,…` URL into a [`Response::Png`] handle
+/// (uploading the bytes to the side-channel), or an error when none is available.
+async fn png_response(opt: Option<String>) -> Response {
     match opt {
-        Some(data_url) if !data_url.is_empty() => png_from_data_url(&data_url),
+        Some(data_url) if !data_url.is_empty() => png_from_data_url(&data_url).await,
         _ => Response::Err("no image available".to_string()),
     }
 }
 
-/// Decode a `data:image/png;base64,…` URL into raw PNG bytes.
-fn png_from_data_url(data_url: &str) -> Response {
-    match data_url.split_once(',') {
-        Some((_, b64)) => match base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()) {
-            Ok(bytes) => Response::Png(bytes),
-            Err(e) => Response::Err(format!("png base64 decode: {e}")),
-        },
-        None => Response::Err("malformed png data url".to_string()),
+/// Decode a `data:image/png;base64,…` URL, POST the raw bytes to the server's
+/// `/png/<id>` side-channel (off the control link), and return a [`PngHandle`].
+async fn png_from_data_url(data_url: &str) -> Response {
+    let Some((_, b64)) = data_url.split_once(',') else {
+        return Response::Err("malformed png data url".to_string());
+    };
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()) {
+        Ok(bytes) => bytes,
+        Err(e) => return Response::Err(format!("png base64 decode: {e}")),
+    };
+    let (width, height) = png_dimensions(&bytes).unwrap_or((0, 0));
+    let byte_len = bytes.len();
+    let id = uuid::Uuid::new_v4().to_string();
+    let origin = ORIGIN.with(|o| o.get_cloned());
+    if let Err(e) = upload_png(&origin, &id, bytes).await {
+        return Response::Err(format!("png upload failed: {e}"));
     }
+    Response::Png(PngHandle {
+        id,
+        byte_len,
+        width,
+        height,
+    })
+}
+
+/// Parse a PNG's pixel dimensions from its IHDR chunk: the 8-byte signature, then
+/// a length+type header, then width/height as big-endian `u32`s at byte offsets
+/// 16 / 20. Returns `None` if the buffer is too short or isn't a PNG.
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    let w = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let h = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    Some((w, h))
+}
+
+/// POST raw PNG bytes to `<origin>/png/<id>` over plain HTTP — a separate
+/// connection from the control link, so a multi-MiB render never blocks small
+/// frames. Posting *before* replying guarantees the server has the bytes by the
+/// time it sees the handle.
+async fn upload_png(origin: &str, id: &str, bytes: Vec<u8>) -> Result<(), String> {
+    let url = format!("{}/png/{id}", origin.trim_end_matches('/'));
+    let body = js_sys::Uint8Array::from(bytes.as_slice());
+    let resp = gloo_net::http::Request::post(&url)
+        .header("content-type", "application/octet-stream")
+        .body(body)
+        .map_err(|e| format!("build request: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("send: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("server returned HTTP {}", resp.status()));
+    }
+    Ok(())
 }

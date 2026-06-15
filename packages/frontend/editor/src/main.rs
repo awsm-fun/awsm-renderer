@@ -134,7 +134,7 @@ pub fn main() {
                                 });
                             }
                             // Remote MCP control: `?mcp=<control-origin>` auto-dials
-                            // the native server over WebTransport. Absent → the
+                            // the native server over a WebSocket. Absent → the
                             // top-bar MCP button connects on demand (to the dev
                             // default origin).
                             if let Some(origin) = boot_mcp_origin() {

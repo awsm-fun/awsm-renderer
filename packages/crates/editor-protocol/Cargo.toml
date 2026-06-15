@@ -1,6 +1,6 @@
 [package]
 name = "awsm-editor-protocol"
-description = "Shared, serializable command/query wire types for driving the awsm-renderer editor remotely (MCP/WebTransport transport) and from headless tests."
+description = "Shared, serializable command/query wire types for driving the awsm-renderer editor remotely (the MCP WebSocket transport) and from headless tests."
 edition.workspace = true
 version.workspace = true
 license.workspace = true

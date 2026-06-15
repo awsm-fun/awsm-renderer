@@ -1,123 +1,158 @@
-//! The link to the attached editor + the per-request stream exchange.
+//! The link to the attached editor over the `/editor` WebSocket.
 //!
-//! The server holds at most one attached editor `Session`. Each request opens a
-//! fresh server-initiated bidirectional stream, writes the bitcode-encoded
-//! [`Request`] and `finish()`es, then reads the editor's [`Response`] to end.
-//! Stream identity is the request/response correlation; framing is by
-//! stream-finish.
+//! The server holds at most one attached editor (one socket). Each request is
+//! tagged with an `id`; the editor replies with a [`Response`] carrying the same
+//! id (the link is one ordered channel, so ids correlate request↔response). The
+//! single writer task that owns the socket sink lives in [`crate::ws`]; here we
+//! track the per-connection pending-request map + the outbound sender, plus the
+//! broadcast of editor push events to every MCP session's forwarder.
+//!
+//! Per-tab isolation (pairing codes, multiple concurrent editors) is layered on
+//! in a later phase; today the most-recently-attached tab wins and every MCP
+//! agent shares it.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use tokio::sync::{broadcast, Mutex};
-use web_transport::{RecvStream, SendStream, Session};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
-use awsm_editor_protocol::{EditorEvent, Request, Response};
+use awsm_editor_protocol::{EditorEvent, Request, Response, WsServerMsg};
 
-/// Cap on a single response (PNGs are the large case). 64 MiB is far above any
-/// legitimate payload and bounds memory if a peer streams without finishing.
-const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+/// Upper bound on one request's round-trip (an offline render / settle is the
+/// slow case).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Shared handle to the (single) attached editor session.
-#[derive(Clone)]
-pub struct EditorLink {
-    inner: Arc<Mutex<Option<Session>>>,
+/// One attached editor tab (one `/editor` socket), with its own request-id space
+/// and pending-request map so a frame can only ever complete its own request.
+pub struct Connection {
+    pub id: u64,
+    tx: mpsc::UnboundedSender<WsServerMsg>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<Response>>>,
+    next_req_id: AtomicU64,
+}
+
+impl Connection {
+    /// Send one request to this tab and await its response.
+    async fn request(&self, req: &Request) -> Result<Response> {
+        let id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(id, tx);
+        self.tx
+            .send(WsServerMsg::Request {
+                id,
+                req: req.clone(),
+            })
+            .map_err(|_| anyhow!("editor link closed"))?;
+        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(_)) => {
+                self.pending.lock().unwrap().remove(&id);
+                Err(anyhow!("editor dropped the request"))
+            }
+            Err(_) => {
+                self.pending.lock().unwrap().remove(&id);
+                Err(anyhow!("editor request timed out"))
+            }
+        }
+    }
+
+    /// Complete a pending request from an incoming `Response` frame.
+    pub fn complete(&self, id: u64, resp: Response) {
+        if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
+            let _ = tx.send(resp);
+        }
+    }
+
+    /// Fail every in-flight request (on socket close): dropping the senders makes
+    /// each awaiting `request` resolve to the "dropped" error.
+    fn drain(&self) {
+        self.pending.lock().unwrap().clear();
+    }
+}
+
+struct LinkInner {
+    /// The single attached editor tab, if any (most-recent-attach wins).
+    conn: Mutex<Option<Arc<Connection>>>,
     /// Fan-out of editor push events to every connected MCP session's forwarder.
     events: broadcast::Sender<EditorEvent>,
+    next_conn_id: AtomicU64,
+}
+
+/// Shared handle to the attached-editor registry. Cheap to clone (`Arc`).
+#[derive(Clone)]
+pub struct EditorLink {
+    inner: Arc<LinkInner>,
 }
 
 impl EditorLink {
     pub fn shared() -> Self {
         let (events, _) = broadcast::channel(256);
         Self {
-            inner: Arc::new(Mutex::new(None)),
-            events,
+            inner: Arc::new(LinkInner {
+                conn: Mutex::new(None),
+                events,
+                next_conn_id: AtomicU64::new(1),
+            }),
         }
     }
 
+    /// Register a freshly-attached tab as the active editor, returning its
+    /// [`Connection`]. Replaces any previous attachment (last-attach wins).
+    pub fn register_connection(&self, tx: mpsc::UnboundedSender<WsServerMsg>) -> Arc<Connection> {
+        let id = self.inner.next_conn_id.fetch_add(1, Ordering::Relaxed);
+        let conn = Arc::new(Connection {
+            id,
+            tx,
+            pending: Mutex::new(HashMap::new()),
+            next_req_id: AtomicU64::new(1),
+        });
+        if let Some(old) = self.inner.conn.lock().unwrap().replace(conn.clone()) {
+            old.drain();
+        }
+        conn
+    }
+
+    /// Remove a tab on socket close (only if it's still the active one — a newer
+    /// tab may already have taken over): fail its in-flight requests and forget it.
+    pub fn remove_connection(&self, id: u64) {
+        let mut guard = self.inner.conn.lock().unwrap();
+        if guard.as_ref().is_some_and(|c| c.id == id) {
+            if let Some(conn) = guard.take() {
+                conn.drain();
+            }
+        }
+    }
+
+    /// Is an editor currently attached? (For `GET /health`.)
+    pub fn is_attached(&self) -> bool {
+        self.inner.conn.lock().unwrap().is_some()
+    }
+
     /// Publish an editor push event to all subscribed MCP forwarders. (Called by
-    /// the QUIC uni-stream reader.)
+    /// the WebSocket reader in [`crate::ws`].)
     pub fn publish_event(&self, ev: EditorEvent) {
         // Err only when there are no receivers — fine, just drop it.
-        let _ = self.events.send(ev);
+        let _ = self.inner.events.send(ev);
     }
 
     /// Subscribe to the editor push-event stream (one per MCP session forwarder).
     pub fn subscribe_events(&self) -> broadcast::Receiver<EditorEvent> {
-        self.events.subscribe()
-    }
-
-    pub async fn set(&self, session: Option<Session>) {
-        *self.inner.lock().await = session;
-    }
-
-    pub async fn session(&self) -> Option<Session> {
-        self.inner.lock().await.clone()
+        self.inner.events.subscribe()
     }
 
     /// Send a request to the attached editor and await its response. Errors when
-    /// no editor is attached. (Used by the rmcp tool layer + the test client.)
-    ///
-    /// A TRANSPORT-level failure (`open_bi` on a closed WebTransport session —
-    /// the tab crashed, navigated, or the OS froze it) DETACHES the stale
-    /// session, so `GET /health` flips to `editor_attached: false` instead of
-    /// lying until the next page load re-attaches. Found during the day-3
-    /// overnight soak: the tab died ~46 min in, /debug returned session errors
-    /// for an hour, and /health still claimed attached.
-    #[allow(dead_code)]
+    /// no editor is attached. (Used by the rmcp tool layer + the `/debug` seam.)
     pub async fn request(&self, req: &Request) -> Result<Response> {
-        let session = self
-            .session()
-            .await
+        let conn = self
+            .inner
+            .conn
+            .lock()
+            .unwrap()
+            .clone()
             .ok_or_else(|| anyhow!("no editor attached"))?;
-        match request(&session, req).await {
-            Err(e) if e.to_string().contains("open_bi") => {
-                tracing::warn!("editor session dead ({e}) — detaching");
-                self.set(None).await;
-                Err(anyhow!("editor session dead (detached): {e}"))
-            }
-            other => other,
-        }
+        conn.request(req).await
     }
-}
-
-/// Run one request/response exchange over a fresh bidirectional stream.
-pub async fn request(session: &Session, req: &Request) -> Result<Response> {
-    let (mut send, mut recv) = session
-        .clone()
-        .open_bi()
-        .await
-        .map_err(|e| anyhow!("open_bi: {e}"))?;
-
-    let bytes = serde_json::to_vec(req).map_err(|e| anyhow!("encode request: {e}"))?;
-    write_all(&mut send, &bytes).await?;
-    send.finish().map_err(|e| anyhow!("finish: {e}"))?;
-
-    let resp_bytes = read_to_end(&mut recv).await?;
-    let resp: Response =
-        serde_json::from_slice(&resp_bytes).map_err(|e| anyhow!("decode response: {e}"))?;
-    Ok(resp)
-}
-
-async fn write_all(send: &mut SendStream, mut buf: &[u8]) -> Result<()> {
-    while !buf.is_empty() {
-        let n = send.write(buf).await.map_err(|e| anyhow!("write: {e}"))?;
-        buf = &buf[n..];
-    }
-    Ok(())
-}
-
-async fn read_to_end(recv: &mut RecvStream) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    while let Some(chunk) = recv
-        .read(64 * 1024)
-        .await
-        .map_err(|e| anyhow!("read: {e}"))?
-    {
-        buf.extend_from_slice(&chunk);
-        if buf.len() > MAX_RESPONSE_BYTES {
-            return Err(anyhow!("response exceeded {MAX_RESPONSE_BYTES} bytes"));
-        }
-    }
-    Ok(buf)
 }

@@ -7,7 +7,7 @@ includes:
 
 tasks:
   serve:
-    desc: "MCP server: WebTransport (QUIC) link the editor dials into + the rmcp /mcp endpoint + /control (cert-hash discovery) + /debug (raw-request seam)."
+    desc: "MCP server: the /editor WebSocket link the editor dials into + the rmcp /mcp endpoint + the /png byte side-channel + /debug (raw-request seam) + /health."
     cmds:
       - >
         cargo run -p awsm-scene-mcp --

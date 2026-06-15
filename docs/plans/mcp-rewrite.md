@@ -118,62 +118,83 @@ MCP client (Claude/Codex/Cursor)  --rmcp /mcp (HTTP)-->  native MCP server  <--/
 
 ## Phase 1 — Transport: WebTransport/QUIC → WebSocket
 
+**Split decision (deviation from the original wording):** to keep Phase 1 a pure
+*transport swap* and avoid throwaway scaffolding, the pairing/isolation envelope
+(`Pair`/`PairingRequired`/`Detached`) and the `Connection`/`AgentSession` model
+are **deferred to Phase 2**. Phase 1 keeps the existing single-attached-editor
+semantics (last-attach wins; every MCP agent shares the one editor), just over a
+WebSocket. The WS envelope here is therefore `WsServerMsg::Request{id,req}` +
+`WsClientMsg::{Response{id,resp}, Event}` only. Phase 2 extends the envelope and
+the link with pairing + the frontend pairing UI.
+
 **Server (`packages/mcp`)**
-- [ ] Delete `src/quic.rs` and `src/cert.rs`.
-- [ ] `Cargo.toml`: remove `web-transport`, `rustls`, `rcgen`, `sha2` (and the
-      cert-hash `base64` usage if now unused); add `ws` feature to `axum`.
-- [ ] New `src/ws.rs` adapted from audio: `/editor` upgrade handler + a
-      **single-writer task** owning the sink so replies/events never interleave a
-      half-written frame. Define the envelope (see protocol below).
-- [ ] Rewrite `src/http.rs`: keep `/mcp` (rmcp streamable-http), `/debug`,
-      `/health`; **replace `/control`** with the `/editor` ws route. Keep the
-      Private-Network-Access CORS so the public editor page can reach loopback.
-- [ ] `src/main.rs`: one axum server on one port; delete the QUIC listener and
-      `--browser-port`/`--client-port` (single `--port`, default 9086).
-- [ ] Idle session timeout: loopback agents sit idle between tool calls — use a
-      **day-long** rmcp session timeout (audio's lesson) so a live-but-idle agent
-      isn't reaped, while genuinely dead sessions still get reclaimed.
+- [x] Deleted `src/quic.rs` and `src/cert.rs`.
+- [x] `Cargo.toml`: removed `web-transport`, `rustls`, `rcgen`, `sha2`, plus the
+      cert-only `time` + `bytes`; added `futures`; `axum` now `features = ["ws"]`.
+      Kept `base64` (glb/png encode) + `uuid` (id parsing; pair codes in Phase 2).
+- [x] New `src/ws.rs` adapted from audio: `/editor` upgrade + **single-writer
+      task** owning the sink; reader demuxes `Response`/`Event`.
+- [x] Rewrote `src/http.rs`: kept `/mcp`, `/debug`, `/health`, `/boot-error`;
+      **replaced `/control`** with the `/editor` ws route; kept PNA CORS. (`/png`
+      side-channel added in 1b below.)
+- [x] `src/main.rs`: one axum server on one port; QUIC listener gone; single
+      `--port` (default 9086); dropped the rustls provider install.
+- [x] Idle session timeout: **day-long** rmcp `session_config.keep_alive` so a
+      live-but-idle agent isn't reaped (audio's lesson).
 
 **Protocol (`packages/crates/editor-protocol/src/transport.rs`)**
-- [ ] Add shared WS envelope types so server + frontend agree (mirror audio's
-      `WsServerMsg`/`WsClientMsg`): `Request{id,req}`, `Response{id,resp}`,
-      `Event(EditorEvent)`, `Pair{code}`, and a `PairingRequired{code}` signal.
-- [ ] Move the control link to **JSON text frames**. Keep `bitcode` only for the
-      existing `.mesh.bin` side file, not the link.
-- [ ] `Response::Png(Vec<u8>)` → `Response::PngHandle { id, byte_len, width,
-      height }` (bytes no longer ride the link — see Phase 1b).
-- [ ] Keep/round-trip-test serialization (audio tests ser→de→ser byte-stability
-      to catch serde rename drift).
+- [x] Added `WsServerMsg::Request{id,req}` + `WsClientMsg::{Response{id,resp},
+      Event(EditorEvent)}` (exported from `lib.rs`). `Pair`/`PairingRequired`/
+      `Detached` deferred to Phase 2 (see split decision).
+- [x] Link is now **JSON text frames** over the WebSocket; `bitcode` stays only
+      for the `.mesh.bin` side file (untouched).
+- [x] `Response::Png(Vec<u8>)` → `Response::Png(PngHandle { id, byte_len, width,
+      height })` (bytes ride the side-channel — see 1b).
+- [x] Added `ws_envelope_roundtrips` test (ser→de→ser byte-stable for the new
+      frames + the PNG handle); existing Request round-trip tests still pass.
 
 **Editor (`packages/frontend/editor`)**
-- [ ] `Cargo.toml`: remove `web-transport`; add `gloo_net` (websocket feature).
-- [ ] Rewrite `src/remote.rs` on audio's model: dial `ws://<origin>/editor`
-      (`wss://` when TLS), single read loop dispatching `Request` →
-      `EditorController`, single writer for responses/events, exponential-backoff
-      reconnect, `disconnect()`. Drop all cert-hash pinning / `/control` fetch.
-- [ ] Keep the reactive state the UI already binds (`status`, `working`,
-      `origin`) and add `pairing_needed`/pair-code state.
+- [x] `Cargo.toml`: removed `web-transport`; `gloo-net` now `["http",
+      "websocket"]`. (`uuid` v4 already present — used to mint png ids.)
+- [x] Rewrote `src/remote.rs` on audio's model: dial `ws://<origin>/editor`
+      (derived from the http origin), single read loop dispatching `Request` →
+      `EditorController`, single writer (mpsc) for responses/events,
+      exponential-backoff reconnect (kept the existing retry-forever dev
+      behaviour), `disconnect()`. All cert-hash/`/control` fetch gone.
+- [x] Kept the reactive state the UI binds (`status`, `working`, `origin`).
+      `pairing_needed`/pair-code state is Phase 2 (TLS toggle is Phase 4).
 
 ### Phase 1b — PNG HTTP side-channel
 
-- [ ] Server `http.rs`: `POST /png/{id}` (editor uploads raw PNG to a temp file),
-      `GET /png/{id}` (agent/human download), with **LRU eviction** (cap ~32,
-      delete oldest; clean temp dir on shutdown) — mirror audio's `/renders`.
-- [ ] Editor `remote.rs`: on `ScenePng`/`MaterialPng`/`TexturePng`, render as
-      today, then **POST the PNG bytes to `/png/{id}`** and return only
-      `PngHandle` over the link.
-- [ ] rmcp tool layer (`mcp.rs`): the image tools fetch from `/png/{id}` and
-      return an MCP `Content::image()` to the agent (no giant base64 over the
-      control link).
-- [ ] Verify: `cargo test --all-features`, then a live screenshot tool round-trip
-      (see Phase 6).
-- [ ] Commit: `mcp: replace WebTransport with WebSocket + PNG side-channel`.
+- [x] Server `http.rs`: `POST /png/{id}` (editor uploads raw PNG → temp file),
+      `GET /png/{id}` (download), with **LRU eviction** (cap 32, delete oldest),
+      256 MiB body cap. `png_path()` is `pub(crate)` so the tool reads it back.
+- [x] Editor `remote.rs`: on `ScenePng`/`MaterialPng`/`TexturePng`, render as
+      today, decode the data-url, **POST bytes to `/png/{id}`**, return only the
+      `PngHandle` (with PNG-IHDR-parsed width/height) over the link.
+- [x] rmcp tool layer (`mcp.rs`): `png()` reads the bytes back from
+      `crate::http::png_path(&handle.id)` (same process; no HTTP self-call) and
+      returns `Content::image()` — no base64 PNG over the control link.
+- [x] Verify: `cargo fmt --all`, `cargo clippy --all --all-features --tests -D
+      warnings`, `cargo test --all-features` (incl. `ws_envelope_roundtrips`) all
+      green; `cargo build -p awsm-scene-mcp` ok. Live screenshot/two-tab checks
+      are **manual** (Phase 6) — needs a browser + agent session.
+- [x] Grep guard: `web-transport`/`rcgen`/`/control`/`browser-port` gone from the
+      tracked source tree. Residue is out of scope: the gitignored
+      `dist/awsm-editor-*.js` (regenerated build glue with web_sys WebTransport
+      bindings) and `quinn` in `Cargo.lock` — the latter was already present at
+      HEAD via `reqwest` ← `awsm-debugging` (http3 optional dep, not activated),
+      unrelated to our removed WebTransport stack.
+- [x] Commit: `mcp: replace WebTransport with WebSocket + PNG side-channel`.
 
 ## Phase 2 — Isolation: multi-tab + pairing codes
 
-Today the server holds a single editor session (last-connect-wins). Adopt audio's
-per-tab binding so multiple tabs never cross streams.
+Today the server holds a single editor session (last-connect-wins, established in
+Phase 1). Adopt audio's per-tab binding so multiple tabs never cross streams.
 
+- [ ] **Envelope extension (deferred from Phase 1):** add `WsServerMsg::{PairingRequired,
+      Detached}` and `WsClientMsg::Pair{code}` to `transport.rs` (+ exports), and
+      handle them in server `ws.rs` and frontend `remote.rs`.
 - [ ] `link.rs`: model `Connection` (one `/editor` ws = one tab, own request-id
       space + pending map) and `AgentSession` (one MCP client, own 4-char
       **Crockford base32** pair code), bound to each other via **`Weak`** pointers

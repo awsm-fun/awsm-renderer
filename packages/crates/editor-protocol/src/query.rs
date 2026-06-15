@@ -1,5 +1,5 @@
 //! `EditorQuery` / `EditorSnapshot` — a serializable read of editor state for
-//! external inspection + headless tests. The MCP/WebTransport transport
+//! external inspection + headless tests. The MCP WebSocket transport
 //! `serde`-encodes these back to the caller. A flat, view-agnostic projection of
 //! the controller's state, not the live model.
 
@@ -143,7 +143,7 @@ fn default_units() -> String {
 // ─────────────────────────────── query surface ──────────────────────────────
 // The READ half of the controller — serializable, read-only (never mutates
 // persisted state, never records undo, never broadcasts; any handler that pins
-// the playhead saves + restores the transport). The MCP/WebTransport transport
+// the playhead saves + restores the transport). The MCP WebSocket transport
 // `serde`-decodes a query → `query()` → encodes the result.
 
 /// A read/verification query against editor + renderer state.
