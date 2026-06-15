@@ -624,7 +624,6 @@ impl RenderPasses {
         use crate::render_passes::coverage::pipeline::CoveragePipelines;
         use crate::render_passes::geometry::pipeline::GeometryPipelines;
         use crate::render_passes::hzb::pipeline::HzbPipelines;
-        use crate::render_passes::material_classify::pipeline::MaterialClassifyPipelines;
         use crate::render_passes::material_decal::classify::pipeline::DecalClassifyPipelines;
         use crate::render_passes::material_decal::pipeline::MaterialDecalPipelines;
         use crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines;
@@ -726,13 +725,14 @@ impl RenderPasses {
             _ => None,
         };
 
+        // The boot batch already compiled the classify pipeline into the shared
+        // compute pool (warming it); `ensure_scene_pipelines` (via `prewarm`)
+        // installs it into `pipeline_cache` before the first frame. So we don't
+        // store the resolved key here — the cache is the single source of truth.
+        let _ = (&per_pass_descs.classify_slot_msaa, &ranges.classify);
         let material_classify = MaterialClassifyRenderPass {
             bind_groups: classify_bg,
-            pipelines: MaterialClassifyPipelines::from_resolved(
-                per_pass_descs.classify_slot_msaa,
-                compute_keys[ranges.classify].to_vec(),
-            ),
-            dynamic_pipeline_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            pipeline_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         };
 
         let material_decal = match (

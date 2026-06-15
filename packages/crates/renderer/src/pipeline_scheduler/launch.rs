@@ -287,18 +287,11 @@ impl crate::AwsmRenderer {
                 .edge_pipelines
                 .clear_dynamic_pipelines(),
         );
-        dropped_keys.extend(
-            self.render_passes
-                .material_classify
-                .pipelines
-                .clear_dynamic_pipelines(),
-        );
-        // The classify pass keeps a SECOND cache — `dynamic_pipeline_cache`,
-        // keyed by `(dispatch_hash, msaa)` and populated by the async install
-        // path — that the clear above doesn't touch. It accumulates a fresh
-        // entry on every registry edit (each mints a new dispatch_hash) and
-        // never drops the old ones, so prune everything that isn't the live
-        // dispatch_hash and free those pool pipelines too.
+        // The classify pass's `pipeline_cache` (keyed by `(dispatch_hash, msaa)`,
+        // populated by the async install path) accumulates a fresh entry on every
+        // registry edit (each mints a new dispatch_hash) and never drops the old
+        // ones, so prune everything that isn't the live dispatch_hash and free
+        // those pool pipelines too.
         let current_dispatch_hash = self.dynamic_materials.dispatch_hash_cached();
         dropped_keys.extend(
             self.render_passes
@@ -1177,7 +1170,7 @@ fn install_per_pass(
         LaunchSlot::Classify { msaa } => renderer
             .render_passes
             .material_classify
-            .dynamic_pipeline_cache
+            .pipeline_cache
             .borrow_mut()
             .insert((dispatch_hash, *msaa), pipeline_key)
             .filter(|old| *old != pipeline_key),
