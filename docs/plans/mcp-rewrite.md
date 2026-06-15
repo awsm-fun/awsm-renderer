@@ -362,19 +362,35 @@ counts; the one clear gap (read-only annotations) was closed.**
 
 ## Phase 6 — Verification (run after each major phase, and a full pass at the end)
 
-- [ ] `task fmt` (or `cargo fmt --all`), `cargo clippy --all --all-features --tests -- -D warnings`, `cargo test --all-features`.
-- [ ] `cargo build -p awsm-scene-mcp`; run `task mcp:serve`; confirm `/health` ok.
-- [ ] Open the editor with `?mcp=http://127.0.0.1:9086`; confirm WS connect, green
-      status, activity chip.
-- [ ] Point an MCP client at `http://127.0.0.1:9086/mcp`; run a mutating tool and a
-      `ScenePng` screenshot tool — confirm the PNG returns via `/png/{id}` and the
-      change is visible live.
-- [ ] **Two-tab test**: open two editor tabs, start a second agent, confirm
-      `PairingRequired` + that a typed pair code binds the right tab with no
-      cross-talk.
-- [ ] `dist plan` succeeds. Confirm `grep -rinE 'web.?transport|quinn|rcgen|rustls|/control|browser-port' packages/` is clean (only intended hits).
-- [ ] Update `README.md`/`docs` so the documented flow matches reality.
+- [x] `cargo fmt --all` + `cargo clippy --all --all-features --tests -- -D warnings`
+      + `cargo test --all-features` — all green (0 test failures).
+- [x] `cargo build -p awsm-scene-mcp`; ran the binary on a test port and curled the
+      surface live: `/health` → `{"editor_attached":false,"last_boot_error":null}`,
+      `/editor` → 400 (ws route present, no upgrade headers), `/mcp` → 406 (rmcp
+      mounted), `/png/<missing>` → 404 (route present), **`/control` → 404 (gone)**.
+- [ ] **NEEDS MANUAL VERIFY (browser):** open the editor with
+      `?mcp=http://127.0.0.1:9086`; confirm WS connect, green status, activity chip.
+- [ ] **NEEDS MANUAL VERIFY (browser + agent):** point an MCP client at
+      `http://127.0.0.1:9086/mcp`; run a mutating tool and a `screenshot_scene` —
+      confirm the PNG returns via `/png/{id}` and the change is visible live.
+- [ ] **NEEDS MANUAL VERIFY (browser):** two-tab test — open two editor tabs, start
+      a second agent, confirm `PairingRequired` + that a typed pair code binds the
+      right tab with no cross-talk.
+- [x] `dist plan` succeeds (4 targets + `.sh`/`.ps1` installers + checksums); the
+      source grep guard is clean.
+- [x] Updated `README.md` (Phase 3) and rewrote `docs/MCP.md` (architecture, ports,
+      wire protocol, cert→TLS, troubleshooting, isolation, source anchors) to match
+      the WebSocket + pairing + `/png` reality.
 
 ---
 
-## Done = all phases checked, CI green, two-tab + PNG round-trips verified, and `web-transport`/`quinn`/`rcgen` fully gone from `Cargo.lock`.
+## Done — automated scope complete
+
+All phases 0–5 implemented; Phase 6's automated checks pass. **Remaining: the three
+browser/agent live checks above** (WS connect, screenshot round-trip, two-tab
+pairing) — they need a real browser + MCP client, so they're left for the user to
+run (`task mcp-dev`, then drive an agent at `:9086/mcp`).
+
+`web-transport` / `rcgen` are fully gone from `Cargo.lock`; `quinn` remains only as
+a pre-existing transitive of `reqwest` ← `awsm-debugging` (http3 optional dep, not
+activated), unrelated to the removed WebTransport stack.

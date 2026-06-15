@@ -15,32 +15,28 @@ live in a shared crate the native server and the editor both depend on.
 ## Architecture
 
 ```
-agent (MCP client) ──HTTP /mcp──▶ awsm-scene-mcp ──WebTransport (QUIC/UDP)──▶ editor (browser tab)
-                                  (packages/mcp)       editor dials out         → EditorController
-                                  • rmcp tool layer    server.open_bi() per req  • src/remote.rs
-                                  • QUIC listener      editor replies on stream  • calls controller directly
-                                  • holds editor link                            • returns PNG bytes
+agent (MCP client) ──HTTP /mcp──▶ awsm-scene-mcp ──WebSocket /editor──▶ editor (browser tab)
+                                  (packages/mcp)      editor dials out    → EditorController
+                                  • rmcp tool layer   id-tagged req/resp   • src/remote.rs
+                                  • /editor ws + link  + push events        • calls controller directly
+                                  • /png side-channel                       • uploads PNG to /png/<id>
 ```
 
-**The one hard constraint:** a browser tab can't be a server and can't open raw
-UDP/QUIC. So the **native server is the QUIC listener and the editor dials out to
-it**, and "QUIC from the browser" means **WebTransport** (HTTP/3 over QUIC) via
-the browser's `WebTransport` API. The [`web-transport`](https://docs.rs/web-transport)
-crate is the unifier — it's quinn on native and `web_sys::WebTransport` on wasm,
-behind one API.
-
-Why WebTransport rather than a websocket: server-initiated bidirectional streams
-(the server drives — no client-side polling), multiplexed concurrent requests
-with no manual id-correlation (one request per stream; stream identity *is* the
-correlation), and binary frames that carry PNG bytes without base64 bloat.
+**The one hard constraint:** a browser tab can't be a server. So the **editor
+dials out** to the native server's `/editor` **WebSocket** and serves the server's
+requests against its `EditorController`. The link is one ordered channel: the
+server tags each `Request` with an `id` and the editor replies with a `Response`
+carrying the same id (ids correlate request↔response). Frames are JSON text;
+rendered PNGs never ride the link — the editor POSTs the bytes to a `/png/<id>`
+HTTP side-channel and returns a small handle, keeping the control link byte-light.
 
 Three pieces:
 
 | Piece | Where | Role |
 |---|---|---|
-| `awsm-editor-protocol` | [`packages/crates/editor-protocol`](../packages/crates/editor-protocol) | The serializable wire vocabulary — `EditorCommand` / `EditorQuery` / `EditorSnapshot` / `QueryResult` + the `Request` / `Response` transport envelope. Compiles for both wasm and native; re-exports the heavy payloads from `awsm-scene-schema`. |
-| `awsm-scene-mcp` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the WebTransport listener + the single editor link. `publish = false`. |
-| editor remote module | [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs) | The WebTransport client: parse `?mcp=`, fetch `/control`, connect, `accept_bi()` loop, decode `Request` → call `EditorController` → encode `Response`. |
+| `awsm-editor-protocol` | [`packages/crates/editor-protocol`](../packages/crates/editor-protocol) | The serializable wire vocabulary — `EditorCommand` / `EditorQuery` / `EditorSnapshot` / `QueryResult` + the `Request` / `Response` envelope and the `WsServerMsg` / `WsClientMsg` WebSocket frames. Compiles for both wasm and native. |
+| `awsm-scene-mcp` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the `/editor` WebSocket link + the `/png` side-channel. Per-tab isolation via pairing codes. `publish = false`. |
+| editor remote module | [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs) | The WebSocket client: parse `?mcp=`/`?pair=`, dial `ws://<origin>/editor`, read `Request` frames → call `EditorController` → reply with `Response` frames; POST screenshots to `/png/<id>`. |
 
 All editor mutation flows through `EditorController` (the editor's single
 command/query authority), so an agent and a human watching the same tab stay in
@@ -59,12 +55,11 @@ sync, and undo/redo/coalescing all work as in the UI.
    | Service | Address |
    | --- | --- |
    | Editor (Trunk) | `http://localhost:9085` |
-   | MCP + control HTTP (TCP) | `http://127.0.0.1:9086` — `/mcp`, `/control`, `/debug`, `/health`, `/boot-error` |
-   | WebTransport link (UDP) | `9087` |
+   | MCP server (HTTP + WebSocket) | `http://127.0.0.1:9086` — `/mcp`, `/editor` (ws), `/png/<id>`, `/debug`, `/health`, `/boot-error` |
 
-   (Ports live in [`taskfiles/config.yml`](../taskfiles/config.yml):
-   `PORT_MCP_HTTP_DEV` / `PORT_MCP_QUIC_DEV`. Run the server alone with
-   `task mcp:serve`.)
+   (The single port lives in [`taskfiles/config.yml`](../taskfiles/config.yml):
+   `PORT_MCP_HTTP_DEV`. Run the server alone with `task mcp:serve`, or the
+   installed binary with `awsm-scene-mcp`.)
 
 2. Attach the editor to the server, either way:
 
@@ -76,8 +71,10 @@ sync, and undo/redo/coalescing all work as in the UI.
 
    Connect and disconnect show a toast, and the button reflects the live state
    (`Connecting…` → `MCP connected`). The server logs `editor attached` once the
-   WebTransport link is up. With neither, the editor runs normally with zero remote
-   overhead.
+   WebSocket link is up. With neither, the editor runs normally with zero remote
+   overhead. When more than one tab/agent is connected the server asks for a
+   **pairing code** — the agent prints it (`pairing_status`); enter it in the MCP
+   modal or append `&pair=<code>` to the editor URL.
 
 3. Point your agent at the MCP server. A ready-to-use
    [`.mcp.json`](../.mcp.json) lives in the repo root:
@@ -116,6 +113,9 @@ every command/query, and each tool self-describes over the MCP schema.
 
 **Connection / health**
 - `ping` — confirm an editor is attached (fails fast otherwise).
+- `pairing_status` — this session's pairing state (paired? this session's code?
+  how many tabs/agents connected?) without performing an editor op. Call it after
+  a `No editor is paired` error to surface the code for the human.
 - `get_console_logs { limit? }` — recent editor notices (toasts) + raw tracing
   (WARN/ERROR from the render loop / bridges) from a ring buffer; surfaces
   runtime errors otherwise stuck in the browser.
@@ -267,55 +267,55 @@ and [`controller/query.rs`](../packages/frontend/editor/src/controller/query.rs)
 
 ## Wire protocol
 
-One request travels per server-initiated bidirectional stream and the editor
-replies on the same stream, so there is no request-id correlation and framing is
-by stream-finish (write the whole message, `finish()`; read to end, decode).
-Encoded as **JSON** at both edges (see note below).
+The link is one ordered WebSocket. The server tags each `Request` with an `id`;
+the editor replies with a `Response` carrying the same id (ids correlate
+request↔response). Frames are the `WsServerMsg` / `WsClientMsg` envelopes,
+serialized as **JSON** text. A single writer on each side owns the socket so
+concurrent replies/events never interleave a half-written frame.
 
 ```rust
 // awsm-editor-protocol
 pub enum Request {
-    Dispatch(EditorCommand),   // mutate
-    Query(EditorQuery),        // structured read (snapshot / timeseries / pixels / stats / wgsl)
-    Undo, Redo,                // controller methods, not EditorCommands
-    ScenePng, MaterialPng, TexturePng(AssetId),  // raw PNG bytes
-    Mode,                      // current workspace mode
+    Dispatch(EditorCommand),       // mutate
+    DispatchBatch(Vec<EditorCommand>), // atomic multi-command (one undo entry)
+    Query(EditorQuery),            // structured read (snapshot / timeseries / pixels / stats / wgsl)
+    Undo, Redo,                    // controller methods, not EditorCommands
+    ScenePng, MaterialPng, TexturePng(AssetId),  // rendered PNGs (returned as a handle)
+    Mode,                          // current workspace mode
 }
 
 pub enum Response {
     Ok,
     Query(Box<QueryResult>),
-    Png(Vec<u8>),              // raw PNG bytes (NOT a data: URL)
+    Png(PngHandle),                // { id, byte_len, width, height } — bytes are at /png/<id>
     Mode(EditorMode),
     Err(String),
 }
+
+pub enum WsServerMsg { Request { id, req }, PairingRequired, Detached }
+pub enum WsClientMsg { Pair { code }, Response { id, resp }, Event(EditorEvent) }
 ```
 
-**Why JSON, not a compact binary format.** `EditorCommand` / `EditorQuery` are
-internally tagged (`#[serde(tag = "cmd")]` / `"query"`) and `QueryResult` is
-untagged, which require a self-describing format (`deserialize_any`). Non-self-
-describing codecs (bitcode, postcard, …) reject them with *"deserialize_any is not
-supported"*. JSON handles all of them and is debuggable; PNG bytes ride as a
-`Vec<u8>` and JSON-encode fine over localhost.
+**Why JSON.** `EditorCommand` / `EditorQuery` are internally tagged
+(`#[serde(tag = "cmd")]` / `"query"`) and `QueryResult` is untagged, which require
+a self-describing format (`deserialize_any`). JSON handles all of them and is
+debuggable in the browser devtools. Since PNG bytes ride the `/png` side-channel
+(not the link), the control frames stay small and human-readable.
 
-**Cert handling (dev).** The browser must pin the server's self-signed cert
-hash before connecting. The server generates a fresh **ECDSA P-256** cert at
-startup (in memory, no disk persistence, 10-day validity — a WebTransport
-`serverCertificateHashes` requirement) and serves
-`base64url(SHA-256(DER))` from a CORS-open `GET /control`:
+**The `/png/<id>` side-channel.** A `screenshot_*` request renders the PNG, the
+editor POSTs the raw bytes to `POST /png/<id>` (a separate HTTP connection, off
+the control link), and returns only a `PngHandle`. The rmcp tool reads the bytes
+back from the temp file the upload landed in and returns them to the agent as an
+MCP image block. Retained files are LRU-capped on disk.
 
-```json
-{ "quic_url": "https://127.0.0.1:9087", "cert_hash": "<base64url-sha256>" }
-```
+**No certificates.** The link is a plain `ws://` (loopback). For a TLS-terminated
+remote server, tick "Use TLS" in the connect modal (or set it via the modal) for
+`wss://`. There is no cert-pinning / `/control` handshake anymore.
 
-The editor fetches `/control`, pins the hash, and connects. A server restart mints
-a new cert; the editor re-fetches on its next connect, so it "just works" — no cert
-files to manage.
-
-**`POST /debug`.** The same control server exposes a raw-request seam: POST a JSON
-`Request` and it's relayed to the editor, returning the `Response` as JSON (PNGs
-are written to a temp file and summarized). Handy for `curl`-driving the pipeline
-without an MCP client. Example:
+**`POST /debug`.** The server exposes a raw-request seam: POST a JSON `Request`
+and it's relayed to the editor, returning the `Response` as JSON (a PNG request
+returns the handle; fetch the bytes at `/png/<id>`). Handy for `curl`-driving the
+pipeline without an MCP client. Example:
 
 ```bash
 curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' \
@@ -332,10 +332,11 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
   cleanly (no pinning). `ServerInfo` is `#[non_exhaustive]` in 1.x; build it from
   `Default` + field assignment. `StreamableHttpService` is a tower service mounted
   on the axum router via `nest_service("/mcp", …)` — rmcp ships no HTTP listener of
-  its own, hence axum.
-- **`web-transport`** unifies quinn (native) + the browser WebTransport API
-  (wasm). The wasm side needs the `web_sys_unstable_apis` cfg, already set in
-  [`.cargo/config.toml`](../.cargo/config.toml).
+  its own, hence axum. Loopback agents sit idle between tool calls, so the rmcp
+  session `keep_alive` is set to a day (the 5-minute default would reap a
+  live-but-idle session).
+- **The link** is `axum`'s built-in WebSocket (the `ws` feature) on the server and
+  `gloo-net`'s WebSocket on the wasm editor — no extra transport stack, no certs.
 
 ---
 
@@ -343,12 +344,15 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
 
 - **`no editor attached`** — no editor tab is connected. Open
   `http://localhost:9085/?mcp=http://127.0.0.1:9086` and wait for `editor attached`
-  in the server log. If you restarted the server, the editor must reconnect
-  (reload the tab) because the cert hash changed.
-- **Tool call fails with `open_bi: … closed`** — the editor's session dropped
-  (tab reloaded/closed/frozen). The relay detaches the dead session, so
-  `GET /health` now reports `editor_attached:false` (and `last_boot_error` if the
-  page failed to init). Reload the editor tab to re-attach.
+  in the server log. The editor auto-reconnects with backoff, so a server restart
+  re-attaches on its own (no tab reload needed).
+- **`No editor is paired with this MCP session`** — more than one tab/agent is
+  connected, so the server can't auto-bind. Call `pairing_status` to get this
+  session's code, then enter it in the editor's MCP modal (or open the editor with
+  `&pair=<code>`).
+- **The editor's socket dropped** (tab reloaded/closed/frozen) — the server forgets
+  the connection, so `GET /health` reports `editor_attached:false` (and
+  `last_boot_error` if the page failed to init). The tab re-attaches when it's back.
 - **Black `screenshot_scene`** — `requestAnimationFrame` (and thus the WebGPU
   draw loop) pauses for hidden/background tabs, and a WebGPU `toDataURL` read can
   come back black if it lands between presents. Make sure the editor tab is the
@@ -361,15 +365,20 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
 
 ## Known limitations / future
 
-- **Single editor link.** The server holds one attached editor; the last tab to
-  connect wins. Multi-tab routing (a `link_id` selector) is not implemented.
+- **Per-tab isolation.** Each editor tab (one `/editor` socket) and each MCP agent
+  get their own identity, bound to each other. Binding is automatic when exactly
+  one unbound tab and one unbound agent exist; otherwise the agent surfaces a
+  4-char pairing code the tab presents (via the modal or `?pair=`). Requests,
+  responses, and events never cross between sessions
+  ([`link::EditorLink`](../packages/mcp/src/link.rs)).
 - **Editor→agent push** is implemented for toasts (warning/error) and selection
-  changes: the editor opens a unidirectional stream per event
-  ([`remote::notify_event`](../packages/frontend/editor/src/remote.rs)), the
-  server fans them out ([`link::EditorLink`](../packages/mcp/src/link.rs)) and each
-  MCP session forwards them as `notifications/message` logging notifications
-  ([`on_initialized`](../packages/mcp/src/mcp.rs)). Other event kinds (and an
-  MCP resource-subscription model) are future work.
+  changes: the editor sends a `WsClientMsg::Event`
+  ([`remote::notify_event`](../packages/frontend/editor/src/remote.rs)), the server
+  tags it with the originating connection id and fans it out, and each agent's
+  forwarder keeps only its bound tab's events, relaying them as
+  `notifications/message` logging notifications
+  ([`on_initialized`](../packages/mcp/src/mcp.rs)). Other event kinds (and an MCP
+  resource-subscription model) are future work.
 
 ---
 
@@ -377,9 +386,9 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
 
 - Protocol crate: [`packages/crates/editor-protocol/src`](../packages/crates/editor-protocol/src)
   (`command.rs`, `query.rs`, `node_spec.rs`, `anim_ui.rs`, `transport.rs`).
-- Server: [`packages/mcp/src`](../packages/mcp/src) — `mcp.rs` (tools), `quic.rs`
-  (WebTransport listener), `link.rs` (editor link + framing), `http.rs`
-  (`/control`, `/debug`, `/mcp` mount), `cert.rs`.
+- Server: [`packages/mcp/src`](../packages/mcp/src) — `mcp.rs` (tools), `ws.rs`
+  (`/editor` WebSocket, single-writer), `link.rs` (connections / agents / pairing),
+  `http.rs` (`/editor`, `/png`, `/debug`, `/health`, `/mcp` mount).
 - Editor remote: [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs);
   `?mcp=` parsing in [`main.rs`](../packages/frontend/editor/src/main.rs).
 - Controller surface: [`controller/command.rs`](../packages/frontend/editor/src/controller/command.rs),
