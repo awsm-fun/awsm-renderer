@@ -103,30 +103,33 @@ impl MaterialClassifyRenderPass {
         ));
 
         let msaa = ctx.anti_aliasing.msaa_sample_count;
-        // First-party fallback for the active MSAA. Lazy-pool: this
-        // is `None` if the user changed MSAA mid-session without
-        // calling `set_anti_aliasing` first. The match below skips
-        // dispatch in that case (a no-op classify produces an empty
-        // bucket — the opaque/transparent passes' "skip if no work"
-        // paths handle the empty result correctly).
+        // First-party fallback for the active MSAA. NOTE: this is only set by
+        // `from_resolved` at construction, for the construction-time MSAA — and
+        // it's *cleared* by `relayout_bucket_buffers` on the first bucket-layout
+        // change (which always happens at boot). The render-driven recompile
+        // (`ensure_scene_pipelines`) re-installs the classify pipeline into the
+        // `dynamic_pipeline_cache`, NOT here. So on a cold start with MSAA on,
+        // this is `None`.
         let first_party_key = if msaa.is_some() {
             self.pipelines.multisampled_pipeline_key
         } else {
             self.pipelines.singlesampled_pipeline_key
         };
-        let pipeline_key_opt = if !ctx.dynamic_materials.is_empty() {
-            // `(dispatch_hash, msaa)` keyed lookup — both halves are
-            // `Copy`, so the probe is alloc-free on the hot path
-            // (vs the previous `Vec<BucketEntry>` clone-and-hash).
-            let key = (ctx.dynamic_materials.dispatch_hash_cached(), msaa);
-            self.dynamic_pipeline_cache
-                .borrow()
-                .get(&key)
-                .copied()
-                .or(first_party_key)
-        } else {
-            first_party_key
-        };
+        // ALWAYS consult `dynamic_pipeline_cache` first (keyed on the live
+        // `(dispatch_hash, msaa)`), then fall back to the first-party key. The
+        // cache is kept current for the active config by `ensure_scene_pipelines`
+        // even on an empty scene; gating this lookup on a non-empty scene was
+        // the "black sky on cold start" bug — an empty scene with MSAA on fell
+        // through to the cleared (`None`) first-party key and skipped classify
+        // entirely, so the skybox (which needs classify to route uncovered
+        // pixels) wrote nothing.
+        let key = (ctx.dynamic_materials.dispatch_hash_cached(), msaa);
+        let pipeline_key_opt = self
+            .dynamic_pipeline_cache
+            .borrow()
+            .get(&key)
+            .copied()
+            .or(first_party_key);
         let Some(pipeline_key) = pipeline_key_opt else {
             // No compiled variant for the current MSAA — skip
             // dispatch. Caller should have awaited
