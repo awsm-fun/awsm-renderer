@@ -19,37 +19,70 @@ use crate::{
     },
 };
 
-/// Material classify pass bind groups and pipelines.
+/// Material classify pass bind groups and the compiled-pipeline cache.
 ///
-/// The base `pipelines` field holds the first-party-only pipeline keys
-/// compiled at builder time. When dynamic materials register, a
-/// different bucket-entry list is needed; the new pipeline gets
-/// compiled via [`crate::AwsmRenderer::prewarm_pipelines`] and looked
-/// up here at dispatch time via `dynamic_pipeline_cache`.
+/// The classify shader is keyed on the live bucket layout, so the
+/// compiled pipeline is looked up per-frame from [`Self::pipeline_cache`]
+/// (keyed on the registry's `(dispatch_hash, msaa)`). The cache is the
+/// single source of truth: `ensure_scene_pipelines` (run by
+/// `prewarm_pipelines` at boot, and on every bucket-layout / MSAA change)
+/// installs the pipeline for the active config — including the empty
+/// first-party-only layout — before the first frame renders. There is no
+/// separate "first-party" key: every consumer awaits
+/// `wait_for_pipelines_ready` (→ `prewarm`) before rendering, so the cache
+/// is always populated for the active config.
 pub struct MaterialClassifyRenderPass {
     pub bind_groups: MaterialClassifyBindGroups,
-    pub pipelines: MaterialClassifyPipelines,
     /// `(dispatch_hash, msaa) → compiled pipeline`. Populated by
-    /// `prewarm_pipelines`. RefCell so the dispatch path can take a
-    /// snapshot without `&mut self`.
-    ///
-    /// Previously keyed on `(Vec<BucketEntry>, Option<u32>)` — the
-    /// dispatch path allocated a fresh `Vec` every frame to probe.
-    /// Now the key is `(u64, Option<u32>)` (the registry's cached
-    /// `dispatch_hash`); the per-frame probe stays alloc-free.
-    pub dynamic_pipeline_cache: RefCell<HashMap<(u64, Option<u32>), ComputePipelineKey>>,
+    /// `ensure_scene_pipelines` (via `prewarm_pipelines`). RefCell so the
+    /// dispatch path can take a snapshot without `&mut self`.
+    pub pipeline_cache: RefCell<HashMap<(u64, Option<u32>), ComputePipelineKey>>,
 }
 
 impl MaterialClassifyRenderPass {
+    /// Number of cached dynamic classify pipeline keys, keyed by
+    /// `(dispatch_hash, msaa)` (leak/observability diagnostics — see `memory_stats`).
+    pub fn dynamic_cache_len(&self) -> usize {
+        self.pipeline_cache.borrow().len()
+    }
+
+    /// Prune `dynamic_pipeline_cache` entries whose `dispatch_hash` no longer
+    /// matches `current_dispatch_hash` — a bucket-SET change orphaned them and
+    /// the dispatch path (keyed on the live `dispatch_hash`) will never look them
+    /// up again. Returns the dropped pool keys so the caller frees them from the
+    /// shared compute-pipeline pool. Without this the cache (and the pool it
+    /// references) grew unbounded on every registry edit → GPU OOM ("aw snap").
+    /// Pruning only non-current entries is dangle-free: nothing dispatches them.
+    /// Part of the pipeline-leak fix.
+    pub fn prune_dynamic_pipeline_cache(
+        &mut self,
+        current_dispatch_hash: u64,
+    ) -> Vec<ComputePipelineKey> {
+        let mut dropped = Vec::new();
+        self.pipeline_cache
+            .borrow_mut()
+            .retain(|(hash, _msaa), key| {
+                if *hash == current_dispatch_hash {
+                    true
+                } else {
+                    dropped.push(*key);
+                    false
+                }
+            });
+        dropped
+    }
+
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = MaterialClassifyBindGroups::new(ctx).await?;
+        // Warm the compute-pipeline pool with the active-config classify so the
+        // first `ensure_scene_pipelines` is a pool hit; the resulting key is
+        // installed into `pipeline_cache` by that ensure (run via
+        // `prewarm_pipelines`) before the first frame, so we don't store it here.
         let first_party_entries = crate::dynamic_materials::first_party_bucket_entries();
-        let pipelines =
-            MaterialClassifyPipelines::new(ctx, &bind_groups, &first_party_entries).await?;
+        MaterialClassifyPipelines::warm_pool(ctx, &bind_groups, &first_party_entries).await?;
         Ok(Self {
             bind_groups,
-            pipelines,
-            dynamic_pipeline_cache: RefCell::new(HashMap::new()),
+            pipeline_cache: RefCell::new(HashMap::new()),
         })
     }
 
@@ -71,35 +104,15 @@ impl MaterialClassifyRenderPass {
         ));
 
         let msaa = ctx.anti_aliasing.msaa_sample_count;
-        // First-party fallback for the active MSAA. Lazy-pool: this
-        // is `None` if the user changed MSAA mid-session without
-        // calling `set_anti_aliasing` first. The match below skips
-        // dispatch in that case (a no-op classify produces an empty
-        // bucket — the opaque/transparent passes' "skip if no work"
-        // paths handle the empty result correctly).
-        let first_party_key = if msaa.is_some() {
-            self.pipelines.multisampled_pipeline_key
-        } else {
-            self.pipelines.singlesampled_pipeline_key
-        };
-        let pipeline_key_opt = if !ctx.dynamic_materials.is_empty() {
-            // `(dispatch_hash, msaa)` keyed lookup — both halves are
-            // `Copy`, so the probe is alloc-free on the hot path
-            // (vs the previous `Vec<BucketEntry>` clone-and-hash).
-            let key = (ctx.dynamic_materials.dispatch_hash_cached(), msaa);
-            self.dynamic_pipeline_cache
-                .borrow()
-                .get(&key)
-                .copied()
-                .or(first_party_key)
-        } else {
-            first_party_key
-        };
+        // The compiled classify pipeline for the live `(dispatch_hash, msaa)`.
+        // `pipeline_cache` is the single source of truth, kept current for the
+        // active config by `ensure_scene_pipelines` (run via `prewarm_pipelines`
+        // at boot + on every bucket-layout / MSAA change). A miss only happens in
+        // the brief window after a config change before its recompile lands; we
+        // skip the dispatch that frame (the next frame, once installed, runs it).
+        let key = (ctx.dynamic_materials.dispatch_hash_cached(), msaa);
+        let pipeline_key_opt = self.pipeline_cache.borrow().get(&key).copied();
         let Some(pipeline_key) = pipeline_key_opt else {
-            // No compiled variant for the current MSAA — skip
-            // dispatch. Caller should have awaited
-            // `AwsmRenderer::set_anti_aliasing` before changing the
-            // mode if they wanted classify to run this frame.
             compute_pass.end();
             return Ok(());
         };

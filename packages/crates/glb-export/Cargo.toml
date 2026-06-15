@@ -1,0 +1,32 @@
+[package]
+name = "awsm-glb-export"
+description = "Scene-complete glTF/GLB export IR + writer for awsm-renderer (no GPU deps)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+awsm-meshgen = { workspace = true }
+gltf-json = { workspace = true }
+glam = { workspace = true }
+serde_json = { workspace = true }
+# The reader half of the gltf stack. Used by `extract::extract_node_mesh` to read
+# geometry back out of a source glTF/GLB's accessors (the editor's Model-node
+# export re-reads the imported file). Pure-Rust + wasm-friendly, no GPU deps.
+gltf = { workspace = true }
+# Decoding `data:` image URIs when copying source textures into the clean
+# re-export (GLB buffer-view images are sliced directly; no re-encode either way).
+base64 = { workspace = true }
+# MikkTSpace tangent generation (shared crate), baked into the exported/canonical
+# glb so the (browser) population path is a dumb upload. Pure CPU, wasm-friendly.
+awsm-tangents = { workspace = true }
+
+[dev-dependencies]
+# Throwaway directories for the player-bundle write_to_dir integration test.
+tempfile = "3"
+# Property-based round-trip tests (MeshData → glb → MeshData fidelity).
+proptest = { workspace = true }

@@ -15,12 +15,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use awsm_editor_protocol::MaterialDef;
 use awsm_renderer::bounds::Aabb;
 use awsm_renderer::lights::Light;
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::transforms::Transform;
 use awsm_renderer::AwsmRenderer;
-use awsm_scene_schema::MaterialDef;
 use awsm_web_shared::prelude::Mutable;
 use awsm_web_shared::util::free_camera::FreeCamera as Camera;
 use gloo_render::AnimationFrame;

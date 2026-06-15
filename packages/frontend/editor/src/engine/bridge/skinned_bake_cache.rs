@@ -1,0 +1,83 @@
+//! Session-local cache of **bind-pose geometry** for imported skinned glTF nodes.
+//!
+//! A `NodeKind::SkinnedMesh` is rendered + deformed by the renderer's glTF skin
+//! path; it has no captured-mesh asset. `drop_skinning` (the terminal bridge to
+//! editing) needs the skinned node's **bind-pose** triangles to bake into a
+//! static, editable `Mesh{ stack:{ base: Captured } }`. Rather than read those
+//! back from the GPU skin, we stash them here at import time: `extract_node_mesh`
+//! reads positions/normals/uvs/colors from the document accessors **without**
+//! JOINTS/WEIGHTS, which IS the bind pose.
+//!
+//! Keyed by `(source file AssetId, glTF node_index, primitive_index)` — the same
+//! triple a [`SkinnedMeshRef`](awsm_editor_protocol::SkinnedMeshRef) carries — so a
+//! `drop_skinning` on any skinned node resolves its bake directly.
+//!
+//! TODO(cross-reload persistence): like the old `model_source_cache`, this is
+//! session-local — it does NOT survive a project Save → reload. A reloaded
+//! project's `SkinnedMesh` nodes re-render only if the source is re-imported; a
+//! `drop_skinning` after a cold reload (no cached bake) currently errors. Full
+//! persistence would write each skinned node's bind-pose bytes to the project's
+//! `assets/` on Save and read them back on Load.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use awsm_editor_protocol::AssetId;
+use awsm_glb_export::MeshData;
+
+/// Cache key: `(source file AssetId, glTF node_index, primitive_index)` — the
+/// triple a `SkinnedMeshRef` carries.
+type BakeKey = (AssetId, u32, Option<u32>);
+
+thread_local! {
+    static SKINNED_BAKES: RefCell<HashMap<BakeKey, MeshData>> = RefCell::new(HashMap::new());
+    /// Per-imported-source the **clean rig glb** (geometry + skeleton + joints/
+    /// weights + morph, re-exported through our writer; materials/anims dropped),
+    /// keyed by the source-file `AssetId`. This is what the player bundle ships
+    /// for the import's skinned nodes (`assets/<source>.glb`). Session-local (same
+    /// caveat as the bind-pose cache above).
+    static SOURCE_RIG_GLB: RefCell<HashMap<AssetId, Vec<u8>>> = RefCell::new(HashMap::new());
+}
+
+/// Stash the clean rig glb for an imported source (keyed by its source-file id).
+pub fn store_rig_glb(source: AssetId, glb: Vec<u8>) {
+    SOURCE_RIG_GLB.with(|c| c.borrow_mut().insert(source, glb));
+}
+
+/// The clean rig glb for an imported source, if present (the bundle reads this).
+pub fn get_rig_glb(source: AssetId) -> Option<Vec<u8>> {
+    SOURCE_RIG_GLB.with(|c| c.borrow().get(&source).cloned())
+}
+
+/// Stash a skinned node's bind-pose geometry under its `(source, node_index,
+/// primitive_index)` key (idempotent — re-storing replaces).
+pub fn store(source: AssetId, node_index: u32, primitive_index: Option<u32>, mesh: MeshData) {
+    SKINNED_BAKES.with(|c| {
+        c.borrow_mut()
+            .insert((source, node_index, primitive_index), mesh)
+    });
+}
+
+/// The cached bind-pose geometry for a skinned node, if present.
+pub fn get(source: AssetId, node_index: u32, primitive_index: Option<u32>) -> Option<MeshData> {
+    SKINNED_BAKES.with(|c| {
+        c.borrow()
+            .get(&(source, node_index, primitive_index))
+            .cloned()
+    })
+}
+
+/// Drop one import's cached bakes + rig glb (its last scene instance deleted
+/// mid-session). Counterpart to [`store`]/[`store_rig_glb`].
+pub fn remove(source: AssetId) {
+    SKINNED_BAKES.with(|c| c.borrow_mut().retain(|(s, _, _), _| *s != source));
+    SOURCE_RIG_GLB.with(|c| {
+        c.borrow_mut().remove(&source);
+    });
+}
+
+/// Drop every cached bake + rig glb (project reset).
+pub fn clear() {
+    SKINNED_BAKES.with(|c| c.borrow_mut().clear());
+    SOURCE_RIG_GLB.with(|c| c.borrow_mut().clear());
+}

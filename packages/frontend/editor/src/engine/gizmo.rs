@@ -329,7 +329,67 @@ pub fn commit_drag() {
                 transform: final_trs,
             })
             .await;
+        // AUTO-KEY (DCC-style): in Animation mode with the Settings toggle on,
+        // a gizmo commit on a node the current clip tracks writes keyframe(s)
+        // at the playhead straight from the committed pose — one undo entry per
+        // key, after the transform's own entry. Gesture-level on purpose: only
+        // a REAL gizmo drag auto-keys (programmatic SetTransform — MCP, IK
+        // apply, undo replay — never does).
+        auto_key_from_commit(node_id, final_trs).await;
     });
+}
+
+/// Write keyframe(s) for a committed gizmo pose when auto-key applies: every
+/// Transform track of the CURRENT clip that targets `node_id` gets a key at
+/// the playhead with the matching component of `trs`.
+async fn auto_key_from_commit(node_id: NodeId, trs: crate::engine::scene::types::Trs) {
+    use awsm_editor_protocol::EditorMode;
+
+    use crate::controller::animation::{find_clip, TrackTarget, TrackValue, TransformProp};
+    use crate::controller::EditorCommand;
+    let ctrl = controller();
+    if !ctrl.settings.auto_key.get() || ctrl.mode.get() != EditorMode::Animation {
+        return;
+    }
+    let Some(clip_id) = ctrl.current_clip.get() else {
+        return;
+    };
+    let Some(clip) = find_clip(&ctrl.custom_animations, clip_id) else {
+        return;
+    };
+    let t = ctrl.playhead.get();
+    let keys: Vec<(usize, TrackValue)> = clip
+        .tracks
+        .lock_ref()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, tr)| {
+            let TrackTarget::Transform { node, prop } = &tr.target else {
+                return None;
+            };
+            if *node != node_id {
+                return None;
+            }
+            Some((
+                i,
+                match prop {
+                    TransformProp::Translation => TrackValue::Vec3(trs.translation),
+                    TransformProp::Rotation => TrackValue::Quat(trs.rotation),
+                    TransformProp::Scale => TrackValue::Vec3(trs.scale),
+                },
+            ))
+        })
+        .collect();
+    for (track, value) in keys {
+        let _ = ctrl
+            .dispatch(EditorCommand::AddKeyframe {
+                clip: clip_id,
+                track,
+                t,
+                value,
+            })
+            .await;
+    }
 }
 
 /// Write the dragged node's renderer-side local transform back into its scene

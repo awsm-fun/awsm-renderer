@@ -8,8 +8,7 @@
 use crate::engine::scene::types::{AssetStatus, LightConfig, LightKind, NodeKind, Trs};
 use crate::prelude::*;
 
-pub use awsm_scene_schema::NodeId;
-use awsm_scene_schema::PrimitiveShape;
+pub use awsm_editor_protocol::NodeId;
 
 pub struct Node {
     pub id: NodeId,
@@ -143,74 +142,47 @@ impl Node {
     // used to create a shared `AssetSource::Material(MaterialDef)`.
     // ─────────────────────────────────────────────────────────────────────
 
-    pub fn new_primitive(name: impl Into<String>, shape: PrimitiveShape) -> Arc<Self> {
-        Self::new_inner(
-            name,
-            NodeKind::Primitive {
-                shape,
-                material: None,
-                inline_material: awsm_scene_schema::MaterialDef::default(),
-                custom_material: None,
-                shadow: Default::default(),
-            },
-        )
-    }
-
     pub fn new_curve(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::Curve(awsm_scene_schema::CurveDef::default()),
+            NodeKind::Curve(awsm_editor_protocol::CurveDef::default()),
         )
     }
 
     pub fn new_line(name: impl Into<String>) -> Arc<Self> {
-        Self::new_inner(name, NodeKind::Line(awsm_scene_schema::LineDef::default()))
+        Self::new_inner(
+            name,
+            NodeKind::Line(awsm_editor_protocol::LineDef::default()),
+        )
     }
 
     pub fn new_sprite(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::Sprite(awsm_scene_schema::SpriteDef::default()),
+            NodeKind::Sprite(awsm_editor_protocol::SpriteDef::default()),
         )
     }
 
     pub fn new_particle(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::ParticleEmitter(awsm_scene_schema::ParticleEmitterDef::default()),
+            NodeKind::ParticleEmitter(awsm_editor_protocol::ParticleEmitterDef::default()),
         )
     }
 
     pub fn new_decal(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::Decal(awsm_scene_schema::DecalConfig::default()),
+            NodeKind::Decal(awsm_editor_protocol::DecalConfig::default()),
         )
     }
 
-    /// `SweepAlongCurve` needs the user to pick a curve node id after
-    /// insert (the inspector exposes the picker). Until then the def
-    /// references the placeholder ID — the editor materializer logs a
-    /// warning and skips materialization.
-    pub fn new_sweep(name: impl Into<String>) -> Arc<Self> {
-        Self::new_inner(
-            name,
-            NodeKind::SweepAlongCurve {
-                def: awsm_scene_schema::SweepAlongCurveDef::default(),
-                material: None,
-                inline_material: awsm_scene_schema::MaterialDef::default(),
-                custom_material: None,
-                shadow: Default::default(),
-            },
-        )
-    }
-
-    /// Same caveat as `new_sweep` — the user picks the curve node + the
-    /// source primitive node via the inspector after insert.
+    /// The user picks the curve node + the source mesh node via the inspector
+    /// after insert.
     pub fn new_instances(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::InstancesAlongCurve(awsm_scene_schema::InstancesAlongCurveDef::default()),
+            NodeKind::InstancesAlongCurve(awsm_editor_protocol::InstancesAlongCurveDef::default()),
         )
     }
 
@@ -221,10 +193,8 @@ impl Node {
         Self::new_inner(
             name,
             NodeKind::Mesh {
-                mesh: awsm_scene_schema::MeshRef(awsm_scene_schema::AssetId::new()),
+                mesh: awsm_editor_protocol::MeshRef(awsm_editor_protocol::AssetId::new()),
                 material: None,
-                inline_material: awsm_scene_schema::MaterialDef::default(),
-                custom_material: None,
                 shadow: Default::default(),
             },
         )

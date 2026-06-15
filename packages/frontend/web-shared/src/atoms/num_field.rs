@@ -144,8 +144,8 @@ impl NumField {
         let on_change: ChangeCb = Rc::new(RefCell::new(self.on_change));
         let step = self.step;
         let (min, max) = (self.min, self.max);
-        // (startX, startVal) while scrubbing, else None.
-        let drag: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
+        // (startX, startY, startVal) while scrubbing, else None.
+        let drag: Rc<Cell<Option<(f64, f64, f64)>>> = Rc::new(Cell::new(None));
 
         // External value source → live-update the display, but never while the
         // user is focused (editing) or scrubbing the field.
@@ -191,7 +191,36 @@ impl NumField {
                 .event(clone!(ah => move |_: events::MouseLeave| ah.set_neq(false)))
                 .event(clone!(drag, display => move |e: events::MouseDown| {
                     let start_val = display.get_cloned().parse::<f64>().unwrap_or(0.0);
-                    drag.set(Some((e.x(), start_val)));
+                    drag.set(Some((e.x(), e.y(), start_val)));
+                }))
+            }));
+        } else {
+            // No axis chip — add a generic drag-to-scrub handle so EVERY numeric
+            // field can be dragged (up/down or left/right) to live-adjust, not
+            // just typed into.
+            children.push(html!("span", {
+                .class("mono")
+                .attr("title", "Drag up/down to scrub the value")
+                .style("cursor", "ns-resize")
+                .style("padding", "0 5px")
+                .style("font-size", "11px")
+                .style("font-weight", "700")
+                .style("height", "100%")
+                .style("display", "flex")
+                .style("align-items", "center")
+                .style("justify-content", "center")
+                .style("user-select", "none")
+                .style_signal("min-width", ah.signal().map(|h| if h { "20px" } else { "14px" }))
+                .style_signal("color", ah.signal().map(|h| if h { "var(--text-1)" } else { "var(--text-4)" }))
+                .style_signal("background", ah.signal().map(|h| {
+                    if h { "color-mix(in oklch, var(--text-2) 16%, transparent)" } else { "transparent" }
+                }))
+                .text("\u{21d5}")
+                .event(clone!(ah => move |_: events::MouseEnter| ah.set_neq(true)))
+                .event(clone!(ah => move |_: events::MouseLeave| ah.set_neq(false)))
+                .event(clone!(drag, display => move |e: events::MouseDown| {
+                    let start_val = display.get_cloned().parse::<f64>().unwrap_or(0.0);
+                    drag.set(Some((e.x(), e.y(), start_val)));
                 }))
             }));
         }
@@ -252,9 +281,12 @@ impl NumField {
             .style_signal("box-shadow", foc.signal().map(|f| if f { "0 0 0 2px var(--accent-ghost)" } else { "none" }))
             // Window-bound scrub listeners (active only while `drag` is Some).
             .global_event(clone!(drag, display, on_change => move |e: events::MouseMove| {
-                if let Some((start_x, start_val)) = drag.get() {
-                    let dx = e.x() - start_x;
-                    let n = clamp_round(start_val + dx * step, step, min, max, true);
+                if let Some((start_x, start_y, start_val)) = drag.get() {
+                    // Right OR up increases, left OR down decreases — so the same
+                    // handle scrubs whether the user drags horizontally or
+                    // vertically (the field's generic handle hints "up/down").
+                    let delta_px = (e.x() - start_x) - (e.y() - start_y);
+                    let n = clamp_round(start_val + delta_px * step, step, min, max, true);
                     display.set(fmt(n));
                     call(&on_change, n);
                 }

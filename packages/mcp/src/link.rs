@@ -57,13 +57,27 @@ impl EditorLink {
 
     /// Send a request to the attached editor and await its response. Errors when
     /// no editor is attached. (Used by the rmcp tool layer + the test client.)
+    ///
+    /// A TRANSPORT-level failure (`open_bi` on a closed WebTransport session —
+    /// the tab crashed, navigated, or the OS froze it) DETACHES the stale
+    /// session, so `GET /health` flips to `editor_attached: false` instead of
+    /// lying until the next page load re-attaches. Found during the day-3
+    /// overnight soak: the tab died ~46 min in, /debug returned session errors
+    /// for an hour, and /health still claimed attached.
     #[allow(dead_code)]
     pub async fn request(&self, req: &Request) -> Result<Response> {
         let session = self
             .session()
             .await
             .ok_or_else(|| anyhow!("no editor attached"))?;
-        request(&session, req).await
+        match request(&session, req).await {
+            Err(e) if e.to_string().contains("open_bi") => {
+                tracing::warn!("editor session dead ({e}) — detaching");
+                self.set(None).await;
+                Err(anyhow!("editor session dead (detached): {e}"))
+            }
+            other => other,
+        }
     }
 }
 

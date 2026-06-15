@@ -13,7 +13,10 @@ use crate::{
     error::Result,
     render::RenderContext,
     render_passes::{
-        geometry::{bind_group::GeometryBindGroups, pipeline::GeometryPipelines},
+        geometry::{
+            bind_group::GeometryBindGroups, masked_bind_group::GeometryMaskedBindGroup,
+            masked_pipeline::GeometryMaskedPipelines, pipeline::GeometryPipelines,
+        },
         RenderPassInitContext,
     },
     renderable::Renderable,
@@ -33,6 +36,13 @@ static VISIBILITY_CLEAR_COLOR: LazyLock<Color> = LazyLock::new(|| {
 pub struct GeometryRenderPass {
     pub bind_groups: GeometryBindGroups,
     pub pipelines: GeometryPipelines,
+    /// Augmented group-0 bind group bound for the masked (alpha-tested)
+    /// variant draws. See [`GeometryMaskedBindGroup`].
+    pub masked_bind_group: GeometryMaskedBindGroup,
+    /// Lazy per-`shader_id` pool of masked (alpha-tested) pipelines.
+    /// Populated by the texture-finalize flow (built-in) + the dynamic
+    /// scheduler (custom); empty until a masked material needs one.
+    pub masked_pipelines: GeometryMaskedPipelines,
 }
 
 impl GeometryRenderPass {
@@ -45,10 +55,14 @@ impl GeometryRenderPass {
         let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
         let bind_groups = GeometryBindGroups::new(ctx).await?;
         let pipelines = GeometryPipelines::new(ctx, &bind_groups, multisampled_geometry).await?;
+        let masked_bind_group = GeometryMaskedBindGroup::new(ctx).await?;
+        let masked_pipelines = GeometryMaskedPipelines::new(ctx, &masked_bind_group, &bind_groups)?;
 
         Ok(Self {
             bind_groups,
             pipelines,
+            masked_bind_group,
+            masked_pipelines,
         })
     }
 
@@ -145,8 +159,13 @@ impl GeometryRenderPass {
 
         render_pass.set_bind_group(3, self.bind_groups.animation.get_bind_group()?, None)?;
 
+        // Pass 1 — non-masked meshes (group 0 = camera, bound above). A mesh
+        // with a compiled masked variant is skipped here and drawn in pass 2.
         let mut last_render_pipeline_key = None;
         for renderable in renderables {
+            if renderable.geometry_masked_render_pipeline_key().is_some() {
+                continue;
+            }
             match renderable.geometry_render_pipeline_key() {
                 Some(render_pipeline_key) => {
                     if last_render_pipeline_key != Some(render_pipeline_key) {
@@ -154,7 +173,12 @@ impl GeometryRenderPass {
                         last_render_pipeline_key = Some(render_pipeline_key);
                     }
 
-                    renderable.push_geometry_pass_commands(ctx, &render_pass, &self.bind_groups)?;
+                    renderable.push_geometry_pass_commands(
+                        ctx,
+                        &render_pass,
+                        &self.bind_groups,
+                        false,
+                    )?;
                 }
                 None => {
                     debug_unique_string(
@@ -167,6 +191,35 @@ impl GeometryRenderPass {
                             )
                         },
                     );
+                }
+            }
+        }
+
+        // Pass 2 — masked (alpha-tested) meshes. Rebind group 0 to the
+        // augmented masked bind group (camera/frame_globals are at the same
+        // slots, so the shared vertex still resolves them; groups 1/2/3 keep
+        // the plain geometry layouts and stay valid across the pipeline switch).
+        let any_masked = renderables
+            .iter()
+            .any(|r| r.geometry_masked_render_pipeline_key().is_some());
+        if any_masked {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+                render_pass.set_bind_group(0, masked_group0, None)?;
+                let mut last_masked_key = None;
+                for renderable in renderables {
+                    let Some(masked_key) = renderable.geometry_masked_render_pipeline_key() else {
+                        continue;
+                    };
+                    if last_masked_key != Some(masked_key) {
+                        render_pass.set_pipeline(ctx.pipelines.render.get(masked_key)?);
+                        last_masked_key = Some(masked_key);
+                    }
+                    renderable.push_geometry_pass_commands(
+                        ctx,
+                        &render_pass,
+                        &self.bind_groups,
+                        true,
+                    )?;
                 }
             }
         }

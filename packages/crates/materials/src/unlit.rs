@@ -93,7 +93,10 @@ impl MaterialShader for UnlitMaterial {
     }
 
     fn is_transparency_pass(&self) -> bool {
-        self.has_alpha_blend() || self.alpha_cutoff().is_some()
+        // MASK is alpha-tested OPAQUE (same as PBR — see pbr.rs): it takes the
+        // visibility/masked-raster path (cutout shadows, opaque_tex inclusion,
+        // MSAA cutout AA), not the transparent pass. Only BLEND is transparency.
+        self.has_alpha_blend()
     }
 
     fn write_uniform_buffer(&self, ctx: &dyn TextureContext, data: &mut Vec<u8>) {

@@ -155,11 +155,39 @@ struct TransparentShadingInput {
     surface_to_camera: vec3<f32>,
     front_facing: bool,
     material_offset: u32,
+    // Per-vertex attribute sets, forwarded from the interpolated FragmentInput so
+    // a custom material can read any COLOR_n / TEXCOORD_n via the accessors below
+    // (the transparent forward path interpolates these as varyings — there is no
+    // visibility-buffer fetch here, unlike the opaque kernels).
+    {% for i in 0..color_sets %}
+    color_{{ i }}: vec4<f32>,
+    {% endfor %}
+    {% for i in 0..uv_sets %}
+    uv_{{ i }}: vec2<f32>,
+    {% endfor %}
     material: MaterialData,
 };
 struct TransparentShadingOutput {
     color: vec4<f32>,
 };
+
+// Author accessors — the transparent-path counterparts of the opaque kernels'
+// material_uv / material_vertex_color, so the SAME custom fragment compiles
+// whether the material is opaque or transparent. A templated switch selects the
+// requested interpolated set (mirrors `texture_uv` / `vertex_color`). An absent
+// set returns a benign default (no presence guard on the custom path).
+fn material_vertex_color(input: TransparentShadingInput, set_index: u32) -> vec4<f32> {
+    {% for i in 0..color_sets %}
+    if (set_index == {{ i }}u) { return input.color_{{ i }}; }
+    {% endfor %}
+    return vec4<f32>(1.0);
+}
+fn material_uv(input: TransparentShadingInput, set_index: u32) -> vec2<f32> {
+    {% for i in 0..uv_sets %}
+    if (set_index == {{ i }}u) { return input.uv_{{ i }}; }
+    {% endfor %}
+    return vec2<f32>(0.0);
+}
 
 fn custom_shade_transparent_dynamic(input: TransparentShadingInput) -> TransparentShadingOutput {
 {{ dynamic_wgsl_fragment|safe }}
@@ -260,6 +288,12 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
             surface_to_camera,
             input.front_facing,
             material_offset,
+            {% for i in 0..color_sets %}
+            input.color_{{ i }},
+            {% endfor %}
+            {% for i in 0..uv_sets %}
+            input.uv_{{ i }},
+            {% endfor %}
             dyn_material,
         );
         let dyn_out = custom_shade_transparent_dynamic(dyn_input);

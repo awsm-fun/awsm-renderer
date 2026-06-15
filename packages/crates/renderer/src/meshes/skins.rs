@@ -28,6 +28,14 @@ pub struct Skins {
     joint_index_weights: DynamicStorageBuffer<SkinKey>,
     matrices_gpu_dirty: bool,
     joint_index_weights_gpu_dirty: bool,
+    /// Skins inserted since the last `update_transforms` pass. Each gets a
+    /// ONE-SHOT full joint-matrix refresh (every joint, not just dirty ones)
+    /// on the next pass: `insert` can only seed `inverse_bind` (joint worlds
+    /// may not be derived yet mid-import), and an async insert can land AFTER
+    /// the frame consumed its joints' dirty flags — leaving every un-animated
+    /// joint's matrix as bare IBM forever (mesh renders collapsed/shredded;
+    /// the editor's mid-session skinned imports hit exactly this).
+    pending_full_refresh: Vec<SkinKey>,
     pub(crate) matrices_gpu_buffer: web_sys::GpuBuffer,
     pub(crate) joint_index_weights_gpu_buffer: web_sys::GpuBuffer,
     matrices_uploader: crate::buffer::mapped_uploader::MappedUploader,
@@ -76,6 +84,7 @@ impl Skins {
             ),
             matrices_gpu_dirty: true,
             joint_index_weights_gpu_dirty: true,
+            pending_full_refresh: Vec::new(),
             matrices_gpu_buffer,
             joint_index_weights_gpu_buffer,
             matrices_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Skin Matrices"),
@@ -161,6 +170,7 @@ impl Skins {
         }
 
         self.sets_len.insert(skin_key, set_len);
+        self.pending_full_refresh.push(skin_key);
 
         self.matrices_gpu_dirty = true;
         self.joint_index_weights_gpu_dirty = true;
@@ -168,6 +178,53 @@ impl Skins {
     }
 
     /// Returns the number of joints in a skin.
+    /// Raw copy of a skin's packed per-vertex joint/weight stream. Layout per
+    /// ORIGINAL vertex, per set: 4 × (u32 joint index, f32 weight), little-
+    /// endian — 32 bytes per set per vertex (see renderer-gltf buffers/skin.rs,
+    /// which packs it, and shared_wgsl/vertex/skin.wgsl, which consumes it).
+    pub fn read_joint_index_weights(&self, skin_key: SkinKey) -> Result<Vec<u8>> {
+        self.joint_index_weights
+            .get(skin_key)
+            .map(|s| s.to_vec())
+            .ok_or(AwsmSkinError::SkinNotFound(skin_key))
+    }
+
+    /// CPU copy of the skin's joint-matrix palette (one `joint_world × IBM`
+    /// `Mat4` per joint, in the skin's joint-array order) — exactly the
+    /// matrices GPU skinning reads. For CPU-side posed-position math: a rest
+    /// vertex's deformed WORLD position is `Σ wᵢ · Mᵢ · rest_p` (skinned
+    /// vertices are world-space; no node model matrix applies — see
+    /// shared_wgsl/vertex/apply_vertex.wgsl).
+    pub fn read_joint_matrices(&self, skin_key: SkinKey) -> Result<Vec<Mat4>> {
+        let bytes = self
+            .skin_matrices
+            .get(skin_key)
+            .ok_or(AwsmSkinError::SkinNotFound(skin_key))?;
+        Ok(bytes
+            .chunks_exact(64)
+            .map(|c| {
+                let mut f = [0.0f32; 16];
+                for (i, ch) in c.chunks_exact(4).enumerate() {
+                    f[i] = f32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]);
+                }
+                Mat4::from_cols_array(&f)
+            })
+            .collect())
+    }
+
+    /// In-place edit of the packed joint/weight stream (same layout as
+    /// [`Self::read_joint_index_weights`]). Marks the GPU copy dirty — the next
+    /// `write_gpu` uploads it, so live skinned meshes re-deform immediately.
+    pub fn update_joint_index_weights_with(
+        &mut self,
+        skin_key: SkinKey,
+        f: impl FnOnce(&mut [u8]),
+    ) {
+        self.joint_index_weights
+            .update_with_unchecked(skin_key, |_, bytes| f(bytes));
+        self.joint_index_weights_gpu_dirty = true;
+    }
+
     pub fn sets_len(&self, skin_key: SkinKey) -> Result<usize> {
         self.sets_len
             .get(skin_key)
@@ -205,15 +262,51 @@ impl Skins {
     pub fn update_transforms(
         &mut self,
         dirty_skin_joints: HashMap<TransformKey, Mat4>,
+        transforms: &crate::transforms::Transforms,
         mut should_update_skin: impl FnMut(SkinKey) -> bool,
     ) {
+        // One-shot full seed for freshly inserted skins — every joint, from the
+        // CURRENT derived worlds, bypassing the dirty set AND the skip gate
+        // (this is a correctness seed, not a per-frame refresh). See the field
+        // doc on `pending_full_refresh` for why insert can't do this itself.
+        for skin_key in std::mem::take(&mut self.pending_full_refresh) {
+            let Some(transform_keys) = self.skeleton_transforms.get(skin_key) else {
+                continue;
+            };
+            for (index, transform_key) in transform_keys.clone().iter().enumerate() {
+                let Ok(world_mat) = transforms.get_world(*transform_key).copied() else {
+                    continue;
+                };
+                let world_matrix = match self.inverse_bind_matrices.get(*transform_key).cloned() {
+                    Some(ibm) => world_mat * ibm,
+                    None => world_mat,
+                };
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(world_matrix.as_ref().as_ptr() as *const u8, 16 * 4)
+                };
+                self.skin_matrices
+                    .update_with_unchecked(skin_key, |_, matrices| {
+                        let start = index * 16 * 4;
+                        matrices[start..start + (16 * 4)].copy_from_slice(bytes);
+                    });
+                self.matrices_gpu_dirty = true;
+            }
+        }
+        // Diagnostic counters for the editor's pose-doesn't-deform class of bug:
+        // a non-empty dirty set that matches ZERO registered joints means the
+        // writer (e.g. the editor's skin bridge) is using different
+        // TransformKeys than the skin registered — silently nothing updates.
+        let mut matched = 0usize;
+        let mut skipped_skins = 0usize;
         // different skins can theoretically share the same joint, so, iterate over them all
         for (skin_key, transform_keys) in self.skeleton_transforms.iter() {
             if !should_update_skin(skin_key) {
+                skipped_skins += 1;
                 continue;
             }
             for (index, transform_key) in transform_keys.iter().enumerate() {
                 if let Some(world_mat) = dirty_skin_joints.get(transform_key) {
+                    matched += 1;
                     // could cache this for revisited joints, but, it's not a huge deal - might even be faster to redo the math
                     let world_matrix = match self.inverse_bind_matrices.get(*transform_key).cloned()
                     {
@@ -240,6 +333,14 @@ impl Skins {
             }
 
             //tracing::info!("{:#?}", u8_to_f32_vec(&self.skin_matrices.raw_slice()[self.skin_matrices.offset(skin_key).unwrap()..]).chunks(16).take(2).collect::<Vec<_>>());
+        }
+        if matched > 0 || skipped_skins > 0 {
+            tracing::debug!(
+                "skins.update_transforms: {} joint matrices updated, {} skins skipped (dirty set: {})",
+                matched,
+                skipped_skins,
+                dirty_skin_joints.len(),
+            );
         }
     }
 

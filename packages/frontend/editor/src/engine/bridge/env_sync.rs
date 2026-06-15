@@ -46,12 +46,38 @@ fn stashed_ktx(id: AssetId) -> Option<Vec<u8>> {
     KTX_BYTES.with(|m| m.borrow().get(&id).cloned())
 }
 
+/// Apply the current `scene.environment` (skybox + IBL) ONCE, awaited — call at
+/// boot AFTER the renderer is ready but BEFORE the render loop starts.
+///
+/// The renderer's default skybox cubemap is solid **black**; the "Simple Sky"
+/// gradient only reaches the GPU through [`apply_skybox`]. That apply is
+/// otherwise driven only by the async observer in [`start`], which lands after
+/// the render loop has begun — and on a cold empty scene it never reflects until
+/// some later event (an import) forces an opaque bind-group rebuild, so the sky
+/// stays black ("black sky on cold start"). Applying it synchronously here,
+/// before the first paint, means the first frame already has the gradient.
+/// [`start`] seeds its `previous` to this same environment so it does not
+/// redundantly re-apply on its first (replayed) emission.
+pub async fn apply_initial() {
+    let env = controller().scene.environment.get_cloned();
+    if let Err(err) = apply_skybox(&env.skybox).await {
+        tracing::error!("initial skybox apply failed: {err}");
+    }
+    if let Err(err) = apply_ibl(&env.ibl).await {
+        tracing::error!("initial ibl apply failed: {err}");
+    }
+}
+
 /// Begin mirroring `scene.environment` onto the renderer. Call once at boot
-/// (after the renderer is ready); the first emission applies the default sky.
+/// (after the renderer is ready, and after [`apply_initial`]). `previous` is
+/// seeded with the current environment so the first (replayed) emission is a
+/// no-op — the initial skybox/IBL was already applied by [`apply_initial`];
+/// only genuine subsequent changes re-apply.
 pub fn start() {
     let signal = controller().scene.environment.signal_cloned();
+    let initial = controller().scene.environment.get_cloned();
     spawn_local(async move {
-        let mut previous: Option<EnvironmentConfig> = None;
+        let mut previous: Option<EnvironmentConfig> = Some(initial);
         signal
             .for_each(move |env| {
                 let sky_changed = previous

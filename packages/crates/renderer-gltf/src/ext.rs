@@ -5,9 +5,12 @@
 
 use std::sync::Arc;
 
-use awsm_renderer::AwsmRenderer;
+use awsm_renderer::{transforms::TransformKey, AwsmRenderer};
 
-use crate::{data::GltfData, populate::GltfPopulateContext};
+use crate::{
+    data::GltfData,
+    populate::{GltfPopulateContext, PopulateGltfOpts},
+};
 
 /// Imports the `populate_gltf` method onto `AwsmRenderer`. Bring this into
 /// scope with `use awsm_renderer_gltf::AwsmRendererGltfExt;`.
@@ -22,6 +25,31 @@ pub trait AwsmRendererGltfExt {
         gltf_data: impl Into<Arc<GltfData>>,
         scene: Option<usize>,
     ) -> anyhow::Result<GltfPopulateContext>;
+
+    /// Like [`populate_gltf`](Self::populate_gltf), but roots the document's
+    /// scene nodes under `parent_transform` instead of at the renderer root.
+    /// Used by `awsm-scene-loader` to drop a runtime-bundle's per-mesh glb
+    /// (a single identity node holding geometry) beneath the scene node that
+    /// carries its real TRS.
+    #[allow(async_fn_in_trait)]
+    async fn populate_gltf_under(
+        &mut self,
+        gltf_data: impl Into<Arc<GltfData>>,
+        scene: Option<usize>,
+        parent_transform: Option<TransformKey>,
+    ) -> anyhow::Result<GltfPopulateContext>;
+
+    /// The full-control entry point: load a glTF with explicit
+    /// [`PopulateGltfOpts`] (material source, deferred texture finalize, parent
+    /// transform). The two methods above are thin wrappers over this with
+    /// foreign-glTF defaults. The bundle loader uses this with
+    /// `GltfMaterialSource::Single` + `finalize_textures: false`.
+    #[allow(async_fn_in_trait)]
+    async fn populate_gltf_with(
+        &mut self,
+        gltf_data: impl Into<Arc<GltfData>>,
+        opts: PopulateGltfOpts,
+    ) -> anyhow::Result<GltfPopulateContext>;
 }
 
 impl AwsmRendererGltfExt for AwsmRenderer {
@@ -30,6 +58,40 @@ impl AwsmRendererGltfExt for AwsmRenderer {
         gltf_data: impl Into<Arc<GltfData>>,
         scene: Option<usize>,
     ) -> anyhow::Result<GltfPopulateContext> {
-        crate::populate::populate_gltf(self, gltf_data, scene).await
+        crate::populate::populate_gltf(
+            self,
+            gltf_data,
+            PopulateGltfOpts {
+                scene,
+                ..PopulateGltfOpts::foreign()
+            },
+        )
+        .await
+    }
+
+    async fn populate_gltf_under(
+        &mut self,
+        gltf_data: impl Into<Arc<GltfData>>,
+        scene: Option<usize>,
+        parent_transform: Option<TransformKey>,
+    ) -> anyhow::Result<GltfPopulateContext> {
+        crate::populate::populate_gltf(
+            self,
+            gltf_data,
+            PopulateGltfOpts {
+                scene,
+                parent_transform,
+                ..PopulateGltfOpts::foreign()
+            },
+        )
+        .await
+    }
+
+    async fn populate_gltf_with(
+        &mut self,
+        gltf_data: impl Into<Arc<GltfData>>,
+        opts: PopulateGltfOpts,
+    ) -> anyhow::Result<GltfPopulateContext> {
+        crate::populate::populate_gltf(self, gltf_data, opts).await
     }
 }

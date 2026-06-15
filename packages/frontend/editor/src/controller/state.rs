@@ -11,8 +11,9 @@ use super::custom_material::{find_material, CustomMaterial as CM};
 use super::*;
 use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
-use awsm_scene_schema::{
-    AssetEntry, AssetSource as SceneAssetSource, MaterialDef, ProceduralTextureDef, TextureDef,
+use awsm_editor_protocol::{
+    AssetEntry, AssetSource as SceneAssetSource, MaterialDef, ModifierStack, ProceduralTextureDef,
+    TextureDef,
 };
 use std::sync::Arc;
 
@@ -115,6 +116,11 @@ pub struct EditorController {
     pub scene: Arc<Scene>,
     /// Ordered selection (last = primary/anchor). Set via `SetSelection`.
     pub selected: Mutable<Vec<NodeId>>,
+    /// Read-only **vertex-selection highlight**: `Some((node, indices))` marks
+    /// those vertices of that node for a viewport overlay (no geometry edit).
+    /// Set via `SetVertexSelection`; `None` (or an empty `indices`) = no
+    /// highlight. Transient session-local view state (not undoable / persisted).
+    pub vertex_selection: Mutable<Option<(NodeId, Vec<u32>)>>,
     pub mode: Mutable<EditorMode>,
     pub project_name: Mutable<String>,
     pub dirty: Mutable<bool>,
@@ -169,6 +175,11 @@ pub struct EditorController {
     /// affecting edit through ONE counter (rather than per-field signal
     /// observers) guarantees no edit silently skips a re-lower.
     pub anim_revision: Mutable<u32>,
+    /// Monotonic revision bumped by `apply` whenever a command
+    /// [`EditorCommand::affects_mesh`] — the single signal the `mesh_sync` bridge
+    /// observes to re-materialize captured-mesh geometry that changed without a
+    /// node-kind change (`SetMeshData`). Mirrors [`Self::anim_revision`].
+    pub mesh_revision: Mutable<u32>,
     /// Which timeline editor the dock shows (Dope / Curves / Mixer).
     pub anim_view: Mutable<AnimView>,
     /// Whether the ⌘K command palette is open (view state).
@@ -195,10 +206,21 @@ pub struct EditorController {
 pub struct Settings {
     pub grid: Mutable<bool>,
     pub gizmo: Mutable<bool>,
+    /// Show the pickable light-icon HUD markers (one per light node).
+    pub light_gizmos: Mutable<bool>,
+    /// Show the skeleton bone-line overlay on skinned rigs.
+    pub skeleton_viz: Mutable<bool>,
+    /// Auto-key: in ANIMATION mode, a gizmo edit on a node that the current
+    /// clip tracks writes keyframe(s) at the playhead automatically.
+    pub auto_key: Mutable<bool>,
     pub msaa: Mutable<bool>,
     pub heatmap: Mutable<bool>,
     pub snap: Mutable<bool>,
     pub units: Mutable<String>,
+    /// Built-in editor view camera projection: `true` = orthographic, `false` =
+    /// perspective. Kept authoritative by the `SetCameraProjection` handler, so the
+    /// viewport toggle/keyboard shortcut and any MCP-driven change stay in sync.
+    pub editor_ortho: Mutable<bool>,
 }
 
 impl Default for Settings {
@@ -206,10 +228,14 @@ impl Default for Settings {
         Self {
             grid: Mutable::new(true),
             gizmo: Mutable::new(true),
+            light_gizmos: Mutable::new(true),
+            skeleton_viz: Mutable::new(true),
+            auto_key: Mutable::new(false),
             msaa: Mutable::new(true),
             heatmap: Mutable::new(false),
             snap: Mutable::new(false),
             units: Mutable::new("meters".to_string()),
+            editor_ortho: Mutable::new(false),
         }
     }
 }
@@ -219,6 +245,7 @@ impl EditorController {
         Self {
             scene: Scene::new(),
             selected: Mutable::new(Vec::new()),
+            vertex_selection: Mutable::new(None),
             mode: Mutable::new(EditorMode::default()),
             project_name: Mutable::new("untitled.awsm".to_string()),
             dirty: Mutable::new(false),
@@ -240,6 +267,7 @@ impl EditorController {
             anim_selection: Mutable::new(None),
             anim_mixer: Mutable::new(MixerDoc::default()),
             anim_revision: Mutable::new(0),
+            mesh_revision: Mutable::new(0),
             anim_view: Mutable::new(AnimView::default()),
             cmdk_open: Mutable::new(false),
             settings: Settings::default(),
@@ -321,20 +349,28 @@ impl EditorController {
             let mut inverses = Vec::new();
             for c in cmds {
                 let touches_anim = c.affects_animation();
+                let touches_mesh = c.affects_mesh();
                 if let Some(inv) = Box::pin(self.apply_inner(c)).await? {
                     inverses.push(inv);
                 }
                 if touches_anim {
                     self.anim_revision.replace_with(|v| v.wrapping_add(1));
                 }
+                if touches_mesh {
+                    self.mesh_revision.replace_with(|v| v.wrapping_add(1));
+                }
             }
             inverses.reverse();
             return Ok(Some(EditorCommand::Batch(inverses)));
         }
         let touches_anim = cmd.affects_animation();
+        let touches_mesh = cmd.affects_mesh();
         let result = self.apply_inner(cmd).await;
         if touches_anim {
             self.anim_revision.replace_with(|v| v.wrapping_add(1));
+        }
+        if touches_mesh {
+            self.mesh_revision.replace_with(|v| v.wrapping_add(1));
         }
         result
     }
@@ -369,6 +405,281 @@ impl EditorController {
         Ok(())
     }
 
+    /// Read the current modifier-stack **recipe** off a mesh asset, for the
+    /// incremental modifier commands (`AddModifier` / `SetModifier` /
+    /// `RemoveModifier`). Errors if the asset isn't a mesh or has no recipe — a
+    /// raw captured/converted mesh with `modifiers == None` must get a base via
+    /// `SetMeshModifiers` first (synthesizing a `Captured`-self base here would
+    /// double-apply the prior bake on the next edit).
+    fn mesh_stack(&self, mesh: AssetId) -> EditorResult<ModifierStack> {
+        match self
+            .scene
+            .assets
+            .lock()
+            .unwrap()
+            .get(mesh)
+            .map(|e| &e.source)
+        {
+            Some(SceneAssetSource::Mesh(def)) => Ok(def.stack.clone()),
+            _ => Err(crate::error::EditorError::msg(format!(
+                "asset {mesh} is not an editable mesh"
+            ))),
+        }
+    }
+
+    /// Replace a mesh asset's modifier-stack **recipe** wholesale: store the new
+    /// recipe on the asset, re-evaluate → re-bake the `.mesh.bin` cache, bump the
+    /// mesh revision (the bridge re-materializes referencing nodes), and return
+    /// the inverse — `SetMeshModifiers(prior_stack)` (re-evaluates to the prior
+    /// geometry). Every `MeshDef` carries a mandatory `stack`, so the prior recipe
+    /// always exists. The shared body of `SetMeshModifiers` and the incremental
+    /// modifier commands. Returns `None` (not undoable) if the asset isn't a mesh.
+    fn apply_mesh_stack(&self, mesh: AssetId, stack: ModifierStack) -> Option<EditorCommand> {
+        use crate::engine::bridge::mesh_cache;
+        // Capture the prior recipe for the inverse, and bail if this asset isn't a
+        // mesh.
+        let prior_stack = match self
+            .scene
+            .assets
+            .lock()
+            .unwrap()
+            .get(mesh)
+            .map(|e| &e.source)
+        {
+            Some(SceneAssetSource::Mesh(def)) => def.stack.clone(),
+            _ => return None,
+        };
+        // Store the new recipe on the asset (the recipe lives in the
+        // project; the .mesh.bin is a regenerable cache). Snapshot the full def
+        // (incl. any authoring overrides) so the re-bake layers them back on.
+        let def = {
+            let mut assets = self.scene.assets.lock().unwrap();
+            match assets.entries.get_mut(&mesh).map(|e| &mut e.source) {
+                Some(SceneAssetSource::Mesh(def)) => {
+                    def.stack = stack.clone();
+                    def.editable = true;
+                    def.clone()
+                }
+                _ => return None,
+            }
+        };
+        // Re-evaluate → re-bake the cache (the bridge re-materializes via
+        // the mesh-revision bump in `apply`).
+        let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
+        mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
+        self.scene.bump_revision();
+        // Inverse: restore the prior stack (re-evaluates to prior geometry).
+        Some(EditorCommand::SetMeshModifiers {
+            mesh,
+            stack: prior_stack,
+        })
+    }
+
+    /// Collapse-before-authoring: make `mesh` *authorable* (index-based per-vertex
+    /// authoring on a frozen topology). If the def isn't already a bare
+    /// `Captured`-self base with no modifiers, bake the procedural part of the
+    /// stack (base + modifiers, WITHOUT the override layer) into a fresh
+    /// `Captured(self)` blob and flatten the stack to `{ base: Captured(self),
+    /// modifiers: [] }`, freezing topology. The existing `overrides` are kept as
+    /// the live layer (they still index into the now-frozen topology), so this is
+    /// idempotent and non-destructive. Per-vertex authoring is **terminal**: after
+    /// this the procedural params are baked and only the override layer is editable.
+    ///
+    /// Returns `Ok(true)` if a collapse actually happened (so the caller can fold
+    /// the recipe-restore into its undo inverse), `Ok(false)` if already authorable,
+    /// and the prior stack (for the inverse) via the out-param. Errors if `mesh`
+    /// isn't a mesh asset.
+    fn ensure_authorable(&self, mesh: AssetId) -> EditorResult<Option<ModifierStack>> {
+        use crate::engine::bridge::mesh_cache;
+        use awsm_editor_protocol::MeshRef;
+        use awsm_editor_protocol::{MeshBase, ModifierStack};
+        let prior_stack = {
+            let assets = self.scene.assets.lock().unwrap();
+            match assets.get(mesh).map(|e| &e.source) {
+                Some(SceneAssetSource::Mesh(def)) => def.stack.clone(),
+                _ => {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "asset {mesh} is not an editable mesh"
+                    )))
+                }
+            }
+        };
+        // Already authorable: a bare `Captured`-self base with no modifiers.
+        if prior_stack.modifiers.is_empty()
+            && matches!(prior_stack.base, MeshBase::Captured(r) if r == MeshRef(mesh))
+        {
+            return Ok(None);
+        }
+        // Freeze topology: bake the *procedural* part (stack only — overrides
+        // stay a live layer that still indexes the frozen verts) into captured
+        // bytes, then flatten the recipe to point at those bytes.
+        let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &prior_stack);
+        mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
+        {
+            let mut assets = self.scene.assets.lock().unwrap();
+            if let Some(entry) = assets.entries.get_mut(&mesh) {
+                if let SceneAssetSource::Mesh(def) = &mut entry.source {
+                    def.stack = ModifierStack {
+                        base: MeshBase::Captured(MeshRef(mesh)),
+                        modifiers: vec![],
+                    };
+                    def.editable = true;
+                }
+            }
+        }
+        Ok(Some(prior_stack))
+    }
+
+    /// Read-modify-write the sparse [`VertexOverrides`] of a mesh def, re-bake the
+    /// cache (stack + overrides), bump the scene revision, and return the prior
+    /// overrides (for an inverse). The shared body of the per-vertex authoring
+    /// commands (paint colors / set normals / sculpt positions). `mutate` receives
+    /// the live overrides to insert/replace into; out-of-range indices are
+    /// silently ignored at bake time (`apply_overrides`).
+    fn apply_vertex_overrides(
+        &self,
+        mesh: AssetId,
+        mutate: impl FnOnce(&mut awsm_editor_protocol::VertexOverrides),
+    ) -> EditorResult<awsm_editor_protocol::VertexOverrides> {
+        use crate::engine::bridge::mesh_cache;
+        // Collapse to a frozen-topology base first (terminal authoring).
+        self.ensure_authorable(mesh)?;
+        let (prior, def) = {
+            let mut assets = self.scene.assets.lock().unwrap();
+            match assets.entries.get_mut(&mesh).map(|e| &mut e.source) {
+                Some(SceneAssetSource::Mesh(def)) => {
+                    let prior = def.overrides.clone();
+                    mutate(&mut def.overrides);
+                    (prior, def.clone())
+                }
+                _ => {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "asset {mesh} is not an editable mesh"
+                    )))
+                }
+            }
+        };
+        let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
+        mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
+        self.scene.bump_revision();
+        Ok(prior)
+    }
+
+    /// Build the undo inverse for a per-vertex authoring command: restore the
+    /// prior `overrides` (a `SetVertexOverrides`), and — if `ensure_authorable`
+    /// collapsed the procedural stack — restore the prior stack too, as a `Batch`.
+    /// The stack restore runs first on undo (it re-bakes the procedural base);
+    /// the overrides restore then re-applies the prior authoring layer.
+    fn overrides_inverse(
+        &self,
+        mesh: AssetId,
+        prior: awsm_editor_protocol::VertexOverrides,
+        collapse: Option<ModifierStack>,
+    ) -> EditorCommand {
+        let restore_overrides = EditorCommand::SetVertexOverrides {
+            mesh,
+            overrides: prior,
+        };
+        match collapse {
+            None => restore_overrides,
+            // Order matters: restore the prior overrides FIRST (a no-op collapse,
+            // since topology is already frozen), THEN restore the procedural
+            // stack — `apply_mesh_stack` re-bakes `stack + overrides`, so the
+            // recipe-restore picks up the just-restored authoring layer. (Doing
+            // the stack restore first would let the overrides-restore re-collapse
+            // it.)
+            Some(prior_stack) => EditorCommand::Batch(vec![
+                restore_overrides,
+                EditorCommand::SetMeshModifiers {
+                    mesh,
+                    stack: prior_stack,
+                },
+            ]),
+        }
+    }
+
+    /// For a procedural-geometry `InsertSpec` (`Primitive` / `Sweep`), mint the
+    /// backing `MeshDef` asset (a `ModifierStack` with the matching base), bake
+    /// its `.mesh.bin` cache, and build the unified `NodeKind::Mesh` node that
+    /// references it. Returns `(mesh_asset_id, node)`; `None` for any other spec
+    /// (the caller falls back to a plain `build_insert`).
+    ///
+    /// The mesh asset id is `AssetId(node_id.0)` — deterministic from the node id
+    /// (asset ids and node ids are disjoint keyspaces, so reusing the UUID is
+    /// safe) so cross-tab replays produce the same asset and the insert stays
+    /// idempotent. Baking the stack now means the node renders the first time it
+    /// materializes (a nil-curve Sweep bakes empty until its curve is picked).
+    fn build_mesh_insert(
+        &self,
+        node_id: NodeId,
+        spec: &InsertSpec,
+    ) -> Option<(AssetId, std::sync::Arc<crate::engine::scene::node::Node>)> {
+        use crate::engine::bridge::mesh_cache;
+        use crate::engine::scene::node::Node;
+        use awsm_editor_protocol::{CapturedSource, MeshDef, MeshRef, PrimitiveShape, Trs};
+        use awsm_editor_protocol::{MeshBase, ModifierStack};
+
+        let (label, base, source): (&str, MeshBase, CapturedSource) = match spec {
+            InsertSpec::Primitive(shape) => {
+                let label = match shape {
+                    PrimitiveShape::Plane { .. } => "Plane",
+                    PrimitiveShape::Box { .. } => "Box",
+                    PrimitiveShape::Sphere { .. } => "Sphere",
+                    PrimitiveShape::Cylinder { .. } => "Cylinder",
+                    PrimitiveShape::Cone { .. } => "Cone",
+                    PrimitiveShape::Torus { .. } => "Torus",
+                };
+                (
+                    label,
+                    MeshBase::Primitive(shape.clone()),
+                    CapturedSource::Primitive(shape.clone()),
+                )
+            }
+            InsertSpec::Sweep => {
+                let def = awsm_editor_protocol::SweepAlongCurveDef::default();
+                (
+                    "Sweep",
+                    MeshBase::Sweep(def.clone()),
+                    CapturedSource::Sweep(def),
+                )
+            }
+            _ => return None,
+        };
+
+        let mesh_id = AssetId(node_id.0);
+        let stack = ModifierStack {
+            base,
+            modifiers: vec![],
+        };
+        // Bake the stack now so the node has geometry on first materialize.
+        let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
+        mesh_cache::store_with_id(mesh_id, mesh_cache::from_mesh_data(baked));
+        self.scene.assets.lock().unwrap().entries.insert(
+            mesh_id,
+            AssetEntry::new(SceneAssetSource::Mesh(MeshDef {
+                label: label.to_string(),
+                source: Some(source),
+                editable: true,
+                stack,
+                overrides: Default::default(),
+            })),
+        );
+
+        let mut node = Node::new_with_transform_and_kind(
+            label,
+            Trs::default(),
+            NodeKind::Mesh {
+                mesh: MeshRef(mesh_id),
+                material: None,
+                shadow: Default::default(),
+            },
+        );
+        std::sync::Arc::get_mut(&mut node)
+            .expect("freshly built node is sole-owned")
+            .id = node_id;
+        Some((mesh_id, node))
+    }
+
     /// Apply a command's effect and return its inverse (for the undo log), or
     /// `None` if the command is not undoable. The undoable per-node mutation
     /// commands return `Some(inverse)` here.
@@ -388,6 +699,17 @@ impl EditorController {
                     nodes: Some(ids.iter().map(|id| id.to_string()).collect()),
                 });
                 self.selected.set(ids);
+                Ok(None)
+            }
+            EditorCommand::SetVertexSelection { node, indices } => {
+                // Read-only highlight (no geometry mutation). An empty `indices`
+                // is normalized to `None` so the bridge's "Some ⇒ draw" path
+                // doubles as the clear path.
+                self.vertex_selection.set(if indices.is_empty() {
+                    None
+                } else {
+                    Some((node, indices))
+                });
                 Ok(None)
             }
             // `Batch` is unwrapped in `apply` (so the async fn doesn't recurse);
@@ -503,6 +825,10 @@ impl EditorController {
                 // Project-level reset (clears the undo log — not itself undoable).
                 self.scene.nodes.lock_mut().clear();
                 self.selected.set(Vec::new());
+                // Transient vertex-selection view state — its viewport markers
+                // otherwise survive the reset (stress-test finding: a ghost
+                // dome of highlight crosses floating in the fresh project).
+                self.vertex_selection.set(None);
                 *self.scene.assets.lock().unwrap() = Default::default();
                 self.scene.bump_revision();
                 // Material library.
@@ -518,8 +844,16 @@ impl EditorController {
                 self.anim_solo_root.set(None);
                 self.playhead.set_neq(0.0);
                 self.playing.set_neq(false);
-                // Skin bridge mappings (#2) belong to imported models — drop them.
+                // Skin bridge mappings (#2) + import templates belong to imported
+                // models — drop them.
                 crate::engine::bridge::bridge().clear_skin_joints();
+                // Remove imported-glTF template meshes from the renderer BEFORE
+                // dropping the template metadata: `clear_templates` only clears the
+                // map, and the skinned populate copies are template-owned (node
+                // teardown deliberately skips them), so without this they ghost.
+                clear_untracked_renderer_resources().await;
+                crate::engine::bridge::bridge().clear_templates();
+                crate::engine::bridge::skinned_bake_cache::clear();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
                 // Seed a sane default scene: a key directional light (tilted ~50°
@@ -527,12 +861,12 @@ impl EditorController {
                 // first PBR/lit material isn't black out of the box (the §E3 fix —
                 // applies to the human editor and MCP alike).
                 let light = build_insert(&InsertSpec::Light(
-                    awsm_scene_schema::LightKind::Directional,
+                    awsm_editor_protocol::LightKind::Directional,
                 ));
                 mutate::insert_under(&self.scene, None, light);
                 self.scene
                     .environment
-                    .set(awsm_scene_schema::EnvironmentConfig::default());
+                    .set(awsm_editor_protocol::EnvironmentConfig::default());
                 self.scene.bump_revision();
                 self.dirty.set_neq(false);
                 self.undo.borrow_mut().clear();
@@ -541,10 +875,143 @@ impl EditorController {
                 Toast::info("New project");
                 Ok(None)
             }
+            EditorCommand::LoadPlayerBundle => {
+                // Round-trip self-test: bake the open project to an in-memory
+                // bundle, reset to empty, then reload it via the player path
+                // (`populate_awsm_scene`). Destructive + not undoable — the
+                // viewport ends up showing the runtime reload (the scene tree is
+                // left empty; reload the project to keep editing). An agent
+                // screenshots before/after to compare authored vs runtime render.
+
+                // 1. Bake the CURRENT project — must read it before we clear.
+                let files = crate::controller::export::bake_player_bundle(self)
+                    .await
+                    .map_err(|e| crate::error::EditorError::msg(format!("bake: {e}")))?;
+                // 2. Split scene.toml out; the rest is the asset map
+                //    (bundle-relative path → bytes) `populate_awsm_scene` reads.
+                let mut scene_toml: Option<String> = None;
+                let mut assets: std::collections::HashMap<String, Vec<u8>> =
+                    std::collections::HashMap::new();
+                for f in files {
+                    if f.path == awsm_editor_protocol::SCENE_FILE {
+                        scene_toml = Some(String::from_utf8_lossy(&f.bytes).into_owned());
+                    } else {
+                        assets.insert(f.path, f.bytes);
+                    }
+                }
+                let scene_toml = scene_toml
+                    .ok_or_else(|| crate::error::EditorError::msg("bundle missing scene.toml"))?;
+                let scene = awsm_editor_protocol::scene_from_toml(&scene_toml)
+                    .map_err(|e| crate::error::EditorError::msg(format!("scene.toml: {e}")))?;
+
+                // 3. Bare reset to empty — NO default-light seed (the bundle
+                //    carries its own light; seeding one would double it). Mirrors
+                //    NewProject's clears. Carry the bundle's environment so the
+                //    env bridge applies the same skybox/IBL.
+                self.scene.nodes.lock_mut().clear();
+                self.selected.set(Vec::new());
+                *self.scene.assets.lock().unwrap() = Default::default();
+                self.custom_materials.lock_mut().clear();
+                self.current_material.set(None);
+                self.asset_selection.set(None);
+                self.custom_animations.lock_mut().clear();
+                self.current_clip.set(None);
+                self.anim_mixer.set(MixerDoc::default());
+                self.anim_selection.set(None);
+                self.anim_solo_root.set(None);
+                self.playhead.set_neq(0.0);
+                self.playing.set_neq(false);
+                crate::engine::bridge::bridge().clear_skin_joints();
+                // Remove imported-glTF template meshes from the renderer BEFORE
+                // dropping the template metadata: `clear_templates` only clears the
+                // map, and the skinned populate copies are template-owned (node
+                // teardown deliberately skips them), so without this they ghost.
+                clear_untracked_renderer_resources().await;
+                crate::engine::bridge::bridge().clear_templates();
+                crate::engine::bridge::skinned_bake_cache::clear();
+                self.missing_assets.set(Vec::new());
+                self.scene.environment.set(scene.environment.clone());
+                self.scene.bump_revision();
+
+                // 4. Load the bundle into the renderer via the player path. The
+                //    bridge's teardown of the old nodes (observer-driven, needs
+                //    the renderer lock) runs once we release this guard, removing
+                //    only the old keys — populate's fresh keys persist. The
+                //    render loop then presents the reload via the free camera.
+                {
+                    let handle = crate::engine::context::renderer_handle();
+                    let mut r = handle.lock().await;
+                    // Drop the editor's own clips + mixer (a prior relower may have
+                    // populated them from the now-cleared model) so the bundle's
+                    // clips don't double up. LoadPlayerBundle doesn't relower (see
+                    // `affects_animation`), so nothing repopulates them.
+                    r.animations.clear_clips();
+                    r.animations.mixer.clear();
+                    // Surface each load phase (building materials / uploading
+                    // textures / uploading meshes / compiling pipelines N) in the
+                    // activity pill — live, because the pill is a reactive signal
+                    // and the loader's awaits yield to the event loop.
+                    let res =
+                        awsm_scene_loader::populate_awsm_scene(&mut r, &scene, &assets, |p| {
+                            crate::engine::activity::set_load_phase(Some(p.label()));
+                        })
+                        .await;
+                    crate::engine::activity::set_load_phase(None);
+                    let loaded =
+                        res.map_err(|e| crate::error::EditorError::msg(format!("populate: {e}")))?;
+                    // Track the direct inserts so the NEXT reset removes them
+                    // (they're outside the bridge's per-node teardown).
+                    set_bundle_resources(loaded.meshes, loaded.lights, loaded.clips);
+                }
+                self.project_name.set("round-trip.awsm".to_string());
+                self.dirty.set_neq(false);
+                self.undo.borrow_mut().clear();
+                self.redo.borrow_mut().clear();
+                self.refresh_history_signals();
+                Toast::info("Round-trip: reloaded via populate_awsm_scene");
+                Ok(None)
+            }
+            EditorCommand::ReloadProjectInMemory => {
+                use crate::controller::persistence;
+                // Editor-path round-trip self-test (no dir picker). Serialize the
+                // open project to its persisted form BEFORE clearing anything.
+                let (toml, mesh_map) = persistence::serialize_inmem(self)?;
+                // Faithfully model a COLD load: drop the session-local caches a
+                // fresh page wouldn't have — imported-glTF templates + their
+                // renderer meshes, the skinned bind-pose/rig cache, and skin-joint
+                // mappings. Without this a skinned model's stale template would
+                // survive and mask the real save→reload gap (skinned data is held
+                // only in these session-local caches, not in project.toml). The
+                // captured-mesh `mesh_cache` is intentionally NOT cleared — its
+                // bytes ARE persisted (`.mesh.bin`) and `apply_inmem` restores them.
+                crate::engine::bridge::bridge().clear_skin_joints();
+                clear_untracked_renderer_resources().await;
+                crate::engine::bridge::bridge().clear_templates();
+                crate::engine::bridge::skinned_bake_cache::clear();
+                persistence::apply_inmem(self, toml, mesh_map).await?;
+                Toast::info("Round-trip: project reloaded in-memory (cold caches)");
+                Ok(None)
+            }
             EditorCommand::Insert { id, spec, parent } => {
                 // Idempotent (apply-when-absent): a cross-tab replay or a
                 // duplicate caller-minted id is a no-op, so the id stays stable.
                 if mutate::find_by_id(&self.scene, id).is_some() {
+                    return Ok(None);
+                }
+                // Procedural-geometry specs (Primitive / Sweep) mint a `MeshDef`
+                // asset (a `ModifierStack` with the matching base) + bake its cache,
+                // then create a unified `NodeKind::Mesh` referencing it. The mesh
+                // asset id is derived deterministically from the node id (disjoint
+                // keyspace) so a cross-tab replay produces the same asset id, and
+                // the inverse can delete both. Every other spec is a plain insert.
+                if let Some((mesh_id, node)) = self.build_mesh_insert(id, &spec) {
+                    if mutate::insert_under(&self.scene, parent, node) {
+                        self.scene.bump_revision();
+                        return Ok(Some(EditorCommand::Batch(vec![
+                            EditorCommand::Delete { id },
+                            EditorCommand::DeleteAsset { id: mesh_id },
+                        ])));
+                    }
                     return Ok(None);
                 }
                 let mut node = build_insert(&spec);
@@ -600,6 +1067,9 @@ impl EditorController {
                     Some(node) => {
                         let spec = spec_from_node(&node);
                         self.selected.lock_mut().retain(|x| *x != id);
+                        // Free any clips left fully orphaned by this delete (e.g.
+                        // every animation of a just-deleted imported model).
+                        self.prune_orphaned_clips();
                         self.scene.bump_revision();
                         Ok(Some(EditorCommand::InsertTree {
                             node: Box::new(spec),
@@ -666,6 +1136,328 @@ impl EditorController {
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::DeleteAsset { id }))
             }
+            EditorCommand::DropSkinning { node } => {
+                use awsm_editor_protocol::SkinnedMeshRef;
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let prev = n.kind.get_cloned();
+                // Only a SkinnedMesh can be dropped to editable — anything else is
+                // a no-op (the UI/MCP layer surfaces a clearer message).
+                let (skin, material, shadow): (SkinnedMeshRef, _, _) = match prev.clone() {
+                    NodeKind::SkinnedMesh {
+                        skin,
+                        material,
+                        shadow,
+                    } => (skin, material, shadow),
+                    _ => return Ok(None),
+                };
+                // Bind-pose geometry stashed at import (no JOINTS/WEIGHTS).
+                let Some(mesh) = crate::engine::bridge::skinned_bake_cache::get(
+                    skin.source,
+                    skin.node_index,
+                    skin.primitive_index,
+                ) else {
+                    Toast::error(
+                        "drop_skinning: this skinned mesh's bind-pose geometry isn't \
+                         cached (re-import the model in this session)",
+                    );
+                    return Ok(None);
+                };
+                // Mint a captured editable Mesh asset from the bind pose and swap
+                // the node's kind. Reuses the import bake path (deterministic id =
+                // node id), so it persists like any captured mesh.
+                let label = n.name.get_cloned();
+                // drop_skinning bakes the single-UV bind pose (no 2nd UV set).
+                let mesh_ref = mint_imported_mesh(node, &label, &mesh, None, skin.source);
+                // Hide the now-orphaned skinned populate copy so it stops rendering
+                // (the node now renders its captured bind-pose Mesh instead).
+                if let Some(template) = crate::engine::bridge::bridge().get_template(skin.source) {
+                    if let Some(tnode) = template.find_by_node_index(skin.node_index) {
+                        let keys: Vec<_> = match skin.primitive_index {
+                            None => tnode.mesh_keys.clone(),
+                            Some(i) => tnode
+                                .mesh_keys
+                                .get(i as usize)
+                                .copied()
+                                .into_iter()
+                                .collect(),
+                        };
+                        spawn_local(async move {
+                            crate::engine::context::with_renderer_mut(move |r| {
+                                for mk in keys {
+                                    let _ = r.set_mesh_hidden(mk, true);
+                                }
+                            })
+                            .await;
+                        });
+                    }
+                }
+                n.kind.set(NodeKind::Mesh {
+                    mesh: mesh_ref,
+                    material,
+                    shadow,
+                });
+                self.structure_rev
+                    .set(self.structure_rev.get().wrapping_add(1));
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                // Inverse restores the prior SkinnedMesh kind (the captured asset is
+                // left behind, harmlessly unreferenced).
+                Ok(Some(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(prev),
+                }))
+            }
+            EditorCommand::ConvertToEditableMesh { node, mesh } => {
+                // Retired: every procedural node is already a `NodeKind::Mesh`
+                // backed by an editable `MeshDef` stack, so there is nothing to
+                // convert. Kept as a no-op for protocol/back-compat; the MCP tool
+                // echoes the node's existing mesh id instead of the (now ignored)
+                // caller-minted `mesh`. Not undoable.
+                let _ = (node, mesh);
+                Ok(None)
+            }
+            EditorCommand::SetMeshData { mesh, data } => {
+                use crate::engine::bridge::mesh_cache;
+                let prior = mesh_cache::get_captured(mesh);
+                mesh_cache::store_with_id(mesh, data);
+                self.scene.bump_revision();
+                // Inverse restores the prior geometry; if there was none (the mesh
+                // didn't exist), the edit isn't undoable.
+                Ok(prior.map(|data| EditorCommand::SetMeshData { mesh, data }))
+            }
+            EditorCommand::SetMeshModifiers { mesh, stack } => {
+                Ok(self.apply_mesh_stack(mesh, stack))
+            }
+            EditorCommand::AddModifier { mesh, modifier } => {
+                let mut stack = match self.mesh_stack(mesh) {
+                    Ok(s) => s,
+                    Err(e) => return Err(e),
+                };
+                stack.modifiers.push(modifier);
+                Ok(self.apply_mesh_stack(mesh, stack))
+            }
+            EditorCommand::SetModifier {
+                mesh,
+                index,
+                modifier,
+            } => {
+                let mut stack = match self.mesh_stack(mesh) {
+                    Ok(s) => s,
+                    Err(e) => return Err(e),
+                };
+                let i = index as usize;
+                if i >= stack.modifiers.len() {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "modifier index {index} out of range (mesh {mesh} has {} modifier(s))",
+                        stack.modifiers.len()
+                    )));
+                }
+                stack.modifiers[i] = modifier;
+                Ok(self.apply_mesh_stack(mesh, stack))
+            }
+            EditorCommand::RemoveModifier { mesh, index } => {
+                let mut stack = match self.mesh_stack(mesh) {
+                    Ok(s) => s,
+                    Err(e) => return Err(e),
+                };
+                let i = index as usize;
+                if i >= stack.modifiers.len() {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "modifier index {index} out of range (mesh {mesh} has {} modifier(s))",
+                        stack.modifiers.len()
+                    )));
+                }
+                stack.modifiers.remove(i);
+                Ok(self.apply_mesh_stack(mesh, stack))
+            }
+            EditorCommand::SetVertexPositions {
+                mesh,
+                indices,
+                positions,
+            } => {
+                // Migrated: write to the sparse `overrides.positions` layer
+                // (collapse-then-override) instead of mutating captured bytes —
+                // same observable result, now non-destructive + uniform.
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for (k, &idx) in indices.iter().enumerate() {
+                        if let Some(p) = positions.get(k) {
+                            ov.positions.insert(idx, *p);
+                        }
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::SoftTransformVertices {
+                mesh,
+                indices,
+                translation,
+                falloff,
+            } => {
+                use crate::engine::bridge::mesh_cache;
+                // Resolve the current (post-eval+override) geometry to weight the
+                // falloff against, then bake the move into `overrides.positions`.
+                let collapse = self.ensure_authorable(mesh)?;
+                let Some(cap) = mesh_cache::get_captured(mesh) else {
+                    return Ok(None);
+                };
+                let md = awsm_meshgen::MeshData {
+                    positions: cap.positions.clone(),
+                    normals: cap.normals.clone(),
+                    uvs: cap.uvs.clone(),
+                    colors: cap.colors.clone(),
+                    indices: cap.indices.clone(),
+                };
+                let new_positions = awsm_meshgen::edit::soft_transform_positions(
+                    &md,
+                    &indices,
+                    translation,
+                    falloff,
+                );
+                // Only override the verts the falloff actually moved.
+                let mut moved = false;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for (i, (old, new)) in cap.positions.iter().zip(&new_positions).enumerate() {
+                        if old != new {
+                            ov.positions.insert(i as u32, *new);
+                            moved = true;
+                        }
+                    }
+                })?;
+                if !moved {
+                    return Ok(None);
+                }
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::PaintVertexColors {
+                mesh,
+                indices,
+                color,
+            } => {
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for &idx in &indices {
+                        ov.colors.insert(idx, color);
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::SetVertexNormals {
+                mesh,
+                indices,
+                normal,
+            } => {
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for &idx in &indices {
+                        ov.normals.insert(idx, normal);
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::SetVertexOverrides { mesh, overrides } => {
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    *ov = overrides;
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::BakeAll {} => {
+                // Project-wide finalize: collapse every Mesh asset's stack.
+                let mesh_ids: Vec<AssetId> = {
+                    let assets = self.scene.assets.lock().unwrap();
+                    assets
+                        .entries
+                        .iter()
+                        .filter_map(|(id, e)| {
+                            matches!(e.source, SceneAssetSource::Mesh(_)).then_some(*id)
+                        })
+                        .collect()
+                };
+                let mut inverses = Vec::new();
+                for mesh in mesh_ids {
+                    // Each collapse returns the prior stack (when it fired). The
+                    // overrides are unchanged by a bake, so the inverse is just the
+                    // stack restore.
+                    if let Some(prior_stack) = self.ensure_authorable(mesh)? {
+                        // Re-bake so the cache reflects the flattened recipe (incl.
+                        // overrides re-applied on the frozen base).
+                        let def = {
+                            let assets = self.scene.assets.lock().unwrap();
+                            match assets.get(mesh).map(|e| &e.source) {
+                                Some(SceneAssetSource::Mesh(def)) => def.clone(),
+                                _ => continue,
+                            }
+                        };
+                        let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
+                        crate::engine::bridge::mesh_cache::store_with_id(
+                            mesh,
+                            crate::engine::bridge::mesh_cache::from_mesh_data(baked),
+                        );
+                        inverses.push(EditorCommand::SetMeshModifiers {
+                            mesh,
+                            stack: prior_stack,
+                        });
+                    }
+                }
+                self.scene.bump_revision();
+                if inverses.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(EditorCommand::Batch(inverses)))
+                }
+            }
+            EditorCommand::CollapseMeshStack { mesh } => {
+                use crate::engine::bridge::mesh_cache;
+                use awsm_editor_protocol::MeshRef;
+                use awsm_editor_protocol::{MeshBase, ModifierStack};
+                let stack = match self
+                    .scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .get(mesh)
+                    .map(|e| &e.source)
+                {
+                    Some(SceneAssetSource::Mesh(def)) => def.stack.clone(),
+                    _ => return Ok(None),
+                };
+                // Nothing to collapse if the stack is already a bare capture
+                // (a `Captured` base with no modifiers — its bytes are the source).
+                if stack.modifiers.is_empty() && matches!(stack.base, MeshBase::Captured(_)) {
+                    return Ok(None);
+                }
+                let Some(prior_bytes) = mesh_cache::get_captured(mesh) else {
+                    return Ok(None);
+                };
+                // Bake the current stack, then flatten the recipe to a bare capture
+                // of this same asset's bytes — the baked geometry becomes the
+                // source of truth (no recipe left to re-evaluate).
+                let baked = crate::controller::mesh_eval::evaluate_stack(&self.scene, &stack);
+                {
+                    let mut assets = self.scene.assets.lock().unwrap();
+                    if let Some(entry) = assets.entries.get_mut(&mesh) {
+                        if let SceneAssetSource::Mesh(def) = &mut entry.source {
+                            def.stack = ModifierStack {
+                                base: MeshBase::Captured(MeshRef(mesh)),
+                                modifiers: vec![],
+                            };
+                        }
+                    }
+                }
+                mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
+                self.scene.bump_revision();
+                // Undo restores the recipe (re-evaluates) then the exact prior bytes.
+                Ok(Some(EditorCommand::Batch(vec![
+                    EditorCommand::SetMeshModifiers { mesh, stack },
+                    EditorCommand::SetMeshData {
+                        mesh,
+                        data: prior_bytes,
+                    },
+                ])))
+            }
             EditorCommand::SetAssetSelection { id } => {
                 self.asset_selection.set(id);
                 Ok(None)
@@ -690,9 +1482,10 @@ impl EditorController {
                 }
                 let n = self.custom_materials.lock_ref().len() + 1;
                 let label = match shading {
-                    awsm_scene_schema::MaterialShading::Pbr => "PBR",
-                    awsm_scene_schema::MaterialShading::Unlit => "Unlit",
-                    awsm_scene_schema::MaterialShading::Toon { .. } => "Toon",
+                    awsm_editor_protocol::MaterialShading::Pbr => "PBR",
+                    awsm_editor_protocol::MaterialShading::Unlit => "Unlit",
+                    awsm_editor_protocol::MaterialShading::Toon { .. } => "Toon",
+                    awsm_editor_protocol::MaterialShading::FlipBook { .. } => "FlipBook",
                 };
                 let mat = CM::new_builtin(id, format!("{label} Material {n}"), shading);
                 self.custom_materials.lock_mut().push_cloned(mat.clone());
@@ -703,12 +1496,39 @@ impl EditorController {
                 self.dirty.set_neq(true);
                 Ok(None)
             }
+            EditorCommand::UpdateBuiltinMaterial { id, def } => {
+                let Some(mat) = find_material(&self.custom_materials, id) else {
+                    return Err(crate::error::EditorError::msg(format!("no material {id}")));
+                };
+                let Some(prior) = mat.builtin.get_cloned() else {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "material {id} is not a built-in (custom WGSL materials \
+                         use the SetCustomMaterial* commands)"
+                    )));
+                };
+                mat.builtin.set(Some(*def));
+                // Variant changed → refresh its card thumbnail + re-materialize
+                // every assigned mesh (debounced).
+                crate::engine::thumbnail::invalidate(mat.id);
+                crate::engine::thumbnail::request(mat.clone());
+                spawn_builtin_resync(mat);
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::UpdateBuiltinMaterial {
+                    id,
+                    def: Box::new(prior),
+                }))
+            }
             EditorCommand::DeleteCustomMaterial { id } => {
                 self.custom_materials.lock_mut().retain(|m| m.id != id);
                 if self.current_material.get() == Some(id) {
                     let next = self.custom_materials.lock_ref().first().map(|m| m.id);
                     self.current_material.set(next);
                 }
+                // Drop the renderer-side registration too, else its compiled GPU
+                // compute pipelines + shader modules leak forever (the pipeline-
+                // leak / "aw snap" fix). No-op if it was never registered.
+                crate::engine::bridge::dynamic::unregister(id).await;
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(None)
@@ -757,55 +1577,71 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::SetCustomMaterialAlphaWgsl { id, wgsl } => {
+                // Replace a MASK material's 2nd alpha-only WGSL window. Setting
+                // the live `alpha_wgsl` field marks the material a draft + bumps
+                // the recompile rev (via mark_material_draft), so the
+                // auto-register observer recompiles the masked variant.
+                match find_material(&self.custom_materials, id) {
+                    Some(mat) => {
+                        let prev = mat.alpha_wgsl.get_cloned();
+                        mat.alpha_wgsl.set(wgsl);
+                        mark_material_draft(&mat);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetCustomMaterialAlphaWgsl {
+                            id,
+                            wgsl: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::AssignMaterial { node, material } => {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {
                         let prev = n.kind.get_cloned();
-                        // Id-keyed assignment: store the material's stable id (so
-                        // renaming it never orphans this mesh). Validate the id
-                        // exists in the custom-material list.
-                        let instance = material
-                            .filter(|id| find_material(&self.custom_materials, *id).is_some())
-                            .map(|id| awsm_scene_schema::CustomMaterialInstance {
-                                material: id,
-                                uniform_overrides: Default::default(),
-                                texture_overrides: Default::default(),
-                                buffer_overrides: Default::default(),
-                            });
+                        // The node's prior assignment (if any) — used to carry the
+                        // existing per-mesh inline store forward when reassigning.
+                        let prior = node_material_ref(&prev).cloned();
                         // Assigning a material adopts its *defaults* (the full
                         // uniform surface — factors, extension params, Toon knobs,
                         // cutoff) into this mesh's inline store, so the mesh starts
                         // looking like the material; the user then customizes
                         // per-mesh from there. (A dynamic material has no built-in
-                        // defaults → keep the existing inline, which it ignores.)
-                        let seeded_inline = instance.as_ref().and_then(|inst| {
-                            find_material(&self.custom_materials, inst.material)
-                                .and_then(|m| m.builtin.get_cloned())
-                        });
+                        // defaults → keep the existing inline, which it ignores;
+                        // fall back to the node's prior inline, else a default.)
+                        // Id-keyed assignment: store the material's stable id (so
+                        // renaming it never orphans this mesh). Validate the id
+                        // exists in the custom-material list. `None` clears the
+                        // assignment → magenta.
+                        let instance = material
+                            .filter(|id| find_material(&self.custom_materials, *id).is_some())
+                            .map(|id| {
+                                let inline = find_material(&self.custom_materials, id)
+                                    .and_then(|m| m.builtin.get_cloned())
+                                    .or_else(|| prior.as_ref().map(|p| p.inline.clone()))
+                                    .unwrap_or_default();
+                                awsm_editor_protocol::dynamic_material::MaterialInstance {
+                                    asset: id,
+                                    inline,
+                                    uniform_overrides: Default::default(),
+                                    texture_overrides: Default::default(),
+                                    buffer_overrides: Default::default(),
+                                }
+                            });
                         let next = match prev.clone() {
-                            NodeKind::Primitive {
-                                shape,
-                                material: mref,
-                                inline_material,
-                                shadow,
-                                ..
-                            } => NodeKind::Primitive {
-                                shape,
-                                material: mref,
-                                inline_material: seeded_inline.unwrap_or(inline_material),
-                                custom_material: instance,
+                            // The sole procedural-geometry node: one material slot.
+                            NodeKind::Mesh { mesh, shadow, .. } => NodeKind::Mesh {
+                                mesh,
+                                material: instance,
                                 shadow,
                             },
-                            // A Model node carries one assigned material (the
-                            // same model as a Primitive); `None` = unassigned →
-                            // magenta.
-                            NodeKind::Model(mut r) => {
-                                if let Some(inline) = seeded_inline {
-                                    r.inline_material = inline;
-                                }
-                                r.material = instance;
-                                NodeKind::Model(r)
-                            }
+                            // A skinned import carries the same one-material slot.
+                            NodeKind::SkinnedMesh { skin, shadow, .. } => NodeKind::SkinnedMesh {
+                                skin,
+                                material: instance,
+                                shadow,
+                            },
                             _ => return Ok(None),
                         };
                         n.kind.set(next);
@@ -829,36 +1665,47 @@ impl EditorController {
                 ) else {
                     return Ok(None);
                 };
-                let NodeKind::Primitive {
-                    inline_material: src_inline,
-                    custom_material: src_cm,
-                    ..
-                } = src.kind.get_cloned()
-                else {
-                    return Ok(None);
+                // The source node's material slot (geometry kinds only).
+                let src_slot = match src.kind.get_cloned() {
+                    NodeKind::Mesh { material, .. } => material,
+                    NodeKind::SkinnedMesh { material, .. } => material,
+                    _ => return Ok(None),
                 };
                 let prev = dst.kind.get_cloned();
-                let NodeKind::Primitive {
-                    shape,
-                    material,
-                    custom_material: dst_cm,
-                    shadow,
-                    ..
-                } = prev.clone()
-                else {
-                    return Ok(None);
+                // Build the next dst kind by replacing only its material slot.
+                let (next, dst_mat) = match prev.clone() {
+                    NodeKind::Mesh {
+                        mesh,
+                        material: dst_mat,
+                        shadow,
+                    } => (
+                        NodeKind::Mesh {
+                            mesh,
+                            material: src_slot.clone(),
+                            shadow,
+                        },
+                        dst_mat,
+                    ),
+                    NodeKind::SkinnedMesh {
+                        skin,
+                        material: dst_mat,
+                        shadow,
+                    } => (
+                        NodeKind::SkinnedMesh {
+                            skin,
+                            material: src_slot.clone(),
+                            shadow,
+                        },
+                        dst_mat,
+                    ),
+                    _ => return Ok(None),
                 };
                 // Only copy between meshes that reference the same material.
-                if src_cm.as_ref().map(|i| i.material) != dst_cm.as_ref().map(|i| i.material) {
+                if src_slot.as_ref().map(|i| i.asset) != dst_mat.as_ref().map(|i| i.asset) {
                     return Ok(None);
                 }
-                dst.kind.set(NodeKind::Primitive {
-                    shape,
-                    material,
-                    inline_material: src_inline,
-                    custom_material: dst_cm,
-                    shadow,
-                });
+                // Copy the whole instance (inline uniforms + override maps).
+                dst.kind.set(next);
                 self.structure_rev
                     .set(self.structure_rev.get().wrapping_add(1));
                 self.scene.bump_revision();
@@ -1022,6 +1869,26 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::SetBuiltinTexture {
+                node,
+                slot,
+                texture,
+            } => match mutate::find_by_id(&self.scene, node) {
+                Some(n) => {
+                    let prev = n.kind.get_cloned();
+                    let mut next = prev.clone();
+                    if !patch_builtin_texture(&mut next, slot, texture) {
+                        return Ok(None);
+                    }
+                    n.kind.set(next);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetKind {
+                        id: node,
+                        kind: Box::new(prev),
+                    }))
+                }
+                None => Ok(None),
+            },
             EditorCommand::SetLightParam { node, param, value } => {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {
@@ -1055,6 +1922,124 @@ impl EditorController {
                 crate::engine::context::with_renderer_mut(|r| r.clear_time_source()).await;
                 Ok(None)
             }
+            EditorCommand::SetSkinWeights {
+                node,
+                entries,
+                normalize,
+            } => {
+                // Live skin-stream surgery: rewrite set-0 joint/weight pairs for
+                // the given ORIGINAL vertices (layout: per vertex, per set,
+                // 4 × (u32 joint LE, f32 weight LE) — 32 B/set/vertex). The
+                // inverse restores the prior pairs for the touched vertices.
+                let meshes = renderer_meshes_for_node(node);
+                let prior = crate::engine::context::with_renderer_mut(move |r| {
+                    let skin_key = meshes
+                        .iter()
+                        .find_map(|mk| r.meshes.mesh_skin_key(*mk).flatten())?;
+                    let sets = r.meshes.skins.sets_len(skin_key).ok()?;
+                    let stride = sets * 32;
+                    let bytes = r.meshes.skins.read_joint_index_weights(skin_key).ok()?;
+                    let vertex_count = bytes.len().checked_div(stride).unwrap_or(0);
+                    // Capture prior values for the inverse.
+                    let mut prior: Vec<awsm_editor_protocol::SkinWeightEntry> = Vec::new();
+                    for e in &entries {
+                        let v = e.vertex as usize;
+                        if v >= vertex_count {
+                            continue;
+                        }
+                        let off = v * stride;
+                        let mut joints = [0u32; 4];
+                        let mut weights = [0f32; 4];
+                        for i in 0..4 {
+                            let p = off + i * 8;
+                            joints[i] = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+                            weights[i] =
+                                f32::from_le_bytes(bytes[p + 4..p + 8].try_into().unwrap());
+                        }
+                        prior.push(awsm_editor_protocol::SkinWeightEntry {
+                            vertex: e.vertex,
+                            joints,
+                            weights,
+                        });
+                    }
+                    // Write the new values.
+                    r.meshes
+                        .skins
+                        .update_joint_index_weights_with(skin_key, |buf| {
+                            for e in &entries {
+                                let v = e.vertex as usize;
+                                if v >= vertex_count {
+                                    continue;
+                                }
+                                let mut w = e.weights;
+                                if normalize {
+                                    let sum: f32 = w.iter().sum();
+                                    if sum > 1e-6 {
+                                        for x in &mut w {
+                                            *x /= sum;
+                                        }
+                                    }
+                                }
+                                let off = v * stride;
+                                for (i, (joint, weight)) in
+                                    e.joints.iter().zip(w.iter()).enumerate()
+                                {
+                                    let p = off + i * 8;
+                                    buf[p..p + 4].copy_from_slice(&joint.to_le_bytes());
+                                    buf[p + 4..p + 8].copy_from_slice(&weight.to_le_bytes());
+                                }
+                            }
+                        });
+                    Some(prior)
+                })
+                .await;
+                match prior {
+                    Some(prior) if !prior.is_empty() => {
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetSkinWeights {
+                            node,
+                            entries: prior,
+                            normalize: false,
+                        }))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            EditorCommand::SetMorphWeight { node, index, value } => {
+                // Live renderer poke (transient — see the protocol doc comment):
+                // node → materialized mesh(es) → geometry AND material morph
+                // buffers, weights[index] = value. Mirrors what a morph animation
+                // track write does per frame (animations.rs), so the preview is
+                // exactly what playback would produce. Out-of-range index or a
+                // morph-less node is a silent no-op; read back via `MorphData`.
+                let meshes = renderer_meshes_for_node(node);
+                crate::engine::context::with_renderer_mut(move |r| {
+                    for mesh in meshes {
+                        if let Some(key) = r.meshes.geometry_morph_key_for_mesh(mesh) {
+                            let _ = r.meshes.morphs.geometry.update_morph_weights_with(
+                                key,
+                                |weights| {
+                                    if let Some(w) = weights.get_mut(index as usize) {
+                                        *w = value;
+                                    }
+                                },
+                            );
+                        }
+                        if let Some(key) = r.meshes.material_morph_key_for_mesh(mesh) {
+                            let _ = r.meshes.morphs.material.update_morph_weights_with(
+                                key,
+                                |weights| {
+                                    if let Some(w) = weights.get_mut(index as usize) {
+                                        *w = value;
+                                    }
+                                },
+                            );
+                        }
+                    }
+                })
+                .await;
+                Ok(None)
+            }
             EditorCommand::SetMaterialTexture {
                 node,
                 slot,
@@ -1075,6 +2060,24 @@ impl EditorController {
                 }
                 None => Ok(None),
             },
+            EditorCommand::SetMaterialBuffer { node, slot, data } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.kind.get_cloned();
+                        let mut next = prev.clone();
+                        if !patch_material_buffer(&mut next, &slot, data) {
+                            return Ok(None);
+                        }
+                        n.kind.set(next);
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetKind {
+                            id: node,
+                            kind: Box::new(prev),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::SetEnvironment { env } => {
                 let prev = self.scene.environment.get_cloned();
                 self.scene.environment.set(env);
@@ -1123,32 +2126,56 @@ impl EditorController {
                         ProjectionMode::Orthographic
                     });
                 });
+                // Mirror into the reactive flag so the viewport toggle / shortcut
+                // reflect the current mode regardless of who changed it (incl. MCP).
+                self.settings.editor_ortho.set_neq(!perspective);
                 Ok(None)
             }
             EditorCommand::FrameNode { node, padding } => {
-                // Compute the node's world AABB (local extent × world matrix),
-                // then fit the camera with a margin (padding 0 = tight).
+                // Prefer the renderer's LIVE world AABB (union over the node's
+                // materialized meshes) — same policy as the NodeBounds query;
+                // the scene-side local box is a unit-cube fallback for
+                // populate-baked SkinnedMesh nodes, which made frame_node aim
+                // at nothing on imported rigs. Resolve meshes BEFORE the
+                // renderer lock (renderer_meshes_for_node locks bridge nodes).
                 let local =
                     mutate::find_by_id(&self.scene, node).map(|n| local_aabb(&n.kind.get_cloned()));
                 let Some((lmin, lmax)) = local else {
                     return Ok(None);
                 };
+                let meshes = renderer_meshes_for_node(node);
+                let tk = {
+                    let b = crate::engine::bridge::bridge();
+                    let nodes = b.nodes.lock().unwrap();
+                    nodes.get(&node).map(|n| n.transform_key)
+                };
                 crate::engine::context::with_renderer_mut(move |r| {
-                    let world = crate::engine::bridge::bridge()
-                        .nodes
-                        .lock()
-                        .unwrap()
-                        .get(&node)
-                        .map(|n| n.transform_key)
-                        .and_then(|tk| r.transforms.get_world(tk).ok().copied())
-                        .unwrap_or(glam::Mat4::IDENTITY);
-                    let (wmin, wmax) = transform_aabb(world, lmin, lmax);
-                    let aabb = awsm_renderer::bounds::Aabb::new(
-                        glam::Vec3::from_array(wmin),
-                        glam::Vec3::from_array(wmax),
-                    );
+                    let live = meshes
+                        .iter()
+                        .filter_map(|mk| {
+                            r.meshes
+                                .get(*mk)
+                                .ok()
+                                .and_then(|mesh| mesh.world_aabb.clone())
+                        })
+                        .reduce(|mut acc, b| {
+                            acc.extend(&b);
+                            acc
+                        });
+                    let aabb = live.unwrap_or_else(|| {
+                        let world = tk
+                            .and_then(|tk| r.transforms.get_world(tk).ok().copied())
+                            .unwrap_or(glam::Mat4::IDENTITY);
+                        let (wmin, wmax) = transform_aabb(world, lmin, lmax);
+                        awsm_renderer::bounds::Aabb::new(
+                            glam::Vec3::from_array(wmin),
+                            glam::Vec3::from_array(wmax),
+                        )
+                    });
+                    // Live mesh AABBs are exact, which FEELS tight when framing
+                    // rigs/characters — breathe a little beyond the request.
                     crate::engine::context::try_with_camera_mut(|c| {
-                        c.frame_aabb(aabb, 1.0 + padding.max(0.0))
+                        c.frame_aabb(aabb, (1.0 + padding.max(0.0)) * 1.15)
                     });
                 })
                 .await;
@@ -1217,6 +2244,26 @@ impl EditorController {
                     ))),
                 }
             }
+            EditorCommand::ImportKtxEnvFromUrl { id, url } => {
+                // Idempotent (cross-tab replay): skip if this id already exists.
+                if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
+                    return Ok(None);
+                }
+                // Register a URL-sourced cubemap asset; the env-sync bridge
+                // fetches + decodes the KTX bytes when `SetEnvironment` applies a
+                // config that references this id (see `env_sync::load_ktx_by_id`'s
+                // `AssetSource::Url` arm). No GPU upload here — unlike a raster
+                // texture, the cubemap is materialized lazily at apply time.
+                self.scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .insert(id, AssetEntry::new(SceneAssetSource::Url(url)));
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::DeleteAsset { id }))
+            }
             // ───────────────────── Animation: clip lifecycle ─────────────────
             EditorCommand::AddClip { id } => {
                 // Idempotent: a cross-tab relay replays this; if the clip id
@@ -1256,6 +2303,15 @@ impl EditorController {
             }
             EditorCommand::SetCurrentClip { id } => {
                 self.current_clip.set(id);
+                // Bump anim_revision so the bridge RE-LOWERS the now-active clip.
+                // The relower clears all renderer clip groups and lowers only the
+                // active clip (+ mixer refs), so switching clips MUST re-lower —
+                // otherwise the newly-selected clip has no clip group and `pin_pose`
+                // can't pose it. This is what made IMPORTED glTF clips (and any
+                // clip-switch) not play: selecting them never triggered a re-lower,
+                // since only authoring edits (SetKeyframe/SetTrackSampler/…) bumped
+                // anim_revision.
+                self.anim_revision.replace_with(|v| v.wrapping_add(1));
                 Ok(None)
             }
             // ───────────────────── Animation: clip props ─────────────────────
@@ -1890,7 +2946,7 @@ impl EditorController {
         // already uploaded (see `gltf::ExtractedMaterial`). Each glTF material
         // becomes a built-in PBR library material; its textures become texture
         // assets (deduped by baked key) pre-registered to the baked GPU texture.
-        use awsm_scene_schema::MaterialShading;
+        use awsm_editor_protocol::MaterialShading;
 
         let mut tex_for_key: std::collections::HashMap<
             awsm_renderer::textures::TextureKey,
@@ -1988,7 +3044,19 @@ impl EditorController {
             id
         };
         let template = Arc::new(import.template);
+        // Cache the node template under the source-file `AssetId` so any
+        // `SkinnedMesh` node from this import can resolve its populate-baked
+        // renderer mesh keys (see `node_sync::materialize_skinned_mesh`). Only
+        // skinned imports actually consult it; static geometry baked to captured
+        // meshes ignores it — but it's cheap + keeps the path uniform.
         crate::engine::bridge::bridge().insert_template(asset_id, template.clone());
+
+        // Cache the import's clean rig glb (built at import for skinned files)
+        // under the source-file id, so the player bundle can ship it as
+        // `assets/<source>.glb` for this import's `SkinnedMesh` nodes.
+        if let Some(glb) = import.skinned_glb {
+            crate::engine::bridge::skinned_bake_cache::store_rig_glb(asset_id, glb);
+        }
 
         // glTF primitives with no material use glTF's default material — white,
         // metallic 1.0, roughness 1.0 (NOT the editor's magenta sentinel, which is
@@ -1996,7 +3064,7 @@ impl EditorController {
         // library material iff the model actually has unmaterialed primitives.
         let default_mat_id = if template.roots.iter().any(template_needs_default_material) {
             let id = AssetId::new();
-            let def = awsm_scene_schema::MaterialDef {
+            let def = awsm_editor_protocol::MaterialDef {
                 base_color: [1.0, 1.0, 1.0, 1.0],
                 metallic: 1.0,
                 roughness: 1.0,
@@ -2017,16 +3085,55 @@ impl EditorController {
         // Imported animation channels (keyed by glTF node index) resolve through
         // this to bind onto the real scene nodes.
         let mut node_map: std::collections::HashMap<u32, NodeId> = std::collections::HashMap::new();
+        let mut roots: Vec<std::sync::Arc<crate::engine::scene::node::Node>> = Vec::new();
         for root in &template.roots {
-            let node = build_editor_subtree(
+            roots.push(build_editor_subtree(
                 root,
                 asset_id,
                 &mat_ids,
                 default_mat_id,
+                &import.node_meshes,
+                &import.node_uvs1,
                 Some(&import.display_name),
                 &mut node_map,
-            );
-            mutate::insert_under(&self.scene, None, node);
+            ));
+        }
+        // With `node_map` now complete, build the bone correspondence — each skin
+        // joint's bone `NodeId` → its node index in the re-exported clean rig glb
+        // (`node_flat_indices`) — and stamp it onto every `SkinnedMesh` node's
+        // `skin.joints`. This is what lets the player drive the rig's baked joints
+        // from our clips (which target bone NodeIds). Patched on the in-memory
+        // nodes BEFORE insertion, so no `node_sync` observer re-materializes on the
+        // kind change. Shared across all skinned nodes of this import (one rig).
+        let skin_joints =
+            assemble_skin_joints(&template.roots, &node_map, &import.node_flat_indices);
+        if !skin_joints.is_empty() {
+            for root in &roots {
+                patch_skin_joints(root, &skin_joints);
+            }
+        }
+        // Track every minted node against this import's template so the
+        // template's populate-baked renderer resources (meshes / materials →
+        // pooled textures / baked transforms) are reclaimed when the LAST
+        // instance is deleted mid-session — not only at project reset. Walk the
+        // whole subtree (not just `node_map`, which omits per-primitive
+        // destructured children) so the refcount counts every deletable node.
+        {
+            fn collect_ids(node: &crate::engine::scene::node::Node, out: &mut Vec<NodeId>) {
+                out.push(node.id);
+                for c in node.children.lock_ref().iter() {
+                    collect_ids(c, out);
+                }
+            }
+            let mut ids = Vec::new();
+            for root in &roots {
+                collect_ids(root, &mut ids);
+            }
+            crate::engine::bridge::bridge().register_template_instances(asset_id, ids);
+        }
+
+        for root in roots {
+            mutate::insert_under(&self.scene, None, root);
         }
         self.scene.bump_revision();
         self.dirty.set_neq(true);
@@ -2072,6 +3179,58 @@ impl EditorController {
         } else {
             Toast::info(format!("Imported {}", import.display_name));
         }
+    }
+
+    /// Remove animation clips that are now FULLY orphaned — every track targets
+    /// a node no longer in the scene (e.g. all clips of a just-deleted imported
+    /// model). Returns the count freed. Kept: clips with any still-present node
+    /// target, any material (`Uniform`) target, or no tracks. `animation_sync`
+    /// re-lowers off `custom_animations`, so the freed clips also drop from the
+    /// renderer; a toast surfaces the cleanup.
+    ///
+    /// NOT recorded in undo — an orphaned clip can't animate anything (all its
+    /// targets are gone), so this is a one-way cleanup of dead data: undoing the
+    /// delete restores the nodes, and the (re-importable) clips stay freed. This
+    /// matches standard DCC behavior — deleting an imported model frees its
+    /// imported animations.
+    fn prune_orphaned_clips(&self) -> usize {
+        use super::animation::TrackTarget;
+        let mut removed = 0usize;
+        self.custom_animations.lock_mut().retain(|clip| {
+            let tracks = clip.tracks.lock_ref();
+            if tracks.is_empty() {
+                return true;
+            }
+            let all_orphaned = tracks.iter().all(|t| match &t.target {
+                TrackTarget::Transform { node, .. }
+                | TrackTarget::Morph { node, .. }
+                | TrackTarget::BuiltinParam { node, .. }
+                | TrackTarget::Light { node, .. }
+                | TrackTarget::Camera { node, .. } => {
+                    mutate::find_by_id(&self.scene, *node).is_none()
+                }
+                // A material-targeted track isn't node-orphaned — keep the clip.
+                TrackTarget::Uniform { .. } => false,
+            });
+            if all_orphaned {
+                removed += 1;
+            }
+            !all_orphaned
+        });
+        if removed > 0 {
+            if let Some(cur) = self.current_clip.get() {
+                if find_clip(&self.custom_animations, cur).is_none() {
+                    let next = self.custom_animations.lock_ref().first().map(|c| c.id);
+                    self.current_clip.set(next);
+                }
+            }
+            self.dirty.set_neq(true);
+            Toast::info(format!(
+                "Freed {removed} orphaned clip{}",
+                if removed == 1 { "" } else { "s" }
+            ));
+        }
+        removed
     }
 
     /// Convert extracted glTF animations into library [`CustomAnimation`] clips
@@ -2350,7 +3509,7 @@ impl EditorController {
 
     /// Project texture assets into the snapshot (id / name / procedural-vs-raster).
     fn texture_snapshots(&self) -> Vec<query::TextureSnapshot> {
-        use awsm_scene_schema::{AssetSource as S, TextureDef};
+        use awsm_editor_protocol::{AssetSource as S, TextureDef};
         let assets = self.scene.assets.lock().unwrap();
         assets
             .entries
@@ -2453,6 +3612,20 @@ impl EditorController {
                     Err(e) => QueryResult::Error { error: e },
                 }
             }
+            EditorQuery::ScenePng { width, height } => {
+                // GPU-read the swapchain → PNG data URL (the same capture the MCP
+                // screenshot_scene tool uses), returned as Text so the /debug
+                // Query channel can surface it. `None` ⇒ the tab isn't presenting
+                // frames (backgrounded / not yet rendered).
+                match crate::engine::query::scene_png(width, height).await {
+                    Some(data_url) => QueryResult::Text(data_url),
+                    None => QueryResult::Error {
+                        error: "scene_png: no frame captured (tab not presenting? \
+                                foreground the editor + retry)"
+                            .to_string(),
+                    },
+                }
+            }
             EditorQuery::CustomMaterialWgsl { material } => {
                 match find_material(&self.custom_materials, material) {
                     Some(mat) => QueryResult::Text(mat.wgsl.get_cloned()),
@@ -2473,6 +3646,346 @@ impl EditorController {
                     }
                     None => QueryResult::Error {
                         error: format!("no custom material {material}"),
+                    },
+                }
+            }
+            EditorQuery::ExportGlb { node } => {
+                // Whole-scene export includes animations; single-node does not.
+                let result = match node {
+                    Some(id) => crate::controller::export::export_glb(&self.scene, Some(id)).await,
+                    None => crate::controller::export::export_scene_glb(self).await,
+                };
+                match result {
+                    Ok(bytes) => {
+                        use base64::Engine;
+                        QueryResult::Text(base64::engine::general_purpose::STANDARD.encode(bytes))
+                    }
+                    Err(e) => QueryResult::Error { error: e },
+                }
+            }
+            EditorQuery::ExportPlayerBundle { name } => {
+                use base64::Engine;
+                use serde_json::json;
+                // The runtime bundle directory (scene.toml + assets/, per the
+                // glb-mesh design) via the native-tested `project_to_scene` +
+                // `assemble_bundle`. Each file's bytes are base64 (STANDARD) so the
+                // wire result stays JSON-clean.
+                match crate::controller::export::bake_player_bundle(self).await {
+                    Ok(bundle) => {
+                        let files: Vec<serde_json::Value> = bundle
+                            .into_iter()
+                            .map(|f| {
+                                json!({
+                                    "path": f.path,
+                                    "bytes": base64::engine::general_purpose::STANDARD
+                                        .encode(f.bytes),
+                                })
+                            })
+                            .collect();
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("name".to_string(), json!(name));
+                        entries.insert("files".to_string(), json!(files));
+                        QueryResult::Map(query::MapResult {
+                            kind: "player_bundle".to_string(),
+                            entries,
+                        })
+                    }
+                    Err(e) => QueryResult::Error { error: e },
+                }
+            }
+            EditorQuery::ResolveNodeMaterial { node } => {
+                use serde_json::json;
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return QueryResult::Error {
+                        error: format!("no node {node}"),
+                    };
+                };
+                let kind = n.kind.get_cloned();
+                let mut entries = std::collections::BTreeMap::new();
+                match node_material_ref(&kind) {
+                    None => {
+                        let is_geo =
+                            matches!(kind, NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. });
+                        entries.insert("assigned".to_string(), json!(false));
+                        entries.insert(
+                            "kind".to_string(),
+                            json!(if is_geo { "unassigned" } else { "none" }),
+                        );
+                    }
+                    Some(inst) => {
+                        entries.insert("assigned".to_string(), json!(true));
+                        entries.insert("asset".to_string(), json!(inst.asset.to_string()));
+                        entries.insert("base_color".to_string(), json!(inst.inline.base_color));
+                        match crate::controller::custom_material::find_material(
+                            &self.custom_materials,
+                            inst.asset,
+                        ) {
+                            Some(m) => {
+                                entries.insert("name".to_string(), json!(m.name.get_cloned()));
+                                match m.builtin.get_cloned() {
+                                    Some(def) => {
+                                        entries.insert("kind".to_string(), json!("builtin"));
+                                        entries.insert(
+                                            "shading".to_string(),
+                                            json!(format!("{:?}", def.shading)),
+                                        );
+                                    }
+                                    None => {
+                                        entries.insert("kind".to_string(), json!("custom"));
+                                    }
+                                }
+                            }
+                            None => {
+                                entries.insert("kind".to_string(), json!("unknown"));
+                            }
+                        }
+                    }
+                }
+                QueryResult::Map(query::MapResult {
+                    kind: "node_material".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::SelectVerticesWhere { node, predicate } => {
+                use awsm_editor_protocol::VertexPredicate as P;
+                use awsm_meshgen::edit::{
+                    select_by_axis, select_by_normal_dir, select_top_percent_axis,
+                    select_within_aabb, select_within_radius, Cmp,
+                };
+                use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(mesh) => {
+                        let idx = match predicate {
+                            P::NormalDir { dir, threshold } => {
+                                select_by_normal_dir(&mesh, dir, threshold)
+                            }
+                            P::AxisGreater { axis, value } => {
+                                select_by_axis(&mesh, axis as usize, Cmp::Greater, value)
+                            }
+                            P::AxisLess { axis, value } => {
+                                select_by_axis(&mesh, axis as usize, Cmp::Less, value)
+                            }
+                            P::TopPercent { axis, percent } => {
+                                if !(0.0..=1.0).contains(&percent) {
+                                    // percent is a 0..1 FRACTION; out-of-range input
+                                    // silently clamps in the selector, which reads as
+                                    // "selected everything" to a confused caller.
+                                    tracing::warn!(
+                                        "select_vertices_where top_percent: percent {percent} \
+                                         is outside 0..1 (it is a fraction, not a percentage) — \
+                                         clamping"
+                                    );
+                                }
+                                select_top_percent_axis(&mesh, axis as usize, percent)
+                            }
+                            P::WithinRadius { center, radius } => {
+                                select_within_radius(&mesh, center, radius)
+                            }
+                            P::WithinAabb { min, max } => select_within_aabb(&mesh, min, max),
+                        };
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("count".to_string(), json!(idx.len()));
+                        entries.insert("indices".to_string(), json!(idx));
+                        QueryResult::Map(query::MapResult {
+                            kind: "vertex_selection".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    },
+                }
+            }
+            EditorQuery::MeshStats { node } => {
+                use serde_json::json;
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(mesh) => {
+                        let s = awsm_meshgen::mesh_stats(&mesh);
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("vertices".to_string(), json!(s.vertices));
+                        entries.insert("triangles".to_string(), json!(s.triangles));
+                        entries.insert("bbox_min".to_string(), json!(s.bbox_min));
+                        entries.insert("bbox_max".to_string(), json!(s.bbox_max));
+                        entries.insert("centroid".to_string(), json!(s.centroid));
+                        entries.insert("surface_area".to_string(), json!(s.surface_area));
+                        entries.insert("volume".to_string(), json!(s.volume));
+                        entries.insert("watertight".to_string(), json!(s.watertight));
+                        QueryResult::Map(query::MapResult {
+                            kind: "mesh_stats".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    },
+                }
+            }
+            EditorQuery::MeshCrossSection {
+                node,
+                axis,
+                samples,
+            } => {
+                use serde_json::json;
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(mesh) => {
+                        let profile =
+                            awsm_meshgen::cross_section_profile(&mesh, axis as usize, samples);
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("axis".to_string(), json!(axis));
+                        entries.insert("profile".to_string(), json!(profile));
+                        QueryResult::Map(query::MapResult {
+                            kind: "mesh_cross_section".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    },
+                }
+            }
+            EditorQuery::MeshModifiers { mesh } => {
+                // Resolve the asset's recipe; `null` JSON when it has none.
+                let stack = match self
+                    .scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .get(mesh)
+                    .map(|e| &e.source)
+                {
+                    Some(SceneAssetSource::Mesh(def)) => Ok(def.stack.clone()),
+                    Some(_) => Err(format!("asset {mesh} is not a mesh")),
+                    None => Err(format!("no asset {mesh}")),
+                };
+                match stack {
+                    Ok(stack) => {
+                        // Every mesh carries a recipe now — serialize the stack.
+                        QueryResult::Text(
+                            serde_json::to_string(&stack)
+                                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
+                        )
+                    }
+                    Err(error) => QueryResult::Error { error },
+                }
+            }
+            EditorQuery::GetVertexData { node, indices } => {
+                use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(md) => {
+                        let verts: Vec<serde_json::Value> = indices
+                            .iter()
+                            .map(|&i| {
+                                let idx = i as usize;
+                                json!({
+                                    "index": i,
+                                    "position": md.positions.get(idx),
+                                    "normal": md.normals.as_ref().and_then(|n| n.get(idx)),
+                                    "color": md.colors.as_ref().and_then(|c| c.get(idx)),
+                                    "uv": md.uvs.as_ref().and_then(|u| u.get(idx)),
+                                })
+                            })
+                            .collect();
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("vertex_count".to_string(), json!(md.positions.len()));
+                        entries.insert("vertices".to_string(), json!(verts));
+                        QueryResult::Map(query::MapResult {
+                            kind: "vertex_data".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    },
+                }
+            }
+            EditorQuery::GetMeshLayers { node } => {
+                use awsm_editor_protocol::MeshBase;
+                use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
+                // Resolve node → mesh asset id, then read its def (stack + overrides).
+                let mesh_id =
+                    mutate::find_by_id(&self.scene, node).and_then(|n| match n.kind.get_cloned() {
+                        NodeKind::Mesh { mesh, .. } => Some(mesh.0),
+                        _ => None,
+                    });
+                let def = mesh_id.and_then(|id| {
+                    match self.scene.assets.lock().unwrap().get(id).map(|e| &e.source) {
+                        Some(SceneAssetSource::Mesh(def)) => Some(def.clone()),
+                        _ => None,
+                    }
+                });
+                match def {
+                    Some(def) => {
+                        let base_kind = match &def.stack.base {
+                            MeshBase::Primitive(_) => "primitive",
+                            MeshBase::Lathe { .. } => "lathe",
+                            MeshBase::Superquadric { .. } => "superquadric",
+                            MeshBase::Sweep(_) => "sweep",
+                            MeshBase::Captured(_) => "captured",
+                            MeshBase::Sdf { .. } => "sdf",
+                        };
+                        // Each modifier serialized as its tagged JSON (the variant
+                        // name + params) — full fidelity for the layer list.
+                        let modifiers: Vec<serde_json::Value> = def
+                            .stack
+                            .modifiers
+                            .iter()
+                            .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                            .collect();
+                        let ov = &def.overrides;
+                        // "Baked/terminal" = a frozen-topology authorable mesh: a
+                        // bare Captured-self base with no modifiers.
+                        let frozen = def.stack.modifiers.is_empty()
+                            && matches!(def.stack.base, MeshBase::Captured(_));
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("mesh".to_string(), json!(mesh_id.map(|i| i.to_string())));
+                        entries.insert("base".to_string(), json!(base_kind));
+                        entries.insert("modifiers".to_string(), json!(modifiers));
+                        entries.insert("modifier_count".to_string(), json!(modifiers.len()));
+                        entries.insert("frozen_topology".to_string(), json!(frozen));
+                        entries.insert("has_overrides".to_string(), json!(!ov.is_empty()));
+                        entries.insert(
+                            "override_counts".to_string(),
+                            json!({
+                                "positions": ov.positions.len(),
+                                "colors": ov.colors.len(),
+                                "normals": ov.normals.len(),
+                                "uvs": ov.uvs.len(),
+                            }),
+                        );
+                        QueryResult::Map(query::MapResult {
+                            kind: "mesh_layers".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} is not a Mesh / has no resolvable mesh asset"),
                     },
                 }
             }
@@ -2510,8 +4023,430 @@ impl EditorController {
                     entries,
                 })
             }
+            EditorQuery::MemoryStats => {
+                use serde_json::json;
+                // Renderer-side object counts (under the renderer guard)…
+                let (
+                    meshes,
+                    transforms,
+                    materials,
+                    lines,
+                    render_pipelines,
+                    compute_pipelines,
+                    shaders,
+                    opaque_main,
+                    edge_per_shader,
+                    classify_dynamic,
+                ) = crate::engine::context::with_renderer_mut(|r| {
+                    (
+                        r.meshes.len(),
+                        r.transforms.len(),
+                        r.materials.len(),
+                        r.line_count(),
+                        r.pipelines.render.len(),
+                        r.pipelines.compute.len(),
+                        r.shaders.len(),
+                        r.render_passes.material_opaque.pipelines.main_len(),
+                        r.render_passes
+                            .material_opaque
+                            .edge_pipelines
+                            .per_shader_len(),
+                        r.render_passes.material_classify.dynamic_cache_len(),
+                    )
+                })
+                .await;
+                let (dynamic_materials, tex_pool, cubemaps, samplers) =
+                    crate::engine::context::with_renderer_mut(|r| {
+                        let (tp, cm, sm) = r.textures.resource_counts();
+                        (r.dynamic_materials.len(), tp, cm, sm)
+                    })
+                    .await;
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("meshes".to_string(), json!(meshes));
+                entries.insert("transforms".to_string(), json!(transforms));
+                entries.insert("materials".to_string(), json!(materials));
+                entries.insert("lines".to_string(), json!(lines));
+                entries.insert("render_pipelines".to_string(), json!(render_pipelines));
+                entries.insert("compute_pipelines".to_string(), json!(compute_pipelines));
+                // Compute-pipeline-pool breakdown (dynamic-material leak diagnostics):
+                // total shader modules + the per-pass typed caches that hold pool keys.
+                // A `compute_pipelines` that exceeds `shaders` + the typed-cache sums
+                // by a growing margin signals detached pool orphans.
+                entries.insert("shaders".to_string(), json!(shaders));
+                entries.insert("opaque_main_keys".to_string(), json!(opaque_main));
+                entries.insert("edge_per_shader_keys".to_string(), json!(edge_per_shader));
+                entries.insert("classify_dynamic_keys".to_string(), json!(classify_dynamic));
+                entries.insert("dynamic_materials".to_string(), json!(dynamic_materials));
+                // GPU texture-resource counts (leak diagnostics — the "Destroyed
+                // texture"/"aw snap" blind spot). Growth under textured-material /
+                // imported-model add+delete churn signals a texture/sampler leak.
+                entries.insert("pool_textures".to_string(), json!(tex_pool));
+                entries.insert("cubemaps".to_string(), json!(cubemaps));
+                entries.insert("samplers".to_string(), json!(samplers));
+                // Per-frame timing (rolling EMA, perf diagnostics): wall-clock frame
+                // period (vsync-capped ~16.6ms at 60fps) + the CPU span building &
+                // submitting the frame (the actionable "how heavy is this scene" number).
+                let (frame_dt_ms, render_cpu_ms) = crate::engine::render_loop::frame_stats();
+                entries.insert(
+                    "frame_dt_ms".to_string(),
+                    json!((frame_dt_ms * 100.0).round() / 100.0),
+                );
+                entries.insert(
+                    "render_cpu_ms".to_string(),
+                    json!((render_cpu_ms * 100.0).round() / 100.0),
+                );
+                // …plus Chrome's non-standard `performance.memory` (zeros
+                // elsewhere). Read via Reflect — web_sys doesn't bind it.
+                let mut heap_used = 0.0f64;
+                let mut heap_total = 0.0f64;
+                let mut heap_limit = 0.0f64;
+                if let Some(perf) = web_sys::window().and_then(|w| w.performance()) {
+                    if let Ok(mem) = js_sys::Reflect::get(&perf, &"memory".into()) {
+                        if !mem.is_undefined() && !mem.is_null() {
+                            let get = |k: &str| {
+                                js_sys::Reflect::get(&mem, &k.into())
+                                    .ok()
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0)
+                            };
+                            heap_used = get("usedJSHeapSize");
+                            heap_total = get("totalJSHeapSize");
+                            heap_limit = get("jsHeapSizeLimit");
+                        }
+                    }
+                }
+                entries.insert("js_heap_used_bytes".to_string(), json!(heap_used));
+                entries.insert("js_heap_total_bytes".to_string(), json!(heap_total));
+                entries.insert("js_heap_limit_bytes".to_string(), json!(heap_limit));
+                QueryResult::Map(query::MapResult {
+                    kind: "memory_stats".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::AnimationRuntime => {
+                use serde_json::json;
+                // Renderer-side lowered state: clip groups, resolved channels per
+                // clip, rest-cache size, mixer layers.
+                let (clip_count, total_channels, per_clip, rest_len, mixer_layers) =
+                    crate::engine::context::with_renderer_mut(|r| {
+                        let per_clip: Vec<serde_json::Value> = r
+                            .animations
+                            .clips_iter()
+                            .map(|(_, g)| json!({"name": g.name, "channels": g.channels.len()}))
+                            .collect();
+                        let total: usize = r
+                            .animations
+                            .clips_iter()
+                            .map(|(_, g)| g.channels.len())
+                            .sum();
+                        (
+                            per_clip.len(),
+                            total,
+                            per_clip,
+                            r.animations.rest_len(),
+                            r.animations.mixer.layers.len(),
+                        )
+                    })
+                    .await;
+                // Controller-side: current clip + its authored track count (the
+                // numerator the resolved channels should match).
+                let current_clip = self.current_clip.get();
+                let authored_tracks = current_clip
+                    .and_then(|id| {
+                        crate::controller::animation::find_clip(&self.custom_animations, id)
+                    })
+                    .map(|c| c.tracks.lock_ref().len())
+                    .unwrap_or(0);
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("clip_groups".to_string(), json!(clip_count));
+                entries.insert("resolved_channels".to_string(), json!(total_channels));
+                entries.insert("per_clip".to_string(), json!(per_clip));
+                entries.insert("rest_entries".to_string(), json!(rest_len));
+                entries.insert("mixer_layers".to_string(), json!(mixer_layers));
+                entries.insert(
+                    "current_clip".to_string(),
+                    json!(current_clip.map(|id| id.to_string())),
+                );
+                entries.insert("authored_tracks".to_string(), json!(authored_tracks));
+                entries.insert("playing".to_string(), json!(self.playing.get()));
+                entries.insert("playhead".to_string(), json!(self.playhead.get()));
+                QueryResult::Map(query::MapResult {
+                    kind: "animation_runtime".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::MorphData { nodes } => {
+                use serde_json::json;
+                // node → first materialized mesh → live geometry morph weights
+                // (the same store `SetMorphWeight` writes and morph animation
+                // tracks drive). Nodes without materialized morphs are omitted —
+                // an empty map on a morph-bearing scene means "not materialized
+                // yet", not "no morphs".
+                let ids = self.resolve_node_ids(&nodes);
+                // (id, meshes, target names) — names ride the import template
+                // (glTF `mesh.extras.targetNames`); empty when the source had
+                // none or the node isn't a template-backed import.
+                let pairs: Vec<(NodeId, Vec<awsm_renderer::meshes::MeshKey>, Vec<String>)> = ids
+                    .iter()
+                    .map(|id| {
+                        (
+                            *id,
+                            renderer_meshes_for_node(*id),
+                            morph_names_for_node(*id),
+                        )
+                    })
+                    .filter(|(_, meshes, _)| !meshes.is_empty())
+                    .collect();
+                let entries = crate::engine::context::with_renderer_mut(move |r| {
+                    let mut entries = std::collections::BTreeMap::new();
+                    for (id, meshes, names) in pairs {
+                        // First morph-bearing primitive wins (multi-primitive
+                        // nodes share one weight set per glTF mesh anyway).
+                        let weights = meshes.iter().find_map(|mesh| {
+                            let key = r.meshes.geometry_morph_key_for_mesh(*mesh)?;
+                            r.meshes.morphs.geometry.read_morph_weights(key).ok()
+                        });
+                        if let Some(weights) = weights {
+                            entries.insert(
+                                id.to_string(),
+                                json!({
+                                    "target_count": weights.len(),
+                                    "weights": weights,
+                                    "names": names,
+                                }),
+                            );
+                        }
+                    }
+                    entries
+                })
+                .await;
+                QueryResult::Map(query::MapResult {
+                    kind: "morph_data".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::SkinData { nodes } => {
+                use serde_json::json;
+                // Rig discovery: every SkinnedMesh node's joint table, each joint
+                // resolved to its live editor bone node (name + current local TRS).
+                // Joints are ordinary scene nodes — SetTransform poses them and a
+                // Transform animation track animates them; this query is just the
+                // map that makes the rig reachable without walking the outliner.
+                let ids = self.resolve_node_ids(&nodes);
+                let mut entries = std::collections::BTreeMap::new();
+                for id in ids {
+                    let Some(n) = mutate::find_by_id(&self.scene, id) else {
+                        continue;
+                    };
+                    let NodeKind::SkinnedMesh { skin, .. } = n.kind.get_cloned() else {
+                        continue;
+                    };
+                    // `live`: the skin bridge holds a mirror→baked mapping for
+                    // this bone, i.e. posing it actually deforms the skin. False
+                    // means the rig is display-only (registration failed/skipped)
+                    // — surfaced so an agent (and we) can SEE a broken chain.
+                    let baked_map = crate::engine::bridge::bridge()
+                        .skin_joint_baked
+                        .lock()
+                        .unwrap()
+                        .clone();
+                    let joints: Vec<serde_json::Value> = skin
+                        .joints
+                        .iter()
+                        .map(|j| {
+                            let bone = mutate::find_by_id(&self.scene, j.node);
+                            let (name, trs) = bone
+                                .map(|b| (b.name.get_cloned(), b.transform.get_cloned()))
+                                .unwrap_or_else(|| {
+                                    (
+                                        "<missing>".to_string(),
+                                        crate::engine::scene::Trs::default(),
+                                    )
+                                });
+                            json!({
+                                "node": j.node.to_string(),
+                                "index": j.index,
+                                "name": name,
+                                "live": baked_map.contains_key(&j.node),
+                                "translation": trs.translation,
+                                "rotation": trs.rotation,
+                                "scale": trs.scale,
+                            })
+                        })
+                        .collect();
+                    entries.insert(
+                        id.to_string(),
+                        json!({
+                            "source": skin.source.to_string(),
+                            "primitive_index": skin.primitive_index,
+                            "joints": joints,
+                        }),
+                    );
+                }
+                QueryResult::Map(query::MapResult {
+                    kind: "skin_data".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::SolveIk {
+                end_node,
+                target,
+                pole,
+            } => {
+                use serde_json::json;
+                // Chain from the renderer's MIRROR hierarchy (bones are scene
+                // nodes; mirrors are parented exactly like the scene tree):
+                // end → parent (mid) → grandparent (root).
+                let (tk_e, tk_to_node) = {
+                    let b = crate::engine::bridge::bridge();
+                    let nodes = b.nodes.lock().unwrap();
+                    let Some(entry) = nodes.get(&end_node) else {
+                        return QueryResult::Error {
+                            error: format!("end_node {end_node} not materialized"),
+                        };
+                    };
+                    let map: std::collections::HashMap<_, _> =
+                        nodes.iter().map(|(id, n)| (n.transform_key, *id)).collect();
+                    (entry.transform_key, map)
+                };
+                let solved = crate::engine::context::with_renderer_mut(move |r| {
+                    let tk_m = r.transforms.get_parent(tk_e).ok()?;
+                    let tk_r = r.transforms.get_parent(tk_m).ok()?;
+                    let mid_id = tk_to_node.get(&tk_m).copied()?;
+                    let root_id = tk_to_node.get(&tk_r).copied()?;
+                    let we = *r.transforms.get_world(tk_e).ok()?;
+                    let wm = *r.transforms.get_world(tk_m).ok()?;
+                    let wr = *r.transforms.get_world(tk_r).ok()?;
+                    let wp = r
+                        .transforms
+                        .get_parent(tk_r)
+                        .ok()
+                        .and_then(|tk| r.transforms.get_world(tk).ok().copied())
+                        .unwrap_or(glam::Mat4::IDENTITY);
+                    let (_, q_r, a) = wr.to_scale_rotation_translation();
+                    let (_, q_m, b) = wm.to_scale_rotation_translation();
+                    let (_, _, c) = we.to_scale_rotation_translation();
+                    let (_, q_p, _) = wp.to_scale_rotation_translation();
+                    let t = glam::Vec3::from_array(target);
+
+                    let l1 = (b - a).length();
+                    let l2 = (c - b).length();
+                    if l1 < 1e-5 || l2 < 1e-5 {
+                        return None;
+                    }
+                    let dvec = t - a;
+                    let dist = dvec.length();
+                    if dist < 1e-5 {
+                        return None;
+                    }
+                    let d = dist.clamp((l1 - l2).abs() + 1e-4, l1 + l2 - 1e-4);
+                    let dir_t = dvec / dist;
+
+                    // Bend-plane normal: toward the pole when given, else the
+                    // chain's CURRENT bend plane, else character-forward (see
+                    // `ik_bend_plane_normal`).
+                    let n = ik_bend_plane_normal(
+                        a,
+                        b,
+                        c,
+                        dir_t,
+                        pole.map(glam::Vec3::from_array),
+                        q_p * glam::Vec3::NEG_Z,
+                    );
+
+                    // Law of cosines: angle at the root between the reach line
+                    // and the upper bone.
+                    let cos_a = ((l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * d)).clamp(-1.0, 1.0);
+                    let ang_a = cos_a.acos();
+                    let dir_ab = glam::Quat::from_axis_angle(n, ang_a) * dir_t;
+
+                    // Sequential rotation-arc deltas → new WORLD rotations.
+                    let q_r_new = glam::Quat::from_rotation_arc((b - a).normalize(), dir_ab) * q_r;
+                    let b_new = a + dir_ab * l1;
+                    let dir_bc_new = (t - b_new).normalize();
+                    let q_m_new =
+                        glam::Quat::from_rotation_arc((c - b).normalize(), dir_bc_new) * q_m;
+
+                    // World → LOCAL under the (new) parents.
+                    let local_r = (q_p.inverse() * q_r_new).normalize();
+                    let local_m = (q_r_new.inverse() * q_m_new).normalize();
+                    Some((root_id, mid_id, local_r, local_m, d / dist))
+                })
+                .await;
+                match solved {
+                    Some((root_id, mid_id, lr, lm, reach)) => {
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("root_node".into(), json!(root_id.to_string()));
+                        entries.insert("mid_node".into(), json!(mid_id.to_string()));
+                        entries.insert("root_rotation".into(), json!(lr.to_array()));
+                        entries.insert("mid_rotation".into(), json!(lm.to_array()));
+                        entries.insert("reach".into(), json!(reach.min(1.0)));
+                        QueryResult::Map(query::MapResult {
+                            kind: "ik_solution".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: "ik solve failed: chain not materialized or degenerate \
+                                (zero-length bones / target at the root)"
+                            .to_string(),
+                    },
+                }
+            }
+            EditorQuery::GetSkinWeights { node, indices } => {
+                use serde_json::json;
+                let meshes = renderer_meshes_for_node(node);
+                let data = crate::engine::context::with_renderer_mut(move |r| {
+                    let skin_key = meshes
+                        .iter()
+                        .find_map(|mk| r.meshes.mesh_skin_key(*mk).flatten())?;
+                    let sets = r.meshes.skins.sets_len(skin_key).ok()?;
+                    let stride = sets * 32;
+                    let bytes = r.meshes.skins.read_joint_index_weights(skin_key).ok()?;
+                    let vertex_count = bytes.len().checked_div(stride).unwrap_or(0);
+                    let want: Vec<u32> = if indices.is_empty() {
+                        (0..vertex_count as u32).collect()
+                    } else {
+                        indices
+                    };
+                    let mut weights = serde_json::Map::new();
+                    for v in want {
+                        let vu = v as usize;
+                        if vu >= vertex_count {
+                            continue;
+                        }
+                        let off = vu * stride;
+                        let mut joints = [0u32; 4];
+                        let mut ws = [0f32; 4];
+                        for i in 0..4 {
+                            let p = off + i * 8;
+                            joints[i] = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+                            ws[i] = f32::from_le_bytes(bytes[p + 4..p + 8].try_into().unwrap());
+                        }
+                        weights.insert(v.to_string(), json!({ "joints": joints, "weights": ws }));
+                    }
+                    Some((vertex_count, sets, weights))
+                })
+                .await;
+                match data {
+                    Some((vertex_count, sets, weights)) => {
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("vertex_count".into(), json!(vertex_count));
+                        entries.insert("set_count".into(), json!(sets));
+                        entries.insert("weights".into(), serde_json::Value::Object(weights));
+                        QueryResult::Map(query::MapResult {
+                            kind: "skin_weights".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no materialized skin"),
+                    },
+                }
+            }
             EditorQuery::ConsoleLogs { limit } => {
                 use serde_json::json;
+                // Editor toasts (info/warning/error notices).
                 let logs: Vec<serde_json::Value> = CONSOLE_LOG.with(|b| {
                     let b = b.borrow();
                     let start = b.len().saturating_sub(limit as usize);
@@ -2520,8 +4455,17 @@ impl EditorController {
                         .map(|(level, message)| json!({ "level": level, "message": message }))
                         .collect()
                 });
+                // Raw `tracing` events (WARN/ERROR/etc. from anywhere — render
+                // loop, bridges, loader) mirrored from the browser console via the
+                // web-shared CaptureLayer, so a headless MCP driver can read them.
+                let tracing_logs: Vec<serde_json::Value> =
+                    awsm_web_shared::logger::captured_logs(limit as usize)
+                        .into_iter()
+                        .map(|(level, message)| json!({ "level": level, "message": message }))
+                        .collect();
                 let mut entries = std::collections::BTreeMap::new();
                 entries.insert("logs".to_string(), json!(logs));
+                entries.insert("tracing".to_string(), json!(tracing_logs));
                 QueryResult::Map(query::MapResult {
                     kind: "console_logs".to_string(),
                     entries,
@@ -2530,7 +4474,7 @@ impl EditorController {
             EditorQuery::GetTrackData { clip, track } => {
                 match find_track(&self.custom_animations, clip, track) {
                     Some(t) => {
-                        let stored = awsm_scene_schema::animation::StoredTrack {
+                        let stored = awsm_editor_protocol::animation::StoredTrack {
                             target: t.target.clone(),
                             sampler: t.sampler.get(),
                             mute: t.mute.get(),
@@ -2634,14 +4578,58 @@ impl EditorController {
                     .map(|n| (*id, local_aabb(&n.kind.get_cloned())))
             })
             .collect();
+        // Resolve per-node renderer meshes + transform keys BEFORE taking the
+        // renderer lock: renderer_meshes_for_node locks the bridge nodes map,
+        // which must never nest inside a scope already holding that lock.
+        let resolved: Vec<(
+            NodeId,
+            Aabb3,
+            Vec<awsm_renderer::meshes::MeshKey>,
+            Option<awsm_renderer::transforms::TransformKey>,
+        )> = {
+            let bridge = crate::engine::bridge::bridge();
+            locals
+                .iter()
+                .map(|(id, aabb)| {
+                    let meshes = renderer_meshes_for_node(*id);
+                    let tk = bridge
+                        .nodes
+                        .lock()
+                        .unwrap()
+                        .get(id)
+                        .map(|n| n.transform_key);
+                    (*id, *aabb, meshes, tk)
+                })
+                .collect()
+        };
         let entries = crate::engine::context::with_renderer_mut(move |r| {
             let mut m = std::collections::BTreeMap::new();
-            let bridge = crate::engine::bridge::bridge();
-            let nodes = bridge.nodes.lock().unwrap();
-            for (id, (lmin, lmax)) in &locals {
-                let world = nodes
-                    .get(id)
-                    .map(|n| n.transform_key)
+            for (id, (lmin, lmax), meshes, tk) in &resolved {
+                // Prefer the renderer's LIVE world AABB (union over the node's
+                // materialized meshes) — exact for whatever actually renders,
+                // including populate-baked SkinnedMesh nodes whose scene-side
+                // local_aabb is just a unit-cube fallback (the bug that made
+                // frame_node aim at nothing on imported rigs).
+                let live = meshes
+                    .iter()
+                    .filter_map(|mk| {
+                        r.meshes
+                            .get(*mk)
+                            .ok()
+                            .and_then(|mesh| mesh.world_aabb.clone())
+                    })
+                    .reduce(|mut acc, b| {
+                        acc.extend(&b);
+                        acc
+                    });
+                if let Some(aabb) = live {
+                    m.insert(
+                        id.to_string(),
+                        json!({ "min": aabb.min.to_array(), "max": aabb.max.to_array() }),
+                    );
+                    continue;
+                }
+                let world = tk
                     .and_then(|tk| r.transforms.get_world(tk).ok().copied())
                     .unwrap_or(glam::Mat4::IDENTITY);
                 let (wmin, wmax) = transform_aabb(world, *lmin, *lmax);
@@ -2760,28 +4748,118 @@ impl EditorController {
 /// A min/max bound as a pair of `[x,y,z]` corners.
 type Aabb3 = ([f32; 3], [f32; 3]);
 
+thread_local! {
+    /// Renderer meshes + lights a prior `LoadPlayerBundle` populated DIRECTLY
+    /// (via `populate_awsm_scene`) — these live OUTSIDE the bridge's per-node
+    /// tracking, so the next reset must remove them explicitly or a repeated
+    /// round-trip / New-Project-after-round-trip leaves them ghosting.
+    static LAST_BUNDLE_RESOURCES: RefCell<(
+        Vec<awsm_renderer::meshes::MeshKey>,
+        Vec<awsm_renderer::lights::LightKey>,
+        Vec<awsm_renderer::animation::AnimationClipKey>,
+    )> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+}
+
+/// Record the resources a `LoadPlayerBundle` populate just created, so the next
+/// project reset removes them.
+fn set_bundle_resources(
+    meshes: Vec<awsm_renderer::meshes::MeshKey>,
+    lights: Vec<awsm_renderer::lights::LightKey>,
+    clips: Vec<awsm_renderer::animation::AnimationClipKey>,
+) {
+    LAST_BUNDLE_RESOURCES.with(|c| *c.borrow_mut() = (meshes, lights, clips));
+}
+
+/// On a project reset, remove renderer resources that live OUTSIDE the bridge's
+/// per-node tracking — otherwise they ghost. Two sources: (a) imported-glTF
+/// template meshes (skinned populate copies node teardown skips; `clear_templates`,
+/// called right after, only drops the metadata map); (b) a prior
+/// `LoadPlayerBundle` populate's direct mesh/light inserts.
+async fn clear_untracked_renderer_resources() {
+    let templates: Vec<_> = crate::engine::bridge::bridge()
+        .templates
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect();
+    let (meshes, lights, clips) =
+        LAST_BUNDLE_RESOURCES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    if templates.is_empty() && meshes.is_empty() && lights.is_empty() && clips.is_empty() {
+        return;
+    }
+    crate::engine::context::with_renderer_mut(move |r| {
+        for t in &templates {
+            crate::engine::bridge::asset_template::remove_template_meshes(r, t);
+        }
+        for mk in meshes {
+            r.remove_mesh(mk);
+        }
+        for lk in lights {
+            r.remove_light(lk);
+        }
+        // Drop the bundle's animation clips; the mixer referenced them by key, so
+        // reset it too (the editor's own clips/mixer re-lower on the next edit).
+        if !clips.is_empty() {
+            for ck in clips {
+                r.animations.remove_clip(ck);
+            }
+            r.animations.mixer.clear();
+        }
+    })
+    .await;
+}
+
 /// A coarse local-space AABB for a node kind (half-extents from primitive dims;
 /// a unit box for anything without obvious bounds). Used only to frame the
 /// camera + report approximate size — not a tight collision bound.
+/// AABB of a set of local-space positions, or `None` when empty.
+fn aabb_from_positions(positions: &[[f32; 3]]) -> Option<Aabb3> {
+    if positions.is_empty() {
+        return None;
+    }
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for p in positions {
+        for i in 0..3 {
+            min[i] = min[i].min(p[i]);
+            max[i] = max[i].max(p[i]);
+        }
+    }
+    Some((min, max))
+}
+
 fn local_aabb(kind: &NodeKind) -> Aabb3 {
-    use awsm_scene_schema::PrimitiveShape as P;
-    let (hx, hy, hz) = match kind {
-        NodeKind::Primitive { shape, .. } => match shape {
-            P::Box { dims } => (dims[0] * 0.5, dims[1] * 0.5, dims[2] * 0.5),
-            P::Sphere { radius, .. } => (*radius, *radius, *radius),
-            P::Plane { width, depth, .. } => (width * 0.5, 0.001, depth * 0.5),
-            P::Cylinder { radius, height, .. } | P::Cone { radius, height, .. } => {
-                (*radius, height * 0.5, *radius)
+    match kind {
+        // A Mesh's true bounds come from its baked geometry in the mesh cache;
+        // every procedural node (box / sphere / sweep / …) is a Mesh now.
+        NodeKind::Mesh { mesh, .. } => {
+            if let Some(raw) = crate::engine::bridge::mesh_cache::get_raw(mesh.0) {
+                if let Some(b) = aabb_from_positions(&raw.positions) {
+                    return b;
+                }
             }
-            P::Torus {
-                radius, thickness, ..
-            } => (radius + thickness, *thickness, radius + thickness),
-        },
-        // Lights / cameras / empties / models: a small unit box centered on the
-        // node (a glTF model's true bounds aren't cheaply available CPU-side).
-        _ => (0.5, 0.5, 0.5),
-    };
-    ([-hx, -hy, -hz], [hx, hy, hz])
+        }
+        // A SkinnedMesh's bounds come from its bind-pose bake (cached at import +
+        // persisted across reload), keyed by the same (source, node, primitive)
+        // triple `drop_skinning` uses — so `frame_node` centers an imported
+        // character instead of a unit box at its origin.
+        NodeKind::SkinnedMesh { skin, .. } => {
+            if let Some(md) = crate::engine::bridge::skinned_bake_cache::get(
+                skin.source,
+                skin.node_index,
+                skin.primitive_index,
+            ) {
+                if let Some(b) = aabb_from_positions(&md.positions) {
+                    return b;
+                }
+            }
+        }
+        _ => {}
+    }
+    // Lights / cameras / empties / un-baked meshes: a small unit box centered on
+    // the node.
+    ([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5])
 }
 
 /// Transform a local AABB by a world matrix and return the enclosing world AABB.
@@ -2818,6 +4896,176 @@ fn readback_key(t: &query::ReadbackTarget) -> String {
         R::LightParam { node, param } => format!("light/{node}/{param:?}"),
         R::CameraParam { node, param } => format!("camera/{node}/{param:?}"),
     }
+}
+
+/// The LIVE value for an animation track target — what key-from-pose captures.
+/// Transform targets read the editor node's authored `Trs` signal (the value
+/// the gizmo + inspector write); everything else reads CPU-side renderer /
+/// scene state through the same `read_readback_target` the timeseries query
+/// uses. `None` when the target can't currently resolve — callers fall back
+/// to sampling the track's own curve (the pre-key-from-pose behavior).
+#[cfg_attr(test, allow(dead_code))] // caller (animation_mode UI) isn't built under cfg(test)
+/// The two-bone-IK bend-plane normal — which SIDE the knee/elbow goes.
+///
+/// Priority (DCC semantics):
+/// 1. **Pole given**: the plane through the reach line and the pole — the
+///    joint bends toward the pole (`n = dir_t × (pole − a)`; Rodrigues with
+///    `n ⊥ dir_t` rotates `dir_t` toward `n × dir_t`, which is the pole's
+///    perpendicular component).
+/// 2. **Chain already bent**: keep the CURRENT bend plane so the joint stays
+///    on the side it's already on — normal `(c − b) × (b − a)`, sign-matched
+///    to the rotate-toward geometry, orthogonalized against `dir_t`. "Bent"
+///    means the sine of the joint angle clears `1e-3` (scale-free).
+/// 3. **Straight chain**: bias to `forward` (the chain-root parent's −Z — the
+///    character's facing, so a standing leg bends its knee FORWARD). The old
+///    world-Y fallback was ~parallel to a downward reach and cascaded to
+///    world-X: kicking the knee sideways.
+/// 4. Degenerate forward (reach ∥ forward): world Y, then X.
+///
+/// `a`/`b`/`c` are the root/mid/end joint world positions, `dir_t` the
+/// normalized root→target direction. Returns a normalized vector ⊥ `dir_t`.
+fn ik_bend_plane_normal(
+    a: glam::Vec3,
+    b: glam::Vec3,
+    c: glam::Vec3,
+    dir_t: glam::Vec3,
+    pole: Option<glam::Vec3>,
+    forward: glam::Vec3,
+) -> glam::Vec3 {
+    if let Some(p) = pole {
+        let n = dir_t.cross(p - a);
+        if n.length_squared() > 1e-8 {
+            return n.normalize();
+        }
+        // Pole on the reach line — fall through to the heuristics.
+    }
+    let l1 = (b - a).length();
+    let l2 = (c - b).length();
+    // Current bend plane, scale-free bent test: |(c−b)×(b−a)| = l1·l2·sin θ.
+    let chain_n = (c - b).cross(b - a);
+    if chain_n.length_squared() > (l1 * l2 * 1e-3).powi(2) {
+        // Orthogonalize against the reach line (projection keeps the sign,
+        // so the joint stays on its current side).
+        let n = chain_n - dir_t * chain_n.dot(dir_t);
+        if n.length_squared() > 1e-8 {
+            return n.normalize();
+        }
+    }
+    // Straight chain → character-forward, then world Y, then X.
+    for f in [forward, glam::Vec3::Y, glam::Vec3::X] {
+        let n = dir_t.cross(f);
+        if n.length_squared() > 1e-8 {
+            return n.normalize();
+        }
+    }
+    glam::Vec3::X // unreachable in practice (dir_t can't be ∥ Y and X)
+}
+
+pub(crate) async fn live_track_value(
+    ctrl: &EditorController,
+    target: &TrackTarget,
+) -> Option<TrackValue> {
+    use crate::controller::animation::TransformProp;
+    // Transform: the editor signal IS the live pose — sync, no renderer.
+    if let TrackTarget::Transform { node, prop } = target {
+        let n = mutate::find_by_id(&ctrl.scene, *node)?;
+        let trs = n.transform.get();
+        return Some(match prop {
+            TransformProp::Translation => TrackValue::Vec3(trs.translation),
+            TransformProp::Rotation => TrackValue::Quat(trs.rotation),
+            TransformProp::Scale => TrackValue::Vec3(trs.scale),
+        });
+    }
+    // Everything else: route through the readback machinery.
+    use query::ReadbackTarget as R;
+    let rt = match target.clone() {
+        TrackTarget::Transform { .. } => unreachable!("handled above"),
+        TrackTarget::Morph { node, index } => R::MorphWeight { node, index },
+        TrackTarget::Uniform { material, name } => R::Uniform { material, name },
+        TrackTarget::BuiltinParam { node, param } => R::BuiltinParam { node, param },
+        TrackTarget::Light { node, param } => R::LightParam { node, param },
+        TrackTarget::Camera { node, param } => R::CameraParam { node, param },
+    };
+    let v = crate::engine::context::with_renderer_mut(move |r| read_readback_target(r, &rt)).await;
+    // Shape the JSON by the track's expected kind (vec3 / quat / scalar).
+    let expected = crate::controller::animation::default_value_for(target);
+    match (expected, v) {
+        (TrackValue::Scalar(_), serde_json::Value::Number(n)) => {
+            Some(TrackValue::Scalar(n.as_f64()? as f32))
+        }
+        (TrackValue::Vec3(_), serde_json::Value::Array(a)) if a.len() >= 3 => {
+            let mut out = [0.0f32; 3];
+            for (i, x) in a.iter().take(3).enumerate() {
+                out[i] = x.as_f64()? as f32;
+            }
+            Some(TrackValue::Vec3(out))
+        }
+        (TrackValue::Quat(_), serde_json::Value::Array(a)) if a.len() >= 4 => {
+            let mut out = [0.0f32; 4];
+            for (i, x) in a.iter().take(4).enumerate() {
+                out[i] = x.as_f64()? as f32;
+            }
+            Some(TrackValue::Quat(out))
+        }
+        _ => None,
+    }
+}
+
+/// Renderer mesh keys for a node, covering BOTH materialization paths: a
+/// captured/editable node's own `model_meshes`, or — when that's empty — a
+/// `SkinnedMesh` node's populate-baked keys resolved through the import
+/// template (those keys are template-owned and deliberately never pushed to
+/// `model_meshes`; see `materialize_skinned_mesh`). Morph-bearing imports ride
+/// the SkinnedMesh path, so any morph resolution MUST use this, not
+/// `model_meshes` alone. Empty when the node isn't materialized.
+pub(crate) fn renderer_meshes_for_node(node: NodeId) -> Vec<awsm_renderer::meshes::MeshKey> {
+    let b = crate::engine::bridge::bridge();
+    let entry = { b.nodes.lock().unwrap().get(&node).cloned() };
+    let Some(entry) = entry else {
+        return Vec::new();
+    };
+    let own = entry.model_meshes.lock().unwrap().clone();
+    if !own.is_empty() {
+        return own;
+    }
+    let NodeKind::SkinnedMesh { skin, .. } = entry.node.kind.get_cloned() else {
+        return Vec::new();
+    };
+    let Some(template) = b.get_template(skin.source) else {
+        return Vec::new();
+    };
+    let Some(tnode) = template.find_by_node_index(skin.node_index) else {
+        return Vec::new();
+    };
+    match skin.primitive_index {
+        None => tnode.mesh_keys.clone(),
+        Some(i) => tnode
+            .mesh_keys
+            .get(i as usize)
+            .copied()
+            .into_iter()
+            .collect(),
+    }
+}
+
+/// Morph target names for a node, via its import template (`SkinnedMesh` ref →
+/// template node → glTF `mesh.extras.targetNames`). Empty when the node isn't a
+/// template-backed import or the source carried no names.
+fn morph_names_for_node(node: NodeId) -> Vec<String> {
+    let b = crate::engine::bridge::bridge();
+    let entry = { b.nodes.lock().unwrap().get(&node).cloned() };
+    let Some(entry) = entry else {
+        return Vec::new();
+    };
+    let NodeKind::SkinnedMesh { skin, .. } = entry.node.kind.get_cloned() else {
+        return Vec::new();
+    };
+    b.get_template(skin.source)
+        .and_then(|t| {
+            t.find_by_node_index(skin.node_index)
+                .map(|tn| tn.morph_target_names.clone())
+        })
+        .unwrap_or_default()
 }
 
 /// Read one readback target from CPU-side renderer state → a JSON number / array
@@ -2988,14 +5236,9 @@ fn read_readback_target(
             // node → first materialized mesh → geometry morph key → current
             // weights; return weights[index] as a number. Null if unresolvable
             // (mesh/morph not materialized, or index out of range).
-            let mesh = crate::engine::bridge::bridge()
-                .nodes
-                .lock()
-                .unwrap()
-                .get(node)
-                .and_then(|n| n.model_meshes.lock().unwrap().first().copied());
-            let weight = mesh
-                .and_then(|mesh| r.meshes.geometry_morph_key_for_mesh(mesh))
+            let weight = renderer_meshes_for_node(*node)
+                .into_iter()
+                .find_map(|mesh| r.meshes.geometry_morph_key_for_mesh(mesh))
                 .and_then(|key| r.meshes.morphs.geometry.read_morph_weights(key).ok())
                 .and_then(|weights| weights.get(*index).copied());
             match weight {
@@ -3089,21 +5332,58 @@ fn validate_keys(keys: &[String], valid: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Patch a built-in material factor on a node's inline material. Returns false
-/// if the node has no inline material or `value` is too short.
+/// The standard error message for a geometry op aimed at a **skinned** mesh
+/// node. Skinned meshes are not editable (their per-vertex skin weights can't
+/// survive topology edits); `drop_skinning` bakes the bind pose to a static
+/// editable mesh first.
+fn skinned_edit_error(node: NodeId) -> String {
+    format!("node {node} is skinned; call drop_skinning first")
+}
+
+/// `true` if `node` is a `SkinnedMesh` — the edit-guard predicate for
+/// geometry-editing commands/queries (which can't target a skinned mesh).
+fn node_is_skinned(scene: &Scene, node: NodeId) -> bool {
+    mutate::find_by_id(scene, node)
+        .map(|n| matches!(n.kind.get_cloned(), NodeKind::SkinnedMesh { .. }))
+        .unwrap_or(false)
+}
+
+/// The node's single material assignment, if it carries one and is assigned
+/// (`Some`). Returns `None` for non-geometry nodes and for unassigned geometry.
+fn node_material_ref(
+    kind: &NodeKind,
+) -> Option<&awsm_editor_protocol::dynamic_material::MaterialInstance> {
+    match kind {
+        NodeKind::Mesh { material, .. } => material.as_ref(),
+        NodeKind::SkinnedMesh { material, .. } => material.as_ref(),
+        _ => None,
+    }
+}
+
+/// Mutable variant of [`node_material_ref`].
+fn node_material_mut(
+    kind: &mut NodeKind,
+) -> Option<&mut awsm_editor_protocol::dynamic_material::MaterialInstance> {
+    match kind {
+        NodeKind::Mesh { material, .. } => material.as_mut(),
+        NodeKind::SkinnedMesh { material, .. } => material.as_mut(),
+        _ => None,
+    }
+}
+
+/// Patch a built-in material factor on a node's per-mesh inline store. Returns
+/// false if the node is unassigned (nothing to tweak on a magenta node) or
+/// `value` is too short.
 fn patch_builtin_param(
     kind: &mut NodeKind,
-    param: awsm_scene_schema::animation::BuiltinParamKind,
+    param: awsm_editor_protocol::animation::BuiltinParamKind,
     value: &[f32],
 ) -> bool {
-    use awsm_scene_schema::animation::BuiltinParamKind as P;
-    let inline = match kind {
-        NodeKind::Primitive {
-            inline_material, ..
-        } => inline_material,
-        NodeKind::Model(r) => &mut r.inline_material,
-        _ => return false,
+    use awsm_editor_protocol::animation::BuiltinParamKind as P;
+    let Some(inst) = node_material_mut(kind) else {
+        return false;
     };
+    let inline = &mut inst.inline;
     match param {
         P::BaseColor => {
             if value.len() < 3 {
@@ -3131,23 +5411,46 @@ fn patch_builtin_param(
     true
 }
 
+/// Bind (or clear) a texture on a node's **built-in/inline** `MaterialDef` slot.
+/// Returns false if the node is unassigned (no inline store to tweak).
+fn patch_builtin_texture(
+    kind: &mut NodeKind,
+    slot: awsm_editor_protocol::BuiltinTextureSlot,
+    texture: Option<AssetId>,
+) -> bool {
+    use awsm_editor_protocol::BuiltinTextureSlot as S;
+    let Some(inst) = node_material_mut(kind) else {
+        return false;
+    };
+    let inline = &mut inst.inline;
+    let tref = texture.map(|asset| awsm_editor_protocol::TextureRef {
+        asset,
+        uv_index: 0,
+        transform: None,
+        sampler: None,
+    });
+    match slot {
+        S::BaseColor => inline.base_color_texture = tref,
+        S::MetallicRoughness => inline.metallic_roughness_texture = tref,
+        S::Normal => inline.normal_texture = tref,
+        S::Occlusion => inline.occlusion_texture = tref,
+        S::Emissive => inline.emissive_texture = tref,
+    }
+    true
+}
+
 /// Bind (or clear) a texture override on a node's assigned custom material.
 /// Returns false if the node has no custom-material instance.
 fn patch_material_texture(kind: &mut NodeKind, slot: &str, texture: Option<AssetId>) -> bool {
-    let inst = match kind {
-        NodeKind::Primitive {
-            custom_material, ..
-        } => custom_material.as_mut(),
-        NodeKind::Model(r) => r.material.as_mut(),
-        _ => None,
-    };
-    let Some(inst) = inst else {
+    let Some(inst) = node_material_mut(kind) else {
         return false;
     };
     match texture {
         Some(asset) => {
-            inst.texture_overrides
-                .insert(slot.to_string(), awsm_scene_schema::TextureRef::new(asset));
+            inst.texture_overrides.insert(
+                slot.to_string(),
+                awsm_editor_protocol::TextureRef::new(asset),
+            );
         }
         None => {
             inst.texture_overrides.remove(slot);
@@ -3156,15 +5459,41 @@ fn patch_material_texture(kind: &mut NodeKind, slot: &str, texture: Option<Asset
     true
 }
 
+/// Bind (or clear) a buffer-data override on a node's assigned custom material.
+/// The `data` words are stashed in the session buffer store and referenced by a
+/// synthetic `session://buffer/<id>` path (the bundle bake later emits the bytes
+/// then rewrites the path to `assets/buffer-<id>.bin`). Returns false if the node
+/// has no custom-material instance.
+fn patch_material_buffer(kind: &mut NodeKind, slot: &str, data: Option<Vec<u32>>) -> bool {
+    let Some(inst) = node_material_mut(kind) else {
+        return false;
+    };
+    match data {
+        Some(words) => {
+            let path = crate::engine::bridge::dynamic::store_buffer_words(words);
+            inst.buffer_overrides.insert(
+                slot.to_string(),
+                awsm_editor_protocol::dynamic_material::BufferRef {
+                    path: std::path::PathBuf::from(path),
+                },
+            );
+        }
+        None => {
+            inst.buffer_overrides.remove(slot);
+        }
+    }
+    true
+}
+
 /// Patch a light parameter on a `LightConfig`. Returns false if the param
 /// doesn't apply to the light kind or `value` is too short.
 fn patch_light_param(
-    cfg: &mut awsm_scene_schema::LightConfig,
-    param: awsm_scene_schema::animation::LightParamKind,
+    cfg: &mut awsm_editor_protocol::LightConfig,
+    param: awsm_editor_protocol::animation::LightParamKind,
     value: &[f32],
 ) -> bool {
-    use awsm_scene_schema::animation::LightParamKind as P;
-    use awsm_scene_schema::LightConfig as L;
+    use awsm_editor_protocol::animation::LightParamKind as P;
+    use awsm_editor_protocol::LightConfig as L;
     match param {
         P::Color => {
             if value.len() < 3 {
@@ -3259,6 +5588,12 @@ async fn await_dynamic_compile(
 }
 
 async fn register_material(mat: &Arc<CM>) -> bool {
+    // A debounced register that lost the race with a delete (create→edit→delete
+    // faster than the ~400ms debounce) must not re-register the deleted material —
+    // it would leak its GPU pipelines forever (sub-second-churn "aw snap" tail).
+    if crate::engine::bridge::dynamic::is_deleted(mat.id) {
+        return false;
+    }
     // Lightweight, author-relative syntax pre-check — its line numbers index the
     // author's WGSL body (the GPU/naga pass can't, since it sees the assembled
     // module). Record these as diagnostics so MCP callers see them.
@@ -3429,9 +5764,9 @@ fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
 
 /// Read the `TextureRef` at an extension texture slot, keyed `"<ext>.<field>"`.
 pub(crate) fn get_ext_texture(
-    ext: &awsm_scene_schema::PbrExtensions,
+    ext: &awsm_editor_protocol::PbrExtensions,
     slot: &str,
-) -> Option<awsm_scene_schema::TextureRef> {
+) -> Option<awsm_editor_protocol::TextureRef> {
     match slot {
         "specular.tex" => ext.specular.and_then(|e| e.tex),
         "specular.color_tex" => ext.specular.and_then(|e| e.color_tex),
@@ -3455,9 +5790,9 @@ pub(crate) fn get_ext_texture(
 /// enabled extension, keyed by `"<ext>.<field>"`. No-op if the extension isn't
 /// present (it was the variant enable that decided whether the slot exists).
 pub(crate) fn set_ext_texture(
-    ext: &mut awsm_scene_schema::PbrExtensions,
+    ext: &mut awsm_editor_protocol::PbrExtensions,
     slot: &str,
-    tref: Option<awsm_scene_schema::TextureRef>,
+    tref: Option<awsm_editor_protocol::TextureRef>,
 ) {
     match slot {
         "specular.tex" => {
@@ -3546,11 +5881,11 @@ fn ensure_import_texture(
         crate::engine::bridge::gltf::TexBinding,
     )>,
     name: &str,
-) -> Option<awsm_scene_schema::TextureRef> {
+) -> Option<awsm_editor_protocol::TextureRef> {
     let (key, binding) = baked?;
     // The texture-asset id is deduped by baked key, but the binding (UV set +
     // transform) is per-slot, so it goes on the TextureRef, not the asset.
-    let mk = |asset: AssetId| awsm_scene_schema::TextureRef {
+    let mk = |asset: AssetId| awsm_editor_protocol::TextureRef {
         asset,
         uv_index: binding.uv_index,
         transform: binding.transform,
@@ -3566,22 +5901,123 @@ fn ensure_import_texture(
     Some(mk(id))
 }
 
+/// Mint a captured-mesh `MeshDef` asset from CPU-extracted glTF geometry: store
+/// the baked bytes in the [`mesh_cache`](crate::engine::bridge::mesh_cache) under
+/// a deterministic id (`AssetId(node_id.0)`, matching the primitive-insert
+/// convention) and register an `AssetSource::Mesh` whose stack `base` is
+/// [`MeshBase::Captured`] (no modifiers). `source_asset` is the imported model's
+/// Filename asset id, recorded as the mesh's [`CapturedSource::Imported`] origin.
+/// Returns the `MeshRef` for the new node's `NodeKind::Mesh`.
+fn mint_imported_mesh(
+    node_id: NodeId,
+    label: &str,
+    mesh: &awsm_glb_export::MeshData,
+    uvs1: Option<Vec<[f32; 2]>>,
+    source_asset: AssetId,
+) -> awsm_editor_protocol::MeshRef {
+    use crate::engine::bridge::mesh_cache;
+    use awsm_editor_protocol::{CapturedSource, MeshDef, MeshRef};
+    use awsm_editor_protocol::{MeshBase, ModifierStack};
+
+    let mesh_id = AssetId(node_id.0);
+    mesh_cache::store_with_id(
+        mesh_id,
+        mesh_cache::from_mesh_data_with_uvs1(mesh.clone(), uvs1),
+    );
+    let stack = ModifierStack {
+        base: MeshBase::Captured(MeshRef(mesh_id)),
+        modifiers: vec![],
+    };
+    controller().scene.assets.lock().unwrap().entries.insert(
+        mesh_id,
+        AssetEntry::new(SceneAssetSource::Mesh(MeshDef {
+            label: label.to_string(),
+            source: Some(CapturedSource::Imported {
+                source: source_asset,
+            }),
+            editable: true,
+            stack,
+            overrides: Default::default(),
+        })),
+    );
+    MeshRef(mesh_id)
+}
+
 /// Recursively mirror one glTF template node as an editor `Node`. Mesh-bearing
-/// nodes become `Model` nodes (which duplicate the template's meshes under
-/// their own transform); pure transform/bone nodes become `Group`s. The local
-/// transform is carried over so the reconstructed hierarchy matches the glTF.
-/// `fallback_name` only labels an unnamed *top-level* node (so a single-root
-/// import shows the file name); children fall back to `Node {index}`.
+/// nodes become unified `NodeKind::Mesh` nodes backed by a captured `MeshDef`
+/// asset (CPU-extracted glTF geometry, via [`mint_imported_mesh`]); pure
+/// transform/bone nodes become `Group`s. The local transform is carried over so
+/// the reconstructed hierarchy matches the glTF — the captured geometry is the
+/// node's *raw* local accessor positions, so this transform places it with no
+/// extra matrix. `fallback_name` only labels an unnamed *top-level* node (so a
+/// single-root import shows the file name); children fall back to `Node {index}`.
+#[allow(clippy::too_many_arguments)]
+/// Build the skin-joint correspondence for an import: every template node flagged
+/// `is_skin_joint`, paired with its bone `NodeId` (via `node_map`) and its node
+/// index in the re-exported clean rig glb (via `node_flat_indices`). Returns the
+/// `SkinJoint` table stored on each `SkinnedMesh` node so the player can bind our
+/// clips' bone targets to the rig's baked joints. Joints whose bone or clean
+/// index is missing are skipped.
+fn assemble_skin_joints(
+    nodes: &[crate::engine::bridge::asset_template::AssetTemplateNode],
+    node_map: &std::collections::HashMap<u32, NodeId>,
+    node_flat_indices: &std::collections::HashMap<u32, u32>,
+) -> Vec<awsm_editor_protocol::SkinJoint> {
+    let mut out = Vec::new();
+    fn walk(
+        nodes: &[crate::engine::bridge::asset_template::AssetTemplateNode],
+        node_map: &std::collections::HashMap<u32, NodeId>,
+        node_flat_indices: &std::collections::HashMap<u32, u32>,
+        out: &mut Vec<awsm_editor_protocol::SkinJoint>,
+    ) {
+        for n in nodes {
+            if n.is_skin_joint {
+                if let (Some(&node), Some(&index)) = (
+                    node_map.get(&n.gltf_node_index),
+                    node_flat_indices.get(&n.gltf_node_index),
+                ) {
+                    out.push(awsm_editor_protocol::SkinJoint { node, index });
+                }
+            }
+            walk(&n.children, node_map, node_flat_indices, out);
+        }
+    }
+    walk(nodes, node_map, node_flat_indices, &mut out);
+    out
+}
+
+/// Stamp `joints` onto every `SkinnedMesh` node in a freshly-built (not-yet-
+/// inserted) subtree. Mutating the kind before insertion avoids triggering a
+/// `node_sync` re-materialize (the field is metadata; the renderer mesh is
+/// unaffected).
+fn patch_skin_joints(
+    node: &std::sync::Arc<crate::engine::scene::node::Node>,
+    joints: &[awsm_editor_protocol::SkinJoint],
+) {
+    use awsm_editor_protocol::NodeKind;
+    let mut kind = node.kind.get_cloned();
+    if let NodeKind::SkinnedMesh { skin, .. } = &mut kind {
+        skin.joints = joints.to_vec();
+        node.kind.set(kind);
+    }
+    for child in node.children.lock_ref().iter() {
+        patch_skin_joints(child, joints);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_editor_subtree(
     tn: &crate::engine::bridge::asset_template::AssetTemplateNode,
     asset_id: AssetId,
     mat_ids: &[AssetId],
     default_mat_id: Option<AssetId>,
+    node_meshes: &std::collections::HashMap<(u32, Option<u32>), awsm_glb_export::MeshData>,
+    node_uvs1: &std::collections::HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
     fallback_name: Option<&str>,
     node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
-    use awsm_scene_schema::{dynamic_material::CustomMaterialInstance, MaterialDef, ModelRef, Trs};
+    use awsm_editor_protocol::{dynamic_material::MaterialInstance, NodeKind, SkinnedMeshRef, Trs};
 
     let name = tn.label.clone().unwrap_or_else(|| {
         fallback_name
@@ -3595,7 +6031,13 @@ fn build_editor_subtree(
     // material per node, derived at import; the instance is shared across every
     // node that uses this glTF material and can be customized per node). `None`
     // (no such material) leaves the node unassigned → magenta.
-    let instance_for = |mi: Option<usize>| -> Option<CustomMaterialInstance> {
+    //
+    // The instance's `inline` per-mesh store is seeded as a *clone of the
+    // assigned material's defaults*. `builtin_merged` then layers its
+    // uniform-class fields (factors, extension params, Toon knobs, mask cutoff)
+    // over the shared variant, so editing it customizes this node without
+    // touching the shared material.
+    let instance_for = |mi: Option<usize>| -> Option<MaterialInstance> {
         // A primitive's glTF material index → its library material; a primitive
         // with NO material (`None`) uses glTF's default material (white,
         // metallic=1, roughness=1) rather than the editor's magenta sentinel.
@@ -3603,83 +6045,182 @@ fn build_editor_subtree(
             Some(i) => mat_ids.get(i).copied(),
             None => default_mat_id,
         };
-        id.map(|id| CustomMaterialInstance {
-            material: id,
-            ..Default::default()
+        id.map(|id| {
+            let inline = crate::controller::custom_material::find_material(
+                &controller().custom_materials,
+                id,
+            )
+            .and_then(|m| m.builtin.get_cloned())
+            .unwrap_or_default();
+            MaterialInstance {
+                asset: id,
+                inline,
+                ..Default::default()
+            }
         })
     };
-    // The per-mesh inline store, seeded as a *clone of the assigned material's
-    // defaults*. `builtin_merged` then layers its uniform-class fields (factors,
-    // extension params, Toon knobs, mask cutoff) over the shared variant, so
-    // editing it customizes this node without touching the shared material.
-    let inline_for = |inst: &Option<CustomMaterialInstance>| -> MaterialDef {
-        inst.as_ref()
-            .and_then(|i| {
-                crate::controller::custom_material::find_material(
-                    &controller().custom_materials,
-                    i.material,
-                )
-            })
-            .and_then(|m| m.builtin.get_cloned())
-            .unwrap_or_default()
-    };
 
-    let node = if tn.mesh_keys.is_empty() {
+    // Skinned-ness / morphed-ness is per-primitive; a node qualifies if ANY
+    // primitive does. Both categories must keep the populate-baked renderer
+    // mesh (`NodeKind::SkinnedMesh`) rather than baking to a captured (static)
+    // `Mesh`: skins because the capture freezes at bind pose (the step-2
+    // regression), morphs because the captured-MeshData path drops the morph
+    // buffers entirely — freezing `set_morph_weight` + morph animation tracks.
+    let node_is_skinned =
+        tn.mesh_is_skinned.iter().any(|&s| s) || tn.mesh_has_morphs.iter().any(|&m| m);
+
+    let node = if let Some(light_cfg) = &tn.light {
+        // A KHR_lights_punctual node → an editable Light node. Its renderer light
+        // is (re)created by node_sync `apply_light` bound to THIS node's
+        // transform_key, so it follows animation + exposes the shadow inspector.
+        // The populate-baked copy was removed at import (`remove_template_lights`).
+        Node::new_with_transform_and_kind(name, trs, NodeKind::Light(light_cfg.clone()))
+    } else if tn.mesh_keys.is_empty() {
         Node::new_with_transform_and_kind(name, trs, NodeKind::Group)
-    } else {
-        // With one material per node, a node whose primitives all share a
-        // material (the common case) maps 1:1. A node whose primitives use
-        // *different* materials is destructured: a Group keeps the transform +
-        // glTF children, and one Model child per primitive carries its own
-        // `primitive_index` + assigned material.
+    } else if node_is_skinned {
+        // A skinned mesh node. With one material per node, a single-material node
+        // maps 1:1 to one `SkinnedMesh` referencing the whole node; a
+        // multi-material node is destructured into one `SkinnedMesh` child per
+        // primitive (each with its own `primitive_index` + material), mirroring
+        // the static (captured-mesh) destructure path.
         let mat_indices = &tn.mesh_gltf_material_indices;
         let distinct: std::collections::BTreeSet<Option<usize>> =
             mat_indices.iter().copied().collect();
         if distinct.len() <= 1 {
             let material = instance_for(mat_indices.first().copied().flatten());
-            let inline_material = inline_for(&material);
+            // Stash the bind-pose geometry (no JOINTS/WEIGHTS) so `drop_skinning`
+            // can bake it to a static editable Mesh later.
+            if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, None)) {
+                crate::engine::bridge::skinned_bake_cache::store(
+                    asset_id,
+                    tn.gltf_node_index,
+                    None,
+                    mesh.clone(),
+                );
+            }
             Node::new_with_transform_and_kind(
                 name,
                 trs,
-                NodeKind::Model(ModelRef {
-                    asset_id,
-                    node_index: tn.gltf_node_index,
-                    primitive_index: None,
+                NodeKind::SkinnedMesh {
+                    skin: SkinnedMeshRef {
+                        source: asset_id,
+                        node_index: tn.gltf_node_index,
+                        primitive_index: None,
+                        // Filled after the whole subtree is built (node_map
+                        // complete) — see `assemble_skin_joints` / patch below.
+                        joints: Vec::new(),
+                    },
                     material,
-                    inline_material,
                     shadow: Default::default(),
-                }),
+                },
             )
         } else {
             let group = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
             for (i, mi) in mat_indices.iter().enumerate() {
                 let material = instance_for(*mi);
-                let inline_material = inline_for(&material);
                 let part_label = material
                     .as_ref()
                     .and_then(|inst| {
                         crate::controller::custom_material::find_material(
                             &controller().custom_materials,
-                            inst.material,
+                            inst.asset,
                         )
                         .map(|m| m.name.get_cloned())
                     })
                     .unwrap_or_else(|| format!("{name} · part {i}"));
-                group
-                    .children
-                    .lock_mut()
-                    .push_cloned(Node::new_with_transform_and_kind(
-                        part_label,
-                        Trs::IDENTITY,
-                        NodeKind::Model(ModelRef {
-                            asset_id,
+                if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32))) {
+                    crate::engine::bridge::skinned_bake_cache::store(
+                        asset_id,
+                        tn.gltf_node_index,
+                        Some(i as u32),
+                        mesh.clone(),
+                    );
+                }
+                let part = Node::new_with_transform_and_kind(
+                    part_label,
+                    Trs::IDENTITY,
+                    NodeKind::SkinnedMesh {
+                        skin: SkinnedMeshRef {
+                            source: asset_id,
                             node_index: tn.gltf_node_index,
                             primitive_index: Some(i as u32),
-                            material,
-                            inline_material,
-                            shadow: Default::default(),
-                        }),
-                    ));
+                            joints: Vec::new(),
+                        },
+                        material,
+                        shadow: Default::default(),
+                    },
+                );
+                group.children.lock_mut().push_cloned(part);
+            }
+            group
+        }
+    } else {
+        // With one material per node, a node whose primitives all share a
+        // material (the common case) maps 1:1 to a single Mesh node. A node whose
+        // primitives use *different* materials is destructured: a Group keeps the
+        // transform + glTF children, and one Mesh child per primitive carries its
+        // own captured geometry + assigned material.
+        let mat_indices = &tn.mesh_gltf_material_indices;
+        let distinct: std::collections::BTreeSet<Option<usize>> =
+            mat_indices.iter().copied().collect();
+        if distinct.len() <= 1 {
+            let material = instance_for(mat_indices.first().copied().flatten());
+            // The whole-node merged geometry (every primitive concatenated).
+            let mesh_node = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
+            if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, None)) {
+                let uvs1 = node_uvs1.get(&(tn.gltf_node_index, None)).cloned();
+                let mesh_ref = mint_imported_mesh(mesh_node.id, &name, mesh, uvs1, asset_id);
+                mesh_node.kind.set(NodeKind::Mesh {
+                    mesh: mesh_ref,
+                    material,
+                    shadow: Default::default(),
+                });
+            } else {
+                tracing::warn!(
+                    "import: glTF node {} has mesh keys but no extracted geometry; \
+                     leaving an empty Group",
+                    tn.gltf_node_index
+                );
+            }
+            mesh_node
+        } else {
+            let group = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
+            for (i, mi) in mat_indices.iter().enumerate() {
+                let material = instance_for(*mi);
+                let part_label = material
+                    .as_ref()
+                    .and_then(|inst| {
+                        crate::controller::custom_material::find_material(
+                            &controller().custom_materials,
+                            inst.asset,
+                        )
+                        .map(|m| m.name.get_cloned())
+                    })
+                    .unwrap_or_else(|| format!("{name} · part {i}"));
+                let part = Node::new_with_transform_and_kind(
+                    part_label.clone(),
+                    Trs::IDENTITY,
+                    NodeKind::Group,
+                );
+                if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32))) {
+                    let uvs1 = node_uvs1
+                        .get(&(tn.gltf_node_index, Some(i as u32)))
+                        .cloned();
+                    let mesh_ref = mint_imported_mesh(part.id, &part_label, mesh, uvs1, asset_id);
+                    part.kind.set(NodeKind::Mesh {
+                        mesh: mesh_ref,
+                        material,
+                        shadow: Default::default(),
+                    });
+                } else {
+                    tracing::warn!(
+                        "import: glTF node {} primitive {} has no extracted geometry; \
+                         leaving an empty Group",
+                        tn.gltf_node_index,
+                        i
+                    );
+                }
+                group.children.lock_mut().push_cloned(part);
             }
             group
         }
@@ -3688,7 +6229,7 @@ fn build_editor_subtree(
     // Record this glTF node index → its minted editor `NodeId`, so imported
     // animation channels (keyed by glTF node index) can resolve their target.
     // For a destructured multi-material node, the transform-bearing Group keeps
-    // the glTF index (its Model-child parts are unindexed primitive splits).
+    // the glTF index (its Mesh-child parts are unindexed primitive splits).
     node_map.insert(tn.gltf_node_index, node.id);
 
     for child in &tn.children {
@@ -3697,6 +6238,8 @@ fn build_editor_subtree(
             asset_id,
             mat_ids,
             default_mat_id,
+            node_meshes,
+            node_uvs1,
             None,
             node_map,
         ));
@@ -3777,28 +6320,22 @@ fn template_needs_default_material(
 /// Drives `structure_rev` so the inspector rebuilds on a discrete toggle but not
 /// on a continuous scrub.
 fn structure_key(kind: &NodeKind) -> String {
-    use awsm_scene_schema::{CameraProjection, LightConfig, MaterialShading, PrimitiveShape};
+    use awsm_editor_protocol::{CameraProjection, LightConfig, MaterialShading};
     match kind {
-        NodeKind::Primitive {
-            shape,
-            inline_material,
-            custom_material,
-            ..
-        } => {
-            let shp = match shape {
-                PrimitiveShape::Plane { .. } => "plane",
-                PrimitiveShape::Box { .. } => "box",
-                PrimitiveShape::Sphere { .. } => "sphere",
-                PrimitiveShape::Cylinder { .. } => "cylinder",
-                PrimitiveShape::Cone { .. } => "cone",
-                PrimitiveShape::Torus { .. } => "torus",
+        // The Mesh inspector rows depend on the assigned material's shading model
+        // (its shared variant) — read it from the per-mesh inline store, which is
+        // seeded from that variant. Unassigned → no material rows. (Geometry is no
+        // longer edited inline — the base/stack display is informational — so the
+        // structure key doesn't vary on the stack base.)
+        NodeKind::Mesh { material, .. } => {
+            let shading = match material.as_ref().map(|m| m.inline.shading) {
+                Some(MaterialShading::Pbr) => "pbr",
+                Some(MaterialShading::Unlit) => "unlit",
+                Some(MaterialShading::Toon { .. }) => "toon",
+                Some(MaterialShading::FlipBook { .. }) => "flipbook",
+                None => "none",
             };
-            let shading = match inline_material.shading {
-                MaterialShading::Pbr => "pbr",
-                MaterialShading::Unlit => "unlit",
-                MaterialShading::Toon { .. } => "toon",
-            };
-            format!("prim/{shp}/{shading}/{}", custom_material.is_some())
+            format!("mesh/{shading}/{}", material.is_some())
         }
         NodeKind::Camera(c) => match c.projection {
             CameraProjection::Perspective { .. } => "cam/persp".into(),
@@ -3827,7 +6364,7 @@ fn find_track(
 /// disjoint tag space (the `NodeId` slot carries a synthetic id derived from the
 /// clip/track/index so the existing scene-node mechanism still applies).
 fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
-    use awsm_scene_schema::AssetId as Aid;
+    use awsm_editor_protocol::AssetId as Aid;
     // Pack a (clip asset id, small index) into a NodeId so animation edits coalesce
     // per (clip, track/layer, keyframe/strip) identity without a second key type.
     let pack = |asset: Aid, a: usize, b: usize| -> NodeId {
@@ -3871,6 +6408,18 @@ fn coalesce_key(cmd: &EditorCommand) -> Option<(u8, NodeId)> {
         }
         EditorCommand::SetBuiltinParam { node, .. } => Some((16, *node)),
         EditorCommand::SetLightParam { node, .. } => Some((17, *node)),
+        // Mesh editing — collapse a continuous edit (modifier-param scrub, a
+        // soft-transform drag) per mesh into one undo step. Explicit
+        // `SetVertexPositions` is left granular (distinct edits stay distinct).
+        EditorCommand::SetMeshModifiers { mesh, .. } => Some((18, pack(*mesh, 0, 0))),
+        EditorCommand::SoftTransformVertices { mesh, .. } => Some((19, pack(*mesh, 0, 0))),
+        // Per-vertex authoring — coalesce continuous strokes per mesh + channel
+        // (consecutive paints / normal tweaks on one mesh = one undo step). The
+        // explicit `SetVertexPositions` stays granular (distinct edits stay
+        // distinct, matching the prior behaviour); `BakeAll` is a discrete,
+        // never-coalesced finalize.
+        EditorCommand::PaintVertexColors { mesh, .. } => Some((20, pack(*mesh, 0, 0))),
+        EditorCommand::SetVertexNormals { mesh, .. } => Some((21, pack(*mesh, 0, 0))),
         _ => None,
     }
 }
@@ -3883,5 +6432,80 @@ fn node_index(scene: &Scene, id: NodeId, parent: Option<NodeId>) -> Option<usize
         None => scene.nodes.lock_ref().iter().position(|n| n.id == id),
         Some(pid) => mutate::find_by_id(scene, pid)
             .and_then(|p| p.children.lock_ref().iter().position(|n| n.id == id)),
+    }
+}
+
+#[cfg(test)]
+mod ik_tests {
+    use super::ik_bend_plane_normal;
+    use glam::Vec3;
+
+    /// Rotating `dir_t` about the returned normal moves the joint toward
+    /// `n × dir_t` (Rodrigues, n ⊥ dir_t) — assert that side matches `want`.
+    fn bend_side(n: Vec3, dir_t: Vec3, want: Vec3) -> bool {
+        n.cross(dir_t).dot(want) > 0.0
+    }
+
+    #[test]
+    fn bent_chain_keeps_its_side() {
+        // Leg down (−Y), knee bent FORWARD (+Z). Target straight below.
+        let (a, b, c) = (
+            Vec3::ZERO,
+            Vec3::new(0.0, -1.0, 0.5),
+            Vec3::new(0.0, -2.0, 0.0),
+        );
+        let dir_t = Vec3::NEG_Y;
+        let n = ik_bend_plane_normal(a, b, c, dir_t, None, Vec3::NEG_Z);
+        assert!(bend_side(n, dir_t, Vec3::Z), "knee must stay forward");
+        // Mirrored: knee bent BACKWARD stays backward.
+        let b2 = Vec3::new(0.0, -1.0, -0.5);
+        let n2 = ik_bend_plane_normal(a, b2, c, dir_t, None, Vec3::NEG_Z);
+        assert!(bend_side(n2, dir_t, Vec3::NEG_Z), "knee must stay backward");
+    }
+
+    #[test]
+    fn straight_chain_bends_character_forward() {
+        // Perfectly straight leg pointing down; character faces +Z (forward
+        // here passed as the facing vector directly).
+        let (a, b, c) = (
+            Vec3::ZERO,
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(0.0, -2.0, 0.0),
+        );
+        let dir_t = Vec3::NEG_Y;
+        let n = ik_bend_plane_normal(a, b, c, dir_t, None, Vec3::Z);
+        assert!(
+            bend_side(n, dir_t, Vec3::Z),
+            "straight knee must bend toward facing, not sideways"
+        );
+    }
+
+    #[test]
+    fn pole_wins_over_current_bend() {
+        // Knee currently forward, pole placed BEHIND — pole must win.
+        let (a, b, c) = (
+            Vec3::ZERO,
+            Vec3::new(0.0, -1.0, 0.5),
+            Vec3::new(0.0, -2.0, 0.0),
+        );
+        let dir_t = Vec3::NEG_Y;
+        let n = ik_bend_plane_normal(a, b, c, dir_t, Some(Vec3::new(0.0, -1.0, -5.0)), Vec3::Z);
+        assert!(
+            bend_side(n, dir_t, Vec3::NEG_Z),
+            "joint must bend toward the pole"
+        );
+    }
+
+    #[test]
+    fn normal_is_unit_and_perpendicular() {
+        let (a, b, c) = (
+            Vec3::ZERO,
+            Vec3::new(0.3, -1.0, 0.4),
+            Vec3::new(0.1, -2.0, 0.1),
+        );
+        let dir_t = (Vec3::new(0.5, -1.8, 0.2) - a).normalize();
+        let n = ik_bend_plane_normal(a, b, c, dir_t, None, Vec3::NEG_Z);
+        assert!((n.length() - 1.0).abs() < 1e-5);
+        assert!(n.dot(dir_t).abs() < 1e-5, "normal must be ⊥ the reach line");
     }
 }

@@ -206,7 +206,13 @@ impl ShadingBase {
     /// first-party variant launch sites pass their `base` explicitly
     /// instead of deriving it here.
     pub fn for_shader_id(shader_id: MaterialShaderId) -> Self {
-        if shader_id == MaterialShaderId::PBR {
+        if shader_id == MaterialShaderId::SKYBOX {
+            // The skybox bucket shades no geometry; its pipeline is the
+            // `skybox_primary` writer (gated to `skybox_only` includes via
+            // `owns_skybox`). `Pbr` is just the base it nominally carries — the
+            // owns_skybox path overrides the include set regardless.
+            ShadingBase::Pbr
+        } else if shader_id == MaterialShaderId::PBR {
             ShadingBase::Pbr
         } else if shader_id == MaterialShaderId::UNLIT {
             ShadingBase::Unlit
@@ -415,23 +421,39 @@ fn fp_variant_bucket_entry(id: MaterialShaderId, base: ShadingBase, features: u3
 /// registrations produce a different list (via [`bucket_entries`]) and
 /// trigger a recompile via the dispatch-hash on affected cache keys.
 pub fn first_party_bucket_entries() -> Vec<BucketEntry> {
-    awsm_materials::registry::enabled_materials()
-        .iter()
-        .map(|e| BucketEntry {
-            shader_id: e.shader_id,
-            base: ShadingBase::for_shader_id(e.shader_id),
-            // EMPTY feature-set for the canonical base bucket. The canonical
-            // PBR bucket (index 0) is only ever the skybox owner — every real
-            // PBR material routes to its own per-feature-set variant bucket,
-            // so nothing shades here but `sample_skybox` (gated by
-            // `owns_skybox`, independent of `pbr_features`). Compiling it with
-            // the full feature set would be an "uber" shader that never runs —
-            // exactly what specialize-only eliminates; the empty set compiles
-            // the minimal shader instead. Inert anyway for Unlit/Flipbook
-            // (their bodies don't read `pbr_features`).
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
-            name: e.name.to_string(),
-        })
+    // Bucket 0 is the dedicated SKYBOX bucket — NOT a material. classify routes
+    // every fully-uncovered ("sky") pixel here, and its opaque pipeline is the
+    // `skybox_primary` writer (owns_skybox → `skybox_only` includes; shades no
+    // geometry). Reserved by TYPE at index 0 (its id is 0, which sorts ahead of
+    // every real material) instead of the old "the empty-feature PBR bucket is
+    // secretly the skybox" convention — so no real PBR material can ever collide
+    // with the sky slot. It rides a `Pbr` base purely so it shares the opaque
+    // kernel preamble; `owns_skybox` overrides the include set regardless.
+    let skybox = BucketEntry {
+        shader_id: MaterialShaderId::SKYBOX,
+        base: ShadingBase::Pbr,
+        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        name: "skybox".to_string(),
+    };
+    std::iter::once(skybox)
+        .chain(
+            awsm_materials::registry::enabled_materials()
+                .iter()
+                .map(|e| {
+                    BucketEntry {
+                        shader_id: e.shader_id,
+                        base: ShadingBase::for_shader_id(e.shader_id),
+                        // EMPTY feature-set for the canonical base bucket. Every real
+                        // first-party material routes to its own per-feature-set variant
+                        // bucket, so these canonical buckets shade nothing — the empty
+                        // set compiles the minimal shader (never an "uber" all-features
+                        // one). Inert anyway for Unlit/Flipbook (their bodies don't read
+                        // `pbr_features`).
+                        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                        name: e.name.to_string(),
+                    }
+                }),
+        )
         .collect()
 }
 
@@ -681,6 +703,45 @@ impl DynamicMaterials {
         )
     }
 
+    /// Returns the **alpha-only** dynamic-shader info for a registered MASK
+    /// custom material — the generated `MaterialData` struct + loader + texture
+    /// helpers, plus the author's alpha-only WGSL fragment — so the masked
+    /// visibility-raster variant can wrap it into `custom_alpha_dynamic`.
+    /// `None` unless the material is registered, `alpha_mode == Mask`, and a
+    /// non-empty `alpha_wgsl` was provided.
+    pub fn alpha_info_for(
+        &self,
+        shader_id: MaterialShaderId,
+    ) -> Option<crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo>
+    {
+        let reg = self.registrations.get(&shader_id)?;
+        if !matches!(reg.alpha_mode, MaterialAlphaMode::Mask { .. }) {
+            return None;
+        }
+        let alpha_wgsl = reg.alpha_wgsl.as_ref()?.clone();
+        if alpha_wgsl.trim().is_empty() {
+            return None;
+        }
+        Some(
+            crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo {
+                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                    "MaterialData",
+                    &reg.layout,
+                ),
+                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                    "MaterialData",
+                    "material_data_load",
+                    &reg.layout,
+                ),
+                texture_helpers: awsm_materials::dynamic_layout::generate_wgsl_texture_helpers(
+                    "MaterialData",
+                    &reg.layout,
+                ),
+                alpha_wgsl,
+            },
+        )
+    }
+
     /// Returns the count of currently-registered dynamic materials.
     /// Returns `true` if inserting `registration` would NOT grow the
     /// registry (i.e., it'd be idempotent on an existing
@@ -866,12 +927,12 @@ impl DynamicMaterials {
 
 /// Runtime registration payload for a custom material.
 ///
-/// The renderer's counterpart to `awsm_scene_schema::MaterialDefinition` +
+/// The renderer's counterpart to `awsm_scene::MaterialDefinition` +
 /// the loaded WGSL fragment. Consumers (`scene-editor`, `material-editor`,
 /// game runtimes) convert their on-disk format into a
 /// [`MaterialRegistration`] before calling
 /// [`AwsmRenderer::register_material`](crate::AwsmRenderer::register_material);
-/// the renderer never depends on `awsm-scene-schema`.
+/// the renderer never depends on `awsm-scene`.
 #[derive(Clone, Debug)]
 pub struct MaterialRegistration {
     /// Author-facing name. Must be unique across registered materials.
@@ -901,7 +962,7 @@ pub struct MaterialRegistration {
     /// Default buffer-slot data, one `Vec<u32>` per `BufferSlot` in
     /// declaration order. Passed at registration time to the extras
     /// pool's bump allocator; per-instance overrides (the per-instance
-    /// `CustomMaterialInstance::buffer_overrides`) can also override.
+    /// `MaterialInstance::buffer_overrides`) can also override.
     /// Empty Vec for slots without a registration default.
     pub buffer_defaults: Vec<Vec<u32>>,
     /// Default values for each uniform in `layout.uniforms`, in the
@@ -926,6 +987,17 @@ pub struct MaterialRegistration {
     /// ([`awsm_materials::FragmentInputs`]). Carried for the cache key +
     /// future scaffolding gating; defaults to `all()`.
     pub fragment_inputs: awsm_materials::FragmentInputs,
+    /// The **second** ("alpha-only") WGSL fragment, present only when
+    /// `alpha_mode` is [`MaterialAlphaMode::Mask`]. Wrapped into
+    /// `fn custom_alpha_dynamic(input: MaskAlphaInput) -> f32` and compiled into
+    /// the masked visibility-raster variant so the material's cutout is
+    /// alpha-tested (and casts hole-shaped shadows / shows through to
+    /// transmission). `None` → the masked variant isn't built and the mesh
+    /// renders solid through the opaque path. The body returns an `f32` alpha in
+    /// `[0,1]`; the raster `discard`s below the per-mesh cutoff. Optional even
+    /// for Mask materials (a procedural cutout can be tiny; a textured one
+    /// samples via the generated `material_sample_<name>` helpers).
+    pub alpha_wgsl: Option<String>,
 }
 
 impl crate::AwsmRenderer {
@@ -1021,9 +1093,12 @@ impl crate::AwsmRenderer {
         }
         let buffer_defaults = registration.buffer_defaults.clone();
         let id = self.dynamic_materials.insert(registration)?;
+        // A new/changed registration may carry a 2nd alpha-only WGSL → its masked
+        // variant must (re)build on the next finalize even with no texture change.
+        self.masked_dynamic_dirty = true;
         // Assign extras-pool slices for any buffer-slot defaults
         // declared on the registration. Per-instance overrides
-        // (the per-instance CustomMaterialInstance.buffer_overrides) can
+        // (the per-instance MaterialInstance.buffer_overrides) can
         // overwrite these per instance — the bridge calls
         // `extras_pool.assign_or_update` directly for those.
         for (slot_index, data) in buffer_defaults.iter().enumerate() {
@@ -1082,6 +1157,45 @@ impl crate::AwsmRenderer {
         Ok(id)
     }
 
+    /// Upload a custom material instance's per-slot BUFFER data into the extras
+    /// pool (keyed by its `shader_id`), so the packed `MaterialData.<slot>_offset`
+    /// / `_length` resolve to those bytes. The registration-time `buffer_defaults`
+    /// path only covers material-level defaults; per-instance `buffer_overrides`
+    /// flow through HERE — without this call the slice stays `(0, 0)` and the
+    /// shader's `extras_load_*` reads pool[0] (zero → black).
+    ///
+    /// Call BEFORE [`Materials::insert`]/`update`: `insert` packs the payload by
+    /// reading `extras_pool.slice_for`, so the slice must exist first.
+    ///
+    /// Keyed per-shader, not per-instance: two meshes sharing one custom material
+    /// with DIFFERENT buffer data collide (last write wins). The common
+    /// single-assignment case (and the bundle round-trip) is correct.
+    pub fn upload_dynamic_material_buffers(&mut self, material: &crate::materials::Material) {
+        let crate::materials::Material::Custom(dm) = material else {
+            return;
+        };
+        for (slot_index, data) in dm.buffers.iter().enumerate() {
+            let Some(words) = data else { continue };
+            if words.is_empty() {
+                continue;
+            }
+            match self
+                .extras_pool
+                .assign_or_update(&self.gpu, dm.shader_id, slot_index, words)
+            {
+                Ok(outcome) => {
+                    if outcome.resized {
+                        self.bind_groups
+                            .mark_create(crate::bind_groups::BindGroupCreate::ExtrasPoolResize);
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "extras_pool: per-instance buffer assign failed (slot {slot_index}): {e:?}"
+                ),
+            }
+        }
+    }
+
     /// Per-frame reconcile: route each opaque PBR material to its
     /// per-feature-set *variant* bucket, allocating + compiling new variants
     /// and re-laying-out the bucket-dependent GPU state when the set grows.
@@ -1104,9 +1218,8 @@ impl crate::AwsmRenderer {
     ///
     /// Only PBR specializes per feature-set; Toon/Unlit/Flipbook render as
     /// single canonical buckets (no compile-gateable shading paths today).
-    /// The canonical PBR bucket (`MaterialShaderId::PBR`, index 0) always
-    /// stays present as the skybox owner even when every PBR material routes
-    /// to a specialized variant.
+    /// The dedicated SKYBOX bucket (index 0) always stays present as the skybox
+    /// writer, independent of any material.
     pub(crate) fn reconcile_material_variants(&mut self) -> Result<(), crate::error::AwsmError> {
         // ── Warm-path fast-out: ONE consuming bool check. Drives BOTH the
         //    PBR feature-set variant resolution below AND the render-driven
@@ -1225,8 +1338,8 @@ impl crate::AwsmRenderer {
         // Submitting the canonical first-party ids matters because the
         // variant reconcile clears `main` (all opaque pipelines) on a
         // bucket-list change and relaunches only scheduler-registered
-        // materials — without an entry, the canonical PBR skybox-owner +
-        // the Unlit/Toon/Flipbook buckets would never recompile (black).
+        // materials — without an entry, the SKYBOX bucket + the
+        // PBR/Unlit/Toon/Flipbook canonical buckets would never recompile.
         let is_first_party = !shader_id.is_dynamic()
             || self
                 .dynamic_materials
@@ -1276,6 +1389,17 @@ impl crate::AwsmRenderer {
         &mut self,
         shader_id: MaterialShaderId,
     ) -> Result<(), AwsmDynamicMaterialError> {
+        // The masked pool may hold a now-stale variant for this id; flag a
+        // rebuild so the next finalize clears + recompiles the live set.
+        self.masked_dynamic_dirty = true;
+        // Flag the variant reconcile so THIS delete (not just the next register)
+        // drives `ensure_scene_pipelines` → `relayout_bucket_buffers` on the next
+        // render. Without it the bucket-SET shrank but no reconcile ran, so the
+        // deleted material's per-bucket opaque/edge pipelines lingered in the typed
+        // caches until some later edit happened to mark variants dirty — the
+        // pipeline-leak residual (it never self-cleaned under delete-only or
+        // faster-than-compile churn). Mirrors `register_material`'s dirty flag.
+        self.materials.mark_variants_dirty();
         let dropped = self.extras_pool.drop_shader(shader_id);
         if dropped > 0 {
             tracing::debug!(
@@ -1298,6 +1422,17 @@ impl crate::AwsmRenderer {
         {
             self.pipeline_scheduler.drop_material_group(mid);
         }
+
+        // NOTE: the deleted material's compiled GPU pipelines + shader modules are
+        // reclaimed by `relayout_bucket_buffers` on the next render, NOT here. The
+        // remove() below drops it from the registry, which changes `dispatch_hash`
+        // + the bucket count → the render preamble's `ensure_scene_pipelines`
+        // detects the bucket-SET change, clears the layout-keyed typed caches, and
+        // sweeps the shader + compute-pipeline pools for every entry whose cache
+        // key carries the now-stale set signature (the deleted material's opaque /
+        // edge / classify variants among them). Doing the sweep there — after the
+        // typed caches are cleared — is what keeps it free of dangling pool
+        // references. This is the pipeline-leak fix ("aw snap" crash).
         self.dynamic_materials.remove(shader_id)
     }
 
@@ -1414,6 +1549,7 @@ mod tests {
             uniform_defaults: Vec::new(),
             shader_includes: awsm_materials::ShaderIncludes::all(),
             fragment_inputs: awsm_materials::FragmentInputs::all(),
+            alpha_wgsl: None,
         }
     }
 
@@ -1688,10 +1824,12 @@ mod tests {
 
         let entries = dm.bucket_entries_cached();
         assert_eq!(entries.len(), fp + 2);
-        // Index 0 stays the canonical PBR bucket (classify routes skybox
-        // to bit 0 → it must remain the PBR skybox-owner).
-        assert_eq!(entries[0].shader_id, MaterialShaderId::PBR);
-        assert_eq!(entries[0].base, ShadingBase::Pbr);
+        // Index 0 is the dedicated SKYBOX bucket (classify routes sky pixels to
+        // bit 0); the canonical PBR bucket follows at index 1.
+        assert_eq!(entries[0].shader_id, MaterialShaderId::SKYBOX);
+        assert_eq!(entries[0].name, "skybox");
+        assert_eq!(entries[1].shader_id, MaterialShaderId::PBR);
+        assert_eq!(entries[1].base, ShadingBase::Pbr);
         // The fp variant comes after the defaults, the custom last.
         assert_eq!(entries[fp].shader_id, var);
         assert_eq!(entries[fp].base, ShadingBase::Pbr);

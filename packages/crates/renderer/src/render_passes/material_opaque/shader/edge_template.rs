@@ -315,3 +315,8 @@ impl ShaderTemplateMaterialFinalBlend {
         Some("Material Final Blend")
     }
 }
+
+// Shader-module completeness (every `<base>_get_material(` call has a matching
+// definition) is now guarded centrally for ALL material-bearing templates —
+// opaque-compute, this edge-resolve pass, and transparent — in
+// `crate::shader_completeness`.

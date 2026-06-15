@@ -87,7 +87,10 @@ pub fn render() -> Dom {
     })
 }
 
-fn tool_palette(tool: &Mutable<GizmoMode>) -> Dom {
+/// The Q/W/E/R/T transform-tool palette. `pub(crate)` so the Animation-mode
+/// viewport mounts the SAME palette (one shared `gizmo_mode()` — posing bones
+/// at the playhead shouldn't require a round-trip through Scene mode).
+pub(crate) fn tool_palette(tool: &Mutable<GizmoMode>) -> Dom {
     let entry = |t: GizmoMode, icon: &str, title: &str, tool: &Mutable<GizmoMode>| -> Dom {
         let active = tool.signal().map(move |cur| cur == t);
         html!("button", {
@@ -171,7 +174,60 @@ fn shading_and_stats(shading: &Mutable<String>) -> Dom {
             .child(sbtn("solid", "sphere-solid", "Solid", shading))
             .child(sbtn("material", "material", "Material preview", shading))
         }))
+        .child(projection_toggle())
         .child(selection_stats())
+    })
+}
+
+/// Toggle the built-in editor view camera between perspective and orthographic.
+/// Dispatches `SetCameraProjection` through the controller (so it's MCP-consistent);
+/// the handler mirrors the result into `settings.editor_ortho`, which drives the
+/// label below and stays in sync no matter who changed the projection.
+pub fn set_editor_projection(ortho: bool) {
+    spawn_local(async move {
+        let _ = controller()
+            .dispatch(EditorCommand::SetCameraProjection {
+                perspective: !ortho,
+                fov_y: None,
+            })
+            .await;
+    });
+}
+
+/// Bottom-left projection toggle (Persp ⇄ Ortho) for the built-in editor camera.
+/// Shows the current mode; clicking flips it. Mirrors the `5` keyboard shortcut.
+fn projection_toggle() -> Dom {
+    let ortho = controller().settings.editor_ortho.clone();
+    html!("div", {
+        .style("display", "flex")
+        .style("padding", "3px")
+        .style("background", PANEL_BG)
+        .style("backdrop-filter", "blur(10px)")
+        .style("border", "1px solid var(--line)")
+        .style("border-radius", "var(--r2)")
+        .style("box-shadow", "var(--shadow-1)")
+        .child(html!("button", {
+            .class("t")
+            .attr("title", "Toggle perspective / orthographic · 5")
+            .style("height", "26px")
+            .style("min-width", "52px")
+            .style("padding", "0 10px")
+            .style("display", "flex")
+            .style("align-items", "center")
+            .style("justify-content", "center")
+            .style("border-radius", "var(--r1)")
+            .style("cursor", "pointer")
+            .style("border", "1px solid transparent")
+            .style("background", "transparent")
+            .style("color", "var(--text-1)")
+            .style("font-size", "11px")
+            .style("font-weight", "600")
+            .style("letter-spacing", "0.04em")
+            .text_signal(ortho.signal().map(|o| if o { "ORTHO" } else { "PERSP" }))
+            .event(clone!(ortho => move |_: events::Click| {
+                set_editor_projection(!ortho.get());
+            }))
+        }))
     })
 }
 

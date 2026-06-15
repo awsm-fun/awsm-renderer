@@ -32,11 +32,63 @@ type NodeSkinTransform = Arc<(Vec<TransformKey>, Vec<SkinInverseBindMatrix>)>;
 /// `GltfKeyLookups::node_meshes`.
 type NodeMeshEntry = (Option<String>, Vec<MeshKey>);
 
+/// Where a primitive's renderer material comes from during populate.
+///
+/// The unifying knob that lets foreign glTF and our runtime glbs share one mesh
+/// path: foreign glTF builds materials from the document; our geometry-only
+/// runtime glbs carry NO materials (stripped at export — materials are ours,
+/// applied from `scene.toml`), so the bundle loader supplies the one material
+/// the node was assigned. Supplying it here avoids minting (and compiling a
+/// pipeline for) a throwaway default PBR material, then replacing it.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum GltfMaterialSource {
+    /// Build (and dedupe) materials from the glTF document — the foreign-glTF
+    /// default.
+    #[default]
+    Document,
+    /// Use this one pre-built material for every primitive; skip the glTF
+    /// material + texture creation entirely. Matches our one-material-per-node
+    /// runtime model.
+    Single(MaterialKey),
+}
+
+/// Options for [`populate_gltf`](crate::populate::populate_gltf). `Default` is
+/// the foreign-glTF behavior (build materials from the document, finalize
+/// textures at the end), so existing single-asset callers are unchanged.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PopulateGltfOpts {
+    /// glTF scene index to load (`None` = the default/first scene).
+    pub scene: Option<usize>,
+    /// Root the document's scene nodes under this transform instead of the
+    /// renderer root (used to place a bundle glb under its scene node's TRS).
+    pub parent_transform: Option<TransformKey>,
+    /// Where each primitive's material comes from.
+    pub material_source: GltfMaterialSource,
+    /// Whether to `finalize_gpu_textures` at the end. `false` lets a batch
+    /// loader (the bundle) stage textures across many glbs and finalize once.
+    pub finalize_textures: bool,
+}
+
+impl PopulateGltfOpts {
+    /// Foreign-glTF defaults: build materials from the document + finalize
+    /// textures. (A bare `Default::default()` sets `finalize_textures: false`;
+    /// this is the "behaves like the old `populate_gltf`" constructor.)
+    pub fn foreign() -> Self {
+        Self {
+            finalize_textures: true,
+            ..Default::default()
+        }
+    }
+}
+
 /// Context and shared state used while populating glTF data.
 pub struct GltfPopulateContext {
     pub data: Arc<GltfData>,
     pub textures: Mutex<HashMap<GltfTextureKey, TextureKey>>,
     pub(super) material_keys: Mutex<HashMap<GltfMaterialLookupKey, MaterialKey>>,
+    /// Where primitive materials come from this populate (see
+    /// [`GltfMaterialSource`]).
+    pub(super) material_source: GltfMaterialSource,
     pub node_to_skin_transform: Mutex<HashMap<GltfIndex, NodeSkinTransform>>,
     pub transform_is_joint: Mutex<HashSet<TransformKey>>,
     pub transform_is_instanced: Mutex<HashSet<TransformKey>>,
@@ -174,13 +226,20 @@ pub(super) struct GltfMaterialLookupKey {
 pub async fn populate_gltf(
     renderer: &mut AwsmRenderer,
     gltf_data: impl Into<Arc<GltfData>>,
-    scene: Option<usize>,
+    opts: PopulateGltfOpts,
 ) -> anyhow::Result<GltfPopulateContext> {
     use crate::populate::animation::GltfAnimationExt;
     use crate::populate::extensions::instancing::GltfInstancingExt;
     use crate::populate::mesh::GltfMeshExt;
     use crate::populate::skin::GltfSkinExt;
     use crate::populate::transforms::GltfTransformsExt;
+
+    let PopulateGltfOpts {
+        scene,
+        parent_transform,
+        material_source,
+        finalize_textures,
+    } = opts;
 
     let gltf_data = gltf_data.into();
     // The old `awsm-renderer` `gltf` cache field stored these `Arc<GltfData>`
@@ -194,6 +253,7 @@ pub async fn populate_gltf(
         data: gltf_data,
         textures: Mutex::new(HashMap::new()),
         material_keys: Mutex::new(HashMap::new()),
+        material_source,
         node_to_skin_transform: Mutex::new(HashMap::new()),
         transform_is_joint: Mutex::new(HashSet::new()),
         transform_is_instanced: Mutex::new(HashSet::new()),
@@ -221,7 +281,7 @@ pub async fn populate_gltf(
     };
 
     for node in scene.nodes() {
-        renderer.populate_gltf_node_transform(&ctx, &node, None)?;
+        renderer.populate_gltf_node_transform(&ctx, &node, parent_transform)?;
     }
 
     for node in scene.nodes() {
@@ -242,7 +302,13 @@ pub async fn populate_gltf(
 
     ctx.punctual_lights = crate::populate::lights::populate_gltf_lights(renderer, &ctx)?;
 
-    renderer.finalize_gpu_textures().await?;
+    // A batch loader (the bundle) defers this so it can stage textures across
+    // many glbs and commit them in one upload; a single-asset caller finalizes
+    // here. (For `GltfMaterialSource::Single` no glTF textures are created, so
+    // this is a near no-op regardless.)
+    if finalize_textures {
+        renderer.finalize_gpu_textures().await?;
+    }
 
     Ok(ctx)
 }

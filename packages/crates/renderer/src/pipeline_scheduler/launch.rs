@@ -175,7 +175,7 @@ impl crate::AwsmRenderer {
         //    The classify cache key is shared across buckets (keyed on
         //    `(msaa, bucket_entries)`, not shader_id); the per-bucket
         //    compile helper's cross-call waiter dedup issues it once (on
-        //    the first bucket, always the canonical PBR skybox owner) and
+        //    the first bucket, always the SKYBOX bucket at index 0) and
         //    makes every later bucket wait on it. So classify lands even on
         //    a Blend-only custom scene whose own opaque compile is skipped.
         let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
@@ -258,15 +258,71 @@ impl crate::AwsmRenderer {
             }
         }
 
-        // Clear layout-keyed typed pipeline caches (opaque `main` + edge).
-        self.render_passes
+        // Clear the layout-keyed typed pipeline caches (opaque `main` + edge +
+        // classify) AND free the GPU pipelines they were holding — the
+        // pipeline-leak fix ("aw snap" crash). Each cache holds
+        // `ComputePipelineKey`s into the shared `self.pipelines.compute` pool; a
+        // bucket-set change makes them stale, so they're cleared here before the
+        // new layout compiles. Historically `clear_dynamic_pipelines` only
+        // dropped these KEYS — the `GpuComputePipeline` objects lingered in the
+        // pool forever (the classify/edge keys are self-invalidating, minting a
+        // fresh pool entry on every registry change and orphaning the old), which
+        // accumulated unbounded under editing churn → GPU OOM. Now the clears
+        // RETURN the dropped keys and we free exactly those from the pool (plus
+        // the shader modules they were built from).
+        //
+        // Freeing precisely the just-dropped keys is dangle-free by construction:
+        // nothing references them anymore (the typed caches are now empty and the
+        // per-frame `collect_renderables` rebuilds from them, so the dispatch
+        // sites' `Option` guard skips the draw until the new layout's pipelines
+        // land).
+        let mut dropped_keys = self
+            .render_passes
             .material_opaque
             .pipelines
             .clear_dynamic_pipelines();
-        self.render_passes
-            .material_opaque
-            .edge_pipelines
-            .clear_dynamic_pipelines();
+        dropped_keys.extend(
+            self.render_passes
+                .material_opaque
+                .edge_pipelines
+                .clear_dynamic_pipelines(),
+        );
+        // The classify pass's `pipeline_cache` (keyed by `(dispatch_hash, msaa)`,
+        // populated by the async install path) accumulates a fresh entry on every
+        // registry edit (each mints a new dispatch_hash) and never drops the old
+        // ones, so prune everything that isn't the live dispatch_hash and free
+        // those pool pipelines too.
+        let current_dispatch_hash = self.dynamic_materials.dispatch_hash_cached();
+        dropped_keys.extend(
+            self.render_passes
+                .material_classify
+                .prune_dynamic_pipeline_cache(current_dispatch_hash),
+        );
+        let freed_shaders = self.pipelines.compute.remove_pipeline_keys(&dropped_keys);
+        for shader_key in &freed_shaders {
+            self.shaders.remove(*shader_key);
+        }
+
+        // The clears above free only what the typed caches still REFERENCE. Rapid
+        // churn also strands DETACHED orphans in the pool — pipelines created via
+        // `ensure_keys` whose resolution was later dropped (stale generation) or
+        // whose typed-cache slot was replaced before this clear ran. They're no
+        // longer reachable through any typed cache, so the only handle on them is
+        // their shader: every set-specialized pipeline (opaque / edge / classify /
+        // skybox-edge / final-blend) is built from a shader whose cache key
+        // carries the now-stale dispatch_hash / bucket set. Sweep the shader cache
+        // for those stale modules and free them + every pool pipeline built from
+        // them. This is dangle-free now that the typed caches were cleared/pruned
+        // above: no live cache (nor the per-frame renderables) references a
+        // stale-signature pipeline anymore. Together the two passes return the
+        // pool to baseline under unbounded editing churn (the "aw snap" fix).
+        let current_bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
+        let stale_shaders = self
+            .shaders
+            .take_stale_dynamic_set_shader_keys(current_dispatch_hash, &current_bucket_entries);
+        if !stale_shaders.is_empty() {
+            self.pipelines.compute.remove_by_shader_keys(&stale_shaders);
+        }
 
         Ok(())
     }
@@ -393,13 +449,18 @@ impl crate::AwsmRenderer {
         );
         slots.push(LaunchSlot::Classify { msaa: active_msaa });
 
-        // Opaque variant for THIS bucket — only when it routes to the
-        // opaque pass. A Blend/Mask custom material's body targets the
-        // transparent contract; it renders via the transparent pass.
+        // Opaque variant for THIS bucket — built when it routes to the opaque
+        // pass: OPAQUE and (now) MASK customs. A MASK custom is alpha-tested
+        // opaque — its MAIN WGSL shades in the opaque compute (OpaqueShadingOutput
+        // contract) while its 2nd alpha-only WGSL discards cutouts in the masked
+        // visibility raster. Only BLEND targets the transparent contract.
         // First-party variants (no registration) always build.
-        let build_opaque = reg
-            .as_ref()
-            .is_none_or(|r| matches!(r.alpha_mode, MaterialAlphaMode::Opaque));
+        let build_opaque = reg.as_ref().is_none_or(|r| {
+            matches!(
+                r.alpha_mode,
+                MaterialAlphaMode::Opaque | MaterialAlphaMode::Mask { .. }
+            )
+        });
         if build_opaque {
             shader_jobs.push(
                 ShaderCacheKeyMaterialOpaque {
@@ -680,9 +741,11 @@ impl crate::AwsmRenderer {
         // bookkeeping — edge pipelines are layout-level, deduped here by the
         // edge cache itself + the in-flight set.
         let mut promise_jobs: Vec<(EdgeLaunchSlot, ComputePipelineCacheKey)> = Vec::new();
+        let (mut hits, mut inflight_skips) = (0usize, 0usize);
         for (slot, cache_key) in &compute_jobs {
             if let Some(existing_key) = self.pipelines.compute.cache_lookup(cache_key).copied() {
                 install_edge_per_pass(self, &slot.0, existing_key);
+                hits += 1;
             } else if self
                 .render_passes
                 .material_opaque
@@ -691,13 +754,27 @@ impl crate::AwsmRenderer {
             {
                 // A prior launch this window already has this compile in
                 // flight; its single resolution installs for the layout.
+                inflight_skips += 1;
+                tracing::debug!(
+                    target: "awsm_renderer::pipeline_readiness",
+                    "launch_edge_resolve_compile: {:?} skipped as in-flight",
+                    slot.0,
+                );
             } else {
                 promise_jobs.push((slot.clone(), cache_key.clone()));
             }
         }
 
         if promise_jobs.is_empty() {
-            // Every pipeline was a cache hit or already in flight.
+            // Every pipeline was a cache hit or already in flight. Logged
+            // because a stuck in-flight marker here looks like "settled but
+            // frozen" downstream — this line is the breadcrumb.
+            tracing::debug!(
+                target: "awsm_renderer::pipeline_readiness",
+                "launch_edge_resolve_compile: 0 pushed ({} cache-hit installs, {} in-flight skips)",
+                hits,
+                inflight_skips,
+            );
             return Ok(());
         }
 
@@ -816,6 +893,14 @@ impl crate::AwsmRenderer {
                     .edge_pipelines
                     .is_edge_key_desired(&cache_key)
                 {
+                    // The layout moved on while this compiled. Logged because a
+                    // dropped FinalBlend with no follow-up relaunch presents as
+                    // the frozen-canvas mode (preamble warn-skip, settled:true).
+                    tracing::debug!(
+                        target: "awsm_renderer::pipeline_readiness",
+                        "apply_compile_resolution: edge resolution no longer desired — dropped (slot {:?})",
+                        edge_slot_from_target(&target),
+                    );
                     return;
                 }
                 match result {
@@ -971,12 +1056,12 @@ impl crate::AwsmRenderer {
 /// Resolve a first-party bucket's `(base, pbr_features, owns_skybox)` for
 /// the opaque cache key from its registry bucket entry. A per-feature-set
 /// PBR/Toon variant reports its specialized family + feature mask; the
-/// canonical first-party buckets carry the EMPTY feature-set (the canonical
-/// PBR bucket is the skybox owner — it shades no material geometry, so it
-/// compiles the minimal shader, never an "uber" all-features one). Only the
-/// canonical `MaterialShaderId::PBR` bucket owns the skybox write (classify
-/// routes skybox pixels to bit 0 / index 0 → that bucket), so every
-/// specialized PBR variant gets `owns_skybox = false`.
+/// canonical first-party buckets carry the EMPTY feature-set (the minimal
+/// shader, never an "uber" all-features one). Only the dedicated
+/// `MaterialShaderId::SKYBOX` bucket (index 0) owns the skybox write — classify
+/// routes every uncovered pixel to bit 0, and its pipeline is the
+/// `skybox_primary` writer (it shades no geometry); every material bucket gets
+/// `owns_skybox = false`.
 fn opaque_variant_params(
     entries: &[crate::dynamic_materials::BucketEntry],
     shader_id: MaterialShaderId,
@@ -992,7 +1077,7 @@ fn opaque_variant_params(
     let pbr_features = entry
         .map(|e| e.pbr_features)
         .unwrap_or_else(|| awsm_materials::pbr::PbrFeatures::default().bits());
-    let owns_skybox = shader_id == MaterialShaderId::PBR;
+    let owns_skybox = shader_id == MaterialShaderId::SKYBOX;
     (base, pbr_features, owns_skybox)
 }
 
@@ -1047,6 +1132,21 @@ fn dispatch_hash_from_target(t: &CompileInstallTarget) -> u64 {
     }
 }
 
+/// True when `shader_id` is still a live bucket in the current registered set
+/// (first-party ids are always present). A resolution for a shader_id that's NOT
+/// live — a dynamic material deleted between compile-launch and resolution —
+/// must NOT be installed into the per-bucket typed caches: it would strand a
+/// stale `(…, shader_id)` entry that the bucket-set clear can't reach (the clear
+/// re-fills only live buckets), leaking it permanently. Part of the pipeline-leak
+/// fix.
+fn is_live_bucket(renderer: &crate::AwsmRenderer, shader_id: MaterialShaderId) -> bool {
+    renderer
+        .dynamic_materials
+        .bucket_entries_cached()
+        .iter()
+        .any(|e| e.shader_id == shader_id)
+}
+
 fn install_per_pass(
     renderer: &mut crate::AwsmRenderer,
     slot: &LaunchSlot,
@@ -1055,29 +1155,53 @@ fn install_per_pass(
     pipeline_key: crate::pipelines::compute_pipeline::ComputePipelineKey,
 ) {
     use crate::render_passes::material_opaque::pipeline::PipelineKeyId;
-    match slot {
-        LaunchSlot::Classify { msaa } => {
-            renderer
-                .render_passes
-                .material_classify
-                .dynamic_pipeline_cache
-                .borrow_mut()
-                .insert((dispatch_hash, *msaa), pipeline_key);
-        }
-        LaunchSlot::Opaque { msaa, mipmaps } => {
-            renderer
-                .render_passes
-                .material_opaque
-                .pipelines
-                .insert_dynamic_pipeline(
-                    PipelineKeyId {
-                        msaa_sample_count: *msaa,
-                        mipmaps: *mipmaps,
-                        shader_id,
-                    },
-                    pipeline_key,
-                );
-        }
+    // Drop a late opaque resolution for a now-deleted bucket (see is_live_bucket).
+    // Classify is shared infra keyed on a sentinel (always-live) shader_id, so it
+    // is exempt — only the per-bucket opaque install is guarded.
+    if matches!(slot, LaunchSlot::Opaque { .. }) && !is_live_bucket(renderer, shader_id) {
+        free_displaced_compute_pipeline(renderer, pipeline_key);
+        return;
+    }
+    // Free the pool pipeline displaced by this install, if any — re-installing a
+    // typed-cache slot under a new bucket layout used to silently orphan the
+    // previous `GpuComputePipeline` (part of the pipeline-leak fix). The
+    // displaced key is no longer referenced by anything, so freeing it is safe.
+    let displaced = match slot {
+        LaunchSlot::Classify { msaa } => renderer
+            .render_passes
+            .material_classify
+            .pipeline_cache
+            .borrow_mut()
+            .insert((dispatch_hash, *msaa), pipeline_key)
+            .filter(|old| *old != pipeline_key),
+        LaunchSlot::Opaque { msaa, mipmaps } => renderer
+            .render_passes
+            .material_opaque
+            .pipelines
+            .insert_dynamic_pipeline(
+                PipelineKeyId {
+                    msaa_sample_count: *msaa,
+                    mipmaps: *mipmaps,
+                    shader_id,
+                },
+                pipeline_key,
+            ),
+    };
+    if let Some(old) = displaced {
+        free_displaced_compute_pipeline(renderer, old);
+    }
+}
+
+/// Free a single displaced compute pipeline (and its shader module) from the
+/// shared pool — used by the install sites when a typed-cache slot is
+/// overwritten under a new bucket layout. Part of the pipeline-leak fix.
+fn free_displaced_compute_pipeline(
+    renderer: &mut crate::AwsmRenderer,
+    key: crate::pipelines::compute_pipeline::ComputePipelineKey,
+) {
+    let freed_shaders = renderer.pipelines.compute.remove_pipeline_keys(&[key]);
+    for shader_key in &freed_shaders {
+        renderer.shaders.remove(*shader_key);
     }
 }
 
@@ -1093,17 +1217,31 @@ fn install_edge_per_pass(
     slot: &EdgePipelineSlot,
     pipeline_key: crate::pipelines::compute_pipeline::ComputePipelineKey,
 ) {
+    // Drop a late per-shader edge resolution for a now-deleted bucket — same
+    // rationale as install_per_pass. Skybox / final-blend are global (no
+    // per-bucket key) so they're always installed.
+    if let EdgePipelineSlot::PerShader(id) = slot {
+        if !is_live_bucket(renderer, id.shader_id) {
+            free_displaced_compute_pipeline(renderer, pipeline_key);
+            return;
+        }
+    }
     let edge = &mut renderer.render_passes.material_opaque.edge_pipelines;
-    match slot {
-        EdgePipelineSlot::PerShader(id) => {
-            edge.insert_per_shader_pipeline(*id, pipeline_key);
-        }
-        EdgePipelineSlot::Skybox => {
-            edge.skybox_edge_resolve_pipeline_key = Some(pipeline_key);
-        }
-        EdgePipelineSlot::FinalBlend => {
-            edge.final_blend_pipeline_key = Some(pipeline_key);
-        }
+    // Capture any pool key displaced by this install so we can free the orphaned
+    // pipeline (part of the pipeline-leak fix — see install_per_pass).
+    let displaced = match slot {
+        EdgePipelineSlot::PerShader(id) => edge.insert_per_shader_pipeline(*id, pipeline_key),
+        EdgePipelineSlot::Skybox => edge
+            .skybox_edge_resolve_pipeline_key
+            .replace(pipeline_key)
+            .filter(|old| *old != pipeline_key),
+        EdgePipelineSlot::FinalBlend => edge
+            .final_blend_pipeline_key
+            .replace(pipeline_key)
+            .filter(|old| *old != pipeline_key),
+    };
+    if let Some(old) = displaced {
+        free_displaced_compute_pipeline(renderer, old);
     }
 }
 

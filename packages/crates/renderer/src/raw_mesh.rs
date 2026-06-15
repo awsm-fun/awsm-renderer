@@ -58,6 +58,12 @@ pub struct RawMeshData {
     pub normals: Option<Vec<[f32; 3]>>,
     /// Optional UV-set 0.
     pub uvs: Option<Vec<[f32; 2]>>,
+    /// Optional UV-set 1 (`TEXCOORD_1`). Packed contiguously right after set 0 so
+    /// `material_mesh_meta.uv_sets_index` points at set 0 and set 1 reads at
+    /// `+2` floats (matching the WGSL `_texture_uv_per_vertex` `set_index*2`
+    /// layout + the glTF populate path). Only meaningful when `uvs` is also set;
+    /// `uv_set_count` becomes 2 so custom materials can read `material_uv(in,1u)`.
+    pub uvs1: Option<Vec<[f32; 2]>>,
     /// Optional per-vertex RGBA colors.
     pub colors: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
@@ -114,7 +120,40 @@ impl RawMeshData {
         }
         Some(Aabb { min, max })
     }
+
+    /// Per-vertex MikkTSpace tangents (`vec4`: xyz direction + handedness `w`),
+    /// one entry per original (non-exploded) vertex, or `None` when the mesh
+    /// lacks the normals/UVs MikkTSpace needs (or generation fails).
+    ///
+    /// This mirrors the gltf populate path's `ensure_tangents` so a captured /
+    /// imported mesh gets the SAME tangent basis a `populate_gltf` load would —
+    /// without it the geometry packs the synthetic `[0,0,0,1]` fallback, which
+    /// degenerates normal mapping (flat, washed-out normal-mapped surfaces —
+    /// e.g. an imported model's normal-mapped metal/glass looks wrong vs the
+    /// model-viewer's `populate_gltf` render). Callers only invoke this when the
+    /// material actually samples a normal map (see `material_wants_tangents`),
+    /// matching populate's gating so non-normal-mapped meshes pay nothing.
+    fn compute_tangents(&self) -> Option<Vec<[f32; 4]>> {
+        let normals = self.normals.as_ref()?;
+        let uvs = self.uvs.as_ref()?;
+        awsm_tangents::generate_tangents(&self.positions, normals, uvs, &self.indices)
+    }
 }
+
+/// True when a material samples a normal map (base or clearcoat) and therefore
+/// needs a real tangent basis. Mirrors `renderer-gltf`'s `ensure_tangents`
+/// gating so the raw-mesh path generates tangents in exactly the cases the
+/// gltf path does.
+fn material_wants_tangents(mat: &Material) -> bool {
+    match mat {
+        Material::Pbr(m) => {
+            m.normal_tex.is_some() || m.clearcoat.as_ref().is_some_and(|c| c.normal_tex.is_some())
+        }
+        _ => false,
+    }
+}
+
+// (MikkTSpace tangent generation moved to the shared `awsm-tangents` crate.)
 
 impl AwsmRenderer {
     /// Upload a raw `RawMeshData` + material into the renderer and return a
@@ -151,46 +190,26 @@ impl AwsmRenderer {
         let triangle_count = data.triangle_count();
         let exploded_count = triangle_count * 3;
 
-        // ── Visibility geometry (56 bytes / exploded vertex) ───────────────
-        const VIS_BYTES_PER_VERTEX: usize = MeshBufferVertexInfo::VISIBILITY_GEOMETRY_BYTE_SIZE;
-        let mut visibility_bytes: Vec<u8> =
-            Vec::with_capacity(exploded_count * VIS_BYTES_PER_VERTEX);
+        // ── Visibility geometry (56 bytes / exploded vertex) — packed by the
+        // shared `mesh_pack` packer (the canonical byte layout). Real MikkTSpace
+        // tangents when the material samples a normal map (the gltf populate path
+        // does the same via `ensure_tangents`); otherwise the packer writes the
+        // synthetic [0,0,0,1] fallback — a surface with no normal map never reads
+        // the tangent, so we skip the generation cost.
         let normals = data.normals.as_ref().expect("ensure_normals filled this");
-
-        // Same barycentric pattern the gltf path uses (see
-        // `gltf/buffers/mesh/visibility.rs`).
-        const BARYCENTRICS: [[f32; 2]; 3] = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
-
-        for (triangle_index, tri) in data.indices.chunks_exact(3).enumerate() {
-            for (corner, &vertex_index) in tri.iter().enumerate() {
-                let v_idx = vertex_index as usize;
-                let pos = data.positions[v_idx];
-                let normal = normals[v_idx];
-                let bary = BARYCENTRICS[corner];
-
-                // position (12)
-                visibility_bytes.extend_from_slice(&pos[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&pos[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&pos[2].to_le_bytes());
-                // triangle_index (4)
-                visibility_bytes.extend_from_slice(&(triangle_index as u32).to_le_bytes());
-                // barycentric (8)
-                visibility_bytes.extend_from_slice(&bary[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&bary[1].to_le_bytes());
-                // normal (12)
-                visibility_bytes.extend_from_slice(&normal[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[2].to_le_bytes());
-                // tangent (16) — synthetic [0,0,0,1] when caller didn't supply one.
-                // Matches gltf populate's default-tangent fallback.
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&1.0_f32.to_le_bytes());
-                // original_vertex_index (4)
-                visibility_bytes.extend_from_slice(&vertex_index.to_le_bytes());
-            }
-        }
+        let tangents = self
+            .materials
+            .get(material_key)
+            .is_ok_and(material_wants_tangents)
+            .then(|| data.compute_tangents())
+            .flatten();
+        let visibility_bytes = crate::mesh_pack::pack_visibility_bytes(
+            &data.positions,
+            normals,
+            tangents.as_deref(),
+            &data.indices,
+            awsm_renderer_core::pipeline::primitive::FrontFace::Ccw,
+        );
 
         // ── Custom attribute index (12 bytes per triangle = 3 * u32) ──────
         let mut attribute_index_bytes: Vec<u8> = Vec::with_capacity(triangle_count * 12);
@@ -207,12 +226,25 @@ impl AwsmRenderer {
         let has_uvs = data.uvs.is_some();
         let has_colors = data.colors.is_some();
 
+        // A 2nd UV set is only valid alongside set 0 (it's contiguous after it).
+        let has_uvs1 = has_uvs && data.uvs1.is_some();
         if has_uvs {
             custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
                 MeshBufferCustomVertexAttributeInfo::TexCoords {
                     index: 0,
                     data_size: 4,     // f32 → 4 bytes per component
                     component_len: 2, // u, v
+                },
+            ));
+        }
+        // TEXCOORD_1 — declared right after set 0 (before colors) so the UV sets
+        // are contiguous (uv_sets_index → set 0, set 1 at +2 floats).
+        if has_uvs1 {
+            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: 1,
+                    data_size: 4,
+                    component_len: 2,
                 },
             ));
         }
@@ -233,6 +265,11 @@ impl AwsmRenderer {
                 let uv = uvs[v];
                 custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
                 custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            if has_uvs1 {
+                let uv1 = data.uvs1.as_ref().unwrap()[v];
+                custom_attribute_bytes.extend_from_slice(&uv1[0].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&uv1[1].to_le_bytes());
             }
             if let Some(colors) = data.colors.as_ref() {
                 let c = colors[v];
@@ -347,60 +384,33 @@ impl AwsmRenderer {
         let aabb = data.aabb();
         let vertex_count = data.vertex_count();
         let triangle_count = data.triangle_count();
-        let exploded_count = triangle_count * 3;
-
-        // ── Visibility geometry (56 B / exploded vertex) — same layout as
-        // the opaque path; the transparent pipeline doesn't consume this but
-        // the buffer_info expects both visibility + transparency offsets.
-        let mut visibility_bytes: Vec<u8> = Vec::with_capacity(
-            exploded_count * MeshBufferVertexInfo::VISIBILITY_GEOMETRY_BYTE_SIZE,
-        );
         let normals = data.normals.as_ref().expect("ensure_normals filled this");
-        const BARYCENTRICS: [[f32; 2]; 3] = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
-        for (triangle_index, tri) in data.indices.chunks_exact(3).enumerate() {
-            for (corner, &vertex_index) in tri.iter().enumerate() {
-                let v_idx = vertex_index as usize;
-                let pos = data.positions[v_idx];
-                let normal = normals[v_idx];
-                let bary = BARYCENTRICS[corner];
-                visibility_bytes.extend_from_slice(&pos[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&pos[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&pos[2].to_le_bytes());
-                visibility_bytes.extend_from_slice(&(triangle_index as u32).to_le_bytes());
-                visibility_bytes.extend_from_slice(&bary[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&bary[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[0].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[1].to_le_bytes());
-                visibility_bytes.extend_from_slice(&normal[2].to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&1.0_f32.to_le_bytes());
-                visibility_bytes.extend_from_slice(&vertex_index.to_le_bytes());
-            }
-        }
 
-        // ── Transparency geometry (40 B / vertex, per-original-vertex,
-        // *not* exploded). Matches `gltf/buffers/mesh/transparency.rs`.
-        let mut transparency_bytes: Vec<u8> = Vec::with_capacity(
-            vertex_count * MeshBufferVertexInfo::TRANSPARENCY_GEOMETRY_BYTE_SIZE,
+        // Real MikkTSpace tangents when the material samples a normal map — same
+        // gating + basis as the gltf populate path (see opaque `add_raw_mesh`).
+        let tangents = self
+            .materials
+            .get(material_key)
+            .is_ok_and(material_wants_tangents)
+            .then(|| data.compute_tangents())
+            .flatten();
+
+        // ── Transparency geometry ONLY (40 B / vertex, per-original-vertex,
+        // *not* exploded), packed by the shared `mesh_pack` packer.
+        //
+        // A transparency-pass material (we returned early above for opaque)
+        // builds NO visibility geometry: emitting it would also rasterize this
+        // mesh into the opaque/visibility buffer, rendering it as a solid
+        // occluder *in front of* its own transmission/blend — a glass surface
+        // would read opaque-white. The gltf path is identical: a
+        // transmission/blend/mask primitive maps to `GeometryKind::Transparency`
+        // with the visibility offset `None` (see `mesh_buffer_geometry_kind`).
+        let transparency_bytes = crate::mesh_pack::pack_transparency_bytes(
+            &data.positions,
+            normals,
+            tangents.as_deref(),
+            vertex_count,
         );
-        for (v_idx, normal) in normals.iter().enumerate().take(vertex_count) {
-            let pos = data.positions[v_idx];
-            let normal = *normal;
-            transparency_bytes.extend_from_slice(&pos[0].to_le_bytes());
-            transparency_bytes.extend_from_slice(&pos[1].to_le_bytes());
-            transparency_bytes.extend_from_slice(&pos[2].to_le_bytes());
-            transparency_bytes.extend_from_slice(&normal[0].to_le_bytes());
-            transparency_bytes.extend_from_slice(&normal[1].to_le_bytes());
-            transparency_bytes.extend_from_slice(&normal[2].to_le_bytes());
-            // Synthetic tangent [0,0,0,1] matches the gltf default-tangent
-            // fallback when meshes don't ship per-vertex tangents.
-            transparency_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-            transparency_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-            transparency_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
-            transparency_bytes.extend_from_slice(&1.0_f32.to_le_bytes());
-        }
 
         // Attribute index (per-triangle u32s — same as opaque).
         let mut attribute_index_bytes: Vec<u8> = Vec::with_capacity(triangle_count * 12);
@@ -415,10 +425,20 @@ impl AwsmRenderer {
         let mut custom_attribute_bytes: Vec<u8> = Vec::new();
         let has_uvs = data.uvs.is_some();
         let has_colors = data.colors.is_some();
+        let has_uvs1 = has_uvs && data.uvs1.is_some();
         if has_uvs {
             custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
                 MeshBufferCustomVertexAttributeInfo::TexCoords {
                     index: 0,
+                    data_size: 4,
+                    component_len: 2,
+                },
+            ));
+        }
+        if has_uvs1 {
+            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: 1,
                     data_size: 4,
                     component_len: 2,
                 },
@@ -438,6 +458,11 @@ impl AwsmRenderer {
                 let uv = uvs[v];
                 custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
                 custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            if has_uvs1 {
+                let uv1 = data.uvs1.as_ref().unwrap()[v];
+                custom_attribute_bytes.extend_from_slice(&uv1[0].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&uv1[1].to_le_bytes());
             }
             if let Some(colors) = data.colors.as_ref() {
                 let c = colors[v];
@@ -461,9 +486,10 @@ impl AwsmRenderer {
             },
         };
         let buffer_info = MeshBufferInfo {
-            visibility_geometry_vertex: Some(MeshBufferVertexInfo {
-                count: exploded_count,
-            }),
+            // Transparency-pass mesh: no visibility geometry (see the comment
+            // on the transparency-bytes build above — it would double-render
+            // the mesh as an opaque occluder).
+            visibility_geometry_vertex: None,
             transparency_geometry_vertex: Some(MeshBufferVertexInfo {
                 count: vertex_count,
             }),
@@ -493,7 +519,7 @@ impl AwsmRenderer {
             &self.materials,
             &self.transforms,
             buffer_info_key,
-            Some(&visibility_bytes),
+            None,
             Some(&transparency_bytes),
             &custom_attribute_bytes,
             &attribute_index_bytes,
@@ -504,6 +530,18 @@ impl AwsmRenderer {
         )?;
 
         self.sync_spatial_for_mesh(mesh_key);
+
+        // A transparent mesh carries NO visibility geometry (see above), so it
+        // can't participate in the shadow-generation pass — which rasterizes
+        // visibility geometry. Default it to no cast / no receive so the shadow
+        // pass never looks up a visibility buffer that doesn't exist (the
+        // `cast: true` mesh default would otherwise make a shadow-casting light
+        // try, and fail, to draw it). Mirrors the scene loader's transparent
+        // shadow default; a caller may still override via `set_mesh_shadow_flags`.
+        let _ = self.set_mesh_shadow_flags(
+            mesh_key,
+            crate::shadows::MeshShadowFlags::TRANSPARENT_DEFAULT,
+        );
 
         // Register the per-mesh transparent pipeline key so the transparent
         // pass has a draw pipeline for this geometry. Mirrors what

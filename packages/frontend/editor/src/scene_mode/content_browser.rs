@@ -9,7 +9,7 @@
 //!
 //! The Asset Inspector right-rail (selecting a card) lives in `inspector.rs`.
 
-use awsm_scene_schema::{
+use awsm_editor_protocol::{
     AssetSource, MaterialAlphaMode, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef,
 };
 
@@ -135,7 +135,7 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
             .on_click(|| {
                 // "+ Material" authors a custom WGSL material in the Studio.
                 dispatch(EditorCommand::AddCustomMaterial {
-                    id: awsm_scene_schema::AssetId::new(),
+                    id: awsm_editor_protocol::AssetId::new(),
                 });
                 dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
             }).render())
@@ -145,7 +145,7 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
                     let close = close.clone();
                     MenuItem::new(label).icon("texture").on_click(move || {
                         dispatch(EditorCommand::AddTextureAsset {
-                            id: awsm_scene_schema::AssetId::new(),
+                            id: awsm_editor_protocol::AssetId::new(),
                             proc: kind,
                         });
                         (close.borrow_mut())();
@@ -511,6 +511,7 @@ fn shading_badge(def: &MaterialDef) -> (String, Tone) {
         MaterialShading::Pbr => ("PBR".to_string(), Tone::Accent),
         MaterialShading::Unlit => ("Unlit".to_string(), Tone::Warn),
         MaterialShading::Toon { .. } => ("Toon".to_string(), Tone::Ok),
+        MaterialShading::FlipBook { .. } => ("FlipBook".to_string(), Tone::Ok),
     }
 }
 
@@ -648,6 +649,11 @@ fn material_users(_id: AssetId) -> usize {
         .nodes
         .lock_ref()
         .iter()
-        .filter(|n| matches!(n.kind.get_cloned(), NodeKind::Primitive { .. }))
+        .filter(|n| {
+            matches!(
+                n.kind.get_cloned(),
+                NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. }
+            )
+        })
         .count()
 }

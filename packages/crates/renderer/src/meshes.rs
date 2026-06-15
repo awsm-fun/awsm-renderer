@@ -394,8 +394,10 @@ impl AwsmRenderer {
             return Err(AwsmMeshError::InstancingNotEnabled(mesh_key).into());
         }
 
+        // In-place when the count is unchanged (the per-frame particle path
+        // allocates nothing); insert on shape changes.
         self.instances
-            .transform_insert(mesh.transform_key, transforms)?;
+            .transform_write_all(mesh.transform_key, transforms)?;
 
         Ok(())
     }
@@ -445,7 +447,7 @@ impl AwsmRenderer {
             }
             .into());
         }
-        self.instances.attribute_insert(transform_key, attrs)?;
+        self.instances.attribute_write_all(transform_key, attrs)?;
 
         let base = self
             .instances
@@ -1649,7 +1651,9 @@ impl Meshes {
 
         // This does update the GPU as dirty, bit skins manage their own GPU dirty state
         self.skins
-            .update_transforms(dirty_transforms, |skin_key| !skip_skins.contains(&skin_key));
+            .update_transforms(dirty_transforms, transforms, |skin_key| {
+                !skip_skins.contains(&skin_key)
+            });
 
         touched
     }
@@ -1843,6 +1847,16 @@ impl Meshes {
         self.resource(mesh_key)
             .ok()
             .and_then(|r| r.geometry_morph_key)
+    }
+
+    /// Material-morph counterpart of [`Self::geometry_morph_key_for_mesh`] —
+    /// `None` if the mesh has no resource or no material (UV/color) morph
+    /// targets. Used by the editor's live `SetMorphWeight` path so a weight
+    /// poke drives BOTH morph buffers, exactly like a morph animation track.
+    pub fn material_morph_key_for_mesh(&self, mesh_key: MeshKey) -> Option<MaterialMorphKey> {
+        self.resource(mesh_key)
+            .ok()
+            .and_then(|r| r.material_morph_key)
     }
 
     /// Smallest `skin_update_period` across every mesh that references

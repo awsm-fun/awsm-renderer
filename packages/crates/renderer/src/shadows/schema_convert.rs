@@ -1,4 +1,4 @@
-//! `From` impls bridging `awsm_scene_schema::*` shadow types to the
+//! `From` impls bridging `awsm_scene::*` shadow types to the
 //! renderer's runtime equivalents. Only compiled when the
 //! `scene-schema` feature is enabled — non-editor consumers that
 //! don't need the conversion (or that already have their own bridge)
@@ -7,7 +7,7 @@
 //! Players typically use these in a one-liner after loading a project:
 //!
 //! ```ignore
-//! let project: awsm_scene_schema::EditorProject = serde_json::from_str(&text)?;
+//! let project: awsm_scene::EditorProject = serde_json::from_str(&text)?;
 //! renderer.set_shadows_config(project.shadows.into());
 //! for (light_key, light_cfg) in light_pairs {
 //!     renderer.set_light_shadow_params(
@@ -25,7 +25,7 @@
 //! prefer these `From` impls because they live next to the runtime
 //! struct definitions and can never drift.
 
-use awsm_scene_schema as schema;
+use awsm_scene as schema;
 
 use crate::shadows::config::ShadowsConfig;
 use crate::shadows::light_shadow::{

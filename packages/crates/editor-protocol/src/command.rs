@@ -1,19 +1,23 @@
 //! `EditorCommand` — the single serializable enum covering every editor
-//! mutation. The UI never mutates editor state directly; it
-//! builds a command and dispatches it through the `EditorController`.
+//! mutation. The UI is read-only/informational and never mutates editor state
+//! directly; every change is a command (from the MCP agent, or UI affordances)
+//! dispatched through the `EditorController`.
 //! Commands are **data** (no closures) so they serialize, and non-transient
 //! ones are invertible — the inverse is captured at apply-time and pushed onto
 //! the undo log (command-sourcing, replacing the old snapshot history).
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene_schema::animation::{
+use awsm_scene::animation::{
     BuiltinParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc,
     LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
-use awsm_scene_schema::{
-    AssetEntry, AssetId, EnvironmentConfig, MaterialShading, NodeId, NodeKind, Trs,
-};
+use awsm_scene::{AssetId, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind, Trs};
+
+use awsm_meshgen::recipe::{Modifier, ModifierStack};
+
+use crate::assets::AssetEntry;
+use crate::mesh_def::{CapturedMesh, VertexOverrides};
 
 use crate::anim_ui::{AnimSel, AnimView, StepKind};
 use crate::node_spec::{InsertSpec, NodeSpec};
@@ -54,6 +58,19 @@ pub struct SlotSpec {
     pub debug: String,
 }
 
+/// Which texture slot of a built-in/inline `MaterialDef` a `SetBuiltinTexture`
+/// targets (mirrors the glTF PBR texture set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum BuiltinTextureSlot {
+    BaseColor,
+    MetallicRoughness,
+    Normal,
+    Occlusion,
+    Emissive,
+}
+
 /// A world axis to snap the viewport camera to (the nav-cube directions). The
 /// camera ends up on that axis looking back at the orbit target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +94,19 @@ pub enum EditorMode {
     Animation,
 }
 
+/// One vertex's skin-weight rewrite for [`EditorCommand::SetSkinWeights`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct SkinWeightEntry {
+    /// ORIGINAL vertex index (the skin stream is per original vertex).
+    pub vertex: u32,
+    /// Joint-array indices (4 influences; pad unused with 0).
+    pub joints: [u32; 4],
+    /// Influence weights (pad unused with 0.0).
+    pub weights: [f32; 4],
+}
+
 /// Every editor mutation, as serializable data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -89,6 +119,13 @@ pub enum EditorCommand {
     /// — the UI computes single/ctrl-toggle/shift-range and dispatches the
     /// resulting set.
     SetSelection { ids: Vec<NodeId> },
+
+    /// Record a read-only **vertex-selection highlight**: "these vertices of
+    /// this node are selected". **Transient** observability (like
+    /// [`SetSelection`]) — session-local view state, never recorded in the undo
+    /// log and never mutating geometry. The bridge draws a small marker at each
+    /// selected vertex in the viewport. An empty `indices` clears the highlight.
+    SetVertexSelection { node: NodeId, indices: Vec<u32> },
 
     /// Apply a list of commands as one atomic step: they run in order and
     /// collapse into a **single undo entry** (so undo reverses the whole batch).
@@ -133,6 +170,25 @@ pub enum EditorCommand {
 
     /// Start a fresh, empty project.
     NewProject,
+
+    /// Round-trip self-test: bake the CURRENT project to an in-memory player
+    /// bundle (`scene.toml` + `assets/`), reset to an empty project, then load
+    /// that bundle back through `awsm_scene_loader::populate_awsm_scene` — the
+    /// player/runtime path. Destructive (replaces the open project with the
+    /// reloaded bundle); not undoable. Lets an agent screenshot-compare the
+    /// editor's authored render against the runtime reload over MCP.
+    LoadPlayerBundle,
+
+    /// Round-trip self-test on the EDITOR path: serialize the CURRENT project to
+    /// an in-memory representation (`project.toml` + captured-mesh `.mesh.bin`),
+    /// reset, then reload it through `apply_project` — the same path as
+    /// `load_from_dir`, but with no filesystem directory picker (so it's
+    /// scriptable over MCP). Unlike `LoadPlayerBundle` (which uses the runtime
+    /// `populate_awsm_scene` path and leaves the editor tree EMPTY), this rebuilds
+    /// the editor scene tree, so an agent can verify what survives a project
+    /// save→reload (captured meshes / materials / clips) and what doesn't.
+    /// Destructive (replaces the open project with the reloaded one); not undoable.
+    ReloadProjectInMemory,
 
     /// Insert a fresh node (from a ribbon Insert action) under `parent` (root
     /// when `None`). **Carries its `id`** (minted by the dispatcher, not in
@@ -181,6 +237,15 @@ pub enum EditorCommand {
     /// `DeleteAsset` of the new id.
     ImportTextureFromUrl { id: AssetId, url: String },
 
+    /// Register a KTX2 cubemap asset that resolves from a URL (the env-sync
+    /// fetches the bytes on apply — see `AssetSource::Url`). Used to wire a
+    /// skybox / IBL-prefiltered / IBL-irradiance cubemap for `SetEnvironment`
+    /// from a URL, the cubemap analogue of `ImportTextureFromUrl` (which only
+    /// makes 2D rasters). **Carries its `id`** (caller-minted, idempotent) so
+    /// the MCP path can reference it in a following `SetEnvironment`. Inverse:
+    /// `DeleteAsset` of the new id.
+    ImportKtxEnvFromUrl { id: AssetId, url: String },
+
     /// Create a fresh custom material asset (Content Browser "+ Material") of the
     /// given shading family. Inserts a `MaterialDef` into the project asset table
     /// and selects it. **Carries its `id`** (caller-minted, idempotent) so the
@@ -222,6 +287,16 @@ pub enum EditorCommand {
         shading: MaterialShading,
     },
 
+    /// Replace a built-in library material's VARIANT definition wholesale —
+    /// shading model + its knobs (Toon bands, FlipBook grid/playback), alpha
+    /// mode, double-sided, vertex colours, texture bindings, extensions. The
+    /// full `MaterialDef` is sent (not a delta) so the edit is one idempotent,
+    /// undoable step; assigned meshes re-materialize (debounced). This is the
+    /// ONLY mutation path for built-in variants (the studio UI routes through
+    /// it too — the "all via controller" rule), and the agent path for e.g.
+    /// authoring a Mask-mode FlipBook. Inverse: restore the prior def.
+    UpdateBuiltinMaterial { id: AssetId, def: Box<MaterialDef> },
+
     /// Delete a custom WGSL material.
     DeleteCustomMaterial { id: AssetId },
 
@@ -239,6 +314,15 @@ pub enum EditorCommand {
     /// UI mounted. Inverse: restore the prior source. The remote/MCP authoring
     /// path (the Studio textarea writes the live model directly).
     SetCustomMaterialWgsl { id: AssetId, wgsl: String },
+
+    /// Replace a custom MASK material's **second** (alpha-only) WGSL window —
+    /// the cheap `f32`-returning fragment compiled into the masked
+    /// visibility-raster variant so the cutout is alpha-tested (holes
+    /// see-through + hole-shaped shadows + transmission-through-holes). Only
+    /// meaningful when the material's alpha mode is Mask; empty clears it.
+    /// Sets the live `alpha_wgsl` field (auto-register observes + recompiles).
+    /// Inverse: restore the prior source.
+    SetCustomMaterialAlphaWgsl { id: AssetId, wgsl: String },
 
     /// Set the scene environment (skybox + IBL). Stored in `scene.environment`
     /// (serialized to TOML); the `env_sync` bridge uploads the cubemaps as a
@@ -281,10 +365,36 @@ pub enum EditorCommand {
     /// Clear the pinned frame time — back to the wall-clock source. **Transient**.
     ClearFrameTime,
 
-    /// Assign a custom WGSL material (by id) to a scene node's mesh, or clear it
-    /// (`material: None`). Sets the node's `custom_material` reference. Inverse:
-    /// restore the node's prior kind (a `SetKind`). The bridge renders the
-    /// assigned material once it's registered with the renderer.
+    /// Set one morph-target weight on a node's materialized mesh(es), live in the
+    /// renderer (both the geometry and material morph buffers when present).
+    /// **Transient** — a preview poke, not scene state: persistent morph poses are
+    /// authored as animation tracks (`TrackTarget::Morph`), which own these
+    /// weights whenever a clip is playing/scrubbing. Out-of-range `index` (or a
+    /// node with no morphs) is a no-op; read back via the `MorphData` query.
+    SetMorphWeight {
+        node: NodeId,
+        index: u32,
+        value: f32,
+    },
+
+    /// Rewrite per-vertex skin weights (set 0) on a skinned node's LIVE skin
+    /// buffer — the mesh re-deforms immediately. `joints` index the skin's
+    /// joint ARRAY (the order `get_skin_data` lists joints), weights should sum
+    /// to 1 (`normalize: true` rescales each entry). Undoable: the inverse
+    /// restores the prior values for the touched vertices. Read back via
+    /// `GetSkinWeights`.
+    SetSkinWeights {
+        node: NodeId,
+        entries: Vec<SkinWeightEntry>,
+        #[serde(default)]
+        normalize: bool,
+    },
+
+    /// Assign a library material (built-in or custom WGSL, by id) to a scene
+    /// node's mesh, or clear it (`material: None` → magenta). Sets the node's
+    /// single `material: Option<MaterialInstance>` field. Inverse: restore the
+    /// node's prior kind (a `SetKind`). The bridge renders the assigned material
+    /// once it's registered with the renderer.
     AssignMaterial {
         node: NodeId,
         material: Option<AssetId>,
@@ -296,6 +406,127 @@ pub enum EditorCommand {
     /// MCP path for "paste these material settings onto that mesh". No-op when the
     /// two meshes don't share the same material. Inverse: restore `to`'s prior kind.
     CopyMaterialInstance { from: NodeId, to: NodeId },
+
+    /// Bake a **skinned** mesh node to a static **editable** mesh: discard the
+    /// skin (JOINTS/WEIGHTS + skeleton), capture the bind-pose geometry into a
+    /// new captured `MeshDef{ stack:{ base: Captured } }` asset, and swap the
+    /// node's kind from `SkinnedMesh` to `Mesh` (carrying the material + shadow
+    /// across). The explicit, **terminal** bridge that makes a skinned import
+    /// editable — a hard prerequisite for any mesh-editing op on it. Errors if
+    /// the node isn't a `SkinnedMesh`. Inverse: restore the prior `SkinnedMesh`
+    /// kind (the captured asset is left behind, harmlessly unreferenced).
+    DropSkinning { node: NodeId },
+
+    // ─────────────────────────── Mesh editing ────────────────────────────────
+    /// **Retired / no-op.** Procedural-geometry nodes are now unified on
+    /// `NodeKind::Mesh`, each already backed by an editable `MeshDef` carrying a
+    /// `ModifierStack` — so there is nothing to convert. The variant is kept for
+    /// protocol stability; `apply` does nothing (not undoable) and the MCP tool
+    /// echoes the node's existing mesh id instead of the (ignored) caller-minted
+    /// `mesh`.
+    ConvertToEditableMesh { node: NodeId, mesh: AssetId },
+    /// Replace an editable mesh's geometry wholesale (raw per-vertex editing / a
+    /// collapsed modifier bake). The bridge re-materializes every referencing
+    /// `NodeKind::Mesh` node via the mesh-revision observer. Inverse: restore the
+    /// prior geometry (a `SetMeshData` carrying the previous `CapturedMesh`).
+    SetMeshData { mesh: AssetId, data: CapturedMesh },
+    /// Replace an editable mesh's procedural **recipe** wholesale (modifier
+    /// stack: base + ordered deformers) — the idempotent, coalescing idiom of
+    /// `SetCustomMaterialLayout`. The handler re-evaluates the stack to triangles
+    /// (resolving `Sweep`/`Captured` bases against the scene) and re-bakes the
+    /// `.mesh.bin` cache; the bridge re-materializes referencing nodes. Add /
+    /// remove / reorder / param-tweak are all the UI/agent sending a new whole
+    /// stack. Inverse: restore the prior stack (or prior bytes if there was none).
+    SetMeshModifiers { mesh: AssetId, stack: ModifierStack },
+    /// Append one `Modifier` to the **end** of a mesh's existing modifier stack
+    /// (convenience over resending the whole stack). The mesh must already carry a
+    /// recipe (`set_mesh_modifiers` first); errors otherwise. Re-bakes + the bridge
+    /// re-materializes referencing nodes. Inverse: `SetMeshModifiers(prior_stack)`.
+    AddModifier { mesh: AssetId, modifier: Modifier },
+    /// Replace the modifier at `index` in a mesh's existing stack. The mesh must
+    /// already carry a recipe; `index` must be in range — errors otherwise.
+    /// Inverse: `SetMeshModifiers(prior_stack)`.
+    SetModifier {
+        mesh: AssetId,
+        index: u32,
+        modifier: Modifier,
+    },
+    /// Remove the modifier at `index` from a mesh's existing stack. The mesh must
+    /// already carry a recipe; `index` must be in range — errors otherwise.
+    /// Inverse: `SetMeshModifiers(prior_stack)`.
+    RemoveModifier { mesh: AssetId, index: u32 },
+    /// Replace the positions of specific vertices (raw editing). `indices[k]`
+    /// gets `positions[k]`; normals are recomputed. Inverse: a `SetVertexPositions`
+    /// carrying the **prior** positions of the same indices (sparse — never a
+    /// whole-mesh snapshot).
+    SetVertexPositions {
+        mesh: AssetId,
+        indices: Vec<u32>,
+        positions: Vec<[f32; 3]>,
+    },
+    /// Translate a vertex selection with a smooth radial falloff (server computes
+    /// the per-vertex weights via `meshgen::edit::soft_transform_positions`).
+    /// Inverse: a sparse `SetVertexPositions` of every vertex the move touched.
+    SoftTransformVertices {
+        mesh: AssetId,
+        indices: Vec<u32>,
+        translation: [f32; 3],
+        falloff: f32,
+    },
+    /// Bake an editable mesh's modifier stack into raw triangles and clear the
+    /// recipe (the deliberate heavy snapshot). Inverse:
+    /// `Batch[SetMeshModifiers(prior), SetMeshData(prior_bytes)]`.
+    CollapseMeshStack { mesh: AssetId },
+
+    // ───────────────────── Per-vertex attribute authoring ────────────────────
+    // Per-vertex authoring is **index-based on a frozen topology** → terminal:
+    // the first authoring op collapses the procedural stack to a `Captured`-self
+    // base (locking topology), after which edits are a sparse per-vertex override
+    // layer (`MeshDef::overrides`). Each command below collapses-first
+    // (`ensure_authorable`), writes the override, re-bakes the `.mesh.bin` cache
+    // (base+modifiers+overrides), and bumps `mesh_revision`. The inverse restores
+    // the prior overrides (and, if the collapse fired, the prior stack too — a
+    // `Batch`).
+    /// Set the per-vertex **color** override of `indices` to `color` (RGBA). The
+    /// painted colors only *display* under a material that reads vertex colors —
+    /// built-in PBR with `vertex_colors_enabled`, or a custom material that
+    /// samples them. Inverse: restore the prior overrides (`SetVertexOverrides`,
+    /// possibly batched with a stack restore).
+    PaintVertexColors {
+        mesh: AssetId,
+        indices: Vec<u32>,
+        color: [f32; 4],
+    },
+    /// Set the per-vertex **normal** override of `indices` to `normal`. An
+    /// explicit normal override always wins over the eval/recompute. Inverse:
+    /// restore the prior overrides.
+    SetVertexNormals {
+        mesh: AssetId,
+        indices: Vec<u32>,
+        normal: [f32; 3],
+    },
+    /// Replace a mesh's entire sparse [`VertexOverrides`] map wholesale (the
+    /// idempotent setter, used as the universal inverse of the authoring
+    /// commands and by `BakeAll` undo). Collapses-first, re-bakes. Inverse:
+    /// `SetVertexOverrides(prior_overrides)`.
+    SetVertexOverrides {
+        mesh: AssetId,
+        overrides: VertexOverrides,
+    },
+    /// Project-wide finalize: collapse **every** Mesh asset's stack (freeze all
+    /// topology, bake all overrides into the cache, then flatten recipes to
+    /// `Captured`-self). Inverse: a `Batch` restoring each mesh's prior stack.
+    BakeAll {},
+
+    /// Bind (or clear) a texture on a mesh node's **built-in/inline** material
+    /// slot — the counterpart of `SetMaterialTexture` (which targets custom-WGSL
+    /// materials). `texture: None` clears the slot. Inverse: restore the node's
+    /// prior kind.
+    SetBuiltinTexture {
+        node: NodeId,
+        slot: BuiltinTextureSlot,
+        texture: Option<AssetId>,
+    },
 
     // ─────────────────── Custom (dynamic-WGSL) material authoring ─────────────
     // The Studio surface that used to mutate the reactive `CustomMaterial`
@@ -352,13 +583,26 @@ pub enum EditorCommand {
     },
     /// Bind a texture asset into a mesh node's assigned custom-material texture
     /// slot (by slot name), or clear it (`texture: None`). Writes the node's
-    /// `CustomMaterialInstance::texture_overrides`. The node must already have a
+    /// `MaterialInstance::texture_overrides`. The node must already have a
     /// custom material assigned with a matching declared texture slot. Inverse:
     /// restore the node's prior kind.
     SetMaterialTexture {
         node: NodeId,
         slot: String,
         texture: Option<AssetId>,
+    },
+    /// Bind raw buffer DATA into a mesh node's assigned custom-material buffer
+    /// slot (by slot name), or clear it (`data: None`). The `data` is the slot's
+    /// little-endian `u32` words (e.g. an `array<vec4<f32>>` of N vec4s is `4·N`
+    /// words, the f32 bit patterns). Writes the node's
+    /// `MaterialInstance::buffer_overrides` — the editor stashes the words under a
+    /// session path and the bundle bake emits them as `assets/<id>.bin`. The node
+    /// must have a custom material assigned with a matching declared buffer slot.
+    /// Inverse: restore the node's prior kind.
+    SetMaterialBuffer {
+        node: NodeId,
+        slot: String,
+        data: Option<Vec<u32>>,
     },
 
     // ───────────────────────── Animation: clip lifecycle ─────────────────────
@@ -546,6 +790,7 @@ impl EditorCommand {
             self,
             EditorCommand::SwitchMode { .. }
                 | EditorCommand::SetSelection { .. }
+                | EditorCommand::SetVertexSelection { .. }
                 | EditorCommand::SetAssetSelection { .. }
                 | EditorCommand::SetCurrentMaterial { .. }
                 | EditorCommand::SnapCameraToAxis { .. }
@@ -555,6 +800,7 @@ impl EditorCommand {
                 | EditorCommand::FrameNode { .. }
                 | EditorCommand::SetFrameTime { .. }
                 | EditorCommand::ClearFrameTime
+                | EditorCommand::SetMorphWeight { .. }
                 | EditorCommand::SetCurrentClip { .. }
                 | EditorCommand::SetPlayhead { .. }
                 | EditorCommand::SetPlaying { .. }
@@ -576,6 +822,7 @@ impl EditorCommand {
             self,
             EditorCommand::SwitchMode { .. }
                 | EditorCommand::SetSelection { .. }
+                | EditorCommand::SetVertexSelection { .. }
                 | EditorCommand::SetAssetSelection { .. }
                 | EditorCommand::SnapCameraToAxis { .. }
                 | EditorCommand::ResetCamera
@@ -584,6 +831,7 @@ impl EditorCommand {
                 | EditorCommand::FrameNode { .. }
                 | EditorCommand::SetFrameTime { .. }
                 | EditorCommand::ClearFrameTime
+                | EditorCommand::SetMorphWeight { .. }
                 | EditorCommand::SetAnimSelection { .. }
                 | EditorCommand::SetSoloRoot { .. }
         )
@@ -607,6 +855,10 @@ impl EditorCommand {
         matches!(
             self,
             // Project-level resets / loads / imports that replace the clip set.
+            // NOTE: `LoadPlayerBundle` is deliberately NOT here — it loads clips
+            // into the renderer DIRECTLY via the player path (`populate_awsm_scene`),
+            // bypassing the editor model. Triggering a relower would rebuild
+            // `r.animations` from the (just-cleared) model and wipe those clips.
             EditorCommand::NewProject
                 | EditorCommand::LoadProjectFromUrl { .. }
                 | EditorCommand::ImportModelFromUrl { .. }
@@ -650,6 +902,33 @@ impl EditorCommand {
         )
     }
 
+    /// Does applying this command change captured-mesh geometry the bridge must
+    /// re-materialize? The bridge (`mesh_sync`) observes a single revision counter
+    /// the controller bumps for exactly these commands (mirrors
+    /// [`affects_animation`](Self::affects_animation)) — `SetMeshData` replaces an
+    /// editable mesh's bytes without changing the node kind, so the per-node
+    /// `node.kind` observer wouldn't otherwise re-fire. (`ConvertToEditableMesh`
+    /// changes the node kind too, so its `SetKind` already re-materializes; it's
+    /// listed for symmetry.)
+    pub fn affects_mesh(&self) -> bool {
+        matches!(
+            self,
+            EditorCommand::SetMeshData { .. }
+                | EditorCommand::ConvertToEditableMesh { .. }
+                | EditorCommand::SetMeshModifiers { .. }
+                | EditorCommand::AddModifier { .. }
+                | EditorCommand::SetModifier { .. }
+                | EditorCommand::RemoveModifier { .. }
+                | EditorCommand::SetVertexPositions { .. }
+                | EditorCommand::SoftTransformVertices { .. }
+                | EditorCommand::CollapseMeshStack { .. }
+                | EditorCommand::PaintVertexColors { .. }
+                | EditorCommand::SetVertexNormals { .. }
+                | EditorCommand::SetVertexOverrides { .. }
+                | EditorCommand::BakeAll {}
+        )
+    }
+
     /// A short human-readable label (used in toasts / telemetry / the eventual
     /// undo-history UI).
     #[allow(dead_code)]
@@ -657,8 +936,11 @@ impl EditorCommand {
         match self {
             EditorCommand::SwitchMode { .. } => "Switch mode",
             EditorCommand::SetSelection { .. } => "Select",
+            EditorCommand::SetVertexSelection { .. } => "Select vertices",
             EditorCommand::Batch(_) => "Batch edit",
             EditorCommand::NewProject => "New project",
+            EditorCommand::LoadPlayerBundle => "Load player bundle",
+            EditorCommand::ReloadProjectInMemory => "Reload project (round-trip)",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",
@@ -673,6 +955,7 @@ impl EditorCommand {
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
             EditorCommand::ImportModelFromFile { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
+            EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",
             EditorCommand::AddMaterialAsset { .. } => "Add material",
             EditorCommand::AddTextureAsset { .. } => "Add texture",
             EditorCommand::DeleteAsset { .. } | EditorCommand::RestoreAsset { .. } => {
@@ -685,8 +968,25 @@ impl EditorCommand {
             EditorCommand::SetCurrentMaterial { .. } => "Select material",
             EditorCommand::RegisterMaterial { .. } => "Register material",
             EditorCommand::SetCustomMaterialWgsl { .. } => "Edit shader",
+            EditorCommand::SetCustomMaterialAlphaWgsl { .. } => "Edit alpha shader",
             EditorCommand::AssignMaterial { .. } => "Assign material",
+            EditorCommand::UpdateBuiltinMaterial { .. } => "Edit material variant",
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
+            EditorCommand::DropSkinning { .. } => "Drop skinning",
+            EditorCommand::ConvertToEditableMesh { .. } => "Convert to editable mesh",
+            EditorCommand::SetMeshData { .. } => "Edit mesh",
+            EditorCommand::SetMeshModifiers { .. } => "Edit modifiers",
+            EditorCommand::AddModifier { .. } => "Add modifier",
+            EditorCommand::SetModifier { .. } => "Set modifier",
+            EditorCommand::RemoveModifier { .. } => "Remove modifier",
+            EditorCommand::SetVertexPositions { .. } => "Move vertices",
+            EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
+            EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",
+            EditorCommand::PaintVertexColors { .. } => "Paint vertex colors",
+            EditorCommand::SetVertexNormals { .. } => "Set vertex normals",
+            EditorCommand::SetVertexOverrides { .. } => "Set vertex overrides",
+            EditorCommand::BakeAll {} => "Bake all meshes",
+            EditorCommand::SetBuiltinTexture { .. } => "Bind texture",
             EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
             EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",
             EditorCommand::SetCustomMaterialDebugColor { .. } => "Set base color",
@@ -697,6 +997,7 @@ impl EditorCommand {
             EditorCommand::SetBuiltinParam { .. } => "Set material param",
             EditorCommand::SetLightParam { .. } => "Set light param",
             EditorCommand::SetMaterialTexture { .. } => "Bind texture",
+            EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
@@ -705,6 +1006,8 @@ impl EditorCommand {
             EditorCommand::FrameNode { .. } => "Frame node",
             EditorCommand::SetFrameTime { .. } => "Pin frame time",
             EditorCommand::ClearFrameTime => "Clear frame time",
+            EditorCommand::SetMorphWeight { .. } => "Set morph weight",
+            EditorCommand::SetSkinWeights { .. } => "Edit skin weights",
             EditorCommand::AddClip { .. } => "New clip",
             EditorCommand::DeleteClip { .. } => "Delete clip",
             EditorCommand::DuplicateClip { .. } => "Duplicate clip",

@@ -10,13 +10,14 @@ rust-version.workspace = true
 
 [dependencies]
 awsm-curves = { workspace = true, features = ["serde"] }
-awsm-meshgen = { workspace = true, features = ["serde"] }
+awsm-meshgen = { workspace = true, features = ["authoring"] }
+awsm-glb-export = { workspace = true }
 awsm-materials = { workspace = true }
 awsm-particles = { workspace = true, features = ["serde"] }
 awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export", "debug-views"] }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
-awsm-scene-schema = { workspace = true }
+awsm-scene-loader = { workspace = true }
 awsm-editor-protocol = { workspace = true }
 awsm-web-shared = { workspace = true }
 

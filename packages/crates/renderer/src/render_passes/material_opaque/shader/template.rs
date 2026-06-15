@@ -101,16 +101,16 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// PBR-only includes (brdf / apply_lighting) behind these so non-PBR
     /// pipelines don't compile them.
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
-    /// Whether this pipeline owns the skybox write (only the canonical
-    /// PBR bucket; see [`ShaderCacheKeyMaterialOpaque::owns_skybox`]).
+    /// Whether this pipeline owns the skybox write (only the dedicated SKYBOX
+    /// bucket; see [`ShaderCacheKeyMaterialOpaque::owns_skybox`]).
     pub owns_skybox: bool,
     /// PBR feature set this specialized pipeline is compiled for. The
     /// compute template + `material_color_calc.wgsl` gate per-feature code
     /// behind `{% if pbr_features.<x> %}`, so an unused feature (no
     /// clearcoat in the scene, etc.) emits no code.
-    /// The empty set for non-PBR ids and the canonical PBR (skybox-owner)
-    /// bucket — inert for the former (their body doesn't read it) and the
-    /// minimal shader for the latter. Never the full "uber" set.
+    /// The empty set for non-PBR ids and the SKYBOX bucket — inert for the
+    /// former (their body doesn't read it) and the minimal skybox-only shader
+    /// for the latter. Never the full "uber" set.
     pub pbr_features: awsm_materials::pbr::PbrFeatures,
     /// For dynamic shader ids: the auto-generated `struct
     /// MaterialData { ... }` declaration emitted above the author's
@@ -571,8 +571,56 @@ mod empty_registry_tests {
     use crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque;
     use awsm_materials::MaterialShaderId;
 
-    /// Build a first-party-only opaque cache key, render the WGSL,
-    /// and return the source.
+    // Dual-context invariant: the custom author accessors must exist IDENTICALLY
+    // in BOTH the primary opaque-compute kernel AND the edge-resolve kernel (a
+    // custom fragment is compiled into both — an accessor present in one but not
+    // the other fails pipeline compile only in the missing variant). These
+    // assert against the source WGSL directly (include_str!) so the guard can't
+    // drift from the rendered templates. (Whether a non-zero set visually differs
+    // is a separate GPU state-2 confirm — needs a multi-UV asset the repo lacks.)
+    const OPAQUE_KERNEL_WGSL: &str =
+        include_str!("material_opaque_wgsl/opaque_kernel_includes.wgsl");
+    const EDGE_RESOLVE_WGSL: &str = include_str!("material_opaque_wgsl/edge_resolve.wgsl");
+
+    #[test]
+    fn custom_attribute_accessors_exist_in_both_opaque_kernels() {
+        for (name, src) in [
+            ("opaque_kernel_includes", OPAQUE_KERNEL_WGSL),
+            ("edge_resolve", EDGE_RESOLVE_WGSL),
+        ] {
+            assert!(
+                src.contains("fn material_uv(input: OpaqueShadingInput"),
+                "{name}.wgsl missing material_uv(input, set) accessor (dual-context invariant)"
+            );
+            assert!(
+                src.contains("fn material_vertex_color(input: OpaqueShadingInput"),
+                "{name}.wgsl missing material_vertex_color(input, set) accessor"
+            );
+            // material_uv reads `input.uv_sets_index`, so the struct must carry it.
+            assert!(
+                src.contains("uv_sets_index"),
+                "{name}.wgsl OpaqueShadingInput missing uv_sets_index — material_uv can't reach set N"
+            );
+            // Out-of-range clamp: the struct must carry the per-mesh set COUNTS and
+            // the accessors must guard against them, so sampling a set the mesh
+            // lacks returns a benign default instead of reading an adjacent
+            // vertex's floats from the shared attribute pool (no auto bounds guard
+            // on the index-driven `visibility_data` fetch).
+            assert!(
+                src.contains("uv_set_count") && src.contains("color_set_count"),
+                "{name}.wgsl OpaqueShadingInput missing uv_set_count/color_set_count for the OOB clamp"
+            );
+            assert!(
+                src.contains("set_index >= input.uv_set_count"),
+                "{name}.wgsl material_uv missing the out-of-range clamp"
+            );
+            assert!(
+                src.contains("set_index >= input.color_set_count"),
+                "{name}.wgsl material_vertex_color missing the out-of-range clamp"
+            );
+        }
+    }
+
     fn render_first_party_wgsl(shader_id: MaterialShaderId, msaa: Option<u32>) -> String {
         let key = ShaderCacheKeyMaterialOpaque {
             texture_pool_arrays_len: 1,
@@ -581,7 +629,7 @@ mod empty_registry_tests {
             mipmaps: true,
             shader_id,
             base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
-            owns_skybox: shader_id == MaterialShaderId::PBR,
+            owns_skybox: shader_id == MaterialShaderId::SKYBOX,
             // Canonical first-party buckets carry the empty feature-set
             // (the minimal shader, never the uber `all()`).
             pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
@@ -762,11 +810,17 @@ mod transparent_dynamic_tests {
         );
 
         // Soft-glass-style fragment — references TransparentShadingInput's
-        // actual fields + input.material.<field>.
+        // actual fields + input.material.<field>, AND the per-vertex attribute
+        // accessors (material_uv / material_vertex_color) so we assert they
+        // resolve on the transparent path too (multiplied by 0 to keep the
+        // visual unchanged while still forcing the references into the module).
         let wgsl_fragment = r#"
 let cos_theta = clamp(dot(input.world_normal, input.surface_to_camera), 0.0, 1.0);
 let alpha = mix(0.85, 0.25, cos_theta);
-let color = input.material.tint * (1.0 - input.material.refraction_strength);
+let uv1 = material_uv(input, 1u);
+let c1 = material_vertex_color(input, 1u);
+let color = input.material.tint * (1.0 - input.material.refraction_strength)
+    + vec3<f32>(uv1, 0.0) * 0.0 + c1.rgb * 0.0;
 return TransparentShadingOutput(vec4<f32>(color, alpha));
 "#
         .to_string();
@@ -781,7 +835,12 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
 
         let key = ShaderCacheKeyMaterialTransparent {
             instancing_transforms: false,
-            attributes: ShaderMaterialVertexAttributes::default(),
+            // 2 UV + 2 COLOR sets so the templated accessors emit real branches.
+            attributes: ShaderMaterialVertexAttributes {
+                color_sets: Some(2),
+                uv_sets: Some(2),
+                ..ShaderMaterialVertexAttributes::default()
+            },
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
@@ -815,6 +874,17 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
         assert!(
             source.contains("struct MaterialData"),
             "transparent template missing auto-generated MaterialData struct"
+        );
+        // Per-vertex attribute accessors must exist on the transparent path too
+        // (parity with the opaque kernels) so the same custom fragment compiles
+        // whether the material is opaque or transparent.
+        assert!(
+            source.contains("fn material_uv(input: TransparentShadingInput"),
+            "transparent template missing material_uv accessor"
+        );
+        assert!(
+            source.contains("fn material_vertex_color(input: TransparentShadingInput"),
+            "transparent template missing material_vertex_color accessor"
         );
         let _ = dyn_id;
     }

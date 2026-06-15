@@ -108,11 +108,11 @@ screenshots**. Useful for agent-in-the-loop scene authoring and visual checks.
 ## How it works
 
 ```
-agent (MCP client) ──HTTP /mcp──▶ awsm-mcp-server ──WebTransport/QUIC──▶ editor (browser tab)
+agent (MCP client) ──HTTP /mcp──▶ awsm-renderer-mcp ──WebTransport/QUIC──▶ editor (browser tab)
                                   (packages/mcp)      editor dials out    → EditorController
 ```
 
-A native server ([`packages/mcp`](packages/mcp), `awsm-mcp-server`) exposes MCP
+A native server ([`packages/mcp`](packages/mcp), `awsm-renderer-mcp`) exposes MCP
 tools over streamable-HTTP and relays each one to a running editor tab over a
 WebTransport (QUIC) link that the **editor dials out to** (a browser tab can't be
 a server). Every mutation flows through the editor's single command/query

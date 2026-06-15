@@ -46,6 +46,16 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
     // can always clear independently.
     let mut atlas_cleared = false;
 
+    // Masked (alpha-tested) caster group-0 — present once a masked material's
+    // variant has been compiled (texture-finalize flow). `None` → no masked
+    // casters yet, so every caster takes the plain solid-shadow path.
+    let masked_group0 = ctx
+        .render_passes
+        .shadow_masked
+        .bind_group
+        .get_bind_group()
+        .ok();
+
     for (_light_key, record) in shadows.records() {
         for view in &record.views {
             if !view.should_render {
@@ -175,18 +185,62 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             // Cache the last-bound pipeline key so we don't re-bind
             // when consecutive draws share the same variant.
             let mut last_pipeline_key = None;
+            // Track whether group 0 currently holds the masked (augmented)
+            // bind group vs the plain shadow_view group, so we only rebind on
+            // a solid↔masked transition. The plain group was bound just above.
+            let mut last_group0_masked = Some(false);
             for mesh_key in bvh_visible.into_iter().chain(conservative_extra) {
                 let Ok(mesh) = ctx.meshes.get(mesh_key) else {
                     continue;
                 };
 
+                // Masked (alpha-tested) caster → hole-shaped shadow when a
+                // masked variant is compiled for this material. Gate on
+                // `alpha_cutoff` present REGARDLESS of opaque/transparent
+                // routing — a Mask+refractive material is transparent-routed but
+                // must still cast a cutout shadow. Falls back to the solid
+                // pipeline (rectangular shadow) when no masked variant exists.
+                let masked_key = masked_group0.and_then(|_| {
+                    if ctx.materials.alpha_cutoff(mesh.material_key).is_some() {
+                        let shader_id = ctx.materials.canonical_shader_id(mesh.material_key);
+                        ctx.render_passes.shadow_masked.pipelines.get(
+                            shader_id,
+                            mesh.instanced,
+                            is_cube,
+                            mesh.double_sided,
+                        )
+                    } else {
+                        None
+                    }
+                });
+
                 // Pipelines-compiled guard at the top of `record`
-                // ensures these Options are Some here. Defensive
+                // ensures the solid Option is Some here. Defensive
                 // `else` skips the draw if the invariant is broken.
-                let Some(pipeline_key) = shadows.shadow_pipeline_key(mesh.instanced, is_cube)
-                else {
-                    continue;
+                let (pipeline_key, use_masked) = match masked_key {
+                    Some(key) => (key, true),
+                    None => match shadows.shadow_pipeline_key(
+                        mesh.instanced,
+                        is_cube,
+                        mesh.double_sided,
+                    ) {
+                        Some(key) => (key, false),
+                        None => continue,
+                    },
                 };
+
+                // Swap group 0 between the plain shadow_view group and the
+                // augmented masked group only on a transition; the per-view
+                // dynamic offset is the same for both.
+                if last_group0_masked != Some(use_masked) {
+                    let group0 = if use_masked {
+                        masked_group0.expect("masked_group0 present when use_masked")
+                    } else {
+                        shadows.shadow_view_bind_group()
+                    };
+                    render_pass.set_bind_group(0, group0, Some(&[view_offset]))?;
+                    last_group0_masked = Some(use_masked);
+                }
                 if last_pipeline_key != Some(pipeline_key) {
                     render_pass.set_pipeline(ctx.pipelines.render.get(pipeline_key)?);
                     last_pipeline_key = Some(pipeline_key);

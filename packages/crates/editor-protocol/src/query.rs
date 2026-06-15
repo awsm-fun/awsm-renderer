@@ -5,8 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene_schema::animation::{BuiltinParamKind, CameraParamKind, LightParamKind};
-use awsm_scene_schema::{AssetId, NodeId};
+use awsm_scene::animation::{BuiltinParamKind, CameraParamKind, LightParamKind};
+use awsm_scene::{AssetId, NodeId};
 
 use crate::command::EditorMode;
 use crate::node_spec::NodeQuery;
@@ -149,6 +149,7 @@ fn default_units() -> String {
 /// A read/verification query against editor + renderer state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "query", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EditorQuery {
     /// The existing editor snapshot.
     Snapshot,
@@ -165,6 +166,18 @@ pub enum EditorQuery {
     CanvasPixels { coords: Vec<(u32, u32)> },
     /// Mean / min / max luma over a region (or the whole canvas when `None`).
     CanvasStats { region: Option<[u32; 4]> },
+    /// A full PNG screenshot of the scene viewport as a `data:image/png;base64,…`
+    /// URL (GPU-read from the swapchain — a WebGPU canvas isn't `toDataURL`-able).
+    /// `width`/`height` optionally scale; `None` = native size. The same capture
+    /// the MCP `screenshot_scene` tool uses, surfaced over the `/debug` Query
+    /// channel so a driver without the image-typed MCP tool can still SEE the
+    /// render (decode the base64 → PNG). Needs a live (foregrounded) tab — the
+    /// capture polls on the render-loop frame cadence; returns an error string if
+    /// no frame arrives.
+    ScenePng {
+        width: Option<u32>,
+        height: Option<u32>,
+    },
     /// The WGSL source of a custom (dynamic) material. Dedicated query (not a
     /// snapshot field) so potentially-large shader bodies stay out of every
     /// snapshot.
@@ -201,6 +214,66 @@ pub enum EditorQuery {
     /// The renderer's current frame globals: `time`, `delta_time`, `frame_count`,
     /// `resolution`. Reflects a `SetFrameTime` pin.
     FrameGlobals,
+    /// Live morph data for each node (empty `nodes` = every node that has
+    /// morphs): `{ target_count, weights }` read from the renderer's geometry
+    /// morph buffer (the same store `SetMorphWeight` writes and morph animation
+    /// tracks drive). Nodes without materialized morphs are omitted. Returned as
+    /// a `Map` result with `kind = "morph_data"`.
+    MorphData {
+        #[serde(default)]
+        nodes: Vec<NodeId>,
+    },
+    /// Rig discovery for each skinned node (empty `nodes` = every SkinnedMesh):
+    /// `{ source, primitive_index, joints: [{ node, index, name, translation,
+    /// rotation, scale }] }`. Joints ARE editor scene nodes (mirror bones synced
+    /// onto the renderer skin each frame), so POSING is plain `SetTransform` on a
+    /// joint's `node` id and ANIMATING is a `Transform` track targeting it — this
+    /// query is the lookup that makes those reachable for an agent. Returned as a
+    /// `Map` result with `kind = "skin_data"`.
+    SkinData {
+        #[serde(default)]
+        nodes: Vec<NodeId>,
+    },
+    /// Analytic two-bone IK solve (read-only). `end_node` is the chain tip (a
+    /// joint scene node, e.g. a foot); the chain is its parent (mid, e.g. knee)
+    /// and grandparent (root, e.g. upper leg) from the scene hierarchy.
+    /// Returns the LOCAL rotations that bring the tip to `target` (world
+    /// space), bending toward `pole` when given — as a `Map` with
+    /// `kind = "ik_solution"`: `{ root_node, mid_node, root_rotation,
+    /// mid_rotation, reach }` (`reach` < 1.0 ⇒ target clamped to the chain's
+    /// span). Apply via SetTransform on the two joints (one DispatchBatch =
+    /// one undo step) — the MCP `solve_ik` tool does exactly that.
+    SolveIk {
+        end_node: NodeId,
+        target: [f32; 3],
+        #[serde(default)]
+        pole: Option<[f32; 3]>,
+    },
+    /// Per-vertex skin weights (set 0) for a skinned node — `{ vertex_count,
+    /// set_count, weights: { "<vertex>": { joints:[u32;4], weights:[f32;4] } } }`
+    /// as a `Map` with `kind = "skin_weights"`. Empty `indices` = every vertex.
+    /// Joint values index the skin's joint ARRAY (the order `get_skin_data`
+    /// lists joints in), not scene nodes. Pairs with `SetSkinWeights`.
+    GetSkinWeights {
+        node: NodeId,
+        #[serde(default)]
+        indices: Vec<u32>,
+    },
+    /// Live memory + renderer-object counts for leak detection and soak
+    /// testing: Chrome's `performance.memory` JS-heap numbers (zeros on other
+    /// browsers) plus renderer entity counts (meshes / transforms / materials /
+    /// lines / compiled pipelines). Sample repeatedly over minutes — flat-ish
+    /// slopes mean healthy; a steady climb on an idle scene is a leak. A read —
+    /// no mutation.
+    MemoryStats,
+    /// Renderer-side animation runtime state (clip/channel lowering diagnostics):
+    /// how many clip groups + RESOLVED channels actually lowered into the
+    /// renderer, the rest-cache size, and the mixer layer count — plus the
+    /// controller's current-clip id + its authored track count. The decisive
+    /// "why doesn't my clip pose the rig" probe: authored tracks > 0 but resolved
+    /// channels == 0 means every track's target was pending/invalid at lower
+    /// time. A read — no mutation.
+    AnimationRuntime,
     /// The last `limit` editor notices (toasts: info/warning/error) from an
     /// in-process ring buffer — surfaces runtime errors otherwise invisible over
     /// MCP. Material compile errors have a dedicated path (`MaterialDiagnostics`).
@@ -208,6 +281,76 @@ pub enum EditorQuery {
         #[serde(default = "default_log_limit")]
         limit: u32,
     },
+    /// Bake geometry + materials to a binary glTF (`.glb`) and return the bytes
+    /// base64-encoded (in a `QueryResult::Text`). `None` exports the whole scene;
+    /// `Some(node)` exports just that subtree. A read — no mutation, no undo.
+    /// Built-in PBR → glTF PBR; Unlit → `KHR_materials_unlit`; custom/Toon →
+    /// `AWSM_materials_none` (no embedded material). MCP: `export_scene_glb` /
+    /// `export_node_glb`.
+    ExportGlb {
+        #[serde(default)]
+        node: Option<NodeId>,
+    },
+    /// Select the vertices of a node's resolved mesh matching `predicate`,
+    /// returning their indices (a read — the agent feeds them to
+    /// `SetVertexPositions` / `SoftTransformVertices`). Command-only selection,
+    /// no cursor. MCP: `select_vertices_where`.
+    SelectVerticesWhere {
+        node: NodeId,
+        predicate: VertexPredicate,
+    },
+    /// Bake the whole project to a player runtime bundle **directory**: a
+    /// `scene.toml` (the runtime scene — nodes / transforms / material instances /
+    /// lights / cameras / our clips / env, meshes by id) + an `assets/` directory
+    /// (one geometry-only `assets/<id>.glb` per non-primitive mesh — bare
+    /// primitives stay procedural in scene.toml; custom-material folders;
+    /// referenced textures). Materials + animations are ours (not in the glbs),
+    /// applied by the player from scene.toml + clips. A read (returns the file
+    /// set; never mutates). MCP: `export_player_bundle`. Skinned/morph glb
+    /// re-export from source is a follow-on (static for now).
+    ExportPlayerBundle { name: String },
+    /// Resolve the material a node actually renders with — the most common
+    /// authoring target, otherwise only reachable by parsing the opaque `NodeKind`
+    /// blob from `node_kind_details`. Returns `{ assigned, kind:
+    /// builtin|custom|unassigned|none, asset, name, shading, base_color }`.
+    /// MCP: `resolve_node_material`.
+    ResolveNodeMaterial { node: NodeId },
+    /// Geometry stats for a node's resolved mesh (Primitive / Mesh / Sweep):
+    /// vertex+triangle counts, bbox, centroid, surface area, volume, watertight.
+    /// A read — the perceive half of the agent's measure→adjust loop. MCP:
+    /// `get_mesh_stats`.
+    MeshStats { node: NodeId },
+    /// Silhouette radius profile of a node's resolved mesh along `axis`
+    /// (0=X, 1=Y, 2=Z) in `samples` bins — `[[height, radius], …]`. Pairs with a
+    /// lathe `(height, radius)` profile. MCP: `get_mesh_cross_section`.
+    MeshCrossSection {
+        node: NodeId,
+        #[serde(default = "default_axis")]
+        axis: u8,
+        #[serde(default = "default_cross_section_samples")]
+        samples: u32,
+    },
+    /// The **final** (post-eval + override) per-vertex data for each requested
+    /// index of a node's resolved mesh: `{ index, position, normal, color, uv }`
+    /// (color/uv `null` when the mesh has no such channel). The read counterpart
+    /// to the paint/sculpt verbs — verify what `paint_vertex_colors` /
+    /// `set_vertex_normals` / `set_vertex_positions` actually produced. MCP:
+    /// `get_vertex_data`.
+    GetVertexData { node: NodeId, indices: Vec<u32> },
+    /// The **layer summary** of a node's resolved mesh: the base kind
+    /// (primitive/lathe/superquadric/sweep/sdf/captured), the ordered modifier
+    /// list, and whether a per-vertex override layer is present (i.e. the mesh is
+    /// "baked/terminal") with per-channel override counts. The agent's "what's
+    /// live (still procedural) vs locked (frozen-topology authoring)" perceive.
+    /// MCP: `get_mesh_layers`.
+    GetMeshLayers { node: NodeId },
+    /// The mesh asset's modifier-stack **recipe** (`{ base, modifiers }`),
+    /// serialized as JSON in a `QueryResult::Text`. `null` when the mesh has no
+    /// recipe (a raw captured/converted mesh) — call `set_mesh_modifiers` to give
+    /// it a base before the incremental `add_/set_/remove_modifier` commands.
+    /// The read half of the incremental modifier-editing loop. MCP:
+    /// `get_mesh_modifiers`.
+    MeshModifiers { mesh: AssetId },
     /// Block until no material recompile is pending **and** the renderer's
     /// pipeline scheduler has drained **and** a fresh frame has presented (or
     /// `max_ms` elapses). The deterministic barrier between an edit and a
@@ -227,9 +370,40 @@ fn default_settle_ms() -> u32 {
     4000
 }
 
+fn default_axis() -> u8 {
+    1 // Y
+}
+
+fn default_cross_section_samples() -> u32 {
+    16
+}
+
+/// A command-driven vertex selection predicate (no cursor). Backs
+/// [`EditorQuery::SelectVerticesWhere`]; each maps to a `meshgen::edit::select_*`
+/// function. `axis`: 0=X, 1=Y, 2=Z.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum VertexPredicate {
+    /// Normal points within `threshold` (dot > threshold) of `dir`.
+    NormalDir { dir: [f32; 3], threshold: f32 },
+    /// Component `axis` greater than `value`.
+    AxisGreater { axis: u8, value: f32 },
+    /// Component `axis` less than `value`.
+    AxisLess { axis: u8, value: f32 },
+    /// Top `percent` (0..1) along `axis`.
+    TopPercent { axis: u8, percent: f32 },
+    /// Within `radius` of `center`.
+    WithinRadius { center: [f32; 3], radius: f32 },
+    /// Inside the axis-aligned box `[min, max]` (inclusive), in the mesh's local
+    /// space — region selection by area (pairs with `get_node_bounds`).
+    WithinAabb { min: [f32; 3], max: [f32; 3] },
+}
+
 /// What a [`EditorQuery::SampleClipTimeseries`] frame reads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "target", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ReadbackTarget {
     /// A node's local TRS (translation, rotation xyzw, scale). Struct variant
     /// (not a newtype) so the internally-tagged enum round-trips — a tagged

@@ -141,6 +141,17 @@ struct OpaqueShadingInput {
     world_normal: vec3<f32>,
     world_position: vec3<f32>,
     surface_to_camera: vec3<f32>,
+    // Per-vertex attribute access (so a custom material can read COLOR_n / future
+    // named streams the way built-in PBR does). The kernel computes these per
+    // pixel anyway; we forward them rather than make the author recompute. Use
+    // `material_vertex_color(input, set)`.
+    triangle_indices: vec3<u32>,    // the 3 vertex indices of this pixel's triangle
+    attribute_data_offset: u32,     // base offset into the packed per-vertex attr stream
+    vertex_attribute_stride: u32,   // floats per vertex in that stream
+    color_sets_index: u32,          // float offset to COLOR_0 within that stream
+    uv_sets_index: u32,             // float offset to TEXCOORD_0 within that stream
+    color_set_count: u32,           // number of COLOR sets present (out-of-range clamp)
+    uv_set_count: u32,              // number of UV sets present (out-of-range clamp)
     material_offset: u32,
     material: MaterialData,
 };
@@ -148,6 +159,40 @@ struct OpaqueShadingOutput {
     color: vec3<f32>,
     alpha: f32,
 };
+
+// Interpolated per-vertex `COLOR_<set_index>` at this pixel (barycentric-blended
+// across the triangle). Mirrors built-in PBR's vertex-colour read. Only
+// meaningful when the mesh actually carries that colour set — declare
+// `fragment_inputs: ["vertex_color"]` and author against a painted mesh; on a
+// mesh without the set there is no presence guard on the custom path.
+fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32> {
+    // Out-of-range clamp: a set the mesh lacks reads a benign default rather than
+    // an adjacent vertex's floats from the shared attribute pool (index-driven
+    // fetch — no automatic bounds guard).
+    if (set_index >= input.color_set_count) { return vec4<f32>(1.0); }
+    return vertex_color(
+        input.attribute_data_offset,
+        input.triangle_indices,
+        input.barycentric,
+        VertexColorInfo(set_index),
+        input.vertex_attribute_stride,
+        input.color_sets_index,
+    );
+}
+
+// Interpolated `TEXCOORD_<set_index>` at this pixel (barycentric-blended across
+// the triangle) — the raw-attribute companion to `material_vertex_color`. Lets a
+// custom material read a NON-ZERO UV set directly, the same multi-set data the
+// built-in PBR `uv_index` samples. Declare `fragment_inputs: ["uv"]`. As with
+// `material_vertex_color`, there is no presence guard on the custom path — only
+// meaningful when the mesh actually carries that UV set.
+fn material_uv(input: OpaqueShadingInput, set_index: u32) -> vec2<f32> {
+    if (set_index >= input.uv_set_count) { return vec2<f32>(0.0); }
+    let uv0 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.x, input.vertex_attribute_stride, input.uv_sets_index);
+    let uv1 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.y, input.vertex_attribute_stride, input.uv_sets_index);
+    let uv2 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.z, input.vertex_attribute_stride, input.uv_sets_index);
+    return input.barycentric.x * uv0 + input.barycentric.y * uv1 + input.barycentric.z * uv2;
+}
 
 fn custom_shade_dynamic(input: OpaqueShadingInput) -> OpaqueShadingOutput {
 {{ dynamic_wgsl_fragment|safe }}

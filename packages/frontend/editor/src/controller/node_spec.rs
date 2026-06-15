@@ -11,14 +11,17 @@ use std::sync::Arc;
 
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 
-use awsm_scene_schema::PrimitiveShape;
-
 use crate::engine::scene::node::Node;
 use crate::engine::scene::types::AssetStatus;
 
 pub use awsm_editor_protocol::{InsertSpec, NodeQuery, NodeSpec};
 
 /// Build the reactive `Node` for an insert spec (fresh id).
+///
+/// The procedural-geometry specs (`Primitive` / `Sweep`) are **not** handled
+/// here: they mint a backing `MeshDef` asset + bake its cache, which needs scene
+/// access, so the controller's `Insert` apply intercepts them via
+/// `build_mesh_insert` before this is reached. They're `unreachable!` here.
 pub fn build_insert(spec: &InsertSpec) -> Arc<Node> {
     match spec {
         InsertSpec::Empty => Node::new_group("Empty"),
@@ -30,26 +33,16 @@ pub fn build_insert(spec: &InsertSpec) -> Arc<Node> {
         InsertSpec::CollisionCylinder => Node::new_collision_cylinder("Cylinder Collider"),
         InsertSpec::CollisionCone => Node::new_collision_cone("Cone Collider"),
         InsertSpec::CollisionEllipsoid => Node::new_collision_ellipsoid("Ellipsoid Collider"),
-        InsertSpec::Primitive(shape) => Node::new_primitive(primitive_label(shape), shape.clone()),
+        InsertSpec::Primitive(_) | InsertSpec::Sweep => {
+            unreachable!("Primitive/Sweep inserts are handled by build_mesh_insert")
+        }
         InsertSpec::Curve => Node::new_curve("Curve"),
         InsertSpec::Line => Node::new_line("Line"),
         InsertSpec::Sprite => Node::new_sprite("Sprite"),
         InsertSpec::Particle => Node::new_particle("Particle Emitter"),
         InsertSpec::Decal => Node::new_decal("Decal"),
-        InsertSpec::Sweep => Node::new_sweep("Sweep"),
         InsertSpec::Instances => Node::new_instances("Instances"),
         InsertSpec::Mesh => Node::new_mesh("Mesh"),
-    }
-}
-
-fn primitive_label(shape: &PrimitiveShape) -> &'static str {
-    match shape {
-        PrimitiveShape::Plane { .. } => "Plane",
-        PrimitiveShape::Box { .. } => "Box",
-        PrimitiveShape::Sphere { .. } => "Sphere",
-        PrimitiveShape::Cylinder { .. } => "Cylinder",
-        PrimitiveShape::Cone { .. } => "Cone",
-        PrimitiveShape::Torus { .. } => "Torus",
     }
 }
 

@@ -40,13 +40,12 @@ impl Scene {
                 stats.nodes += 1;
                 match &*node.kind.lock_ref() {
                     NodeKind::Group => stats.groups += 1,
-                    NodeKind::Model(_) => stats.models += 1,
                     NodeKind::Light(_) => stats.lights += 1,
                     NodeKind::Collider(_) => stats.colliders += 1,
                     NodeKind::Camera(_) => stats.cameras += 1,
-                    NodeKind::Primitive { .. } | NodeKind::Mesh { .. } => stats.primitives += 1,
+                    NodeKind::Mesh { .. } => stats.primitives += 1,
+                    NodeKind::SkinnedMesh { .. } => stats.primitives += 1,
                     NodeKind::Curve(_) => stats.curves += 1,
-                    NodeKind::SweepAlongCurve { .. } => stats.sweeps += 1,
                     NodeKind::InstancesAlongCurve(_) => stats.instances += 1,
                     NodeKind::Line(_) => stats.lines += 1,
                     NodeKind::Sprite(_) => stats.sprites += 1,

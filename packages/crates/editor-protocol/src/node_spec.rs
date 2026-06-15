@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene_schema::{EditorNode, LightKind, NodeId, NodeKind, PrimitiveShape, Trs};
+use awsm_scene::{EditorNode, LightKind, NodeId, NodeKind, PrimitiveShape, Trs};
 
 /// A fresh node to insert (one per ribbon Insert action). The editor's
 /// `build_insert` turns this into a reactive `Node`.
@@ -119,14 +119,12 @@ fn default_true_nq() -> bool {
 pub fn kind_tag(kind: &NodeKind) -> &'static str {
     match kind {
         NodeKind::Group => "group",
-        NodeKind::Model(_) => "model",
         NodeKind::Light(_) => "light",
         NodeKind::Collider(_) => "collider",
         NodeKind::Camera(_) => "camera",
-        NodeKind::Primitive { .. } => "primitive",
         NodeKind::Mesh { .. } => "mesh",
+        NodeKind::SkinnedMesh { .. } => "skinned_mesh",
         NodeKind::Curve(_) => "curve",
-        NodeKind::SweepAlongCurve { .. } => "sweep",
         NodeKind::InstancesAlongCurve(_) => "instances",
         NodeKind::Line(_) => "line",
         NodeKind::Sprite(_) => "sprite",

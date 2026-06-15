@@ -19,15 +19,26 @@ use awsm_renderer::dynamic_materials::MaterialRegistration;
 use awsm_renderer::materials::Material;
 use awsm_renderer::AwsmRenderer;
 
-use awsm_scene_schema::dynamic_material::{
-    CustomMaterialInstance, UniformValue as SceneUniformValue,
-};
+use awsm_editor_protocol::dynamic_material::{MaterialInstance, UniformValue as SceneUniformValue};
 
 use crate::controller::{AlphaMode, CustomMaterial};
 use crate::engine::context::renderer_handle;
 use crate::engine::scene::AssetId;
 
 thread_local! {
+    /// Serializes the WHOLE of [`register`] / [`unregister`] so their thread-local
+    /// bookkeeping (REGISTRY / LAST_HASH / DELETED) and renderer mutations can't
+    /// interleave across the multiple `await`s each holds (renderer lock,
+    /// `finalize_gpu_textures`, …). The renderer's own `AsyncMutex` only serializes
+    /// the renderer ops, not the bookkeeping around them — e.g. `register` inserts
+    /// into REGISTRY only AFTER `finalize_gpu_textures().await`, so a delete that
+    /// runs during that await found no REGISTRY entry to unregister and left a
+    /// permanent orphan (the sub-second-churn "aw snap" tail + "duplicate name"
+    /// errors). Holding this guard for the entire op closes every such window.
+    /// Always acquired BEFORE the renderer lock — consistent ordering, no deadlock.
+    static BRIDGE_OP_LOCK: std::sync::Arc<xutex::AsyncMutex<()>> =
+        std::sync::Arc::new(xutex::AsyncMutex::new(()));
+
     /// `material id → registered shader id`, populated by [`register`]. Keyed by
     /// the material's **stable id** (not its display name) so renaming a material
     /// never orphans an assigned mesh's resolution.
@@ -39,6 +50,25 @@ thread_local! {
     /// shader_id (drop + re-add → a fresh id) out from under an in-flight
     /// compile-status poll, which would otherwise race the diagnostics.
     static LAST_HASH: RefCell<HashMap<AssetId, (u64, u64)>> = RefCell::new(HashMap::new());
+
+    /// Tombstones for DELETED material ids. The auto-register is debounced
+    /// (~400ms), so a create→edit→delete faster than the debounce fires the
+    /// pending `register` AFTER `unregister` — re-registering a material the
+    /// editor already deleted. That orphan never gets unregistered again, so its
+    /// shader_id stays a live bucket forever (its opaque/edge pipelines recompile
+    /// on every later edit → unbounded GPU growth, the sub-second-churn tail of
+    /// the "aw snap" leak). [`register`] consults this set and bails for a
+    /// tombstoned id. Asset ids are unique (never reused), so tombstones never
+    /// need clearing.
+    static DELETED: RefCell<std::collections::HashSet<AssetId>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Whether `mat_id` has been deleted (see [`DELETED`]). The debounced
+/// auto-register call site checks this to skip a register that lost the race
+/// with a delete.
+pub fn is_deleted(mat_id: AssetId) -> bool {
+    DELETED.with(|d| d.borrow().contains(&mat_id))
 }
 
 fn registered_shader_id(id: AssetId) -> Option<MaterialShaderId> {
@@ -61,22 +91,32 @@ thread_local! {
 }
 
 /// Store a loaded buffer's words and return the synthetic path that references
-/// it (set as the `BufferRef::path` on a `CustomMaterialInstance` override).
+/// it (set as the `BufferRef::path` on a `MaterialInstance` override).
 pub(crate) fn store_buffer_words(words: Vec<u32>) -> String {
     let path = format!("session://buffer/{}", AssetId::new().0);
     BUFFER_DATA.with(|m| m.borrow_mut().insert(path.clone(), words));
     path
 }
 
-fn buffer_words_for(path: &str) -> Option<Vec<u32>> {
+pub(crate) fn buffer_words_for(path: &str) -> Option<Vec<u32>> {
     BUFFER_DATA.with(|m| m.borrow().get(path).cloned())
 }
 
 /// Register a custom material with the renderer (locks it, finalizes textures).
 /// Returns the assigned shader id, or an error string on failure.
 pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> {
-    let reg = build_registration(mat);
     let mat_id = mat.id;
+    // Serialize the whole op against any concurrent register/unregister (see
+    // BRIDGE_OP_LOCK) — held until this fn returns.
+    let op_lock = BRIDGE_OP_LOCK.with(|l| l.clone());
+    let _op_guard = op_lock.lock().await;
+    // Lost-the-race guard: a debounced register that fires after the material was
+    // deleted must NOT re-register it (see DELETED). Without this the orphaned
+    // registration leaks its GPU pipelines forever under sub-second churn.
+    if is_deleted(mat_id) {
+        return Err("custom material was deleted".to_string());
+    }
+    let reg = build_registration(mat);
     let hashes = (reg.layout_hash, reg.wgsl_hash);
     // No-op when the content is byte-identical to the last successful register
     // (same layout + wgsl) and we still hold its shader id. Avoids the debounced
@@ -90,6 +130,8 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
     }
     let handle = renderer_handle();
     let mut r = handle.lock().await;
+    // (No second is_deleted re-check needed: BRIDGE_OP_LOCK is held for the whole
+    // op, so no `unregister`/delete can run between the check above and here.)
     // Recompile: the renderer rejects re-registering a key whose content changed,
     // so drop this material's previous registration first (the editor's
     // edit→re-register cycle `unregister_material` expects). Keyed by id, so a
@@ -106,15 +148,48 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
     Ok(shader_id)
 }
 
+/// Drop a custom material's renderer registration when it's DELETED. Without
+/// this the renderer keeps the dynamic registration — and its compiled GPU
+/// compute pipelines + shader modules — forever, so repeated create/delete
+/// editing churns GPU memory until Chrome OOMs ("aw snap"). `unregister_material`
+/// also evicts the material's pipelines from the shared caches (the
+/// pipeline-leak fix). No-op if the material was never registered.
+pub async fn unregister(mat_id: AssetId) {
+    // Serialize against any concurrent register/unregister (see BRIDGE_OP_LOCK):
+    // notably this blocks until an in-flight `register` for the SAME id finishes
+    // inserting into REGISTRY, so the remove below actually finds + drops it
+    // (otherwise the registration completes after us → permanent orphan).
+    let op_lock = BRIDGE_OP_LOCK.with(|l| l.clone());
+    let _op_guard = op_lock.lock().await;
+    // Tombstone the id so a debounced `register` that fires after this delete
+    // (create→edit→delete faster than the ~400ms debounce) can't re-register the
+    // now-deleted material into a permanent orphan. See DELETED.
+    DELETED.with(|d| {
+        d.borrow_mut().insert(mat_id);
+    });
+    let shader_id = REGISTRY.with(|reg| reg.borrow_mut().remove(&mat_id));
+    LAST_HASH.with(|h| {
+        h.borrow_mut().remove(&mat_id);
+    });
+    if let Some(shader_id) = shader_id {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
+        let _ = r.unregister_material(shader_id);
+    }
+}
+
 /// Build + insert a `Material::Custom` for an assigned custom material `name`,
 /// returning its `MaterialKey`. `None` if `name` isn't registered (the caller
 /// falls back to the mesh's inline material). Mirrors `material::insert_material`'s
 /// disjoint-field borrow so it composes with the renderer lock.
 pub fn insert_custom(
     renderer: &mut AwsmRenderer,
-    inst: &CustomMaterialInstance,
+    inst: &MaterialInstance,
 ) -> Option<awsm_renderer::materials::MaterialKey> {
     let material = build_custom(renderer, inst)?;
+    // Upload per-instance buffer-override words to the extras pool BEFORE insert
+    // (insert packs `MaterialData.<slot>_offset` from `extras_pool.slice_for`).
+    renderer.upload_dynamic_material_buffers(&material);
     Some(renderer.materials.insert(
         material,
         &renderer.textures,
@@ -127,8 +202,8 @@ pub fn insert_custom(
 /// **instance**: starts from the registration's authored defaults, then applies
 /// this mesh's per-instance `uniform_overrides` (#4.2) — matched by slot name
 /// and type-checked against the layout. `None` if the material isn't registered.
-fn build_custom(renderer: &mut AwsmRenderer, inst: &CustomMaterialInstance) -> Option<Material> {
-    let mut material = build_custom_for_shader(renderer, registered_shader_id(inst.material)?)?;
+fn build_custom(renderer: &mut AwsmRenderer, inst: &MaterialInstance) -> Option<Material> {
+    let mut material = build_custom_for_shader(renderer, registered_shader_id(inst.asset)?)?;
     if let Material::Custom(dm) = &mut material {
         // Per-mesh uniform overrides (matched by slot name, type-checked).
         if !inst.uniform_overrides.is_empty() {
@@ -199,13 +274,13 @@ fn build_custom(renderer: &mut AwsmRenderer, inst: &CustomMaterialInstance) -> O
 
 /// The default value a declared uniform [`Slot`] parses to (its authored WGSL
 /// type + default-value string), as the **schema** `UniformValue` the inspector
-/// stores in `CustomMaterialInstance::uniform_overrides` (#4.2).
+/// stores in `MaterialInstance::uniform_overrides` (#4.2).
 pub fn slot_default_value(slot: &crate::controller::Slot) -> SceneUniformValue {
     renderer_to_scene(&parse_uniform_value(parse_field_type(&slot.ty), &slot.val))
 }
 
 /// Convert the serializable schema `UniformValue` (stored on a
-/// `CustomMaterialInstance`) into the renderer's value type. The two enums have
+/// `MaterialInstance`) into the renderer's value type. The two enums have
 /// identical variants — this is the (deliberately exhaustive) bridge so adding a
 /// variant to one forces updating the other.
 fn scene_to_renderer(v: &SceneUniformValue) -> UniformValue {
@@ -310,21 +385,140 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
         .collect();
     let buffer_defaults: Vec<Vec<u32>> = buffers.iter().map(|_| Vec::new()).collect();
 
+    let main_wgsl = mat.wgsl.get_cloned();
+    let alpha_body = mat.alpha_wgsl.get_cloned();
+    let alpha_mode = convert_alpha(mat.alpha.get(), mat.cutoff.get() as f32);
+    // The 2nd ("alpha-only") WGSL window — only meaningful for MASK materials.
+    // Empty body → `None` (no masked variant built).
+    let alpha_wgsl = if matches!(mat.alpha.get(), AlphaMode::Mask) && !alpha_body.trim().is_empty()
+    {
+        Some(alpha_body.clone())
+    } else {
+        None
+    };
+    // CRITICAL: the bridge's register no-op + the registry's idempotency are keyed
+    // on `wgsl_hash`, so it MUST cover everything that changes the compiled output
+    // — not just the main WGSL. Fold in the alpha mode/cutoff and the alpha-only
+    // WGSL, else editing only the cutout (or toggling Mask) is treated as a no-op
+    // and the masked variant never (re)builds.
+    let wgsl_hash = hash_str(&format!(
+        "{main_wgsl}\u{0}alpha_mode={alpha_mode:?}\u{0}alpha_wgsl={alpha_body}"
+    ));
+
     MaterialRegistration {
         // The renderer-internal registration key is the material's stable id
         // (the display name is UI-only); keeps the registry rename-proof and
         // free of duplicate-display-name collisions.
         name: mat.id.to_string(),
-        alpha_mode: convert_alpha(mat.alpha.get(), mat.cutoff.get() as f32),
+        alpha_mode,
         double_sided: mat.double_sided.get(),
         layout,
         layout_hash: layout_hash(mat, &uniforms, &textures, &buffers),
-        wgsl_hash: hash_str(&mat.wgsl.get_cloned()),
-        wgsl_fragment: mat.wgsl.get_cloned(),
+        wgsl_hash,
+        wgsl_fragment: main_wgsl,
         buffer_defaults,
         uniform_defaults,
         shader_includes: includes_from_keys(&mat.shader_includes.get_cloned()),
         fragment_inputs: inputs_from_keys(&mat.fragment_inputs.get_cloned()),
+        alpha_wgsl,
+    }
+}
+
+/// Serialize a live `CustomMaterial` into the bundle's serde `MaterialDefinition`
+/// (written as `material.json`) — the player rebuilds a `MaterialRegistration`
+/// from this + `material.wgsl`. Texture/buffer slot DEFAULTS serialize as `None`
+/// (the editor's `CustomMaterial` doesn't carry default bytes); per-mesh texture/
+/// buffer overrides still apply at instance time.
+pub fn material_definition(mat: &CustomMaterial) -> awsm_editor_protocol::MaterialDefinition {
+    use awsm_editor_protocol::dynamic_material::{
+        BufferSlot, FieldType as FT, MaterialDefinition, TextureSlot, UniformField,
+        UniformValue as UV,
+    };
+    use awsm_editor_protocol::MaterialAlphaMode;
+
+    let parse_ty = |s: &str| -> FT {
+        match s {
+            "u32" | "i32" => FT::U32,
+            "vec2<f32>" => FT::Vec2,
+            "vec3<f32>" => FT::Vec3,
+            "vec4<f32>" => FT::Vec4,
+            "vec2<i32>" => FT::IVec2,
+            "vec3<i32>" => FT::IVec3,
+            "vec4<i32>" => FT::IVec4,
+            "mat3x3<f32>" => FT::Mat3,
+            "mat4x4<f32>" => FT::Mat4,
+            "color3" => FT::Color3,
+            "color4" => FT::Color4,
+            "bool" => FT::Bool,
+            _ => FT::F32,
+        }
+    };
+    let parse_val = |ty: FT, s: &str| -> UV {
+        let fnums: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let inums: Vec<i32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let f = |i: usize| fnums.get(i).copied().unwrap_or(0.0);
+        let n = |i: usize| inums.get(i).copied().unwrap_or(0);
+        match ty {
+            FT::F32 => UV::F32(f(0)),
+            FT::U32 => UV::U32(s.trim().parse().unwrap_or(0)),
+            FT::Vec2 => UV::Vec2([f(0), f(1)]),
+            FT::Vec3 => UV::Vec3([f(0), f(1), f(2)]),
+            FT::Vec4 => UV::Vec4([f(0), f(1), f(2), f(3)]),
+            FT::IVec2 => UV::IVec2([n(0), n(1)]),
+            FT::IVec3 => UV::IVec3([n(0), n(1), n(2)]),
+            FT::IVec4 => UV::IVec4([n(0), n(1), n(2), n(3)]),
+            FT::Mat3 => UV::Mat3(std::array::from_fn(f)),
+            FT::Mat4 => UV::Mat4(std::array::from_fn(f)),
+            FT::Color3 => UV::Color3([f(0), f(1), f(2)]),
+            FT::Color4 => UV::Color4([f(0), f(1), f(2), f(3)]),
+            FT::Bool => UV::Bool(matches!(s.trim(), "true" | "1")),
+        }
+    };
+    let alpha_mode = match mat.alpha.get() {
+        AlphaMode::Opaque => MaterialAlphaMode::Opaque,
+        AlphaMode::Mask => MaterialAlphaMode::Mask {
+            cutoff: mat.cutoff.get() as f32,
+        },
+        AlphaMode::Blend => MaterialAlphaMode::Blend,
+    };
+    MaterialDefinition {
+        name: mat.name.get_cloned(),
+        version: 1,
+        alpha_mode,
+        double_sided: mat.double_sided.get(),
+        uniforms: mat
+            .uniforms
+            .get_cloned()
+            .iter()
+            .map(|u| {
+                let ty = parse_ty(&u.ty);
+                UniformField {
+                    name: u.name.clone(),
+                    ty,
+                    default: parse_val(ty, &u.val),
+                }
+            })
+            .collect(),
+        textures: mat
+            .textures
+            .get_cloned()
+            .iter()
+            .map(|t| TextureSlot {
+                name: t.name.clone(),
+                default: None,
+            })
+            .collect(),
+        buffers: mat
+            .buffers
+            .get_cloned()
+            .iter()
+            .map(|b| BufferSlot {
+                name: b.name.clone(),
+                default: None,
+            })
+            .collect(),
+        shader_includes: mat.shader_includes.get_cloned(),
+        fragment_inputs: mat.fragment_inputs.get_cloned(),
     }
 }
 

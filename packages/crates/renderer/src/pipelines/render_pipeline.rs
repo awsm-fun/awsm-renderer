@@ -77,6 +77,17 @@ impl RenderPipelines {
         }
     }
 
+    /// Number of compiled render pipelines (observability / leak checks —
+    /// a climbing count on a stable scene means cache keys are churning).
+    pub fn len(&self) -> usize {
+        self.lookup.len()
+    }
+
+    /// True when no render pipelines exist.
+    pub fn is_empty(&self) -> bool {
+        self.lookup.is_empty()
+    }
+
     /// Returns a pipeline key, creating the pipeline if needed.
     ///
     /// Thin wrapper over [`Self::ensure_keys`] — funnelling the

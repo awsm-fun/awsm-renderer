@@ -4,6 +4,7 @@
 //! bridge + actions land here as the panels that need them arrive (M4+).
 
 pub mod activity;
+pub mod activity_feed;
 pub mod bridge;
 pub mod canvas;
 pub mod canvas_host;
@@ -12,10 +13,12 @@ pub mod context;
 pub mod curve_handles;
 pub mod gizmo;
 pub mod grid;
+pub mod light_icons;
 pub mod preview;
 pub mod query;
 pub mod render_loop;
 pub mod scene;
 pub mod selection_box;
 pub mod settings_sync;
+pub mod skeleton_viz;
 pub mod thumbnail;

@@ -29,12 +29,13 @@ use serde_json::Value;
 
 use awsm_editor_protocol::{
     CameraAxis, CompileError, CustomAlphaMode, EditorCommand, EditorMode, EditorQuery, InsertSpec,
-    ProceduralKind, QueryResult, Request, Response, SlotSpec,
+    ProceduralKind, QueryResult, Request, Response, SlotSpec, StepKind,
 };
-use awsm_scene_schema::animation::{
-    BuiltinParamKind, ClipLoop, Interp, LightParamKind, TrackTarget, TrackValue, TransformProp,
+use awsm_scene::animation::{
+    BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TrackTarget, TrackValue,
+    TransformProp,
 };
-use awsm_scene_schema::{
+use awsm_scene::{
     AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, NodeId, PrimitiveShape,
     SkyboxConfig, Trs,
 };
@@ -97,6 +98,148 @@ pub struct NodesParams {
     /// Node UUIDs to read; empty/omitted = every node in the scene.
     #[serde(default)]
     pub nodes: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExportNodeParams {
+    /// UUID of the node (subtree) to bake to GLB.
+    pub node: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MeshCrossSectionParams {
+    /// UUID of the geometry node.
+    pub node: String,
+    /// Profile axis: 0=X, 1=Y, 2=Z. Defaults to Y.
+    #[serde(default = "default_axis_y")]
+    pub axis: u8,
+    /// Number of height bins. Defaults to 16.
+    #[serde(default = "default_cross_samples")]
+    pub samples: u32,
+}
+
+fn default_axis_y() -> u8 {
+    1
+}
+fn default_cross_samples() -> u32 {
+    16
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SelectVerticesParams {
+    /// UUID of the geometry node.
+    pub node: String,
+    /// Strongly-typed selection predicate (the schema lists every `kind`).
+    pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExportBundleParams {
+    /// Bundle name (publish dir / manifest label).
+    pub name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MeshIdParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetVertexPositionsParams {
+    pub mesh: String,
+    /// Vertex indices to move.
+    pub indices: Vec<u32>,
+    /// New positions, aligned with `indices`.
+    pub positions: Vec<[f32; 3]>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SoftTransformParams {
+    pub mesh: String,
+    /// The selected vertex indices (the move's full-weight center).
+    pub indices: Vec<u32>,
+    /// Translation applied at the selection, fading over the falloff radius.
+    pub translation: [f32; 3],
+    /// Falloff radius (world units); 0 = hard move of exactly the selection.
+    pub falloff: f32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetMeshModifiersParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+    /// Strongly-typed modifier stack (the schema lists every base + modifier).
+    /// See the `awsm://docs/mesh-tools` resource for worked examples.
+    pub stack: Flexible<awsm_editor_protocol::ModifierStack>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddModifierParams {
+    /// UUID of the editable mesh asset (must already have a modifier stack —
+    /// call `set_mesh_modifiers` first to give it a base).
+    pub mesh: String,
+    /// One strongly-typed modifier object (e.g. `{"twist":{"axis":"y","turns":2}}`).
+    /// See the `awsm://docs/mesh-tools` resource for every modifier's shape.
+    pub modifier: Flexible<awsm_editor_protocol::Modifier>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetModifierParams {
+    /// UUID of the editable mesh asset (must already have a modifier stack).
+    pub mesh: String,
+    /// Zero-based index of the modifier to replace (must be in range).
+    pub index: u32,
+    /// The replacement modifier object.
+    pub modifier: Flexible<awsm_editor_protocol::Modifier>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveModifierParams {
+    /// UUID of the editable mesh asset (must already have a modifier stack).
+    pub mesh: String,
+    /// Zero-based index of the modifier to remove (must be in range).
+    pub index: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetMeshModifiersParams {
+    /// UUID of the mesh asset to read the modifier stack from.
+    pub mesh: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PaintVertexColorsParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+    /// Vertex indices (into the resolved/baked topology) to paint.
+    pub indices: Vec<u32>,
+    /// Linear RGBA color to set on each index.
+    pub color: [f32; 4],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetVertexNormalsParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+    /// Vertex indices to override the normal of.
+    pub indices: Vec<u32>,
+    /// The normal vector to set on each index (should be unit-length).
+    pub normal: [f32; 3],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetVertexDataParams {
+    /// UUID of the node whose resolved mesh to read.
+    pub node: String,
+    /// Vertex indices to read the final (post-eval + override) data of.
+    pub indices: Vec<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetMeshLayersParams {
+    /// UUID of the node whose mesh layer summary to read.
+    pub node: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -167,6 +310,14 @@ pub struct SelectionParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct VertexSelectionParams {
+    /// UUID of the geometry node whose vertices are highlighted.
+    pub node: String,
+    /// Vertex indices to highlight (empty = clear the highlight).
+    pub indices: Vec<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct UrlParams {
     pub url: String,
 }
@@ -181,11 +332,28 @@ pub struct BaseUrlParams {
 pub enum ShadingArg {
     Pbr,
     Unlit,
+    /// Cel shading (sensible default knobs; edit via dispatch_command
+    /// UpdateBuiltinMaterial / the studio).
+    Toon,
+    /// Sprite-sheet animation. Defaults: 4×4 grid, 16 frames, 12 fps, loop.
+    /// The atlas image is the material's BASE-COLOR texture slot; grid /
+    /// playback knobs edit via dispatch_command. Mask alpha mode gives an
+    /// animated CUTOUT (alpha-tested opaque, casts hole-shaped shadows).
+    Flipbook,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ShadingParams {
     pub shading: ShadingArg,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UpdateBuiltinParams {
+    /// The built-in material's asset id.
+    pub id: String,
+    /// The FULL MaterialDef as JSON (read the current one from get_snapshot,
+    /// modify, send back). See the tool description for field shapes.
+    pub def: serde_json::Value,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -309,6 +477,17 @@ pub struct BuiltinParamParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BuiltinTextureParams {
+    /// Mesh node UUID.
+    pub node: String,
+    /// Which built-in PBR slot to bind.
+    pub slot: awsm_editor_protocol::BuiltinTextureSlot,
+    /// Texture asset UUID to bind, or omit/null to clear the slot.
+    #[serde(default)]
+    pub texture: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProceduralArg {
     Checker,
@@ -334,6 +513,18 @@ pub struct MaterialTextureParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MaterialBufferParams {
+    /// Mesh node UUID (must already have a custom material assigned).
+    pub node: String,
+    /// Declared buffer slot name on the material.
+    pub slot: String,
+    /// The buffer's f32 words in declaration order (e.g. 4·N floats for an
+    /// `array<vec4<f32>>` of N elements). Empty = clear the slot.
+    #[serde(default)]
+    pub values: Vec<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct LightColorParams {
     /// Light node UUID.
     pub node: String,
@@ -345,6 +536,57 @@ pub struct LightColorParams {
 pub struct LightScalarParams {
     /// Light node UUID.
     pub node: String,
+    pub value: f32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SolveIkParams {
+    /// Chain TIP joint node UUID (e.g. a foot); the chain is its parent (knee)
+    /// and grandparent (upper leg) from the scene hierarchy.
+    pub end_node: String,
+    /// World-space target position for the tip.
+    pub target: [f32; 3],
+    /// Optional world-space pole hint — the chain bends toward it (e.g. put it
+    /// in front of a knee). Omit to keep the chain's current bend plane.
+    pub pole: Option<[f32; 3]>,
+    /// Apply the solution (default true): one DispatchBatch of two
+    /// SetTransforms = one undo step. False = solve-only (returns rotations).
+    #[serde(default = "default_true_param")]
+    pub apply: bool,
+}
+
+fn default_true_param() -> bool {
+    true
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SkinWeightsGetParams {
+    /// Skinned node UUID.
+    pub node: String,
+    /// ORIGINAL vertex indices to read; empty = every vertex.
+    #[serde(default)]
+    pub indices: Vec<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SkinWeightsSetParams {
+    /// Skinned node UUID.
+    pub node: String,
+    /// Per-vertex rewrites: { vertex, joints:[u32;4], weights:[f32;4] }.
+    pub entries: Vec<awsm_editor_protocol::SkinWeightEntry>,
+    /// Rescale each entry's weights to sum to 1.
+    #[serde(default)]
+    pub normalize: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MorphWeightParams {
+    /// Mesh node UUID (a node whose mesh has morph targets).
+    pub node: String,
+    /// Morph target index (0-based; `get_morph_data` reports the target count).
+    pub index: u32,
+    /// New weight (0.0 = off, 1.0 = full; out-of-[0,1] extrapolates, matching
+    /// glTF semantics).
     pub value: f32,
 }
 
@@ -516,6 +758,40 @@ pub struct TrackDataParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackIndexParams {
+    pub clip: String,
+    pub track: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackMuteParams {
+    pub clip: String,
+    pub track: u32,
+    pub mute: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackSoloParams {
+    pub clip: String,
+    pub track: u32,
+    pub solo: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TrackSamplerParams {
+    pub clip: String,
+    pub track: u32,
+    /// step | linear | cubic
+    pub sampler: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StepPlayheadParams {
+    /// home | prev | next | end
+    pub kind: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClipNameParams {
     pub clip: String,
     pub name: String,
@@ -602,9 +878,9 @@ pub struct BatchJsonParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct QueryJsonParams {
-    /// A raw `EditorQuery` as JSON, internally tagged by `"query"`. Example:
-    /// `{"query":"canvas_pixels","coords":[[100,100],[200,200]]}`.
-    pub query: Value,
+    /// Strongly-typed `EditorQuery` (the schema lists every variant, tagged by
+    /// `"query"`). Example: `{"query":"canvas_pixels","coords":[[100,100],[200,200]]}`.
+    pub query: Flexible<EditorQuery>,
 }
 
 // ──────────────────────────────── the tools ─────────────────────────────────
@@ -638,7 +914,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "The last `limit` editor notices (toasts: info/warning/error) — surfaces runtime errors otherwise invisible over MCP. For material compile errors prefer get_material_diagnostics."
+        description = "The last `limit` log entries: `logs` = editor toasts (info/warning/error notices), and `tracing` = raw `tracing` events (WARN/ERROR/etc. from the render loop, bridges, loader — the same lines you'd see in the browser devtools console, otherwise invisible over MCP). For material compile errors prefer get_material_diagnostics."
     )]
     async fn get_console_logs(
         &self,
@@ -646,6 +922,39 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::ConsoleLogs {
             limit: p.limit.unwrap_or(50),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Live memory + renderer-object counts for leak detection and soak testing: Chrome JS-heap bytes (used/total/limit; zeros on other browsers) plus renderer counts (meshes, transforms, materials, lines, compiled render/compute pipelines). Sample repeatedly over minutes — flat-ish slopes are healthy; a steady climb on an idle scene is a leak. Pure read."
+    )]
+    async fn get_memory_stats(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MemoryStats).await
+    }
+
+    #[tool(
+        description = "Renderer-side animation runtime state — the 'why doesn't my clip pose the rig' probe. Returns the lowered clip_groups, RESOLVED channel count, per_clip channel counts, rest_entries, mixer_layers, plus the controller's current_clip / authored_tracks / playing / playhead. If resolved_channels < authored_tracks, some tracks failed to resolve (target node/material pending or deleted); resolved_channels == 0 with a live current_clip means every track targets a node that no longer exists (e.g. an orphaned clip left after its imported model was deleted). Pure read."
+    )]
+    async fn get_animation_runtime(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::AnimationRuntime).await
+    }
+
+    #[tool(
+        description = "Replace a built-in library material's VARIANT definition wholesale (idempotent full MaterialDef as JSON, undoable; assigned meshes re-materialize). Key fields: shading ({\"pbr\":null} | {\"unlit\":null} | {\"toon\":{...}} | {\"flip_book\":{\"cols\":2,\"rows\":2,\"frame_count\":4,\"fps\":2.0,\"time_offset\":0.0,\"mode\":\"loop\",\"flip_y\":false}}), alpha_mode ({\"opaque\":null} | {\"mask\":{\"cutoff\":0.5}} | {\"blend\":null}), double_sided, base_color (rgba), base_color_texture ({\"asset\":\"<texture-asset-id>\"} — for a FlipBook this is the ATLAS), label. Read the current def from get_snapshot first and send it back modified. A Mask-mode FlipBook = an ANIMATED CUTOUT (alpha-tested opaque, hole-shaped shadows)."
+    )]
+    async fn update_builtin_material(
+        &self,
+        Parameters(p): Parameters<UpdateBuiltinParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = parse_asset(&p.id)?;
+        let def: awsm_editor_protocol::MaterialDef = serde_json::from_value(p.def.clone())
+            .map_err(|e| {
+                McpError::invalid_params(format!("def does not parse as a MaterialDef: {e}"), None)
+            })?;
+        self.dispatch(EditorCommand::UpdateBuiltinMaterial {
+            id,
+            def: Box::new(def),
         })
         .await
     }
@@ -736,6 +1045,78 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(
+        description = "Bake the whole scene to a binary glTF and return the .glb bytes base64-encoded. Built-in PBR → glTF PBR; Unlit → KHR_materials_unlit; custom/Toon → AWSM_materials_none (no embedded material). Textures are referenced-only."
+    )]
+    async fn export_scene_glb(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ExportGlb { node: None }).await
+    }
+
+    #[tool(
+        description = "Bake one node (and its subtree) to a binary glTF and return the .glb bytes base64-encoded. Same material mapping as export_scene_glb."
+    )]
+    async fn export_node_glb(
+        &self,
+        Parameters(p): Parameters<ExportNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ExportGlb {
+            node: Some(parse_node(&p.node)?),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Geometry stats for a node's resolved mesh (Primitive/Mesh/Sweep): vertex+triangle counts, bbox, centroid, surface area, volume, watertight. The perceive half of a measure→adjust loop."
+    )]
+    async fn get_mesh_stats(
+        &self,
+        Parameters(p): Parameters<ExportNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MeshStats {
+            node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Resolve the material a node actually RENDERS with — the direct answer to 'what material is on this node?' (otherwise only reachable by parsing the opaque NodeKind blob from get_node_details). Returns { assigned, kind: builtin|custom|unassigned|none, asset (material UUID), name, shading, base_color }. `unassigned` = a geometry node with no material (renders magenta); `none` = not a geometry node."
+    )]
+    async fn resolve_node_material(
+        &self,
+        Parameters(p): Parameters<ExportNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ResolveNodeMaterial {
+            node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Silhouette radius profile of a node's mesh along an axis (0=X,1=Y,2=Z) in `samples` bins, as [[height,radius],…]. Pairs with a lathe (height,radius) profile — measure the tip radius, adjust, re-measure."
+    )]
+    async fn get_mesh_cross_section(
+        &self,
+        Parameters(p): Parameters<MeshCrossSectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MeshCrossSection {
+            node: parse_node(&p.node)?,
+            axis: p.axis,
+            samples: p.samples,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bake the whole project to a player runtime bundle DIRECTORY: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory: one geometry-only `assets/<id>.glb` per non-primitive mesh (bare primitives stay procedural in scene.toml), custom-material wgsl folders, and referenced textures. Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips). A read; returns the file set `{name, files:[{path, base64 bytes}]}` (result kind `player_bundle`). Skinned/morph meshes' glb re-export from source is a follow-on (static geometry for now)."
+    )]
+    async fn export_player_bundle(
+        &self,
+        Parameters(p): Parameters<ExportBundleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ExportPlayerBundle { name: p.name })
+            .await
+    }
+
     #[tool(description = "Mean/min/max luma over a canvas region (or the whole canvas).")]
     async fn canvas_stats(
         &self,
@@ -752,9 +1133,7 @@ impl EditorMcp {
         &self,
         Parameters(p): Parameters<QueryJsonParams>,
     ) -> Result<CallToolResult, McpError> {
-        let q: EditorQuery = serde_json::from_value(p.query)
-            .map_err(|e| McpError::invalid_params(format!("bad query: {e}"), None))?;
-        self.query(q).await
+        self.query(p.query.0).await
     }
 
     // ── screenshots ─────────────────────────────────────────────────────────
@@ -857,6 +1236,19 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::Delete {
             id: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bake a SKINNED mesh node to a static, EDITABLE mesh: discards the skin (joints/weights + skeleton) and captures the bind-pose geometry into a new captured Mesh asset, swapping the node from SkinnedMesh → Mesh. This is the TERMINAL, explicit bridge that makes an imported rigged mesh editable — a hard prerequisite for ANY geometry op (set_mesh_modifiers, vertex tools, get_mesh_layers, select_vertices_where) on it, which otherwise error 'node <id> is skinned; call drop_skinning first'. The mesh stops animating after this. Errors if the node isn't a SkinnedMesh. Undoable (restores the prior SkinnedMesh kind)."
+    )]
+    async fn drop_skinning(
+        &self,
+        Parameters(p): Parameters<NodeArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DropSkinning {
+            node: parse_node(&p.node)?,
         })
         .await
     }
@@ -1040,11 +1432,32 @@ impl EditorMcp {
         self.dispatch(EditorCommand::SetSelection { ids }).await
     }
 
+    #[tool(
+        description = "Highlight a node mesh's vertices in the viewport (read-only overlay; no geometry change). Pairs with select_vertices_where: run that query to get matching indices, then call this so the human can SEE which vertices matched (a small amber cross marks each). Pass an empty `indices` to clear the highlight."
+    )]
+    async fn set_vertex_selection(
+        &self,
+        Parameters(p): Parameters<VertexSelectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetVertexSelection {
+            node: parse_node(&p.node)?,
+            indices: p.indices,
+        })
+        .await
+    }
+
     // ── project / import / history ──────────────────────────────────────────
 
     #[tool(description = "Start a fresh, empty project (clears undo history).")]
     async fn new_project(&self) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::NewProject).await
+    }
+
+    #[tool(
+        description = "Round-trip self-test: bake the CURRENT project to an in-memory player bundle (scene.toml + assets/), reset to empty, then reload it through populate_awsm_scene (the runtime/player path). DESTRUCTIVE: the viewport ends up showing the reload and the scene tree is left empty (reload your project to keep editing). Workflow: screenshot_scene (authored) → load_player_bundle → wait_render_settled → screenshot_scene (runtime reload), and compare. Geometry/built-in-materials/lights load today; textures, custom-WGSL, glb-mesh materials, cameras + clips are follow-ons."
+    )]
+    async fn load_player_bundle(&self) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::LoadPlayerBundle).await
     }
 
     #[tool(description = "Load a project from a base URL (fetches <base>/project.toml).")]
@@ -1097,7 +1510,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Create a fresh built-in material (pbr | unlit). Returns the new material id."
+        description = "Create a fresh built-in material (pbr | unlit | toon | flipbook). Returns the new material id. Flipbook: the atlas is the base-color texture; 4×4/16-frame/12fps/loop defaults — knob edits + Mask (animated cutout) via dispatch_command."
     )]
     async fn add_builtin_material(
         &self,
@@ -1106,10 +1519,257 @@ impl EditorMcp {
         let shading = match p.shading {
             ShadingArg::Pbr => MaterialShading::Pbr,
             ShadingArg::Unlit => MaterialShading::Unlit,
+            ShadingArg::Toon => MaterialShading::Toon {
+                diffuse_bands: 3,
+                rim_strength: 0.4,
+                specular_steps: 2,
+                shininess: 32.0,
+                rim_power: 2.0,
+            },
+            ShadingArg::Flipbook => MaterialShading::FlipBook {
+                cols: 4,
+                rows: 4,
+                frame_count: 16,
+                fps: 12.0,
+                time_offset: 0.0,
+                mode: awsm_editor_protocol::FlipBookPlayMode::Loop,
+                flip_y: false,
+            },
         };
         let id = AssetId::new();
         self.dispatch_echo_asset(EditorCommand::AddBuiltinMaterial { id, shading }, id)
             .await
+    }
+
+    #[tool(
+        description = "Retired/no-op: every procedural node is already an editable Mesh backed by a ModifierStack (MeshDef), so there is nothing to convert. Echoes the node's EXISTING mesh asset id (use it with set_mesh_modifiers / vertex tools). Errors if the node isn't a Mesh."
+    )]
+    async fn convert_to_editable_mesh(
+        &self,
+        Parameters(p): Parameters<ExportNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        // Resolve the node's existing mesh asset id from its serialized kind.
+        let resp = self
+            .req(Request::Query(EditorQuery::NodeKindDetails {
+                nodes: vec![node],
+            }))
+            .await?;
+        let Response::Query(qr) = resp else {
+            return Err(unexpected(resp));
+        };
+        let QueryResult::Map(m) = *qr else {
+            return Err(McpError::internal_error("unexpected kind result", None));
+        };
+        let entry = m.entries.get(&node.to_string());
+        // A SkinnedMesh isn't editable — steer the agent to drop_skinning, which
+        // bakes its bind pose into an editable Mesh.
+        if entry.and_then(|v| v.get("skinned_mesh")).is_some() {
+            return Err(McpError::invalid_params(
+                format!("node {node} is skinned; call drop_skinning first"),
+                None,
+            ));
+        }
+        let mesh = entry
+            .and_then(|v| v.get("mesh"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError::invalid_params(format!("node {node} is not a Mesh"), None))?;
+        Ok(text(mesh.to_string()))
+    }
+
+    #[tool(
+        description = "Replace an editable mesh's procedural recipe (modifier stack). `mesh` is the mesh asset UUID; `stack` is a ModifierStack JSON { base, modifiers }. base = primitive/lathe/superquadric/sweep/captured/sdf; modifiers = ordered taper/twist/bend/inflate/spherify/roughen/subdivide/smooth/mirror/array/displace. **Read the `awsm://docs/mesh-tools` resource for the full JSON shapes + copy-paste examples (twist, lathe bat, SDF mug).** Re-bakes geometry; the recipe lives in the project, the .mesh.bin is a regenerable cache."
+    )]
+    async fn set_mesh_modifiers(
+        &self,
+        Parameters(p): Parameters<SetMeshModifiersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mesh = AssetId(uuid::Uuid::parse_str(&p.mesh).map_err(|e| {
+            McpError::invalid_params(format!("invalid mesh id {:?}: {e}", p.mesh), None)
+        })?);
+        self.dispatch(EditorCommand::SetMeshModifiers {
+            mesh,
+            stack: p.stack.0,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Append one modifier to the END of a mesh's modifier stack — the convenience alternative to resending the whole stack via set_mesh_modifiers. `mesh` is the mesh asset UUID; `modifier` is a single Modifier object (e.g. {\"twist\":{\"axis\":\"y\",\"turns\":2}}, {\"taper\":{\"axis\":\"y\",\"factor\":0.3}}, {\"subdivide\":{\"iterations\":2}}). Every Mesh node already carries a stack (its base shape), so this works on any mesh asset id; errors only if `mesh` isn't a mesh asset. Re-bakes geometry; each call is one discrete undo step. Read get_mesh_modifiers to see the current stack + indices. Full modifier shapes: the `awsm://docs/mesh-tools` resource."
+    )]
+    async fn add_modifier(
+        &self,
+        Parameters(p): Parameters<AddModifierParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::AddModifier {
+            mesh: parse_asset(&p.mesh)?,
+            modifier: p.modifier.0,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Replace the modifier at `index` (zero-based) in a mesh's existing modifier stack with `modifier`. `mesh` is the mesh asset UUID. PRECONDITION: the mesh must already have a modifier stack and `index` must be in range — both error otherwise. Re-bakes geometry; one discrete undo step. Use get_mesh_modifiers to read the current stack + valid indices first. Modifier shapes: the `awsm://docs/mesh-tools` resource."
+    )]
+    async fn set_modifier(
+        &self,
+        Parameters(p): Parameters<SetModifierParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetModifier {
+            mesh: parse_asset(&p.mesh)?,
+            index: p.index,
+            modifier: p.modifier.0,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove the modifier at `index` (zero-based) from a mesh's existing modifier stack. `mesh` is the mesh asset UUID. PRECONDITION: the mesh must already have a modifier stack and `index` must be in range — both error otherwise. Re-bakes geometry; one discrete undo step. Use get_mesh_modifiers to read the current stack + valid indices first."
+    )]
+    async fn remove_modifier(
+        &self,
+        Parameters(p): Parameters<RemoveModifierParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::RemoveModifier {
+            mesh: parse_asset(&p.mesh)?,
+            index: p.index,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Read a mesh's current modifier-stack recipe ({ base, modifiers }) as JSON. `mesh` is the mesh asset UUID. Returns `null` when the mesh has no recipe yet (a raw captured/converted mesh — call set_mesh_modifiers to give it a base before add_/set_/remove_modifier). The read half of incremental modifier editing: read the stack, find the index you want, then add_/set_/remove_modifier."
+    )]
+    async fn get_mesh_modifiers(
+        &self,
+        Parameters(p): Parameters<GetMeshModifiersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MeshModifiers {
+            mesh: parse_asset(&p.mesh)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Replace specific vertices' positions on an editable mesh (raw editing). `indices[k]` ↦ `positions[k]`; normals are recomputed. Undo restores the prior positions (sparse)."
+    )]
+    async fn set_vertex_positions(
+        &self,
+        Parameters(p): Parameters<SetVertexPositionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetVertexPositions {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            positions: p.positions,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Translate a vertex selection with a smooth radial falloff (server computes the per-vertex weights). `falloff` 0 = hard move of exactly the selection. Pairs with select-by-predicate + get_mesh_stats for cursor-free editing."
+    )]
+    async fn soft_transform_vertices(
+        &self,
+        Parameters(p): Parameters<SoftTransformParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SoftTransformVertices {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            translation: p.translation,
+            falloff: p.falloff,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bake an editable mesh's modifier stack into raw triangles and clear the recipe (the deliberate heavy snapshot, undoable). After this the mesh is raw-vertex-edited via set_vertex_positions / soft_transform_vertices."
+    )]
+    async fn collapse_mesh_stack(
+        &self,
+        Parameters(p): Parameters<MeshIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::CollapseMeshStack {
+            mesh: parse_asset(&p.mesh)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON, e.g. {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} (percent is a 0..1 FRACTION of the axis extent — 0.2 = top 20%; values >1 are clamped to 1.0 = everything) or {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection)."
+    )]
+    async fn select_vertices_where(
+        &self,
+        Parameters(p): Parameters<SelectVerticesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::SelectVerticesWhere {
+            node: parse_node(&p.node)?,
+            predicate: p.predicate.0,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Paint per-vertex COLORS on an editable mesh. `mesh` is the mesh asset UUID; `indices` are vertex indices (into the resolved/baked topology — get them from select_vertices_where); `color` is a linear RGBA [r,g,b,a]. TERMINAL/COLLAPSE: the first per-vertex authoring op freezes the procedural stack to a Captured base (topology locks; modifier params bake in) — after this only the sparse override layer is editable. NOTE: painted colors only DISPLAY under a material that reads vertex colors — built-in PBR with `vertex_colors_enabled`, or a custom material that samples them (see the texture-splatting recipe in `awsm://docs/mesh-tools`). Re-bakes geometry; coalesces consecutive strokes on one mesh into one undo step. Verify with get_vertex_data."
+    )]
+    async fn paint_vertex_colors(
+        &self,
+        Parameters(p): Parameters<PaintVertexColorsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::PaintVertexColors {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            color: p.color,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Override per-vertex NORMALS on an editable mesh (hand-author shading — e.g. flatten a face, fake a crease). `mesh` is the mesh asset UUID; `indices` are vertex indices; `normal` is the vector [x,y,z] (unit-length) set on each. An explicit normal override always wins over the auto-recompute that follows position sculpting. TERMINAL/COLLAPSE: freezes the procedural stack on first authoring op (see paint_vertex_colors). Re-bakes geometry; coalesces on one mesh. Verify with get_vertex_data."
+    )]
+    async fn set_vertex_normals(
+        &self,
+        Parameters(p): Parameters<SetVertexNormalsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetVertexNormals {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            normal: p.normal,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Project-wide FINALIZE: collapse every Mesh asset's modifier stack to a frozen-topology Captured base (bakes all procedural params + override layers into the geometry cache). The deliberate whole-project bake before export/handoff. Undoable (restores every mesh's prior stack as one step). No params."
+    )]
+    async fn bake_all(&self) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::BakeAll {}).await
+    }
+
+    #[tool(
+        description = "Read the FINAL (post-eval + override) per-vertex data for specific indices of a node's resolved mesh: returns `{ vertex_count, vertices: [{ index, position, normal, color, uv }] }` (color/uv null when the mesh has no such channel). The read counterpart to paint_vertex_colors / set_vertex_normals / set_vertex_positions — confirm what your last authoring op actually produced. `node` is the node UUID; `indices` the verts to read."
+    )]
+    async fn get_vertex_data(
+        &self,
+        Parameters(p): Parameters<GetVertexDataParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetVertexData {
+            node: parse_node(&p.node)?,
+            indices: p.indices,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Read a node mesh's LAYER SUMMARY — what's live (still procedural) vs locked (frozen-topology authoring): `{ base, modifiers, modifier_count, frozen_topology, has_overrides, override_counts:{positions,colors,normals,uvs} }`. `base` is primitive/lathe/superquadric/sweep/sdf/captured; `frozen_topology` true means per-vertex authoring already collapsed the stack (terminal). The perceive for deciding whether to edit modifiers (still procedural) or author per-vertex (terminal). `node` is the node UUID."
+    )]
+    async fn get_mesh_layers(
+        &self,
+        Parameters(p): Parameters<GetMeshLayersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetMeshLayers {
+            node: parse_node(&p.node)?,
+        })
+        .await
     }
 
     #[tool(description = "Delete a custom (dynamic/built-in) material by id.")]
@@ -1208,6 +1868,52 @@ impl EditorMcp {
                 QueryResult::Diagnostics(d) if d.ok => Ok(text("ok")),
                 QueryResult::Diagnostics(d) => Err(McpError::internal_error(
                     format!("WGSL compile failed:\n{}", fmt_diag_errors(&d.errors)),
+                    None,
+                )),
+                QueryResult::Error { error } => Err(McpError::internal_error(error, None)),
+                other => Ok(text(
+                    serde_json::to_string_pretty(&other).unwrap_or_default(),
+                )),
+            },
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        description = "Set a custom MASK material's SECOND, alpha-only WGSL window — a cheap `f32`-returning fragment compiled into the masked visibility raster so the cutout is alpha-tested (holes see-through + hole-shaped shadows + transmission-through-holes). Body must `return` an f32 alpha in [0,1]; the raster discards below the material's cutoff. Inputs arrive on `input` (e.g. input.uv, input.barycentric, input.material.<field>, material_sample_<tex>(input.material, input.uv)). Only meaningful when alpha mode = mask (set via set_material_alpha_mode). Empty clears it. Recompiles + reports diagnostics like set_material_wgsl."
+    )]
+    async fn set_material_alpha_wgsl(
+        &self,
+        Parameters(p): Parameters<SetWgslParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = parse_asset(&p.material)?;
+        if let Response::Err(e) = self
+            .req(Request::Dispatch(
+                EditorCommand::SetCustomMaterialAlphaWgsl { id, wgsl: p.wgsl },
+            ))
+            .await?
+        {
+            return Err(McpError::internal_error(e, None));
+        }
+        // Synchronous re-register so the masked variant recompiles + diagnostics
+        // are recorded on the material.
+        if let Response::Err(e) = self
+            .req(Request::Dispatch(EditorCommand::RegisterMaterial { id }))
+            .await?
+        {
+            return Err(McpError::internal_error(e, None));
+        }
+        match self
+            .req(Request::Query(EditorQuery::MaterialDiagnostics {
+                material: id,
+            }))
+            .await?
+        {
+            Response::Query(qr) => match *qr {
+                QueryResult::Diagnostics(d) if d.ok => Ok(text("ok")),
+                QueryResult::Diagnostics(d) => Err(McpError::internal_error(
+                    format!("alpha WGSL compile failed:\n{}", fmt_diag_errors(&d.errors)),
                     None,
                 )),
                 QueryResult::Error { error } => Err(McpError::internal_error(error, None)),
@@ -1340,6 +2046,28 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Bind raw buffer DATA into a mesh node's custom-material buffer slot (by slot name), or clear it (empty `values`). `values` are f32 words in declaration order — e.g. for an `array<vec4<f32>>` slot pass 4·N floats (the shader reads them via `extras_load_vec4_f32(<slot>_offset + i*4)`). The node needs a custom material assigned with a matching declared buffer slot. The bundle bake emits the bytes as `assets/<id>.bin`."
+    )]
+    async fn set_material_buffer(
+        &self,
+        Parameters(p): Parameters<MaterialBufferParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // f32 values → little-endian u32 bit patterns (the extras pool stores
+        // u32 words; the shader bitcasts back via `extras_load_f32`).
+        let data = if p.values.is_empty() {
+            None
+        } else {
+            Some(p.values.iter().map(|f| f.to_bits()).collect())
+        };
+        self.dispatch(EditorCommand::SetMaterialBuffer {
+            node: parse_node(&p.node)?,
+            slot: p.slot,
+            data,
+        })
+        .await
+    }
+
+    #[tool(
         description = "Import a raster texture (PNG/JPEG/WebP) from a URL: fetch + decode + upload to the GPU + add the asset. Returns the new texture id. Cross-origin URLs need CORS headers. Bind with set_material_texture."
     )]
     async fn import_texture_from_url(
@@ -1385,6 +2113,21 @@ impl EditorMcp {
             node: parse_node(&p.node)?,
             param,
             value: p.value,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bind a texture asset onto a mesh node's BUILT-IN (inline PBR) material slot: base_color | metallic_roughness | normal | occlusion | emissive. Omit `texture` to clear. Create textures with import_texture_from_url (raster) or add_texture_asset (procedural). (set_material_texture is the custom-WGSL-material counterpart.)"
+    )]
+    async fn set_node_texture(
+        &self,
+        Parameters(p): Parameters<BuiltinTextureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetBuiltinTexture {
+            node: parse_node(&p.node)?,
+            slot: p.slot,
+            texture: parse_asset_opt(&p.texture)?,
         })
         .await
     }
@@ -1454,17 +2197,221 @@ impl EditorMcp {
         .await
     }
 
+    // ── morphs (live preview; persistent poses are animation tracks) ─────────
+
     #[tool(
-        description = "Set the scene environment (skybox + IBL). Use 'builtin' (or omit) for the built-in default cubemap/lighting, or pass KTX texture asset UUIDs. A fresh scene already seeds the built-in environment; use this to switch to custom KTX."
+        description = "Set one morph-target weight on a node's mesh, LIVE in the renderer (transient preview — it does not persist in the scene and a playing/scrubbing morph animation track will overwrite it). 0-based index; out-of-range or a morph-less node is a no-op. Read back with get_morph_data; author persistent poses as animation tracks (add_track morph)."
+    )]
+    async fn set_morph_weight(
+        &self,
+        Parameters(p): Parameters<MorphWeightParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetMorphWeight {
+            node: parse_node(&p.node)?,
+            index: p.index,
+            value: p.value,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Live morph data per node: { target_count, weights, names } from the renderer's morph buffer (names from the glTF mesh.extras.targetNames convention; empty when the source had none) (what set_morph_weight writes and morph animation tracks drive). Pass node UUIDs, or empty for all. Nodes without MATERIALIZED morphs are omitted — empty on a morph-bearing scene means not-yet-materialized, not no-morphs."
+    )]
+    async fn get_morph_data(
+        &self,
+        Parameters(p): Parameters<NodesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::MorphData {
+            nodes: parse_nodes(&p.nodes)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Rig discovery per skinned node: { source, primitive_index, joints:[{node,index,name,translation,rotation,scale}] }. Joints ARE ordinary scene nodes — POSE one with set_node_transform on its `node` id (the skin deforms live), ANIMATE one with add_track targeting it (transform). Pass node UUIDs, or empty for all skinned nodes."
+    )]
+    async fn get_skin_data(
+        &self,
+        Parameters(p): Parameters<NodesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::SkinData {
+            nodes: parse_nodes(&p.nodes)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Per-vertex skin weights (set 0) for a skinned node: { vertex_count, set_count, weights: { \"<vertex>\": { joints:[4], weights:[4] } } }. `joints` index the skin's joint ARRAY (the order get_skin_data lists joints), not scene nodes. Empty indices = all vertices (fox ≈ 1.7k — fine). Pairs with set_skin_weights."
+    )]
+    async fn get_skin_weights(
+        &self,
+        Parameters(p): Parameters<SkinWeightsGetParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetSkinWeights {
+            node: parse_node(&p.node)?,
+            indices: p.indices,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Rewrite per-vertex skin weights (set 0) on a skinned node's LIVE skin — the mesh re-deforms immediately, undoable. entries = [{ vertex, joints:[u32;4], weights:[f32;4] }]; joints index the skin's joint ARRAY (get_skin_data order); normalize rescales each entry to sum 1. Verify by posing the newly-weighted joint."
+    )]
+    async fn set_skin_weights(
+        &self,
+        Parameters(p): Parameters<SkinWeightsSetParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetSkinWeights {
+            node: parse_node(&p.node)?,
+            entries: p.entries,
+            normalize: p.normalize,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Two-bone IK: bring a chain TIP (end_node, e.g. a foot joint) to a world-space target, bending at its parent (knee) under its grandparent (upper leg). Solves analytically and (by default) APPLIES the two joint rotations as one undoable batch — auto-key compatible. `pole` biases the bend direction. Returns { root_node, mid_node, root_rotation, mid_rotation, reach } (reach < 1 ⇒ target beyond the chain's span, clamped). Discover chains via get_skin_data; clips OWN bones while active (delete/pause first)."
+    )]
+    async fn solve_ik(
+        &self,
+        Parameters(p): Parameters<SolveIkParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let end_node = parse_node(&p.end_node)?;
+        // 1. Solve (read-only).
+        let sol = match self
+            .req(Request::Query(EditorQuery::SolveIk {
+                end_node,
+                target: p.target,
+                pole: p.pole,
+            }))
+            .await?
+        {
+            Response::Query(q) => *q,
+            Response::Err(e) => return Err(McpError::internal_error(e, None)),
+            other => {
+                return Err(McpError::internal_error(
+                    format!("unexpected response: {other:?}"),
+                    None,
+                ))
+            }
+        };
+        let entries = match &sol {
+            awsm_editor_protocol::QueryResult::Map(m) if m.kind == "ik_solution" => &m.entries,
+            awsm_editor_protocol::QueryResult::Error { error } => {
+                return Err(McpError::internal_error(error.clone(), None))
+            }
+            other => {
+                return Err(McpError::internal_error(
+                    format!("unexpected solve result: {other:?}"),
+                    None,
+                ))
+            }
+        };
+        if !p.apply {
+            return Ok(text(serde_json::to_string(entries).unwrap_or_default()));
+        }
+        // 2. Apply: current locals (translation/scale preserved) + solved
+        // rotations, as ONE batch (one undo step).
+        let get = |k: &str| entries.get(k).cloned().unwrap_or(serde_json::Value::Null);
+        let root = get("root_node")
+            .as_str()
+            .map(parse_node)
+            .transpose()?
+            .ok_or_else(|| McpError::internal_error("bad root_node", None))?;
+        let mid = get("mid_node")
+            .as_str()
+            .map(parse_node)
+            .transpose()?
+            .ok_or_else(|| McpError::internal_error("bad mid_node", None))?;
+        let quat = |k: &str| -> Result<[f32; 4], McpError> {
+            serde_json::from_value(get(k))
+                .map_err(|e| McpError::internal_error(format!("bad {k}: {e}"), None))
+        };
+        let (rq, mq) = (quat("root_rotation")?, quat("mid_rotation")?);
+        // Current locals for translation/scale.
+        let tr = match self
+            .req(Request::Query(EditorQuery::NodeTransforms {
+                nodes: vec![root, mid],
+            }))
+            .await?
+        {
+            Response::Query(q) => *q,
+            other => {
+                return Err(McpError::internal_error(
+                    format!("unexpected transforms response: {other:?}"),
+                    None,
+                ))
+            }
+        };
+        let tmap = match &tr {
+            awsm_editor_protocol::QueryResult::Map(m) => &m.entries,
+            _ => return Err(McpError::internal_error("bad transforms result", None)),
+        };
+        let trs_of = |id: NodeId, rot: [f32; 4]| -> Result<awsm_editor_protocol::Trs, McpError> {
+            let e = tmap
+                .get(&id.to_string())
+                .ok_or_else(|| McpError::internal_error("joint transform missing", None))?;
+            let v3 = |k: &str| -> [f32; 3] {
+                serde_json::from_value(e.get(k).cloned().unwrap_or_default())
+                    .unwrap_or([0.0, 0.0, 0.0])
+            };
+            let mut scale = v3("scale");
+            if scale == [0.0, 0.0, 0.0] {
+                scale = [1.0, 1.0, 1.0];
+            }
+            Ok(awsm_editor_protocol::Trs {
+                translation: v3("translation"),
+                rotation: rot,
+                scale,
+            })
+        };
+        let cmds = vec![
+            EditorCommand::SetTransform {
+                id: root,
+                transform: trs_of(root, rq)?,
+            },
+            EditorCommand::SetTransform {
+                id: mid,
+                transform: trs_of(mid, mq)?,
+            },
+        ];
+        if let Response::Err(e) = self.req(Request::DispatchBatch(cmds)).await? {
+            return Err(McpError::internal_error(e, None));
+        }
+        Ok(text(serde_json::to_string(entries).unwrap_or_default()))
+    }
+
+    #[tool(
+        description = "Set the scene environment (skybox + IBL). Each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default cubemap/lighting, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap (fetched + registered on the fly, like import_texture_from_url). IBL needs both ibl_prefiltered + ibl_irradiance. A fresh scene already seeds the built-in environment."
     )]
     async fn set_environment(
         &self,
         Parameters(p): Parameters<EnvironmentParams>,
     ) -> Result<CallToolResult, McpError> {
+        let is_url = |s: &str| s.starts_with("http://") || s.starts_with("https://");
+        // Resolve a cubemap arg → an existing KTX asset id, registering a
+        // URL-sourced asset first when given a URL (the cubemap analogue of
+        // import_texture_from_url; the env-sync fetches the bytes on apply).
+        macro_rules! resolve_ktx {
+            ($v:expr) => {{
+                let v: &str = $v;
+                if is_url(v) {
+                    let id = AssetId::new();
+                    self.dispatch(EditorCommand::ImportKtxEnvFromUrl {
+                        id,
+                        url: v.to_string(),
+                    })
+                    .await?;
+                    id
+                } else {
+                    parse_asset(v)?
+                }
+            }};
+        }
         let skybox = match p.skybox.as_deref() {
             None | Some("builtin") | Some("builtin_default") => SkyboxConfig::BuiltInDefault,
-            Some(uuid) => SkyboxConfig::Ktx {
-                asset_id: parse_asset(uuid)?,
+            Some(v) => SkyboxConfig::Ktx {
+                asset_id: resolve_ktx!(v),
             },
         };
         let ibl = match p.ibl_prefiltered.as_deref() {
@@ -1472,13 +2419,13 @@ impl EditorMcp {
             Some(prefiltered) => {
                 let irradiance = p.ibl_irradiance.as_deref().ok_or_else(|| {
                     McpError::invalid_params(
-                        "ibl_irradiance is required when ibl_prefiltered is a KTX asset UUID",
+                        "ibl_irradiance is required when ibl_prefiltered is set (KTX asset UUID or .ktx2 URL)",
                         None,
                     )
                 })?;
                 IblConfig::Ktx {
-                    prefiltered_asset_id: parse_asset(prefiltered)?,
-                    irradiance_asset_id: parse_asset(irradiance)?,
+                    prefiltered_asset_id: resolve_ktx!(prefiltered),
+                    irradiance_asset_id: resolve_ktx!(irradiance),
                 }
             }
         };
@@ -1781,6 +2728,75 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Delete a track (by index) from a clip. Undoable. Index is the track's position in the clip's tracks (see get_snapshot / get_track_data)."
+    )]
+    async fn delete_track(
+        &self,
+        Parameters(p): Parameters<TrackIndexParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DeleteTrack {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Mute / unmute a track (muted tracks don't contribute to the pose). Undoable."
+    )]
+    async fn set_track_mute(
+        &self,
+        Parameters(p): Parameters<TrackMuteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetTrackMute {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            mute: p.mute,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Solo / unsolo a track (when any track is soloed, only soloed tracks contribute). Undoable."
+    )]
+    async fn set_track_solo(
+        &self,
+        Parameters(p): Parameters<TrackSoloParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetTrackSolo {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            solo: p.solo,
+        })
+        .await
+    }
+
+    #[tool(description = "Set a track's interpolation sampler: step | linear | cubic. Undoable.")]
+    async fn set_track_sampler(
+        &self,
+        Parameters(p): Parameters<TrackSamplerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let sampler: SamplerKind = parse_enum(&p.sampler, "sampler")?;
+        self.dispatch(EditorCommand::SetTrackSampler {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            sampler,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Step the playhead: home (t=0) | prev (previous keyframe) | next | end (clip duration). Transport — not undoable."
+    )]
+    async fn step_playhead(
+        &self,
+        Parameters(p): Parameters<StepPlayheadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let kind: StepKind = parse_enum(&p.kind, "step kind")?;
+        self.dispatch(EditorCommand::StepPlayhead { kind }).await
+    }
+
+    #[tool(
         description = "Read a track's full stored data (target, sampler, mute/solo, times, keyframes incl. interp/tangents) — to verify what you authored."
     )]
     async fn get_track_data(
@@ -1803,8 +2819,7 @@ impl EditorMcp {
         &self,
         Parameters(p): Parameters<CommandJsonParams>,
     ) -> Result<CallToolResult, McpError> {
-        let cmd: EditorCommand = serde_json::from_value(p.command)
-            .map_err(|e| McpError::invalid_params(format!("bad command: {e}"), None))?;
+        let cmd: EditorCommand = json_arg(p.command, "command")?;
         self.dispatch(cmd).await
     }
 
@@ -1818,9 +2833,8 @@ impl EditorMcp {
         let cmds: Vec<EditorCommand> = p
             .commands
             .into_iter()
-            .map(serde_json::from_value)
-            .collect::<Result<_, _>>()
-            .map_err(|e| McpError::invalid_params(format!("bad command in batch: {e}"), None))?;
+            .map(|c| json_arg(c, "command in batch"))
+            .collect::<Result<_, _>>()?;
         match self.req(Request::DispatchBatch(cmds)).await? {
             Response::Ok => Ok(text("ok")),
             Response::Err(e) => Err(McpError::internal_error(e, None)),
@@ -2055,6 +3069,15 @@ impl ServerHandler for EditorMcp {
                 "Clips, tracks, keyframes + worked examples (spin, pulse).",
             ),
             res(
+                "awsm://docs/mesh-tools",
+                "Mesh tools",
+                "Authoring/editing geometry: set_mesh_modifiers (modifier stack + SDF) \
+                 JSON shapes, vertex selection/edit predicates, per-vertex authoring \
+                 (paint_vertex_colors / set_vertex_normals / sculpt + bake_all), \
+                 introspection (get_vertex_data / get_mesh_layers), export — with \
+                 copy-paste examples (twist, lathe bat, SDF mug, texture splatting).",
+            ),
+            res(
                 "awsm://docs/material-contract-opaque",
                 "Opaque material contract",
                 "The WGSL ABI for opaque/mask dynamic materials.",
@@ -2077,6 +3100,7 @@ impl ServerHandler for EditorMcp {
             "awsm://docs/agent-guide" => AGENT_GUIDE,
             "awsm://docs/material-recipes" => MATERIAL_RECIPES,
             "awsm://docs/animation" => ANIMATION_DOC,
+            "awsm://docs/mesh-tools" => MESH_TOOLS_DOC,
             "awsm://docs/material-contract-opaque" => CONTRACT_OPAQUE,
             "awsm://docs/material-contract-transparent" => CONTRACT_TRANSPARENT,
             other => {
@@ -2171,6 +3195,54 @@ fn parse_asset(s: &str) -> Result<AssetId, McpError> {
 
 fn parse_asset_opt(s: &Option<String>) -> Result<Option<AssetId>, McpError> {
     s.as_deref().map(parse_asset).transpose()
+}
+
+/// A tool argument that is **strongly typed** (its JSON Schema is `T`'s, so
+/// clients see the exact shape) yet tolerant of clients that deliver a nested
+/// object as a JSON *string* — it deserializes from either form. The best of
+/// both: typed/self-documenting AND robust.
+#[derive(Debug, Clone)]
+pub struct Flexible<T>(pub T);
+
+impl<'de, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Flexible<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let inner = match serde_json::Value::deserialize(d)? {
+            serde_json::Value::String(s) => serde_json::from_str(&s).map_err(Error::custom)?,
+            other => serde_json::from_value(other).map_err(Error::custom)?,
+        };
+        Ok(Flexible(inner))
+    }
+}
+
+// Schema is exactly `T`'s — clients that respect schemas send a structured object.
+impl<T: schemars::JsonSchema> schemars::JsonSchema for Flexible<T> {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        T::schema_name()
+    }
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        T::schema_id()
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        T::json_schema(generator)
+    }
+}
+
+/// Deserialize a free-form JSON tool argument into `T`. Some MCP clients deliver
+/// an untyped (schema-less) object argument as a JSON *string* rather than a
+/// nested object; accept both by re-parsing a string first. (For typed args
+/// prefer [`Flexible<T>`], which also publishes the schema.)
+fn json_arg<T: serde::de::DeserializeOwned>(
+    v: serde_json::Value,
+    what: &str,
+) -> Result<T, McpError> {
+    let v = match v {
+        serde_json::Value::String(s) => serde_json::from_str(&s)
+            .map_err(|e| McpError::invalid_params(format!("bad {what}: {e}"), None))?,
+        other => other,
+    };
+    serde_json::from_value(v)
+        .map_err(|e| McpError::invalid_params(format!("bad {what}: {e}"), None))
 }
 
 /// Parse a snake_case string into a scene-schema enum via serde (e.g. param /
@@ -2281,6 +3353,7 @@ const MCP_DOC: &str = include_str!("../../../docs/MCP.md");
 const AGENT_GUIDE: &str = include_str!("../../../docs/AGENT_GUIDE.md");
 const MATERIAL_RECIPES: &str = include_str!("../../../docs/dynamic-materials/recipes.md");
 const ANIMATION_DOC: &str = include_str!("../../../docs/ANIMATION_AUTHORING.md");
+const MESH_TOOLS_DOC: &str = include_str!("../../../docs/MESH_TOOLS.md");
 
 const PROMPT_AUTHOR_MATERIAL: &str = "\
 Author a lit custom WGSL material so it renders (never a silent black mesh):

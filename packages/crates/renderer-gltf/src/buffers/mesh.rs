@@ -18,6 +18,7 @@ use crate::buffers::{
     MeshBufferTriangleInfoWithOffset, MeshBufferVertexInfoWithOffset,
 };
 use crate::data::GltfDataHints;
+#[cfg(test)]
 use crate::error::AwsmGltfError;
 use awsm_renderer::meshes::buffer_info::MeshBufferVertexAttributeInfo;
 
@@ -34,13 +35,27 @@ pub(super) fn mesh_buffer_geometry_kind(
     primitive: &gltf::Primitive,
     hints: &GltfDataHints,
 ) -> GltfMeshBufferGeometryKind {
+    use crate::data::GltfGeometryOverride as Ov;
+    // A caller-applied material overrides the glb's own alpha (e.g. the bundle
+    // loader over a materialless geometry-only glb). Transparent → transparency
+    // geometry only (no visibility waste); the glb's own material is irrelevant.
+    match hints.geometry_override {
+        Ov::Opaque => return GltfMeshBufferGeometryKind::Visibility,
+        Ov::Transparent => return GltfMeshBufferGeometryKind::Transparency,
+        Ov::Both => return GltfMeshBufferGeometryKind::Both,
+        Ov::FromMaterial => {}
+    }
     if hints.hud {
         GltfMeshBufferGeometryKind::Both
     } else {
         let gltf_material = primitive.material();
 
         match gltf_material.alpha_mode() {
-            AlphaMode::Mask => GltfMeshBufferGeometryKind::Transparency,
+            // MASK is alpha-tested OPAQUE (glTF): visibility geometry, so it lands
+            // in `opaque_tex` for transmission + casts shadows. The per-fragment
+            // cutoff is applied by the masked `geometry` raster variant (matches
+            // `PbrMaterial::is_transparency_pass`, which no longer flags Mask).
+            AlphaMode::Mask => GltfMeshBufferGeometryKind::Visibility,
             AlphaMode::Blend => GltfMeshBufferGeometryKind::Transparency,
             AlphaMode::Opaque => match gltf_material.transmission() {
                 Some(transmission) => {
@@ -307,6 +322,8 @@ pub(super) fn convert_to_mesh_buffer(
     })
 }
 
+// Used only by the Phase-2b byte-identity REFERENCE writers (cfg(test)).
+#[cfg(test)]
 fn get_position_from_buffer(positions: &[u8], vertex_index: usize) -> Result<[f32; 3]> {
     let offset = vertex_index * 12; // 3 f32s = 12 bytes
 
@@ -352,6 +369,8 @@ fn get_position_from_buffer(positions: &[u8], vertex_index: usize) -> Result<[f3
     Ok([x, y, z])
 }
 
+// Used only by the Phase-2b byte-identity REFERENCE writers (cfg(test)).
+#[cfg(test)]
 fn get_vec3_from_buffer(buffer: &[u8], vertex_index: usize, name: &str) -> Result<[f32; 3]> {
     let offset = vertex_index * 12; // 3 f32s = 12 bytes
 
@@ -395,6 +414,8 @@ fn get_vec3_from_buffer(buffer: &[u8], vertex_index: usize, name: &str) -> Resul
     Ok([x, y, z])
 }
 
+// Used only by the Phase-2b byte-identity REFERENCE writers (cfg(test)).
+#[cfg(test)]
 fn get_vec4_from_buffer(buffer: &[u8], vertex_index: usize, name: &str) -> Result<[f32; 4]> {
     let offset = vertex_index * 16; // 4 f32s = 16 bytes
 

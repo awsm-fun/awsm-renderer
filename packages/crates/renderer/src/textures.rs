@@ -113,9 +113,14 @@ impl AwsmRenderer {
             .textures
             .write_gpu_texture_pool(&self.logging, &self.gpu)
             .await?;
+        // A custom-material register/alpha-edit can need the masked variant
+        // (re)built with no texture change (procedural cutout). Take the flag so
+        // the rebuild below runs; with an unchanged pool the opaque/transparent
+        // descriptors below are cache hits and only the new masked variant compiles.
+        let force_masked = std::mem::take(&mut self.masked_dynamic_dirty);
         let was_dirty = pool_dirty || sampler_pool_dirty;
 
-        if !was_dirty {
+        if !was_dirty && !force_masked {
             return Ok(());
         }
 
@@ -397,6 +402,202 @@ impl AwsmRenderer {
             .pipelines
             .install_per_mesh_keys(mesh_keys, transparent_pipeline_keys);
 
+        // -----------------------------------------------------------
+        // Masked (alpha-tested) geometry — rebuild against the new pool
+        // -----------------------------------------------------------
+        // The masked group-0 carries the texture pool, so its layout changes
+        // when the pool grows. Relayout the bind group + pipeline pool, then
+        // (re)compile the built-in PBR masked variant (its base-color cutout
+        // samples the pool), plus every registered MASK custom material that
+        // carries a 2nd alpha-only WGSL window.
+        {
+            // Collect the registered MASK customs first (releases the
+            // dynamic_materials borrow before the RenderPassInitContext below).
+            let custom_masked: Vec<(
+                awsm_materials::MaterialShaderId,
+                crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo,
+            )> = self
+                .dynamic_materials
+                .iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|id| {
+                    self.dynamic_materials
+                        .alpha_info_for(id)
+                        .map(|info| (id, info))
+                })
+                .collect();
+
+            let new_masked_bg = {
+                let mut ctx = RenderPassInitContext {
+                    gpu: &mut self.gpu,
+                    pipelines: &mut self.pipelines,
+                    shaders: &mut self.shaders,
+                    textures: &mut self.textures,
+                    render_texture_formats: &mut self.render_textures.formats,
+                    bind_group_layouts: &mut self.bind_group_layouts,
+                    pipeline_layouts: &mut self.pipeline_layouts,
+                    features: &self.features,
+                    anti_aliasing: &self.anti_aliasing,
+                    post_processing: &self.post_processing,
+                };
+                self.render_passes
+                    .geometry
+                    .masked_bind_group
+                    .clone_because_texture_pool_changed(&mut ctx)?
+            };
+            self.render_passes.geometry.masked_bind_group = new_masked_bg;
+
+            let mut ctx = RenderPassInitContext {
+                gpu: &mut self.gpu,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                textures: &mut self.textures,
+                render_texture_formats: &mut self.render_textures.formats,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+            };
+            self.render_passes.geometry.masked_pipelines.relayout(
+                &mut ctx,
+                &self.render_passes.geometry.masked_bind_group,
+                &self.render_passes.geometry.bind_groups,
+            )?;
+            // Built-in MASK materials route alpha-tested-OPAQUE: PBR, Unlit,
+            // Toon share the same header prefix (shader_id, alpha_mode,
+            // alpha_cutoff, base_color_tex(5), base_color_factor(4)), so the
+            // masked fragment's base-color path covers them with one WGSL —
+            // only the cache-key shader_id differs. FlipBook gets its OWN
+            // masked WGSL arm (the mask alpha is the time-varying atlas cell,
+            // evaluated by the shared cell math the shaded material also runs).
+            for (shader_id, base) in [
+                (
+                    awsm_materials::MaterialShaderId::PBR,
+                    crate::dynamic_materials::ShadingBase::Pbr,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::UNLIT,
+                    crate::dynamic_materials::ShadingBase::Unlit,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::TOON,
+                    crate::dynamic_materials::ShadingBase::Toon,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::FLIPBOOK,
+                    crate::dynamic_materials::ShadingBase::Flipbook,
+                ),
+            ] {
+                let variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
+                    shader_id,
+                    base,
+                    dynamic_alpha: None,
+                };
+                self.render_passes
+                    .geometry
+                    .masked_pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.geometry.masked_bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
+
+            // Custom MASK materials — one masked variant each, emitting the
+            // author's alpha-only fragment. Iterate by reference so the same
+            // list feeds the masked-shadow build below.
+            for (shader_id, info) in &custom_masked {
+                let variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
+                    shader_id: *shader_id,
+                    base: crate::dynamic_materials::ShadingBase::Custom,
+                    dynamic_alpha: Some(info.clone()),
+                };
+                self.render_passes
+                    .geometry
+                    .masked_pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.geometry.masked_bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
+
+            // -------------------------------------------------------------
+            // Masked (alpha-tested) SHADOW casters — same per-shader-id pool,
+            // for hole-shaped (cutout) shadows (B2). The masked-shadow group-0
+            // carries the texture pool too, so relayout it against the new pool,
+            // then compile the built-in PBR/Unlit/Toon variants (base-color
+            // cutout) + every registered MASK custom (alpha-only WGSL). The
+            // shadow render path falls back to the solid pipeline until these
+            // land, so a masked caster always casts *some* shadow.
+            // -------------------------------------------------------------
+            let new_shadow_masked_bg = self
+                .render_passes
+                .shadow_masked
+                .bind_group
+                .clone_because_texture_pool_changed(&mut ctx)?;
+            self.render_passes.shadow_masked.bind_group = new_shadow_masked_bg;
+            self.render_passes.shadow_masked.pipelines.relayout(
+                &mut ctx,
+                &self.render_passes.shadow_masked.bind_group,
+                &self.render_passes.geometry.bind_groups,
+            )?;
+            for (shader_id, base) in [
+                (
+                    awsm_materials::MaterialShaderId::PBR,
+                    crate::dynamic_materials::ShadingBase::Pbr,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::UNLIT,
+                    crate::dynamic_materials::ShadingBase::Unlit,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::TOON,
+                    crate::dynamic_materials::ShadingBase::Toon,
+                ),
+                (
+                    awsm_materials::MaterialShaderId::FLIPBOOK,
+                    crate::dynamic_materials::ShadingBase::Flipbook,
+                ),
+            ] {
+                let variant = crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
+                    shader_id,
+                    base,
+                    dynamic_alpha: None,
+                };
+                self.render_passes
+                    .shadow_masked
+                    .pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.shadow_masked.bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
+            for (shader_id, info) in &custom_masked {
+                let variant = crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
+                    shader_id: *shader_id,
+                    base: crate::dynamic_materials::ShadingBase::Custom,
+                    dynamic_alpha: Some(info.clone()),
+                };
+                self.render_passes
+                    .shadow_masked
+                    .pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.shadow_masked.bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
+        }
+
         // Re-launch the compile for every currently-registered
         // scheduler material entry.
         //
@@ -671,6 +872,20 @@ impl TextureTransform {
 }
 
 impl Textures {
+    /// Live GPU-texture-resource counts `(pool_textures, cubemaps, samplers)` for
+    /// leak diagnostics (surfaced via `memory_stats`). `memory_stats` historically
+    /// counted only pipelines/shaders/transforms/meshes — textures were a blind
+    /// spot, yet "Destroyed texture" GPU-validation spam + Chrome "aw snap" point
+    /// at texture/sampler accumulation. A growing count under add/delete churn of
+    /// textured materials / imported models signals a leak.
+    pub fn resource_counts(&self) -> (usize, usize, usize) {
+        (
+            self.pool_textures.len(),
+            self.cubemaps.len(),
+            self.samplers.len(),
+        )
+    }
+
     /// Creates texture storage and GPU buffers.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let samplers = SlotMap::with_key();

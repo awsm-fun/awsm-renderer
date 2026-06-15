@@ -14,6 +14,7 @@ pub mod material_transparent;
 pub mod occlusion;
 pub mod shader_cache_key;
 pub mod shader_template;
+pub mod shadow_masked;
 pub mod shared;
 
 use std::ops::Range;
@@ -48,6 +49,11 @@ use crate::{
 /// Collection of render passes used by the renderer.
 pub struct RenderPasses {
     pub geometry: GeometryRenderPass,
+    /// Masked (alpha-tested) shadow caster resources — bind group + lazy
+    /// pipeline pool for hole-shaped (cutout) shadows. Always present; the pool
+    /// stays empty (and routing falls back to the plain solid shadow pipeline)
+    /// until a masked material's variant is compiled.
+    pub shadow_masked: shadow_masked::ShadowMaskedRenderPass,
     /// GPU mesh-pixel-coverage producer. `None` when
     /// `features.coverage_lod == false`. Consumers read the resulting
     /// `MeshCoverage` table via `is_below_threshold`; with the
@@ -104,6 +110,10 @@ impl RenderPassesShaderPlan {
 /// from_resolved unchanged.
 struct RenderPassesBindings {
     geometry_bg: geometry::bind_group::GeometryBindGroups,
+    geometry_masked_bg: geometry::masked_bind_group::GeometryMaskedBindGroup,
+    geometry_masked_pipelines: geometry::masked_pipeline::GeometryMaskedPipelines,
+    shadow_masked_bg: shadow_masked::bind_group::ShadowMaskedBindGroup,
+    shadow_masked_pipelines: shadow_masked::pipeline::ShadowMaskedPipelines,
     coverage_bg_single: Option<coverage::bind_group::CoverageBindGroups>,
     coverage_bg_msaa: Option<coverage::bind_group::CoverageBindGroups>,
     hzb_bg: Option<hzb::bind_group::HzbBindGroups>,
@@ -275,6 +285,25 @@ impl RenderPasses {
         // Phase 1 — sync bind-group setup + auxiliary resources
         // ----------------------------------------------------------
         let geometry_bg = geometry::bind_group::GeometryBindGroups::new(ctx).await?;
+        // Masked (alpha-tested) geometry variant: augmented group-0 bind group +
+        // an empty lazy pipeline pool. Pipelines compile later (built-in PBR in
+        // the texture-finalize flow; custom via the dynamic scheduler).
+        let geometry_masked_bg =
+            geometry::masked_bind_group::GeometryMaskedBindGroup::new(ctx).await?;
+        let geometry_masked_pipelines = geometry::masked_pipeline::GeometryMaskedPipelines::new(
+            ctx,
+            &geometry_masked_bg,
+            &geometry_bg,
+        )?;
+        // Masked (alpha-tested) shadow caster: augmented group-0 bind group +
+        // an empty lazy pipeline pool. Pipelines compile later in the
+        // texture-finalize flow (parallel to the geometry masked pool).
+        let shadow_masked_bg = shadow_masked::bind_group::ShadowMaskedBindGroup::new(ctx)?;
+        let shadow_masked_pipelines = shadow_masked::pipeline::ShadowMaskedPipelines::new(
+            ctx,
+            &shadow_masked_bg,
+            &geometry_bg,
+        )?;
         let (coverage_bg_single, coverage_bg_msaa) = if features.coverage_lod {
             (
                 Some(coverage::bind_group::CoverageBindGroups::new(ctx, false).await?),
@@ -379,6 +408,10 @@ impl RenderPasses {
         Ok(RenderPassesShaderPlan {
             bindings: RenderPassesBindings {
                 geometry_bg,
+                geometry_masked_bg,
+                geometry_masked_pipelines,
+                shadow_masked_bg,
+                shadow_masked_pipelines,
                 coverage_bg_single,
                 coverage_bg_msaa,
                 hzb_bg,
@@ -591,7 +624,6 @@ impl RenderPasses {
         use crate::render_passes::coverage::pipeline::CoveragePipelines;
         use crate::render_passes::geometry::pipeline::GeometryPipelines;
         use crate::render_passes::hzb::pipeline::HzbPipelines;
-        use crate::render_passes::material_classify::pipeline::MaterialClassifyPipelines;
         use crate::render_passes::material_decal::classify::pipeline::DecalClassifyPipelines;
         use crate::render_passes::material_decal::pipeline::MaterialDecalPipelines;
         use crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines;
@@ -608,6 +640,10 @@ impl RenderPasses {
         } = descs;
         let RenderPassesBindings {
             geometry_bg,
+            geometry_masked_bg,
+            geometry_masked_pipelines,
+            shadow_masked_bg,
+            shadow_masked_pipelines,
             coverage_bg_single,
             coverage_bg_msaa,
             hzb_bg,
@@ -633,6 +669,13 @@ impl RenderPasses {
                 &per_pass_descs.geometry,
                 render_keys[ranges.geometry].to_vec(),
             )?,
+            masked_bind_group: geometry_masked_bg,
+            masked_pipelines: geometry_masked_pipelines,
+        };
+
+        let shadow_masked = shadow_masked::ShadowMaskedRenderPass {
+            bind_group: shadow_masked_bg,
+            pipelines: shadow_masked_pipelines,
         };
 
         let coverage = match (
@@ -682,13 +725,14 @@ impl RenderPasses {
             _ => None,
         };
 
+        // The boot batch already compiled the classify pipeline into the shared
+        // compute pool (warming it); `ensure_scene_pipelines` (via `prewarm`)
+        // installs it into `pipeline_cache` before the first frame. So we don't
+        // store the resolved key here — the cache is the single source of truth.
+        let _ = (&per_pass_descs.classify_slot_msaa, &ranges.classify);
         let material_classify = MaterialClassifyRenderPass {
             bind_groups: classify_bg,
-            pipelines: MaterialClassifyPipelines::from_resolved(
-                per_pass_descs.classify_slot_msaa,
-                compute_keys[ranges.classify].to_vec(),
-            ),
-            dynamic_pipeline_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            pipeline_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         };
 
         let material_decal = match (
@@ -755,6 +799,7 @@ impl RenderPasses {
 
         Ok(Self {
             geometry,
+            shadow_masked,
             coverage,
             hzb,
             occlusion,

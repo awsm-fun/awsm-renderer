@@ -3,18 +3,29 @@
 //! meshes, and skinning), then snapshots that into an
 //! [`AssetTemplate`](super::asset_template::AssetTemplate). The caller
 //! (`EditorController::finish_model_import`) mirrors the template as editor
-//! `Group`/`Model` nodes so the import appears as an editable hierarchy in the
-//! Outliner; each `Model` node duplicates the template meshes under its own
-//! transform (see `node_sync::materialize_model`). The template's own meshes are
-//! hidden so they don't double-render.
+//! `Group`/`Mesh` nodes so the import appears as an editable hierarchy in the
+//! Outliner.
+//!
+//! **Geometry is baked at import** (not retained as a hidden renderer copy): each
+//! mesh-bearing glTF node's geometry is read CPU-side from the document's
+//! accessors via [`awsm_glb_export::extract_node_mesh`] and carried on
+//! [`GltfImport::node_meshes`]. The controller mints a captured `MeshDef` asset
+//! per node and builds a `NodeKind::Mesh { mesh: Captured(..), .. }` node — so an
+//! imported model is the same unified Mesh node as every other geometry kind, with
+//! no `NodeKind::Model` and no retained source bytes. `populate_gltf` is still run
+//! purely to extract materials + textures (and the transform/material-index
+//! template); its meshes are hidden so they don't render.
 
+use std::collections::HashMap;
+
+use awsm_editor_protocol::MaterialDef;
+use awsm_glb_export::MeshData;
 use awsm_renderer::textures::TextureKey;
 use awsm_renderer_gltf::data::GltfData;
 use awsm_renderer_gltf::extract::{extract_animations, ExtractedAnimation};
 use awsm_renderer_gltf::loader::{get_type_from_filename, GltfFileType};
 use awsm_renderer_gltf::populate::GltfPopulateContext;
 use awsm_renderer_gltf::{loader::GltfLoader, AwsmRendererGltfExt};
-use awsm_scene_schema::MaterialDef;
 
 use super::asset_template::{self, AssetTemplate};
 use crate::engine::context::renderer_handle;
@@ -33,6 +44,33 @@ pub struct GltfImport {
     /// lowers the sampler into authored keyframes. Empty when the file has no
     /// animations (or extraction failed — logged, never fatal).
     pub animations: Vec<ExtractedAnimation>,
+    /// Baked geometry for every mesh-bearing glTF node, read CPU-side from the
+    /// document accessors at import. Keyed by `(node_index, primitive_index)`:
+    /// the `None` primitive key is the whole node (every primitive merged), and
+    /// each `Some(i)` key is one primitive in isolation — the controller uses the
+    /// merged entry for single-material nodes and the per-primitive entries when
+    /// it destructures a multi-material node. Positions are the node's *raw* local
+    /// accessor values; the editor node carries the glTF node's local transform,
+    /// so the geometry is used as-is (no extra matrix). Skinned meshes bake to
+    /// their bind pose (JOINTS/WEIGHTS are not read).
+    pub node_meshes: HashMap<(u32, Option<u32>), MeshData>,
+    /// Optional 2nd UV set (`TEXCOORD_1`) per `(node_index, primitive_index)`,
+    /// vertex-aligned with `node_meshes`. Parallel to `node_meshes` so a captured
+    /// static mesh can carry UV set 1 (`material_uv(in, 1u)`) without bloating
+    /// `MeshData`. Absent key = that mesh has only UV set 0.
+    pub node_uvs1: HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
+    /// `Some` when the import carries skins: the whole rig (geometry + skeleton +
+    /// joints/weights + morph) re-exported through our writer into a clean glb
+    /// (materials/animations dropped). This is what the player bundle ships for
+    /// the import's `SkinnedMesh` nodes (`assets/<source-id>.glb`); cached under
+    /// the source-file `AssetId` at `finish_model_import`. `None` for unskinned
+    /// imports (those go through the captured-mesh path).
+    pub skinned_glb: Option<Vec<u8>>,
+    /// Source glTF node index → its node index in the clean re-export
+    /// (`skinned_glb`), the depth-first flatten the player's loader sees. Used at
+    /// `finish_model_import` to record each skin joint's bone `NodeId` → clean-glb
+    /// index on `SkinnedMeshRef::joints`. Empty for unskinned imports.
+    pub node_flat_indices: HashMap<u32, u32>,
 }
 
 /// A glTF material extracted into an editable [`MaterialDef`] (factors only;
@@ -54,14 +92,14 @@ pub struct ExtractedMaterial {
 #[derive(Clone, Copy, Default)]
 pub struct TexBinding {
     pub uv_index: u32,
-    pub transform: Option<awsm_scene_schema::TextureTransform>,
-    pub sampler: Option<awsm_scene_schema::TextureSampler>,
+    pub transform: Option<awsm_editor_protocol::TextureTransform>,
+    pub sampler: Option<awsm_editor_protocol::TextureSampler>,
 }
 
 /// Map a glTF texture sampler → the editor's [`TextureSampler`]. Returns `None`
 /// when it's the glTF default (repeat + linear), to keep refs compact.
-fn gltf_sampler(s: gltf::texture::Sampler) -> Option<awsm_scene_schema::TextureSampler> {
-    use awsm_scene_schema::{TextureFilter, TextureSampler, TextureWrap};
+fn gltf_sampler(s: gltf::texture::Sampler) -> Option<awsm_editor_protocol::TextureSampler> {
+    use awsm_editor_protocol::{TextureFilter, TextureSampler, TextureWrap};
     let wrap = |w: gltf::texture::WrappingMode| match w {
         gltf::texture::WrappingMode::ClampToEdge => TextureWrap::ClampToEdge,
         gltf::texture::WrappingMode::MirroredRepeat => TextureWrap::MirroredRepeat,
@@ -127,13 +165,13 @@ struct MaterialTextureIndices {
 fn tex_binding(
     tex_coord: u32,
     xform: Option<gltf::texture::TextureTransform>,
-    sampler: Option<awsm_scene_schema::TextureSampler>,
+    sampler: Option<awsm_editor_protocol::TextureSampler>,
 ) -> TexBinding {
     let uv_index = xform
         .as_ref()
         .and_then(|x| x.tex_coord())
         .unwrap_or(tex_coord);
-    let transform = xform.map(|x| awsm_scene_schema::TextureTransform {
+    let transform = xform.map(|x| awsm_editor_protocol::TextureTransform {
         offset: x.offset(),
         rotation: x.rotation(),
         scale: x.scale(),
@@ -160,6 +198,58 @@ pub async fn import_file(name: &str, url: &str) -> Result<GltfImport, String> {
     import_typed(url, file_type, Some(name)).await
 }
 
+/// Read CPU-side geometry for every mesh-bearing glTF node out of an
+/// already-decoded document, into a map keyed by `(node_index, primitive_index)`.
+/// For each such node we store the whole-node merge (`primitive_index = None`) and
+/// one entry per individual primitive (`Some(i)`), so the controller can build a
+/// single Mesh node or destructure a multi-material node per-primitive — exactly
+/// the cases the old `Model` path covered. Positions are raw local accessor values
+/// (see [`awsm_glb_export::extract_node_mesh`] on the no-double-transform rule).
+/// Both the per-node primary geometry AND the optional 2nd UV set
+/// (`TEXCOORD_1`), keyed by `(node_index, primitive_index)`. `uvs1` rides this
+/// parallel map (not `MeshData`) so it reaches the editor's captured mesh →
+/// renderer UV set 1 without churning `MeshData`'s many construction sites.
+type NodeMeshMaps = (
+    HashMap<(u32, Option<u32>), MeshData>,
+    HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
+);
+
+fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
+    let buffers = &data.buffers.raw;
+    let mut out = HashMap::new();
+    let mut uvs1 = HashMap::new();
+    let insert = |key: (u32, Option<u32>),
+                  ex: awsm_glb_export::ExtractedNodeMesh,
+                  out: &mut HashMap<_, _>,
+                  uvs1: &mut HashMap<_, _>| {
+        if let Some(u1) = ex.uvs1 {
+            uvs1.insert(key, u1);
+        }
+        out.insert(key, ex.mesh);
+    };
+    for node in data.doc.nodes() {
+        let Some(mesh) = node.mesh() else { continue };
+        let node_index = node.index() as u32;
+        // Whole-node merge (the common, single-material case).
+        if let Some(ex) = awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None) {
+            insert((node_index, None), ex, &mut out, &mut uvs1);
+        }
+        // Per-primitive (used when a node's primitives carry different materials
+        // and the controller destructures it into one Mesh child per primitive).
+        let prim_count = mesh.primitives().count();
+        if prim_count > 1 {
+            for i in 0..prim_count as u32 {
+                if let Some(ex) =
+                    awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, Some(i))
+                {
+                    insert((node_index, Some(i)), ex, &mut out, &mut uvs1);
+                }
+            }
+        }
+    }
+    (out, uvs1)
+}
+
 async fn import_typed(
     url: &str,
     file_type: Option<GltfFileType>,
@@ -169,6 +259,11 @@ async fn import_typed(
         .await
         .map_err(|e| format!("load: {e}"))?;
     let data = loader.into_data(None).map_err(|e| format!("decode: {e}"))?;
+    // Bake every mesh-bearing node's geometry CPU-side from the accessors before
+    // `data` is moved into `populate_gltf` — this is what becomes each editor
+    // node's captured Mesh asset (the renderer's own meshes are only kept for
+    // material/texture extraction, then hidden).
+    let (node_meshes, node_uvs1) = extract_node_meshes(&data);
     // Read material factors + texture indices from the document before it's moved
     // into `populate_gltf`; the indices are resolved to baked texture keys after.
     let mat_specs = extract_material_specs(&data);
@@ -180,6 +275,34 @@ async fn import_typed(
             tracing::warn!("glTF animation extraction failed (importing 0 clips): {e}");
             Vec::new()
         }
+    };
+    // If the import carries skins OR morph targets, ingest the whole rig
+    // (geometry + skeleton +
+    // joints/weights + morph) into OUR clean glb — re-exported through our writer
+    // (materials/anims/cruft dropped), the same pipeline static meshes use. This
+    // is what the player bundle ships for skinned content (the source bytes never
+    // need retaining — we have our own re-export). Static imports go through
+    // `node_meshes`/`mesh_cache` instead, so we only pay this for skinned files.
+    let has_morphs = data
+        .doc
+        .meshes()
+        .any(|m| m.primitives().any(|p| p.morph_targets().next().is_some()));
+    let skinned_glb = if data.doc.skins().next().is_some() || has_morphs {
+        awsm_glb_export::reexport_clean_scene(&data.doc, &data.buffers.raw)
+            .map(|scene| awsm_glb_export::write_glb(&scene))
+    } else {
+        None
+    };
+    // The source→clean node-index map (same DFS flatten the clean glb uses), so
+    // `finish_model_import` can bind each skin joint's bone `NodeId` to the index
+    // the player's loader will assign that joint. Only meaningful when skinned.
+    let node_flat_indices: HashMap<u32, u32> = if skinned_glb.is_some() {
+        awsm_glb_export::scene_node_flat_indices(&data.doc)
+            .into_iter()
+            .map(|(src, clean)| (src as u32, clean as u32))
+            .collect()
+    } else {
+        HashMap::new()
     };
     let (template, materials) = {
         // Hold the renderer lock across the async populate + the synchronous
@@ -194,6 +317,11 @@ async fn import_typed(
         // The renderer already rendered these meshes directly; hide them so the
         // editor's user-movable Model-node duplicates are the only visible copy.
         asset_template::hide_template_meshes(&mut r, &template);
+        // Remove the populate-baked lights: each KHR light is re-materialized as
+        // an editable `NodeKind::Light` bound to its editor node's transform (so
+        // it follows animation + gets the inspector). Drop the populate copies so
+        // they don't double up (and so the frozen populate-bound copy is gone).
+        asset_template::remove_template_lights(&mut r, &ctx);
         let materials = resolve_materials(&ctx, mat_specs);
         (template, materials)
     };
@@ -202,7 +330,45 @@ async fn import_typed(
         template,
         materials,
         animations,
+        node_meshes,
+        node_uvs1,
+        skinned_glb,
+        node_flat_indices,
     })
+}
+
+/// Rebuild an imported skinned source's renderer **template** from its persisted
+/// clean rig glb (slice-3 persistence). A cold project reload has no template
+/// (session-local), so its `SkinnedMesh` nodes render empty + log "no import
+/// template cached". Re-running `populate_gltf` on the rig + snapshotting the
+/// template (then hiding non-skinned copies, as import does) makes
+/// `materialize_skinned_mesh` resolve them again. Call BEFORE the SkinnedMesh
+/// nodes materialize (i.e. before `apply_project` sets the scene). The
+/// reclaim-guard's scene check (`node_sync::scene_has_skinned_from`) keeps this
+/// template alive through the reload's old-node teardown.
+pub async fn repopulate_skinned_template(
+    source: awsm_editor_protocol::AssetId,
+    rig_bytes: Vec<u8>,
+) -> Result<(), String> {
+    let loader = GltfLoader::from_glb_bytes(&rig_bytes)
+        .await
+        .map_err(|e| format!("rig load: {e}"))?;
+    let data = loader
+        .into_data(None)
+        .map_err(|e| format!("rig decode: {e}"))?;
+    let template = {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
+        let ctx = r
+            .populate_gltf(data, None)
+            .await
+            .map_err(|e| format!("rig populate: {e}"))?;
+        let template = asset_template::build_from_context(&r, &ctx);
+        asset_template::hide_template_meshes(&mut r, &template);
+        template
+    };
+    super::bridge().insert_template(source, std::sync::Arc::new(template));
+    Ok(())
 }
 
 /// Read each glTF material's editable factors + its slot texture indices.
@@ -235,9 +401,9 @@ fn extract_material_specs(data: &GltfData) -> Vec<MatSpec> {
                 alpha_mode: extract_alpha_mode(&m),
                 // KHR_materials_unlit → the editor's flat/unlit shading model.
                 shading: if m.unlit() {
-                    awsm_scene_schema::MaterialShading::Unlit
+                    awsm_editor_protocol::MaterialShading::Unlit
                 } else {
-                    awsm_scene_schema::MaterialShading::Pbr
+                    awsm_editor_protocol::MaterialShading::Pbr
                 },
                 extensions,
                 ..MaterialDef::default()
@@ -313,8 +479,8 @@ fn extract_material_specs(data: &GltfData) -> Vec<MatSpec> {
 }
 
 /// glTF `material.alphaMode` (+ cutoff) → the editor's [`MaterialAlphaMode`].
-fn extract_alpha_mode(m: &gltf::Material) -> awsm_scene_schema::MaterialAlphaMode {
-    use awsm_scene_schema::MaterialAlphaMode;
+fn extract_alpha_mode(m: &gltf::Material) -> awsm_editor_protocol::MaterialAlphaMode {
+    use awsm_editor_protocol::MaterialAlphaMode;
     match m.alpha_mode() {
         gltf::material::AlphaMode::Opaque => MaterialAlphaMode::Opaque,
         gltf::material::AlphaMode::Mask => MaterialAlphaMode::Mask {
@@ -357,41 +523,74 @@ fn ext_color3(v: &gltf::json::Value, key: &str, default: [f32; 3]) -> [f32; 3] {
 fn extract_extensions(
     m: &gltf::Material,
     ext_textures: &mut Vec<(&'static str, (usize, TexBinding))>,
-) -> awsm_scene_schema::material::PbrExtensions {
-    use awsm_scene_schema::material::*;
+) -> awsm_editor_protocol::material::PbrExtensions {
+    use awsm_editor_protocol::material::*;
     let mut e = PbrExtensions::default();
-    // Capture an extension texture slot (a glTF `textureInfo` object) by name.
+
+    // KHR_materials_{emissive_strength, ior, specular, transmission, volume} are
+    // parsed NATIVELY by the `gltf` crate into typed accessors. Reading them via
+    // `extension_value` returns `None` (the crate already consumed them out of the
+    // raw extensions map) — which silently DROPPED transmission/volume/ior/specular
+    // on import (e.g. a glass model imported opaque, not translucent). Use the typed
+    // accessors, exactly as `populate_gltf` (renderer-gltf) does. The remaining
+    // extensions below are NOT in the crate's typed API, so they read raw JSON.
+    if let Some(strength) = m.emissive_strength() {
+        e.emissive_strength = Some(EmissiveStrengthExt { strength });
+    }
+    if let Some(ior) = m.ior() {
+        e.ior = Some(IorExt { ior });
+    }
+    if let Some(s) = m.specular() {
+        e.specular = Some(SpecularExt {
+            factor: s.specular_factor(),
+            color_factor: s.specular_color_factor(),
+            ..Default::default()
+        });
+        if let Some(i) = s.specular_texture() {
+            ext_textures.push(("specular.tex", info_to_ext(i)));
+        }
+        if let Some(i) = s.specular_color_texture() {
+            ext_textures.push(("specular.color_tex", info_to_ext(i)));
+        }
+    }
+    if let Some(t) = m.transmission() {
+        e.transmission = Some(TransmissionExt {
+            factor: t.transmission_factor(),
+            ..Default::default()
+        });
+        if let Some(i) = t.transmission_texture() {
+            ext_textures.push(("transmission.tex", info_to_ext(i)));
+        }
+    }
+    if let Some(vol) = m.volume() {
+        // attenuation_distance defaults to +inf ("no absorption") in glTF; clamp
+        // non-finite to a large finite value so the MaterialDef stays
+        // JSON/TOML-serializable (the bundle round-trip) without changing the look.
+        let attenuation_distance = {
+            let d = vol.attenuation_distance();
+            if d.is_finite() {
+                d
+            } else {
+                f32::MAX
+            }
+        };
+        e.volume = Some(VolumeExt {
+            thickness_factor: vol.thickness_factor(),
+            attenuation_distance,
+            attenuation_color: vol.attenuation_color(),
+            ..Default::default()
+        });
+        if let Some(i) = vol.thickness_texture() {
+            ext_textures.push(("volume.thickness_tex", info_to_ext(i)));
+        }
+    }
+
+    // Capture an extension texture slot (a glTF `textureInfo` JSON object) by name.
     let mut grab = |slot: &'static str, v: &gltf::json::Value, json_key: &str| {
         if let Some(t) = ext_tex(v, json_key) {
             ext_textures.push((slot, t));
         }
     };
-    if let Some(v) = m.extension_value("KHR_materials_emissive_strength") {
-        e.emissive_strength = Some(EmissiveStrengthExt {
-            strength: ext_f32(v, "emissiveStrength", 1.0),
-        });
-    }
-    if let Some(v) = m.extension_value("KHR_materials_ior") {
-        e.ior = Some(IorExt {
-            ior: ext_f32(v, "ior", 1.5),
-        });
-    }
-    if let Some(v) = m.extension_value("KHR_materials_specular") {
-        e.specular = Some(SpecularExt {
-            factor: ext_f32(v, "specularFactor", 1.0),
-            color_factor: ext_color3(v, "specularColorFactor", [1.0, 1.0, 1.0]),
-            ..Default::default()
-        });
-        grab("specular.tex", v, "specularTexture");
-        grab("specular.color_tex", v, "specularColorTexture");
-    }
-    if let Some(v) = m.extension_value("KHR_materials_transmission") {
-        e.transmission = Some(TransmissionExt {
-            factor: ext_f32(v, "transmissionFactor", 0.0),
-            ..Default::default()
-        });
-        grab("transmission.tex", v, "transmissionTexture");
-    }
     if let Some(v) = m.extension_value("KHR_materials_diffuse_transmission") {
         e.diffuse_transmission = Some(DiffuseTransmissionExt {
             factor: ext_f32(v, "diffuseTransmissionFactor", 0.0),
@@ -404,15 +603,6 @@ fn extract_extensions(
             v,
             "diffuseTransmissionColorTexture",
         );
-    }
-    if let Some(v) = m.extension_value("KHR_materials_volume") {
-        e.volume = Some(VolumeExt {
-            thickness_factor: ext_f32(v, "thicknessFactor", 0.0),
-            attenuation_distance: ext_f32(v, "attenuationDistance", 1.0),
-            attenuation_color: ext_color3(v, "attenuationColor", [1.0, 1.0, 1.0]),
-            ..Default::default()
-        });
-        grab("volume.thickness_tex", v, "thicknessTexture");
     }
     if let Some(v) = m.extension_value("KHR_materials_clearcoat") {
         e.clearcoat = Some(ClearcoatExt {
@@ -468,6 +658,21 @@ fn extract_extensions(
     e
 }
 
+/// A typed glTF extension `textureInfo` (from the crate's native accessors —
+/// e.g. `specular.specular_texture()`, `transmission.transmission_texture()`) →
+/// (glTF texture index, binding). The typed-accessor counterpart of [`ext_tex`]
+/// (which parses crate-unknown extensions' textures from raw JSON); mirrors the
+/// standard-slot path in `extract_material_specs`.
+fn info_to_ext(info: gltf::texture::Info) -> (usize, TexBinding) {
+    let texture = info.texture();
+    let index = texture.index();
+    let sampler = gltf_sampler(texture.sampler());
+    (
+        index,
+        tex_binding(info.tex_coord(), info.texture_transform(), sampler),
+    )
+}
+
 /// Read an extension `textureInfo` JSON object → (glTF texture index, binding).
 /// Honors the slot's own `texCoord` + an inline `KHR_texture_transform`.
 fn ext_tex(v: &gltf::json::Value, key: &str) -> Option<(usize, TexBinding)> {
@@ -484,7 +689,7 @@ fn ext_tex(v: &gltf::json::Value, key: &str) -> Option<(usize, TexBinding)> {
                 .and_then(|x| x.as_u64())
                 .map(|x| x as u32)
                 .unwrap_or(tex_coord);
-            let transform = awsm_scene_schema::TextureTransform {
+            let transform = awsm_editor_protocol::TextureTransform {
                 offset: read_vec2(t, "offset", [0.0, 0.0]),
                 rotation: ext_f32(t, "rotation", 0.0),
                 scale: read_vec2(t, "scale", [1.0, 1.0]),

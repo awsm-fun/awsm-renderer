@@ -100,6 +100,12 @@ struct OpaqueShadingInput {
     world_normal: vec3<f32>,        // world-space normal
     world_position: vec3<f32>,      // world-space surface position
     surface_to_camera: vec3<f32>,   // normalized vector from surface to camera
+    // Per-vertex attribute access ---------------------------------------
+    triangle_indices: vec3<u32>,    // the 3 vertex indices of this pixel's triangle
+    attribute_data_offset: u32,     // base offset into the packed per-vertex attr stream
+    vertex_attribute_stride: u32,   // floats per vertex in that stream
+    color_sets_index: u32,          // float offset to COLOR_0 within that stream
+    uv_sets_index: u32,             // float offset to TEXCOORD_0 within that stream
     // Per-material data -------------------------------------------------
     material_offset: u32,           // byte offset for material_load_* calls
     material: MaterialData,         // your auto-generated struct (see below)
@@ -114,6 +120,41 @@ themselves from `world_normal` + the per-pixel UV derivatives.
 Most dynamic materials (overlay effects, scanlines, simple PBR
 tints) don't need a TBN, so the wrapper trades flexibility for
 keeping the per-pixel cost low.
+
+### Per-vertex colours + UVs (and other named attributes)
+
+A custom material can read any interpolated per-vertex `COLOR_n` **or
+`TEXCOORD_n`** the same way built-in PBR does — declare the matching
+`fragment_inputs` (`["vertex_color"]` / `["uv"]`) and call the in-scope helper:
+
+```wgsl
+// shader.wgsl — an unlit vertex-colour material (one tiny opaque bucket)
+let c = material_vertex_color(input, 0u);   // interpolated COLOR_0 at this pixel
+return OpaqueShadingOutput(c.rgb, 1.0);
+```
+
+```wgsl
+// …and the UV companion — read any TEXCOORD set directly (set 1 here), the same
+// multi-set data built-in PBR's per-texture `uv_index` samples:
+let uv1 = material_uv(input, 1u);           // interpolated TEXCOORD_1 at this pixel
+```
+
+This is the building block for **texture splatting** — paint per-vertex weights
+(`paint_vertex_colors` over MCP) and blend texture slots by them, e.g.
+`mix(material_sample_rock(...), material_sample_grass(...), c.r)`. Unlike a
+built-in PBR tint this is a non-lit, single-bucket material — exactly the
+"lots of small opaque materials" case the specialize-only renderer is built for.
+
+Both helpers barycentric-blend the requested set across the triangle using
+`input.{triangle_indices, attribute_data_offset, vertex_attribute_stride}` +
+`input.color_sets_index` / `input.uv_sets_index` (all exposed above). A set is
+only meaningful when the mesh actually carries it — there is no presence guard on
+the custom path, so author against a mesh that has the set (paint it with
+`paint_vertex_colors`, or import geometry with `TEXCOORD_1`). Any set index works
+(`COLOR_1+`, `TEXCOORD_1+`); future named per-vertex streams beyond the glTF
+vocabulary land on this same machinery once the runtime mesh format owns its
+attribute table. (Both helpers exist on the transparent path too — see the
+transparent contract — so the same custom fragment compiles either way.)
 
 `MaterialData` is **auto-generated** from your `material.json` layout — see
 "Per-material data" below.

@@ -55,6 +55,15 @@ pub fn render() -> Dom {
             if e.ctrl_key() || e.alt_key() || e.shift_key() || typing_in_field() {
                 return;
             }
+            // `5` toggles the editor view between perspective and orthographic
+            // (Blender uses Numpad-5; dominator only exposes `key()`, so plain `5`
+            // — which also works on numpad-less laptops).
+            if e.key() == "5" {
+                e.prevent_default();
+                let ortho = controller().settings.editor_ortho.get();
+                crate::scene_mode::viewport::set_editor_projection(!ortho);
+                return;
+            }
             let mode = match e.key().as_str() {
                 "q" | "Q" => GizmoMode::Select,
                 "w" | "W" => GizmoMode::Move,
@@ -71,6 +80,7 @@ pub fn render() -> Dom {
         .child(stats_bar())
         .child(crate::command_palette::render())
         .child(activity_indicator())
+        .child(agent_feed())
         .child_signal(ctrl.settings_open.signal().map(|open| if open { Some(settings_drawer()) } else { None }))
     })
 }
@@ -123,6 +133,131 @@ fn activity_indicator() -> Dom {
             }))
         }))
     })
+}
+
+/// "Watch-it-work" agent-activity feed: a compact, auto-scrolling narration
+/// strip pinned to the bottom-left, fed from the inbound MCP command stream (see
+/// `engine::activity_feed`). Each entry reads "🤖 {phrase}" with a subtle
+/// fade-in. Read-only/informational — it never mutates editor state, and
+/// degrades silently (hidden) when no agent is connected or the feed is empty.
+///
+/// The newest entries render at the bottom (closest to the eye); only the last
+/// handful are shown so the strip stays unobtrusive over the viewport while the
+/// full ~50-entry history is retained in the model.
+fn agent_feed() -> Dom {
+    use crate::engine::activity_feed::feed;
+    /// How many trailing entries the strip shows at once (the model keeps ~50).
+    const VISIBLE: usize = 6;
+    let max_height = format!("{}px", VISIBLE * 30);
+    html!("div", {
+        .style("position", "fixed")
+        .style("left", "12px")
+        .style("bottom", "40px")
+        .style("z-index", "340")
+        .style("display", "flex")
+        .style("flex-direction", "column")
+        .style("gap", "5px")
+        .style("max-width", "min(340px, 42vw)")
+        .style("pointer-events", "none")
+        .style("justify-content", "flex-end")
+        // Hide the whole strip when the feed is empty (no agent activity yet) so
+        // it degrades silently with no agent connected.
+        .style_signal("display", feed().signal_vec_cloned().len().map(|n| if n == 0 { "none" } else { "flex" }))
+        // A tiny "clear" affordance pinned above the rows (the column is
+        // bottom-anchored, so the first child sits at top). Interactive, so it
+        // opts back into pointer events the strip otherwise disables.
+        .child(agent_feed_clear_btn())
+        // Cap the *rows* to a trailing window via CSS: the inner column is
+        // bottom-anchored, so older entries overflow + scroll off the top. The
+        // model keeps the full ~50.
+        .child(html!("div", {
+            .style("display", "flex")
+            .style("flex-direction", "column")
+            .style("gap", "5px")
+            .style("max-height", &max_height)
+            .style("overflow", "hidden")
+            .style("justify-content", "flex-end")
+            .children_signal_vec(feed().signal_vec_cloned().map(|entry| agent_feed_row(&entry.phrase)))
+        }))
+    })
+}
+
+/// Small "✕ clear" chip above the feed rows — empties the narration strip. Mute
+/// (stop narrating entirely) lives in Settings → "Agent activity feed".
+fn agent_feed_clear_btn() -> Dom {
+    html!("button", {
+        .style("align-self", "flex-start")
+        .style("pointer-events", "auto")
+        .style("cursor", "pointer")
+        .style("display", "inline-flex")
+        .style("align-items", "center")
+        .style("gap", "5px")
+        .style("padding", "2px 8px")
+        .style("margin-bottom", "1px")
+        .style("background", "color-mix(in oklch, var(--bg-1) 80%, transparent)")
+        .style("border", "1px solid var(--line-soft)")
+        .style("border-radius", "999px")
+        .style("font-size", "10.5px")
+        .style("color", "var(--text-3)")
+        .attr("title", "Clear the agent activity feed")
+        .text("\u{2715} clear")
+        .event(|_: events::Click| crate::engine::activity_feed::clear())
+    })
+}
+
+/// One narration row: "🤖 {phrase}" in a small translucent pill that fades in.
+fn agent_feed_row(phrase: &str) -> Dom {
+    html!("div", {
+        .style("display", "inline-flex")
+        .style("align-items", "center")
+        .style("gap", "7px")
+        .style("align-self", "flex-start")
+        .style("padding", "5px 11px 5px 9px")
+        .style("background", "color-mix(in oklch, var(--bg-1) 88%, transparent)")
+        .style("border", "1px solid var(--line-soft)")
+        .style("border-radius", "999px")
+        .style("box-shadow", "var(--shadow-2)")
+        .style("font-size", "12px")
+        .style("color", "var(--text-1)")
+        .style("white-space", "nowrap")
+        .style("max-width", "100%")
+        .style("overflow", "hidden")
+        .style("text-overflow", "ellipsis")
+        .style("animation", "feed-in 0.28s ease-out")
+        .child(html!("span", { .style("flex", "0 0 auto").text("\u{1F916}") }))
+        .child(html!("span", {
+            .style("overflow", "hidden")
+            .style("text-overflow", "ellipsis")
+            .text(phrase)
+        }))
+    })
+}
+
+/// Transient "agent acting" spotlight: while a panel is the active focus target
+/// (set for ~1s when a matching command lands, see `engine::activity_feed`),
+/// overlay a non-interactive pulsing accent ring on it so the human's eye lands
+/// where the agent is working. Reuses the `mcp-pulse` keyframe (index.html).
+/// Returns an `apply` closure adding the overlay child to a (positioned) panel.
+fn panel_highlight(
+    target: crate::engine::activity_feed::FocusTarget,
+) -> impl FnOnce(
+    dominator::DomBuilder<web_sys::HtmlElement>,
+) -> dominator::DomBuilder<web_sys::HtmlElement> {
+    use crate::engine::activity_feed::focus;
+    move |d| {
+        d.child(html!("div", {
+            .style("position", "absolute")
+            .style("inset", "0")
+            .style("z-index", "300")
+            .style("pointer-events", "none")
+            .style("border-radius", "2px")
+            .style("box-shadow", "inset 0 0 0 2px var(--accent-line)")
+            .style("animation", "mcp-pulse 1.1s ease-in-out infinite")
+            .style_signal("display", focus().signal().map(move |f| {
+                if f == Some(target) { "block" } else { "none" }
+            }))
+        }))
+    }
 }
 
 /// Whether a text-entry element currently holds focus — used to suppress the
@@ -214,6 +349,94 @@ fn download_text(filename: &str, content: &str) {
     let _ = web_sys::Url::revoke_object_url(&url);
 }
 
+/// Trigger a browser download of raw `bytes` as `filename` (binary — e.g. a
+/// `.glb`). Shared by the scene + per-node GLB export.
+pub(crate) fn download_bytes(filename: &str, bytes: &[u8]) {
+    use wasm_bindgen::JsCast;
+    let u8arr = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::new();
+    parts.push(&u8arr);
+    let Ok(blob) = web_sys::Blob::new_with_u8_array_sequence(&parts) else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
+    };
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        if let Ok(a) = doc.create_element("a") {
+            if let Ok(a) = a.dyn_into::<web_sys::HtmlAnchorElement>() {
+                a.set_href(&url);
+                a.set_download(filename);
+                a.click();
+            }
+        }
+    }
+    let _ = web_sys::Url::revoke_object_url(&url);
+}
+
+/// Export the whole scene to a binary glTF and download it. The player/runtime
+/// (or another DCC tool) re-imports the `.glb`; it's not auto-added back to the
+/// project.
+fn export_scene_glb() {
+    spawn_local(async {
+        match crate::controller::export::export_scene_glb(&controller()).await {
+            Ok(bytes) => {
+                let name = controller().project_name.get_cloned();
+                let file = if name.is_empty() {
+                    "scene.glb".to_string()
+                } else {
+                    format!("{name}.glb")
+                };
+                download_bytes(&file, &bytes);
+                Toast::info(format!("Exported {file} ({} KB)", bytes.len() / 1024));
+            }
+            Err(e) => Toast::error(format!("Export failed: {e}")),
+        }
+    });
+}
+
+/// Assemble a player bundle (scene.glb + custom-material side-files + referenced
+/// custom-material textures + env.json + bundle.json index) and write every file
+/// into a picked directory via the File System Access handle. Reuses the native
+/// `assemble_bundle` layout so the editor and the tested layout never drift.
+fn export_player_bundle() {
+    spawn_local(async {
+        let name = {
+            let n = controller().project_name.get_cloned();
+            if n.is_empty() {
+                "bundle".to_string()
+            } else {
+                n
+            }
+        };
+        let _ = &name; // bundle name is the picked directory's; kept for the toast.
+        let bundle = match crate::controller::export::bake_player_bundle(&controller()).await {
+            Ok(bundle) => bundle,
+            Err(e) => {
+                Toast::error(format!("Export bundle failed: {e}"));
+                return;
+            }
+        };
+        match crate::fs::ProjectDir::pick().await {
+            Ok(dir) => {
+                let count = bundle.len();
+                for file in &bundle {
+                    if let Err(e) = dir.write_bytes(&file.path, &file.bytes).await {
+                        Toast::error(format!("Export bundle failed ({}): {e}", file.path));
+                        return;
+                    }
+                }
+                Toast::info(format!("Wrote {count} files to {}/", dir.name()));
+            }
+            Err(crate::fs::FsError::Cancelled) => {}
+            Err(crate::fs::FsError::Unsupported) => {
+                Toast::error("Export bundle needs a directory picker (Chromium-only)");
+            }
+            Err(e) => Toast::error(format!("Export bundle: {e}")),
+        }
+    });
+}
+
 fn settings_drawer() -> Dom {
     let s = controller().settings.clone();
     RightDrawer::new("Settings")
@@ -224,8 +447,14 @@ fn settings_drawer() -> Dom {
             DrawerSection::new("Viewport")
                 .child(row("Show grid", toggle(s.grid.clone())))
                 .child(row("Show gizmo", toggle(s.gizmo.clone())))
+                .child(row("Light gizmos", toggle(s.light_gizmos.clone())))
+                .child(row("Skeleton overlay", toggle(s.skeleton_viz.clone())))
                 .child(row("MSAA", toggle(s.msaa.clone())))
                 .child(row("Light heatmap", toggle(s.heatmap.clone())))
+                .child(row(
+                    "Agent activity feed",
+                    toggle(crate::engine::activity_feed::enabled()),
+                ))
                 .render(),
         )
         .child(
@@ -337,9 +566,7 @@ fn count_nodes(nodes: &[std::sync::Arc<crate::engine::scene::Node>], c: &mut Cou
     for node in nodes {
         c.nodes += 1;
         match node.kind.get_cloned() {
-            NodeKind::Primitive { .. } | NodeKind::Mesh { .. } | NodeKind::Model(_) => {
-                c.meshes += 1
-            }
+            NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. } => c.meshes += 1,
             NodeKind::Light(_) => c.lights += 1,
             _ => {}
         }
@@ -461,28 +688,94 @@ fn cmdk_button() -> Dom {
     })
 }
 
-/// Top-bar MCP link button. Reflects the remote connection [`status`] and opens
-/// the connect modal on click (where the server address is editable).
+/// Top-bar MCP cluster: a `MCP` / `MCP…` / `MCP ✓` status button (opens the
+/// connect modal, or disconnects when connected) plus — while connected — a
+/// same-sized 🤖 activity chip that pulses whenever the agent is mid-request.
+///
+/// The chip is informational only: the editor stays fully interactive while the
+/// agent works (every edit is command-sourced + undoable), matching the
+/// awsm-audio convention — it tells the human "changes are landing live; wait
+/// for idle before editing / exporting" without locking input.
 ///
 /// [`status`]: crate::remote::status
 fn mcp_button() -> Dom {
     use crate::remote::RemoteStatus;
     html!("div", {
         .style("display", "flex")
-        .child_signal(crate::remote::status().signal().map(|st| {
-            let (title, active) = match st {
-                RemoteStatus::Disconnected => ("Connect to MCP server", false),
-                RemoteStatus::Connecting => ("Connecting to MCP\u{2026}", false),
-                RemoteStatus::Connected => ("MCP connected", true),
-            };
-            Some(
-                IconBtn::new("link")
-                    .title(title)
-                    .active(active)
-                    .on_click(open_mcp_modal)
-                    .render(),
-            )
-        }))
+        .style("align-items", "center")
+        .style("gap", "6px")
+        .child_signal(crate::remote::status().signal().map(|st| Some(mcp_status_button(st))))
+        .child_signal(map_ref! {
+            let status = crate::remote::status().signal(),
+            let working = crate::remote::working().signal() =>
+            (*status == RemoteStatus::Connected).then(|| mcp_activity_chip(*working))
+        })
+    })
+}
+
+/// The three-state MCP status button.
+fn mcp_status_button(status: crate::remote::RemoteStatus) -> Dom {
+    use crate::remote::RemoteStatus;
+    match status {
+        RemoteStatus::Disconnected => Btn::new()
+            .label("MCP")
+            .variant(BtnVariant::Ghost)
+            .size(BtnSize::Sm)
+            .title("Connect to an MCP server")
+            .on_click(open_mcp_modal)
+            .render(),
+        RemoteStatus::Connecting => Btn::new()
+            .label("MCP\u{2026}")
+            .variant(BtnVariant::Ghost)
+            .size(BtnSize::Sm)
+            .title("Connecting\u{2026}")
+            .disabled(true)
+            .render(),
+        RemoteStatus::Connected => Btn::new()
+            .label("MCP \u{2713}")
+            .variant(BtnVariant::Primary)
+            .size(BtnSize::Sm)
+            .title("Connected \u{2014} click to disconnect")
+            .on_click(crate::remote::disconnect)
+            .render(),
+    }
+}
+
+/// The 🤖 agent-activity chip shown next to the MCP button while connected.
+/// Sized to match the `BtnSize::Sm` button (26px height) so the two read as one
+/// cluster. Pulses (via the `mcp-pulse` keyframe in `index.html`) while working.
+fn mcp_activity_chip(working: bool) -> Dom {
+    html!("div", {
+        .style("display", "inline-flex")
+        .style("align-items", "center")
+        .style("gap", "5px")
+        .style("height", "26px")
+        .style("box-sizing", "border-box")
+        .style("padding", "0 11px")
+        .style("border-radius", "var(--r2)")
+        .style("border-style", "solid")
+        .style("border-width", "1px")
+        .style("font-size", "12.5px")
+        .style("font-weight", "550")
+        .style("white-space", "nowrap")
+        .style("user-select", "none")
+        .apply(|d| if working {
+            d.style("color", "var(--accent-bright)")
+                .style("background", "var(--accent-ghost)")
+                .style("border-color", "var(--accent-line)")
+                .style("animation", "mcp-pulse 1.1s ease-in-out infinite")
+                .attr(
+                    "title",
+                    "Agent is working \u{2014} changes are landing live; wait for idle before editing or exporting.",
+                )
+        } else {
+            d.style("color", "var(--text-3)")
+                .style("background", "transparent")
+                .style("border-color", "var(--line)")
+                .attr("title", "Agent idle \u{2014} safe to edit / export.")
+        })
+        .child(html!("span", { .text("\u{1F916}") }))
+        .child(html!("span", { .text(if working { "working\u{2026}" } else { "idle" }) }))
     })
 }
 
@@ -509,7 +802,7 @@ fn open_mcp_modal() {
                 .style("font-size", "12.5px")
                 .style("color", "var(--text-2)")
                 .style("line-height", "1.5")
-                .text("Run awsm-mcp-server locally, then connect — the editor dials out to \
+                .text("Run awsm-renderer-mcp locally, then connect — the editor dials out to \
                        this address. An MCP agent (Claude, Codex, \u{2026}) drives the editor \
                        through that same server.")
             }))
@@ -690,6 +983,8 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
         .style("display", "inline-flex")
         .child(DropButton::new().icon("more").variant(BtnVariant::Quiet).chevron(false)
             .items(|close| vec![
+                MenuItem::new("Export scene as GLB\u{2026}").icon("mesh").on_click(clone!(close => move || { export_scene_glb(); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Export player bundle\u{2026}").icon("mesh").on_click(clone!(close => move || { export_player_bundle(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Settings\u{2026}").icon("settings").on_click(clone!(close => move || { controller().settings_open.set_neq(true); (close.borrow_mut())(); })).render(),
                 MenuItem::new("About AwsmRenderer\u{2026}").icon("help").on_click(clone!(close => move || { open_about(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Clear scene\u{2026}").icon("trash").danger(true).on_click(clone!(close => move || { open_clear_all(); (close.borrow_mut())(); })).render(),
@@ -714,6 +1009,7 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
 }
 
 fn workspace(ctrl: &EditorController) -> Dom {
+    use crate::engine::activity_feed::FocusTarget;
     // Both workspaces stay mounted and are display-toggled by mode, so the
     // WebGPU canvas (reparented into the Scene viewport slot) is never torn out
     // of the DOM on a mode switch — the render loop keeps ticking.
@@ -739,6 +1035,8 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .style("flex", "0 0 auto")
                     .style("border-right", "1px solid var(--line)")
                     .style("min-height", "0")
+                    .style("position", "relative")
+                    .apply(panel_highlight(FocusTarget::Outliner))
                     .child(crate::scene_mode::outliner::render())
                 }))
                 .child(html!("div", {
@@ -746,6 +1044,7 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .style("min-width", "0")
                     .style("min-height", "0")
                     .style("position", "relative")
+                    .apply(panel_highlight(FocusTarget::Viewport))
                     .child(crate::scene_mode::viewport::render())
                 }))
                 .child(html!("div", {
@@ -753,6 +1052,8 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .style("flex", "0 0 auto")
                     .style("border-left", "1px solid var(--line)")
                     .style("min-height", "0")
+                    .style("position", "relative")
+                    .apply(panel_highlight(FocusTarget::Inspector))
                     .child(crate::scene_mode::inspector::render())
                 }))
             }))

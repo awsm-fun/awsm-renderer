@@ -63,7 +63,14 @@ thread_local! {
 
 /// Debounced (~200ms, like material auto-register) re-lower of the active clip +
 /// mixer into the renderer. Coalesces a burst of edits into one rebuild.
-fn schedule_relower() {
+///
+/// `pub(crate)` because node materialization (node_sync) also nudges it: a
+/// channel whose target node hadn't materialized at lower time is skipped as
+/// pending, and nothing else re-fires when the node appears — an import whose
+/// clips register before all its (async) bone mirrors land would otherwise
+/// lower only the bones that won the race (seen live: Fox's left-leg channels
+/// silently missing while the right leg animated).
+pub(crate) fn schedule_relower() {
     let already = RELOWER_PENDING.with(|p| p.swap(true, Ordering::SeqCst));
     if already {
         return;
@@ -110,13 +117,39 @@ async fn relower() {
         })
         .collect();
 
+    // Authored track count of the ACTIVE clip (the numerator the resolved channel
+    // count should match) — read before the clips move into the renderer closure.
+    let active_authored: Option<usize> = active_id.and_then(|aid| {
+        clips
+            .iter()
+            .find(|(id, _)| *id == aid)
+            .map(|(_, c)| c.tracks.lock_ref().len())
+    });
+
     let playhead = ctrl.playhead.get();
-    with_renderer_mut(move |r| {
+    let active_resolved: Option<usize> = with_renderer_mut(move |r| {
         // Lower each clip now that the renderer is available (Uniform resolution).
         let groups: Vec<(AssetId, AnimationClipGroup)> = clips
             .iter()
             .map(|(id, clip)| (*id, lower_clip(r, clip, solo_root)))
             .collect();
+        // Breadcrumb for the pose-doesn't-deform investigations: how many clips +
+        // resolved channels actually lowered. 0 channels with non-zero authored
+        // tracks ⇒ every track's target was pending/invalid at lower time.
+        let total_channels: usize = groups.iter().map(|(_, g)| g.channels.len()).sum();
+        tracing::debug!(
+            "anim relower: {} clip(s), {} resolved channel(s), mixer_doc_layers={}",
+            groups.len(),
+            total_channels,
+            mixer_doc.layers.len()
+        );
+        // Resolved channel count of the active clip, for the orphaned-clip warning.
+        let active_resolved = active_id.and_then(|aid| {
+            groups
+                .iter()
+                .find(|(id, _)| *id == aid)
+                .map(|(_, g)| g.channels.len())
+        });
         let mixer = lower_mixer(&mixer_doc, &clip_ids, &groups);
 
         r.animations.clear_clips();
@@ -140,8 +173,47 @@ async fn relower() {
         // Re-pin the pose at the current playhead so the viewport reflects the
         // edit immediately (WYSIWYG), even while paused.
         pin_pose(r, playhead);
+        active_resolved
     })
     .await;
+
+    // Orphaned-clip warning: the active clip has authored tracks but NONE resolved
+    // into renderer channels — every target node/material is gone (the common case
+    // is a clip left in the library after its imported model was deleted; its
+    // tracks bind to now-deleted node ids). Silently it would just rest-hold (look
+    // like "playback does nothing"), so surface it once per offending clip. Toasts
+    // mirror into the MCP console-log ring, so a driver sees it too. Deduped by
+    // active-clip id; cleared when the active clip resolves cleanly so a later
+    // re-orphaning warns again.
+    warn_if_orphaned_clip(active_id, active_authored, active_resolved);
+}
+
+thread_local! {
+    /// The active-clip id we last warned was orphaned (resolves 0 channels), so a
+    /// burst of re-lowers doesn't re-toast. Reset when the active clip resolves
+    /// cleanly (or changes), so a genuine later re-orphaning warns again.
+    static LAST_ORPHAN_WARN: std::cell::Cell<Option<AssetId>> = const { std::cell::Cell::new(None) };
+}
+
+/// Toast once when the active clip authored tracks but resolved no channels.
+fn warn_if_orphaned_clip(
+    active_id: Option<AssetId>,
+    active_authored: Option<usize>,
+    active_resolved: Option<usize>,
+) {
+    let orphaned = matches!((active_authored, active_resolved), (Some(a), Some(0)) if a > 0);
+    if orphaned {
+        if LAST_ORPHAN_WARN.with(|c| c.get()) != active_id {
+            LAST_ORPHAN_WARN.with(|c| c.set(active_id));
+            awsm_web_shared::prelude::Toast::warning(
+                "This clip targets deleted nodes — nothing to animate. \
+                 It was likely left behind when its imported model was removed.",
+            );
+        }
+    } else {
+        // Active clip is healthy (or none) — clear so a future orphaning re-warns.
+        LAST_ORPHAN_WARN.with(|c| c.set(None));
+    }
 }
 
 /// Seed the rest (authored-default) pose for every animated transform target

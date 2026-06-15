@@ -1,0 +1,27 @@
+[package]
+name = "awsm-scene-loader"
+description = "Load an awsm-scene runtime bundle (scene.toml + assets/) into the renderer — the parallel to renderer-gltf's populate_gltf, for OUR own format. Used by the model-test page (round-trip: export a bundle → load it back → compare) and the player."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# The core renderer (GPU) + the glTF loader we reuse for the per-mesh glbs.
+# `scene-schema` pulls in the reusable animation lowering
+# (`animation::scene_loader::lower_stored_clip` / `lower_stored_mixer`) we feed
+# the bundle's clips + mixer through.
+awsm-renderer = { workspace = true, features = ["scene-schema"] }
+awsm-renderer-core = { workspace = true }
+awsm-renderer-gltf = { workspace = true }
+# Dynamic-material types (custom-WGSL registration: layout, registration, shader id).
+awsm-materials = { workspace = true }
+# Player-lean meshgen (default = primitives only) for `RuntimeMesh::Primitive`.
+awsm-meshgen = { workspace = true }
+# The runtime Scene schema we load.
+awsm-scene = { workspace = true }
+glam = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

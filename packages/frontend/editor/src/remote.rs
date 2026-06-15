@@ -13,7 +13,7 @@
 //! server-initiated bidirectional streams, one [`Request`] each, replying with a
 //! [`Response`] on the same stream (framing by stream-finish).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use awsm_web_shared::prelude::{Mutable, Toast};
 use base64::Engine;
@@ -28,6 +28,10 @@ use crate::controller::controller;
 /// Cap on a single inbound request (bounds memory if a peer streams without
 /// finishing). Requests are small; 16 MiB is far outside the legitimate range.
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+
+/// How long the "agent working" pulse lingers after the last in-flight request
+/// finishes, so a burst of quick mutations doesn't flicker the indicator on/off.
+const WORKING_COOLDOWN_MS: u32 = 450;
 
 /// The MCP server's control origin the connect modal pre-fills when no `?mcp=`
 /// param was supplied. Baked from `MCP_DEFAULT_ORIGIN` at build time (sourced from
@@ -51,11 +55,68 @@ thread_local! {
     static ORIGIN: Mutable<String> = Mutable::new(default_origin().to_string());
     /// The live session, kept so the UI can `disconnect()` it.
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+    /// True while the MCP agent is actively serving requests (drives the UI pulse).
+    static WORKING: Mutable<bool> = Mutable::new(false);
+    /// Count of in-flight requests (a long render keeps the pulse lit).
+    static IN_FLIGHT: Cell<u32> = const { Cell::new(0) };
+    /// Bumped whenever activity starts/stops; lets a queued cooldown cancel itself.
+    static IDLE_GEN: Cell<u64> = const { Cell::new(0) };
+    /// True while a connect/reconnect task is active — the editor keeps re-dialing
+    /// the MCP server (with backoff) until [`disconnect`] clears it. Lets a server
+    /// restart reconnect seamlessly without a manual page reload.
+    static RECONNECT: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Reactive connection status (for the UI button).
 pub fn status() -> Mutable<RemoteStatus> {
     STATUS.with(|s| s.clone())
+}
+
+/// Reactive "agent working" flag — true while the MCP agent is serving requests
+/// (plus a short cooldown). The top-bar MCP chip pulses on this so the human
+/// knows the agent is mid-edit and changes are landing live. Informational only:
+/// the editor stays fully interactive (every edit is command-sourced + undoable),
+/// matching the awsm-audio convention — no hard lock on human input.
+pub fn working() -> Mutable<bool> {
+    WORKING.with(|w| w.clone())
+}
+
+/// Mark the start of serving one MCP request: light the pulse, cancel any pending
+/// idle cooldown.
+fn activity_begin() {
+    IN_FLIGHT.with(|c| c.set(c.get() + 1));
+    IDLE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
+    WORKING.with(|w| w.set_neq(true));
+}
+
+/// Mark one request done. When the last one finishes, keep the pulse lit for a
+/// short cooldown, then clear it if still idle (so bursts don't flicker).
+async fn activity_end() {
+    let remaining = IN_FLIGHT.with(|c| {
+        let n = c.get().saturating_sub(1);
+        c.set(n);
+        n
+    });
+    if remaining != 0 {
+        return;
+    }
+    let generation = IDLE_GEN.with(|g| {
+        let n = g.get().wrapping_add(1);
+        g.set(n);
+        n
+    });
+    gloo_timers::future::TimeoutFuture::new(WORKING_COOLDOWN_MS).await;
+    // Still idle and no newer activity since we queued? Then we're truly done.
+    if IDLE_GEN.with(|g| g.get()) == generation && IN_FLIGHT.with(|c| c.get()) == 0 {
+        WORKING.with(|w| w.set_neq(false));
+    }
+}
+
+/// Force the pulse off (on disconnect) so a stale "working" never lingers.
+fn activity_reset() {
+    IN_FLIGHT.with(|c| c.set(0));
+    IDLE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
+    WORKING.with(|w| w.set_neq(false));
 }
 
 /// The control origin the modal pre-fills (defaults to [`default_origin`];
@@ -70,36 +131,61 @@ struct ControlInfo {
     cert_hash: String,
 }
 
-/// Connect to the MCP server at `control_origin`. No-op if already connecting or
-/// connected. Surfaces connect / disconnect / failure as toasts and drives the
-/// [`status`] signal.
+/// Connect to the MCP server at `control_origin`, **staying connected**: if the
+/// link drops (e.g. the server restarts), re-dial with backoff until
+/// [`disconnect`] is called. No-op if a connect/reconnect task is already active.
+/// Surfaces connect / disconnect / failure as toasts and drives the [`status`]
+/// signal. The seamless reconnect is what lets the dev MCP server restart (new
+/// commands/tools) without a manual editor reload.
 pub fn connect(control_origin: String) {
-    let status = status();
-    if status.get() != RemoteStatus::Disconnected {
-        return; // already connecting or connected
+    if RECONNECT.with(|r| r.get()) {
+        return; // a connect/reconnect task is already running
     }
     origin().set(control_origin.clone());
-    status.set(RemoteStatus::Connecting);
+    RECONNECT.with(|r| r.set(true));
+    status().set(RemoteStatus::Connecting);
 
     spawn_local(async move {
-        let result = run(control_origin).await;
-        SESSION.with(|s| *s.borrow_mut() = None);
-        let was_connected = status.get() == RemoteStatus::Connected;
-        status.set(RemoteStatus::Disconnected);
-        match (was_connected, result) {
-            // Dropped after a successful connect (server stopped, or user clicked
-            // disconnect) — informational, not an error.
-            (true, res) => {
-                if let Err(e) = res {
-                    tracing::warn!("mcp link ended: {e}");
+        let mut backoff_ms = 500u32;
+        let mut toasted_failure = false;
+        loop {
+            let result = run(control_origin.clone()).await;
+            SESSION.with(|s| *s.borrow_mut() = None);
+            activity_reset();
+            let was_connected = status().get() == RemoteStatus::Connected;
+            status().set(RemoteStatus::Disconnected);
+
+            // Explicit disconnect (RECONNECT cleared) — stop, no retry.
+            if !RECONNECT.with(|r| r.get()) {
+                if was_connected {
+                    Toast::info("MCP disconnected");
                 }
-                Toast::info("MCP disconnected");
+                break;
             }
-            // Never got connected — the connect itself failed (server down, bad
-            // cert, …).
-            (false, Err(e)) => Toast::error(format!("MCP connect failed: {e}")),
-            (false, Ok(())) => {} // run() only returns Ok via the accept loop ending
+
+            // Otherwise keep the link alive by re-dialing.
+            if was_connected {
+                Toast::info("MCP disconnected \u{2014} reconnecting\u{2026}");
+                backoff_ms = 500; // a live link dropped; retry promptly
+                toasted_failure = false;
+            } else if let Err(e) = &result {
+                // Connect attempt failed (server not up yet / bad cert). Toast
+                // once, then retry quietly so we don't spam while it comes up.
+                if !toasted_failure {
+                    Toast::error(format!("MCP connect failed (retrying): {e}"));
+                    toasted_failure = true;
+                }
+                tracing::warn!("mcp connect failed (retrying): {e}");
+            }
+
+            gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
+            if !RECONNECT.with(|r| r.get()) {
+                break; // disconnected during the backoff
+            }
+            backoff_ms = (backoff_ms.saturating_mul(2)).min(3000);
+            status().set(RemoteStatus::Connecting);
         }
+        RECONNECT.with(|r| r.set(false)); // task done; allow a future connect()
     });
 }
 
@@ -135,10 +221,12 @@ async fn send_event(session: Session, ev: &EditorEvent) -> Result<(), String> {
     Ok(())
 }
 
-/// Disconnect the live link (closes the WebTransport session). No-op when not
-/// connected. The "MCP disconnected" toast is emitted by the connect task once
-/// the accept loop unwinds.
+/// Disconnect the live link and **stop reconnecting** (clears the reconnect
+/// flag, then closes the WebTransport session). The connect task sees the flag
+/// cleared and exits instead of re-dialing. The "MCP disconnected" toast is
+/// emitted by that task as it unwinds.
 pub fn disconnect() {
+    RECONNECT.with(|r| r.set(false));
     SESSION.with(|s| {
         if let Some(session) = s.borrow().as_ref() {
             session.close(0, "client disconnect");
@@ -194,6 +282,7 @@ async fn run(control_origin: String) -> Result<(), String> {
 
 /// Read one request off a stream, dispatch it, and write the response back.
 async fn serve_one(mut send: SendStream, mut recv: RecvStream) {
+    activity_begin();
     let resp = match read_request(&mut recv).await {
         Ok(req) => dispatch(req).await,
         Err(e) => Response::Err(e),
@@ -201,6 +290,7 @@ async fn serve_one(mut send: SendStream, mut recv: RecvStream) {
     if let Err(e) = reply(&mut send, &resp).await {
         tracing::warn!("mcp: reply failed: {e}");
     }
+    activity_end().await;
 }
 
 async fn read_request(recv: &mut RecvStream) -> Result<Request, String> {
@@ -235,14 +325,23 @@ async fn dispatch(req: Request) -> Response {
     let ctrl = controller();
     match req {
         Request::Mode => Response::Mode(ctrl.mode.get()),
-        Request::Dispatch(cmd) => match ctrl.dispatch(cmd).await {
-            Ok(()) => Response::Ok,
-            Err(e) => Response::Err(format!("{e}")),
-        },
-        Request::DispatchBatch(cmds) => match ctrl.dispatch_batch(cmds).await {
-            Ok(()) => Response::Ok,
-            Err(e) => Response::Err(format!("{e}")),
-        },
+        Request::Dispatch(cmd) => {
+            // "Watch-it-work": narrate the agent's command into the activity
+            // feed + spotlight the focus panel. Read-only/informational — never
+            // mutates state; derived from the command alone.
+            crate::engine::activity_feed::narrate(&cmd);
+            match ctrl.dispatch(cmd).await {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Err(format!("{e}")),
+            }
+        }
+        Request::DispatchBatch(cmds) => {
+            crate::engine::activity_feed::narrate_batch(&cmds);
+            match ctrl.dispatch_batch(cmds).await {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Err(format!("{e}")),
+            }
+        }
         Request::Query(q) => Response::Query(Box::new(ctrl.query(q).await)),
         Request::Undo => {
             ctrl.undo().await;

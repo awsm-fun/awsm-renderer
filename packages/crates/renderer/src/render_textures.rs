@@ -26,7 +26,25 @@ pub struct RenderTextures {
     features: RendererFeatures,
     frame_count: u32,
     inner: Option<RenderTexturesInner>,
+    /// Render-texture generations retired by a recreate but NOT yet
+    /// `destroy()`ed, paired with the `frame_count` they were retired on. A
+    /// recreate (viewport resize / AA flip / mip-grow / HUD-depth) cannot
+    /// destroy the old textures immediately: a previously-submitted "Rendering"
+    /// command buffer may still reference them on the GPU, and destroying a
+    /// texture still bound by an in-flight submit raises a `GPUValidationError`
+    /// ("Destroyed texture used in a submit") which rejects the whole frame —
+    /// the cause of "black sky on cold start", where the canvas size settles
+    /// over the first few frames and recreates the textures while frame 0's
+    /// submit is in flight. We instead defer `destroy()` by
+    /// [`DESTROY_DELAY_FRAMES`] (safely past frames-in-flight), keeping GPU
+    /// memory bounded (one or two retired generations) without the hazard.
+    pending_destroy: Vec<(RenderTexturesInner, u32)>,
 }
+
+/// Frames to wait before `destroy()`ing a retired render-texture generation —
+/// comfortably past the 1–2 frames a submit can stay in flight. See
+/// [`RenderTextures::pending_destroy`].
+const DESTROY_DELAY_FRAMES: u32 = 3;
 
 /// Formats used for render textures.
 #[derive(Clone, Debug)]
@@ -105,15 +123,30 @@ impl RenderTextures {
             features: features.clone(),
             frame_count: 0,
             inner: None,
+            pending_destroy: Vec::new(),
             opaque_to_transparent_blit_pipeline_msaa_4: msaa_4_pipeline,
             opaque_to_transparent_blit_pipeline_no_anti_alias: single_sample_pipeline.clone(),
             transparent_to_composite_blit_pipeline_no_anti_alias: single_sample_pipeline,
         })
     }
 
-    /// Advances the internal frame counter.
+    /// Advances the internal frame counter and `destroy()`s any retired
+    /// render-texture generation old enough that no in-flight submit can still
+    /// reference it (see [`Self::pending_destroy`]).
     pub fn next_frame(&mut self) {
         self.frame_count = self.frame_count.wrapping_add(1);
+        let now = self.frame_count;
+        // `destroy(self)` consumes the inner, so drain by value (not `retain`,
+        // which only yields `&`). Keep the not-yet-old-enough generations.
+        let mut keep = Vec::new();
+        for (inner, retired_at) in std::mem::take(&mut self.pending_destroy) {
+            if now.wrapping_sub(retired_at) >= DESTROY_DELAY_FRAMES {
+                inner.destroy();
+            } else {
+                keep.push((inner, retired_at));
+            }
+        }
+        self.pending_destroy = keep;
     }
 
     /// Returns the current frame counter.
@@ -185,7 +218,12 @@ impl RenderTextures {
 
         if size_changed || anti_aliasing_changed || opaque_mips_grown || hud_depth_appeared {
             if let Some(inner) = self.inner.take() {
-                inner.destroy();
+                // Defer destroy: a prior frame's "Rendering" submit may still
+                // reference these textures on the GPU. Destroying now would
+                // raise "Destroyed texture used in a submit" and reject that
+                // frame (the black-on-start cause). `next_frame` destroys it
+                // once it's `DESTROY_DELAY_FRAMES` old.
+                self.pending_destroy.push((inner, self.frame_count));
             }
 
             let inner = RenderTexturesInner::new(

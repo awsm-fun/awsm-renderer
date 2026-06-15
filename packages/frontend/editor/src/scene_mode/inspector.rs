@@ -7,16 +7,16 @@ use std::sync::Arc;
 
 use glam::{EulerRot, Quat};
 
-use crate::controller::NodeSpec;
 use crate::engine::scene::mutate::find_by_id;
 use crate::engine::scene::{
     AssetId, CameraConfig, CameraProjection, ColliderShape, LightConfig, Node, NodeId, NodeKind,
     Trs,
 };
 use crate::prelude::*;
-use awsm_scene_schema::{
-    AssetSource, BillboardMode, CurveDef, DecalConfig, LineDef, MaterialAlphaMode, MaterialDef,
-    MaterialShading, MeshRef, MeshShadowConfig, ParticleEmitterDef, PrimitiveShape,
+use awsm_editor_protocol::{
+    AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, EvsmCutoff,
+    FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, MaterialAlphaMode,
+    MaterialDef, MaterialShading, MeshShadowConfig, ParticleEmitterDef, PrimitiveShape,
     ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef,
 };
 
@@ -139,6 +139,45 @@ fn single_node(node: Arc<Node>) -> Dom {
         .child(row("Prefab root", toggle(prefab)))
         .child(transform_section(&node))
         .child(kind_editor(&node))
+        .child(export_node_section(&node))
+    })
+}
+
+/// "Export GLB" for the selected node's subtree (geometry-bearing kinds +
+/// Group containers). Downloads a binary glTF; re-import is up to the user.
+fn export_node_section(node: &Arc<Node>) -> Dom {
+    let exportable = matches!(
+        node.kind.get_cloned(),
+        NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. } | NodeKind::Group
+    );
+    if !exportable {
+        return html!("div");
+    }
+    let node_id = node.id;
+    let raw_name = node.name.get_cloned();
+    html!("div", {
+        .style("margin", "10px 12px 0")
+        .child(Btn::new()
+            .label("Export GLB")
+            .icon("mesh")
+            .variant(BtnVariant::Ghost)
+            .full(true)
+            .on_click(move || {
+                let file = {
+                    let n = raw_name.trim();
+                    if n.is_empty() { "node.glb".to_string() } else { format!("{n}.glb") }
+                };
+                spawn_local(async move {
+                    match crate::controller::export::export_glb(&controller().scene, Some(node_id)).await {
+                        Ok(bytes) => {
+                            crate::app::download_bytes(&file, &bytes);
+                            Toast::info(format!("Exported {file} ({} KB)", bytes.len() / 1024));
+                        }
+                        Err(e) => Toast::error(format!("Export failed: {e}")),
+                    }
+                });
+            })
+            .render())
     })
 }
 
@@ -150,47 +189,470 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         NodeKind::Light(cfg) => light_editor(node, &cfg),
         NodeKind::Camera(cfg) => camera_editor(node, &cfg),
         NodeKind::Collider(shape) => collider_editor(node, &shape),
-        NodeKind::Primitive {
-            shape,
-            inline_material,
-            custom_material,
-            shadow,
-            ..
-        } => html!("div", {
-            .child(geometry_editor(node, &shape))
-            .child(material_editor(node, &inline_material, custom_material.is_some()))
-            .child(mesh_shadow_editor(node, shadow))
-            .child(capture_mesh_button(shape))
-        }),
-        NodeKind::SweepAlongCurve { .. } => sweep_editor(node),
         NodeKind::InstancesAlongCurve(_) => instances_editor(node),
         NodeKind::Curve(def) => curve_editor(node, &def),
         NodeKind::Sprite(def) => sprite_editor(node, &def),
         NodeKind::Line(def) => line_editor(node, &def),
         NodeKind::Decal(cfg) => decal_editor(node, &cfg),
         NodeKind::ParticleEmitter(def) => particle_editor(node, &def),
-        // A captured-geometry Mesh shares the Primitive's per-mesh surface:
-        // material (built-in/dynamic + per-mesh uniforms) + shadow flags.
+        // The sole procedural-geometry node. Shows an informational geometry
+        // summary (the stack base + modifier count — editing is via MCP) plus the
+        // per-mesh surface: material (built-in/dynamic + per-mesh uniforms) and
+        // shadow flags.
         NodeKind::Mesh {
-            inline_material,
-            custom_material,
+            mesh,
+            material,
             shadow,
-            ..
         } => html!("div", {
-            .child(material_editor(node, &inline_material, custom_material.is_some()))
+            .child(mesh_geometry_section(mesh.0))
+            .child(material_editor(node, &inline_of(&material), material.is_some()))
             .child(mesh_shadow_editor(node, shadow))
         }),
+        // A skinned glTF import: not editable geometry (its per-vertex skin
+        // weights can't survive topology edits). Shows the material + shadow
+        // surface plus a "Drop Skinning" action that bakes the bind pose into a
+        // static editable Mesh (terminal).
+        NodeKind::SkinnedMesh {
+            material, shadow, ..
+        } => {
+            let node_id = node.id;
+            html!("div", {
+                .child(info_section(
+                    "Skinned Mesh",
+                    "An imported, rigged mesh deformed by the renderer's skin path \
+                     (driven by its bones + animation clips). It is NOT editable — \
+                     per-vertex skin weights can't survive topology-changing edits. \
+                     Drop skinning to bake the bind pose into a static, editable mesh.",
+                ))
+                .child(material_editor(node, &inline_of(&material), material.is_some()))
+                .child(mesh_shadow_editor(node, shadow))
+                .child(html!("div", {
+                    .style("margin", "8px 0")
+                    .child(Btn::new()
+                        .label("Drop Skinning")
+                        .icon("cube")
+                        .variant(BtnVariant::Ghost)
+                        .full(true)
+                        .on_click(move || {
+                            spawn_local(async move {
+                                let _ = controller()
+                                    .dispatch(EditorCommand::DropSkinning { node: node_id })
+                                    .await;
+                            });
+                        })
+                        .render())
+                }))
+            })
+        }
         // A Group is purely an organisational transform parent — name + transform
         // (above) are its full property set.
         NodeKind::Group => info_section("Group", "An organizational parent. Its children inherit this node's transform; it has no geometry of its own."),
-        // A Model is an imported glTF/glb mesh. It carries one assigned library
-        // material (shared, derived at import) plus the *same* per-mesh editing
-        // surface as a captured Mesh: built-in uniform factors + texture
-        // overrides, or a dynamic material's declared overrides, and shadow flags.
-        NodeKind::Model(r) => html!("div", {
-            .child(material_editor(node, &r.inline_material, r.material.is_some()))
-            .child(mesh_shadow_editor(node, r.shadow))
-        }),
+    }
+}
+
+/// Geometry editor for a `NodeKind::Mesh`. When the backing `MeshDef`'s stack
+/// base is a built-in **primitive**, expose live editable parameters (box dims,
+/// sphere/cylinder/cone radius + segments, plane subdivisions, torus, …) — each
+/// rewrites the stack base via `SetMeshModifiers`, which re-bakes the mesh + the
+/// bridge re-materializes referencing nodes. Non-primitive bases (lathe /
+/// superquadric / sweep / SDF / captured) + the modifier stack stay MCP-authored,
+/// so those show a read-only summary. Falls back to a "missing asset" note.
+fn mesh_geometry_section(mesh: awsm_editor_protocol::AssetId) -> Dom {
+    use awsm_editor_protocol::MeshBase;
+
+    let (prim, base_name, mod_count) = {
+        let ctrl = controller();
+        let assets = ctrl.scene.assets.lock().unwrap();
+        match assets.get(mesh).map(|e| &e.source) {
+            Some(AssetSource::Mesh(def)) => {
+                let n = def.stack.modifiers.len();
+                match &def.stack.base {
+                    MeshBase::Primitive(s) => (Some(s.clone()), None, n),
+                    MeshBase::Lathe { .. } => (None, Some("lathe"), n),
+                    MeshBase::Superquadric { .. } => (None, Some("superquadric"), n),
+                    MeshBase::Sweep(_) => (None, Some("sweep along curve"), n),
+                    MeshBase::Captured(_) => (None, Some("captured"), n),
+                    MeshBase::Sdf { .. } => (None, Some("SDF/CSG"), n),
+                }
+            }
+            _ => (None, Some("geometry asset missing"), 0),
+        }
+    };
+
+    let mut sec = Section::new("Geometry").dense(true);
+    match prim {
+        Some(shape) => {
+            sec = primitive_fields(sec, mesh, &shape);
+            if mod_count > 0 {
+                let mods = if mod_count == 1 {
+                    "1 modifier".to_string()
+                } else {
+                    format!("{mod_count} modifiers")
+                };
+                sec = sec.child(html!("div", {
+                    .style("font-size", "11px").style("color", "var(--text-4)").style("margin-top", "6px")
+                    .text(&format!("+ {mods} on the stack (edit via the MCP mesh tools)"))
+                }));
+            }
+        }
+        None => {
+            sec = sec
+                .child(html!("div", {
+                    .style("font-size", "12px").style("color", "var(--text-3)").style("line-height", "1.5")
+                    .text(&format!("base: {}", base_name.unwrap_or("")))
+                }))
+                .child(html!("div", {
+                    .style("font-size", "11px").style("color", "var(--text-4)").style("margin-top", "4px")
+                    .text("Edit the modifier stack + vertices via the MCP mesh tools.")
+                }));
+        }
+    }
+    sec.render()
+}
+
+/// Replace the mesh's stack base with `shape` (preserving its modifiers) and
+/// dispatch `SetMeshModifiers` so the geometry re-bakes live.
+fn apply_primitive(mesh: awsm_editor_protocol::AssetId, shape: PrimitiveShape) {
+    use awsm_editor_protocol::MeshBase;
+    let stack = {
+        let ctrl = controller();
+        let assets = ctrl.scene.assets.lock().unwrap();
+        match assets.get(mesh).map(|e| &e.source) {
+            Some(AssetSource::Mesh(def)) => Some(def.stack.clone()),
+            _ => None,
+        }
+    };
+    if let Some(mut stack) = stack {
+        stack.base = MeshBase::Primitive(shape);
+        spawn_local(async move {
+            let _ = controller()
+                .dispatch(EditorCommand::SetMeshModifiers { mesh, stack })
+                .await;
+        });
+    }
+}
+
+/// Append the per-variant editable NumFields for a primitive base. Each field's
+/// `on_change` rebuilds the full `PrimitiveShape` (the other params captured from
+/// the current snapshot) and calls [`apply_primitive`]. `u32` segment counts are
+/// floored to their topological minimum.
+fn primitive_fields(
+    sec: Section,
+    mesh: awsm_editor_protocol::AssetId,
+    shape: &PrimitiveShape,
+) -> Section {
+    use PrimitiveShape as P;
+    // `mesh` is Copy; build an f32 field whose change maps to a new shape.
+    let f = move |val: f32, min: f64, step: f64, build: Box<dyn Fn(f64) -> P>| {
+        NumField::new(val as f64)
+            .min(min)
+            .step(step)
+            .on_change(move |v| apply_primitive(mesh, build(v)))
+            .render()
+    };
+    match shape {
+        P::Plane {
+            width,
+            depth,
+            segments_x,
+            segments_z,
+        } => {
+            let (w, d, sx, sz) = (*width, *depth, *segments_x, *segments_z);
+            sec.child(row(
+                "Width",
+                f(
+                    w,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Plane {
+                        width: v as f32,
+                        depth: d,
+                        segments_x: sx,
+                        segments_z: sz,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Depth",
+                f(
+                    d,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Plane {
+                        width: w,
+                        depth: v as f32,
+                        segments_x: sx,
+                        segments_z: sz,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments X",
+                f(
+                    sx as f32,
+                    1.0,
+                    1.0,
+                    Box::new(move |v| P::Plane {
+                        width: w,
+                        depth: d,
+                        segments_x: (v as u32).max(1),
+                        segments_z: sz,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Z",
+                f(
+                    sz as f32,
+                    1.0,
+                    1.0,
+                    Box::new(move |v| P::Plane {
+                        width: w,
+                        depth: d,
+                        segments_x: sx,
+                        segments_z: (v as u32).max(1),
+                    }),
+                ),
+            ))
+        }
+        P::Box { dims } => {
+            let dm = *dims;
+            sec.child(row(
+                "Width",
+                f(
+                    dm[0],
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Box {
+                        dims: [v as f32, dm[1], dm[2]],
+                    }),
+                ),
+            ))
+            .child(row(
+                "Height",
+                f(
+                    dm[1],
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Box {
+                        dims: [dm[0], v as f32, dm[2]],
+                    }),
+                ),
+            ))
+            .child(row(
+                "Depth",
+                f(
+                    dm[2],
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Box {
+                        dims: [dm[0], dm[1], v as f32],
+                    }),
+                ),
+            ))
+        }
+        P::Sphere {
+            radius,
+            segments_long,
+            segments_lat,
+        } => {
+            let (r, sl, sa) = (*radius, *segments_long, *segments_lat);
+            sec.child(row(
+                "Radius",
+                f(
+                    r,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Sphere {
+                        radius: v as f32,
+                        segments_long: sl,
+                        segments_lat: sa,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Long",
+                f(
+                    sl as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Sphere {
+                        radius: r,
+                        segments_long: (v as u32).max(3),
+                        segments_lat: sa,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Lat",
+                f(
+                    sa as f32,
+                    2.0,
+                    1.0,
+                    Box::new(move |v| P::Sphere {
+                        radius: r,
+                        segments_long: sl,
+                        segments_lat: (v as u32).max(2),
+                    }),
+                ),
+            ))
+        }
+        P::Cylinder {
+            radius,
+            height,
+            radial_segments,
+        } => {
+            let (r, h, rs) = (*radius, *height, *radial_segments);
+            sec.child(row(
+                "Radius",
+                f(
+                    r,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Cylinder {
+                        radius: v as f32,
+                        height: h,
+                        radial_segments: rs,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Height",
+                f(
+                    h,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Cylinder {
+                        radius: r,
+                        height: v as f32,
+                        radial_segments: rs,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Radial Segments",
+                f(
+                    rs as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Cylinder {
+                        radius: r,
+                        height: h,
+                        radial_segments: (v as u32).max(3),
+                    }),
+                ),
+            ))
+        }
+        P::Cone {
+            radius,
+            height,
+            radial_segments,
+        } => {
+            let (r, h, rs) = (*radius, *height, *radial_segments);
+            sec.child(row(
+                "Radius",
+                f(
+                    r,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Cone {
+                        radius: v as f32,
+                        height: h,
+                        radial_segments: rs,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Height",
+                f(
+                    h,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Cone {
+                        radius: r,
+                        height: v as f32,
+                        radial_segments: rs,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Radial Segments",
+                f(
+                    rs as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Cone {
+                        radius: r,
+                        height: h,
+                        radial_segments: (v as u32).max(3),
+                    }),
+                ),
+            ))
+        }
+        P::Torus {
+            radius,
+            thickness,
+            segments_major,
+            segments_minor,
+        } => {
+            let (r, t, sj, sn) = (*radius, *thickness, *segments_major, *segments_minor);
+            sec.child(row(
+                "Radius",
+                f(
+                    r,
+                    0.0,
+                    0.1,
+                    Box::new(move |v| P::Torus {
+                        radius: v as f32,
+                        thickness: t,
+                        segments_major: sj,
+                        segments_minor: sn,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Thickness",
+                f(
+                    t,
+                    0.0,
+                    0.05,
+                    Box::new(move |v| P::Torus {
+                        radius: r,
+                        thickness: v as f32,
+                        segments_major: sj,
+                        segments_minor: sn,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Major",
+                f(
+                    sj as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Torus {
+                        radius: r,
+                        thickness: t,
+                        segments_major: (v as u32).max(3),
+                        segments_minor: sn,
+                    }),
+                ),
+            ))
+            .child(row(
+                "Segments Minor",
+                f(
+                    sn as f32,
+                    3.0,
+                    1.0,
+                    Box::new(move |v| P::Torus {
+                        radius: r,
+                        thickness: t,
+                        segments_major: sj,
+                        segments_minor: (v as u32).max(3),
+                    }),
+                ),
+            ))
+        }
     }
 }
 
@@ -271,86 +733,6 @@ fn ref_picker(
     row(label, select(sel, options))
 }
 
-/// "Capture as Mesh asset": freeze this primitive's geometry into a captured
-/// mesh + spawn a `Mesh` node referencing it (shared, reusable geometry).
-fn capture_mesh_button(shape: PrimitiveShape) -> Dom {
-    html!("div", {
-        .style("margin-top", "10px")
-        .child(Btn::new()
-            .label("Capture as Mesh asset")
-            .icon("mesh")
-            .variant(BtnVariant::Solid)
-            .full(true)
-            .on_click(move || {
-                let mesh = crate::engine::bridge::node_sync::primitive_to_mesh(&shape);
-                let id = crate::engine::bridge::mesh_cache::store(
-                    crate::engine::bridge::mesh_cache::from_mesh_data(mesh),
-                );
-                let node = NodeSpec {
-                    id: NodeId::new(),
-                    name: "Captured Mesh".to_string(),
-                    transform: Trs::default(),
-                    kind: NodeKind::Mesh {
-                        mesh: MeshRef(id),
-                        material: None,
-                        inline_material: MaterialDef::default(),
-                        custom_material: None,
-                        shadow: MeshShadowConfig::default(),
-                    },
-                    locked: false,
-                    visible: true,
-                    prefab: false,
-                    children: Vec::new(),
-                };
-                spawn_local(async move {
-                    let _ = controller()
-                        .dispatch(EditorCommand::InsertTree {
-                            node: Box::new(node),
-                            parent: None,
-                            index: None,
-                        })
-                        .await;
-                    Toast::info("Captured mesh \u{2192} new Mesh node");
-                });
-            })
-            .render())
-    })
-}
-
-fn sweep_editor(node: &Arc<Node>) -> Dom {
-    let id = node.id;
-    let curve_node = match node.kind.get_cloned() {
-        NodeKind::SweepAlongCurve { def, .. } => def.curve_node,
-        _ => NodeId::nil(),
-    };
-    let curves = collect_kind_nodes(|k| matches!(k, NodeKind::Curve(_)));
-    let n = node.clone();
-    Section::new("Sweep")
-        .child(ref_picker("Curve", curves, curve_node, move |picked| {
-            if let NodeKind::SweepAlongCurve {
-                mut def,
-                material,
-                inline_material,
-                custom_material,
-                shadow,
-            } = n.kind.get_cloned()
-            {
-                def.curve_node = picked;
-                dispatch_kind(
-                    id,
-                    NodeKind::SweepAlongCurve {
-                        def,
-                        material,
-                        inline_material,
-                        custom_material,
-                        shadow,
-                    },
-                );
-            }
-        }))
-        .render()
-}
-
 fn instances_editor(node: &Arc<Node>) -> Dom {
     let id = node.id;
     let def = match node.kind.get_cloned() {
@@ -358,7 +740,7 @@ fn instances_editor(node: &Arc<Node>) -> Dom {
         _ => return html!("div", {}),
     };
     let curves = collect_kind_nodes(|k| matches!(k, NodeKind::Curve(_)));
-    let sources = collect_kind_nodes(|k| matches!(k, NodeKind::Primitive { .. }));
+    let sources = collect_kind_nodes(|k| matches!(k, NodeKind::Mesh { .. }));
     let n_curve = node.clone();
     let n_src = node.clone();
     Section::new("Instances")
@@ -1163,61 +1545,20 @@ fn collider_editor(node: &Arc<Node>, shape: &ColliderShape) -> Dom {
 // ── Material (built-in inline_material) ───────────────────────────────────────
 
 /// The per-mesh inline material of a Primitive **or** a captured Mesh node (both
-/// share the same material surface in the inspector).
+/// share the same material surface in the inspector). `None` when the node is
+/// unassigned (nothing to edit on a magenta node).
 fn current_primitive_material(node: &Arc<Node>) -> Option<MaterialDef> {
-    match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            inline_material, ..
-        }
-        | NodeKind::Mesh {
-            inline_material, ..
-        } => Some(inline_material),
-        NodeKind::Model(r) => Some(r.inline_material),
-        _ => None,
-    }
+    node_material_instance(node).map(|inst| inst.inline)
 }
 
-/// Replace a Primitive's or Mesh's `inline_material`, preserving the rest of the kind.
+/// Replace the node's per-mesh inline uniform store, preserving the rest of the
+/// assigned instance + kind. A no-op when the node is unassigned.
 fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
-    match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            shape,
-            material,
-            custom_material,
-            shadow,
-            ..
-        } => dispatch_kind(
-            node.id,
-            NodeKind::Primitive {
-                shape,
-                material,
-                inline_material: mat,
-                custom_material,
-                shadow,
-            },
-        ),
-        NodeKind::Mesh {
-            mesh,
-            material,
-            custom_material,
-            shadow,
-            ..
-        } => dispatch_kind(
-            node.id,
-            NodeKind::Mesh {
-                mesh,
-                material,
-                inline_material: mat,
-                custom_material,
-                shadow,
-            },
-        ),
-        NodeKind::Model(mut r) => {
-            r.inline_material = mat;
-            dispatch_kind(node.id, NodeKind::Model(r));
-        }
-        _ => {}
-    }
+    let Some(mut inst) = node_material_instance(node) else {
+        return;
+    };
+    inst.inline = mat;
+    set_node_material(node, inst);
 }
 
 /// Reactive material-assignment dropdown — rebuilds whenever the custom-material
@@ -1255,14 +1596,7 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
         .iter()
         .map(|m| (m.id, m.name.get_cloned()))
         .collect();
-    let current: Option<AssetId> = match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            custom_material: Some(inst),
-            ..
-        } => Some(inst.material),
-        NodeKind::Model(r) => r.material.map(|i| i.material),
-        _ => None,
-    };
+    let current: Option<AssetId> = node_material_instance(node).map(|i| i.asset);
     // A DropButton whose items dispatch `AssignMaterial` directly on click —
     // robust against the reactive rebuild (no Mutable-observer race). The button
     // label reflects the current assignment; the inspector rebuilds on assign.
@@ -1323,20 +1657,8 @@ enum Assigned {
 }
 
 fn assigned_material(node: &Arc<Node>) -> Assigned {
-    let id = match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            custom_material: Some(inst),
-            ..
-        }
-        | NodeKind::Mesh {
-            custom_material: Some(inst),
-            ..
-        } => inst.material,
-        NodeKind::Model(r) => match r.material {
-            Some(inst) => inst.material,
-            None => return Assigned::None,
-        },
-        _ => return Assigned::None,
+    let Some(id) = node_material_instance(node).map(|i| i.asset) else {
+        return Assigned::None;
     };
     match crate::controller::custom_material::find_material(&controller().custom_materials, id) {
         Some(m) if m.is_builtin() => Assigned::Builtin,
@@ -1347,21 +1669,10 @@ fn assigned_material(node: &Arc<Node>) -> Assigned {
 
 /// The shading model of the **assigned** library material (which decides whether to
 /// show the PBR factor knobs), or `None` when nothing resolvable is assigned. Note:
-/// the *mesh's* `inline_material.shading` is irrelevant — shading is a variant
-/// setting that lives on the material.
+/// the *mesh's* `inline.shading` is irrelevant — shading is a variant setting that
+/// lives on the material.
 fn assigned_shading(node: &Arc<Node>) -> Option<MaterialShading> {
-    let id = match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            custom_material: Some(inst),
-            ..
-        }
-        | NodeKind::Mesh {
-            custom_material: Some(inst),
-            ..
-        } => inst.material,
-        NodeKind::Model(r) => r.material?.material,
-        _ => return None,
-    };
+    let id = node_material_instance(node).map(|i| i.asset)?;
     crate::controller::custom_material::find_material(&controller().custom_materials, id)
         .and_then(|m| m.builtin.get_cloned())
         .map(|def| def.shading)
@@ -1376,15 +1687,17 @@ pub(crate) fn collect_texture_assets() -> Vec<(AssetId, String)> {
         .entries
         .iter()
         .filter_map(|(id, e)| match &e.source {
-            awsm_scene_schema::AssetSource::Texture(def) => {
+            awsm_editor_protocol::AssetSource::Texture(def) => {
                 let label = match def {
-                    awsm_scene_schema::TextureDef::Procedural(p) => match p {
-                        awsm_scene_schema::ProceduralTextureDef::Checker { .. } => "Checker",
-                        awsm_scene_schema::ProceduralTextureDef::Gradient { .. } => "Gradient",
-                        awsm_scene_schema::ProceduralTextureDef::Noise { .. } => "Noise",
+                    awsm_editor_protocol::TextureDef::Procedural(p) => match p {
+                        awsm_editor_protocol::ProceduralTextureDef::Checker { .. } => "Checker",
+                        awsm_editor_protocol::ProceduralTextureDef::Gradient { .. } => "Gradient",
+                        awsm_editor_protocol::ProceduralTextureDef::Noise { .. } => "Noise",
                     }
                     .to_string(),
-                    awsm_scene_schema::TextureDef::Raster { display_name } => display_name.clone(),
+                    awsm_editor_protocol::TextureDef::Raster { display_name } => {
+                        display_name.clone()
+                    }
                 };
                 Some((*id, label))
             }
@@ -1615,7 +1928,7 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         let core: [(
             &'static str,
             &'static str,
-            Option<awsm_scene_schema::TextureRef>,
+            Option<awsm_editor_protocol::TextureRef>,
         ); 5] = [
             ("base_color_texture", "Base color", def.base_color_texture),
             (
@@ -1647,7 +1960,7 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         let mut entries: Vec<(
             &'static str,
             &'static str,
-            Option<awsm_scene_schema::TextureRef>,
+            Option<awsm_editor_protocol::TextureRef>,
             bool,
         )> = Vec::new();
         for (slot, label, d) in core {
@@ -1684,13 +1997,10 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
 /// node (its shared defaults — texture slots, shading, factors), or `None` when
 /// the node has no built-in material assigned.
 fn assigned_builtin_def(node: &Arc<Node>) -> Option<MaterialDef> {
-    let inst = current_custom_instance(node)?;
-    crate::controller::custom_material::find_material(
-        &controller().custom_materials,
-        inst.material,
-    )?
-    .builtin
-    .get_cloned()
+    let inst = node_material_instance(node)?;
+    crate::controller::custom_material::find_material(&controller().custom_materials, inst.asset)?
+        .builtin
+        .get_cloned()
 }
 
 /// A small uppercase subsection header row (for grouping uniform overrides).
@@ -1713,7 +2023,7 @@ fn ext_num_row(
     min: f64,
     max: f64,
     step: f64,
-    apply: impl Fn(&mut awsm_scene_schema::material::PbrExtensions, f32) + 'static,
+    apply: impl Fn(&mut awsm_editor_protocol::material::PbrExtensions, f32) + 'static,
 ) -> Dom {
     let node = node.clone();
     row(
@@ -1737,7 +2047,7 @@ fn ext_color_row(
     node: &Arc<Node>,
     label: &str,
     current: [f32; 3],
-    apply: impl Fn(&mut awsm_scene_schema::material::PbrExtensions, [f32; 3]) + 'static,
+    apply: impl Fn(&mut awsm_editor_protocol::material::PbrExtensions, [f32; 3]) + 'static,
 ) -> Dom {
     let m = Mutable::new(rgb_to_hex(current));
     let apply = std::rc::Rc::new(apply);
@@ -2209,19 +2519,19 @@ fn builtin_uniform_extras(
 /// Per-mesh override editor for an assigned **dynamic** material's declared
 /// uniform slots (#4.2). Each uniform the material declares is shown here with a
 /// control seeded from its default (or this mesh's existing override); editing
-/// it writes a per-mesh entry into `CustomMaterialInstance::uniform_overrides`,
+/// it writes a per-mesh entry into `MaterialInstance::uniform_overrides`,
 /// which `dynamic::insert_custom` applies when materializing the mesh. Texture /
 /// buffer slot overrides are a follow-on; uniforms are the common case the user
 /// hit (declared uniforms weren't exposed on the mesh at all).
 fn dynamic_overrides(node: &Arc<Node>) -> Dom {
-    use awsm_scene_schema::dynamic_material::UniformValue as UV;
+    use awsm_editor_protocol::dynamic_material::UniformValue as UV;
 
-    let Some(inst) = current_custom_instance(node) else {
+    let Some(inst) = node_material_instance(node) else {
         return html!("div", {});
     };
     let Some(mat) = crate::controller::custom_material::find_material(
         &controller().custom_materials,
-        inst.material,
+        inst.asset,
     ) else {
         return html!("div", {});
     };
@@ -2382,7 +2692,7 @@ fn pick_buffer_bin(node: &Arc<Node>, name: &str) {
             set_buffer_override(
                 &node,
                 &name,
-                Some(awsm_scene_schema::dynamic_material::BufferRef { path: path.into() }),
+                Some(awsm_editor_protocol::dynamic_material::BufferRef { path: path.into() }),
             );
         });
     });
@@ -2395,9 +2705,9 @@ fn pick_buffer_bin(node: &Arc<Node>, name: &str) {
 fn set_buffer_override(
     node: &Arc<Node>,
     name: &str,
-    value: Option<awsm_scene_schema::dynamic_material::BufferRef>,
+    value: Option<awsm_editor_protocol::dynamic_material::BufferRef>,
 ) {
-    if let Some(mut inst) = current_custom_instance(node) {
+    if let Some(mut inst) = node_material_instance(node) {
         match value {
             Some(b) => {
                 inst.buffer_overrides.insert(name.to_string(), b);
@@ -2406,7 +2716,7 @@ fn set_buffer_override(
                 inst.buffer_overrides.remove(name);
             }
         }
-        set_custom_instance(node, inst);
+        set_node_material(node, inst);
     }
 }
 
@@ -2450,7 +2760,7 @@ fn texture_override_picker(
                             set_texture_override(
                                 &node,
                                 &name,
-                                Some(awsm_scene_schema::TextureRef::new(id)),
+                                Some(awsm_editor_protocol::TextureRef::new(id)),
                             );
                             (close.borrow_mut())();
                         }
@@ -2472,9 +2782,9 @@ fn texture_override_picker(
 fn set_texture_override(
     node: &Arc<Node>,
     name: &str,
-    value: Option<awsm_scene_schema::TextureRef>,
+    value: Option<awsm_editor_protocol::TextureRef>,
 ) {
-    if let Some(mut inst) = current_custom_instance(node) {
+    if let Some(mut inst) = node_material_instance(node) {
         match value {
             Some(t) => {
                 inst.texture_overrides.insert(name.to_string(), t);
@@ -2483,7 +2793,7 @@ fn set_texture_override(
                 inst.texture_overrides.remove(name);
             }
         }
-        set_custom_instance(node, inst);
+        set_node_material(node, inst);
     }
 }
 
@@ -2495,12 +2805,16 @@ fn set_texture_override(
 // other binding fields when one changes (read-modify-write at edit time).
 
 /// The currently-bound `TextureRef` for a slot (`is_ext` picks the storage).
-fn read_slot(node: &Arc<Node>, slot: &str, is_ext: bool) -> Option<awsm_scene_schema::TextureRef> {
+fn read_slot(
+    node: &Arc<Node>,
+    slot: &str,
+    is_ext: bool,
+) -> Option<awsm_editor_protocol::TextureRef> {
     if is_ext {
         current_primitive_material(node)
             .and_then(|m| crate::controller::get_ext_texture(&m.extensions, slot))
     } else {
-        current_custom_instance(node).and_then(|i| i.texture_overrides.get(slot).copied())
+        node_material_instance(node).and_then(|i| i.texture_overrides.get(slot).copied())
     }
 }
 
@@ -2509,7 +2823,7 @@ fn write_slot(
     node: &Arc<Node>,
     slot: &str,
     is_ext: bool,
-    tref: Option<awsm_scene_schema::TextureRef>,
+    tref: Option<awsm_editor_protocol::TextureRef>,
 ) {
     if is_ext {
         if let Some(mut m) = current_primitive_material(node) {
@@ -2528,8 +2842,8 @@ fn edit_slot(
     node: &Arc<Node>,
     slot: &str,
     is_ext: bool,
-    default_ref: Option<awsm_scene_schema::TextureRef>,
-    f: impl FnOnce(&mut awsm_scene_schema::TextureRef),
+    default_ref: Option<awsm_editor_protocol::TextureRef>,
+    f: impl FnOnce(&mut awsm_editor_protocol::TextureRef),
 ) {
     if let Some(mut tr) = read_slot(node, slot, is_ext).or(default_ref) {
         f(&mut tr);
@@ -2557,32 +2871,32 @@ fn enum_select_row(
     row(label, select(sel, options))
 }
 
-fn wrap_str(w: awsm_scene_schema::TextureWrap) -> &'static str {
-    use awsm_scene_schema::TextureWrap as W;
+fn wrap_str(w: awsm_editor_protocol::TextureWrap) -> &'static str {
+    use awsm_editor_protocol::TextureWrap as W;
     match w {
         W::Repeat => "repeat",
         W::ClampToEdge => "clamp_to_edge",
         W::MirroredRepeat => "mirrored_repeat",
     }
 }
-fn wrap_from(s: &str) -> awsm_scene_schema::TextureWrap {
-    use awsm_scene_schema::TextureWrap as W;
+fn wrap_from(s: &str) -> awsm_editor_protocol::TextureWrap {
+    use awsm_editor_protocol::TextureWrap as W;
     match s {
         "clamp_to_edge" => W::ClampToEdge,
         "mirrored_repeat" => W::MirroredRepeat,
         _ => W::Repeat,
     }
 }
-fn filt_str(f: awsm_scene_schema::TextureFilter) -> &'static str {
+fn filt_str(f: awsm_editor_protocol::TextureFilter) -> &'static str {
     match f {
-        awsm_scene_schema::TextureFilter::Nearest => "nearest",
-        awsm_scene_schema::TextureFilter::Linear => "linear",
+        awsm_editor_protocol::TextureFilter::Nearest => "nearest",
+        awsm_editor_protocol::TextureFilter::Linear => "linear",
     }
 }
-fn filt_from(s: &str) -> awsm_scene_schema::TextureFilter {
+fn filt_from(s: &str) -> awsm_editor_protocol::TextureFilter {
     match s {
-        "nearest" => awsm_scene_schema::TextureFilter::Nearest,
-        _ => awsm_scene_schema::TextureFilter::Linear,
+        "nearest" => awsm_editor_protocol::TextureFilter::Nearest,
+        _ => awsm_editor_protocol::TextureFilter::Linear,
     }
 }
 fn wrap_opts() -> Vec<(String, String)> {
@@ -2604,11 +2918,11 @@ fn texture_slot_rows(
     node: &Arc<Node>,
     label: &str,
     slot: &'static str,
-    default_ref: Option<awsm_scene_schema::TextureRef>,
+    default_ref: Option<awsm_editor_protocol::TextureRef>,
     is_ext: bool,
     assets: &[(AssetId, String)],
 ) -> Vec<Dom> {
-    use awsm_scene_schema::TextureTransform;
+    use awsm_editor_protocol::TextureTransform;
     // Effective binding = this mesh's override, else the material's imported
     // default (which carries the UV set / transform / sampler read from glTF).
     let cur = read_slot(node, slot, is_ext).or(default_ref);
@@ -2732,7 +3046,7 @@ fn texture_slot_rows(
         let smp = cur.and_then(|t| t.sampler).unwrap_or_default();
         // Set one sampler field, preserving the rest (seeds a sampler if absent).
         let set_smp = move |node: &Arc<Node>,
-                            g: fn(&mut awsm_scene_schema::TextureSampler, &str),
+                            g: fn(&mut awsm_editor_protocol::TextureSampler, &str),
                             v: String| {
             edit_slot(node, slot, is_ext, default_ref, move |t| {
                 let mut s = t.sampler.unwrap_or_default();
@@ -2789,79 +3103,68 @@ fn texture_slot_rows(
     rows
 }
 
-/// The per-mesh `CustomMaterialInstance` on a Primitive/Mesh node, if any.
-fn current_custom_instance(
+/// The single per-mesh `MaterialInstance` on a geometry node, if assigned.
+fn node_material_instance(
     node: &Arc<Node>,
-) -> Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance> {
+) -> Option<awsm_editor_protocol::dynamic_material::MaterialInstance> {
     match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            custom_material, ..
-        }
-        | NodeKind::Mesh {
-            custom_material, ..
-        } => custom_material,
-        // A Model node stores its single assignment (built-in or dynamic) in
-        // `material`; per-mesh texture/uniform/buffer overrides live on it.
-        NodeKind::Model(r) => r.material,
+        NodeKind::Mesh { material, .. } => material,
+        NodeKind::SkinnedMesh { material, .. } => material,
         _ => None,
     }
 }
 
-/// Replace the node's `custom_material` instance, preserving the rest of the kind.
-fn set_custom_instance(
+/// Replace the node's `material` instance, preserving the rest of the kind.
+fn set_node_material(
     node: &Arc<Node>,
-    inst: awsm_scene_schema::dynamic_material::CustomMaterialInstance,
+    inst: awsm_editor_protocol::dynamic_material::MaterialInstance,
 ) {
     match node.kind.get_cloned() {
-        NodeKind::Primitive {
-            shape,
-            material,
-            inline_material,
-            shadow,
-            ..
-        } => dispatch_kind(
-            node.id,
-            NodeKind::Primitive {
-                shape,
-                material,
-                inline_material,
-                custom_material: Some(inst),
-                shadow,
-            },
-        ),
-        NodeKind::Mesh {
-            mesh,
-            material,
-            inline_material,
-            shadow,
-            ..
-        } => dispatch_kind(
-            node.id,
-            NodeKind::Mesh {
-                mesh,
-                material,
-                inline_material,
-                custom_material: Some(inst),
-                shadow,
-            },
-        ),
-        NodeKind::Model(mut r) => {
-            r.material = Some(inst);
-            dispatch_kind(node.id, NodeKind::Model(r));
+        NodeKind::Mesh { mesh, shadow, .. } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::Mesh {
+                    mesh,
+                    material: Some(inst),
+                    shadow,
+                },
+            );
+        }
+        NodeKind::SkinnedMesh { skin, shadow, .. } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::SkinnedMesh {
+                    skin,
+                    material: Some(inst),
+                    shadow,
+                },
+            );
         }
         _ => {}
     }
+}
+
+/// The per-mesh inline uniform store for a (possibly `None`) assignment — the
+/// built-in's per-mesh values, or a default for an unassigned node. Used as the
+/// `material_editor`'s read-only `MaterialDef` view.
+fn inline_of(
+    material: &Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+) -> MaterialDef {
+    material
+        .as_ref()
+        .map(|i| i.inline.clone())
+        .unwrap_or_default()
 }
 
 /// Write one per-mesh uniform override and re-materialize.
 fn set_uniform_override(
     node: &Arc<Node>,
     name: &str,
-    value: awsm_scene_schema::dynamic_material::UniformValue,
+    value: awsm_editor_protocol::dynamic_material::UniformValue,
 ) {
-    if let Some(mut inst) = current_custom_instance(node) {
+    if let Some(mut inst) = node_material_instance(node) {
         inst.uniform_overrides.insert(name.to_string(), value);
-        set_custom_instance(node, inst);
+        set_node_material(node, inst);
     }
 }
 
@@ -2871,7 +3174,7 @@ fn uniform_num(
     name: &str,
     value: f64,
     step: f64,
-    to_val: impl Fn(f64) -> awsm_scene_schema::dynamic_material::UniformValue + 'static,
+    to_val: impl Fn(f64) -> awsm_editor_protocol::dynamic_material::UniformValue + 'static,
 ) -> Dom {
     let node = node.clone();
     let name = name.to_string();
@@ -2887,7 +3190,7 @@ fn uniform_vec(
     node: &Arc<Node>,
     name: &str,
     comps: &[f32],
-    build: impl Fn(&[f32]) -> awsm_scene_schema::dynamic_material::UniformValue + 'static,
+    build: impl Fn(&[f32]) -> awsm_editor_protocol::dynamic_material::UniformValue + 'static,
 ) -> Dom {
     let state = std::rc::Rc::new(std::cell::RefCell::new(comps.to_vec()));
     let build = std::rc::Rc::new(build);
@@ -2919,7 +3222,7 @@ fn uniform_vec(
 
 /// A color (color3 / color4) override as an RGB swatch; color4 keeps its alpha.
 fn uniform_color(node: &Arc<Node>, name: &str, rgb: [f32; 3], alpha: Option<f32>) -> Dom {
-    use awsm_scene_schema::dynamic_material::UniformValue as UV;
+    use awsm_editor_protocol::dynamic_material::UniformValue as UV;
     let hexm = Mutable::new(rgb_to_hex(rgb));
     let node = node.clone();
     let name = name.to_string();
@@ -2945,7 +3248,7 @@ fn uniform_color(node: &Arc<Node>, name: &str, rgb: [f32; 3], alpha: Option<f32>
 
 /// A boolean override toggle.
 fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
-    use awsm_scene_schema::dynamic_material::UniformValue as UV;
+    use awsm_editor_protocol::dynamic_material::UniformValue as UV;
     let m = Mutable::new(value);
     let node = node.clone();
     let name = name.to_string();
@@ -2965,26 +3268,30 @@ fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
 
 // ── Shadows (per-mesh cast / receive) ─────────────────────────────────────────
 
-/// Replace a Primitive's `shadow`, preserving the rest of the kind.
+/// Replace a Mesh / SkinnedMesh's `shadow`, preserving the rest of the kind.
 fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
-    if let NodeKind::Primitive {
-        shape,
-        material,
-        inline_material,
-        custom_material,
-        ..
-    } = node.kind.get_cloned()
-    {
-        dispatch_kind(
-            node.id,
-            NodeKind::Primitive {
-                shape,
-                material,
-                inline_material,
-                custom_material,
-                shadow,
-            },
-        );
+    match node.kind.get_cloned() {
+        NodeKind::Mesh { mesh, material, .. } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::Mesh {
+                    mesh,
+                    material,
+                    shadow,
+                },
+            );
+        }
+        NodeKind::SkinnedMesh { skin, material, .. } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::SkinnedMesh {
+                    skin,
+                    material,
+                    shadow,
+                },
+            );
+        }
+        _ => {}
     }
 }
 
@@ -2997,7 +3304,7 @@ fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {
             first = false;
             clone!(node => async move {
                 if !fire { return; }
-                if let NodeKind::Primitive { shadow, .. } = node.kind.get_cloned() {
+                if let Some(shadow) = node.kind.get_cloned().mesh_shadow().copied() {
                     if shadow.cast != on {
                         set_mesh_shadow(&node, MeshShadowConfig { cast: on, ..shadow });
                     }
@@ -3013,7 +3320,7 @@ fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {
             first = false;
             clone!(node => async move {
                 if !fire { return; }
-                if let NodeKind::Primitive { shadow, .. } = node.kind.get_cloned() {
+                if let Some(shadow) = node.kind.get_cloned().mesh_shadow().copied() {
                     if shadow.receive != on {
                         set_mesh_shadow(&node, MeshShadowConfig { receive: on, ..shadow });
                     }
@@ -3079,7 +3386,282 @@ fn light_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
                 .render(),
         ));
     }
+    // Light params (Color/Intensity/Range) + the per-light Shadows section
+    // (cast / hardness-PCSS / cascades / biases / update rates).
+    html!("div", {
+        .child(sec.render())
+        .child(light_shadow_editor(node, cfg))
+    })
+}
+
+/// Per-light shadow settings: cast toggle, filter hardness (Hard / Soft-PCF /
+/// PCSS), map resolution, depth/normal bias, max distance, and — for the kinds
+/// that use them — directional cascade controls (count / split-λ / EVSM cutoff /
+/// far-cascade update rate) and the point-light cube-face update rate. Each
+/// control rewrites the light's `LightShadowConfig` via `SetKind`, which the
+/// node-sync bridge re-applies to the renderer live (`set_light_shadow_params`).
+fn light_shadow_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
+    let shadow = light_shadow(cfg);
+
+    let cast = Mutable::new(shadow.cast);
+    spawn_local(clone!(cast, node => async move {
+        let mut first = true;
+        cast.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if fire { update_shadow(&node, |s| s.cast = on); }
+            })
+        }).await;
+    }));
+
+    let mut sec = Section::new("Shadows").child(row("Cast", toggle(cast)));
+
+    let n = node.clone();
+    sec = sec.child(enum_select_row(
+        "Hardness",
+        hardness_str(shadow.hardness),
+        vec![
+            ("hard".into(), "Hard".into()),
+            ("soft".into(), "Soft (PCF)".into()),
+            ("pcss".into(), "PCSS".into()),
+        ],
+        move |v| update_shadow(&n, |s| s.hardness = hardness_from(&v)),
+    ));
+
+    // Governs both Soft (scales the fixed PCF disc) and PCSS (scales the
+    // virtual light-disc radius), so it's labelled generically and shown for
+    // every hardness except Hard, where it has no effect.
+    let n = node.clone();
+    sec = sec.child(row(
+        "Softness",
+        NumField::new(shadow.pcss_penumbra_scale as f64)
+            .min(0.0)
+            .step(0.1)
+            .on_change(move |v| update_shadow(&n, |s| s.pcss_penumbra_scale = v as f32))
+            .render(),
+    ));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Resolution",
+        NumField::new(shadow.resolution as f64)
+            .min(16.0)
+            .step(256.0)
+            .on_change(move |v| update_shadow(&n, |s| s.resolution = (v as u32).max(16)))
+            .render(),
+    ));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Depth Bias",
+        NumField::new(shadow.depth_bias as f64)
+            .step(0.0005)
+            .on_change(move |v| update_shadow(&n, |s| s.depth_bias = v as f32))
+            .render(),
+    ));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Normal Bias",
+        NumField::new(shadow.normal_bias as f64)
+            .min(0.0)
+            .step(0.01)
+            .on_change(move |v| update_shadow(&n, |s| s.normal_bias = v as f32))
+            .render(),
+    ));
+
+    let n = node.clone();
+    sec = sec.child(row(
+        "Max Distance",
+        NumField::new(shadow.max_distance as f64)
+            .min(0.0)
+            .step(5.0)
+            .on_change(move |v| update_shadow(&n, |s| s.max_distance = v as f32))
+            .render(),
+    ));
+
+    // Directional cascades.
+    if matches!(cfg, LightConfig::Directional { .. }) {
+        let n = node.clone();
+        sec = sec.child(row(
+            "Cascades",
+            NumField::new(shadow.cascade_count as f64)
+                .min(1.0)
+                .max(4.0)
+                .step(1.0)
+                .on_change(move |v| update_shadow(&n, |s| s.cascade_count = (v as u8).clamp(1, 4)))
+                .render(),
+        ));
+        let n = node.clone();
+        sec = sec.child(row(
+            "Split \u{03bb}",
+            NumField::new(shadow.cascade_split_lambda as f64)
+                .min(0.0)
+                .max(1.0)
+                .step(0.05)
+                .on_change(move |v| {
+                    update_shadow(&n, |s| s.cascade_split_lambda = (v as f32).clamp(0.0, 1.0))
+                })
+                .render(),
+        ));
+        let n = node.clone();
+        sec = sec.child(enum_select_row(
+            "EVSM",
+            evsm_str(shadow.evsm_cutoff),
+            vec![
+                ("off".into(), "Off".into()),
+                ("last_cascade".into(), "Last cascade".into()),
+                ("last_two_cascades".into(), "Last 2 cascades".into()),
+            ],
+            move |v| update_shadow(&n, |s| s.evsm_cutoff = evsm_from(&v)),
+        ));
+        let n = node.clone();
+        sec = sec.child(enum_select_row(
+            "Far Update",
+            far_rate_str(shadow.far_cascade_update_rate),
+            rate_opts(),
+            move |v| update_shadow(&n, |s| s.far_cascade_update_rate = far_rate_from(&v)),
+        ));
+    }
+
+    // Point-light cube faces.
+    if matches!(cfg, LightConfig::Point { .. }) {
+        let n = node.clone();
+        sec = sec.child(enum_select_row(
+            "Cube Update",
+            cube_rate_str(shadow.cube_face_update_rate),
+            rate_opts(),
+            move |v| update_shadow(&n, |s| s.cube_face_update_rate = cube_rate_from(&v)),
+        ));
+    }
+
     sec.render()
+}
+
+/// Read the inline shadow config off any light kind.
+fn light_shadow(cfg: &LightConfig) -> LightShadowConfig {
+    match cfg {
+        LightConfig::Directional { shadow, .. }
+        | LightConfig::Point { shadow, .. }
+        | LightConfig::Spot { shadow, .. } => shadow.clone(),
+    }
+}
+
+/// Mutate the selected light's shadow config in place + dispatch the SetKind.
+fn update_shadow(node: &Arc<Node>, f: impl FnOnce(&mut LightShadowConfig)) {
+    if let Some(cur) = current_light(node) {
+        let mut shadow = light_shadow(&cur);
+        f(&mut shadow);
+        dispatch_kind(node.id, NodeKind::Light(with_shadow(cur, shadow)));
+    }
+}
+
+fn with_shadow(cfg: LightConfig, shadow: LightShadowConfig) -> LightConfig {
+    match cfg {
+        LightConfig::Directional {
+            color, intensity, ..
+        } => LightConfig::Directional {
+            color,
+            intensity,
+            shadow,
+        },
+        LightConfig::Point {
+            color,
+            intensity,
+            range,
+            ..
+        } => LightConfig::Point {
+            color,
+            intensity,
+            range,
+            shadow,
+        },
+        LightConfig::Spot {
+            color,
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+            ..
+        } => LightConfig::Spot {
+            color,
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+            shadow,
+        },
+    }
+}
+
+fn hardness_str(h: LightShadowHardness) -> &'static str {
+    match h {
+        LightShadowHardness::Hard => "hard",
+        LightShadowHardness::Soft => "soft",
+        LightShadowHardness::Pcss => "pcss",
+    }
+}
+fn hardness_from(s: &str) -> LightShadowHardness {
+    match s {
+        "hard" => LightShadowHardness::Hard,
+        "pcss" => LightShadowHardness::Pcss,
+        _ => LightShadowHardness::Soft,
+    }
+}
+fn evsm_str(c: EvsmCutoff) -> &'static str {
+    match c {
+        EvsmCutoff::Off => "off",
+        EvsmCutoff::LastCascade => "last_cascade",
+        EvsmCutoff::LastTwoCascades => "last_two_cascades",
+    }
+}
+fn evsm_from(s: &str) -> EvsmCutoff {
+    match s {
+        "off" => EvsmCutoff::Off,
+        "last_two_cascades" => EvsmCutoff::LastTwoCascades,
+        _ => EvsmCutoff::LastCascade,
+    }
+}
+fn rate_opts() -> Vec<(String, String)> {
+    vec![
+        ("every_frame".into(), "Every frame".into()),
+        ("every2_frames".into(), "Every 2".into()),
+        ("every4_frames".into(), "Every 4".into()),
+        ("every8_frames".into(), "Every 8".into()),
+    ]
+}
+fn far_rate_str(r: FarCascadeUpdateRate) -> &'static str {
+    match r {
+        FarCascadeUpdateRate::EveryFrame => "every_frame",
+        FarCascadeUpdateRate::Every2Frames => "every2_frames",
+        FarCascadeUpdateRate::Every4Frames => "every4_frames",
+        FarCascadeUpdateRate::Every8Frames => "every8_frames",
+    }
+}
+fn far_rate_from(s: &str) -> FarCascadeUpdateRate {
+    match s {
+        "every_frame" => FarCascadeUpdateRate::EveryFrame,
+        "every2_frames" => FarCascadeUpdateRate::Every2Frames,
+        "every8_frames" => FarCascadeUpdateRate::Every8Frames,
+        _ => FarCascadeUpdateRate::Every4Frames,
+    }
+}
+fn cube_rate_str(r: CubeFaceUpdateRate) -> &'static str {
+    match r {
+        CubeFaceUpdateRate::EveryFrame => "every_frame",
+        CubeFaceUpdateRate::Every2Frames => "every2_frames",
+        CubeFaceUpdateRate::Every4Frames => "every4_frames",
+        CubeFaceUpdateRate::Every8Frames => "every8_frames",
+    }
+}
+fn cube_rate_from(s: &str) -> CubeFaceUpdateRate {
+    match s {
+        "every2_frames" => CubeFaceUpdateRate::Every2Frames,
+        "every4_frames" => CubeFaceUpdateRate::Every4Frames,
+        "every8_frames" => CubeFaceUpdateRate::Every8Frames,
+        _ => CubeFaceUpdateRate::EveryFrame,
+    }
 }
 
 fn current_light(node: &Arc<Node>) -> Option<LightConfig> {
@@ -3210,381 +3792,6 @@ fn with_range(cfg: LightConfig, range: f32) -> LightConfig {
             shadow,
         },
         other => other,
-    }
-}
-
-fn geometry_editor(node: &Arc<Node>, shape: &PrimitiveShape) -> Dom {
-    let mut sec = Section::new("Geometry");
-    let num = |label: &str, val: f64, step: f64, min: f64, on_change: Box<dyn FnMut(f64)>| -> Dom {
-        row(
-            label,
-            NumField::new(val)
-                .step(step)
-                .min(min)
-                .on_change(on_change)
-                .render(),
-        )
-    };
-    match shape {
-        PrimitiveShape::Plane { width, depth, .. } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Width",
-                *width as f64,
-                0.1,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Plane {
-                        depth,
-                        segments_x,
-                        segments_z,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Plane {
-                                width: v as f32,
-                                depth,
-                                segments_x,
-                                segments_z,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Depth",
-                *depth as f64,
-                0.1,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Plane {
-                        width,
-                        segments_x,
-                        segments_z,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Plane {
-                                width,
-                                depth: v as f32,
-                                segments_x,
-                                segments_z,
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-        PrimitiveShape::Box { dims } => {
-            for (i, axis) in ["Width", "Height", "Depth"].iter().enumerate() {
-                let n = node.clone();
-                sec = sec.child(num(
-                    axis,
-                    dims[i] as f64,
-                    0.1,
-                    0.01,
-                    Box::new(move |v| {
-                        if let Some(PrimitiveShape::Box { mut dims }) = current_shape(&n) {
-                            dims[i] = v as f32;
-                            set_shape(&n, PrimitiveShape::Box { dims });
-                        }
-                    }),
-                ));
-            }
-        }
-        PrimitiveShape::Sphere {
-            radius,
-            segments_long,
-            segments_lat,
-        } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Radius",
-                *radius as f64,
-                0.05,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Sphere {
-                        segments_long,
-                        segments_lat,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Sphere {
-                                radius: v as f32,
-                                segments_long,
-                                segments_lat,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Segments (long)",
-                *segments_long as f64,
-                1.0,
-                3.0,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Sphere {
-                        radius,
-                        segments_lat,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Sphere {
-                                radius,
-                                segments_long: (v.round() as u32).max(3),
-                                segments_lat,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Segments (lat)",
-                *segments_lat as f64,
-                1.0,
-                2.0,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Sphere {
-                        radius,
-                        segments_long,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Sphere {
-                                radius,
-                                segments_long,
-                                segments_lat: (v.round() as u32).max(2),
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-        PrimitiveShape::Cylinder {
-            radius,
-            height,
-            radial_segments,
-        } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Radius",
-                *radius as f64,
-                0.05,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cylinder {
-                        height,
-                        radial_segments,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cylinder {
-                                radius: v as f32,
-                                height,
-                                radial_segments,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Height",
-                *height as f64,
-                0.1,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cylinder {
-                        radius,
-                        radial_segments,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cylinder {
-                                radius,
-                                height: v as f32,
-                                radial_segments,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Segments",
-                *radial_segments as f64,
-                1.0,
-                3.0,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cylinder { radius, height, .. }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cylinder {
-                                radius,
-                                height,
-                                radial_segments: (v.round() as u32).max(3),
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-        PrimitiveShape::Cone { radius, height, .. } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Radius",
-                *radius as f64,
-                0.05,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cone {
-                        height,
-                        radial_segments,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cone {
-                                radius: v as f32,
-                                height,
-                                radial_segments,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Height",
-                *height as f64,
-                0.1,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Cone {
-                        radius,
-                        radial_segments,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Cone {
-                                radius,
-                                height: v as f32,
-                                radial_segments,
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-        PrimitiveShape::Torus {
-            radius, thickness, ..
-        } => {
-            let n = node.clone();
-            sec = sec.child(num(
-                "Radius",
-                *radius as f64,
-                0.05,
-                0.01,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Torus {
-                        thickness,
-                        segments_major,
-                        segments_minor,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Torus {
-                                radius: v as f32,
-                                thickness,
-                                segments_major,
-                                segments_minor,
-                            },
-                        );
-                    }
-                }),
-            ));
-            let n = node.clone();
-            sec = sec.child(num(
-                "Thickness",
-                *thickness as f64,
-                0.02,
-                0.005,
-                Box::new(move |v| {
-                    if let Some(PrimitiveShape::Torus {
-                        radius,
-                        segments_major,
-                        segments_minor,
-                        ..
-                    }) = current_shape(&n)
-                    {
-                        set_shape(
-                            &n,
-                            PrimitiveShape::Torus {
-                                radius,
-                                thickness: v as f32,
-                                segments_major,
-                                segments_minor,
-                            },
-                        );
-                    }
-                }),
-            ));
-        }
-    }
-    sec.render()
-}
-
-fn current_shape(node: &Arc<Node>) -> Option<PrimitiveShape> {
-    match node.kind.get_cloned() {
-        NodeKind::Primitive { shape, .. } => Some(shape),
-        _ => None,
-    }
-}
-
-fn set_shape(node: &Arc<Node>, shape: PrimitiveShape) {
-    if let NodeKind::Primitive {
-        material,
-        inline_material,
-        custom_material,
-        shadow,
-        ..
-    } = node.kind.get_cloned()
-    {
-        dispatch_kind(
-            node.id,
-            NodeKind::Primitive {
-                shape,
-                material,
-                inline_material,
-                custom_material,
-                shadow,
-            },
-        );
     }
 }
 
@@ -4019,6 +4226,7 @@ fn material_badge(def: &MaterialDef) -> (String, Tone) {
         MaterialShading::Pbr => ("PBR".to_string(), Tone::Accent),
         MaterialShading::Unlit => ("Unlit".to_string(), Tone::Warn),
         MaterialShading::Toon { .. } => ("Toon".to_string(), Tone::Ok),
+        MaterialShading::FlipBook { .. } => ("FlipBook".to_string(), Tone::Ok),
     }
 }
 

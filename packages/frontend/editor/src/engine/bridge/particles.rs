@@ -7,6 +7,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use awsm_editor_protocol::{
+    ColorOverLifeDef, EmitterSpaceDef, ForceDef, NodeId, ParticleEmitterDef, SizeOverLifeDef,
+    SpawnShapeDef,
+};
 use awsm_particles::{Emitter, EmitterSpace, Force, Simulator, SpawnShape};
 use awsm_renderer::instances::InstanceAttr;
 use awsm_renderer::materials::pbr::PbrMaterial;
@@ -16,10 +20,6 @@ use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::AwsmRenderer;
-use awsm_scene_schema::{
-    ColorOverLifeDef, EmitterSpaceDef, ForceDef, NodeId, ParticleEmitterDef, SizeOverLifeDef,
-    SpawnShapeDef,
-};
 use glam::{Quat, Vec3};
 
 const PARTICLE_QUAD_SIZE: f32 = 1.0;
@@ -130,6 +130,7 @@ fn build_runtime(
         positions: m.positions,
         normals: m.normals,
         uvs: m.uvs,
+        uvs1: None,
         colors: m.colors,
         indices: m.indices,
     };

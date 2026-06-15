@@ -107,7 +107,7 @@ pub enum GeometryCullKey {
 }
 
 impl GeometryCullKey {
-    fn from_cull_mode(mode: CullMode) -> Result<Self> {
+    pub fn from_cull_mode(mode: CullMode) -> Result<Self> {
         match mode {
             CullMode::None => Ok(Self::None),
             CullMode::Back => Ok(Self::Back),

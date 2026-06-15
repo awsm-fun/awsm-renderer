@@ -10,7 +10,7 @@
 
 use crate::engine::scene::AssetId;
 use awsm_editor_protocol::CompileError;
-use awsm_scene_schema::{MaterialDef, MaterialShading};
+use awsm_editor_protocol::{MaterialDef, MaterialShading};
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 use std::sync::Arc;
 
@@ -99,6 +99,13 @@ pub struct CustomMaterial {
     /// `None` ⇒ a dynamic WGSL material.
     pub builtin: Mutable<Option<MaterialDef>>,
     pub wgsl: Mutable<String>,
+    /// The **second**, alpha-only WGSL window — only meaningful when
+    /// `alpha == AlphaMode::Mask`. Returns just an `f32` alpha; it is compiled
+    /// into the masked visibility-raster variant so the cutout is cheap
+    /// (no color/lighting) and casts hole-shaped shadows + shows through to
+    /// transmission. Empty → no masked variant is built (the mesh renders solid
+    /// through the opaque path). See `MaterialRegistration::alpha_wgsl`.
+    pub alpha_wgsl: Mutable<String>,
     pub alpha: Mutable<AlphaMode>,
     pub cutoff: Mutable<f64>,
     pub double_sided: Mutable<bool>,
@@ -182,6 +189,7 @@ impl CustomMaterial {
             name: Mutable::new(name.into()),
             builtin: Mutable::new(None),
             wgsl: Mutable::new(NEW_MATERIAL_WGSL.to_string()),
+            alpha_wgsl: Mutable::new(String::new()),
             alpha: Mutable::new(AlphaMode::Opaque),
             cutoff: Mutable::new(0.5),
             double_sided: Mutable::new(false),

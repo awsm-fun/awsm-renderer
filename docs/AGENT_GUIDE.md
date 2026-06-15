@@ -127,11 +127,60 @@ frame for reproducible captures: `set_frame_time { seconds }` (and
 `set_playhead { t }` for animations), screenshot, then `clear_frame_time` to
 resume. See [`TEMPORAL_SHADERS.md`](TEMPORAL_SHADERS.md).
 
-## 8. What's in scope
+## 8. Skins & morphs (rigs over MCP)
 
-This is a **renderer + scene/material/animation editor**. In scope: meshes,
-primitives, glTF import, transforms/hierarchy, PBR + custom-WGSL materials,
-textures, lights, IBL/skybox, cameras, keyframe animation, screenshots. **Out of
-scope** (no engine for them here): physics/collision, input handling, audio,
-gameplay scripting, 2D UI/text. Build the *look* and *content* of a game here;
-wire behavior/physics in your host engine.
+A skinned import keeps its rig live: every joint is an ordinary scene node
+(a "mirror bone", bone-icon rows in the outliner), so rigs are driven with the
+SAME tools as everything else.
+
+- **Discover** — `get_skin_data { nodes: [] }` → per skinned node:
+  `{ source, primitive_index, joints: [{ node, index, name, live, translation,
+  rotation, scale }] }`. `live: true` = posing that joint deforms the skin
+  (the skin bridge holds its mapping); `false` flags a broken chain.
+- **Pose** — `set_node_transform` on a joint's `node` id. The mesh deforms live.
+  NOTE: while a clip is playing/scrubbing, the clip OWNS the bones — it
+  overwrites manual pokes every frame (like any DCC). Delete/mute the clip or
+  pause first.
+- **Animate** — `add_track` with a `transform` target on the joint's node id;
+  the transport (set_playing / set_playhead) poses the whole rig.
+- **Morphs** — `get_morph_data { nodes: [] }` → `{ target_count, weights,
+  names }` (names from glTF `mesh.extras.targetNames`, empty when absent).
+  `set_morph_weight { node, index, value }` is a LIVE transient preview (a
+  playing morph track overwrites it); persistent poses are animation tracks
+  (`add_track` morph target).
+- **See the rig** — Settings → "Skeleton overlay" draws bone lines through the
+  mesh; "Light gizmos" is the same pattern for lights. Verify numerically
+  without pixels via `sample_clip_timeseries` (pins the playhead, reads
+  NodeLocalTrs / MorphWeight back — GPU-independent).
+
+## 9. Editing geometry & vertices
+
+Beyond importing/placing meshes you can author + edit geometry (full typed-tool
+list grouped by task in [`docs/MCP.md`](MCP.md) § Tool catalog):
+
+- **Procedural meshes** are a modifier stack — `set_mesh_modifiers { mesh, stack }`
+  (`mesh` = the asset UUID; `stack` = `{ base, modifiers }`), or edit incrementally
+  with `add_modifier` / `set_modifier { index }` / `remove_modifier { index }`.
+  `get_mesh_modifiers { mesh }` reads the recipe; `get_mesh_stats` /
+  `get_mesh_layers` / `get_node_bounds` measure the result.
+- **Raw-vertex editing** — after `collapse_mesh_stack { mesh }` (or on a captured
+  mesh): `select_vertices_where { node, predicate }` → indices, then
+  `set_vertex_positions`, `set_vertex_normals`, `paint_vertex_colors`,
+  `soft_transform_vertices { falloff }`; `get_vertex_data { node, indices }` reads
+  resolved per-vertex data back, `set_vertex_selection` highlights in-viewport.
+- **Rig editing** — `get_skin_weights` / `set_skin_weights`,
+  `solve_ik { end_node, target }`, `drop_skinning { node }` (bake a skinned mesh
+  to a static editable Mesh).
+- **Custom materials read attributes** — a custom-WGSL fragment can sample any
+  vertex set via `material_uv(input, n)` / `material_vertex_color(input, n)` (see
+  the material contract, `awsm://docs/material-contract-opaque`).
+
+## 10. What's in scope
+
+This is a **renderer + scene/material/animation editor**. In scope: meshes
+(import + procedural modifier stacks + raw per-vertex editing), primitives, glTF
+import, transforms/hierarchy, PBR + custom-WGSL materials, textures, lights,
+IBL/skybox, cameras, keyframe animation, skins/morphs/IK, screenshots, and
+glTF/player-bundle export. **Out of scope** (no engine for them here):
+physics/collision, input handling, audio, gameplay scripting, 2D UI/text. Build
+the *look* and *content* of a game here; wire behavior/physics in your host engine.

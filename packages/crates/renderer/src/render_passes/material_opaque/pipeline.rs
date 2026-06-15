@@ -1,9 +1,12 @@
 //! Material opaque pass pipeline setup.
 //!
 //! Pipelines are cached per `(msaa_sample_count, mipmaps, shader_id)`.
-//! With three enabled material shaders (PBR / Unlit / Toon) and
-//! two-each MSAA / mipmaps axes, that's a 12-entry cache — built once
-//! at construction; lookup is a direct hash hit on the hot path.
+//! **Nothing first-party is compiled at construction.** Cold boot emits only
+//! the empty-opaque kernel for the active MSAA; each of the first-party shaders
+//! ([`OPAQUE_SHADER_IDS`]: PBR / Unlit / Toon / Flipbook) compiles lazily — on
+//! first actual use — via the render-driven [`crate::AwsmRenderer::ensure_scene_pipelines`].
+//! So a project that uses none of them pays zero material-shader compile cost at
+//! startup. Once compiled, a lookup is a direct hash hit on the hot path.
 
 use std::collections::HashMap;
 
@@ -49,17 +52,15 @@ pub(crate) struct OpaqueShaderDesc {
 /// `main` is keyed by `(msaa, mipmaps, shader_id)`; `empty_*` are the
 /// "no geometry — just skybox" fallbacks (one per MSAA mode).
 ///
-/// **Lazy-pool semantics:** at construction time we only compile
-/// the variants matching the live `AntiAliasing` config — typically
-/// 4 entries in `main` (one per first-party shader_id at the active
-/// msaa+mipmap state) plus 1 empty pipeline for the active MSAA.
-/// The other axes' variants are compiled on demand via
-/// [`crate::AwsmRenderer::set_anti_aliasing`] (msaa/mipmap change) or
-/// [`crate::AwsmRenderer::prewarm_pipelines`] (dynamic-material register).
-/// Both lookups (`get_compute_pipeline_key`,
-/// `get_empty_compute_pipeline_key`) already return `Option`, so the
-/// dispatch path's "skip if missing" branch is the right behavior
-/// before the recompile lands.
+/// **Lazy-pool semantics:** at construction time `main` starts **empty** —
+/// boot compiles 0 first-party material pipelines, only 1 empty pipeline for
+/// the active MSAA. Each first-party shader_id is compiled on first use (and
+/// each msaa/mipmap variant on demand) via
+/// [`crate::AwsmRenderer::ensure_scene_pipelines`] (a material registers /
+/// a live bucket needs it) or [`crate::AwsmRenderer::set_anti_aliasing`]
+/// (msaa/mipmap change). Both lookups (`get_compute_pipeline_key`,
+/// `get_empty_compute_pipeline_key`) return `Option`, so the dispatch path's
+/// "skip if missing" branch is the right behavior before the compile lands.
 pub struct MaterialOpaquePipelines {
     main: HashMap<PipelineKeyId, ComputePipelineKey>,
     /// `None` until the user-facing config selects MSAA=Some(4) AT
@@ -68,11 +69,12 @@ pub struct MaterialOpaquePipelines {
     singlesampled_empty_compute_pipeline_key: Option<ComputePipelineKey>,
 }
 
-/// Every opaque-rendering material shader the renderer supports.
-/// Mirror of the `MaterialShaderId` variant set in
-/// `awsm_materials::shader_id`. Used at construction time to enumerate
-/// the pipelines we need to build.
+/// Every opaque-compute pipeline the renderer can build per config. `SKYBOX` is
+/// the dedicated skybox-writer bucket (index 0; `owns_skybox` → `skybox_primary`
+/// kernel, shades no geometry); the rest are the first-party material families.
+/// Used by the AA/mipmap-recompile descriptor build to enumerate variants.
 const OPAQUE_SHADER_IDS: &[MaterialShaderId] = &[
+    MaterialShaderId::SKYBOX,
     MaterialShaderId::PBR,
     MaterialShaderId::UNLIT,
     MaterialShaderId::TOON,
@@ -102,13 +104,13 @@ pub struct MaterialOpaquePipelineDescriptors {
 impl MaterialOpaquePipelines {
     /// Creates pipelines for the opaque material pass.
     ///
-    /// Two batched compile passes: first all 14 shader variants
-    /// concurrently via `Shaders::ensure_keys`, then all 14 compute
-    /// pipelines concurrently via `ComputePipelines::ensure_keys`.
-    /// On a cold PSO disk cache that turns the previous 14× per-
-    /// shader and 14× per-pipeline strict-serial wall-clock into
-    /// roughly `max(t_i)` for each batch (bounded by Dawn's compile
-    /// pool size, typically `num_cpus`).
+    /// Two batched compile passes (shader compiles, then compute-pipeline
+    /// compiles) via `ensure_keys`. Because [`Self::shader_descriptors_and_layouts`]
+    /// runs with `include_first_party = false`, the eager set here is just the
+    /// single empty-opaque kernel — no first-party material shaders are compiled
+    /// at boot (they're lazy; see the module + `OPAQUE_SHADER_IDS` docs). The
+    /// batched shape is retained because the same `ensure_keys` primitives absorb
+    /// the on-demand opaque + decal + transparent recompiles into shared batches.
     ///
     /// Thin wrapper over [`Self::build_descriptors`] +
     /// [`Self::from_resolved`]. The pooled-finalize path
@@ -149,13 +151,14 @@ impl MaterialOpaquePipelines {
     /// per-variant shader descriptors for the *live* anti-aliasing
     /// config. Sync, no `ensure_keys`. Pure cache-key construction.
     ///
-    /// **Lazy-pool reduction:** the previous build compiled all
-    /// `[Some(4), None] × [true, false] × 4 shader_ids = 16` main
-    /// variants + 2 empty variants = 18 entries. Now we emit
-    /// `4 main + 1 empty = 5` for the configured MSAA + mipmap state.
-    /// The other variants get compiled on demand by
-    /// [`Self::recompile_for_anti_aliasing`] when the user changes
-    /// MSAA / mipmap mode.
+    /// **Lazy-pool reduction:** an early build compiled all
+    /// `[Some(4), None] × [true, false] × 4 shader_ids = 16` main variants +
+    /// 2 empty variants = 18 entries; a later step cut that to `4 main + 1 empty`
+    /// (the active config's first-party set). This call now goes the whole way:
+    /// with `include_first_party = false` it emits `0 main + 1 empty = 1` at
+    /// boot. First-party material variants compile on demand via
+    /// [`crate::AwsmRenderer::ensure_scene_pipelines`] (first use) and the
+    /// other msaa/mipmap variants when the user changes MSAA / mipmap mode.
     fn shader_descriptors_and_layouts(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialOpaqueBindGroups,
@@ -249,7 +252,7 @@ impl MaterialOpaquePipelines {
                         mipmaps: active_mipmaps,
                         shader_id,
                         base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
-                        owns_skybox: shader_id == MaterialShaderId::PBR,
+                        owns_skybox: shader_id == MaterialShaderId::SKYBOX,
                         // Per-bucket feature-set from the bucket entry (never
                         // the full "uber" set). At build() only the canonical
                         // buckets exist, so this is the empty set for PBR /
@@ -454,12 +457,20 @@ impl MaterialOpaquePipelines {
     /// Inserts a compiled opaque-compute pipeline for a dynamic
     /// shader_id. Called from `AwsmRenderer::prewarm_pipelines` after
     /// compiling a registered material's per-shader-id pipeline.
+    /// Returns the DISPLACED pool key when this insert overwrote a different
+    /// existing entry for `key_id`, so the caller can free the orphaned
+    /// `GpuComputePipeline` from the shared pool (the leak fix — re-installs for
+    /// the same `(shader_id, msaa, mipmaps)` under a new bucket layout used to
+    /// silently orphan the previous pipeline). `None` when the slot was empty or
+    /// re-installed the identical key.
     pub fn insert_dynamic_pipeline(
         &mut self,
         key_id: PipelineKeyId,
         pipeline_key: ComputePipelineKey,
-    ) {
-        self.main.insert(key_id, pipeline_key);
+    ) -> Option<ComputePipelineKey> {
+        self.main
+            .insert(key_id, pipeline_key)
+            .filter(|displaced| *displaced != pipeline_key)
     }
 
     /// Clear every per-shader-id opaque pipeline entry. The empty-slot
@@ -478,7 +489,17 @@ impl MaterialOpaquePipelines {
     /// After clearing, `get_compute_pipeline_key` returns `None` for
     /// those entries and the dispatch site's `Option` guard skips
     /// the draw until the new pipeline lands.
-    pub fn clear_dynamic_pipelines(&mut self) {
-        self.main.clear();
+    /// Returns the dropped pool keys so the caller can free them from the
+    /// shared compute-pipeline pool (the leak fix — the typed cache used to drop
+    /// these references while the `GpuComputePipeline`s lingered in the pool
+    /// forever).
+    pub fn clear_dynamic_pipelines(&mut self) -> Vec<ComputePipelineKey> {
+        self.main.drain().map(|(_, key)| key).collect()
+    }
+
+    /// Number of per-bucket opaque pipeline keys currently held (leak/observability
+    /// diagnostics — see `memory_stats`).
+    pub fn main_len(&self) -> usize {
+        self.main.len()
     }
 }

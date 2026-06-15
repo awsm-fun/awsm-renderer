@@ -231,6 +231,11 @@ pub struct AwsmRenderer {
     /// Runtime-registered dynamic materials. See
     /// [`crate::dynamic_materials`].
     pub dynamic_materials: crate::dynamic_materials::DynamicMaterials,
+    /// Set when a custom material registers/unregisters or its alpha-only WGSL
+    /// changes, so the next `finalize_gpu_textures` rebuilds the masked
+    /// (alpha-tested) pipelines for MASK customs even if no texture changed
+    /// (a procedural cutout needs no texture). Cleared by `finalize_gpu_textures`.
+    pub masked_dynamic_dirty: bool,
     /// Renderer-wide variable-length per-material data pool. Backs
     /// `BufferSlot` declarations on registered dynamic materials.
     pub extras_pool: crate::dynamic_materials::extras_pool::ExtrasPool,
@@ -439,10 +444,13 @@ impl AwsmRenderer {
     ///
     /// `AwsmRendererBuilder::build()` already compiles, in parallel:
     ///
-    /// - **Opaque-compute** material kernels — 12 variants (3
-    ///   `MaterialShaderId` × {MSAA on, off} × {mipmaps on, off}) plus
-    ///   two empty kernels for the no-meshes case. See
-    ///   `MaterialOpaquePipelines::new`.
+    /// - **Opaque-compute** material kernels — only the empty kernel for the
+    ///   active MSAA (the no-meshes / skybox-only fallback). The first-party
+    ///   material shaders (PBR / Unlit / Toon / Flipbook) are **NOT** compiled
+    ///   at boot — they compile lazily on first use via
+    ///   [`Self::ensure_scene_pipelines`], so a project that uses none of them
+    ///   pays zero material-shader compile cost at startup. See the
+    ///   `MaterialOpaquePipelines` module docs + `shader_descriptors_and_layouts`.
     /// - **Geometry render pipelines** — every (MSAA × instancing ×
     ///   storage-array × cull_mode) variant. See
     ///   `GeometryRenderPipelineKeys::new`.
@@ -458,12 +466,13 @@ impl AwsmRenderer {
     ///
     /// ## What this method does today
     ///
-    /// - **Builder-time prewarm** has already compiled the first-party
-    ///   opaque material pipelines, the geometry passes, hzb,
-    ///   material_classify, effects, decal, shadows, and the picker /
-    ///   line variants. Calling this at the end of `build()` finds all
-    ///   those keys already cached and returns immediately (single
-    ///   tracing span; no GPU work).
+    /// - **Builder-time prewarm** has already compiled the empty-opaque kernel,
+    ///   the geometry passes, hzb, material_classify, effects, decal, shadows,
+    ///   and the picker / line variants — but **not** the first-party material
+    ///   pipelines (those are lazy). Calling this at the end of `build()` kicks
+    ///   `ensure_scene_pipelines`, which compiles whatever the *live* scene
+    ///   actually needs (none, on an empty scene); cached keys return
+    ///   immediately.
     ///
     /// - **Per-scene transparent prewarm** runs whenever the caller
     ///   invokes this method after meshes have been populated. It
@@ -1004,7 +1013,7 @@ impl AwsmRendererBuilder {
 
     /// Pins a renderer-wide shadow configuration that the new
     /// `Shadows` will use at construction. Use this when loading an
-    /// `awsm_scene_schema::EditorProject` so the cube-pool size, EVSM
+    /// `awsm_scene::EditorProject` so the cube-pool size, EVSM
     /// atlas size, and 2D atlas size match the authored intent before
     /// any frame renders.
     pub fn with_shadows_config(mut self, config: shadows::ShadowsConfig) -> Self {
@@ -1770,6 +1779,7 @@ impl AwsmRendererBuilder {
             bind_groups,
             materials,
             dynamic_materials: crate::dynamic_materials::DynamicMaterials::new(),
+            masked_dynamic_dirty: false,
             extras_pool: extras_pool_built,
             pipeline_layouts,
             pipelines,

@@ -25,17 +25,53 @@ impl GltfData {
 }
 
 /// Optional hints used during glTF population.
+/// Override which draw-geometry `populate_gltf` builds per primitive, for a
+/// caller that applies its OWN material so the glb's own material alpha is not
+/// authoritative (e.g. the bundle loader's `GltfMaterialSource::Single` over a
+/// geometry-only glb whose materials were stripped).
+///
+/// Transparency is a per-**instance** material property — one glb mesh asset can
+/// be shared by several nodes with different materials (opaque vs transparent) —
+/// so this is chosen per *load*, NOT baked into the glb.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GltfGeometryOverride {
+    /// Decide per primitive from the glb's own material alpha (the default).
+    #[default]
+    FromMaterial,
+    /// Visibility (opaque-pass) geometry only.
+    Opaque,
+    /// Transparency-pass geometry only.
+    Transparent,
+    /// Both visibility + transparency geometry.
+    Both,
+}
+
 #[derive(Default, Clone)]
 pub struct GltfDataHints {
     pub hud: bool,
     pub hidden: bool,
     pub render_timings: bool,
+    /// Per-load override of the draw-geometry built for every primitive — used
+    /// when the caller applies its own material (the glb's material alpha can't be
+    /// trusted, e.g. a stripped geometry-only bundle glb). [`FromMaterial`] keeps
+    /// the per-primitive decision from the glb material. Without this, a geometry-
+    /// only glb reads Opaque → no transparency geometry → the transparency pass
+    /// errors `TransparencyGeometryBufferNotFound` once a transparent material is
+    /// applied. [`FromMaterial`]: [`GltfGeometryOverride::FromMaterial`]
+    pub geometry_override: GltfGeometryOverride,
 }
 
 impl GltfDataHints {
     /// Sets whether this data is for a HUD overlay.
     pub fn with_hud(mut self, hud: bool) -> Self {
         self.hud = hud;
+        self
+    }
+
+    /// Override the per-primitive draw-geometry kind (see
+    /// [`GltfGeometryOverride`]).
+    pub fn with_geometry_override(mut self, geometry_override: GltfGeometryOverride) -> Self {
+        self.geometry_override = geometry_override;
         self
     }
 

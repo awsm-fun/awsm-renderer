@@ -246,6 +246,7 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
             positions: mesh.positions,
             normals: mesh.normals,
             uvs: mesh.uvs,
+            uvs1: None,
             colors: mesh.colors,
             indices: mesh.indices,
         };

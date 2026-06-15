@@ -119,6 +119,30 @@ fn calculate_uv_sets_index(buffer_info: &MeshBufferInfo) -> u32 {
     offset_floats as u32
 }
 
+/// Calculate the offset (in floats) to COLOR_0 within the vertex attribute data.
+/// Symmetric with [`calculate_uv_sets_index`]: accounts for any TEXCOORD_n (or
+/// other) attributes packed before the first color set. The opaque compute
+/// kernel fetches vertex colours manually from the visibility buffer (unlike the
+/// transparent raster path, which gets rasterizer-interpolated attributes), so
+/// it needs the real per-vertex offset rather than assuming colours sit at 0.
+fn calculate_color_sets_index(buffer_info: &MeshBufferInfo) -> u32 {
+    let mut offset_floats = 0;
+    for attr in &buffer_info.triangles.vertex_attributes {
+        if let MeshBufferVertexAttributeInfo::Custom(custom) = attr {
+            match custom {
+                MeshBufferCustomVertexAttributeInfo::TexCoords { .. } => {
+                    offset_floats += attr.vertex_size() / 4;
+                }
+                MeshBufferCustomVertexAttributeInfo::Colors { .. } => {
+                    // Found the first color set, stop counting.
+                    break;
+                }
+            }
+        }
+    }
+    offset_floats as u32
+}
+
 /// Calculate how many UV sets and color sets this mesh has.
 /// Returns (uv_set_count, color_set_count).
 fn calculate_attribute_counts(buffer_info: &MeshBufferInfo) -> (u32, u32) {
@@ -248,15 +272,26 @@ impl<'a> MaterialMeshMeta<'a> {
         // samples shadows correctly. Live updates run through
         // `MeshMeta::set_shadow_receiver_gate`.
         push_u32(1);
-        // Reserved trailing u32s (indices 20-23). The last two formerly
-        // held the per-mesh light slice (`offset`/`count`) for the old
-        // per-mesh lighting path, removed when shading unified on the
-        // per-pixel froxel light list; kept as inert tail padding (each
-        // entry is 256-byte aligned, so removing them reclaims nothing).
-        // The four u32s keep the populated region at a vec4 multiple so
-        // `padding_4: array<vec4<u32>, _>` stays vec4-aligned.
-        push_u32(0);
-        push_u32(0);
+        // color_sets_index (index 20) — offset in floats to COLOR_0 within the
+        // vertex attribute data, symmetric with `uv_sets_index`. The opaque
+        // compute kernel fetches vertex colours manually, so it needs the real
+        // offset (colours pack after UVs, not at 0). Formerly `_reserved0`.
+        push_u32(calculate_color_sets_index(buffer_info));
+        // alpha_cutoff (index 21, f32 bits) — the glTF MASK cutoff for this
+        // mesh's material (0.0 for non-MASK materials, which never route to the
+        // masked geometry variant anyway). The masked raster reads this per-mesh
+        // and `discard`s fragments whose masking alpha < cutoff. Uniform across
+        // built-in (base-color alpha) and custom (alpha-only WGSL) materials, so
+        // the masked fragment reads the cutoff from one place regardless of type.
+        // Formerly `_reserved1`.
+        let alpha_cutoff = materials.alpha_cutoff(material_key).unwrap_or(0.0);
+        push_u32(alpha_cutoff.to_bits());
+        // Reserved trailing u32s (indices 22-23). Formerly held the per-mesh
+        // light slice (`offset`/`count`) for the old per-mesh lighting path,
+        // removed when shading unified on the per-pixel froxel light list; kept
+        // as inert tail padding (each entry is 256-byte aligned, so removing
+        // them reclaims nothing) and to keep the populated region at a vec4
+        // multiple so `padding_4: array<vec4<u32>, _>` stays vec4-aligned.
         push_u32(0);
         push_u32(0);
 

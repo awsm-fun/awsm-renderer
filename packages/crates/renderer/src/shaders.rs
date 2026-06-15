@@ -17,7 +17,10 @@ use crate::{
         shader_cache_key::ShaderCacheKeyRenderPass,
         shader_template::ShaderTemplateRenderPass,
     },
-    shadows::shader::{cache_key::ShaderCacheKeyShadow, template::ShaderTemplateShadow},
+    shadows::shader::{
+        cache_key::ShaderCacheKeyShadow, masked_cache_key::ShaderCacheKeyShadowMasked,
+        masked_template::ShaderTemplateShadowMasked, template::ShaderTemplateShadow,
+    },
 };
 
 /// Cached GPU shader modules keyed by template parameters.
@@ -39,6 +42,54 @@ impl Shaders {
     /// Inserts a shader module without caching it by template key.
     pub fn insert_uncached(&mut self, shader_module: web_sys::GpuShaderModule) -> ShaderKey {
         self.lookup.insert(shader_module)
+    }
+
+    /// Number of live shader modules in the slotmap (leak diagnostics).
+    pub fn len(&self) -> usize {
+        self.lookup.len()
+    }
+
+    /// True when no shader modules are cached.
+    pub fn is_empty(&self) -> bool {
+        self.lookup.is_empty()
+    }
+
+    /// Evict a shader module by key — drops the slotmap entry (releasing the
+    /// `GpuShaderModule`) AND removes any cache entry pointing at it. Used by
+    /// `unregister_material` to reclaim a deleted custom material's shader
+    /// modules (the pipeline-leak fix).
+    /// Returns true if a module was removed.
+    pub fn remove(&mut self, shader_key: ShaderKey) -> bool {
+        let existed = self.lookup.remove(shader_key).is_some();
+        self.cache.retain(|_, v| *v != shader_key);
+        existed
+    }
+
+    /// Evict every cached shader module that is STALE relative to the current
+    /// dynamic-material set (see [`ShaderCacheKey::is_stale_dynamic_set`]). Drops
+    /// the slotmap entries and cache rows and returns the freed [`ShaderKey`]s so
+    /// the caller can sweep the pipeline pools by shader key. This reclaims the
+    /// opaque / edge / classify / transparent pipelines orphaned when a bucket-set
+    /// change forces a recompile under a new cache key — the core of the
+    /// dynamic-material pipeline-leak fix.
+    pub fn take_stale_dynamic_set_shader_keys(
+        &mut self,
+        current_dispatch_hash: u64,
+        current_bucket_entries: &[crate::dynamic_materials::BucketEntry],
+    ) -> std::collections::HashSet<ShaderKey> {
+        let mut removed = std::collections::HashSet::new();
+        self.cache.retain(|cache_key, shader_key| {
+            if cache_key.is_stale_dynamic_set(current_dispatch_hash, current_bucket_entries) {
+                removed.insert(*shader_key);
+                false
+            } else {
+                true
+            }
+        });
+        for shader_key in &removed {
+            self.lookup.remove(*shader_key);
+        }
+        removed
     }
 
     /// Sync cache-only lookup: returns the key iff the shader is already
@@ -294,10 +345,54 @@ pub enum ShaderCacheKey {
     RenderPass(ShaderCacheKeyRenderPass),
     Picker(ShaderCacheKeyPicker),
     Shadow(ShaderCacheKeyShadow),
+    /// Masked (alpha-tested) shadow caster — cutout / hole-shaped shadows.
+    /// Per-`shader_id` specialized; see [`ShaderCacheKeyShadowMasked`].
+    ShadowMasked(ShaderCacheKeyShadowMasked),
     /// Fat-line shader (renderer-built editor / debug overlays).
     /// Hoisted out of `RenderPass` for the same reason as `Picker` —
     /// it's a top-level renderer concern, not a per-pass variant.
     Line(ShaderCacheKeyLine),
+}
+
+impl ShaderCacheKey {
+    /// Whether this cache key is STALE relative to the current registered
+    /// dynamic-material set (its `dispatch_hash` / bucket list).
+    ///
+    /// The opaque, edge-resolve, transparent and classify passes specialize
+    /// against the WHOLE registered set (a `dispatch_hash` for the first three,
+    /// the raw `bucket_entries` for classify). Registering or unregistering ANY
+    /// dynamic material changes that signature, so on the next render every
+    /// affected pass recompiles under a NEW cache key — and the OLD key's GPU
+    /// pipeline is orphaned in the shared pool (the typed per-pass caches drop
+    /// their key, the classify/transparent keys are self-invalidating). Sweeping
+    /// the shader cache by this predicate after a bucket-set change reclaims them.
+    /// Set-independent keys (picker, line, shadow, masked geometry/shadow — which
+    /// key on their own `shader_id`, not the registered set) return false.
+    pub fn is_stale_dynamic_set(
+        &self,
+        current_dispatch_hash: u64,
+        current_bucket_entries: &[crate::dynamic_materials::BucketEntry],
+    ) -> bool {
+        use crate::render_passes::shader_cache_key::ShaderCacheKeyRenderPass as Rp;
+        match self {
+            ShaderCacheKey::RenderPass(rp) => match rp {
+                Rp::MaterialOpaque(k) => k.dispatch_hash != current_dispatch_hash,
+                Rp::MaterialEdgeResolve(k) => k.dispatch_hash != current_dispatch_hash,
+                Rp::MaterialTransparent(k) => k.dispatch_hash != current_dispatch_hash,
+                Rp::MaterialClassify(k) => k.bucket_entries.as_slice() != current_bucket_entries,
+                // The global MSAA edge-resolve compositors (skybox sampler +
+                // final blend) carry only the bucket list (no dispatch_hash);
+                // it still drifts on every registry change, minting a new key
+                // and orphaning the old compute pipeline. Sweep them by bucket set.
+                Rp::MaterialSkyboxEdgeResolve(k) => {
+                    k.bucket_entries.as_slice() != current_bucket_entries
+                }
+                Rp::MaterialFinalBlend(k) => k.bucket_entries.as_slice() != current_bucket_entries,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
 }
 
 /// Shader template variants for renderer-managed shaders.
@@ -314,6 +409,7 @@ pub enum ShaderTemplate {
     RenderPass(Box<ShaderTemplateRenderPass>),
     Picker(ShaderTemplatePicker),
     Shadow(ShaderTemplateShadow),
+    ShadowMasked(ShaderTemplateShadowMasked),
     Line(ShaderTemplateLine),
 }
 
@@ -327,6 +423,9 @@ impl TryFrom<&ShaderCacheKey> for ShaderTemplate {
             }
             ShaderCacheKey::Picker(cache_key) => Ok(ShaderTemplate::Picker(cache_key.into())),
             ShaderCacheKey::Shadow(cache_key) => Ok(ShaderTemplate::Shadow(cache_key.try_into()?)),
+            ShaderCacheKey::ShadowMasked(cache_key) => {
+                Ok(ShaderTemplate::ShadowMasked(cache_key.try_into()?))
+            }
             ShaderCacheKey::Line(cache_key) => Ok(ShaderTemplate::Line(cache_key.try_into()?)),
         }
     }
@@ -353,6 +452,7 @@ impl ShaderTemplate {
             ShaderTemplate::RenderPass(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Picker(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Shadow(tmpl) => tmpl.debug_label(),
+            ShaderTemplate::ShadowMasked(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Line(tmpl) => tmpl.debug_label(),
         }
     }
@@ -363,6 +463,7 @@ impl ShaderTemplate {
             ShaderTemplate::RenderPass(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Picker(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Shadow(tmpl) => tmpl.into_source()?,
+            ShaderTemplate::ShadowMasked(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Line(tmpl) => tmpl.into_source()?,
         };
         //tracing::info!("{:#?}", tmpl);

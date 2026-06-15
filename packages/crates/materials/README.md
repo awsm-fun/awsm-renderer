@@ -74,9 +74,8 @@ This crate registers materials at **compile time** via Cargo features. The
 registry is a `const` slice the renderer walks during shader templating.
 
 We do not support runtime / user-supplied materials in this crate. Paths to
-add that later are documented in the overhaul plan (`docs/plans/editor-
-renderer-overhaul.md`): editor-time WGSL hot-reload, or tile-classified
-material shading. Neither is built speculatively.
+add that later — editor-time WGSL hot-reload, or tile-classified material
+shading — are not built speculatively.
 
 ## Why askama-substitution, not askama iteration
 

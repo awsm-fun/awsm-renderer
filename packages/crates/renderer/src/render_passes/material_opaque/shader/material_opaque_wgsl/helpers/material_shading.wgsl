@@ -85,6 +85,7 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
             barycentric: vec3<f32>,
             vertex_attribute_stride: u32,
             uv_sets_index: u32,
+            color_sets_index: u32,
             geometry_tbn: TBN,
             bary_derivs: vec4<f32>,
         ) -> PbrMaterialColor {
@@ -108,6 +109,7 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
                 barycentric,
                 vertex_attribute_stride,
                 uv_sets_index,
+                color_sets_index,
                 gradients,
                 geometry_tbn,
             );
@@ -123,6 +125,7 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
             barycentric: vec3<f32>,
             vertex_attribute_stride: u32,
             uv_sets_index: u32,
+            color_sets_index: u32,
             geometry_tbn: TBN,
         ) -> PbrMaterialColor {
             return pbr_get_material_color_no_mips(
@@ -133,6 +136,7 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
                 barycentric,
                 vertex_attribute_stride,
                 uv_sets_index,
+                color_sets_index,
                 geometry_tbn,
             );
         }

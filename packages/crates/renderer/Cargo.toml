@@ -40,7 +40,7 @@ serde = ["awsm-renderer-core/serde"]
 mega-texture = ["awsm-renderer-core/mega-texture"]
 exr = ["awsm-renderer-core/exr"]
 texture-export = ["awsm-renderer-core/texture-export"]
-# Pulls in `awsm-scene-schema` and compiles the `From<scene_schema::*>`
+# Pulls in `awsm-scene` and compiles the `From<awsm_scene::*>`
 # bridges that convert the on-disk authoring format into the renderer's
 # runtime types (`ShadowsConfig`, `LightShadowParams`, `MeshShadowFlags`,
 # etc.). Off by default so the renderer stays scene-schema-free for
@@ -50,12 +50,12 @@ texture-export = ["awsm-renderer-core/texture-export"]
 # This is an extension point: new bridges go in feature-gated
 # `schema_convert` modules next to each subsystem's runtime structs.
 # See the crate-root docs and `shadows::schema_convert` for the pattern.
-scene-schema = ["dep:awsm-scene-schema"]
+scene-schema = ["dep:awsm-scene"]
 
 [dependencies]
 awsm-renderer-core = { workspace = true, features = ["texture-pool"] }
 awsm-materials = { workspace = true }
-awsm-scene-schema = { workspace = true, optional = true }
+awsm-scene = { workspace = true, optional = true }
 web-sys = {workspace = true}
 wasm-bindgen = {workspace = true}
 wasm-bindgen-futures = {workspace = true}
@@ -68,7 +68,8 @@ askama = {workspace = true}
 strum = {workspace = true}
 ordered-float = {workspace = true}
 indexmap = { workspace = true}
-bevy_mikktspace = { workspace = true}
+# MikkTSpace tangent generation (shared crate) for the raw-mesh upload path.
+awsm-tangents = { workspace = true }
 rstar = "0.12"
 # Required unconditionally by the `workers/` module (Phase 4.3a) — job
 # Input/Output must be serializable. The legacy optional `serde`

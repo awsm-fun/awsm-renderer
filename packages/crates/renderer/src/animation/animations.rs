@@ -137,6 +137,12 @@ impl Animations {
         !self.clips.is_empty()
     }
 
+    /// Number of cached rest-pose entries (animation diagnostics): one per
+    /// distinct target any lowered channel has contributed to.
+    pub fn rest_len(&self) -> usize {
+        self.rest.len()
+    }
+
     /// Drops the entire rest-pose cache. The editor calls this when authored
     /// defaults may have changed wholesale (e.g. a new scene loaded); the
     /// next mixer frame re-captures rest for every contributing target.
@@ -974,5 +980,87 @@ mod tests {
 
         assert!(animations.remove_clip(key).is_some());
         assert!(!animations.has_clips());
+    }
+
+    #[test]
+    fn apply_camera_param_drives_each_field() {
+        use crate::cameras::{CameraParams, CameraProjectionParams, Cameras};
+        let mut cams = Cameras::new();
+        let key = cams.insert(CameraParams {
+            projection: CameraProjectionParams::Perspective { fov_y_rad: 1.0 },
+            near: 0.1,
+            far: 100.0,
+            aperture: 5.6,
+            focus_distance: 10.0,
+        });
+        apply_camera_param(&mut cams, key, CameraParam::FovY, &AnimationData::F32(0.5)).unwrap();
+        apply_camera_param(&mut cams, key, CameraParam::Near, &AnimationData::F32(0.25)).unwrap();
+        apply_camera_param(&mut cams, key, CameraParam::Far, &AnimationData::F32(250.0)).unwrap();
+        apply_camera_param(
+            &mut cams,
+            key,
+            CameraParam::Aperture,
+            &AnimationData::F32(2.8),
+        )
+        .unwrap();
+        apply_camera_param(
+            &mut cams,
+            key,
+            CameraParam::FocusDistance,
+            &AnimationData::F32(7.0),
+        )
+        .unwrap();
+        let p = cams.get(key).unwrap();
+        assert!(
+            matches!(p.projection, CameraProjectionParams::Perspective { fov_y_rad } if (fov_y_rad - 0.5).abs() < 1e-6)
+        );
+        assert_eq!(p.near, 0.25);
+        assert_eq!(p.far, 250.0);
+        assert_eq!(p.aperture, 2.8);
+        assert_eq!(p.focus_distance, 7.0);
+    }
+
+    #[test]
+    fn apply_camera_param_fovy_noop_on_orthographic() {
+        use crate::cameras::{CameraParams, CameraProjectionParams, Cameras};
+        let mut cams = Cameras::new();
+        let key = cams.insert(CameraParams {
+            projection: CameraProjectionParams::Orthographic { half_height: 3.0 },
+            near: 0.1,
+            far: 100.0,
+            aperture: 5.6,
+            focus_distance: 10.0,
+        });
+        // FovY on an ortho camera is a documented no-op (must not panic / must
+        // leave the projection untouched); Near still applies.
+        apply_camera_param(&mut cams, key, CameraParam::FovY, &AnimationData::F32(0.9)).unwrap();
+        apply_camera_param(&mut cams, key, CameraParam::Near, &AnimationData::F32(0.5)).unwrap();
+        let p = cams.get(key).unwrap();
+        assert!(
+            matches!(p.projection, CameraProjectionParams::Orthographic { half_height } if (half_height - 3.0).abs() < 1e-6)
+        );
+        assert_eq!(p.near, 0.5);
+    }
+
+    #[test]
+    fn apply_camera_param_rejects_wrong_data_kind() {
+        use crate::cameras::{CameraParams, CameraProjectionParams, Cameras};
+        let mut cams = Cameras::new();
+        let key = cams.insert(CameraParams {
+            projection: CameraProjectionParams::Perspective { fov_y_rad: 1.0 },
+            near: 0.1,
+            far: 100.0,
+            aperture: 5.6,
+            focus_distance: 10.0,
+        });
+        // A Vec3 sample on a scalar camera param is an error, not a silent
+        // mis-write.
+        assert!(apply_camera_param(
+            &mut cams,
+            key,
+            CameraParam::Near,
+            &AnimationData::Vec3(glam::Vec3::ZERO),
+        )
+        .is_err());
     }
 }

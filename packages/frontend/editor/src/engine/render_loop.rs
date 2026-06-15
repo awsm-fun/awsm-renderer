@@ -2,10 +2,10 @@
 //! per-frame scene→GPU sync (lights / decals / gizmo / particles / colliders)
 //! is layered in via the renderer bridge.
 
+use awsm_editor_protocol::{CameraProjection, NodeKind};
 use awsm_renderer::camera::CameraMatrices;
 use awsm_renderer::cameras::CameraProjectionParams;
 use awsm_renderer::AwsmRenderer;
-use awsm_scene_schema::{CameraProjection, NodeKind};
 use glam::{Mat4, Vec3};
 
 use super::context;
@@ -31,6 +31,28 @@ thread_local! {
     /// means an external scrub (`SetPlayhead`) landed and the phase must re-seed.
     static TRANSPORT: std::cell::Cell<(f64, f64)> =
         const { std::cell::Cell::new((0.0, f64::NAN)) };
+
+    /// Backstop latch for the "starts black until you resize the window" bug:
+    /// whether we've run the thorough surface re-sync ([`context::sync_canvas_size`])
+    /// since the canvas last had a real (nonzero) client size. The mount-time
+    /// call to that function only polls ~480ms before giving up, and the
+    /// `ResizeObserver` doesn't reliably fire on the reparent into the viewport
+    /// slot — so on a slow/late layout the surface can stay at its stale default
+    /// (black) until a manual resize finally triggers the observer. We reset this
+    /// to `false` whenever the canvas is zero-sized and re-run the full re-sync on
+    /// the next nonzero frame, so every 0→nonzero transition (first mount, tab
+    /// show, reparent) auto-heals — exactly what the manual resize did by hand.
+    static DID_REAL_SIZE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// The playhead (as bits) the render loop last pinned the pose at. While
+    /// PAUSED the loop only re-pins when the playhead actually moves — NOT every
+    /// frame — so a gizmo pose on an animated bone HOLDS (DCC semantics: the
+    /// pose persists until you scrub, play, or edit clip data) instead of the
+    /// clip stomping it back one frame later. Clip-DATA edits (keys / tracks /
+    /// mute / solo / current-clip / mixer) re-pin via the bridge re-lower
+    /// (`animation_sync` ends every re-lower with an explicit `pin_pose`), so
+    /// the paused viewport still updates immediately on those.
+    static LAST_PIN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 fn request_frame() {
@@ -40,10 +62,61 @@ fn request_frame() {
             prev.map(|p| (ts - p).max(0.0)).unwrap_or(0.0)
         });
         tick_animation_clock(dt_ms);
+        // Time the CPU cost of building + submitting the frame (perf diagnostics,
+        // surfaced via memory_stats). `ts` is the rAF DOMHighResTimeStamp; a second
+        // `performance.now()` after render gives the in-frame CPU span. `dt_ms` is
+        // the wall-clock frame period (vsync-capped ~16.6ms at 60fps); the CPU span
+        // is the actionable "how heavy is our frame" number.
         render_one_frame();
+        let cpu_ms = now_ms().map(|end| (end - ts).max(0.0));
+        record_frame_stats(dt_ms, cpu_ms);
         request_frame();
     });
     context::set_raf(raf);
+}
+
+thread_local! {
+    /// Rolling (EMA) per-frame timing for perf diagnostics, read by the
+    /// `memory_stats` query. `(frame_dt_ms, render_cpu_ms)` — the wall-clock frame
+    /// period and the CPU span spent in `render_one_frame`. EMA smooths the jitter
+    /// so a single sampled query reflects the steady-state cost.
+    static FRAME_STATS: std::cell::Cell<(f64, f64)> = const { std::cell::Cell::new((0.0, 0.0)) };
+}
+
+/// `performance.now()` in ms, if a window/performance is available.
+fn now_ms() -> Option<f64> {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+}
+
+/// Fold this frame's timing into the rolling EMA (α=0.1).
+fn record_frame_stats(dt_ms: f64, cpu_ms: Option<f64>) {
+    let cpu_ms = match cpu_ms {
+        Some(c) => c,
+        None => return,
+    };
+    FRAME_STATS.with(|s| {
+        let (dt_ema, cpu_ema) = s.get();
+        // Seed on first sample so the EMA converges from the real value, not 0.
+        let dt_ema = if dt_ema == 0.0 {
+            dt_ms
+        } else {
+            dt_ema * 0.9 + dt_ms * 0.1
+        };
+        let cpu_ema = if cpu_ema == 0.0 {
+            cpu_ms
+        } else {
+            cpu_ema * 0.9 + cpu_ms * 0.1
+        };
+        s.set((dt_ema, cpu_ema));
+    });
+}
+
+/// Rolling `(frame_dt_ms, render_cpu_ms)` EMA for the perf section of
+/// `memory_stats`. `(0.0, 0.0)` before the first frame.
+pub fn frame_stats() -> (f64, f64) {
+    FRAME_STATS.with(|s| s.get())
 }
 
 /// Advance the animation transport while playing. The editor owns the clock:
@@ -132,6 +205,21 @@ fn playhead_from_phase(
 }
 
 fn render_one_frame() {
+    // Black-on-start backstop: drive the full surface re-sync once per
+    // 0→nonzero canvas-size transition. Reads only the canvas client box (no
+    // renderer lock); `sync_canvas_size` is `IN_FLIGHT`-coalesced + idempotent
+    // and a no-op while the size is zero, so this is safe to poll every frame.
+    // It's what finally heals the stale-default surface that otherwise stays
+    // black until the user resizes the window (see `DID_REAL_SIZE_SYNC`).
+    {
+        let (cw, ch) = context::with_canvas(|c| (c.client_width(), c.client_height()));
+        if cw <= 0 || ch <= 0 {
+            DID_REAL_SIZE_SYNC.with(|done| done.set(false));
+        } else if !DID_REAL_SIZE_SYNC.with(|done| done.replace(true)) {
+            context::sync_canvas_size();
+        }
+    }
+
     // Which camera drives the view this frame: the free built-in camera (None),
     // or a scene Camera node (Some) — see `EditorController::active_camera`.
     let active = controller().active_camera.get();
@@ -142,6 +230,24 @@ fn render_one_frame() {
     // local (declared after `handle`) so it drops before `handle`.
     let mut guard = handle.try_lock();
     if let Some(renderer) = guard.as_mut() {
+        // Self-heal the surface size every frame. The canvas is reparented into the
+        // viewport slot *after* layout, so the initial `ResizeObserver` / `sync_canvas_size`
+        // can miss the first real size — leaving the surface at the stale default and every
+        // RAF render BLACK until the user resizes the window (which is what finally
+        // reconfigures it). Here we reconfigure whenever the backing store doesn't match the
+        // CSS box: a cheap int compare that no-ops once they agree, so it fixes first mount
+        // (and any resize the observer drops) without a manual resize. Done under the guard,
+        // before any render, so there's no in-flight-submit race against texture recreation.
+        let canvas = renderer.gpu.canvas().clone();
+        let cw = canvas.client_width();
+        let ch = canvas.client_height();
+        if cw > 0 && ch > 0 && (canvas.width() != cw as u32 || canvas.height() != ch as u32) {
+            canvas.set_width(cw as u32);
+            canvas.set_height(ch as u32);
+            renderer.gpu.sync_canvas_buffer_with_css();
+            context::try_with_camera_mut(|c| c.set_aspect(cw as f32 / ch as f32));
+        }
+
         // A scene camera reads from the renderer's transform graph, so refresh
         // world matrices before sampling it.
         if active.is_some() {
@@ -162,13 +268,29 @@ fn render_one_frame() {
         // Keep the gizmo screen-constant + anchored under the selection, and
         // enforce its visibility against the selection + toggle.
         super::gizmo::per_frame_update(renderer);
+        // Re-anchor + zoom the pickable light icons (one per light node).
+        super::light_icons::per_frame_update(renderer, &matrices);
+        // Bone-line skeleton overlay for skinned rigs (Settings toggle).
+        super::skeleton_viz::per_frame_update(renderer);
         // Keep curve control-point handles screen-constant + anchored.
         super::curve_handles::per_frame_update(renderer);
         // Advance any particle emitters + push their live particles to the GPU.
         super::bridge::particles::tick_all(renderer);
         // Pin the animation pose at the current playhead BEFORE world transforms
-        // are derived (animation writes locals; `update_transforms` derives world).
-        super::bridge::animation_sync::pin_pose(renderer, controller().playhead.get());
+        // are derived (animation writes locals; `update_transforms` derives world)
+        // — but only when the pose could have changed: while playing (the clock
+        // advances) or when the playhead moved (scrub / step). While paused with
+        // the playhead parked we deliberately SKIP the pin so a hand pose holds
+        // (see `LAST_PIN`).
+        {
+            let playing = controller().playing.get();
+            let playhead = controller().playhead.get();
+            let key = playhead.to_bits();
+            if playing || LAST_PIN.with(|c| c.get()) != Some(key) {
+                super::bridge::animation_sync::pin_pose(renderer, playhead);
+                LAST_PIN.with(|c| c.set(Some(key)));
+            }
+        }
         // Skin bridge: copy animated/posed mirror-bone locals onto the baked
         // joint keys the skin reads, BEFORE world matrices are derived — otherwise
         // a skinned glTF's joint data animates but the mesh stays frozen.

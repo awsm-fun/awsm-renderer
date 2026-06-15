@@ -4,21 +4,20 @@
 
 use std::sync::Arc;
 
-use awsm_meshgen::{
-    box_mesh, cone_mesh, cylinder_mesh, plane_mesh, sphere_mesh, sweep_along_curve, torus_mesh,
-    CrossSection, MeshData, SweepOpts, UvMode,
-};
-use awsm_renderer::cameras::{CameraParams, CameraProjectionParams};
+use awsm_meshgen::MeshData;
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
-use awsm_scene_schema::PrimitiveShape;
+// Shared with the runtime-bundle loader (`populate_awsm_scene`) so a light lowers
+// identically on the editor's live render and the player — the round-trip premise.
+use awsm_scene_loader::camera::camera_params_from_config;
+use awsm_scene_loader::light::{light_from_config, light_shadow_params_from_config};
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::{SignalVecExt, VecDiff};
 use glam::{Quat, Vec3, Vec4};
 
 use super::{bridge, material, RendererNode};
 use crate::engine::context::{renderer_handle, with_renderer_mut};
-use crate::engine::scene::{LightConfig, Node, NodeId, NodeKind, Trs};
+use crate::engine::scene::{AssetId, LightConfig, Node, NodeId, NodeKind, Trs};
 use crate::prelude::*;
 
 /// Begin mirroring the controller's scene root onto the renderer.
@@ -161,6 +160,14 @@ async fn add_node(
         .insert(node_id, entry.clone());
     order_insert(parent_id, index, node_id);
 
+    // A freshly materialized node may be the missing dependency of a PENDING
+    // animation channel (lowering skips channels whose target node isn't in the
+    // bridge yet — e.g. clips registering before their import's bone mirrors
+    // finish landing). Nudge the debounced re-lower so those channels resolve;
+    // bursts (a whole rig materializing) coalesce into one rebuild, and the
+    // relower is a cheap no-op when no clips exist.
+    super::animation_sync::schedule_relower();
+
     // Kind observer — fires on the current value first, so this materializes
     // the node on insert and re-materializes on any kind change.
     {
@@ -232,13 +239,101 @@ async fn remove_node(node_id: NodeId) {
     };
     if let Some(entry) = entry {
         teardown(&entry).await;
+        // Free the node's OWN transform. `teardown` only frees sub-transforms
+        // (`model_transforms`); the node's `transform_key` is a SlotMap key into
+        // `r.transforms`, and dropping the `Arc<RendererNode>` below does NOT free
+        // that renderer slot — so without this the transform leaked (+1 per
+        // inserted-then-deleted node, verified via memory_stats). Children were
+        // already removed by the recursion above, so nothing still parents off it.
+        let tk = entry.transform_key;
+        with_renderer_mut(move |r| {
+            r.transforms.remove(tk);
+        })
+        .await;
+        // Skin-bridge cleanup: drop any baked-joint mapping this node had (no-op
+        // for non-bone nodes) so a deleted skinned-model bone doesn't linger.
+        bridge().unregister_skin_joint(node_id);
+        // Template reclamation (mid-session leak fix): node teardown deliberately
+        // leaves an import's populate-baked resources alone (skinned meshes are
+        // template-owned + deform live; static hidden copies survive their
+        // captured siblings). Reclaim them — meshes, their materials → pooled
+        // textures, baked transforms — once the LAST instance of an import is
+        // gone. Candidate templates: this node's tracked import id, and (for a
+        // skinned node) the template it renders from.
+        reclaim_templates_for_removed(&entry, node_id).await;
         // Dropping the entry (and its loaders) cancels the observers.
     }
 }
 
+/// Free the populate-baked renderer resources of any import whose **last**
+/// instance just got deleted. Dangle-free: a template is freed only when no
+/// tracked instance remains AND no live `SkinnedMesh` (e.g. a duplicate) still
+/// renders from it (`Bridge::any_live_skinned_from`).
+/// Whether the AUTHORED scene (controller, updated synchronously by mutations +
+/// `apply_project`) still has a `SkinnedMesh` referencing `aid`. Used by template
+/// reclamation as a reload-safe guard (see `reclaim_templates_for_removed`):
+/// during a project reload the bridge nodes lag (async re-materialize) but the
+/// scene already holds the new SkinnedMesh nodes.
+fn scene_has_skinned_from(aid: AssetId) -> bool {
+    fn walk(node: &Arc<crate::engine::scene::node::Node>, aid: AssetId) -> bool {
+        if let NodeKind::SkinnedMesh { skin, .. } = node.kind.get_cloned() {
+            if skin.source == aid {
+                return true;
+            }
+        }
+        node.children.lock_ref().iter().any(|c| walk(c, aid))
+    }
+    controller()
+        .scene
+        .nodes
+        .lock_ref()
+        .iter()
+        .any(|n| walk(n, aid))
+}
+
+async fn reclaim_templates_for_removed(entry: &Arc<RendererNode>, node_id: NodeId) {
+    let mut candidates: Vec<AssetId> = Vec::new();
+    if let Some(aid) = bridge().untrack_template_node(node_id) {
+        candidates.push(aid);
+    }
+    if let NodeKind::SkinnedMesh { skin, .. } = entry.node.kind.get_cloned() {
+        if !candidates.contains(&skin.source) {
+            candidates.push(skin.source);
+        }
+    }
+    for aid in candidates {
+        // Don't reclaim a template anything still references. Three checks:
+        //  - tracked instances (import-time registration),
+        //  - a live materialized SkinnedMesh in the bridge,
+        //  - a SkinnedMesh in the AUTHORED SCENE referencing it. The scene check
+        //    is what keeps a project RELOAD safe: `apply_project` swaps the scene
+        //    nodes SYNCHRONOUSLY (old removed → this async teardown's reclaim runs,
+        //    but the new same-id SkinnedMesh is already in `controller().scene`),
+        //    so the freshly re-populated template (slice-3 persistence) survives.
+        //    On a genuine DELETE the scene node is already gone → reclaim proceeds.
+        if bridge().template_instance_count(aid) > 0
+            || bridge().any_live_skinned_from(aid)
+            || scene_has_skinned_from(aid)
+        {
+            continue;
+        }
+        let Some(template) = bridge().get_template(aid) else {
+            continue;
+        };
+        with_renderer_mut(move |r| {
+            super::asset_template::remove_template_meshes(r, &template);
+        })
+        .await;
+        bridge().remove_template(aid);
+        super::skinned_bake_cache::remove(aid);
+        tracing::debug!("reclaimed import template {aid:?} (last instance deleted)");
+    }
+}
+
 /// Tear down a node's GPU resources (meshes / sub-transforms / owned materials /
-/// light). Leaves the node's own `transform_key` alone unless the node itself is
-/// being removed (handled by the caller dropping the entry — we also free it).
+/// light). Deliberately leaves the node's own `transform_key` alone so a kind
+/// change (re-materialize) keeps a stable transform; when the node is actually
+/// deleted, `remove_node` frees that `transform_key` explicitly after this.
 async fn teardown(entry: &Arc<RendererNode>) {
     let meshes: Vec<_> = entry.model_meshes.lock().unwrap().drain(..).collect();
     let transforms: Vec<_> = entry.model_transforms.lock().unwrap().drain(..).collect();
@@ -320,48 +415,32 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
     teardown(&entry).await;
 
     match kind {
-        NodeKind::Primitive {
-            shape,
-            inline_material,
-            custom_material,
-            shadow,
-            ..
-        } => {
-            materialize_primitive(
-                entry.clone(),
-                shape,
-                inline_material,
-                custom_material,
-                shadow,
-            )
-            .await
-        }
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
         NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
         NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def).await,
         NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
         NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg).await,
-        NodeKind::SweepAlongCurve {
-            def,
-            inline_material,
-            ..
-        } => materialize_sweep(entry.clone(), def, inline_material).await,
         NodeKind::InstancesAlongCurve(def) => materialize_instances(entry.clone(), def).await,
         NodeKind::ParticleEmitter(def) => materialize_particle(entry.clone(), def).await,
-        NodeKind::Mesh {
-            mesh,
-            inline_material,
-            ..
-        } => match super::mesh_cache::get_raw(mesh.0) {
+        // The sole procedural-geometry path: read the baked stack from the mesh
+        // cache + upload with the node's assigned material (magenta when None).
+        // Primitives + sweeps are now `MeshDef` stacks behind this same arm.
+        NodeKind::Mesh { mesh, material, .. } => match super::mesh_cache::get_raw(mesh.0) {
             Some(raw) => {
-                upload_simple_mesh(entry.clone(), raw, inline_material).await;
+                upload_simple_mesh(entry.clone(), raw, MeshMaterial::Assigned(material)).await;
             }
             None => {
                 tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
             }
         },
-        NodeKind::Model(model_ref) => materialize_model(entry.clone(), model_ref).await,
+        // A skinned glTF import: the renderer's `populate_gltf` already built the
+        // skinned mesh + skeleton; we keep that copy rendering (it deforms via the
+        // joints) and just (re)assign this node's material/shadow to it. NOT the
+        // captured-mesh pipeline — skinned geometry isn't editable.
+        NodeKind::SkinnedMesh { skin, material, .. } => {
+            materialize_skinned_mesh(entry.clone(), skin, material).await
+        }
         NodeKind::Camera(cfg) => materialize_camera(entry.clone(), cfg).await,
         // Group: no procedural geometry, no renderer resource.
         _ => {}
@@ -375,42 +454,15 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
 /// with this mesh's per-mesh uniform values (`inline`: base color / metallic /
 /// roughness / emissive) into a final `MaterialDef`. Returns `None` for a dynamic
 /// material or an unknown id (callers then try the dynamic path / inline).
-/// The geometry COLOR set index a renderer mesh carries (glTF `COLOR_n`), or
-/// `None` if it has no vertex-colour attribute. Vertex-colour *usage* is
-/// geometry-derived — a material that multiplies by COLOR only makes sense when
-/// the mesh actually has it — so the bridge sets `vertex_colors_enabled` + the
-/// set index from this rather than an authored bit, mirroring how `populate_gltf`
-/// decides it per primitive.
-fn mesh_vertex_color_set(
-    r: &awsm_renderer::AwsmRenderer,
-    mk: awsm_renderer::meshes::MeshKey,
-) -> Option<u32> {
-    use awsm_renderer::meshes::buffer_info::{
-        MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo,
-    };
-    r.meshes.buffer_info(mk).ok().and_then(|info| {
-        info.triangles.vertex_attributes.iter().find_map(|attr| {
-            if let MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::Colors { index, .. },
-            ) = attr
-            {
-                Some(*index)
-            } else {
-                None
-            }
-        })
-    })
-}
-
 fn builtin_merged(
-    inst: &awsm_scene_schema::dynamic_material::CustomMaterialInstance,
-    inline: &awsm_scene_schema::MaterialDef,
-) -> Option<awsm_scene_schema::MaterialDef> {
-    use awsm_scene_schema::material::{MaterialAlphaMode, MaterialShading, PbrExtensions};
-    use awsm_scene_schema::TextureRef;
+    inst: &awsm_editor_protocol::dynamic_material::MaterialInstance,
+) -> Option<awsm_editor_protocol::MaterialDef> {
+    use awsm_editor_protocol::material::{MaterialAlphaMode, MaterialShading, PbrExtensions};
+    use awsm_editor_protocol::TextureRef;
+    let inline = &inst.inline;
     let ctrl = crate::controller::controller();
     let mat =
-        crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.material)?;
+        crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.asset)?;
     let variant = mat.builtin.get_cloned()?;
 
     // ── The override rule ────────────────────────────────────────────────────
@@ -464,14 +516,16 @@ fn builtin_merged(
         _ => variant.alpha_mode.clone(),
     };
 
-    // Shading MODEL is variant (selects the renderer Material flavour); the Toon
-    // knobs are uniform (one canonical Toon shader_id), so carry them from inline.
+    // Shading MODEL is variant (selects the renderer Material flavour); the
+    // Toon / FlipBook knobs are uniform (one canonical shader_id each), so
+    // carry them from inline.
     let shading = match (variant.shading, inline.shading) {
         (MaterialShading::Toon { .. }, t @ MaterialShading::Toon { .. }) => t,
+        (MaterialShading::FlipBook { .. }, f @ MaterialShading::FlipBook { .. }) => f,
         (v, _) => v,
     };
 
-    Some(awsm_scene_schema::MaterialDef {
+    Some(awsm_editor_protocol::MaterialDef {
         base_color: inline.base_color,
         metallic: inline.metallic,
         roughness: inline.roughness,
@@ -494,166 +548,165 @@ fn builtin_merged(
     })
 }
 
-async fn materialize_primitive(
-    entry: Arc<RendererNode>,
-    shape: PrimitiveShape,
-    inline: awsm_scene_schema::MaterialDef,
-    custom_material: Option<awsm_scene_schema::dynamic_material::CustomMaterialInstance>,
-    shadow: awsm_scene_schema::MeshShadowConfig,
-) {
-    let mesh = primitive_to_mesh(&shape);
-    let raw = RawMeshData {
-        positions: mesh.positions,
-        normals: mesh.normals,
-        uvs: mesh.uvs,
-        colors: mesh.colors,
-        indices: mesh.indices,
-    };
-    let parent_tk = entry.transform_key;
-
-    // Hold the renderer lock across the upload so we can finalize the GPU
-    // texture pool / bind groups afterwards (committing the material so the mesh
-    // actually draws — the archived editor batched this in instance_batcher).
-    let handle = renderer_handle();
-    let mut r = handle.lock().await;
-    // Resolve the assigned library material (by stable id):
-    //   • a built-in → merge its shared *variant* settings with this mesh's
-    //     per-mesh *uniform* values (`inline`) → one Material::Pbr/Unlit/Toon;
-    //   • a registered dynamic WGSL material → its registered bucket;
-    //   • otherwise (unassigned / not-yet-registered) → the mesh's inline material.
-    // Material resolution. A mesh with NO assigned material (or an assignment that
-    // can't be resolved yet) renders flat **magenta** — the missing-material
-    // sentinel — NOT a default PBR material. `inline` is purely the per-mesh
-    // *uniform* store for a built-in assignment (base colour / metallic / … — see
-    // the material model note in inspector.rs::material_editor); it never stands in
-    // as a material on its own.
-    let mat_key = match custom_material.as_ref() {
+/// Resolve the renderer material key for a geometry node from its optional
+/// library assignment + per-mesh inline uniform store. **The single source of
+/// truth** for the material model — shared by primitives, captured meshes, and
+/// sweeps so all three render identically:
+///   • assigned built-in → merge its shared *variant* with this mesh's per-mesh
+///     `inline` uniforms → one `Material::Pbr/Unlit/Toon`;
+///   • assigned custom WGSL → its registered bucket;
+///   • unassigned (or an assignment that can't resolve yet) → flat **magenta**,
+///     the missing-material sentinel.
+///
+/// The instance's `inline` field is purely the per-mesh *uniform* store for a
+/// built-in assignment (base colour / metallic / … — see the material model note
+/// in `inspector.rs::material_editor`); it never stands in as a material on its
+/// own.
+///
+/// `vertex_color_set` is the geometry COLOR set the mesh carries (`Some(0)` for
+/// painted `COLOR_0`), or `None` when it has none. Vertex-colour *usage* is
+/// geometry-derived, so — exactly as the skinned path does — we flip
+/// `vertex_colors_enabled` on the merged built-in def + bind the set, so painted
+/// colours actually multiply the base colour instead of being uploaded and
+/// silently ignored.
+fn resolve_assigned_material(
+    r: &mut awsm_renderer::AwsmRenderer,
+    material: Option<&awsm_editor_protocol::dynamic_material::MaterialInstance>,
+    vertex_color_set: Option<u32>,
+) -> awsm_renderer::materials::MaterialKey {
+    match material {
         Some(inst) => {
-            if let Some(merged) = builtin_merged(inst, &inline) {
-                material::insert_material(&mut r, &merged)
-            } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
+            if let Some(mut merged) = builtin_merged(inst) {
+                merged.vertex_colors_enabled = vertex_color_set.is_some();
+                material::insert_material_vc(r, &merged, vertex_color_set)
+            } else if let Some(k) = super::dynamic::insert_custom(r, inst) {
                 k
             } else {
-                material::insert_magenta(&mut r)
+                material::insert_magenta(r)
             }
         }
-        None => material::insert_magenta(&mut r),
-    };
-    let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    match r.add_raw_mesh(raw, sub_tk, mat_key) {
-        Ok(mk) => {
-            if let Err(e) = r.finalize_gpu_textures().await {
-                tracing::warn!("finalize_gpu_textures: {e}");
-            }
-            let _ = r.set_mesh_shadow_flags(mk, mesh_shadow_flags_from_config(&shadow));
-            drop(r);
-            entry.model_meshes.lock().unwrap().push(mk);
-            entry.model_transforms.lock().unwrap().push(sub_tk);
-            entry.material_keys.lock().unwrap().push(mat_key);
-            bridge().register_mesh(mk, entry.node_id);
-        }
-        Err(e) => {
-            r.transforms.remove(sub_tk);
-            r.remove_material(mat_key);
-            tracing::error!("materialize primitive failed: {e}");
-        }
+        None => material::insert_magenta(r),
     }
 }
 
-/// Materialize a `Model` node by **duplicating** its glTF template meshes under
-/// the node's own transform. The template (built at import time from
-/// `populate_gltf`) holds the renderer mesh keys for each glTF node; we look up
-/// this node's by `node_index` and call `duplicate_mesh_with_transform` so the
-/// copy is parented to *this* editor node — moving the node moves the mesh.
-/// Skinning is preserved: the duplicate keeps its joint references (the joints
-/// still live in the renderer transform tree as the hidden template).
-async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schema::ModelRef) {
-    let Some(template) = bridge().get_template(model_ref.asset_id) else {
-        tracing::warn!(
-            "Model {:?}: no node template cached; renders empty",
-            model_ref.asset_id
-        );
-        return;
+/// How [`upload_simple_mesh`] resolves its material.
+enum MeshMaterial {
+    /// A user-assignable geometry node (captured mesh, sweep): resolve the
+    /// optional assignment via [`resolve_assigned_material`] — magenta when
+    /// unassigned, exactly like a primitive.
+    Assigned(Option<awsm_editor_protocol::dynamic_material::MaterialInstance>),
+    /// Render this material def directly — no assignment concept. Used by
+    /// instanced geometry, whose appearance is the flat default + per-instance
+    /// colours, not a per-node material assignment.
+    Flat(awsm_editor_protocol::MaterialDef),
+}
+
+/// The geometry COLOR set index a renderer mesh carries (glTF `COLOR_n`), or
+/// `None` if it has no vertex-colour attribute. Vertex-colour *usage* is
+/// geometry-derived, so the bridge sets `vertex_colors_enabled` + the set index
+/// from this (mirroring how `populate_gltf` decides it per primitive).
+fn mesh_vertex_color_set(
+    r: &awsm_renderer::AwsmRenderer,
+    mk: awsm_renderer::meshes::MeshKey,
+) -> Option<u32> {
+    use awsm_renderer::meshes::buffer_info::{
+        MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo,
     };
-    let Some(tnode) = template.find_by_node_index(model_ref.node_index) else {
-        tracing::warn!(
-            "Model node_index {} not found in template; renders empty",
-            model_ref.node_index
-        );
-        return;
-    };
-    // Each mesh: (mesh_key, is_skinned, gltf material index). `primitive_index =
-    // Some(i)` would peel a single primitive (Split); we materialize them all.
-    type Triple = (awsm_renderer::meshes::MeshKey, bool, Option<usize>);
-    let triples: Vec<Triple> = match model_ref.primitive_index {
-        None => tnode
-            .mesh_keys
-            .iter()
-            .copied()
-            .zip(tnode.mesh_is_skinned.iter().copied())
-            .zip(tnode.mesh_gltf_material_indices.iter().copied())
-            .map(|((mk, s), mi)| (mk, s, mi))
-            .collect(),
-        Some(i) => {
-            let i = i as usize;
-            match (
-                tnode.mesh_keys.get(i),
-                tnode.mesh_is_skinned.get(i),
-                tnode.mesh_gltf_material_indices.get(i),
-            ) {
-                (Some(mk), Some(s), Some(mi)) => vec![(*mk, *s, *mi)],
-                _ => Vec::new(),
+    r.meshes.buffer_info(mk).ok().and_then(|info| {
+        info.triangles.vertex_attributes.iter().find_map(|attr| {
+            if let MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::Colors { index, .. },
+            ) = attr
+            {
+                Some(*index)
+            } else {
+                None
             }
-        }
+        })
+    })
+}
+
+/// Schema → runtime per-mesh shadow cast/receive flags.
+fn mesh_shadow_flags_from_config(
+    cfg: &awsm_editor_protocol::MeshShadowConfig,
+) -> awsm_renderer::shadows::MeshShadowFlags {
+    awsm_renderer::shadows::MeshShadowFlags {
+        cast: cfg.cast,
+        receive: cfg.receive,
+    }
+}
+
+/// Materialize a `SkinnedMesh` node: the renderer's `populate_gltf` already built
+/// the skinned mesh + skeleton at import (and `hide_template_meshes` left the
+/// skinned copies *visible*), so we don't build geometry — we look this node's
+/// glTF `node_index` up in the cached import template, find its (skinned)
+/// renderer mesh key(s), and (re)assign this node's material + shadow flags onto
+/// them. The mesh keeps deforming via the skeleton joints, which the per-frame
+/// `skin_bridge` drives from the editor's animated mirror bones.
+///
+/// The skinned mesh keys are owned by the populate pass (the hidden template
+/// hierarchy keeps the joints alive), so they are **not** pushed to
+/// `entry.model_meshes` — `teardown` must not remove them. Only the materials we
+/// insert here are this node's to own + free.
+async fn materialize_skinned_mesh(
+    entry: Arc<RendererNode>,
+    skin: awsm_editor_protocol::SkinnedMeshRef,
+    material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+) {
+    let Some(template) = bridge().get_template(skin.source) else {
+        tracing::warn!(
+            "SkinnedMesh {:?}: no import template cached (session-local — survives \
+             only within the import session); renders empty",
+            skin.source
+        );
+        return;
     };
-    if triples.is_empty() {
+    let Some(tnode) = template.find_by_node_index(skin.node_index) else {
+        tracing::warn!(
+            "SkinnedMesh node_index {} not in template; renders empty",
+            skin.node_index
+        );
+        return;
+    };
+    // The skinned renderer mesh key(s) for this node. `primitive_index = Some(i)`
+    // peels one primitive (a destructured multi-material node); `None` = all.
+    let mesh_keys: Vec<awsm_renderer::meshes::MeshKey> = match skin.primitive_index {
+        None => tnode.mesh_keys.clone(),
+        Some(i) => tnode
+            .mesh_keys
+            .get(i as usize)
+            .copied()
+            .into_iter()
+            .collect(),
+    };
+    if mesh_keys.is_empty() {
         return;
     }
 
     let visible = entry.node.visible.get();
-    let shadow_flags = mesh_shadow_flags_from_config(&model_ref.shadow);
-    let parent_tk = entry.transform_key;
+    let shadow_cfg = entry
+        .node
+        .kind
+        .get_cloned()
+        .mesh_shadow()
+        .copied()
+        .unwrap_or_default();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
 
-    let mut created = Vec::new();
     let mut material_keys = Vec::new();
     let mut to_register = Vec::new();
     {
         let handle = renderer_handle();
         let mut r = handle.lock().await;
-        // The node's assigned library material drives every primitive it renders.
-        // Resolved exactly like a Primitive/Mesh — a built-in merges this node's
-        // per-mesh inline uniforms + texture overrides over the shared variant; a
-        // dynamic material applies its declared overrides; an *unassigned* node
-        // renders the flat-magenta missing-material sentinel. The material is
-        // resolved PER PRIMITIVE because vertex-color usage is geometry-derived:
-        // glTF uses COLOR_0 iff the primitive carries it (matching the renderer's
-        // native per-primitive behaviour), not from any authored material bit — so
-        // a primitive with vertex colours gets `vertex_colors_enabled` flipped on
-        // (its own pipeline variant) while a sibling without them does not.
-        for (mk, skinned, _mat_idx) in &triples {
+        for mk in &mesh_keys {
+            let _ = r.set_mesh_hidden(*mk, !visible);
+            let _ = r.set_mesh_shadow_flags(*mk, shadow_flags);
+            // Resolve PER PRIMITIVE because vertex-colour usage is geometry-derived
+            // (matches the renderer's native per-primitive behaviour).
             let vertex_color_set = mesh_vertex_color_set(&r, *mk);
-            // Skinned meshes keep rendering in place (their original copy) —
-            // duplicating collapses the skin; non-skinned are duplicated under
-            // this node's transform so the editor node owns + moves them.
-            let target = if *skinned {
-                *mk
-            } else {
-                match r.duplicate_mesh_with_transform(*mk, parent_tk) {
-                    Ok(new_mesh) => {
-                        let _ = r.set_mesh_hidden(new_mesh, !visible);
-                        let _ = r.set_mesh_shadow_flags(new_mesh, shadow_flags);
-                        created.push(new_mesh);
-                        new_mesh
-                    }
-                    Err(e) => {
-                        tracing::warn!("Model: duplicate_mesh_with_transform failed: {e}");
-                        continue;
-                    }
-                }
-            };
-            let mat_key = match model_ref.material.as_ref() {
+            let mat_key = match material.as_ref() {
                 Some(inst) => {
-                    if let Some(mut merged) = builtin_merged(inst, &model_ref.inline_material) {
+                    if let Some(mut merged) = builtin_merged(inst) {
                         merged.vertex_colors_enabled = vertex_color_set.is_some();
                         material::insert_material_vc(&mut r, &merged, vertex_color_set)
                     } else if let Some(k) = super::dynamic::insert_custom(&mut r, inst) {
@@ -664,27 +717,27 @@ async fn materialize_model(entry: Arc<RendererNode>, model_ref: awsm_scene_schem
                 }
                 None => material::insert_magenta(&mut r),
             };
-            let _ = r.set_mesh_material(target, mat_key);
+            let _ = r.set_mesh_material(*mk, mat_key);
             material_keys.push(mat_key);
-            to_register.push(target);
+            to_register.push(*mk);
         }
         if let Err(e) = r.finalize_gpu_textures().await {
-            tracing::warn!("finalize_gpu_textures (model): {e}");
+            tracing::warn!("finalize_gpu_textures (skinned mesh): {e}");
         }
     }
 
     for mk in &to_register {
         bridge().register_mesh(*mk, entry.node_id);
     }
-    // Duplicates + the materials we inserted are owned (torn down) by this node;
-    // skinned originals belong to the populate pass and stay put.
-    entry.model_meshes.lock().unwrap().extend(created);
+    // Only the inserted materials are owned by this node; the skinned mesh keys
+    // belong to the populate pass and must survive teardown (so they keep
+    // deforming) — do NOT add them to `model_meshes`.
     entry.material_keys.lock().unwrap().extend(material_keys);
 }
 
 /// Authored polyline (`NodeKind::Line`) → fat-line strip. The fat-line pipeline
 /// reads world-space positions, so the node transform is baked in CPU-side.
-async fn materialize_line(entry: Arc<RendererNode>, def: awsm_scene_schema::LineDef) {
+async fn materialize_line(entry: Arc<RendererNode>, def: awsm_editor_protocol::LineDef) {
     if def.points.len() < 2 {
         return;
     }
@@ -728,7 +781,7 @@ async fn materialize_line(entry: Arc<RendererNode>, def: awsm_scene_schema::Line
 /// Curve viz (`NodeKind::Curve`) → a sampled Catmull-Rom polyline drawn as a
 /// magenta fat-line (the curve itself emits no game geometry; sweeps/instances
 /// consume it). World-space, parent transform baked in.
-async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_scene_schema::CurveDef) {
+async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_editor_protocol::CurveDef) {
     if def.control_points.len() < 2 {
         return;
     }
@@ -782,7 +835,7 @@ async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_scene_schema:
 /// Textured/tinted quad (`NodeKind::Sprite`) → a `sprite_quad` mesh with the
 /// renderer's billboard mode. Single-cell unlit-ish quad (the flipbook-animated
 /// variant is the follow-on); sprites don't cast/receive shadows.
-async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_scene_schema::SpriteDef) {
+async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol::SpriteDef) {
     use awsm_meshgen::sprite_quad;
     use awsm_renderer::meshes::mesh::BillboardMode;
 
@@ -791,21 +844,22 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_scene_schema::Sp
         positions: mesh.positions,
         normals: mesh.normals,
         uvs: mesh.uvs,
+        uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,
     };
-    let sprite_mat = awsm_scene_schema::MaterialDef {
+    let sprite_mat = awsm_editor_protocol::MaterialDef {
         base_color: def.tint,
         metallic: 0.0,
         roughness: 1.0,
         emissive: [def.tint[0] * 1.8, def.tint[1] * 1.8, def.tint[2] * 1.8],
         double_sided: true,
-        ..awsm_scene_schema::MaterialDef::default()
+        ..awsm_editor_protocol::MaterialDef::default()
     };
     let mode = match def.billboard {
-        awsm_scene_schema::BillboardMode::None => BillboardMode::None,
-        awsm_scene_schema::BillboardMode::YAxis => BillboardMode::YAxis,
-        awsm_scene_schema::BillboardMode::Full => BillboardMode::Full,
+        awsm_editor_protocol::BillboardMode::None => BillboardMode::None,
+        awsm_editor_protocol::BillboardMode::YAxis => BillboardMode::YAxis,
+        awsm_editor_protocol::BillboardMode::Full => BillboardMode::Full,
     };
     let parent_tk = entry.transform_key;
 
@@ -813,7 +867,9 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_scene_schema::Sp
     let mut r = handle.lock().await;
     let mat_key = material::insert_material(&mut r, &sprite_mat);
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    match r.add_raw_mesh(raw, sub_tk, mat_key) {
+    // Transparent path (a tinted/blended sprite routes through the transparency
+    // pass; opaque delegates to `add_raw_mesh`).
+    match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
         Ok(mk) => {
             if let Err(e) = r.finalize_gpu_textures().await {
                 tracing::warn!("sprite finalize_gpu_textures: {e}");
@@ -836,7 +892,10 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_scene_schema::Sp
 /// Collider (`NodeKind::Collider`) → an editor-overlay wireframe of the shape,
 /// drawn as a world-baked fat-line segment list (one-shot; re-materializes on
 /// shape/transform change via the kind observer).
-async fn materialize_collider(entry: Arc<RendererNode>, shape: awsm_scene_schema::ColliderShape) {
+async fn materialize_collider(
+    entry: Arc<RendererNode>,
+    shape: awsm_editor_protocol::ColliderShape,
+) {
     let parent_tk = entry.transform_key;
     let entry2 = entry.clone();
     let line_key = with_renderer_mut(move |r| {
@@ -866,7 +925,7 @@ async fn materialize_collider(entry: Arc<RendererNode>, shape: awsm_scene_schema
 /// Projection decal (`NodeKind::Decal`) → inserts the renderer decal (inert
 /// until a texture is assigned) plus a unit-cube volume wireframe so the decal
 /// is placeable/visible in the editor (the projection volume).
-async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::DecalConfig) {
+async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_editor_protocol::DecalConfig) {
     let parent_tk = entry.transform_key;
     let entry2 = entry.clone();
     let alpha = cfg.alpha;
@@ -881,7 +940,7 @@ async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::Dec
             Err(err) => tracing::warn!("insert_decal: {err:?}"),
         }
         let (positions, colors) = super::collider_wire::build(
-            &awsm_scene_schema::ColliderShape::Box {
+            &awsm_editor_protocol::ColliderShape::Box {
                 half_extents: [0.5, 0.5, 0.5],
             },
             &world,
@@ -897,7 +956,7 @@ async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_scene_schema::Dec
 
 /// The single curve node referenced by a sweep/instances node, if it exists and
 /// is a `Curve`.
-fn lookup_curve_def(node_id: NodeId) -> Option<awsm_scene_schema::CurveDef> {
+fn lookup_curve_def(node_id: NodeId) -> Option<awsm_editor_protocol::CurveDef> {
     let b = bridge();
     let entry = b.nodes.lock().unwrap().get(&node_id).cloned()?;
     match entry.node.kind.get_cloned() {
@@ -911,14 +970,27 @@ fn lookup_curve_def(node_id: NodeId) -> Option<awsm_scene_schema::CurveDef> {
 async fn upload_simple_mesh(
     entry: Arc<RendererNode>,
     raw: RawMeshData,
-    inline: awsm_scene_schema::MaterialDef,
+    mat: MeshMaterial,
 ) -> Option<awsm_renderer::meshes::MeshKey> {
     let parent_tk = entry.transform_key;
     let handle = renderer_handle();
     let mut r = handle.lock().await;
-    let mat_key = material::insert_material(&mut r, &inline);
+    // Vertex-colour usage is geometry-derived: painted meshes carry a non-empty
+    // `colors` (uploaded as `COLOR_0`), so bind set 0 on the assigned built-in.
+    let vertex_color_set = raw.colors.as_ref().filter(|c| !c.is_empty()).map(|_| 0u32);
+    let mat_key = match &mat {
+        MeshMaterial::Assigned(material) => {
+            resolve_assigned_material(&mut r, material.as_ref(), vertex_color_set)
+        }
+        MeshMaterial::Flat(def) => material::insert_material(&mut r, def),
+    };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    match r.add_raw_mesh(raw, sub_tk, mat_key) {
+    // `add_raw_mesh_transparent` builds transparency geometry when the material
+    // routes through the transparency pass (alpha Blend/Mask OR transmission) and
+    // otherwise delegates to the opaque `add_raw_mesh`. The plain `add_raw_mesh`
+    // ERRORS on a transparency-pass material, so a transmissive/blended captured
+    // mesh (e.g. an imported glass model) wouldn't upload at all.
+    match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
         Ok(mk) => {
             if let Err(e) = r.finalize_gpu_textures().await {
                 tracing::warn!("upload_simple_mesh finalize: {e}");
@@ -939,81 +1011,18 @@ async fn upload_simple_mesh(
     }
 }
 
-/// Sweep a cross-section along the referenced curve (`NodeKind::SweepAlongCurve`)
-/// → solid geometry. Renders only once its `curve_node` points at a real Curve.
-async fn materialize_sweep(
-    entry: Arc<RendererNode>,
-    def: awsm_scene_schema::SweepAlongCurveDef,
-    inline: awsm_scene_schema::MaterialDef,
-) {
-    use awsm_curves::CatmullRomCurve;
-    use awsm_scene_schema::{CrossSectionDef, SweepUvMode};
-
-    // Nil curve ref = "not wired up yet"; render empty quietly until the user picks one.
-    if def.curve_node.is_nil() {
-        return;
-    }
-    let Some(curve_def) = lookup_curve_def(def.curve_node) else {
-        tracing::warn!("SweepAlongCurve references missing/!curve node");
-        return;
-    };
-    let curve = CatmullRomCurve::new(
-        curve_def
-            .control_points
-            .iter()
-            .map(|p| Vec3::from_array(*p))
-            .collect(),
-        curve_def.closed,
-    );
-    let cs = match def.cross_section {
-        CrossSectionDef::Strip { width, y_offset } => CrossSection::Strip { width, y_offset },
-        CrossSectionDef::Tube {
-            radius,
-            radial_segments,
-        } => CrossSection::Tube {
-            radius,
-            radial_segments,
-        },
-        CrossSectionDef::Wall { width, height } => CrossSection::Wall { width, height },
-        CrossSectionDef::Profile { points, closed } => CrossSection::Profile { points, closed },
-    };
-    let opts = SweepOpts {
-        samples: def.samples,
-        uv_mode: match def.uv_mode {
-            SweepUvMode::StretchOnce => UvMode::StretchOnce,
-            SweepUvMode::RepeatByLength {
-                u_repeat,
-                v_repeat_per_unit,
-            } => UvMode::RepeatByLength {
-                u_repeat,
-                v_repeat_per_unit,
-            },
-        },
-        up_hint: def.up_hint,
-    };
-    let mesh = sweep_along_curve(&curve, &cs, &opts);
-    let raw = RawMeshData {
-        positions: mesh.positions,
-        normals: mesh.normals,
-        uvs: mesh.uvs,
-        colors: mesh.colors,
-        indices: mesh.indices,
-    };
-    upload_simple_mesh(entry, raw, inline).await;
-}
-
-/// Place copies of a source primitive along the referenced curve
+/// Place copies of a source mesh along the referenced curve
 /// (`NodeKind::InstancesAlongCurve`) via GPU instancing. Renders once both its
-/// `curve_node` (a Curve) and `source_node` (a Primitive) point at real nodes.
+/// `curve_node` (a Curve) and `source_node` (a Mesh) point at real nodes.
 async fn materialize_instances(
     entry: Arc<RendererNode>,
-    def: awsm_scene_schema::InstancesAlongCurveDef,
+    def: awsm_editor_protocol::InstancesAlongCurveDef,
 ) {
     use awsm_curves::{CatmullRomCurve, Curve3, FrameSequence};
     use awsm_renderer::instances::InstanceAttr;
 
     // Both refs are optional; a nil sentinel just means "not wired up yet" — the
-    // node renders empty until the user picks a curve + a source primitive.
+    // node renders empty until the user picks a curve + a source mesh.
     if def.curve_node.is_nil() || def.source_node.is_nil() {
         return;
     }
@@ -1021,13 +1030,27 @@ async fn materialize_instances(
         tracing::warn!("InstancesAlongCurve references missing curve node");
         return;
     };
-    let shape = {
+    // The source is a Mesh node; its baked geometry lives in the mesh cache.
+    let mesh = {
         let b = bridge();
         let src = b.nodes.lock().unwrap().get(&def.source_node).cloned();
-        match src.map(|e| e.node.kind.get_cloned()) {
-            Some(NodeKind::Primitive { shape, .. }) => shape,
+        let mesh_ref = match src.map(|e| e.node.kind.get_cloned()) {
+            Some(NodeKind::Mesh { mesh, .. }) => mesh,
             _ => {
-                tracing::warn!("InstancesAlongCurve source node is missing/not a Primitive");
+                tracing::warn!("InstancesAlongCurve source node is missing/not a Mesh");
+                return;
+            }
+        };
+        match super::mesh_cache::get_raw(mesh_ref.0) {
+            Some(raw) => MeshData {
+                positions: raw.positions,
+                normals: raw.normals,
+                uvs: raw.uvs,
+                colors: raw.colors,
+                indices: raw.indices,
+            },
+            None => {
+                tracing::warn!("InstancesAlongCurve source mesh not in capture cache");
                 return;
             }
         }
@@ -1072,15 +1095,20 @@ async fn materialize_instances(
         attrs.push(InstanceAttr::from_rgba_alpha_size(rgba, 1.0, 1.0));
     }
 
-    let mesh = primitive_to_mesh(&shape);
     let raw = RawMeshData {
         positions: mesh.positions,
         normals: mesh.normals,
         uvs: mesh.uvs,
+        uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,
     };
-    let mesh_key = upload_simple_mesh(entry, raw, awsm_scene_schema::MaterialDef::default()).await;
+    let mesh_key = upload_simple_mesh(
+        entry,
+        raw,
+        MeshMaterial::Flat(awsm_editor_protocol::MaterialDef::default()),
+    )
+    .await;
     if let Some(mk) = mesh_key {
         with_renderer_mut(move |r| {
             if let Err(err) = r.enable_mesh_instancing_opaque(mk, &transforms) {
@@ -1102,7 +1130,7 @@ async fn materialize_instances(
 /// instanced billboard quad, ticked each frame by the render loop.
 async fn materialize_particle(
     entry: Arc<RendererNode>,
-    def: awsm_scene_schema::ParticleEmitterDef,
+    def: awsm_editor_protocol::ParticleEmitterDef,
 ) {
     let parent_tk = entry.transform_key;
     let node_id = entry.node_id;
@@ -1167,160 +1195,10 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
 /// kind observer re-fires on every `SetKind`, so editing the camera config
 /// re-inserts a slot that reflects the new config — keeping store and config in
 /// sync without a separate observer.
-async fn materialize_camera(entry: Arc<RendererNode>, cfg: awsm_scene_schema::CameraConfig) {
+async fn materialize_camera(entry: Arc<RendererNode>, cfg: awsm_editor_protocol::CameraConfig) {
     let params = camera_params_from_config(&cfg);
     let key = with_renderer_mut(move |r| r.cameras.insert(params)).await;
     *entry.camera_key.lock().unwrap() = Some(key);
-}
-
-/// Schema camera config → renderer camera params. Maps the projection kind +
-/// clip planes; depth-of-field (`aperture`/`focus_distance`) isn't authored on
-/// the node config yet, so it defaults to the same values `scene_camera_matrices`
-/// has always used (`5.6` / `10.0`).
-fn camera_params_from_config(cfg: &awsm_scene_schema::CameraConfig) -> CameraParams {
-    use awsm_scene_schema::CameraProjection;
-    let projection = match cfg.projection {
-        CameraProjection::Perspective { fov_y_rad } => {
-            CameraProjectionParams::Perspective { fov_y_rad }
-        }
-        CameraProjection::Orthographic { half_height } => {
-            CameraProjectionParams::Orthographic { half_height }
-        }
-    };
-    CameraParams {
-        projection,
-        near: cfg.near,
-        far: cfg.far,
-        aperture: 5.6,
-        focus_distance: 10.0,
-    }
-}
-
-/// Schema → runtime light shadow params.
-fn light_shadow_params_from_config(
-    cfg: &awsm_scene_schema::LightShadowConfig,
-) -> awsm_renderer::shadows::LightShadowParams {
-    use awsm_renderer::shadows as r;
-    use awsm_scene_schema as s;
-    r::LightShadowParams {
-        cast: cfg.cast,
-        depth_bias: cfg.depth_bias,
-        normal_bias: cfg.normal_bias,
-        resolution: cfg.resolution,
-        hardness: match cfg.hardness {
-            s::LightShadowHardness::Hard => r::LightShadowHardness::Hard,
-            s::LightShadowHardness::Soft => r::LightShadowHardness::Soft,
-            s::LightShadowHardness::Pcss => r::LightShadowHardness::Pcss,
-        },
-        pcss_penumbra_scale: cfg.pcss_penumbra_scale,
-        max_distance: cfg.max_distance,
-        cascade_count: cfg.cascade_count,
-        cascade_split_lambda: cfg.cascade_split_lambda,
-        evsm_cutoff: match cfg.evsm_cutoff {
-            s::EvsmCutoff::Off => r::EvsmCutoff::Off,
-            s::EvsmCutoff::LastCascade => r::EvsmCutoff::LastCascade,
-            s::EvsmCutoff::LastTwoCascades => r::EvsmCutoff::LastTwoCascades,
-        },
-        far_cascade_update_rate: match cfg.far_cascade_update_rate {
-            s::FarCascadeUpdateRate::EveryFrame => r::FarCascadeUpdateRate::EveryFrame,
-            s::FarCascadeUpdateRate::Every2Frames => r::FarCascadeUpdateRate::Every2Frames,
-            s::FarCascadeUpdateRate::Every4Frames => r::FarCascadeUpdateRate::Every4Frames,
-            s::FarCascadeUpdateRate::Every8Frames => r::FarCascadeUpdateRate::Every8Frames,
-        },
-        cube_face_update_rate: match cfg.cube_face_update_rate {
-            s::CubeFaceUpdateRate::EveryFrame => r::CubeFaceUpdateRate::EveryFrame,
-            s::CubeFaceUpdateRate::Every2Frames => r::CubeFaceUpdateRate::Every2Frames,
-            s::CubeFaceUpdateRate::Every4Frames => r::CubeFaceUpdateRate::Every4Frames,
-            s::CubeFaceUpdateRate::Every8Frames => r::CubeFaceUpdateRate::Every8Frames,
-        },
-    }
-}
-
-/// Schema → runtime per-mesh shadow cast/receive flags.
-fn mesh_shadow_flags_from_config(
-    cfg: &awsm_scene_schema::MeshShadowConfig,
-) -> awsm_renderer::shadows::MeshShadowFlags {
-    awsm_renderer::shadows::MeshShadowFlags {
-        cast: cfg.cast,
-        receive: cfg.receive,
-    }
-}
-
-fn light_from_config(
-    cfg: &LightConfig,
-    position: Vec3,
-    direction: Vec3,
-) -> awsm_renderer::lights::Light {
-    use awsm_renderer::lights::Light;
-    match cfg {
-        LightConfig::Directional {
-            color, intensity, ..
-        } => Light::Directional {
-            color: *color,
-            intensity: *intensity,
-            direction: direction.to_array(),
-        },
-        LightConfig::Point {
-            color,
-            intensity,
-            range,
-            ..
-        } => Light::Point {
-            color: *color,
-            intensity: *intensity,
-            position: position.to_array(),
-            range: *range,
-        },
-        LightConfig::Spot {
-            color,
-            intensity,
-            range,
-            inner_angle,
-            outer_angle,
-            ..
-        } => Light::Spot {
-            color: *color,
-            intensity: *intensity,
-            position: position.to_array(),
-            direction: direction.to_array(),
-            range: *range,
-            inner_angle: *inner_angle,
-            outer_angle: *outer_angle,
-        },
-    }
-}
-
-pub fn primitive_to_mesh(shape: &PrimitiveShape) -> MeshData {
-    match shape {
-        PrimitiveShape::Plane {
-            width,
-            depth,
-            segments_x,
-            segments_z,
-        } => plane_mesh(*width, *depth, *segments_x, *segments_z),
-        PrimitiveShape::Box { dims } => box_mesh(Vec3::from_array(*dims)),
-        PrimitiveShape::Sphere {
-            radius,
-            segments_long,
-            segments_lat,
-        } => sphere_mesh(*radius, *segments_long, *segments_lat),
-        PrimitiveShape::Cylinder {
-            radius,
-            height,
-            radial_segments,
-        } => cylinder_mesh(*radius, *height, *radial_segments),
-        PrimitiveShape::Cone {
-            radius,
-            height,
-            radial_segments,
-        } => cone_mesh(*radius, *height, *radial_segments),
-        PrimitiveShape::Torus {
-            radius,
-            thickness,
-            segments_major,
-            segments_minor,
-        } => torus_mesh(*radius, *thickness, *segments_major, *segments_minor),
-    }
 }
 
 pub(crate) fn trs_to_transform(trs: &Trs) -> Transform {
@@ -1328,5 +1206,21 @@ pub(crate) fn trs_to_transform(trs: &Trs) -> Transform {
         translation: Vec3::from_array(trs.translation),
         rotation: Quat::from_array(trs.rotation),
         scale: Vec3::from_array(trs.scale),
+    }
+}
+
+/// Re-materialize every `NodeKind::Mesh` node — the `mesh_sync` observer's
+/// response to a `mesh_revision` bump. `SetMeshData` replaces an editable mesh's
+/// bytes in the store *without* changing the node kind, so the per-node `kind`
+/// observer wouldn't re-fire on its own; this re-runs `apply_kind` (which re-reads
+/// `mesh_cache::get_raw`) for the affected nodes.
+pub(crate) async fn rematerialize_mesh_nodes() {
+    let entries: Vec<Arc<RendererNode>> =
+        bridge().nodes.lock().unwrap().values().cloned().collect();
+    for entry in entries {
+        let kind = entry.node.kind.get_cloned();
+        if matches!(kind, NodeKind::Mesh { .. }) {
+            apply_kind(entry, kind).await;
+        }
     }
 }

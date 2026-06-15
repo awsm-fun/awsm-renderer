@@ -48,3 +48,8 @@ pub use consts::{
 };
 pub use record::{EvsmDispatchEntry, LightShadowRecord, LightShadowView, ShadowViewThrottle};
 pub use state::{Shadows, ShadowsDescriptors};
+
+/// Re-exported for the masked-shadow pipeline pool
+/// (`render_passes::shadow_masked`), which builds depth-only caster pipelines
+/// that share the plain caster's cull / depth-bias / vertex-layout state.
+pub(crate) use helpers::shadow_pipeline_cache_key;

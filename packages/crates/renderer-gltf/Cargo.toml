@@ -35,7 +35,10 @@ glam = { workspace = true }
 strum = { workspace = true }
 ordered-float = { workspace = true }
 indexmap = { workspace = true }
-bevy_mikktspace = { workspace = true }
+# Tangent generation is delegated to the shared awsm-tangents crate; the
+# byte-buffer reference impl (test-only byte-identity guard) still needs
+# bevy_mikktspace, so it moved to dev-dependencies.
+awsm-tangents = { workspace = true }
 serde = { workspace = true }
 # `serde_bytes` opts `Vec<u8>` fields into serde's `serialize_bytes`
 # path — serde_wasm_bindgen turns those into `Uint8Array`s in one
@@ -44,3 +47,10 @@ serde = { workspace = true }
 # crossing postMessage (Phase 4.3b A/B; see PERFORMANCE.md §5c).
 serde_bytes = "0.11"
 serde-wasm-bindgen = { workspace = true }
+
+[dev-dependencies]
+# Phase-2b byte-identity proptests: the mesh_pack delegation vs the retained
+# reference writers (visibility + transparency).
+proptest = { workspace = true }
+# Used only by the test-only reference tangent impl (byte-identity guard).
+bevy_mikktspace = { workspace = true }

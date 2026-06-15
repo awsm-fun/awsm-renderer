@@ -349,18 +349,32 @@ pub fn sync_canvas_size() {
                 let (width, height) = (cw as u32, ch as u32);
                 let renderer_handle = renderer_handle();
                 let camera_handle = camera_handle();
-                let renderer = renderer_handle.lock().await;
+                let mut renderer = renderer_handle.lock().await;
                 renderer.gpu.canvas().set_width(width);
                 renderer.gpu.canvas().set_height(height);
                 renderer.gpu.sync_canvas_buffer_with_css();
-                // The RAF loop renders every frame + pushes the camera, so we
-                // only set the aspect here and let the next frame draw — no
-                // manual render (which would race the loop's in-flight submit
-                // around the texture recreation).
-                camera_handle
-                    .lock()
-                    .unwrap()
-                    .set_aspect(width as f32 / height as f32);
+                // Set the real aspect, then draw one frame immediately (same as the
+                // ResizeObserver path). The RAF loop also renders every frame, but
+                // on first mount a render hook installed asynchronously after boot
+                // (e.g. the viewport grid, whose pipelines compile off-thread) could
+                // otherwise stay invisible until a manual resize triggers the
+                // observer's render. We hold the renderer lock across the
+                // reconfigure + render, and the RAF loop uses `try_lock` (skips while
+                // we hold it), so there's no in-flight-submit race against the
+                // texture recreation.
+                let camera_matrices = {
+                    let mut camera = camera_handle.lock().unwrap();
+                    camera.set_aspect(width as f32 / height as f32);
+                    camera.matrices()
+                };
+                if let Err(err) = renderer.update_camera(camera_matrices) {
+                    tracing::error!("camera update on canvas sync: {err:?}");
+                }
+                let hooks = render_hooks_handle();
+                let hooks = hooks.read().unwrap();
+                if let Err(err) = renderer.render(hooks.as_ref()) {
+                    tracing::error!("render on canvas sync: {err:?}");
+                }
                 IN_FLIGHT.with(|d| d.set(false));
                 return;
             }

@@ -1,45 +1,47 @@
-//! Compute pipeline for the material classify pass.
+//! Compute pipeline descriptors for the material classify pass.
 //!
-//! **Lazy-pool semantics:** the initial build compiles only the
-//! variant matching the live `AntiAliasing` config — one of the
-//! two `Option` fields below is populated, the other is `None`.
-//! [`crate::AwsmRenderer::set_anti_aliasing`] compiles the missing variant
-//! on demand. Once compiled, a variant stays cached even after the
-//! user toggles back — so MSAA-flipping back and forth pays the
-//! compile cost only on the first transition in each direction.
+//! The classify shader is keyed on the live bucket layout (the registry's
+//! `dispatch_hash`) + MSAA, so the compiled pipeline lives in
+//! [`MaterialClassifyRenderPass::pipeline_cache`](super::render_pass::MaterialClassifyRenderPass::pipeline_cache),
+//! installed by `ensure_scene_pipelines` for the active config. This module is a
+//! namespace for the descriptor builders that both the boot pool-warm
+//! ([`MaterialClassifyPipelines::warm_pool`]) and the
+//! [`crate::AwsmRenderer::set_anti_aliasing`] recompile feed into the scheduler.
 
 use crate::anti_alias::AntiAliasing;
 use crate::dynamic_materials::BucketEntry;
 use crate::error::Result;
 use crate::pipeline_layouts::PipelineLayoutCacheKey;
-use crate::pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey};
+use crate::pipelines::compute_pipeline::ComputePipelineCacheKey;
 use crate::render_passes::material_classify::{
     bind_group::MaterialClassifyBindGroups, shader::cache_key::ShaderCacheKeyMaterialClassify,
 };
 use crate::render_passes::RenderPassInitContext;
 use crate::shaders::ShaderCacheKey;
 
-pub struct MaterialClassifyPipelines {
-    pub multisampled_pipeline_key: Option<ComputePipelineKey>,
-    pub singlesampled_pipeline_key: Option<ComputePipelineKey>,
-}
+/// Namespace for the classify pipeline descriptor builders. Holds no state —
+/// the compiled pipeline is cached per-config in
+/// [`MaterialClassifyRenderPass::pipeline_cache`](super::render_pass::MaterialClassifyRenderPass::pipeline_cache).
+pub struct MaterialClassifyPipelines;
 
-/// Output of [`MaterialClassifyPipelines::build_descriptors`]. The
-/// `slot_msaa` field records which (Some(4) / None) MSAA each entry
-/// in `pipeline_cache_keys` belongs to, so the recompile path can
-/// merge them back into the right `Option` field via
-/// [`MaterialClassifyPipelines::merge_resolved`].
+/// Output of [`MaterialClassifyPipelines::build_descriptors`]. `slot_msaa`
+/// records which MSAA (Some(4) / None) each entry in `pipeline_cache_keys`
+/// belongs to, so the scheduler install path can key the cache by msaa.
 pub struct MaterialClassifyPrewarmDescriptors {
     pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
     pub slot_msaa: Vec<Option<u32>>,
 }
 
 impl MaterialClassifyPipelines {
-    pub async fn new(
+    /// Compile the active-config classify pipeline into the shared compute-pool
+    /// at boot, so the first `ensure_scene_pipelines` (which installs it into
+    /// `pipeline_cache` before the first frame) is a pool hit. The resolved key
+    /// isn't stored here — `pipeline_cache` is the single source of truth.
+    pub async fn warm_pool(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialClassifyBindGroups,
         bucket_entries: &[BucketEntry],
-    ) -> Result<Self> {
+    ) -> Result<()> {
         ctx.shaders
             .ensure_keys(
                 ctx.gpu,
@@ -47,8 +49,7 @@ impl MaterialClassifyPipelines {
             )
             .await?;
         let descs = Self::build_descriptors(ctx, bind_groups, bucket_entries).await?;
-        let pipeline_keys = ctx
-            .pipelines
+        ctx.pipelines
             .compute
             .ensure_keys(
                 ctx.gpu,
@@ -57,7 +58,7 @@ impl MaterialClassifyPipelines {
                 descs.pipeline_cache_keys.clone(),
             )
             .await?;
-        Ok(Self::from_resolved(descs.slot_msaa, pipeline_keys))
+        Ok(())
     }
 
     /// Shader cache keys for the live AA config only. Previously
@@ -102,8 +103,8 @@ impl MaterialClassifyPipelines {
         .await
     }
 
-    /// Live-config descriptor builder used by both the initial
-    /// `new()` path and the mid-session
+    /// Live-config descriptor builder used by both the boot pool-warm
+    /// ([`Self::warm_pool`]) and the mid-session
     /// [`crate::AwsmRenderer::set_anti_aliasing`] recompile. Takes the AA
     /// config explicitly so the recompile flow can target the
     /// *incoming* state without rewriting renderer fields first.
@@ -145,34 +146,5 @@ impl MaterialClassifyPipelines {
             )],
             slot_msaa: vec![active_msaa],
         })
-    }
-
-    pub fn from_resolved(
-        slot_msaa: Vec<Option<u32>>,
-        pipeline_keys: Vec<ComputePipelineKey>,
-    ) -> Self {
-        let mut s = Self {
-            multisampled_pipeline_key: None,
-            singlesampled_pipeline_key: None,
-        };
-        s.merge_resolved(slot_msaa, pipeline_keys);
-        s
-    }
-
-    /// Merge a fresh batch of resolved pipelines into `self` without
-    /// dropping already-compiled variants. Used by the recompile path
-    /// so toggling MSAA back and forth doesn't re-trigger compiles
-    /// for variants we've already built.
-    pub fn merge_resolved(
-        &mut self,
-        slot_msaa: Vec<Option<u32>>,
-        pipeline_keys: Vec<ComputePipelineKey>,
-    ) {
-        for (msaa, key) in slot_msaa.into_iter().zip(pipeline_keys) {
-            match msaa {
-                Some(4) => self.multisampled_pipeline_key = Some(key),
-                _ => self.singlesampled_pipeline_key = Some(key),
-            }
-        }
     }
 }

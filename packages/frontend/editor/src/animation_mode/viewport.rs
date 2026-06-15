@@ -36,6 +36,12 @@ pub fn render() -> Dom {
         // Overlay chrome.
         .child(transport_overlay())
         .child(clip_chip())
+        // The SAME transform-tool palette as Scene mode (shared `gizmo_mode()`):
+        // posing a bone at the playhead needs Move/Rotate right here — switching
+        // workspaces to reach the rotate tool was the workflow break.
+        .child(crate::scene_mode::viewport::tool_palette(
+            &crate::engine::gizmo::gizmo_mode(),
+        ))
     })
 }
 

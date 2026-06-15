@@ -100,6 +100,35 @@ pub fn set_compile_progress(materials: usize, subcompiles: u32) {
     });
 }
 
+/// Reserved id for the live scene-load phase entry (driven by a loader's
+/// `LoadPhase` callback, not an RAII guard). Distinct from `COMPILE_ID` and the
+/// monotonic `begin_activity` ids so it upserts/clears in place.
+const LOAD_PHASE_ID: u64 = u64::MAX - 1;
+
+/// Upsert (or clear, with `None`) the scene-load phase pill — "Building
+/// materials…" / "Uploading meshes…" etc. Driven by `populate_awsm_scene`'s
+/// `LoadPhase` callback (via `LoadPhase::label()`). Because `ACTIVITIES` is a
+/// reactive `Mutable` and the loader's awaits yield to the event loop, the pill
+/// updates live even while the loader holds the renderer lock.
+pub fn set_load_phase(label: Option<String>) {
+    ACTIVITIES.with(|a| {
+        let mut list = a.lock_mut();
+        let pos = list.iter().position(|(i, _)| *i == LOAD_PHASE_ID);
+        match (label, pos) {
+            (Some(label), Some(p)) => {
+                if list[p].1 != label {
+                    list[p].1 = label;
+                }
+            }
+            (Some(label), None) => list.insert(0, (LOAD_PHASE_ID, label)),
+            (None, Some(p)) => {
+                list.remove(p);
+            }
+            (None, None) => {}
+        }
+    });
+}
+
 impl Drop for Activity {
     fn drop(&mut self) {
         let id = self.id;

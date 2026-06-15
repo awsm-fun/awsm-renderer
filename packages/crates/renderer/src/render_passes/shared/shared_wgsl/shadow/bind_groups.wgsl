@@ -340,7 +340,10 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         // the canonical "directional light + character on a plane"
         // test). 16 fixed = visually clean; the tap-count knob exists
         // for the PCSS branch's wide-kernel pass.
-        let SOFT_WORLD_RADIUS: f32 = 0.15;
+        // World-space disc radius. Base 0.15 m at `pcss_penumbra_scale == 1`;
+        // the per-light knob (bias_params.w) is the user's softness control,
+        // shared with PCSS so one slider governs both modes for point lights too.
+        let SOFT_WORLD_RADIUS: f32 = 0.15 * max(desc.bias_params.w, 0.0);
         var sum = 0.0;
         for (var i = 0u; i < 16u; i = i + 1u) {
             let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * SOFT_WORLD_RADIUS;
@@ -641,8 +644,12 @@ fn sample_shadow_cascade_array(
         // (e.g. a floor plane under a directional light). The
         // PCSS branch below still tapers; the Soft path is fixed.
         let world_per_texel = max(desc.cascade_info.y, 1e-4);
-        let soft_world_radius = 0.25;
-        let radius_texels = clamp(soft_world_radius / world_per_texel, 3.0, 20.0);
+        // World-unit penumbra → texel kernel below; scale-invariant. Base 0.12 m
+        // at `pcss_penumbra_scale == 1`; the per-light knob (bias_params.w) is
+        // the user's softness control, shared with PCSS. Fixed-width (no blocker
+        // search), so keep the base modest — it does not narrow toward contact.
+        let soft_world_radius = 0.12 * max(desc.bias_params.w, 0.0);
+        let radius_texels = clamp(soft_world_radius / world_per_texel, 2.0, 10.0);
         let angle = pcss_disk_angle(
             biased_pos.xz * 137.0 + vec2<f32>(biased_pos.y * 31.0, biased_pos.y * 17.0),
         );
@@ -713,9 +720,15 @@ fn sample_shadow_cascade_array(
     let light_size_texels = pcss_light_world_radius / world_per_texel_pcss;
     let penumbra_texels = clamp(
         (ref_depth - avg_blocker) * light_size_texels / max(avg_blocker, 1e-4),
-        4.0,
-        40.0,
+        2.0,
+        24.0,
     );
+    // Wide PCSS kernels sample texels far from the fragment; on a sloped /
+    // curved receiver the depth stored there differs by the surface slope and
+    // self-shadows into acne. Scale the comparison bias with the kernel width so
+    // wider penumbras get proportional slack — the softness hides the extra
+    // peter-panning a near-contact (narrow-kernel) fragment would otherwise show.
+    let pcss_ref = ref_depth - desc.bias_params.x * penumbra_texels * 0.5;
     var pcf_sum = 0.0;
     for (var i = 0u; i < 16u; i = i + 1u) {
         let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_texels;
@@ -724,7 +737,7 @@ fn sample_shadow_cascade_array(
             shadow_atlas_sampler,
             clamp(atlas_uv + off * inv_atlas, tile_min, tile_max),
             layer,
-            ref_depth,
+            pcss_ref,
         );
     }
     return pcf_sum / 16.0;
@@ -818,18 +831,21 @@ fn sample_shadow_descriptor(
         // larger span produces soft ones, and the boundary between
         // is visible as a step in penumbra width.
         let world_per_texel = max(desc.cascade_info.y, 1e-4);
-        // 25 cm penumbra at default light angles. Earlier passes used
-        // 6 cm which produced shadows that were technically PCF but
-        // visually indistinguishable from `Hard` — bumped to a value
-        // that gives a clearly readable soft edge while still
-        // resolving fine detail in the near cascade.
-        let soft_world_radius = 0.25;
+        // Penumbra half-width in WORLD units (converted to a texel kernel by
+        // the divide below), so the perceived soft edge is identical regardless
+        // of scene scale or which cascade resolves it — nothing here assumes a
+        // particular scene size. The 0.12 m base is the default at
+        // `pcss_penumbra_scale == 1`; that per-light knob (bias_params.w) is the
+        // user's softness control, shared with PCSS so one slider governs both
+        // modes. Unlike PCSS this kernel is fixed-width (no blocker search), so
+        // it does not narrow toward contact — keep the base modest.
+        let soft_world_radius = 0.12 * max(desc.bias_params.w, 0.0);
         // Clamp at 3 texels min (a too-tight kernel collapses to a
         // single 2×2 bilinear compare and the cascade-boundary blend
         // shows a "soft → razor" step). 20 texels max so the near
         // cascade doesn't waste kernel area where world_per_texel is
         // sub-millimetre.
-        let radius_texels = clamp(soft_world_radius / world_per_texel, 3.0, 20.0);
+        let radius_texels = clamp(soft_world_radius / world_per_texel, 2.0, 10.0);
 
         // Per-fragment rotation hash. MUST be keyed on world position
         // (not `atlas_uv`) — atlas_uv shifts by exactly one texel
@@ -942,9 +958,17 @@ fn sample_shadow_descriptor(
     let light_size_texels = pcss_light_world_radius / world_per_texel_pcss;
     let penumbra_texels = clamp(
         (ref_depth - avg_blocker) * light_size_texels / max(avg_blocker, 1e-4),
-        4.0,
-        40.0,
+        2.0,
+        24.0,
     );
+    // Wide PCSS kernels sample texels far from the fragment; on a sloped /
+    // curved receiver the depth stored there differs by the surface slope and
+    // self-shadows into acne. Scale the comparison bias with the kernel width so
+    // wider penumbras get proportional slack — the softness hides the extra
+    // peter-panning a near-contact (narrow-kernel) fragment would otherwise show.
+    // The slack is the user's own `depth_bias` (bias_params.x) times the kernel
+    // radius, so it inherits the per-light tuning instead of a fresh constant.
+    let pcss_ref = ref_depth - desc.bias_params.x * penumbra_texels * 0.5;
     var pcf_sum = 0.0;
     for (var i = 0u; i < 16u; i = i + 1u) {
         let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_texels;
@@ -952,7 +976,7 @@ fn sample_shadow_descriptor(
             shadow_atlas,
             shadow_atlas_sampler,
             clamp(atlas_uv + off * inv_atlas, tile_min, tile_max),
-            ref_depth,
+            pcss_ref,
         );
     }
     return pcf_sum / 16.0;

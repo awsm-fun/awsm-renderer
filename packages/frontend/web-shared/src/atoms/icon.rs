@@ -64,6 +64,13 @@ fn icon_children(name: &str) -> Vec<Dom> {
         "camera" => vec![sp("M3.5 8.5h4l1.5-2h6l1.5 2h4v10h-17z"), sc("12", "13", "3.2")],
         "curve" => vec![sp("M3 19c5 0 4-14 9-14s4 14 9 14")],
         "empty" => vec![sc("12", "12", "2"), sp("M12 4v4M12 16v4M4 12h4M16 12h4")],
+        // Classic bone: two knuckle circles joined by a diagonal shaft. Used by
+        // the outliner for skin-joint (mirror bone) rows.
+        "bone" => vec![
+            sc("6.7", "17.3", "2.4"),
+            sc("17.3", "6.7", "2.4"),
+            sp("M8.4 15.6L15.6 8.4"),
+        ],
         "collision" => vec![sp("M12 3l7 4v6c0 4-3 6.5-7 8-4-1.5-7-4-7-8V7z")],
         "material" => vec![sc("12", "12", "8.5"), fp_op("M12 3.5a8.5 8.5 0 000 17", "0.5")],
         "eye" => vec![sp("M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"), sc("12", "12", "2.8")],

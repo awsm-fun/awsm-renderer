@@ -135,6 +135,28 @@ impl GltfLoader {
         })
     }
 
+    /// Loads a glTF asset from in-memory GLB bytes (no network fetch).
+    ///
+    /// For self-contained GLB only: external-URI buffers or images would need a
+    /// base path to resolve against, and none is available here. The runtime
+    /// bundle's per-mesh glbs are geometry-only single-BIN files, so this is the
+    /// path `awsm-scene-loader` uses to feed them through `populate_gltf`.
+    pub async fn from_glb_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        let Gltf {
+            document: doc,
+            blob,
+        } = parse_gltf_lenient(bytes)?;
+
+        let buffers = import_buffer_data(&doc, "", blob).await?;
+        let images = import_image_data(&doc, "", &buffers).await?;
+
+        Ok(Self {
+            doc,
+            buffers,
+            images,
+        })
+    }
+
     /// Clones the loaded glTF data and buffers.
     pub fn heavy_clone(&self) -> Self {
         Self {

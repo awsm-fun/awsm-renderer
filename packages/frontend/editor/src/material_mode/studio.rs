@@ -53,17 +53,17 @@ pub fn render() -> Dom {
 /// (PBR / Unlit / Toon) shading type. Built-ins carry shared variant settings;
 /// their uniform values are set per-mesh.
 fn new_material_items(close: Close) -> Vec<Dom> {
-    use awsm_scene_schema::MaterialShading;
+    use awsm_editor_protocol::MaterialShading;
     let mk = |label: &str, shading: Option<MaterialShading>, close: Close| {
         MenuItem::new(label)
             .on_click(move || {
                 match shading {
                     Some(s) => dispatch(EditorCommand::AddBuiltinMaterial {
-                        id: awsm_scene_schema::AssetId::new(),
+                        id: awsm_editor_protocol::AssetId::new(),
                         shading: s,
                     }),
                     None => dispatch(EditorCommand::AddCustomMaterial {
-                        id: awsm_scene_schema::AssetId::new(),
+                        id: awsm_editor_protocol::AssetId::new(),
                     }),
                 }
                 (close.borrow_mut())();
@@ -81,6 +81,19 @@ fn new_material_items(close: Close) -> Vec<Dom> {
                 specular_steps: 2,
                 shininess: 32.0,
                 rim_power: 2.0,
+            }),
+            close.clone(),
+        ),
+        mk(
+            "FlipBook",
+            Some(MaterialShading::FlipBook {
+                cols: 4,
+                rows: 4,
+                frame_count: 16,
+                fps: 12.0,
+                time_offset: 0.0,
+                mode: awsm_editor_protocol::FlipBookPlayMode::Loop,
+                flip_y: false,
             }),
             close.clone(),
         ),
@@ -175,14 +188,16 @@ fn status_badge(wgsl: &str, registered: bool) -> Dom {
 
 /// Mutate the inner `MaterialDef` of a built-in library material + flag dirty.
 /// The `spawn_builtin_resync` observer re-materializes assigned meshes.
-fn edit_builtin(mat: &Arc<CustomMaterial>, f: impl FnOnce(&mut awsm_scene_schema::MaterialDef)) {
+fn edit_builtin(mat: &Arc<CustomMaterial>, f: impl FnOnce(&mut awsm_editor_protocol::MaterialDef)) {
+    // All-via-controller: the edit dispatches `UpdateBuiltinMaterial` (undoable,
+    // cross-tab, MCP-visible) instead of mutating the reactive def directly —
+    // the handler owns the thumbnail refresh + assigned-mesh resync.
     let mut def = mat.builtin.get_cloned().unwrap_or_default();
     f(&mut def);
-    mat.builtin.set(Some(def));
-    // The variant changed → refresh its card thumbnail.
-    crate::engine::thumbnail::invalidate(mat.id);
-    crate::engine::thumbnail::request(mat.clone());
-    controller().dirty.set_neq(true);
+    dispatch(EditorCommand::UpdateBuiltinMaterial {
+        id: mat.id,
+        def: Box::new(def),
+    });
 }
 
 /// A toggle row bound to a built-in material's variant `MaterialDef`.
@@ -190,7 +205,7 @@ fn builtin_toggle_row(
     mat: &Arc<CustomMaterial>,
     label: &str,
     value: bool,
-    set: impl Fn(&mut awsm_scene_schema::MaterialDef, bool) + 'static,
+    set: impl Fn(&mut awsm_editor_protocol::MaterialDef, bool) + 'static,
 ) -> Dom {
     use futures_signals::signal::SignalExt;
     let state = Mutable::new(value);
@@ -229,7 +244,7 @@ fn builtin_num_row(
     min: f64,
     max: f64,
     step: f64,
-    set: impl Fn(&mut awsm_scene_schema::MaterialDef, f64) + 'static,
+    set: impl Fn(&mut awsm_editor_protocol::MaterialDef, f64) + 'static,
 ) -> Dom {
     let mat = mat.clone();
     row(
@@ -250,10 +265,11 @@ fn builtin_num_row(
 fn builtin_texture_row(
     mat: &Arc<CustomMaterial>,
     label: &str,
-    current: Option<awsm_scene_schema::TextureRef>,
-    set: impl Fn(&mut awsm_scene_schema::MaterialDef, Option<awsm_scene_schema::TextureRef>) + 'static,
+    current: Option<awsm_editor_protocol::TextureRef>,
+    set: impl Fn(&mut awsm_editor_protocol::MaterialDef, Option<awsm_editor_protocol::TextureRef>)
+        + 'static,
 ) -> Dom {
-    use awsm_scene_schema::TextureRef;
+    use awsm_editor_protocol::TextureRef;
     use futures_signals::signal::SignalExt;
     let textures = crate::scene_mode::inspector::collect_texture_assets();
     let mut options: Vec<(String, String)> = vec![("__none__".into(), "— none —".into())];
@@ -288,12 +304,18 @@ fn builtin_texture_row(
 /// The material's texture slots (variant: enabling one recompiles assigned meshes).
 /// Base-color + emissive maps apply to every shading model; metallic/roughness,
 /// normal and occlusion maps are PBR-only.
-fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::MaterialDef) -> Dom {
-    use awsm_scene_schema::MaterialShading;
+fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_editor_protocol::MaterialDef) -> Dom {
+    use awsm_editor_protocol::MaterialShading;
+    let is_flipbook = matches!(def.shading, MaterialShading::FlipBook { .. });
     let mut sec = Section::new("Textures");
+    // For FlipBook the base-color slot IS the sprite-sheet atlas — label it so.
     sec = sec.child(builtin_texture_row(
         mat,
-        "Base color map",
+        if is_flipbook {
+            "Atlas (sprite sheet)"
+        } else {
+            "Base color map"
+        },
         def.base_color_texture,
         |d, t| {
             d.base_color_texture = t;
@@ -325,21 +347,26 @@ fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::Material
             },
         ));
     }
-    sec = sec.child(builtin_texture_row(
-        mat,
-        "Emissive map",
-        def.emissive_texture,
-        |d, t| {
-            d.emissive_texture = t;
-        },
-    ));
+    // Emissive map: PBR / Unlit / Toon sample an emissive texture; FlipBook
+    // does NOT (its only texture slot is the atlas, bound from base-color), so
+    // an emissive map there would be a dead control the bridge silently drops.
+    if !is_flipbook {
+        sec = sec.child(builtin_texture_row(
+            mat,
+            "Emissive map",
+            def.emissive_texture,
+            |d, t| {
+                d.emissive_texture = t;
+            },
+        ));
+    }
     sec.render()
 }
 
 /// The Toon knobs (uniforms structurally carried on the Toon shading variant, so
 /// they live on the material). Only shown for Toon materials.
-fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::MaterialDef) -> Dom {
-    use awsm_scene_schema::MaterialShading;
+fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_editor_protocol::MaterialDef) -> Dom {
+    use awsm_editor_protocol::MaterialShading;
     let MaterialShading::Toon {
         diffuse_bands,
         rim_strength,
@@ -424,6 +451,141 @@ fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::MaterialDef)
         .render()
 }
 
+/// The FlipBook knobs (atlas grid + playback; uniforms on the FlipBook shading
+/// variant — one canonical FLIPBOOK shader, no recompile on edit). Only shown
+/// for FlipBook materials. The atlas image itself is the "Base color map" in
+/// the Textures section.
+fn flipbook_section(mat: &Arc<CustomMaterial>, def: &awsm_editor_protocol::MaterialDef) -> Dom {
+    use awsm_editor_protocol::{FlipBookPlayMode, MaterialShading};
+    let MaterialShading::FlipBook {
+        cols,
+        rows,
+        frame_count,
+        fps,
+        time_offset,
+        mode,
+        flip_y,
+    } = def.shading
+    else {
+        return html!("div", {});
+    };
+    let knob = |label: &str,
+                value: f64,
+                min: f64,
+                max: f64,
+                step: f64,
+                mutate: fn(&mut MaterialShading, f64)| {
+        builtin_num_row(mat, label, value, min, max, step, move |d, v| {
+            mutate(&mut d.shading, v)
+        })
+    };
+    // Playback-mode select (mirrors the alpha-mode select wiring above).
+    let mode_sel = Mutable::new(
+        match mode {
+            FlipBookPlayMode::Loop => "loop",
+            FlipBookPlayMode::PingPong => "ping_pong",
+            FlipBookPlayMode::Clamp => "clamp",
+            FlipBookPlayMode::Once => "once",
+        }
+        .to_string(),
+    );
+    spawn_local({
+        use futures_signals::signal::SignalExt;
+        let mode_sel = mode_sel.clone();
+        let mat = mat.clone();
+        async move {
+            let mut first = true;
+            mode_sel
+                .signal_cloned()
+                .for_each(move |v| {
+                    let fire = !first;
+                    first = false;
+                    let mat = mat.clone();
+                    async move {
+                        if fire {
+                            edit_builtin(&mat, |d| {
+                                if let MaterialShading::FlipBook { mode, .. } = &mut d.shading {
+                                    *mode = match v.as_str() {
+                                        "ping_pong" => FlipBookPlayMode::PingPong,
+                                        "clamp" => FlipBookPlayMode::Clamp,
+                                        "once" => FlipBookPlayMode::Once,
+                                        _ => FlipBookPlayMode::Loop,
+                                    };
+                                }
+                            });
+                        }
+                    }
+                })
+                .await;
+        }
+    });
+    Section::new("FlipBook")
+        .child(knob("Columns", cols as f64, 1.0, 64.0, 1.0, |s, v| {
+            if let MaterialShading::FlipBook { cols, .. } = s {
+                *cols = (v.round() as u32).max(1);
+            }
+        }))
+        .child(knob("Rows", rows as f64, 1.0, 64.0, 1.0, |s, v| {
+            if let MaterialShading::FlipBook { rows, .. } = s {
+                *rows = (v.round() as u32).max(1);
+            }
+        }))
+        .child(knob(
+            "Frame count",
+            frame_count as f64,
+            1.0,
+            4096.0,
+            1.0,
+            |s, v| {
+                if let MaterialShading::FlipBook { frame_count, .. } = s {
+                    *frame_count = (v.round() as u32).max(1);
+                }
+            },
+        ))
+        .child(knob("FPS", fps as f64, 0.0, 120.0, 0.5, |s, v| {
+            if let MaterialShading::FlipBook { fps, .. } = s {
+                *fps = v as f32;
+            }
+        }))
+        .child(knob(
+            "Time offset",
+            time_offset as f64,
+            -60.0,
+            60.0,
+            0.05,
+            |s, v| {
+                if let MaterialShading::FlipBook { time_offset, .. } = s {
+                    *time_offset = v as f32;
+                }
+            },
+        ))
+        .child(row(
+            "Mode",
+            select(
+                mode_sel,
+                vec![
+                    ("loop".into(), "Loop".into()),
+                    ("ping_pong".into(), "Ping-pong".into()),
+                    ("clamp".into(), "Clamp".into()),
+                    ("once".into(), "Once (vanish)".into()),
+                ],
+            ),
+        ))
+        .child(builtin_toggle_row(
+            mat,
+            "Flip rows (V-up atlas)",
+            flip_y,
+            |d, on| {
+                if let awsm_editor_protocol::MaterialShading::FlipBook { flip_y, .. } =
+                    &mut d.shading
+                {
+                    *flip_y = on;
+                }
+            },
+        ))
+        .render()
+}
+
 /// The KHR-extensions panel for a built-in **PBR** material. Each extension has
 /// an enable toggle (flipping it is a *variant* change → assigned meshes recompile
 /// to a distinct shader) and, when enabled, its scalar factor knob(s). Reactive on
@@ -431,7 +593,7 @@ fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_scene_schema::MaterialDef)
 /// Color factors default to white and are edited once the texture/color picker
 /// pass lands; the primary scalar of every extension is authorable here now.
 fn extensions_section(mat: &Arc<CustomMaterial>) -> Dom {
-    use awsm_scene_schema::MaterialShading;
+    use awsm_editor_protocol::MaterialShading;
     use futures_signals::signal::SignalExt;
     let mat = mat.clone();
     html!("div", {
@@ -523,12 +685,13 @@ fn extensions_section(mat: &Arc<CustomMaterial>) -> Dom {
 /// (shading type + alpha / double-sided / vertex-colors). Uniform values + texture
 /// bindings are set per-mesh, so they don't appear here.
 fn builtin_definition(mat: &Arc<CustomMaterial>) -> Dom {
-    use awsm_scene_schema::{MaterialAlphaMode, MaterialShading};
+    use awsm_editor_protocol::{MaterialAlphaMode, MaterialShading};
     let def = mat.builtin.get_cloned().unwrap_or_default();
     let shading_label = match def.shading {
         MaterialShading::Pbr => "PBR (physically based)",
         MaterialShading::Unlit => "Unlit (emissive only)",
         MaterialShading::Toon { .. } => "Toon (cel-shaded)",
+        MaterialShading::FlipBook { .. } => "FlipBook (sprite-sheet animation)",
     };
     // Alpha mode select.
     let alpha = Mutable::new(
@@ -587,6 +750,7 @@ fn builtin_definition(mat: &Arc<CustomMaterial>) -> Dom {
                 .render())
             .child(textures_section(mat, &def))
             .child(toon_section(mat, &def))
+            .child(flipbook_section(mat, &def))
             .child(extensions_section(mat))
             .child(html!("div", {
                 .style("margin", "11px 12px").style("padding", "8px 10px")
@@ -1154,6 +1318,14 @@ fn code_pane(mat: &Arc<CustomMaterial>, help: Mutable<bool>) -> Dom {
         }))
         // Editor (line gutter + textarea).
         .child(code_editor(mat))
+        // Second, alpha-only WGSL window — only for MASK materials. Returns an
+        // `f32` alpha; compiled into the masked visibility raster so the cutout
+        // is alpha-tested (holes see-through + hole-shaped shadows +
+        // transmission-through-holes), cheaply (no color/lighting).
+        .child_signal(mat.alpha.signal().map(clone!(mat => move |a| {
+            (a == crate::controller::custom_material::AlphaMode::Mask)
+                .then(|| alpha_code_editor(&mat))
+        })))
         // Problems strip.
         .child(html!("div", {
             .style("flex", "0 0 auto").style("border-top", "1px solid var(--line-soft)").style("background", "var(--bg-2)").style("max-height", "120px").style("overflow-y", "auto")
@@ -1181,6 +1353,42 @@ fn code_editor(mat: &Arc<CustomMaterial>) -> Dom {
                 // cross-tab broadcast, MCP-reachable) rather than writing the
                 // reactive model directly.
                 .event(clone!(ta, mat => move |_: events::Input| dispatch(EditorCommand::SetCustomMaterialWgsl { id: mat.id, wgsl: ta.value() })))
+            })
+        }))
+    })
+}
+
+/// The second, alpha-only WGSL editor (MASK materials only). Dispatches
+/// `SetCustomMaterialAlphaWgsl`; the body must `return` an `f32` alpha in
+/// `[0,1]` — the masked raster discards below the material's cutoff.
+fn alpha_code_editor(mat: &Arc<CustomMaterial>) -> Dom {
+    let mat = mat.clone();
+    let initial = mat.alpha_wgsl.get_cloned();
+    html!("div", {
+        .style("flex", "0 0 auto").style("display", "flex").style("flex-direction", "column")
+        .style("border-top", "1px solid var(--line-soft)").style("height", "150px")
+        .child(html!("div", {
+            .style("flex", "0 0 auto").style("padding", "5px 12px").style("background", "var(--bg-2)")
+            .style("display", "flex").style("align-items", "center").style("gap", "8px")
+            .child(html!("span", {
+                .class("kicker").style("font-size", "10px").style("color", "var(--text-3)")
+                .style("text-transform", "uppercase").style("letter-spacing", ".06em")
+                .text("Alpha (cutout) WGSL → f32")
+            }))
+            .child(html!("span", {
+                .style("font-size", "11px").style("color", "var(--text-3)")
+                .text("e.g. return select(1.0, 0.0, fract(input.uv.x * 8.0) < 0.5);")
+            }))
+        }))
+        .child(html!("textarea" => web_sys::HtmlTextAreaElement, {
+            .class("mono")
+            .attr("spellcheck", "false").attr("wrap", "off")
+            .prop("value", &initial)
+            .style("flex", "1").style("min-width", "0").style("margin", "0").style("padding", "12px 14px")
+            .style("background", "var(--bg-3)").style("border-style", "none").style("outline-style", "none").style("resize", "none")
+            .style("color", "var(--text-0)").style("font-size", "12.5px").style("line-height", "19px").style("white-space", "pre").style("tab-size", "4")
+            .with_node!(ta => {
+                .event(clone!(ta, mat => move |_: events::Input| dispatch(EditorCommand::SetCustomMaterialAlphaWgsl { id: mat.id, wgsl: ta.value() })))
             })
         }))
     })
@@ -1235,16 +1443,17 @@ fn assign_to_selection(material: AssetId) {
             Toast::warning("Select a mesh in the Scene to assign this material to.");
             return;
         };
-        let is_primitive = crate::engine::scene::mutate::find_by_id(&ctrl.scene, node)
+        let is_mesh = crate::engine::scene::mutate::find_by_id(&ctrl.scene, node)
             .map(|n| {
                 matches!(
                     n.kind.get_cloned(),
-                    crate::engine::scene::NodeKind::Primitive { .. }
+                    crate::engine::scene::NodeKind::Mesh { .. }
+                        | crate::engine::scene::NodeKind::SkinnedMesh { .. }
                 )
             })
             .unwrap_or(false);
-        if !is_primitive {
-            Toast::warning("Select a mesh primitive to assign this material.");
+        if !is_mesh {
+            Toast::warning("Select a mesh to assign this material.");
             return;
         }
         let registered =

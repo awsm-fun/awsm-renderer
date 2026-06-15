@@ -7,10 +7,10 @@ use awsm_renderer::meshes::buffer_info::{
     MeshBufferVertexAttributeInfo, MeshBufferVisibilityVertexAttributeInfo,
 };
 
-use crate::{
-    buffers::mesh::{get_position_from_buffer, get_vec3_from_buffer, get_vec4_from_buffer},
-    error::AwsmGltfError,
-};
+// The buffer-reader helpers are only used by the test-only reference writer.
+#[cfg(test)]
+use crate::buffers::mesh::{get_position_from_buffer, get_vec3_from_buffer, get_vec4_from_buffer};
+use crate::error::AwsmGltfError;
 
 /// Creates EXPLODED visibility vertices for deferred/visibility buffer rendering.
 ///
@@ -34,6 +34,142 @@ use crate::{
 /// - Smooth edges: GLTF shared vertices with averaged normals → same normal copied to all 3 corners → smooth shading preserved
 /// - Hard edges: GLTF duplicated vertices with different normals → respective normals copied → hard edges preserved
 pub(super) fn create_visibility_vertices(
+    attribute_data: &BTreeMap<MeshBufferVertexAttributeInfo, Cow<'_, [u8]>>,
+    triangle_indices: &[[usize; 3]],
+    front_face: FrontFace,
+    visibility_vertex_bytes: &mut Vec<u8>,
+) -> Result<()> {
+    let (positions, normals, tangents) = resolve_attribute_buffers(attribute_data)?;
+
+    // Decode the LE byte streams into typed slices (bit-preserving:
+    // `from_le_bytes` → `to_le_bytes` round-trips every f32 bit pattern,
+    // including NaNs) and delegate to the renderer's CANONICAL packer —
+    // the Phase-2b convergence: one byte-layout definition for both upload
+    // front-ends. Byte-identity with the previous hand-rolled writer is
+    // pinned by the proptest below against `reference_visibility_vertices`.
+    let positions_t = decode_vec3s(positions);
+    let normals_t = decode_vec3s(normals);
+    let tangents_t = tangents.map(decode_vec4s);
+
+    // Bounds pre-check (the packer indexes unchecked; the old writer returned
+    // an error on an out-of-range vertex — keep that contract).
+    let limit = positions_t
+        .len()
+        .min(normals_t.len())
+        .min(tangents_t.as_ref().map(|t| t.len()).unwrap_or(usize::MAX));
+    let mut flat: Vec<u32> = Vec::with_capacity(triangle_indices.len() * 3);
+    for tri in triangle_indices {
+        for &v in tri {
+            if v >= limit {
+                return Err(AwsmGltfError::AttributeData(format!(
+                    "vertex index {v} out of range (attribute count {limit})"
+                )));
+            }
+            flat.push(v as u32);
+        }
+    }
+
+    visibility_vertex_bytes.extend_from_slice(&awsm_renderer::mesh_pack::pack_visibility_bytes(
+        &positions_t,
+        &normals_t,
+        tangents_t.as_deref(),
+        &flat,
+        front_face,
+    ));
+    Ok(())
+}
+
+/// `(positions, normals, tangents)` byte slices for a primitive.
+pub(super) type AttributeBuffers<'a> = (&'a [u8], &'a [u8], Option<&'a [u8]>);
+
+/// Positions / normals / optional tangents byte slices out of the attribute
+/// map, with the format validations the writers rely on.
+pub(super) fn resolve_attribute_buffers<'a>(
+    attribute_data: &'a BTreeMap<MeshBufferVertexAttributeInfo, Cow<'_, [u8]>>,
+) -> Result<AttributeBuffers<'a>> {
+    let positions = attribute_data
+        .iter()
+        .find_map(|(attr_info, data)| match attr_info {
+            MeshBufferVertexAttributeInfo::Visibility(
+                MeshBufferVisibilityVertexAttributeInfo::Positions { .. },
+            ) => Some(&data[..]),
+            _ => None,
+        })
+        .ok_or_else(|| AwsmGltfError::Positions("missing positions".to_string()))?;
+    let normals = attribute_data
+        .iter()
+        .find_map(|(attr_info, data)| match attr_info {
+            MeshBufferVertexAttributeInfo::Visibility(
+                MeshBufferVisibilityVertexAttributeInfo::Normals { .. },
+            ) => Some(&data[..]),
+            _ => None,
+        })
+        .ok_or_else(|| AwsmGltfError::AttributeData("missing normals".to_string()))?;
+    let tangents = attribute_data
+        .iter()
+        .find_map(|(attr_info, data)| match attr_info {
+            MeshBufferVertexAttributeInfo::Visibility(
+                MeshBufferVisibilityVertexAttributeInfo::Tangents { .. },
+            ) => Some(&data[..]),
+            _ => None,
+        });
+    if positions.len() % 12 != 0 {
+        return Err(AwsmGltfError::Positions(format!(
+            "Position buffer length ({}) is not a multiple of 12 (3 * f32).",
+            positions.len()
+        )));
+    }
+    if normals.len() % 12 != 0 {
+        return Err(AwsmGltfError::AttributeData(format!(
+            "Normal buffer length ({}) is not a multiple of 12 (3 * f32).",
+            normals.len()
+        )));
+    }
+    if let Some(tangents) = tangents {
+        if tangents.len() % 16 != 0 {
+            return Err(AwsmGltfError::AttributeData(format!(
+                "Tangent buffer length ({}) is not a multiple of 16 (4 * f32).",
+                tangents.len()
+            )));
+        }
+    }
+    Ok((positions, normals, tangents))
+}
+
+/// LE byte stream → `[f32; 3]`s (bit-preserving).
+pub(super) fn decode_vec3s(bytes: &[u8]) -> Vec<[f32; 3]> {
+    bytes
+        .chunks_exact(12)
+        .map(|c| {
+            [
+                f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
+            ]
+        })
+        .collect()
+}
+
+/// LE byte stream → `[f32; 4]`s (bit-preserving).
+pub(super) fn decode_vec4s(bytes: &[u8]) -> Vec<[f32; 4]> {
+    bytes
+        .chunks_exact(16)
+        .map(|c| {
+            [
+                f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
+                f32::from_le_bytes([c[12], c[13], c[14], c[15]]),
+            ]
+        })
+        .collect()
+}
+
+/// The pre-Phase-2b hand-rolled writer, kept as the byte-identity REFERENCE
+/// the proptest compares the mesh_pack delegation against. Do not call from
+/// live code.
+#[cfg(test)]
+pub(super) fn reference_visibility_vertices(
     attribute_data: &BTreeMap<MeshBufferVertexAttributeInfo, Cow<'_, [u8]>>,
     triangle_indices: &[[usize; 3]],
     front_face: FrontFace,
@@ -163,4 +299,130 @@ pub(super) fn create_visibility_vertices(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use std::borrow::Cow;
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// Build the attribute map the live entry points consume, from raw typed
+    /// vertices (encoded LE — exactly what the gltf accessor lowering yields).
+    fn attribute_map(
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        tangents: Option<&[[f32; 4]]>,
+    ) -> BTreeMap<MeshBufferVertexAttributeInfo, Cow<'static, [u8]>> {
+        let mut map: BTreeMap<MeshBufferVertexAttributeInfo, Cow<'static, [u8]>> = BTreeMap::new();
+        let enc3 = |vs: &[[f32; 3]]| -> Vec<u8> {
+            vs.iter()
+                .flat_map(|v| v.iter().flat_map(|f| f.to_le_bytes()))
+                .collect()
+        };
+        map.insert(
+            MeshBufferVertexAttributeInfo::Visibility(
+                MeshBufferVisibilityVertexAttributeInfo::Positions {
+                    data_size: 4,
+                    component_len: 3,
+                },
+            ),
+            Cow::Owned(enc3(positions)),
+        );
+        map.insert(
+            MeshBufferVertexAttributeInfo::Visibility(
+                MeshBufferVisibilityVertexAttributeInfo::Normals {
+                    data_size: 4,
+                    component_len: 3,
+                },
+            ),
+            Cow::Owned(enc3(normals)),
+        );
+        if let Some(tangents) = tangents {
+            map.insert(
+                MeshBufferVertexAttributeInfo::Visibility(
+                    MeshBufferVisibilityVertexAttributeInfo::Tangents {
+                        data_size: 4,
+                        component_len: 4,
+                    },
+                ),
+                Cow::Owned(
+                    tangents
+                        .iter()
+                        .flat_map(|v| v.iter().flat_map(|f| f.to_le_bytes()))
+                        .collect::<Vec<u8>>(),
+                ),
+            );
+        }
+        map
+    }
+
+    /// Arbitrary f32 BIT PATTERNS (incl. NaN/inf/denormals) — the packer must
+    /// be bit-preserving, so the strategy space is all of u32.
+    fn any_f32() -> impl Strategy<Value = f32> {
+        any::<u32>().prop_map(f32::from_bits)
+    }
+
+    fn vec3s(len: usize) -> impl Strategy<Value = Vec<[f32; 3]>> {
+        proptest::collection::vec([any_f32(), any_f32(), any_f32()], len)
+    }
+
+    fn vec4s(len: usize) -> impl Strategy<Value = Vec<[f32; 4]>> {
+        proptest::collection::vec([any_f32(), any_f32(), any_f32(), any_f32()], len)
+    }
+
+    proptest! {
+        /// Phase-2b byte identity: the mesh_pack delegation produces EXACTLY
+        /// the bytes the pre-2b hand-rolled writer did, for both windings,
+        /// with and without tangents, across arbitrary f32 bit patterns.
+        #[test]
+        fn visibility_delegation_matches_reference(
+            (positions, normals, tangents, tris, cw) in (1usize..24).prop_flat_map(|vcount| (
+                vec3s(vcount),
+                vec3s(vcount),
+                proptest::option::of(vec4s(vcount)),
+                proptest::collection::vec([0..vcount, 0..vcount, 0..vcount], 0..32),
+                any::<bool>(),
+            )),
+        ) {
+            let map = attribute_map(&positions, &normals, tangents.as_deref());
+            let front_face = if cw { FrontFace::Cw } else { FrontFace::Ccw };
+
+            let mut new_bytes = Vec::new();
+            create_visibility_vertices(&map, &tris, front_face, &mut new_bytes).unwrap();
+            let mut ref_bytes = Vec::new();
+            reference_visibility_vertices(&map, &tris, front_face, &mut ref_bytes).unwrap();
+            prop_assert_eq!(new_bytes, ref_bytes);
+        }
+
+        /// Same identity for the transparency (non-exploded) stream.
+        #[test]
+        fn transparency_delegation_matches_reference(
+            (positions, normals, tangents) in (1usize..48).prop_flat_map(|vcount| (
+                vec3s(vcount),
+                vec3s(vcount),
+                proptest::option::of(vec4s(vcount)),
+            )),
+        ) {
+            let map = attribute_map(&positions, &normals, tangents.as_deref());
+            let index = crate::buffers::MeshBufferAttributeIndexInfoWithOffset {
+                offset: 0,
+                count: 0,
+            };
+            let mut new_bytes = Vec::new();
+            super::super::transparency::create_transparency_vertices(
+                &map, &index, &[], 0, FrontFace::Ccw, &mut new_bytes,
+            )
+            .unwrap();
+            let mut ref_bytes = Vec::new();
+            super::super::transparency::reference_transparency_vertices(
+                &map, &index, &[], 0, FrontFace::Ccw, &mut ref_bytes,
+            )
+            .unwrap();
+            prop_assert_eq!(new_bytes, ref_bytes);
+        }
+    }
 }

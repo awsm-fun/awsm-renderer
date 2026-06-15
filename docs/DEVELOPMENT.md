@@ -80,7 +80,7 @@ Everything lives under `packages/`:
 
 **Native tooling**
 
-* [mcp](../packages/mcp): the `awsm-mcp-server` that drives the editor from an AI agent (see below)
+* [mcp](../packages/mcp): the `awsm-renderer-mcp` that drives the editor from an AI agent (see below)
 * [debugging](../packages/debugging): native debugging binaries
 
 **Other**

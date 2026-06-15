@@ -22,6 +22,7 @@ use crate::{
 
 use super::animation::GltfAnimationExt;
 use super::GltfMaterialLookupKey;
+use super::GltfMaterialSource;
 use super::GltfPopulateContext;
 
 /// Per-crate extension trait carrying mesh-population methods on
@@ -192,7 +193,12 @@ impl GltfMeshExt for AwsmRenderer {
                 &ctx.data.buffers.raw,
             );
 
-        let material_key = {
+        let material_key = if let GltfMaterialSource::Single(key) = ctx.material_source {
+            // The caller supplied the material (our runtime glb: one per node,
+            // from scene.toml). Skip glTF material + texture creation + pipeline
+            // scheduling entirely — no throwaway default to mint and replace.
+            key
+        } else {
             let existing = ctx
                 .material_keys
                 .lock()
@@ -203,9 +209,27 @@ impl GltfMeshExt for AwsmRenderer {
             match existing {
                 Some(key) => key,
                 None => {
-                    let material =
-                        pbr_material_mapper(self, ctx, primitive_buffer_info, gltf_material)
-                            .await?;
+                    // `AWSM_materials_none` (primitive-level, plural — emitted by
+                    // awsm-glb-export for custom-WGSL / Toon materials): the GLB
+                    // carries NO embedded glTF material. Render geometry-only
+                    // (Unlit) here rather than fabricating a PBR default; the
+                    // editor/player re-binds the real material via scene-level
+                    // assignment on import. (Distinct from the legacy
+                    // material-level singular `AWSM_material_none` handled in
+                    // `pbr_material_mapper`.)
+                    let material = if gltf_primitive
+                        .extension_value("AWSM_materials_none")
+                        .is_some()
+                    {
+                        awsm_renderer::materials::Material::Unlit(
+                            awsm_renderer::materials::unlit::UnlitMaterial::new(
+                                awsm_renderer::materials::MaterialAlphaMode::Opaque,
+                                gltf_material.double_sided(),
+                            ),
+                        )
+                    } else {
+                        pbr_material_mapper(self, ctx, primitive_buffer_info, gltf_material).await?
+                    };
                     // Block A.3: also bridge first-party materials
                     // through the pipeline-readiness scheduler so the
                     // scheduler's view of "what materials are in this

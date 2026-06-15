@@ -1,7 +1,7 @@
 //! Per-light shadow parameters (runtime, not on-disk schema).
 
 /// Runtime per-light shadow parameters. The renderer-side counterpart
-/// to `scene_schema::LightShadowConfig` — the scene editor converts
+/// to `awsm_scene::LightShadowConfig` — the scene editor converts
 /// between them in its renderer-bridge. A non-editor consumer
 /// constructs `LightShadowParams` directly via `Default::default()`.
 ///
@@ -24,10 +24,18 @@ pub struct LightShadowParams {
     pub resolution: u32,
     /// Sample-site filter mode.
     pub hardness: LightShadowHardness,
-    /// Multiplier on the estimated PCSS penumbra size. Only consulted
-    /// when `hardness == Pcss`.
+    /// Per-light softness knob, in world-space penumbra units. Consulted
+    /// by both `Soft` (scales the fixed PCF disc) and `Pcss` (scales the
+    /// virtual light-disc radius the blocker search uses). `1.0` is the
+    /// neutral default; `0.0` collapses to a near-hard edge. Named for
+    /// PCSS for back-compat, but it now governs the `Soft` mode too so a
+    /// single control drives both.
     pub pcss_penumbra_scale: f32,
     /// Camera-distance fadeout cutoff for this light's shadow.
+    /// Camera-distance cutoff for the cascade span. `<= 0` = AUTO
+    /// (follow the camera far plane) — the scale-safe default; a
+    /// positive value pins the span (tighter cascades, sharper shadows
+    /// up close, none beyond it).
     pub max_distance: f32,
     /// Number of cascades (1..=4). Directional only; ignored otherwise.
     pub cascade_count: u8,
@@ -59,7 +67,7 @@ impl Default for LightShadowParams {
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
-            max_distance: 100.0,
+            max_distance: 0.0,
             cascade_count: 4,
             cascade_split_lambda: 0.5,
             evsm_cutoff: EvsmCutoff::LastCascade,

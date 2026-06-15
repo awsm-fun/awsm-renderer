@@ -24,6 +24,24 @@ pub struct SkinLodLevel {
     pub period: u8,
 }
 
+/// Picks the skinning period for a mesh at `dist` metres from the camera.
+///
+/// `levels` is expected sorted by ascending `max_distance`; the first row whose
+/// `max_distance >= dist` wins. Past the last threshold the last row's period
+/// applies; an empty table yields `1` (every frame). The result is always `>= 1`
+/// (a `0` period in the table is clamped up — `0` would mean "never update").
+///
+/// Pure + free-standing so both the LOD walk and its tests exercise the same
+/// code (no logic duplicated in a test closure).
+pub fn period_for_distance(levels: &[SkinLodLevel], dist: f32) -> u8 {
+    levels
+        .iter()
+        .find(|lvl| dist <= lvl.max_distance)
+        .map(|lvl| lvl.period)
+        .unwrap_or_else(|| levels.last().map(|l| l.period).unwrap_or(1))
+        .max(1)
+}
+
 impl AwsmRenderer {
     /// Sets a single mesh's `skin_update_period`. `1` updates every
     /// frame (default); `2` halves the cost; `4` quarter-rate.
@@ -70,12 +88,7 @@ impl AwsmRenderer {
                 continue;
             }
             let dist = (center - camera_pos).length();
-            let period = levels
-                .iter()
-                .find(|lvl| dist <= lvl.max_distance)
-                .map(|lvl| lvl.period)
-                .unwrap_or_else(|| levels.last().map(|l| l.period).unwrap_or(1))
-                .max(1);
+            let period = period_for_distance(levels, dist);
             if let Ok(mesh) = self.meshes.get_mut(mesh_key) {
                 mesh.skin_update_period = period;
             }
@@ -87,9 +100,8 @@ impl AwsmRenderer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn lod_levels_pick_first_match() {
-        let levels = [
+    fn lod_table() -> [SkinLodLevel; 3] {
+        [
             SkinLodLevel {
                 max_distance: 10.0,
                 period: 1,
@@ -102,22 +114,54 @@ mod tests {
                 max_distance: 80.0,
                 period: 4,
             },
-        ];
-        // Simulate the find() the function uses.
-        let pick = |d: f32| -> u8 {
-            levels
-                .iter()
-                .find(|lvl| d <= lvl.max_distance)
-                .map(|lvl| lvl.period)
-                .unwrap_or_else(|| levels.last().unwrap().period)
-        };
-        assert_eq!(pick(5.0), 1);
-        assert_eq!(pick(20.0), 2);
-        assert_eq!(pick(50.0), 4);
+        ]
+    }
+
+    #[test]
+    fn lod_levels_pick_first_match() {
+        // Exercises the PRODUCTION fn (not a re-implementation).
+        let levels = lod_table();
+        assert_eq!(period_for_distance(&levels, 5.0), 1);
+        assert_eq!(period_for_distance(&levels, 20.0), 2);
+        assert_eq!(period_for_distance(&levels, 50.0), 4);
         assert_eq!(
-            pick(200.0),
+            period_for_distance(&levels, 200.0),
             4,
             "past last threshold, sticks at slowest tier"
+        );
+    }
+
+    #[test]
+    fn lod_boundary_is_inclusive() {
+        // dist == max_distance matches that row (the find uses `<=`), so a mesh
+        // exactly on a tier edge takes the nearer (lower) tier's period.
+        let levels = lod_table();
+        assert_eq!(period_for_distance(&levels, 10.0), 1, "edge of tier 0");
+        assert_eq!(period_for_distance(&levels, 30.0), 2, "edge of tier 1");
+        assert_eq!(period_for_distance(&levels, 80.0), 4, "edge of tier 2");
+    }
+
+    #[test]
+    fn lod_empty_table_is_every_frame() {
+        assert_eq!(
+            period_for_distance(&[], 42.0),
+            1,
+            "no table → update every frame"
+        );
+    }
+
+    #[test]
+    fn lod_period_floored_at_one() {
+        // A 0-period row would mean "never update"; the selector clamps it to 1.
+        let levels = [SkinLodLevel {
+            max_distance: 100.0,
+            period: 0,
+        }];
+        assert_eq!(period_for_distance(&levels, 5.0), 1);
+        assert_eq!(
+            period_for_distance(&levels, 500.0),
+            1,
+            "past-last fallback is also floored"
         );
     }
 }

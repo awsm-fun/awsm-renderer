@@ -4,11 +4,15 @@ members = [
     "packages/crates/geometry",
     "packages/crates/materials",
     "packages/crates/meshgen",
+    "packages/crates/glb-export",
+    "packages/crates/gltf-convert",
+    "packages/crates/tangents",
     "packages/crates/particles",
     "packages/crates/renderer",
     "packages/crates/renderer-core",
     "packages/crates/renderer-gltf",
-    "packages/crates/scene-schema",
+    "packages/crates/scene",
+    "packages/crates/scene-loader",
     "packages/crates/editor-protocol",
     "packages/frontend/web-shared",
     "packages/frontend/editor",
@@ -80,10 +84,14 @@ opt-level = 1
 # Bump this block together with the version above on every release.
 awsm-curves = { path = "packages/crates/curves", version = "0.2.0" }
 awsm-geometry = { path = "packages/crates/geometry", version = "0.2.0" }
-awsm-scene-schema = { path = "packages/crates/scene-schema", version = "0.2.0" }
+awsm-scene = { path = "packages/crates/scene", version = "0.2.0" }
+awsm-scene-loader = { path = "packages/crates/scene-loader", version = "0.2.0" }
 awsm-editor-protocol = { path = "packages/crates/editor-protocol", version = "0.2.0" }
 awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.2.0" }
 awsm-meshgen = { path = "packages/crates/meshgen", version = "0.2.0" }
+awsm-glb-export = { path = "packages/crates/glb-export", version = "0.2.0" }
+awsm-gltf-convert = { path = "packages/crates/gltf-convert", version = "0.2.0" }
+awsm-tangents = { path = "packages/crates/tangents", version = "0.2.0" }
 awsm-particles = { path = "packages/crates/particles", version = "0.2.0" }
 awsm-materials = { path = "packages/crates/materials", version = "0.2.0" }
 awsm-renderer = { path = "packages/crates/renderer", version = "0.2.0" }
@@ -126,6 +134,10 @@ askama = {version = "0.15.6", default-features = false, features = ["config", "d
 glam = {version = "0.32.1"}
 half = "2.4.1"
 bevy_mikktspace = "0.15.3"
+# Property-based testing (dev-only; pulled in under [dev-dependencies]).
+proptest = "1"
+# base64 — decoding `data:` URI image payloads in the pure-data converter.
+base64 = "0.22"
 
 # Debugging - only needed for `android_chrome_check`
 tokio = {version = "1.52.3", features = ["full"]}
@@ -142,6 +154,7 @@ reqwest = {version = "0.13.4", features = ["json"]}
 # JSON in `renderer-gltf` instead. See gltf-rs/gltf#465.
 gltf = {version = "1.4.1", features = [
     "extensions",
+    "extras",
     "KHR_lights_punctual",
     "KHR_texture_transform",
     "KHR_materials_emissive_strength",
@@ -150,6 +163,17 @@ gltf = {version = "1.4.1", features = [
     "KHR_materials_ior",
     "KHR_materials_transmission",
     "KHR_materials_volume",
+]}
+# Export writer (Phase 1 GLB export). The reader `gltf` above is import-only;
+# this is the JSON model used to *build* a glTF/GLB. Feature set mirrors what
+# the export IR can emit: named objects, custom extensions (AWSM_materials_none),
+# punctual lights, and unlit materials.
+gltf-json = { version = "1.4.1", features = [
+    "names",
+    "extensions",
+    "extras",
+    "KHR_lights_punctual",
+    "KHR_materials_unlit",
 ]}
 exr = "1.74.0"
 binpack2d = "1.0.1"
