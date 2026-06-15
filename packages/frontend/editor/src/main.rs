@@ -98,6 +98,12 @@ pub fn main() {
                             // Mirror the scene onto the renderer (materializes
                             // any already-present nodes + every future insert).
                             engine::bridge::init();
+                            // Apply the environment skybox/IBL synchronously
+                            // BEFORE the first paint — the renderer's default
+                            // skybox is black, and the async observer in
+                            // `env_sync::start` only reflects after a later
+                            // bind-group rebuild (black sky on cold start).
+                            engine::bridge::env_sync::apply_initial().await;
                             engine::render_loop::start();
                             // Compile the GPU picker in the background so the
                             // first viewport click selects without a warm-up miss.
