@@ -1,5 +1,5 @@
 [package]
-name = "awsm-renderer-mcp"
+name = "awsm-scene-mcp"
 description = "Native MCP server that drives the awsm-renderer editor over a WebTransport (QUIC) link."
 edition.workspace = true
 version.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [[bin]]
-name = "awsm-renderer-mcp"
+name = "awsm-scene-mcp"
 path = "src/main.rs"
 
 [dependencies]

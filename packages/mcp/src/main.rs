@@ -1,4 +1,4 @@
-//! `awsm-renderer-mcp` — drives the awsm-renderer editor from an AI agent.
+//! `awsm-scene-mcp` — drives the awsm-renderer editor from an AI agent.
 //!
 //! The editor (browser wasm) dials *out* to this process over WebTransport
 //! (QUIC); this process exposes MCP tools (added in a later phase) that relay to
@@ -37,7 +37,7 @@ const DEFAULT_BROWSER_PORT: u16 = 9087;
 ///                               to this for the live data link.
 #[derive(Debug, Parser)]
 #[command(
-    name = "awsm-renderer-mcp",
+    name = "awsm-scene-mcp",
     version,
     about = "Native MCP server for the awsm-renderer editor.",
     long_about = "Native MCP server for the awsm-renderer editor — a stateless bridge \
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,awsm_renderer_mcp=debug".into()),
+                .unwrap_or_else(|_| "info,awsm_scene_mcp=debug".into()),
         )
         .init();
 

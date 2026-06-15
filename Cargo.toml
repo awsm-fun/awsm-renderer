@@ -33,8 +33,7 @@ authors = ["David Komer"]
 # Rust 1.85+. Keeping the MSRV here lets dependency specs stay simple (`rmcp = "1"`)
 # instead of pinning around the resolver.
 rust-version = "1.85.0"
-repository = "https://github.com/dakom/awsm-renderer"
-homepage = "https://dakom.github.io/awsm-renderer/"
+repository = "https://github.com/awsm-fun/awsm-renderer"
 
 ### Patches
 

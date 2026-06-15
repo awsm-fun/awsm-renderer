@@ -510,33 +510,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-renderer-mcp"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "awsm-editor-protocol",
- "awsm-scene",
- "axum",
- "base64 0.22.1",
- "bytes",
- "clap",
- "glam 0.32.1",
- "rcgen",
- "rmcp",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "time",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "web-transport",
-]
-
-[[package]]
 name = "awsm-scene"
 version = "0.2.0"
 dependencies = [
@@ -564,6 +537,33 @@ dependencies = [
  "glam 0.32.1",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "awsm-scene-mcp"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "awsm-editor-protocol",
+ "awsm-scene",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "clap",
+ "glam 0.32.1",
+ "rcgen",
+ "rmcp",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "time",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "web-transport",
 ]
 
 [[package]]

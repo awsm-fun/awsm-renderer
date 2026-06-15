@@ -15,7 +15,7 @@ live in a shared crate the native server and the editor both depend on.
 ## Architecture
 
 ```
-agent (MCP client) ──HTTP /mcp──▶ awsm-renderer-mcp ──WebTransport (QUIC/UDP)──▶ editor (browser tab)
+agent (MCP client) ──HTTP /mcp──▶ awsm-scene-mcp ──WebTransport (QUIC/UDP)──▶ editor (browser tab)
                                   (packages/mcp)       editor dials out         → EditorController
                                   • rmcp tool layer    server.open_bi() per req  • src/remote.rs
                                   • QUIC listener      editor replies on stream  • calls controller directly
@@ -39,7 +39,7 @@ Three pieces:
 | Piece | Where | Role |
 |---|---|---|
 | `awsm-editor-protocol` | [`packages/crates/editor-protocol`](../packages/crates/editor-protocol) | The serializable wire vocabulary — `EditorCommand` / `EditorQuery` / `EditorSnapshot` / `QueryResult` + the `Request` / `Response` transport envelope. Compiles for both wasm and native; re-exports the heavy payloads from `awsm-scene-schema`. |
-| `awsm-renderer-mcp` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the WebTransport listener + the single editor link. `publish = false`. |
+| `awsm-scene-mcp` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the WebTransport listener + the single editor link. `publish = false`. |
 | editor remote module | [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs) | The WebTransport client: parse `?mcp=`, fetch `/control`, connect, `accept_bi()` loop, decode `Request` → call `EditorController` → encode `Response`. |
 
 All editor mutation flows through `EditorController` (the editor's single

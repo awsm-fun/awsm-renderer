@@ -27,8 +27,7 @@ vars:
   PORT_MEDIA_LOCAL_DEV: 9082
   PORT_MEDIA_ADDITIONAL_ASSETS_DEV: 9083
   PORT_EDITOR_DEV: 9085
-  PORT_MCP_HTTP_DEV: 9086 # TCP — rmcp /mcp + /control + /debug
-  PORT_MCP_QUIC_DEV: 9087 # UDP — WebTransport link the editor dials out to
+  PORT_MCP_HTTP_DEV: 9086 # TCP — rmcp /mcp + the editor link + control surface
 
   # URLs — dev (served by the per-frontend dev recipes + media servers)
   URL_DEV_MODEL_TESTS: "http://localhost:{{.PORT_MODEL_TESTS_DEV}}"
