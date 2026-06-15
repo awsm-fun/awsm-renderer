@@ -10,16 +10,6 @@ pub struct Config {
     pub camera_aperture: f32,
 }
 
-impl Config {
-    /// URL for the editor's bundled gltf gizmo asset (Trunk copies the crate's
-    /// `assets/` dir into the dist). Relative — resolves against the page base.
-    /// Consumed by the gizmo loader in M6.
-    #[allow(dead_code)]
-    pub fn gizmo_url(&self) -> &'static str {
-        "assets/gizmo.glb"
-    }
-}
-
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config {
     camera_aperture: 5.6,
     camera_focus_distance: 10.0,

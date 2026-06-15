@@ -1,10 +1,6 @@
-use crate::{models::collections::GltfId, pages::app::scene::camera::Camera, prelude::*};
+use crate::{pages::app::scene::camera::Camera, prelude::*};
 use anyhow::Result;
 use awsm_renderer::{render::RenderHooks, AwsmRenderer};
-use awsm_renderer_gltf::{
-    data::{GltfData, GltfDataHints},
-    loader::GltfLoader,
-};
 use dominator_helpers::futures::AsyncLoader;
 use futures::StreamExt;
 
@@ -17,7 +13,6 @@ use awsm_web_shared::viewport3d::{
 pub struct AppSceneEditor {
     pub pipelines: Arc<EditorPipelines>,
     pub render_hooks: Arc<std::sync::RwLock<Option<Arc<RenderHooks>>>>,
-    pub gizmo_gltf_data: Arc<GltfData>,
     pub transform_controller: Arc<std::sync::Mutex<Option<TransformController>>>,
     pub selected_object: Mutable<Option<TransformObject>>,
     grid_enabled: Mutable<bool>,
@@ -36,14 +31,6 @@ impl AppSceneEditor {
         gizmo_rotation_enabled: Mutable<bool>,
         gizmo_scale_enabled: Mutable<bool>,
     ) -> Result<Self> {
-        let gizmo_gltf_data = Arc::new(
-            GltfLoader::load(&GltfId::AwsmTransformGizmo.url(), None)
-                .await?
-                .into_data(Some(
-                    GltfDataHints::default().with_hud(true).with_hidden(true),
-                ))?,
-        );
-
         let pipelines = Arc::new(EditorPipelines::load(&mut *renderer.lock().await).await?);
 
         let render_hooks = Arc::new(std::sync::RwLock::new(None));
@@ -109,6 +96,12 @@ impl AppSceneEditor {
                 {
                     let renderer = &mut *renderer.lock().await;
                     if let Some(transform_controller) = transform_controller.lock().unwrap().as_mut() {
+                        // Anchor the gizmo to the current selection. (Object
+                        // selection is set on the `selected_object` Mutable by the
+                        // pointer handler; the controller's own `selected_object`
+                        // is what `zoom_gizmo_transforms` reads to place + show the
+                        // gizmo, so keep the two in sync here.)
+                        transform_controller.selected_object = selected_transform_key;
                         if selected_transform_key.is_some() {
                             if let Err(err) = transform_controller.set_hidden(renderer, !gizmo_translation_enabled, !gizmo_rotation_enabled, !gizmo_scale_enabled) {
                                 tracing::error!("Error setting transform controller enabled state: {}", err);
@@ -130,7 +123,6 @@ impl AppSceneEditor {
             gizmo_scale_enabled,
             selected_object,
             reactor,
-            gizmo_gltf_data,
             transform_controller,
         })
     }

@@ -9,8 +9,11 @@
 
 use std::sync::Arc;
 
-use crate::controller::animation::{find_clip, AnimSel, CustomAnimation, Track, TrackTarget};
+use crate::controller::animation::{
+    default_value_for, find_clip, AnimSel, CustomAnimation, Track, TrackTarget, TransformProp,
+};
 use crate::controller::{EditorCommand, Interp, SamplerKind, TrackValue};
+use crate::engine::scene::{mutate, NodeId};
 use crate::prelude::*;
 
 pub fn render() -> Dom {
@@ -317,6 +320,21 @@ fn track_rows(
             mono(prop_label(&track.target), "var(--text-0)", 12.0),
         ));
 
+    // Editable transform values (issue d): a Transform track exposes live
+    // Translation / Rotation / Scale number fields bound to the **playhead** —
+    // typing a value moves the bone and writes/updates the keyframe at the
+    // playhead, so editing a transform value never requires first creating and
+    // selecting a keyframe by hand.
+    if let TrackTarget::Transform { node, prop } = track.target {
+        b = b.child(transform_values_section(
+            clip_id,
+            track.clone(),
+            track_idx,
+            node,
+            prop,
+        ));
+    }
+
     // Sampler (Select: Step / Linear / CubicSpline).
     let sampler = Mutable::new(sampler_key(track.sampler.get()).to_string());
     spawn_local(clone!(sampler => async move {
@@ -352,6 +370,126 @@ fn track_rows(
         "Channels",
         mono(channels_label(&track.target), "var(--text-2)", 11.5),
     ))
+}
+
+/// The editable T/R/S value rows for a Transform track. Reactive on the playhead
+/// so the displayed values track the scrub; each field writes/updates a keyframe
+/// at the *current* playhead on edit. `display: contents` so the inner reactive
+/// block's rows lay out as direct siblings of the other inspector rows.
+fn transform_values_section(
+    clip_id: Option<crate::engine::scene::AssetId>,
+    track: Arc<Track>,
+    track_idx: usize,
+    node: NodeId,
+    prop: TransformProp,
+) -> Dom {
+    html!("div", {
+        .style("display", "contents")
+        .child_signal(controller().playhead.signal().map(clone!(track => move |t| {
+            Some(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "var(--gap)")
+                .children(transform_value_rows(clip_id, &track, track_idx, node, prop, t))
+            }))
+        })))
+    })
+}
+
+/// One editable number row per channel of a Transform track's value at `t`.
+fn transform_value_rows(
+    clip_id: Option<crate::engine::scene::AssetId>,
+    track: &Arc<Track>,
+    track_idx: usize,
+    node: NodeId,
+    prop: TransformProp,
+    t: f64,
+) -> Vec<Dom> {
+    let cur = transform_track_value(track, node, prop, t);
+    let labels: &[&str] = match prop {
+        TransformProp::Rotation => &["X", "Y", "Z", "W"],
+        _ => &["X", "Y", "Z"],
+    };
+    labels
+        .iter()
+        .enumerate()
+        .map(|(i, lab)| {
+            let init = tv_component(&cur, i);
+            let track = track.clone();
+            row(
+                *lab,
+                NumField::new(init)
+                    .step(0.05)
+                    .on_change(clone!(track => move |val| {
+                        let Some(clip_id) = clip_id else { return };
+                        // Read the playhead + base value FRESH on edit (not captured
+                        // at render) so a scrub between render and edit keys the
+                        // right time, and editing one channel never stomps another.
+                        let t = controller().playhead.get();
+                        let base = transform_track_value(&track, node, prop, t);
+                        let value = tv_with_component(&base, i, val as f32);
+                        dispatch(EditorCommand::AddKeyframe {
+                            clip: clip_id,
+                            track: track_idx,
+                            t,
+                            value,
+                        });
+                    }))
+                    .render(),
+            )
+        })
+        .collect()
+}
+
+/// A Transform track's value at time `t`: the track's own curve sample when it
+/// has keyframes, else the live node transform (so a not-yet-keyed track seeds
+/// from the bone's current pose), else the target's default.
+fn transform_track_value(
+    track: &Arc<Track>,
+    node: NodeId,
+    prop: TransformProp,
+    t: f64,
+) -> TrackValue {
+    if let Some(v) = track.sample_at(t) {
+        return v;
+    }
+    if let Some(n) = mutate::find_by_id(&controller().scene, node) {
+        let trs = n.transform.get();
+        return match prop {
+            TransformProp::Translation => TrackValue::Vec3(trs.translation),
+            TransformProp::Rotation => TrackValue::Quat(trs.rotation),
+            TransformProp::Scale => TrackValue::Vec3(trs.scale),
+        };
+    }
+    default_value_for(&track.target)
+}
+
+/// Read channel `i` of a track value as `f64` (for a `NumField` seed).
+fn tv_component(v: &TrackValue, i: usize) -> f64 {
+    match v {
+        TrackValue::Vec3(a) => a.get(i).copied().unwrap_or(0.0) as f64,
+        TrackValue::Quat(a) => a.get(i).copied().unwrap_or(0.0) as f64,
+        TrackValue::Scalar(s) => *s as f64,
+    }
+}
+
+/// Return `v` with channel `i` replaced by `val` (shape-preserving).
+fn tv_with_component(v: &TrackValue, i: usize, val: f32) -> TrackValue {
+    match v {
+        TrackValue::Vec3(a) => {
+            let mut n = *a;
+            if i < 3 {
+                n[i] = val;
+            }
+            TrackValue::Vec3(n)
+        }
+        TrackValue::Quat(a) => {
+            let mut n = *a;
+            if i < 4 {
+                n[i] = val;
+            }
+            TrackValue::Quat(n)
+        }
+        TrackValue::Scalar(_) => TrackValue::Scalar(val),
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

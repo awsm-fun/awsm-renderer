@@ -1,28 +1,25 @@
 //! On-canvas transform gizmo, backed by
 //! `awsm_web_shared::viewport3d::TransformController`.
 //!
-//! Loads the crate-bundled `gizmo.glb`, populates it into the renderer as a
-//! HUD/hidden model, and builds a `TransformController` bound to its named
-//! handle meshes. The controller lives in a thread-local (wasm is
+//! The gizmo is generated procedurally (always-on-top fat lines) and picked
+//! analytically — see the controller. It lives in a thread-local (wasm is
 //! single-threaded) so both the render loop (per-frame zoom-to-screen-size +
 //! re-anchor under the selection) and the canvas pointer handlers (pick + drag)
 //! can reach it.
 
 use std::cell::RefCell;
 
-use awsm_renderer::meshes::MeshKey;
+use awsm_editor_protocol::EditorMode;
 use awsm_renderer::transforms::TransformKey;
 use awsm_renderer::AwsmRenderer;
-use awsm_renderer_gltf::{data::GltfDataHints, loader::GltfLoader, AwsmRendererGltfExt};
 use awsm_web_shared::viewport3d::transform_controller::{
-    GizmoSpace, TransformController, TransformObject, TransformTarget,
+    GizmoSpace, TransformController, TransformObject,
 };
 use futures_signals::map_ref;
 
 use super::context::renderer_handle;
 use crate::controller::controller;
 use crate::engine::bridge::bridge;
-use crate::engine::config::CONFIG;
 use crate::engine::scene::NodeId;
 use crate::prelude::*;
 
@@ -76,60 +73,55 @@ pub fn init() {
 }
 
 async fn init_inner() -> Result<(), String> {
-    let loader = GltfLoader::load(CONFIG.gizmo_url(), None)
-        .await
-        .map_err(|e| format!("gizmo.glb load: {e}"))?;
-
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
 
-    let hints = GltfDataHints::default().with_hud(true).with_hidden(true);
-    let gltf_data = loader
-        .into_data(Some(hints))
-        .map_err(|e| format!("gizmo decode: {e}"))?;
-
-    let ctx = renderer
-        .populate_gltf(gltf_data, None)
-        .await
-        .map_err(|e| format!("gizmo populate: {e}"))?;
-
-    let controller = TransformController::new(ctx.key_lookups.clone(), GizmoSpace::Global)
+    // The gizmo is generated procedurally (fat lines) — no `.glb` to load.
+    let mut controller = TransformController::new(&mut renderer, GizmoSpace::Global)
         .map_err(|e| format!("TransformController::new: {e}"))?;
 
     // Hide every handle until a selection appears.
     let _ = controller.set_hidden(&mut renderer, true, true, true);
-    // The picker was prewarmed at boot — before this HUD model existed — so its
-    // id-buffer setup predates the gizmo. Drop it so the next `pick()` rebuilds
-    // against the now-present HUD (the canvas pointer handler retries through the
-    // recompile). Non-destructive: no GPU work here, just clears the cached
-    // picker; the rebuild happens lazily inside the next `pick()`.
-    renderer.invalidate_picker();
     drop(renderer);
 
     GIZMO.with(|g| *g.borrow_mut() = Some(controller));
 
     start_selection_observer();
+    start_anim_gizmo_mode_observer();
     Ok(())
 }
 
-/// Anchor the gizmo on the single selected node (hide on multi/empty selection).
+/// Anchor the gizmo on the effective selection (hide on multi/empty selection).
+///
+/// In **Scene/Material** mode that's the single outliner selection
+/// (`controller().selected`). In **Animation** mode, a selected timeline track
+/// takes over: the gizmo snaps to that track's *target node* so the user can
+/// pose the bone the track drives (and auto-key it). A track whose target isn't
+/// a Transform (light / camera / morph / uniform / builtin) has no gizmo, so the
+/// gizmo hides gracefully.
+///
 /// Combined with `scene.revision` so a selection that fires *before* the bridge
 /// entry materializes re-syncs once the entry (and its transform key) appears.
 fn start_selection_observer() {
     spawn_local(async move {
+        let ctrl = controller();
         let selected_id =
-            controller().selected.signal_ref(
-                |ids| {
-                    if ids.len() == 1 {
-                        Some(ids[0])
-                    } else {
-                        None
-                    }
-                },
-            );
+            ctrl.selected
+                .signal_ref(|ids| if ids.len() == 1 { Some(ids[0]) } else { None });
+        // The effective gizmo anchor: in Animation mode a selected track's
+        // transform-target node wins; otherwise the outliner selection.
         map_ref! {
-            let id = selected_id,
-            let _rev = controller().scene.revision.signal() => *id
+            let scene_id = selected_id,
+            let mode = ctrl.mode.signal(),
+            let anim_sel = ctrl.anim_selection.signal(),
+            let clip = ctrl.current_clip.signal(),
+            let _rev = ctrl.scene.revision.signal() => {
+                if *mode == EditorMode::Animation && anim_sel.is_some() {
+                    anim_selected_transform_node(*clip, *anim_sel)
+                } else {
+                    *scene_id
+                }
+            }
         }
         .dedupe()
         .for_each(|id| async move {
@@ -137,6 +129,84 @@ fn start_selection_observer() {
         })
         .await;
     });
+}
+
+/// The scene node a selected animation track drives — `Some(node)` only for a
+/// **Transform** track (the only kind with an on-canvas gizmo). Anything else
+/// (or no resolvable track) is `None`, so the gizmo hides.
+fn anim_selected_transform_node(
+    clip: Option<crate::engine::scene::AssetId>,
+    sel: Option<crate::controller::animation::AnimSel>,
+) -> Option<NodeId> {
+    anim_selected_transform(clip, sel).map(|(node, _)| node)
+}
+
+/// The (node, channel) a selected Transform track drives, or `None` for a
+/// non-Transform track / no resolvable selection.
+fn anim_selected_transform(
+    clip: Option<crate::engine::scene::AssetId>,
+    sel: Option<crate::controller::animation::AnimSel>,
+) -> Option<(NodeId, crate::controller::animation::TransformProp)> {
+    use crate::controller::animation::{find_clip, TrackTarget};
+    let sel = sel?;
+    let clip = find_clip(&controller().custom_animations, clip?)?;
+    let track = clip.tracks.lock_ref().get(sel.track).cloned()?;
+    match track.target {
+        TrackTarget::Transform { node, prop } => Some((node, prop)),
+        _ => None,
+    }
+}
+
+/// In Animation mode, match the active gizmo tool to the selected Transform
+/// track's channel — Translation→Move, Rotation→Rotate, Scale→Scale — so the
+/// gizmo edits the property the track actually animates (and the gizmo commit
+/// auto-keys that track). Without this, selecting a rotation track would still
+/// show the translate gizmo, and dragging it would move the bone while writing
+/// no rotation key. Fires only on selection/clip/mode changes (not per scene
+/// revision), so a manual tool switch (Q/W/E/R) sticks until the next track pick.
+fn start_anim_gizmo_mode_observer() {
+    use crate::controller::animation::TransformProp;
+    spawn_local(async move {
+        let ctrl = controller();
+        map_ref! {
+            let mode = ctrl.mode.signal(),
+            let sel = ctrl.anim_selection.signal(),
+            let clip = ctrl.current_clip.signal() => {
+                if *mode == EditorMode::Animation {
+                    anim_selected_transform(*clip, *sel).map(|(_, prop)| prop)
+                } else {
+                    None
+                }
+            }
+        }
+        .dedupe()
+        .for_each(|prop| async move {
+            if let Some(prop) = prop {
+                gizmo_mode().set_neq(match prop {
+                    TransformProp::Translation => GizmoMode::Move,
+                    TransformProp::Rotation => GizmoMode::Rotate,
+                    TransformProp::Scale => GizmoMode::Scale,
+                });
+            }
+        })
+        .await;
+    });
+}
+
+/// Whether the gizmo is currently anchored on a target (has a selected object).
+///
+/// The canvas pointer handler uses this to decide whether to probe for a gizmo
+/// grab on pointer-down. In Scene mode the gizmo follows the single outliner
+/// selection, but in Animation mode it's anchored to the *selected track's* node
+/// with no scene selection — so gating the probe on `controller().selected`
+/// alone would leave the gizmo visible but ungrabbable (a drag would fall through
+/// to camera orbit). Checking the controller's own `selected_object` covers both.
+pub fn has_selection() -> bool {
+    GIZMO.with(|g| {
+        g.borrow()
+            .as_ref()
+            .is_some_and(|c| c.selected_object.is_some())
+    })
 }
 
 /// Look up a scene node's renderer-side transform key via the bridge.
@@ -210,20 +280,37 @@ pub fn per_frame_update(renderer: &mut AwsmRenderer) {
     });
 }
 
-/// Begin a gizmo drag if `mesh_key` is one of the gizmo handles. Returns `true`
-/// when a handle was grabbed (the caller then routes pointer-move to the gizmo
-/// instead of the camera). The renderer lock is held by the caller.
-pub fn try_start_pick(renderer: &mut AwsmRenderer, mesh_key: MeshKey, x: i32, y: i32) -> bool {
+/// Try to grab a gizmo handle at screen `(x, y)` via analytic picking. Returns
+/// `true` when a handle was grabbed (the caller then routes pointer-move to the
+/// gizmo instead of the camera). The renderer lock is held by the caller.
+pub fn try_start_pick(renderer: &mut AwsmRenderer, x: i32, y: i32) -> bool {
     GIZMO.with(|g| {
         let mut guard = g.borrow_mut();
         let Some(controller) = guard.as_mut() else {
             return false;
         };
-        matches!(
-            controller.start_pick(renderer, mesh_key, x, y),
-            Some(TransformTarget::GizmoHit(_))
-        )
+        controller.try_grab(renderer, x, y).is_some()
     })
+}
+
+/// Update the hovered-handle highlight from a screen position (call on
+/// pointer-move when NOT dragging). Renderer-free — picks against the gizmo's
+/// cached placement — so it's cheap to call on every move.
+pub fn update_hover(x: i32, y: i32) {
+    GIZMO.with(|g| {
+        if let Some(controller) = g.borrow_mut().as_mut() {
+            controller.update_hover(x, y);
+        }
+    });
+}
+
+/// Clear any hover highlight (call when the pointer leaves the canvas).
+pub fn clear_hover() {
+    GIZMO.with(|g| {
+        if let Some(controller) = g.borrow_mut().as_mut() {
+            controller.clear_hover();
+        }
+    });
 }
 
 /// Apply a pointer-move delta to the in-flight gizmo drag.
@@ -231,6 +318,16 @@ pub fn drag(renderer: &mut AwsmRenderer, dx: i32, dy: i32) {
     GIZMO.with(|g| {
         if let Some(controller) = g.borrow_mut().as_mut() {
             controller.update_transform(renderer, dx, dy);
+        }
+    });
+}
+
+/// Clear the controller's in-flight drag state + active highlight. Called on
+/// pointer-up alongside `commit_drag`.
+pub fn end_drag() {
+    GIZMO.with(|g| {
+        if let Some(controller) = g.borrow_mut().as_mut() {
+            controller.end_drag();
         }
     });
 }
@@ -289,6 +386,9 @@ pub fn begin_drag() {
 /// value (so the controller captures the correct inverse), then dispatches the
 /// final value.
 pub fn commit_drag() {
+    // Clear the controller's in-flight drag + active-handle highlight (covers
+    // both pointer-up and pointer-cancel, which both route here).
+    end_drag();
     let start = DRAG_START.with(|d| d.borrow_mut().take());
     let selected = GIZMO.with(|g| g.borrow().as_ref().and_then(|c| c.selected_object));
     let (Some((node_id, start_trs)), Some(sel)) = (start, selected) else {
@@ -343,8 +443,6 @@ pub fn commit_drag() {
 /// Transform track of the CURRENT clip that targets `node_id` gets a key at
 /// the playhead with the matching component of `trs`.
 async fn auto_key_from_commit(node_id: NodeId, trs: crate::engine::scene::types::Trs) {
-    use awsm_editor_protocol::EditorMode;
-
     use crate::controller::animation::{find_clip, TrackTarget, TrackValue, TransformProp};
     use crate::controller::EditorCommand;
     let ctrl = controller();

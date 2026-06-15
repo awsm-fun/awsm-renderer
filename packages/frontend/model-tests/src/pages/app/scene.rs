@@ -25,7 +25,7 @@ use awsm_renderer::picker::PickResult;
 use awsm_renderer::AwsmRenderer;
 use awsm_web::dom::resize::ResizeObserver;
 use awsm_web_shared::viewport3d::transform_controller::{
-    GizmoSpace, TransformController, TransformTarget,
+    GizmoSpace, TransformController, TransformObject,
 };
 use camera::{Camera, CameraId};
 use gloo_events::EventListener;
@@ -129,36 +129,50 @@ impl AppScene {
                         let mut renderer = state.renderer.lock().await;
                         let event = event.unchecked_into::<PointerEvent>();
                         let (x, y) = renderer.gpu.pointer_event_to_canvas_coords_i32(&event);
+
+                        // 1) Analytic gizmo grab takes priority (CPU ray-cast,
+                        //    tolerance band — no GPU pick needed).
+                        let grabbed = {
+                            let editor_guard = state.editor.lock().unwrap();
+                            match editor_guard.as_ref() {
+                                Some(editor) => {
+                                    let mut tc = editor.transform_controller.lock().unwrap();
+                                    match tc.as_mut() {
+                                        Some(tc) => tc.try_grab(&mut renderer, x, y).is_some(),
+                                        None => false,
+                                    }
+                                }
+                                None => false,
+                            }
+                        };
+                        if grabbed {
+                            state.move_action.set(Some(MoveAction::GizmoTransforming));
+                            return;
+                        }
+
+                        // 2) Otherwise GPU-pick → object selection.
                         match renderer.pick(x,y).await {
                             Err(err) => {
                                 tracing::error!("Pick error: {:?}", err);
                             }
-                            Ok(res) => {
-                                if let PickResult::Hit(mesh_key) = res {
+                            Ok(PickResult::Hit(mesh_key)) => {
+                                if let Ok(mesh) = renderer.meshes.get(mesh_key) {
+                                    let obj = TransformObject {
+                                        key: mesh.transform_key,
+                                        instance: mesh.instanced.then_some(0),
+                                    };
                                     if let Some(editor) = state.editor.lock().unwrap().as_ref() {
-                                        if let Some(transform_controller) = editor.transform_controller.lock().unwrap().as_mut() {
-                                            match transform_controller.start_pick(&mut renderer, mesh_key, x, y) {
-                                                Some(TransformTarget::GizmoHit(_)) => {
-                                                    state.move_action.set(Some(MoveAction::GizmoTransforming));
-                                                }
-                                                Some(TransformTarget::ObjectHit(transform)) => {
-                                                    editor.selected_object.set_neq(Some(transform));
-                                                }
-                                                None => { }
-                                            }
-                                        }
+                                        editor.selected_object.set_neq(Some(obj));
                                     }
                                 }
-
                             }
+                            Ok(_) => {}
                         }
 
-                        if state.move_action.get() != Some(MoveAction::GizmoTransforming) {
-                            if let Some(camera) = state.camera.lock().unwrap().as_mut() {
-                                camera.on_pointer_down();
-                            }
-                            state.move_action.set(Some(MoveAction::CameraMoving));
+                        if let Some(camera) = state.camera.lock().unwrap().as_mut() {
+                            camera.on_pointer_down();
                         }
+                        state.move_action.set(Some(MoveAction::CameraMoving));
                     }));
                 }),
             ),
@@ -194,6 +208,12 @@ impl AppScene {
 
                     if let Some(camera) = state.camera.lock().unwrap().as_mut() {
                         camera.on_pointer_up();
+                    }
+                    // End any in-flight gizmo drag (clears drag state + highlight).
+                    if let Some(editor) = state.editor.lock().unwrap().as_ref() {
+                        if let Some(tc) = editor.transform_controller.lock().unwrap().as_mut() {
+                            tc.end_drag();
+                        }
                     }
                     state.move_action.set(None);
 
@@ -645,23 +665,10 @@ impl AppScene {
             {
                 let mut renderer = scene.renderer.lock().await;
 
-                let editor_gizmo_gltf_data = {
-                    let editor_guard = scene.editor.lock().unwrap();
-                    editor_guard
-                        .as_ref()
-                        .map(|editor| editor.gizmo_gltf_data.clone())
-                };
-
-                if let Some(editor_gizmo_gltf_data) = editor_gizmo_gltf_data {
-                    let ctx = renderer.populate_gltf(editor_gizmo_gltf_data, None).await?;
-
-                    if let Some(editor) = scene.editor.lock().unwrap().as_ref() {
-                        *editor.transform_controller.lock().unwrap() =
-                            Some(TransformController::new(
-                                ctx.key_lookups.clone(),
-                                GizmoSpace::default(),
-                            )?);
-                    }
+                // The gizmo is generated procedurally (fat lines) — no `.glb`.
+                let controller = TransformController::new(&mut renderer, GizmoSpace::default())?;
+                if let Some(editor) = scene.editor.lock().unwrap().as_ref() {
+                    *editor.transform_controller.lock().unwrap() = Some(controller);
                 }
 
                 if let Some(ibl) = scene
@@ -963,24 +970,9 @@ impl AppScene {
         // Need to create a new camera - compute scene bounds
         let mut scene_aabb: Option<Aabb> = None;
 
-        for (key, mesh) in renderer.meshes.iter() {
-            if self
-                .editor
-                .lock()
-                .unwrap()
-                .as_ref()
-                .and_then(|editor| {
-                    editor
-                        .transform_controller
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .map(|tc| tc.is_gizmo_mesh_key(key))
-                })
-                .unwrap_or(false)
-            {
-                continue;
-            }
+        for (_key, mesh) in renderer.meshes.iter() {
+            // The gizmo is drawn as fat lines (not meshes), so nothing here needs
+            // to be excluded from the camera-fit bounds.
             if let Some(mesh_aabb) = mesh.world_aabb.clone() {
                 if let Some(current_scene_aabb) = &mut scene_aabb {
                     current_scene_aabb.extend(&mesh_aabb);

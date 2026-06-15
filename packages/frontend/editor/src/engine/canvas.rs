@@ -76,9 +76,16 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                 // selected curve (whose control-point handles show regardless of
                 // the gizmo toggle). Otherwise start the camera immediately so
                 // navigation stays crisp.
+                //
+                // The gizmo is also grabbable when it's anchored *without* a scene
+                // selection — in Animation mode it follows the selected track's
+                // node (`controller().selected` is empty there), so gating purely
+                // on `single` would render the gizmo visible but un-draggable and
+                // every drag would orbit the camera instead of posing the bone.
                 let single = controller().selected.lock_ref().len() == 1;
                 let gizmo_on = controller().settings.gizmo.get();
-                let probe = single && (gizmo_on || curve_handles::has_active_handles());
+                let gizmo_probe = gizmo_on && (single || gizmo::has_selection());
+                let probe = gizmo_probe || (single && curve_handles::has_active_handles());
                 if !probe {
                     // A scene camera locks the view — don't start an orbit/pan;
                     // leaving `action` unset still lets a click pick + select.
@@ -93,12 +100,26 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                 let (px, py) = canvas_coords(&canvas, event.x(), event.y());
                 spawn_local(clone!(action => async move {
                     let handle = renderer_handle();
-                    // Retry across a few frames while the picker (re)compiles —
-                    // the gizmo load invalidates it so it rebuilds with the HUD,
-                    // and the first pick after that returns Initializing. Release
-                    // the lock between attempts so the render loop keeps running.
-                    // Curve handles take priority (then the gizmo); `None` falls
-                    // through to the camera.
+                    // 1) The gizmo is picked ANALYTICALLY (a CPU ray-cast with a
+                    //    screen-space tolerance band) and takes priority — it
+                    //    needs no GPU pick, so it's checked first and synchronously
+                    //    under one lock.
+                    if gizmo_on {
+                        let grabbed = {
+                            let mut r = handle.lock().await;
+                            gizmo::try_start_pick(&mut r, px, py)
+                        };
+                        if grabbed {
+                            action.set(Some(MoveAction::Gizmo));
+                            gizmo::begin_drag();
+                            return;
+                        }
+                    }
+                    // 2) Otherwise GPU-pick for curve control-point handles. Retry
+                    //    across a few frames while the picker (re)compiles; release
+                    //    the lock between attempts so the render loop keeps running.
+                    //    `None` falls through to the camera (object selection
+                    //    happens on click-up, not here).
                     let mut resolved: Option<Option<MoveAction>> = None;
                     for attempt in 0..12 {
                         let res: Option<Option<MoveAction>> = {
@@ -107,8 +128,6 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                                 Ok(PickResult::Hit(mesh_key)) => {
                                     if curve_handles::try_start_pick(&mut r, Some(mesh_key), px, py) {
                                         Some(Some(MoveAction::CurveHandle))
-                                    } else if gizmo_on && gizmo::try_start_pick(&mut r, mesh_key, px, py) {
-                                        Some(Some(MoveAction::Gizmo))
                                     } else {
                                         Some(None)
                                     }
@@ -138,10 +157,6 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                         Some(MoveAction::CurveHandle) => {
                             action.set(Some(MoveAction::CurveHandle));
                         }
-                        Some(MoveAction::Gizmo) => {
-                            action.set(Some(MoveAction::Gizmo));
-                            gizmo::begin_drag();
-                        }
                         _ if !scene_camera_active() => {
                             action.set(Some(MoveAction::Camera));
                             with_camera_mut(|c| c.on_pointer_down());
@@ -150,7 +165,16 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                     }
                 }));
             }))
-            .event(clone!(drag, action => move |event: events::PointerMove| {
+            .event(clone!(canvas, drag, action => move |event: events::PointerMove| {
+                // Idle hover (no button down, no pending pick): highlight the
+                // gizmo handle under the cursor. Done on every move from the
+                // absolute position — NOT gated on movement deltas (synthetic
+                // moves and some real ones report movementX/Y == 0). Renderer-free.
+                if action.get().is_none() && drag.get().is_none() {
+                    let (px, py) = canvas_coords(&canvas, event.x(), event.y());
+                    gizmo::update_hover(px, py);
+                    return;
+                }
                 let dx = event.movement_x();
                 let dy = event.movement_y();
                 if dx == 0 && dy == 0 {
@@ -188,7 +212,8 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                             }
                         }
                     }
-                    // Gizmo pick still pending — just remember it became a drag.
+                    // Button down, gizmo pick still pending — remember it became
+                    // a drag. (Idle hover is handled at the top of this handler.)
                     None => {
                         if let Some((sx, sy, moved)) = drag.get() {
                             let moved = moved
@@ -199,6 +224,8 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                     }
                 }
             }))
+            // Clear the hover highlight when the pointer leaves the canvas.
+            .event(|_: events::PointerLeave| gizmo::clear_hover())
             .event(clone!(canvas, drag, action => move |event: events::PointerUp| {
                 try_with_camera_mut(|c| c.on_pointer_up());
                 let finished = action.get();

@@ -23,7 +23,7 @@ use awsm_renderer::animation::{
 use awsm_web_shared::prelude::{Mutable, MutableVec};
 use glam::{Quat, Vec3};
 
-use crate::engine::scene::AssetId;
+use crate::engine::scene::{AssetId, NodeId};
 
 // The serde model types are the **persistence schema** (`awsm_editor_protocol`), so
 // the live model + the project TOML share one definition (mirrors how
@@ -74,6 +74,19 @@ pub fn target_key(t: &TrackTarget) -> String {
         TrackTarget::BuiltinParam { node, param } => format!("builtin/{node}/{param:?}"),
         TrackTarget::Light { node, param } => format!("light/{node}/{param:?}"),
         TrackTarget::Camera { node, param } => format!("camera/{node}/{param:?}"),
+    }
+}
+
+/// The scene node a target binds to, if any. `Uniform` targets bind to a
+/// material (by `AssetId`), not a node, so they return `None`.
+pub fn target_node(t: &TrackTarget) -> Option<NodeId> {
+    match t {
+        TrackTarget::Transform { node, .. }
+        | TrackTarget::Morph { node, .. }
+        | TrackTarget::BuiltinParam { node, .. }
+        | TrackTarget::Light { node, .. }
+        | TrackTarget::Camera { node, .. } => Some(*node),
+        TrackTarget::Uniform { .. } => None,
     }
 }
 
