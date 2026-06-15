@@ -12,6 +12,7 @@ mod controller;
 mod engine;
 mod error;
 mod fs;
+mod help_modal;
 mod material_mode;
 mod prelude;
 mod remote;

@@ -303,13 +303,19 @@ Phase 1). Adopt audio's per-tab binding so multiple tabs never cross streams.
 
 ### Phase 4b — Help modal
 
-- [ ] **Help modal** (`help_modal.rs`, adapt audio): a top-bar **Help button** and
-      an MCP section — what it is, install the server, run it, connect this editor
-      (`?mcp=`/`?pair=`, TLS), point your agent at `…/mcp` (Claude Code/Codex/
-      Cursor), watch it work. Deep-linkable from a **Help button added to the MCP
-      modal**. Adapt copy to the scene editor (not audio). (The MCP-modal Help
-      button is added here, with 4b, since it targets this modal.)
-- [ ] Verify in-browser (Phase 6). Commit: `editor: help modal + MCP help section`.
+- [x] **Help modal** (new `help_modal.rs`, `mod help_modal;` in `main.rs`): a small
+      tabbed guide — **Overview** + **Using the MCP**. The MCP tab covers what it
+      is, install the server (the curl/PowerShell/cargo one-liners), run it, connect
+      this editor (`?mcp=`/`?pair=`, the TLS toggle), point your agent at
+      `…:9086/mcp` (Claude Code / `.mcp.json` / Cursor), and watch it work
+      (the activity feed). Tabs switch via a local `Mutable<usize>`; copy is
+      scene-editor-specific (not a port of audio's audio tabs).
+- [x] Top-bar **Help button** (`IconBtn("help")` next to Settings) → `open_help`.
+      A **Help button in the MCP modal** (left of the action row) closes the modal
+      and `open_help_mcp()` — deep-links to the "Using the MCP" tab.
+- [x] Verified: `clippy --all --all-features --tests -D warnings` + `test
+      --all-features` + `fmt` green; grep guard clean. Live in-browser check is
+      **manual** (Phase 6). Commit: `editor: help modal + MCP help section`.
 
 ## Phase 5 — MCP server best-practices pass (judgment)
 

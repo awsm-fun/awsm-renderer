@@ -932,11 +932,21 @@ fn open_mcp_modal() {
                     }))
                 }))
             })))
-            // Action: Connect / Connecting… / Disconnect, by live status.
+            // Action: Help on the left; Connect / Connecting… / Disconnect on the
+            // right, by live status.
             .child(html!("div", {
                 .style("display", "flex")
-                .style("justify-content", "flex-end")
+                .style("justify-content", "space-between")
+                .style("align-items", "center")
                 .style("margin-top", "4px")
+                .child(Btn::new()
+                    .label("Help")
+                    .icon("help")
+                    .variant(BtnVariant::Ghost)
+                    .size(BtnSize::Md)
+                    .title("How the MCP works — open the guide")
+                    .on_click(|| { Modal::close(); crate::help_modal::open_help_mcp(); })
+                    .render())
                 .child_signal(crate::remote::status().signal().map(clone!(addr => move |st| {
                     Some(match st {
                         RemoteStatus::Connected => Btn::new()
@@ -1044,6 +1054,8 @@ fn top_bar(ctrl: &EditorController) -> Dom {
         ], false, false))
         .child(IconBtn::new("settings").title("Settings")
             .on_click(|| controller().settings_open.set_neq(true)).render())
+        .child(IconBtn::new("help").title("Help")
+            .on_click(crate::help_modal::open_help).render())
         .child(cmdk_button())
         .child(mcp_button())
         .child(html!("div", { .style("flex", "1") }))
