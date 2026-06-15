@@ -112,13 +112,3 @@ model's pipelines before the first frame that shows it — `prewarm_pipelines` /
 `wait_for_pipelines_ready` already exist as the building blocks), but **verifying
 it needs a human wall-clock / eyes on a real cold load** — the agreed
 human-in-the-loop step.
-
----
-
-## 4. (Separate effort) MCP template repo
-
-Not part of the renderer release. A tiny separate repo (working name `awsm-mcp`)
-so anyone can drive the **hosted** editor from an MCP agent without cloning
-`awsm-renderer` / building the WASM frontend: ship the prebuilt
-`awsm-renderer-mcp` binary + a ready `.mcp.json`, open the hosted editor, click
-**Connect**. Depends on the existing MCP work.
