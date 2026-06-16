@@ -214,7 +214,7 @@ From source (needs Rust): `cargo install --git https://github.com/awsm-fun/awsm-
    ```json
    {
      "mcpServers": {
-       "awsm-editor": { "type": "http", "url": "http://127.0.0.1:9086/mcp" }
+       "awsm-scene": { "type": "http", "url": "http://127.0.0.1:9086/mcp" }
      }
    }
    ```

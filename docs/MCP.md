@@ -82,7 +82,7 @@ sync, and undo/redo/coalescing all work as in the UI.
    ```json
    {
      "mcpServers": {
-       "awsm-editor": { "type": "http", "url": "http://127.0.0.1:9086/mcp" }
+       "awsm-scene": { "type": "http", "url": "http://127.0.0.1:9086/mcp" }
      }
    }
    ```
