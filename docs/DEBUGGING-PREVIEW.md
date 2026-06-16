@@ -37,7 +37,7 @@ renderer load never touches the Claude app.
 
 > **Driving the editor specifically?** Prefer the **MCP bridge** over raw
 > `javascript_tool`: run `task mcp-dev`, load the editor at
-> `http://localhost:9085/?mcp=http://127.0.0.1:9086`, and call the `awsm-editor`
+> `http://localhost:9085/?mcp=http://127.0.0.1:9086`, and call the `awsm-scene`
 > MCP tools (`get_snapshot`, `node_set_transform`, `screenshot_scene`, …). That
 > path goes through the editor's command/query authority instead of poking the
 > DOM. See the README's "Driving the editor from an AI agent" section and
