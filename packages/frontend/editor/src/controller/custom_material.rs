@@ -140,25 +140,19 @@ pub struct CustomMaterial {
 }
 
 /// The custom-material-facing `ShaderIncludes` menu — the **Tier-A generic
-/// helpers** a custom material may opt into (order = display order). The Tier-B
-/// PBR-internal modules (`apply_lighting` / `brdf` / `material_color_calc`) are
-/// deliberately NOT offered: they're welded to the built-in `PbrMaterial` /
-/// `PbrMaterialColor` types and `ShaderIncludeFlags::for_custom` masks them off
-/// for any custom material, so selecting them would do nothing. A custom
-/// material that wants PBR-like shading writes its own WGSL (it can build on the
-/// generic `light_access` accessors + `brdf_primitives` helpers). See
-/// `awsm_materials::ShaderIncludes` + docs/plans/material-optimizations.md.
-pub const SHADER_INCLUDE_KEYS: &[&str] = &[
-    "math",
-    "camera",
-    "color_space",
-    "textures",
-    "vertex_color",
-    "light_access",
-    "shadows",
-    "skybox",
-    "extras",
-];
+/// helpers** a custom material may opt into (display order). Derived from the
+/// single source of truth, `awsm_materials::ShaderIncludes::tier_a_catalog()`,
+/// so it can't drift from the engine's actual gate set. The Tier-B PBR-internal
+/// modules (`apply_lighting`/`brdf`/`material_color_calc`) are excluded there:
+/// `ShaderIncludeFlags::for_custom` masks them, so offering them would do
+/// nothing. A custom material that wants PBR-like shading writes its own WGSL
+/// (building on `light_access` + the generic `brdf_primitives` helpers).
+pub static SHADER_INCLUDE_KEYS: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        awsm_materials::ShaderIncludes::tier_a_catalog()
+            .map(|(key, _desc)| key)
+            .collect()
+    });
 
 /// Every `FragmentInputs` flag, by key.
 pub const FRAGMENT_INPUT_KEYS: &[&str] = &[

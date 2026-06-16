@@ -371,10 +371,29 @@ helper catalog must be discoverable via MCP. Surfaces found:
      hardcoded string. Source it from `awsm_materials::ShaderIncludes` (single source of truth)
      rather than duplicating the list.
 
-- [ ] Update editor `ALL_SHADER_INCLUDES` / picker UI to the Tier-A menu.
-- [ ] Update + (ideally) data-drive the MCP `SetCustomMaterialShaderIncludes` legal-key list.
-- [ ] Add an MCP query exposing the full Tier-A helper catalog (key + description + input deps).
-- [ ] Saved-project migration/notes for removed Tier-B keys.
+- [x] Update editor picker to the Tier-A menu. → Done. `SHADER_INCLUDE_KEYS` now **derives** from
+      `awsm_materials::ShaderIncludes::tier_a_catalog()` (single source; LazyLock for the `'static`
+      `dep_group` API). Editor compiles (wasm check). Dropped Tier-B from the picker.
+- [x] Update + data-drive the MCP legal-key list. → Done. `set_material_includes` description lists
+      the Tier-A keys + explains the Tier-B exclusion. Also deduped the two identical hardcoded
+      key→include parser maps (scene-loader + editor bridge) to `ShaderIncludes::from_key()` — the
+      single source is now `ShaderIncludes::KEY_TABLE` with a drift-guard test.
+- [~] Add an MCP query exposing the full Tier-A helper catalog. → **Deferred (architecturally
+      blocked).** `awsm-scene-mcp` depends ONLY on `awsm-editor-protocol`, NOT on `awsm-materials`,
+      so it can't source the catalog from `ShaderIncludes` without either duplicating it in
+      editor-protocol (defeats single-source) or adding MCP→editor query-forwarding (a larger
+      architecture change). The `set_material_includes` description already enumerates the legal
+      Tier-A keys for LLM discovery, which serves the practical need. Revisit if MCP gains a generic
+      query-forward to the editor (where `tier_a_catalog()` is reachable).
+- [x] Saved-project migration for removed Tier-B keys. → No code change needed: the
+      scene-loader + editor-bridge parsers (now `from_key()`) still accept the Tier-B keys
+      (back-compat — they're in `KEY_TABLE`), and `ShaderIncludeFlags::for_custom` masks them on the
+      custom path, so an old project loads fine — its Tier-B selections simply become inert (they did
+      nothing useful for a custom material anyway). Documented in `KEY_TABLE`.
+
+> **Phase 7 done** (editor picker Tier-A + single-source `KEY_TABLE`/`from_key`/`tier_a_catalog`,
+> parser dedup, MCP description; catalog-query [~] dep-blocked). awsm-materials 34 + renderer 254
+> green; scene-loader + awsm-scene-mcp + awsm-editor (wasm) all compile.
 
 ### Finding — benchmark MSAA mismatch (unfair) + a big size/perf lever (user-spotted)
 

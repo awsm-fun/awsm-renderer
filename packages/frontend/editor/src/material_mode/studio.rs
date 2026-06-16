@@ -835,7 +835,7 @@ fn pass_deps_section(mat: &Arc<CustomMaterial>) -> Dom {
             .style("font-size", "11px").style("color", "var(--text-3)").style("line-height", "1.45").style("margin-bottom", "8px")
             .text("Which shader includes + interpolants the WGSL needs. Fewer = leaner bucket.")
         }))
-        .child(dep_group("Shader includes", SHADER_INCLUDE_KEYS, DepKind::Includes, mat))
+        .child(dep_group("Shader includes", SHADER_INCLUDE_KEYS.as_slice(), DepKind::Includes, mat))
         .child(html!("div", { .style("height", "8px") }))
         .child(dep_group("Fragment inputs", FRAGMENT_INPUT_KEYS, DepKind::Inputs, mat))
         .render()
