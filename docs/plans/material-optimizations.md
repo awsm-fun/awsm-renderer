@@ -263,14 +263,26 @@ include set — split per module (one commit each), naga-validated. Entanglement
       gradient match) + the Custom `material_uv` accessor on new `inc.textures`. PBR/Unlit/Toon/Flipbook
       all declare TEXTURES (keep); for_custom keeps it (Tier A); skybox_only false. empty Custom
       153,905 → 135,712 B (−18 KB). 33+254 green (naga all hosts). Ceiling 160K→142K.
-- [ ] Add `FragmentInputs` to `ShaderCacheKeyMaterialOpaque` and consume it in the
-      compute template so the kernel computes/unpacks only declared inputs (TBN unpack,
-      lights read, UV/vertex-color fetch). Today the opaque kernel is inert to
-      `FragmentInputs` and computes everything.
-- [ ] Each newly-gated module needs its flag field, the `{% if %}` in the include host,
-      and matching guards at its call sites in `compute.wgsl`.
-- [ ] First-party bases must declare the Tier A modules they actually use so they don’t
-      regress (audit pbr/toon/unlit/flipbook declarations against the new gates).
+- [~] Add `FragmentInputs` to `ShaderCacheKeyMaterialOpaque` and consume it — **RESOLVED as
+      won't-do (redundant on the opaque path).** Assessed against the actual kernel: the only
+      unconditional per-pixel inputs are `standard_coordinates` (world_position + surface_to_camera),
+      the TBN unpack (`world_normal`), and `lights_info` (already gated on `inc.light_access`). The
+      first three are **fields of the `OpaqueShadingInput` struct contract** — every Custom body may
+      read `input.world_normal` / `world_position` / `surface_to_camera`, so they MUST be computed to
+      construct the struct (gating them out would break the contract + the benchmark's noise body).
+      Lights/UV/vertex-color fetch are ALREADY gated via the include flags (light_access / textures /
+      vertex_color). So FragmentInputs would gate nothing useful here while adding a second flags
+      struct, conditional struct construction, and benchmark-declaration churn — negative ROI. (The
+      `FragmentInputs` *menu* still matters for Phase 7's editor/MCP authoring surface; it's just not
+      a kernel gate.) TANGENTS-only skipping inside `unpack_normal_tangent` is a micro-opt the driver
+      already DCEs. If a concrete need appears (e.g. a normal-free deferred input), revisit.
+- [x] Each newly-gated module needs its flag field, the `{% if %}` in the include host,
+      and matching guards at its call sites in `compute.wgsl`. → Done for all 5 module gates.
+- [x] First-party bases must declare the Tier A modules they actually use so they don’t
+      regress. → Audited: PBR declares MATH/CAMERA/COLOR_SPACE/TEXTURES/VERTEX_COLOR/LIGHT_ACCESS/
+      APPLY_LIGHTING/BRDF/MATERIAL_COLOR_CALC/SHADOWS/EXTRAS; Unlit TEXTURES/COLOR_SPACE; Toon
+      LIGHT_ACCESS/TEXTURES/CAMERA/COLOR_SPACE; Flipbook TEXTURES/COLOR_SPACE. naga validates each →
+      no first-party regression from any gate.
 
 ### Phase 5 — de-duplicate the MSAA shading path (#5)
 
