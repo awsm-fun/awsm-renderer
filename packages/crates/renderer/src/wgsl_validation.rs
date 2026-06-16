@@ -131,6 +131,25 @@ fn first_party_opaque_shaders_validate() {
             let label = format!("opaque/{name} msaa={msaa:?} mips={mips}");
             let src = render(&first_party_key(id, base, owns_skybox, msaa, mips), &label);
             naga_validate(&src, &label);
+            // Entry-point existence guard: the launcher creates every opaque
+            // bucket's pipeline with `.with_entry_point("cs_opaque")` — so the
+            // module MUST define `fn cs_opaque`. naga only checks the module
+            // *compiles*, not that the requested entry point exists; a missing
+            // one fails at pipeline-create time on a real GPU (it's how the
+            // skybox writer's `fn main` slipped through the 1024 module
+            // unification until model-tests caught it). The MSAA path also
+            // needs `cs_edge` — except the skybox writer (no edge resolve).
+            assert!(
+                src.contains("fn cs_opaque("),
+                "{label}: opaque module missing `fn cs_opaque` entry point \
+                 (launcher requests it → pipeline-create would fail on GPU)"
+            );
+            if msaa.is_some() && !owns_skybox {
+                assert!(
+                    src.contains("fn cs_edge("),
+                    "{label}: MSAA opaque module missing `fn cs_edge` entry point"
+                );
+            }
         }
     }
 }

@@ -11,8 +11,15 @@
 // the heavy PBR shading includes, so this compiles to a tiny shader.
 {% include "material_opaque_wgsl/opaque_kernel_includes.wgsl" %}
 
+// Entry point named `cs_opaque` to match the opaque-pipeline convention the
+// launcher requests for every opaque bucket (launch.rs `.with_entry_point(
+// "cs_opaque")`). The 1024 module-unification (commit 1a3f35cb) switched all
+// opaque modules to `cs_opaque` but left this writer's entry as `main`, so the
+// skybox bucket's pipeline failed to create ("entry point cs_opaque doesn't
+// exist") the moment a scene with an environment compiled it — latent because
+// the cube benchmark sets no skybox. This is the skybox writer (no cs_edge).
 @compute @workgroup_size(8, 8)
-fn main(
+fn cs_opaque(
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>
 ) {
