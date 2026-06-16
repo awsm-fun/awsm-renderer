@@ -132,7 +132,11 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
       → Done. Extracted `pbr_get_gradients` (self-gated by `inc.material_color_calc`) to
       `mipmap_pbr.wgsl`; `mipmap.wgsl` keeps the generic UV-deriv machinery + `{% include %}`s
       it. Behavior-preserving (WGSL is order-independent at module scope). 247 tests green.
-- [ ] Keep `apply_lighting.wgsl` and `material_color_calc.wgsl` as Tier B wholesale.
+- [x] Keep `apply_lighting.wgsl` and `material_color_calc.wgsl` as Tier B wholesale.
+      → Verified, no split needed. `apply_lighting.wgsl` is whole-file gated by
+      `inc.apply_lighting`; every entry point takes `PbrMaterialColor`. `material_color_calc.wgsl`
+      is two model-internal builders (PBR gated by `inc.material_color_calc`, unlit by
+      `base==Unlit`) — no generic helpers mixed in to extract.
 
 ### Phase 3 — separate the custom menu from first-party internals (kills #1 + the dead 33 KB)
 
