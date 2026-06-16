@@ -855,11 +855,27 @@ fn open_mcp_modal() {
             .style("display", "flex")
             .style("flex-direction", "column")
             .style("gap", "14px")
+            // Header: title on the left, Help on the right (easy to spot — the
+            // guide is the first thing a new user wants).
             .child(html!("div", {
-                .style("font-size", "15px")
-                .style("font-weight", "600")
-                .style("color", "var(--text-0)")
-                .text("MCP server")
+                .style("display", "flex")
+                .style("align-items", "center")
+                .style("justify-content", "space-between")
+                .style("gap", "8px")
+                .child(html!("div", {
+                    .style("font-size", "15px")
+                    .style("font-weight", "600")
+                    .style("color", "var(--text-0)")
+                    .text("MCP server")
+                }))
+                .child(Btn::new()
+                    .label("Help")
+                    .icon("help")
+                    .variant(BtnVariant::Ghost)
+                    .size(BtnSize::Sm)
+                    .title("How the MCP works — open the guide")
+                    .on_click(|| { Modal::close(); crate::help_modal::open_help_mcp(); })
+                    .render())
             }))
             .child(html!("div", {
                 .style("font-size", "12.5px")
@@ -953,21 +969,13 @@ fn open_mcp_modal() {
             // Live work display — the activity feed (narration + panel spotlight)
             // that lets you watch the agent build. Also under Settings.
             .child(row("Follow agent activity", toggle(crate::engine::activity_feed::enabled())))
-            // Action: Help on the left; Connect / Connecting… / Disconnect on the
-            // right, by live status.
+            // Action: Connect / Connecting… / Disconnect, by live status. (Help
+            // lives in the header now.)
             .child(html!("div", {
                 .style("display", "flex")
-                .style("justify-content", "space-between")
+                .style("justify-content", "flex-end")
                 .style("align-items", "center")
                 .style("margin-top", "4px")
-                .child(Btn::new()
-                    .label("Help")
-                    .icon("help")
-                    .variant(BtnVariant::Ghost)
-                    .size(BtnSize::Md)
-                    .title("How the MCP works — open the guide")
-                    .on_click(|| { Modal::close(); crate::help_modal::open_help_mcp(); })
-                    .render())
                 .child_signal(crate::remote::status().signal().map(clone!(addr => move |st| {
                     Some(match st {
                         RemoteStatus::Connected => Btn::new()
