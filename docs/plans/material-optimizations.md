@@ -188,6 +188,15 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
       into a Custom shader). Caught + fixed a false-positive from a header comment. Ceilings tightened
       210K/280K → 170K/170K. GPU-level validation = the phase-end browser run. 33+249 tests green.
 
+> **Phase 3 end** — browser verification (rebuilt benchmark, fresh-context runs). Per-material
+> WGSL: 273 KB (orig) → 201 (P0) → **170 (P3)**, ~38% cut. N=256 clean at 60 fps, precompile
+> 2.9→2.6 s. N=1024 precompile 14.8→6.5 s; still **borderline** (cold-GPU retry renders at 30 fps,
+> pressured run cascades). **Key insight:** shader-size cuts help precompile but NOT the N=1024
+> runtime device-loss — that's driven by the COUNT of live GPU resources (1024 pipelines + bind
+> groups + buffers), inherent to N unique materials, independent of source size. Reliable 1024 is
+> now tracked as the O(N²) bucket fix + a per-pipeline GPU-resource reduction (see candidate phase),
+> NOT Phases 4–5. Phases 4–5 still valuable for compile time + the authoring/editor story.
+
 ### Phase 4 — complete the gating + wire FragmentInputs into the opaque path (#3, #4)
 
 - [ ] Gate the currently-unconditional Tier A modules in `opaque_kernel_includes.wgsl`
