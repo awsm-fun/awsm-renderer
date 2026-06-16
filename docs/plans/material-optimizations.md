@@ -127,8 +127,11 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
       all 3 includers (opaque/transparent/gate-test) stay byte-identical. 247 tests green
       (incl. brdf_gate_tests + shader_completeness). Behavior-preserving; size unchanged (Phase 4
       gates the halves independently).
-- [ ] Split the PBR-gradient half of `mipmap.wgsl` (`pbr_get_gradients`, Tier B) from
+- [x] Split the PBR-gradient half of `mipmap.wgsl` (`pbr_get_gradients`, Tier B) from
       its generic UV-derivative machinery (Tier A, gate on textures/UV).
+      → Done. Extracted `pbr_get_gradients` (self-gated by `inc.material_color_calc`) to
+      `mipmap_pbr.wgsl`; `mipmap.wgsl` keeps the generic UV-deriv machinery + `{% include %}`s
+      it. Behavior-preserving (WGSL is order-independent at module scope). 247 tests green.
 - [ ] Keep `apply_lighting.wgsl` and `material_color_calc.wgsl` as Tier B wholesale.
 
 ### Phase 3 — separate the custom menu from first-party internals (kills #1 + the dead 33 KB)
