@@ -230,16 +230,23 @@ include set — split per module (one commit each), naga-validated. Entanglement
       skybox-owner bucket + all material kernels (which drop the unused helper). 33+251 green.
 - [x] (prep) Extend the naga net to the empty opaque + transparent (first-party + Custom) templates —
       the entangled modules touch those hosts. 5 wgsl_validation tests green at baseline. Committed.
-- [~] `light_access` → **SKIP (respect documented decision).** light_access.wgsl carries an explicit
-      "DELIBERATELY NOT skinny-gated" rationale: its packed structs are bind-group ABI
-      (`bind_groups.wgsl` declares `lights_info: LightsInfoPacked`) so must always be present, and the
-      author notes gating the accessors "would only entangle the per-pixel shade entry points (which
-      take `LightsInfo` for every material) for no real win" — the exact `shade_sample` entanglement.
-      The win is mostly comment bytes (negligible GPU/compile cost). Not worth overriding a reasoned,
-      documented design decision; the bind-group ABI makes a clean gate impossible anyway.
-- [~] `vertex_color` + `material_vertex_color` accessor → **SKIP (negligible).** `vertex_color.wgsl`
-      is ~75 bytes (just the `VertexColorInfo` struct); `vertex_color_attrib.wgsl` is small. Gating
-      saves ~nothing while adding the wrapper-accessor entanglement — not worth it.
+- [ ] `light_access` → **gate on `LIGHT_ACCESS` (decision reversed — user direction 2026-06-16).**
+      The "DELIBERATELY NOT skinny-gated" comment in light_access.wgsl predates this granular-split
+      effort; a scene/material that provably has no lighting should be able to opt out of lighting
+      **completely**, which is worth it now. The bind-group ABI concern is solved the same way as
+      brdf/mipmap: **split** `light_access.wgsl` into `light_access_types.wgsl` (the structs —
+      `LightsInfoPacked`/`LightsInfo`/`IblInfo`/`LightPacked`/`Light`/`LightSample`, always included
+      so the `lights_info: LightsInfoPacked` binding + `LightsInfo` signatures resolve) +
+      `light_access.wgsl` (the accessor functions, gated on `inc.light_access`). Then in `compute.wgsl`
+      gate the two unconditional `let lights_info = get_lights_info();` (cs_opaque:151, cs_edge:739)
+      and the `shade_sample` `lights_info: LightsInfo` param + call arg on `inc.light_access` (PBR/Toon
+      arms that use it require LIGHT_ACCESS, so they keep it). empty.wgsl includes types only (it calls
+      no light fns). Transparent: keep functions always-included for now (its fragment calls
+      get_lights_info; transparent gating is a follow-up). Add `inc.light_access`; **update the
+      outdated comment** in the file. naga-validate all hosts.
+- [ ] `vertex_color` + `vertex_color_attrib` + `material_vertex_color` accessor → gate on
+      `VERTEX_COLOR` (same granular opt-in principle; `vertex_color_attrib.wgsl` ~1.7 KB is the real
+      content, the struct is tiny). Lower priority than light_access/textures but in scope.
 - [ ] `textures` + `texture_uvs` + generic `mipmap` + the `material_uv` accessor → gate on `TEXTURES`.
       The one substantial remaining gate (~25 KB). Entangled: the Custom `material_uv` wrapper accessor
       uses texture_uvs; PBR/flipbook sample via the texture pool. Gate all on a new `inc.textures`;
