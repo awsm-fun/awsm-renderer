@@ -282,6 +282,11 @@ pub struct ShaderIncludeFlags {
     /// `extras_pool` *binding* stays declared regardless (ABI); only the WGSL
     /// accessor bodies are gated. (Phase 4)
     pub extras: bool,
+    /// `skybox.wgsl` helper — `sample_skybox`. Tier A: in the opaque pass only
+    /// the skybox-owner bucket (`skybox_primary`) calls it; the material kernel
+    /// (`compute.wgsl`) never does. A custom material that declares `SKYBOX` may
+    /// sample it too. (Phase 4)
+    pub skybox: bool,
 }
 
 impl ShaderIncludeFlags {
@@ -301,6 +306,7 @@ impl ShaderIncludeFlags {
             apply_lighting: i.contains(S::APPLY_LIGHTING),
             material_color_calc: i.contains(S::MATERIAL_COLOR_CALC),
             extras: i.contains(S::EXTRAS),
+            skybox: i.contains(S::SKYBOX),
         }
     }
 
@@ -330,6 +336,9 @@ impl ShaderIncludeFlags {
             apply_lighting: false,
             material_color_calc: false,
             extras: false,
+            // The skybox-owner bucket (skybox_primary) is the one place that
+            // actually calls `sample_skybox`, so it keeps the skybox helper.
+            skybox: true,
         }
     }
 }

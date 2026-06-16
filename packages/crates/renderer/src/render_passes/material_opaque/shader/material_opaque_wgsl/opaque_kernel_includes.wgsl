@@ -104,9 +104,11 @@
 {% include "material_opaque_wgsl/helpers/positions.wgsl" %}
 /*************** END positions.wgsl ******************/
 
+{% if inc.skybox %}
 /*************** START skybox.wgsl ******************/
 {% include "material_opaque_wgsl/helpers/skybox.wgsl" %}
 /*************** END skybox.wgsl ******************/
+{% endif %}
 
 {% if multisampled_geometry %}
 /*************** START msaa.wgsl ******************/

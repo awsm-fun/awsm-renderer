@@ -224,8 +224,10 @@ include set — split per module (one commit each), naga-validated. Entanglement
       EXTRAS calls `extras_load_*`; the `extras_pool` binding stays). Added `ShaderIncludeFlags.extras`.
       empty Custom 162,574 → 161,295 B; `empty<all` now holds. naga-validated all first-party (PBR keeps
       it; Unlit/Toon/Flipbook drop dead extras). 33+251 green.
-- [ ] `skybox` → gate on `SKYBOX` (sample_skybox only used by skybox_primary; set the flag for the
-      skybox-owner bucket).
+- [x] `skybox` → gate on `SKYBOX` (sample_skybox only used by skybox_primary; set the flag for the
+      skybox-owner bucket). → Done. Added `ShaderIncludeFlags.skybox`; `skybox_only()` sets it true
+      (the owner bucket calls sample_skybox). empty Custom 161,295 → 159,722 B. naga-validated the
+      skybox-owner bucket + all material kernels (which drop the unused helper). 33+251 green.
 - [ ] `light_access` → gate on `LIGHT_ACCESS`/`LIGHTS` (guard the two `get_lights_info()` calls +
       handle the `shade_sample` LightsInfo param; split light_access types vs accessors if needed).
 - [ ] `textures` + `texture_uvs` + generic `mipmap` + the `material_uv` accessor → gate on `TEXTURES`.
