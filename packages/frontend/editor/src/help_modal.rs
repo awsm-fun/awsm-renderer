@@ -87,20 +87,68 @@ fn p(text: &str) -> Dom {
     })
 }
 
-/// A monospace code / command block (multi-line, horizontally scrollable).
-fn code(text: &str) -> Dom {
+/// A monospace code / command block (multi-line, horizontally scrollable) with a
+/// clipboard button in its top-right corner — the install/connect commands are
+/// long and awkward to select by hand. The button flashes ✓ on a successful copy.
+fn code(text: &'static str) -> Dom {
+    let copied = Mutable::new(false);
     html!("div", {
-        .class("mono")
-        .style("font-size", "11.5px")
-        .style("color", "var(--text-1)")
-        .style("background", "var(--bg-3)")
-        .style("border", "1px solid var(--line-soft)")
-        .style("border-radius", "var(--r1)")
-        .style("padding", "7px 9px")
-        .style("overflow-x", "auto")
-        .style("white-space", "pre")
-        .text(text)
+        .style("position", "relative")
+        .child(html!("div", {
+            .class("mono")
+            .style("font-size", "11.5px")
+            .style("color", "var(--text-1)")
+            .style("background", "var(--bg-3)")
+            .style("border", "1px solid var(--line-soft)")
+            .style("border-radius", "var(--r1)")
+            // Extra right padding so long lines don't run under the copy button.
+            .style("padding", "7px 34px 7px 9px")
+            .style("overflow-x", "auto")
+            .style("white-space", "pre")
+            .text(text)
+        }))
+        .child(html!("button", {
+            .style("position", "absolute")
+            .style("top", "5px")
+            .style("right", "5px")
+            .style("display", "inline-flex")
+            .style("align-items", "center")
+            .style("justify-content", "center")
+            .style("width", "22px")
+            .style("height", "22px")
+            .style("padding", "0")
+            .style("cursor", "pointer")
+            .style("border-radius", "var(--r1)")
+            .style("background", "var(--bg-2)")
+            .style("border", "1px solid var(--line-soft)")
+            .style("font-size", "12px")
+            .style("line-height", "1")
+            .style_signal("color", copied.signal().map(|c| {
+                if c { "var(--ok)" } else { "var(--text-2)" }
+            }))
+            .attr("title", "Copy to clipboard")
+            .text_signal(copied.signal().map(|c| if c { "\u{2713}" } else { "\u{1F4CB}" }))
+            .event(clone!(copied => move |_: events::Click| {
+                copy_to_clipboard(text);
+                copied.set(true);
+                spawn_local(clone!(copied => async move {
+                    gloo_timers::future::TimeoutFuture::new(1200).await;
+                    copied.set(false);
+                }));
+            }))
+        }))
     })
+}
+
+/// Write `text` to the OS clipboard (fire-and-forget; the promise is driven to
+/// completion so the browser doesn't log an unhandled rejection).
+fn copy_to_clipboard(text: &str) {
+    if let Some(win) = web_sys::window() {
+        let promise = win.navigator().clipboard().write_text(text);
+        spawn_local(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        });
+    }
 }
 
 /// A vertical stack wrapping one tab's content.
