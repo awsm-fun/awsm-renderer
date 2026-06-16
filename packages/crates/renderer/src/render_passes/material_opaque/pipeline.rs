@@ -333,7 +333,21 @@ impl MaterialOpaquePipelines {
         for d in shader_descs {
             let shader_key = shaders.get_key(gpu, d.shader_cache.clone()).await?;
             shader_cache_keys.push(d.shader_cache);
-            pipeline_cache_keys.push(ComputePipelineCacheKey::new(shader_key, d.layout_key));
+            // § Part B (the "1024 fix"): a material's opaque module now exposes
+            // TWO `@compute` entry points (`cs_opaque` + `cs_edge`), so the
+            // opaque pipeline must name `cs_opaque` explicitly — WebGPU rejects
+            // an implicit entry point on a multi-entry module. The empty-opaque
+            // fallback module keeps its single `fn main`, so it stays implicit.
+            let cache_key = match d.slot {
+                OpaquePipelineSlot::Main(_) => {
+                    ComputePipelineCacheKey::new(shader_key, d.layout_key)
+                        .with_entry_point("cs_opaque")
+                }
+                OpaquePipelineSlot::EmptyMsaa4 | OpaquePipelineSlot::EmptySingle => {
+                    ComputePipelineCacheKey::new(shader_key, d.layout_key)
+                }
+            };
+            pipeline_cache_keys.push(cache_key);
             slots.push(d.slot);
         }
 

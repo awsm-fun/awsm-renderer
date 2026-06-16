@@ -54,11 +54,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         i32((packed_xy >> 16u) & 0xFFFFu),
     );
 
+    // §5: width-gated slot_map extraction; skybox sentinel widens 0xFE→0xFFFE.
+    {% if edge_slot_bits == 16 %}
+    let slot_w0 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u];
+    let slot_w1 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u + 1u];
+    {% else %}
     let slot_map = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id];
+    {% endif %}
     var slot_index: u32 = 4u;
     for (var i = 0u; i < 4u; i++) {
-        let byte_val = (slot_map >> (i * 8u)) & 0xFFu;
-        if (byte_val == 0xFEu) {
+        {% if edge_slot_bits == 16 %}
+        let word = select(slot_w0, slot_w1, i >= 2u);
+        let field = (word >> ((i % 2u) * 16u)) & 0xFFFFu;
+        if (field == 0xFFFEu) {
+        {% else %}
+        let field = (slot_map >> (i * 8u)) & 0xFFu;
+        if (field == 0xFEu) {
+        {% endif %}
             slot_index = i;
             break;
         }

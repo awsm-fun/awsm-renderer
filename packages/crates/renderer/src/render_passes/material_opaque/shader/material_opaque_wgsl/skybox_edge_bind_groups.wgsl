@@ -26,9 +26,9 @@ struct EdgeBufferLayoutSky {
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,
-    {% for entry in bucket_entries %}
-    {{ entry.args_field() }}_sample_list_base: u32,
-    {% endfor %}
+    // Base of bucket 0's sample list; bucket `i` at
+    // `per_shader_sample_list_base + i * sample_entries_per_bucket` (§4c).
+    per_shader_sample_list_base: u32,
     skybox_sample_list_base: u32,
     sample_entries_per_bucket: u32,
 };

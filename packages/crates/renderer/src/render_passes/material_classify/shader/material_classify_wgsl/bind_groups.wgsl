@@ -41,18 +41,21 @@ struct ClassifyIndirectArgs {
 // slots are at offsets `i * 16`; `dispatchWorkgroupsIndirect` reads
 // each as `(x, y, z)` from the bound buffer at that offset.
 //
-// Generated per-registration: one `args_<name>` field per bucket,
-// then one `<name>_offset` field per bucket, then the shared
-// `bucket_capacity`, then `pad_words` words of alignment padding so
-// the trailing `tiles` array (vec2<u32>, 8 B stride) starts on a
-// 16-byte boundary. The host's `header_bytes(bucket_count)` matches.
+// Data-driven layout (§4b): `args` is `array<ClassifyIndirectArgs,
+// bucket_count>` and `offsets` is `array<u32, bucket_count>`, indexed
+// by bucket index. This is **byte-identical** to the old back-to-back
+// per-bucket named fields — `ClassifyIndirectArgs` is 16 B / align 4
+// (WGSL array stride 16, matching the host `INDIRECT_ARGS_STRIDE`), and
+// the u32 offsets array packs at stride 4 — so the host
+// `header_bytes(bucket_count)` / `write_header` writer is unchanged. We
+// only stop *naming* each bucket's slot, so thread-0's fan-out can index
+// `args[bucket_index]` from the set-bit scan instead of an unrolled
+// per-bucket `if`. The trailing `bucket_capacity` + `pad_words` of
+// alignment padding push the runtime `tiles` array (vec2<u32>, 8 B
+// stride) to a 16-byte boundary, exactly as before.
 struct ClassifyOutput {
-{% for entry in bucket_entries %}
-    {{ entry.args_field() }}: ClassifyIndirectArgs,
-{% endfor %}
-{% for entry in bucket_entries %}
-    {{ entry.offset_field() }}: u32,
-{% endfor %}
+    args: array<ClassifyIndirectArgs, {{ bucket_count }}u>,
+    offsets: array<u32, {{ bucket_count }}u>,
     bucket_capacity: u32,
 {% for pad in pad_words_iter %}
     _pad_align_{{ pad }}: u32,
@@ -99,15 +102,18 @@ struct EdgeIndirectArgs {
 };
 
 // args_buffer-shaped struct: atomic counters + per-args slots only.
+// `per_shader_edge_args` is `array<EdgeIndirectArgs, bucket_count>`,
+// indexed by bucket index (§4c). Byte-identical to the old back-to-back
+// `<name>_edge` named fields (EdgeIndirectArgs is 16 B / stride 16,
+// starting at byte 48 after the 3 fixed fields), so the indirect-dispatch
+// offsets the host computes (`48 + bucket_index*16`) are unchanged.
 struct EdgeArgsBuffer {
     edge_count: atomic<u32>,
     edge_overflow_count: atomic<u32>,
     _pad_counters: vec2<u32>,
     final_blend_args: EdgeIndirectArgs,
     skybox_edge_args: EdgeIndirectArgs,
-    {% for entry in bucket_entries %}
-    {{ entry.args_field() }}_edge: EdgeIndirectArgs,
-    {% endfor %}
+    per_shader_edge_args: array<EdgeIndirectArgs, {{ bucket_count }}u>,
 };
 
 @group(0) @binding(4) var<storage, read_write> edge_buffers: EdgeArgsBuffer;
@@ -126,9 +132,12 @@ struct EdgeBufferLayout {
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,
-    {% for entry in bucket_entries %}
-    {{ entry.args_field() }}_sample_list_base: u32,
-    {% endfor %}
+    // Base (u32-stride) of bucket 0's sample list (§4c). Bucket `i`'s list
+    // is at `per_shader_sample_list_base + i * sample_entries_per_bucket`
+    // (contiguous, uniformly sized) — replaces the old per-bucket
+    // `<name>_sample_list_base` field array, so this uniform is now a fixed
+    // 10-u32 (48 B padded) struct regardless of bucket count.
+    per_shader_sample_list_base: u32,
     skybox_sample_list_base: u32,
     sample_entries_per_bucket: u32,
 };
@@ -178,4 +187,17 @@ struct EdgeBufferLayout {
 // diagonal slope of the platform top in the canonical MorphStressTest
 // view.
 @group(0) @binding(9) var normal_tangent_tex: texture_multisampled_2d<f32>;
+{% endif %}
+
+// bucket_lut (§4a): `shader_id → bucket_index`, O(1) per-pixel/per-sample
+// map replacing the old `shader_id == SHADER_ID_*` if/else chain. Bound
+// LAST so the binding index is 4 in the singlesampled variant and 10 in
+// the MSAA variant (after the 6 edge bindings) — kept in lockstep with
+// `bind_group.rs` (which appends it last in both layout + recreate).
+// `bucket_lut[raw_sid]` returns the bucket index, or 0xFFFFFFFF (no live
+// bucket — the data-driven form of the old "no arm matched" fall-through).
+{% if emit_edge_data %}
+@group(0) @binding(10) var<storage, read> bucket_lut: array<u32>;
+{% else %}
+@group(0) @binding(4) var<storage, read> bucket_lut: array<u32>;
 {% endif %}

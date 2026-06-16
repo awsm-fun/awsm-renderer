@@ -146,6 +146,7 @@ impl AwsmRenderer {
             anti_aliasing: &self.anti_aliasing,
             shadows: &self.shadows,
             material_classify_buffers: &self.material_classify_buffers,
+            material_bucket_lut: &self.material_bucket_lut,
             light_culling_buffers: &self.light_culling_buffers,
             material_edge_buffers: self.material_edge_buffers.as_ref(),
             material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),

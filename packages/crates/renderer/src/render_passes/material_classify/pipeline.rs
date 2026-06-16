@@ -76,7 +76,7 @@ impl MaterialClassifyPipelines {
         };
         vec![ShaderCacheKey::from(ShaderCacheKeyMaterialClassify {
             msaa_sample_count: active_msaa,
-            bucket_entries: bucket_entries.to_vec(),
+            bucket_count: bucket_entries.len() as u32,
             // Priority-3 edge data emission requires MSAA + device
             // support for the full Stage 3 dispatch wiring (5 bind
             // groups, 11 storage buffers). When the device caps out
@@ -133,7 +133,7 @@ impl MaterialClassifyPipelines {
                 gpu,
                 ShaderCacheKeyMaterialClassify {
                     msaa_sample_count: active_msaa,
-                    bucket_entries: bucket_entries.to_vec(),
+                    bucket_count: bucket_entries.len() as u32,
                     emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(gpu),
                 },
             )

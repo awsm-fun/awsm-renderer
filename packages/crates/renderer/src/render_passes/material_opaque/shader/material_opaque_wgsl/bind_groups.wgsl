@@ -133,3 +133,45 @@ struct CullParams {
 
 // === Shadow bind group (group 3) ===
 {% include "shared_wgsl/shadow/bind_groups.wgsl" %}
+
+// ─────────────────────────────────────────────────────────────────
+// Group(3) extension for the UNIFIED `cs_edge` entry point (§ Part B —
+// the "1024 fix"). Under MSAA this module exposes BOTH `cs_opaque`
+// (the material kernel) and `cs_edge` (the per-shader MSAA edge
+// resolve) so a material compiles ONE shader module instead of two.
+//
+// `cs_edge` needs the edge-resolve data buffer (read-write storage) +
+// the edge-layout uniform, appended to the shadow group at bindings
+// 10/11 exactly as the standalone `edge_resolve_bind_groups.wgsl` did
+// (so its binding ABI is byte-identical). `cs_opaque` never references
+// these, so the opaque pipeline layout (shadows only) stays valid —
+// WebGPU validates the bind-group layout per entry point.
+//
+// Gated on `multisampled_geometry`: there are no edges without MSAA,
+// so the singlesampled module carries no `cs_edge` and no edge
+// bindings.
+{% if multisampled_geometry %}
+// data_buffer: small counter-mirror header + edge_to_xy + edge_slot_map
+// + accumulator + sample lists, indexed via the EdgeBufferLayout
+// uniform's u32-stride offsets.
+@group({{ shadow_group_index }}) @binding(10) var<storage, read_write> edge_data: array<u32>;
+
+struct EdgeBufferLayout {
+    max_edge_budget: u32,
+    // u32-stride indices into `edge_data` of the atomic-counter
+    // mirrors classify writes during edge emission.
+    edge_count_index: u32,
+    per_shader_count_base: u32,
+    skybox_count_index: u32,
+    edge_to_xy_base: u32,
+    edge_slot_map_base: u32,
+    accumulator_base: u32,
+    // Base of bucket 0's sample list; bucket `i` at
+    // `per_shader_sample_list_base + i * sample_entries_per_bucket` (§4c).
+    per_shader_sample_list_base: u32,
+    skybox_sample_list_base: u32,
+    sample_entries_per_bucket: u32,
+};
+
+@group({{ shadow_group_index }}) @binding(11) var<uniform> edge_layout: EdgeBufferLayout;
+{% endif %}

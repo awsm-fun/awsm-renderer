@@ -129,6 +129,12 @@ pub struct AwsmRenderer {
     /// buckets + indirect-dispatch args the opaque material pipelines
     /// consume.
     pub material_classify_buffers: render_passes::material_classify::buffers::ClassifyBuffers,
+    /// `shader_id → bucket_index` lookup table (§4a) bound read-only into
+    /// the classify pass — the O(1) replacement for the old per-pixel
+    /// `shader_id == SHADER_ID_*` if/else chain. Rebuilt only when the
+    /// bucket set changes (`relayout_bucket_buffers`), independent of the
+    /// classify buckets (which realloc on viewport resize).
+    pub material_bucket_lut: render_passes::material_classify::bucket_lut::MaterialBucketLut,
     /// GPU light-culling froxel buffers (per-frame params uniform +
     /// per-froxel counts + flat indices + overflow counter). Owned at
     /// the top level so the per-frame `ensure_viewport` / `write_params`
@@ -788,6 +794,10 @@ pub struct AwsmRendererBuilder {
     /// edge_overflow_count via CPU readback can also grow the budget
     /// at runtime via [`AwsmRenderer::set_max_edge_budget`].
     max_edge_budget: Option<u32>,
+    /// Registration ceiling for co-resident material buckets (§2). `None`
+    /// → default 32 (identical to today). Set via
+    /// [`AwsmRendererBuilder::with_bucket_config`]; validated `1..=65534`.
+    bucket_config: Option<crate::dynamic_materials::BucketConfig>,
     /// Adaptive runtime policy. Defaults to `Auto` mode for the
     /// gpu_culling path; library consumers can override at build time
     /// (or via `AwsmRenderer::set_optimization_policy` later) to force
@@ -886,6 +896,7 @@ impl AwsmRendererBuilder {
             shadows_config: None,
             features: RendererFeatures::default(),
             max_edge_budget: None,
+            bucket_config: None,
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
             phase_handler: None,
             scene_spatial_config: None,
@@ -971,6 +982,37 @@ impl AwsmRendererBuilder {
     /// fires (indicating overflow this session).
     pub fn with_max_edge_budget(mut self, budget: u32) -> Self {
         self.max_edge_budget = Some(budget.max(1));
+        self
+    }
+
+    /// Sets the registration ceiling for co-resident material buckets
+    /// (`docs/plans/increase-materials.md` §2). Default is 32 (identical to
+    /// today). Valid range `1..=65534`; an out-of-range value is clamped
+    /// into range here and logged, so the builder never produces a registry
+    /// that can mint a bucket index the edge encoding can't represent. The
+    /// cap sizes nothing per-frame — every GPU width follows the *live*
+    /// bucket count, so a high cap costs nothing until the count grows.
+    pub fn with_bucket_config(
+        mut self,
+        config: crate::dynamic_materials::BucketConfig,
+    ) -> Self {
+        let config = match config.validate() {
+            Ok(()) => config,
+            Err(msg) => {
+                let clamped = config.max_bucket_entries.clamp(
+                    1,
+                    crate::dynamic_materials::MAX_BUCKET_ENTRIES_CEILING,
+                );
+                tracing::warn!(
+                    target: "awsm_renderer::dynamic_materials",
+                    "with_bucket_config: {msg}; clamping to {clamped}"
+                );
+                crate::dynamic_materials::BucketConfig {
+                    max_bucket_entries: clamped,
+                }
+            }
+        };
+        self.bucket_config = Some(config);
         self
     }
 
@@ -1127,6 +1169,7 @@ impl AwsmRendererBuilder {
             shadows_config,
             mut features,
             max_edge_budget,
+            bucket_config,
             optimization_policy,
             phase_handler,
             scene_spatial_config,
@@ -1376,6 +1419,14 @@ impl AwsmRendererBuilder {
                 &gpu,
                 1024,
                 first_party_bucket_count,
+            )?;
+        // Seed the bucket LUT from the first-party entries so a scene that
+        // never registers a dynamic material still classifies correctly;
+        // `relayout_bucket_buffers` rebuilds it as the registry grows.
+        let material_bucket_lut =
+            render_passes::material_classify::bucket_lut::MaterialBucketLut::new(
+                &gpu,
+                &crate::dynamic_materials::first_party_bucket_entries(),
             )?;
 
         // Light-culling froxel buffers. Sized to a tiny placeholder
@@ -1752,6 +1803,7 @@ impl AwsmRendererBuilder {
             recommended_shadow_quality_tier,
             light_buckets: LightMeshBuckets::default(),
             material_classify_buffers,
+            material_bucket_lut,
             light_culling_buffers,
             light_culling_debug_heatmap: 0,
             debug_view_mode: 0,
@@ -1825,6 +1877,15 @@ impl AwsmRendererBuilder {
             animations,
             cameras: crate::cameras::Cameras::new(),
         };
+
+        // Apply the configured registration ceiling (§2). Validated +
+        // clamped in `with_bucket_config`, so this only sets the field; it
+        // sizes nothing per-frame (widths follow the live count, §0).
+        if let Some(bucket_config) = bucket_config {
+            _self
+                .dynamic_materials
+                .set_max_bucket_entries(bucket_config.max_bucket_entries);
+        }
 
         // Initial AA + PP state — the effects + display pipelines we
         // installed in the cross-tail pool above already match the

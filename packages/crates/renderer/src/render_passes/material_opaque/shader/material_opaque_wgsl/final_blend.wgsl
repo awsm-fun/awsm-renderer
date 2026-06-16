@@ -27,7 +27,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         i32((packed_xy >> 16u) & 0xFFFFu),
     );
 
+    // §5: width-gated slot_map read; empty sentinel widens 0xFF→0xFFFF.
+    {% if edge_slot_bits == 16 %}
+    let slot_w0 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u];
+    let slot_w1 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u + 1u];
+    {% else %}
     let slot_map = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id];
+    {% endif %}
 
     var color_sum = vec3<f32>(0.0);
     var total_count: f32 = 0.0;
@@ -35,10 +41,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var slot = 0u; slot < 4u; slot++) {
         // Skip slots that have no shader_id assigned this frame. Their
         // accumulator region holds stale data.
+        {% if edge_slot_bits == 16 %}
+        let word = select(slot_w0, slot_w1, slot >= 2u);
+        let slot_byte = (word >> ((slot % 2u) * 16u)) & 0xFFFFu;
+        if (slot_byte == 0xFFFFu) {
+            continue;
+        }
+        {% else %}
         let slot_byte = (slot_map >> (slot * 8u)) & 0xFFu;
         if (slot_byte == 0xFFu) {
             continue;
         }
+        {% endif %}
         let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot) * 4u;
         let r = bitcast<f32>(edge_data[accum_word_index + 0u]);
         let g = bitcast<f32>(edge_data[accum_word_index + 1u]);

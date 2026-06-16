@@ -377,9 +377,12 @@ impl ShaderCacheKey {
         match self {
             ShaderCacheKey::RenderPass(rp) => match rp {
                 Rp::MaterialOpaque(k) => k.dispatch_hash != current_dispatch_hash,
-                Rp::MaterialEdgeResolve(k) => k.dispatch_hash != current_dispatch_hash,
                 Rp::MaterialTransparent(k) => k.dispatch_hash != current_dispatch_hash,
-                Rp::MaterialClassify(k) => k.bucket_entries.as_slice() != current_bucket_entries,
+                // Classify is identity-independent since §4a-§4d — its shader
+                // text depends only on the bucket COUNT (via bucket_lut). So it
+                // is stale only when the count changes; a same-count identity
+                // change reuses the compiled classify pipeline (§4d win).
+                Rp::MaterialClassify(k) => k.bucket_count != current_bucket_entries.len() as u32,
                 // The global MSAA edge-resolve compositors (skybox sampler +
                 // final blend) carry only the bucket list (no dispatch_hash);
                 // it still drifts on every registry change, minting a new key

@@ -37,8 +37,10 @@
 
 pub mod error;
 pub mod extras_pool;
+pub mod widths;
 
 pub use error::AwsmDynamicMaterialError;
+pub use widths::*;
 
 mod registry;
 pub use registry::*;

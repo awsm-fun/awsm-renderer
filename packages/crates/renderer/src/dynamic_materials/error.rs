@@ -50,16 +50,13 @@ pub enum AwsmDynamicMaterialError {
     #[error("[dynamic-material] {0}")]
     Core(#[from] AwsmCoreError),
 
-    /// Registration would push `bucket_entries.len()` past the
-    /// `MAX_BUCKET_ENTRIES` cap. The tightest constraint is the
-    /// classify pass's per-workgroup `tile_mask: atomic<u32>`, which
-    /// accumulates a `BUCKET_BIT_<NAME> = (1u << index)` per visible
-    /// bucket id — a bucket index `>= 32` would compile to
-    /// `1u << 32u`, an implementation-defined WGSL shift that
-    /// typically resolves to `0` on Dawn, silently dropping the
-    /// bucket from classification. See [`crate::dynamic_materials::MAX_BUCKET_ENTRIES`]
-    /// for the full encoding inventory.
-    #[error("[dynamic-material] bucket-id cap exceeded: would push bucket_entries.len() to {would_be}, max is {max} (each classify tile_mask word holds 32 bucket bits). Raise MAX_BUCKET_WORDS to widen the cap.")]
+    /// Registration would push `bucket_entries.len()` past the configured
+    /// registration ceiling (the default 32, or the value set via
+    /// `AwsmRendererBuilder::with_bucket_config`). Raise it with a
+    /// [`BucketConfig`](crate::dynamic_materials::BucketConfig) (valid range
+    /// `1..=65534`); per-frame GPU widths follow the live bucket count, so a
+    /// higher cap costs nothing until the count actually grows.
+    #[error("[dynamic-material] bucket-id cap exceeded: would push bucket_entries.len() to {would_be}, max is {max}. Raise the cap via AwsmRendererBuilder::with_bucket_config(BucketConfig {{ max_bucket_entries: .. }}) (1..=65534).")]
     BucketCapExceeded {
         /// What `bucket_entries.len()` would become if this material /
         /// registration were accepted.

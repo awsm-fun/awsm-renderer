@@ -90,6 +90,10 @@ mod renderer;
 mod shader_completeness;
 pub use renderer::*;
 
+/// Re-export the bucket registration-cap config (§2) at the crate root for
+/// discoverability alongside `AwsmRendererBuilder::with_bucket_config`.
+pub use dynamic_materials::BucketConfig;
+
 pub use load_phase::LoadPhase;
 
 // `AwsmRendererLogging` lives in `crate::debug`; the crate root re-exports

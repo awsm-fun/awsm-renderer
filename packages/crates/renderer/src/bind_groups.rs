@@ -50,6 +50,10 @@ pub struct BindGroupRecreateContext<'a> {
     /// the opaque dispatch.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// `shader_id → bucket_index` LUT (§4a), bound read-only into classify
+    /// as the O(1) per-pixel/per-sample bucket map.
+    pub material_bucket_lut:
+        &'a crate::render_passes::material_classify::bucket_lut::MaterialBucketLut,
     /// GPU light-culling froxel buffers (params uniform + per-froxel
     /// counts + flat indices + overflow counter). Bound RW on the cull
     /// pass; bound read-only by the transparent + opaque-oversized

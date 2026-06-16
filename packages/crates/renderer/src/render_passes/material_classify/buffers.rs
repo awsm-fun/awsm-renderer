@@ -29,6 +29,38 @@ use awsm_renderer_core::{
 /// returned by [`indirect_args_offset`].
 pub const INDIRECT_ARGS_STRIDE: u32 = 16;
 
+/// Total VRAM budget for the classify `tiles` array (bytes). The tiles
+/// array is partitioned per bucket; sizing each bucket to the full viewport
+/// tile count is `O(bucket_count × tile_count)` — ~237 MB at 1024 buckets /
+/// 720p, which (atop the edge buffers + N material pipelines) exhausts device
+/// VRAM and makes the per-frame mapped-staging ring fail to allocate. Capping
+/// the total to this budget keeps it `O(tile_count)` at high bucket counts
+/// (the per-bucket lists are vastly over-provisioned in practice — each
+/// bucket touches only the tiles its material covers). The typical/low-count
+/// case is unaffected: the cap only binds once `bucket_count` is large enough
+/// that the full sizing would exceed this budget (~>200 buckets at 720p).
+pub const MAX_CLASSIFY_TILE_BYTES: u32 = 32 * 1024 * 1024;
+
+/// Per-bucket tile-capacity floor, so very high bucket counts don't starve a
+/// bucket below a usable minimum. At the 1024 target the even budget share
+/// already exceeds this; it only binds past a few thousand buckets.
+pub const MIN_CLASSIFY_BUCKET_CAPACITY: u32 = 1024;
+
+/// Per-bucket tile capacity for `(requested, bucket_count)`: the requested
+/// capacity, capped so the whole tiles array fits [`MAX_CLASSIFY_TILE_BYTES`]
+/// (each tile entry is 8 bytes), floored at [`MIN_CLASSIFY_BUCKET_CAPACITY`].
+/// Below the budget-binding bucket count this is exactly `requested` (no
+/// change to small/typical scenes). NOTE: a bucket whose material covers more
+/// tiles than this cap silently drops the overflow tiles (no grow path) — a
+/// non-issue for many-small-materials workloads; documented graceful
+/// degradation for the pathological "one material fills the screen at >hundreds
+/// of buckets" case.
+pub fn capped_bucket_capacity(requested: u32, bucket_count: u32) -> u32 {
+    let bucket_count = bucket_count.max(1);
+    let budget_cap = (MAX_CLASSIFY_TILE_BYTES / 8 / bucket_count).max(MIN_CLASSIFY_BUCKET_CAPACITY);
+    requested.max(1).min(budget_cap)
+}
+
 /// Header byte count given a bucket count. Layout:
 ///   - `bucket_count` × `INDIRECT_ARGS_STRIDE` bytes of indirect args
 ///   - `bucket_count` × `u32` bytes of per-bucket tile offsets
@@ -85,8 +117,10 @@ impl ClassifyBuffers {
         bucket_capacity: u32,
         bucket_count: u32,
     ) -> Result<Self, AwsmCoreError> {
-        let bucket_capacity = bucket_capacity.max(1);
         let bucket_count = bucket_count.max(1);
+        // Cap per-bucket capacity so the tiles array stays O(tile_count), not
+        // O(bucket_count × tile_count) — see MAX_CLASSIFY_TILE_BYTES.
+        let bucket_capacity = capped_bucket_capacity(bucket_capacity, bucket_count);
         let header = header_bytes(bucket_count);
         let tiles_bytes = bucket_capacity
             .saturating_mul(bucket_count)
@@ -126,12 +160,19 @@ impl ClassifyBuffers {
         gpu: &AwsmRendererWebGpu,
         needed_capacity: u32,
     ) -> Result<bool, AwsmCoreError> {
-        if needed_capacity <= self.bucket_capacity {
+        // Grow with 2× headroom so back-to-back resizes don't thrash, then
+        // apply the VRAM budget cap. Compare against the CAPPED target (not
+        // raw `needed_capacity`): once the cap binds, `needed_capacity` may
+        // exceed `self.bucket_capacity` forever — comparing raw would realloc
+        // to the same capped size every frame.
+        let target = capped_bucket_capacity(
+            needed_capacity.saturating_mul(2).max(needed_capacity),
+            self.bucket_count,
+        );
+        if target <= self.bucket_capacity {
             return Ok(false);
         }
-        // Grow with 2× headroom so back-to-back resizes don't thrash.
-        let new_capacity = (needed_capacity * 2).max(needed_capacity);
-        *self = Self::new(gpu, new_capacity, self.bucket_count)?;
+        *self = Self::new(gpu, target, self.bucket_count)?;
         Ok(true)
     }
 
@@ -205,4 +246,49 @@ pub fn write_header(dst: &mut [u8], bucket_capacity: u32, bucket_count: u32) {
 /// pipeline matching that bucket's shader_id.
 pub fn indirect_args_offset(bucket_index: u32) -> u32 {
     bucket_index * INDIRECT_ARGS_STRIDE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The classify tiles array stays O(tile_count) at high bucket counts:
+    /// total bytes ≤ the budget once the cap binds, and the typical/low-count
+    /// case is unchanged (cap returns the full requested capacity).
+    #[test]
+    fn classify_tiles_capped_to_budget_at_high_counts() {
+        const TILE_COUNT_720P: u32 = 14400; // ceil(1280/8) * ceil(720/8)
+        let requested = TILE_COUNT_720P * 2; // ensure_capacity's 2× headroom
+
+        // Low/typical counts: NO cap — full requested per-bucket capacity.
+        for &bc in &[1u32, 5, 16, 32, 64] {
+            assert_eq!(
+                capped_bucket_capacity(requested, bc),
+                requested,
+                "cap must not bind at {bc} buckets (no typical-case regression)"
+            );
+        }
+
+        // High counts: total tiles array stays within budget.
+        for &bc in &[254u32, 512, 1024, 4096, 65534] {
+            let cap = capped_bucket_capacity(requested, bc);
+            let total_bytes = (cap as u64) * (bc as u64) * 8;
+            // Either the floor binds (tiny budget share) or we're under budget.
+            assert!(
+                cap == MIN_CLASSIFY_BUCKET_CAPACITY
+                    || total_bytes <= MAX_CLASSIFY_TILE_BYTES as u64,
+                "at {bc} buckets: cap={cap}, total={total_bytes} exceeds budget"
+            );
+            assert!(cap >= MIN_CLASSIFY_BUCKET_CAPACITY);
+        }
+
+        // The 1024 target: was ~237 MB (2×14400×1029×8) → now ≤ ~32 MB.
+        let cap_1024 = capped_bucket_capacity(requested, 1029);
+        let bytes_1024 = (cap_1024 as u64) * 1029 * 8;
+        assert!(
+            bytes_1024 <= MAX_CLASSIFY_TILE_BYTES as u64 + (MIN_CLASSIFY_BUCKET_CAPACITY as u64 * 1029 * 8),
+            "1024-bucket tiles array {bytes_1024} B not bounded"
+        );
+        assert!(bytes_1024 < 64 * 1024 * 1024, "1024-bucket tiles array should be well under 64 MB, got {bytes_1024}");
+    }
 }

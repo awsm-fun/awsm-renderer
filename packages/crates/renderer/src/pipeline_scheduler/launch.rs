@@ -237,6 +237,18 @@ impl crate::AwsmRenderer {
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
         }
+        // Rebuild + upload the `shader_id → bucket_index` LUT (§4a) for the
+        // new bucket set. This is the only site the LUT changes (the bucket
+        // set just changed); a buffer-grow forces the classify bind group to
+        // rebind. Done here — not in `ClassifyBuffers` — because the LUT must
+        // survive viewport-resize reallocs of the classify buckets.
+        if self
+            .material_bucket_lut
+            .ensure(&self.gpu, self.dynamic_materials.bucket_entries_cached())?
+        {
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
+        }
         // Edge buffers + edge-layout uniform (MSAA only). The edge
         // args/data buffers live on the classify multi-sampled bind group
         // (binding 4/5) — the classify recreate mark covers them too.
@@ -442,7 +454,7 @@ impl crate::AwsmRenderer {
         shader_jobs.push(
             ShaderCacheKeyMaterialClassify {
                 msaa_sample_count: active_msaa,
-                bucket_entries: entries.to_vec(),
+                bucket_count: entries.len() as u32,
                 emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(&self.gpu),
             }
             .into(),
@@ -509,7 +521,17 @@ impl crate::AwsmRenderer {
                     }
                 }
             };
-            compute_jobs.push((slot, ComputePipelineCacheKey::new(shader_key, layout)));
+            // § Part B (the "1024 fix"): the opaque module now exposes TWO
+            // `@compute` entry points (`cs_opaque` + `cs_edge`), so the opaque
+            // pipeline must name `cs_opaque` explicitly. Classify keeps its
+            // single default entry point.
+            let cache_key = match &slot {
+                LaunchSlot::Opaque { .. } => {
+                    ComputePipelineCacheKey::new(shader_key, layout).with_entry_point("cs_opaque")
+                }
+                LaunchSlot::Classify { .. } => ComputePipelineCacheKey::new(shader_key, layout),
+            };
+            compute_jobs.push((slot, cache_key));
         }
 
         // Cache-hit + cross-call waiter dedup. The classify cache key is
@@ -711,19 +733,26 @@ impl crate::AwsmRenderer {
             .shaders
             .ensure_keys_sync_skip_validate(&self.gpu, descs.shader_cache_keys)?;
 
-        // Build compute pipeline cache keys per entry.
+        // Build compute pipeline cache keys per entry. § Part B: per-shader
+        // edge pipelines select the `cs_edge` entry point on the UNIFIED
+        // opaque shader module (`descs.entry_points`); skybox/final_blend
+        // keep their single default entry point.
         let mut compute_jobs: Vec<(EdgeLaunchSlot, ComputePipelineCacheKey)> =
             Vec::with_capacity(descs.slots.len());
-        for ((shader_key, layout_key), slot) in resolved_shader_keys
+        for (((shader_key, layout_key), entry_point), slot) in resolved_shader_keys
             .into_iter()
             .zip(descs.pipeline_layout_keys.iter().copied())
+            .zip(descs.entry_points.iter().cloned())
             .zip(descs.slots.iter().copied())
         {
             let edge_slot = EdgeLaunchSlot(slot);
-            compute_jobs.push((
-                edge_slot,
-                ComputePipelineCacheKey::new(shader_key, layout_key),
-            ));
+            let cache_key = match entry_point {
+                Some(name) => {
+                    ComputePipelineCacheKey::new(shader_key, layout_key).with_entry_point(&name)
+                }
+                None => ComputePipelineCacheKey::new(shader_key, layout_key),
+            };
+            compute_jobs.push((edge_slot, cache_key));
         }
 
         // Record what THIS layout wants — the authoritative install-validity

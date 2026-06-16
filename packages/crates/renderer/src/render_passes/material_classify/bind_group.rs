@@ -150,6 +150,17 @@ impl MaterialClassifyBindGroups {
             // base entries.
         }
 
+        // bucket_lut (§4a) — appended LAST so its binding index is 4 in the
+        // singlesampled variant and 10 in the MSAA variant (after the 6 edge
+        // bindings), matching the templated WGSL `@binding` and the layout
+        // builder below (both also append it last). Always present: the
+        // per-pixel + per-sample bucket map needs it in every variant.
+        let bucket_lut_binding = entries.len() as u32;
+        entries.push(BindGroupEntry::new(
+            bucket_lut_binding,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.material_bucket_lut.buffer)),
+        ));
+
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts.get(layout_key)?,
             Some("Material Classify"),
@@ -296,6 +307,18 @@ async fn create_bind_group_layout_key(
             visibility_compute: true,
         });
     }
+
+    // bucket_lut (§4a) — storage RO `array<u32>`. Appended LAST in both
+    // variants so its binding index is 4 (singlesampled) or 10 (after the 6
+    // MSAA edge bindings), matching `recreate()` + the templated WGSL.
+    entries.push(BindGroupLayoutCacheKeyEntry {
+        resource: BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+        ),
+        visibility_vertex: false,
+        visibility_fragment: false,
+        visibility_compute: true,
+    });
 
     Ok(ctx
         .bind_group_layouts

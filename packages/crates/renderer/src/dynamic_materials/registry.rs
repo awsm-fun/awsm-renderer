@@ -516,6 +516,13 @@ pub struct DynamicMaterials {
     /// frame; now the per-frame probe uses `(u64, Option<u32>)`
     /// instead so neither side allocates on the hot path.
     dispatch_hash_cache: u64,
+    /// Registration ceiling — how many co-resident buckets the registry
+    /// accepts (the cap-check sites compare against this). Defaults to
+    /// [`MAX_BUCKET_ENTRIES`] (32) so behavior is identical to today unless
+    /// the builder sets a [`BucketConfig`](crate::dynamic_materials::BucketConfig).
+    /// Does NOT size any per-frame shader/buffer — those follow the live
+    /// count (§0). Validated `1..=65534` by the builder before it lands here.
+    max_bucket_entries: usize,
 }
 
 impl DynamicMaterials {
@@ -533,7 +540,22 @@ impl DynamicMaterials {
             next_dynamic_id: MaterialShaderId::DYNAMIC_START,
             bucket_entries_cache: first_party_bucket_entries(),
             dispatch_hash_cache: 0,
+            max_bucket_entries: MAX_BUCKET_ENTRIES,
         }
+    }
+
+    /// Sets the registration ceiling (from the builder's resolved
+    /// [`BucketConfig`](crate::dynamic_materials::BucketConfig)). The caller
+    /// must have validated `1..=65534` already. Does not resize anything —
+    /// per-frame widths follow the live count (§0).
+    pub fn set_max_bucket_entries(&mut self, cap: u32) {
+        self.max_bucket_entries = cap as usize;
+    }
+
+    /// The configured registration ceiling (default 32). Cap-check sites
+    /// compare the prospective bucket count against this.
+    pub fn max_bucket_entries(&self) -> usize {
+        self.max_bucket_entries
     }
 
     /// Resolve a first-party feature-set to its bucket `shader_id`,
@@ -868,10 +890,10 @@ impl DynamicMaterials {
             }
         }
         let final_count = self.bucket_entries_cache.len() + new_buckets;
-        if final_count > MAX_BUCKET_ENTRIES {
+        if final_count > self.max_bucket_entries {
             return Err(AwsmDynamicMaterialError::BucketCapExceeded {
                 would_be: final_count,
-                max: MAX_BUCKET_ENTRIES,
+                max: self.max_bucket_entries,
             });
         }
         Ok(())
@@ -1084,10 +1106,11 @@ impl crate::AwsmRenderer {
         // contract must hold even at the cap.
         if !self.dynamic_materials.would_be_idempotent(&registration) {
             let current_len = bucket_entries(&self.dynamic_materials).len();
-            if current_len >= MAX_BUCKET_ENTRIES {
+            let cap = self.dynamic_materials.max_bucket_entries();
+            if current_len >= cap {
                 return Err(AwsmDynamicMaterialError::BucketCapExceeded {
                     would_be: current_len + 1,
-                    max: MAX_BUCKET_ENTRIES,
+                    max: cap,
                 });
             }
         }
@@ -1247,10 +1270,11 @@ impl crate::AwsmRenderer {
             // (raise MAX_BUCKET_WORDS) and propagates out of the render loop.
             let mut resolved: Vec<(crate::materials::MaterialKey, MaterialShaderId)> =
                 Vec::with_capacity(wants.len());
+            let cap = self.dynamic_materials.max_bucket_entries();
             for (key, base, features) in wants {
                 let id = self
                     .dynamic_materials
-                    .resolve_first_party_variant_or_cap_err(base, features, MAX_BUCKET_ENTRIES)?;
+                    .resolve_first_party_variant_or_cap_err(base, features, cap)?;
                 resolved.push((key, id));
             }
             // Stamp the resolved id into each material's payload (re-packs
@@ -1801,6 +1825,40 @@ mod tests {
             AwsmDynamicMaterialError::BucketCapExceeded { .. }
         ));
         assert_eq!(dm.bucket_entries_cached().len(), MAX_BUCKET_ENTRIES);
+    }
+
+    #[test]
+    fn configurable_cap_admits_up_to_and_rejects_past_the_configured_ceiling() {
+        // Default is the historical 32.
+        let dm = DynamicMaterials::new();
+        assert_eq!(dm.max_bucket_entries(), MAX_BUCKET_ENTRIES);
+
+        // Raise the cap and confirm the registry fills to exactly the new
+        // ceiling, then hard-errors on the next genuinely-new variant. The
+        // runtime cap-check sites read `max_bucket_entries()`, so this test
+        // drives them through the same accessor.
+        let cap = 100usize;
+        let mut dm = DynamicMaterials::new();
+        dm.set_max_bucket_entries(cap as u32);
+        assert_eq!(dm.max_bucket_entries(), cap);
+
+        let configured = dm.max_bucket_entries();
+        let mut i = 0u32;
+        while dm.bucket_entries_cached().len() < cap {
+            dm.resolve_first_party_variant_or_cap_err(ShadingBase::Pbr, i, configured)
+                .expect("should resolve below the configured cap");
+            i += 1;
+        }
+        assert_eq!(dm.bucket_entries_cached().len(), cap);
+
+        let err = dm
+            .resolve_first_party_variant_or_cap_err(ShadingBase::Pbr, 999_999, configured)
+            .expect_err("a new variant past the configured cap must error");
+        assert!(matches!(
+            err,
+            AwsmDynamicMaterialError::BucketCapExceeded { max, .. } if max == cap
+        ));
+        assert_eq!(dm.bucket_entries_cached().len(), cap);
     }
 
     #[test]

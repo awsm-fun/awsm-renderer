@@ -130,6 +130,21 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// their `classify_buckets.<name>_offset` field. Mirrors the
     /// classify-pass template's `bucket_entries`.
     pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
+    /// Bucket index this shader_id occupies inside `bucket_entries`
+    /// (§ Part B — the unified module). Hard-coded into the merged
+    /// `cs_edge` entry point's `{{ bucket_index }}u` slot-match in the
+    /// slot_map scan + the per-shader entry-count read — same as the
+    /// former standalone `edge_resolve.wgsl`. Resolved from the
+    /// shader_id's position in `bucket_entries` at template-render time
+    /// (0 for the SKYBOX bucket, which renders `skybox_primary` and so
+    /// never emits `cs_edge`).
+    pub bucket_index: u32,
+    /// Edge `edge_slot_map` packing width (8 or 16), §5 — derived from
+    /// the live bucket count. Gates the `cs_edge` slot_map read between
+    /// one u32/edge (8-bit, ≤254 buckets) and two u32/edge (16-bit,
+    /// >254). Only consumed inside the `{% if multisampled_geometry %}`
+    /// `cs_edge` block; inert on the singlesampled module.
+    pub edge_slot_bits: u32,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -252,6 +267,18 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 bucket_entries.len() as u32,
             ))
             .collect();
+        // § Part B (the unified module): the merged `cs_edge` entry point
+        // hard-codes this bucket's index for its slot-map scan + per-shader
+        // entry-count read. Resolve it from the shader_id's position in
+        // `bucket_entries`; default 0 if not found (the SKYBOX bucket
+        // renders `skybox_primary` and never emits `cs_edge`, so its value
+        // is inert).
+        let bucket_index = bucket_entries
+            .iter()
+            .position(|e| e.shader_id == value.shader_id)
+            .unwrap_or(0) as u32;
+        let edge_slot_bits =
+            crate::dynamic_materials::edge_slot_bits(bucket_entries.len() as u32) as u32;
         let _self = Self {
             bind_groups: ShaderTemplateMaterialOpaqueBindGroups {
                 texture_pool_arrays_len,
@@ -322,6 +349,8 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                     .map(|d| d.wgsl_fragment.clone())
                     .unwrap_or_default(),
                 bucket_entries,
+                bucket_index,
+                edge_slot_bits,
             },
         };
 
@@ -571,23 +600,20 @@ mod empty_registry_tests {
     use crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque;
     use awsm_materials::MaterialShaderId;
 
-    // Dual-context invariant: the custom author accessors must exist IDENTICALLY
-    // in BOTH the primary opaque-compute kernel AND the edge-resolve kernel (a
-    // custom fragment is compiled into both — an accessor present in one but not
-    // the other fails pipeline compile only in the missing variant). These
-    // assert against the source WGSL directly (include_str!) so the guard can't
-    // drift from the rendered templates. (Whether a non-zero set visually differs
-    // is a separate GPU state-2 confirm — needs a multi-UV asset the repo lacks.)
+    // Custom author accessors must exist in the opaque-compute kernel includes.
+    // Since the opaque-shade + edge-resolve kernels were unified into one shader
+    // module (the `cs_opaque` + `cs_edge` entry points both include
+    // `opaque_kernel_includes.wgsl`), a single source covers both contexts — an
+    // accessor missing here fails pipeline compile for both. This asserts against
+    // the source WGSL directly (include_str!) so the guard can't drift from the
+    // rendered templates. (Whether a non-zero set visually differs is a separate
+    // GPU state-2 confirm — needs a multi-UV asset the repo lacks.)
     const OPAQUE_KERNEL_WGSL: &str =
         include_str!("material_opaque_wgsl/opaque_kernel_includes.wgsl");
-    const EDGE_RESOLVE_WGSL: &str = include_str!("material_opaque_wgsl/edge_resolve.wgsl");
 
     #[test]
     fn custom_attribute_accessors_exist_in_both_opaque_kernels() {
-        for (name, src) in [
-            ("opaque_kernel_includes", OPAQUE_KERNEL_WGSL),
-            ("edge_resolve", EDGE_RESOLVE_WGSL),
-        ] {
+        for (name, src) in [("opaque_kernel_includes", OPAQUE_KERNEL_WGSL)] {
             assert!(
                 src.contains("fn material_uv(input: OpaqueShadingInput"),
                 "{name}.wgsl missing material_uv(input, set) accessor (dual-context invariant)"
