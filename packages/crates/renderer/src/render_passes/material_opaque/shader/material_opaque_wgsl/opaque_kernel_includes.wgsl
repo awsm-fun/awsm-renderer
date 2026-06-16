@@ -52,9 +52,14 @@
 {% include "shared_wgsl/transforms.wgsl" %}
 /*************** END transforms.wgsl ******************/
 
+/*************** START light_access_types.wgsl (always — ABI) ******************/
+{% include "shared_wgsl/lighting/light_access_types.wgsl" %}
+/*************** END light_access_types.wgsl ******************/
+{% if inc.light_access %}
 /*************** START light_access.wgsl ******************/
 {% include "shared_wgsl/lighting/light_access.wgsl" %}
 /*************** END light_access.wgsl ******************/
+{% endif %}
 
 {% if inc.apply_lighting %}
 /*************** START apply_lighting.wgsl ******************/

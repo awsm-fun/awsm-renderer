@@ -34,12 +34,16 @@
 {% include "shared_wgsl/vertex_color.wgsl" %}
 /*************** END vertex_color.wgsl ******************/
 
-// `light_access.wgsl` stays: it defines the `LightsInfoPacked` / `LightPacked`
-// structs that `bind_groups.wgsl` declares the group(1) light bindings with
-// (binding ABI — always present). `apply_lighting.wgsl` is deliberately NOT
-// included: this kernel only writes the skybox and never calls any lighting
-// orchestration, so pulling the punctual walk (which references `brdf_*`)
-// would be dead code.
+// light_access types (ABI structs for the group(1) light bindings) + accessor
+// functions. The empty kernel's `main` only writes the skybox, BUT it still
+// embeds `materials_wgsl` (every first-party fragment), and toon's
+// `compute_toon_lit_color` calls `get_light` / `light_sample` — so the accessor
+// functions must be present here too (they're dead but referenced). Not gated:
+// empty is a single shader, and the per-material light_access opt-out (Phase 4)
+// targets the per-material Custom kernels, not this one.
+/*************** START light_access_types.wgsl ******************/
+{% include "shared_wgsl/lighting/light_access_types.wgsl" %}
+/*************** END light_access_types.wgsl ******************/
 /*************** START light_access.wgsl ******************/
 {% include "shared_wgsl/lighting/light_access.wgsl" %}
 /*************** END light_access.wgsl ******************/

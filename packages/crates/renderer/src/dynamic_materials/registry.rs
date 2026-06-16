@@ -287,6 +287,14 @@ pub struct ShaderIncludeFlags {
     /// (`compute.wgsl`) never does. A custom material that declares `SKYBOX` may
     /// sample it too. (Phase 4)
     pub skybox: bool,
+    /// `light_access.wgsl` accessor FUNCTIONS (get_lights_info / get_light /
+    /// light_sample / …). Tier A: a material/scene with no lighting opts out
+    /// completely. The structs (`light_access_types.wgsl`) stay always-included
+    /// (bind-group ABI); only the accessor bodies + the kernel's
+    /// `get_lights_info()` calls + `shade_sample` `lights_info` param gate on
+    /// this. PBR/Toon declare LIGHT_ACCESS (and APPLY_LIGHTING resolves to it).
+    /// (Phase 4)
+    pub light_access: bool,
 }
 
 impl ShaderIncludeFlags {
@@ -307,6 +315,7 @@ impl ShaderIncludeFlags {
             material_color_calc: i.contains(S::MATERIAL_COLOR_CALC),
             extras: i.contains(S::EXTRAS),
             skybox: i.contains(S::SKYBOX),
+            light_access: i.contains(S::LIGHT_ACCESS),
         }
     }
 
@@ -339,6 +348,8 @@ impl ShaderIncludeFlags {
             // The skybox-owner bucket (skybox_primary) is the one place that
             // actually calls `sample_skybox`, so it keeps the skybox helper.
             skybox: true,
+            // Skybox-owner shades no geometry → no light accessors.
+            light_access: false,
         }
     }
 }

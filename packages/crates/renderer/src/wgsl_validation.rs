@@ -240,3 +240,4 @@ fn custom_transparent_shaders_validate() {
         }
     }
 }
+

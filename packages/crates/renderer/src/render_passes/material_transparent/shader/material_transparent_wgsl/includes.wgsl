@@ -50,6 +50,12 @@
 {% include "shared_wgsl/material_mesh_meta.wgsl" %}
 /*************** END mesh_meta.wgsl ******************/
 
+/*************** START light_access_types.wgsl (always — ABI) ******************/
+{% include "shared_wgsl/lighting/light_access_types.wgsl" %}
+/*************** END light_access_types.wgsl ******************/
+{# Transparent keeps the light accessors always-included for now (its fragment
+   calls get_lights_info in the PBR/Toon paths); transparent-side light_access
+   gating is a Phase-4 follow-up. #}
 /*************** START light_access.wgsl ******************/
 {% include "shared_wgsl/lighting/light_access.wgsl" %}
 /*************** END light_access.wgsl ******************/

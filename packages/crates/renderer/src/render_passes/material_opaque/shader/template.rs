@@ -1057,7 +1057,7 @@ mod size_regression {
     // Phase 3 (dead first-party bodies removed + all() Tier-A-only): empty AND
     // all() both ~162.6 KB msaa4+mips (Tier A not gated until Phase 4, so they're
     // equal for now). Was ~196 KB / ~262 KB at Phase 2.
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 170_000;
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 160_000;
     const CEIL_ALL_MSAA4_MIPS: usize = 170_000;
 
     #[test]

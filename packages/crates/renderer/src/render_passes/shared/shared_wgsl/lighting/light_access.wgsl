@@ -1,62 +1,19 @@
-// light_access.wgsl — light-data access shared by every lit shading model
-// (PBR + toon). Split out of the former lights.wgsl so non-PBR materials can
-// walk the light list WITHOUT pulling in apply_lighting + the PBR BRDF.
+// light_access.wgsl — light-data ACCESSOR FUNCTIONS (get_lights_info / get_light
+// / light_sample / …). The STRUCTS they return live in `light_access_types.wgsl`
+// (always included — bind-group ABI).
 //
-// DELIBERATELY NOT skinny-gated, and included in every opaque pipeline. The
-// packed structs (LightsInfoPacked/LightPacked) are part of the bind-group ABI
-// (bind_groups.wgsl declares the bindings with these types), so — exactly like
-// the bindings themselves — they must always be present. The accessor functions
-// below are ~80 lines of trivial unpack/switch code: their compile cost is
-// negligible next to the gated brdf.wgsl (889 lines of GGX/Fresnel/IBL math),
-// and gating them would only entangle the per-pixel shade entry points (which
-// take `LightsInfo` for every material) for no real win. So this whole file is
-// cheap, always-present shared infrastructure.
-
-// `data`: x = n_lights, y = prefiltered-env mip count, z = irradiance mip
-// count, w = n_directional (count of directional lights this frame, ≤ 8).
-// `directional`: packed-array indices of the (≤ 8) directional lights.
-// The shading paths use these to walk *only* the directionals in
-// O(n_directional) instead of scanning all `n_lights` per pixel — the
-// latter is catastrophic when a scene has hundreds/thousands of punctuals
-// (each pixel would skip over every punctual just to find the sun).
-struct LightsInfoPacked {
-    data: vec4<u32>,
-    directional: array<vec4<u32>, 2>,
-}
-
-struct LightsInfo {
-    n_lights: u32,
-    ibl: IblInfo
-}
-
-struct IblInfo {
-    prefiltered_env_mip_count: u32,
-    irradiance_mip_count: u32,
-}
-
-struct LightPacked {
-  // pos.xyz + range
-  pos_range: vec4<f32>,
-  // dir.xyz + inner_cone
-  dir_inner: vec4<f32>,
-  // color.rgb + intensity
-  color_intensity: vec4<f32>,
-  // kind (as uint) + outer_cone + shadow_index (bit-cast u32) + 1 pad
-  kind_outer_pad: vec4<f32>,
-};
-
-struct Light {
-    kind: u32,
-    color: vec3<f32>,
-    intensity: f32,
-    position: vec3<f32>,
-    range: f32,
-    direction: vec3<f32>,
-    inner_cone: f32,
-    outer_cone: f32,
-    // Index into `shadow_descriptors`. `0xFFFFFFFF` = no shadow.
-    shadow_index: u32,
-};
+// GATED on `inc.light_access` (Phase 4 of docs/plans/material-optimizations.md).
+// A material — or a whole scene known to have no lights — can opt out of lighting
+// completely: these accessors are dropped, and the per-pixel shade entry points
+// gate their `get_lights_info()` calls + `lights_info` params to match. PBR/Toon
+// declare LIGHT_ACCESS so they keep them; an unlit/flipbook/no-light custom
+// material does not.
+//
+// (Historical note: this file was previously "deliberately not skinny-gated" on
+// the reasoning that the structs are ABI and the accessors are cheap. That
+// predated the granular include splits + the explicit lighting opt-out; the
+// structs are now split into light_access_types.wgsl so the ABI stays intact
+// while the accessor bodies gate out.)
 
 fn get_lights_info() -> LightsInfo {
     // expects `lights_info` is global LightsInfoPacked
@@ -113,25 +70,6 @@ fn light_count_heatmap(count: u32) -> vec3<f32> {
     let b = saturate(1.5 - abs(4.0 * t - 1.0));
     return vec3<f32>(r, g, b);
 }
-
-// The result of sampling one light at a surface point — the generic,
-// shading-model-agnostic lighting primitive. `light_sample()` (below) computes
-// it for any light kind (directional/point/spot) with NO PBR/BRDF math, so
-// custom materials can do Lambert / Phong / toon / whatever WITHOUT pulling in
-// brdf.wgsl or apply_lighting.wgsl (this file is always present in every opaque
-// + transparent pipeline). The PBR path (`brdf_direct`) consumes the same
-// struct; it's just one consumer.
-//   - light_dir : normalized surface->light direction
-//   - radiance  : color * intensity * attenuation (spot/range already applied)
-//   - n_dot_l   : saturate(dot(normal, light_dir)) — the Lambert term
-// Lambert diffuse:  radiance * n_dot_l
-// Phong specular:   pow(max(dot(reflect(-light_dir, normal), view_dir), 0), s) * radiance
-struct LightSample {
-    normal: vec3<f32>,
-    n_dot_l: f32,
-    light_dir: vec3<f32>,
-    radiance: vec3<f32>,
-};
 
 // KHR_lights_punctual unit-handling note:
 //   * Directional intensity is `lux` (lm/m²).

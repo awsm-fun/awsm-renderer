@@ -148,7 +148,9 @@ fn cs_opaque(
     let tbn = unpack_normal_tangent(packed_nt);
     let world_normal = tbn.N;
 
+    {% if inc.light_access %}
     let lights_info = get_lights_info();
+    {% endif %}
 
     // Compute material color and apply lighting based on shader type.
     // Each opaque pipeline is specialized for one `shader_id`; the
@@ -431,7 +433,9 @@ fn shade_sample(
     camera: Camera,
     screen_dims: vec2<u32>,
     screen_dims_f32: vec2<f32>,
+    {% if inc.light_access %}
     lights_info: LightsInfo,
+    {% endif %}
 ) -> vec4<f32> {
     let textures = msaa_load_sample_textures(coords, sample_index);
     let tri_id = join32(textures.vis_data.x, textures.vis_data.y);
@@ -736,7 +740,9 @@ fn cs_edge(
     let screen_dims_u = textureDimensions(visibility_data_tex);
     let screen_dims = vec2<u32>(screen_dims_u.x, screen_dims_u.y);
     let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
+    {% if inc.light_access %}
     let lights_info = get_lights_info();
+    {% endif %}
 
     var color_sum = vec3<f32>(0.0);
     var alpha_sum: f32 = 0.0;
@@ -744,7 +750,7 @@ fn cs_edge(
 
     for (var s = 0u; s < 4u; s++) {
         if ((sample_mask & (1u << s)) != 0u) {
-            let shaded = shade_sample(coords, s, camera, screen_dims, screen_dims_f32, lights_info);
+            let shaded = shade_sample(coords, s, camera, screen_dims, screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
             color_sum += shaded.rgb;
             alpha_sum += shaded.a;
             sample_count += 1u;

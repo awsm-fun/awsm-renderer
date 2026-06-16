@@ -230,7 +230,13 @@ include set — split per module (one commit each), naga-validated. Entanglement
       skybox-owner bucket + all material kernels (which drop the unused helper). 33+251 green.
 - [x] (prep) Extend the naga net to the empty opaque + transparent (first-party + Custom) templates —
       the entangled modules touch those hosts. 5 wgsl_validation tests green at baseline. Committed.
-- [ ] `light_access` → **gate on `LIGHT_ACCESS` (decision reversed — user direction 2026-06-16).**
+- [x] `light_access` → **gate on `LIGHT_ACCESS` (decision reversed — user direction 2026-06-16).**
+      → DONE. Split into light_access_types.wgsl (structs, always — ABI) + light_access.wgsl
+      (accessors, gated on new `inc.light_access`); gated the 2 get_lights_info() calls + the
+      shade_sample lights_info param/arg; empty.wgsl keeps functions (it embeds the toon body which
+      calls get_light — the naga net caught this); transparent keeps functions always (follow-up);
+      updated the outdated comment. empty Custom 159,722 → 153,905 B (−5.8 KB). 33+254 green
+      (naga validates opaque/empty/transparent). Ceiling tightened 170K→160K.
       The "DELIBERATELY NOT skinny-gated" comment in light_access.wgsl predates this granular-split
       effort; a scene/material that provably has no lighting should be able to opt out of lighting
       **completely**, which is worth it now. The bind-group ABI concern is solved the same way as
