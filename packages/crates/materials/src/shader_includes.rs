@@ -154,6 +154,51 @@ impl ShaderIncludes {
                 | Self::BIT_EXTRAS,
         )
     }
+
+    /// The single-source key table: `(key, bit, tier_a, description)`. The
+    /// authoring string keys, their bits, whether they're offered on the
+    /// custom-material (Tier-A) menu, and a one-line description. Editor pickers,
+    /// the scene-loader / editor-bridge string parsers, and the MCP catalog all
+    /// derive from THIS — no duplicated key lists. Tier-B entries (the PBR
+    /// internals) stay in the table for back-compat parsing of old saved
+    /// projects, but `tier_a` is false so they're never offered to custom
+    /// materials (and `ShaderIncludeFlags::for_custom` masks them anyway).
+    pub const KEY_TABLE: &'static [(&'static str, Self, bool, &'static str)] = &[
+        ("math", Self::MATH, true, "Basic math helpers (constants, clamping, etc.)"),
+        ("camera", Self::CAMERA, true, "Camera uniform + view/projection access"),
+        ("color_space", Self::COLOR_SPACE, true, "Linear/sRGB + tonemap-adjacent helpers"),
+        ("textures", Self::TEXTURES, true, "Texture-pool sampling + UV helpers"),
+        ("vertex_color", Self::VERTEX_COLOR, true, "Per-vertex COLOR_n attribute access"),
+        ("light_access", Self::LIGHT_ACCESS, true, "Punctual light access: get_lights_info / get_light / light_sample"),
+        ("shadows", Self::SHADOWS, true, "Shadow-map sampling helpers"),
+        ("skybox", Self::SKYBOX, true, "Skybox cubemap sampling (sample_skybox)"),
+        ("extras", Self::EXTRAS, true, "Extras storage-pool accessors (extras_load_*)"),
+        ("apply_lighting", Self::APPLY_LIGHTING, false, "(PBR-internal) apply_lighting orchestration — NOT available to custom materials"),
+        ("brdf", Self::BRDF, false, "(PBR-internal) PBR BRDF orchestrators — NOT available to custom materials"),
+        ("material_color_calc", Self::MATERIAL_COLOR_CALC, false, "(PBR-internal) PbrMaterialColor builder — NOT available to custom materials"),
+    ];
+
+    /// Parse an authoring string key (e.g. `"light_access"`) to its include bit.
+    /// `None` for unknown keys. The single source for the scene-loader + editor
+    /// bridge string→include parsers (back-compat: Tier-B keys still parse, but
+    /// `for_custom` masks them on the custom path).
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::KEY_TABLE
+            .iter()
+            .find(|(k, ..)| *k == key)
+            .map(|(_, bit, ..)| *bit)
+    }
+
+    /// The custom-material-facing **Tier-A** helper catalog: `(key, description)`
+    /// for every generic module a custom material may opt into. Drives the editor
+    /// picker + the MCP helper catalog. Excludes the Tier-B PBR internals.
+    pub fn tier_a_catalog() -> impl Iterator<Item = (&'static str, &'static str)> {
+        Self::KEY_TABLE
+            .iter()
+            .filter(|(.., tier_a, _)| *tier_a)
+            .map(|(k, _, _, desc)| (*k, *desc))
+    }
+
     pub const fn bits(self) -> u32 {
         self.0
     }
@@ -312,6 +357,34 @@ impl core::ops::BitOr for FragmentInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_table_is_single_source_of_truth() {
+        // from_key round-trips every table key.
+        for (k, bit, _, _) in ShaderIncludes::KEY_TABLE {
+            assert_eq!(ShaderIncludes::from_key(k), Some(*bit), "from_key({k}) drifted");
+        }
+        assert_eq!(ShaderIncludes::from_key("nonsense"), None);
+
+        // The Tier-A catalog == exactly the bits in `all()` (the custom menu).
+        // If a new generic module is added, this forces updating the catalog too.
+        let catalog_union = ShaderIncludes::tier_a_catalog()
+            .map(|(k, _)| ShaderIncludes::from_key(k).unwrap())
+            .fold(ShaderIncludes::empty(), |a, b| a.union(b));
+        assert_eq!(
+            catalog_union.bits(),
+            ShaderIncludes::all().bits(),
+            "tier_a_catalog must cover exactly ShaderIncludes::all() (the custom-facing menu)"
+        );
+
+        // The Tier-B PBR internals are in the table (back-compat parsing) but NOT
+        // in the Tier-A catalog (never offered to custom materials).
+        let tier_a_keys: Vec<_> = ShaderIncludes::tier_a_catalog().map(|(k, _)| k).collect();
+        for forbidden in ["apply_lighting", "brdf", "material_color_calc"] {
+            assert!(ShaderIncludes::from_key(forbidden).is_some(), "{forbidden} must still parse (back-compat)");
+            assert!(!tier_a_keys.contains(&forbidden), "{forbidden} must NOT be on the custom Tier-A menu");
+        }
+    }
 
     #[test]
     fn closure_pulls_transitive_deps() {

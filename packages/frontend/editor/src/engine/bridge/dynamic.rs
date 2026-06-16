@@ -581,22 +581,10 @@ fn convert_alpha(a: AlphaMode, cutoff: f32) -> MaterialAlphaMode {
 fn includes_from_keys(keys: &[String]) -> ShaderIncludes {
     let mut s = ShaderIncludes::empty();
     for k in keys {
-        let flag = match k.as_str() {
-            "math" => ShaderIncludes::MATH,
-            "camera" => ShaderIncludes::CAMERA,
-            "color_space" => ShaderIncludes::COLOR_SPACE,
-            "textures" => ShaderIncludes::TEXTURES,
-            "vertex_color" => ShaderIncludes::VERTEX_COLOR,
-            "light_access" => ShaderIncludes::LIGHT_ACCESS,
-            "apply_lighting" => ShaderIncludes::APPLY_LIGHTING,
-            "brdf" => ShaderIncludes::BRDF,
-            "material_color_calc" => ShaderIncludes::MATERIAL_COLOR_CALC,
-            "shadows" => ShaderIncludes::SHADOWS,
-            "skybox" => ShaderIncludes::SKYBOX,
-            "extras" => ShaderIncludes::EXTRAS,
-            _ => ShaderIncludes::empty(),
-        };
-        s = s.union(flag);
+        // Single source of truth: awsm_materials::ShaderIncludes::KEY_TABLE.
+        // Unknown keys dropped; Tier-B keys parse for back-compat but are masked
+        // off for custom materials by ShaderIncludeFlags::for_custom.
+        s = s.union(ShaderIncludes::from_key(k).unwrap_or_else(ShaderIncludes::empty));
     }
     s
 }
