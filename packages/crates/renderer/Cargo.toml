@@ -77,3 +77,6 @@ rstar = "0.12"
 serde = { workspace = true }
 serde-wasm-bindgen = {workspace = true}
 futures = {workspace = true}
+
+[dev-dependencies]
+naga = { version = "28.0.0", features = ["wgsl-in"] }

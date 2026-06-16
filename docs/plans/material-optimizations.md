@@ -197,6 +197,20 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
 > now tracked as the O(N²) bucket fix + a per-pipeline GPU-resource reduction (see candidate phase),
 > NOT Phases 4–5. Phases 4–5 still valuable for compile time + the authoring/editor story.
 
+### Phase 4 prep — naga WGSL validation safety net (added; user-chosen)
+
+Phase 4 gates always-on modules shared by first-party + Custom; `shader_completeness` only
+checks `_get_material` calls (narrow), and the Custom-only benchmark never exercises first-party
+PBR/Toon/Unlit/Flipbook — so a Phase-4 break could pass `cargo test` + the benchmark yet fail on a
+real PBR scene. Before touching the gates we added a static validator.
+
+- [x] Add `naga` (v28, dev-dependency, `wgsl-in`) + `src/wgsl_validation.rs`: render every
+      first-party base (PBR/Unlit/Toon/Flipbook/Skybox) and Custom (empty/all/explicit-Tier-B)
+      across {msaa,no-msaa}×{mips,no-mips} and run naga parse + validate (Capabilities::all). naga
+      is a Tint proxy — not identical, but reliably catches undefined-function/-type + type-mismatch
+      errors, the exact Phase-4 regression class. **Baseline confirmed: all current shaders validate
+      clean** (so the gate is real, not a dialect artifact). 33+251 tests green.
+
 ### Phase 4 — complete the gating + wire FragmentInputs into the opaque path (#3, #4)
 
 - [ ] Gate the currently-unconditional Tier A modules in `opaque_kernel_includes.wgsl`

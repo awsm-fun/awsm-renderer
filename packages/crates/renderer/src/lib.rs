@@ -88,6 +88,8 @@ mod renderer;
 
 #[cfg(test)]
 mod shader_completeness;
+#[cfg(test)]
+mod wgsl_validation;
 pub use renderer::*;
 
 /// Re-export the bucket registration-cap config (§2) at the crate root for
