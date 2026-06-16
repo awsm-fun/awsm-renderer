@@ -40,6 +40,7 @@
 {% include "shared_wgsl/textures.wgsl" %}
 /*************** END textures.wgsl ******************/
 
+{% if inc.vertex_color %}
 /*************** START vertex_color.wgsl ******************/
 {% include "shared_wgsl/vertex_color.wgsl" %}
 /*************** END vertex_color.wgsl ******************/
@@ -47,6 +48,7 @@
 /*************** START vertex_color_attrib.wgsl ******************/
 {% include "material_opaque_wgsl/helpers/vertex_color_attrib.wgsl" %}
 /*************** END vertex_color_attrib.wgsl ******************/
+{% endif %}
 
 /*************** START transforms.wgsl ******************/
 {% include "shared_wgsl/transforms.wgsl" %}
@@ -178,8 +180,11 @@ struct OpaqueShadingOutput {
 // Interpolated per-vertex `COLOR_<set_index>` at this pixel (barycentric-blended
 // across the triangle). Mirrors built-in PBR's vertex-colour read. Only
 // meaningful when the mesh actually carries that colour set — declare
-// `fragment_inputs: ["vertex_color"]` and author against a painted mesh; on a
-// mesh without the set there is no presence guard on the custom path.
+// `vertex_color` in the material's includes and author against a painted mesh;
+// on a mesh without the set there is no presence guard on the custom path.
+// Gated on `inc.vertex_color` (builds on `vertex_color()` from
+// vertex_color_attrib.wgsl) — a custom material reading vertex colour declares it.
+{% if inc.vertex_color %}
 fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32> {
     // Out-of-range clamp: a set the mesh lacks reads a benign default rather than
     // an adjacent vertex's floats from the shared attribute pool (index-driven
@@ -194,6 +199,7 @@ fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32>
         input.color_sets_index,
     );
 }
+{% endif %}{# inc.vertex_color (material_vertex_color accessor) #}
 
 // Interpolated `TEXCOORD_<set_index>` at this pixel (barycentric-blended across
 // the triangle) — the raw-attribute companion to `material_vertex_color`. Lets a

@@ -304,6 +304,13 @@ pub struct ShaderIncludeFlags {
     /// references the types (ABI-like). PBR/Unlit/Toon/Flipbook all declare
     /// TEXTURES. (Phase 4)
     pub textures: bool,
+    /// Per-vertex COLOR attribute code: `vertex_color.wgsl` (the
+    /// `VertexColorInfo` struct) + `vertex_color_attrib.wgsl` (the `vertex_color`
+    /// fetch fn) + the Custom `material_vertex_color` accessor. Tier A. The only
+    /// first-party caller is the PBR builder's `{% if pbr_features.vertex_color %}`
+    /// block (PBR declares VERTEX_COLOR so always keeps it); Unlit/Toon/Flipbook
+    /// never read vertex colour. (Phase 4)
+    pub vertex_color: bool,
 }
 
 impl ShaderIncludeFlags {
@@ -326,6 +333,7 @@ impl ShaderIncludeFlags {
             skybox: i.contains(S::SKYBOX),
             light_access: i.contains(S::LIGHT_ACCESS),
             textures: i.contains(S::TEXTURES),
+            vertex_color: i.contains(S::VERTEX_COLOR),
         }
     }
 
@@ -363,6 +371,8 @@ impl ShaderIncludeFlags {
             // Skybox-owner samples only the skybox cubemap (via sample_skybox),
             // never the texture pool → no texture sampling code.
             textures: false,
+            // Skybox-owner reads no per-vertex colour.
+            vertex_color: false,
         }
     }
 }

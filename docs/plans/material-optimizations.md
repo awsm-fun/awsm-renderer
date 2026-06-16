@@ -250,9 +250,12 @@ include set — split per module (one commit each), naga-validated. Entanglement
       no light fns). Transparent: keep functions always-included for now (its fragment calls
       get_lights_info; transparent gating is a follow-up). Add `inc.light_access`; **update the
       outdated comment** in the file. naga-validate all hosts.
-- [ ] `vertex_color` + `vertex_color_attrib` + `material_vertex_color` accessor → gate on
-      `VERTEX_COLOR` (same granular opt-in principle; `vertex_color_attrib.wgsl` ~1.7 KB is the real
-      content, the struct is tiny). Lower priority than light_access/textures but in scope.
+- [x] `vertex_color` + `vertex_color_attrib` + `material_vertex_color` accessor → gate on
+      `VERTEX_COLOR`. → Done. Added `inc.vertex_color`; gated the struct + attrib fns + the Custom
+      accessor. Only first-party caller is the PBR builder's `{% if pbr_features.vertex_color %}`
+      block (PBR declares VERTEX_COLOR so always keeps it); Unlit/Toon/Flipbook never read vertex
+      colour; empty keeps its own struct include. empty Custom 135,712 → 133,216 B (−2.5 KB). 33+254
+      green (naga all hosts). Ceiling 142K→138K.
 - [x] `textures` group → gate on `TEXTURES`. → Done. Refinement: `textures.wgsl` itself (the
       `TextureInfo`/`TextureInfoRaw` structs) STAYS always-included — the always-present
       `material.wgsl` accessor `material_load_texture_info -> TextureInfo` references it (ABI-like,
