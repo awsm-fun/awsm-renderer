@@ -85,6 +85,7 @@
 {% endif %}
 
 
+{% if inc.textures %}
 {% match mipmap %}
     {% when MipmapMode::Gradient %}
 /*************** START mipmap.wgsl ******************/
@@ -96,6 +97,7 @@
 /*************** START texture_uvs.wgsl ******************/
 {% include "material_opaque_wgsl/helpers/texture_uvs.wgsl" %}
 /*************** END texture_uvs.wgsl ******************/
+{% endif %}
 
 /*************** START standard.wgsl ******************/
 {% include "material_opaque_wgsl/helpers/standard.wgsl" %}
@@ -196,9 +198,13 @@ fn material_vertex_color(input: OpaqueShadingInput, set_index: u32) -> vec4<f32>
 // Interpolated `TEXCOORD_<set_index>` at this pixel (barycentric-blended across
 // the triangle) — the raw-attribute companion to `material_vertex_color`. Lets a
 // custom material read a NON-ZERO UV set directly, the same multi-set data the
-// built-in PBR `uv_index` samples. Declare `fragment_inputs: ["uv"]`. As with
-// `material_vertex_color`, there is no presence guard on the custom path — only
-// meaningful when the mesh actually carries that UV set.
+// built-in PBR `uv_index` samples. As with `material_vertex_color`, there is no
+// presence guard on the custom path — only meaningful when the mesh actually
+// carries that UV set.
+// Gated on `inc.textures` (it builds on `_texture_uv_per_vertex` from
+// texture_uvs.wgsl) — a custom material that reads UVs declares `TEXTURES`.
+// (A finer UV-without-sampling split could ride FragmentInputs::UV later.)
+{% if inc.textures %}
 fn material_uv(input: OpaqueShadingInput, set_index: u32) -> vec2<f32> {
     if (set_index >= input.uv_set_count) { return vec2<f32>(0.0); }
     let uv0 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.x, input.vertex_attribute_stride, input.uv_sets_index);
@@ -206,6 +212,7 @@ fn material_uv(input: OpaqueShadingInput, set_index: u32) -> vec2<f32> {
     let uv2 = _texture_uv_per_vertex(input.attribute_data_offset, set_index, input.triangle_indices.z, input.vertex_attribute_stride, input.uv_sets_index);
     return input.barycentric.x * uv0 + input.barycentric.y * uv1 + input.barycentric.z * uv2;
 }
+{% endif %}{# inc.textures (material_uv accessor) #}
 
 fn custom_shade_dynamic(input: OpaqueShadingInput) -> OpaqueShadingOutput {
 {{ dynamic_wgsl_fragment|safe }}

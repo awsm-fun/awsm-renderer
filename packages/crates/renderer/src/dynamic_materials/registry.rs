@@ -295,6 +295,15 @@ pub struct ShaderIncludeFlags {
     /// this. PBR/Toon declare LIGHT_ACCESS (and APPLY_LIGHTING resolves to it).
     /// (Phase 4)
     pub light_access: bool,
+    /// Texture sampling code: `texture_uvs.wgsl` (UV computation + texture-pool
+    /// sampling) + the generic UV-derivative half of `mipmap.wgsl` + the Custom
+    /// `material_uv` wrapper accessor. Tier A: a material that samples no textures
+    /// opts out. NOTE: `textures.wgsl` itself (the `TextureInfo`/`TextureInfoRaw`
+    /// descriptor structs) stays ALWAYS-included — the always-present
+    /// `material.wgsl` storage accessor (`material_load_texture_info -> TextureInfo`)
+    /// references the types (ABI-like). PBR/Unlit/Toon/Flipbook all declare
+    /// TEXTURES. (Phase 4)
+    pub textures: bool,
 }
 
 impl ShaderIncludeFlags {
@@ -316,6 +325,7 @@ impl ShaderIncludeFlags {
             extras: i.contains(S::EXTRAS),
             skybox: i.contains(S::SKYBOX),
             light_access: i.contains(S::LIGHT_ACCESS),
+            textures: i.contains(S::TEXTURES),
         }
     }
 
@@ -350,6 +360,9 @@ impl ShaderIncludeFlags {
             skybox: true,
             // Skybox-owner shades no geometry → no light accessors.
             light_access: false,
+            // Skybox-owner samples only the skybox cubemap (via sample_skybox),
+            // never the texture pool → no texture sampling code.
+            textures: false,
         }
     }
 }

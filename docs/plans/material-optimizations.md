@@ -253,10 +253,13 @@ include set — split per module (one commit each), naga-validated. Entanglement
 - [ ] `vertex_color` + `vertex_color_attrib` + `material_vertex_color` accessor → gate on
       `VERTEX_COLOR` (same granular opt-in principle; `vertex_color_attrib.wgsl` ~1.7 KB is the real
       content, the struct is tiny). Lower priority than light_access/textures but in scope.
-- [ ] `textures` + `texture_uvs` + generic `mipmap` + the `material_uv` accessor → gate on `TEXTURES`.
-      The one substantial remaining gate (~25 KB). Entangled: the Custom `material_uv` wrapper accessor
-      uses texture_uvs; PBR/flipbook sample via the texture pool. Gate all on a new `inc.textures`;
-      first-party declares TEXTURES (PBR/Unlit/Toon/Flipbook all already do). naga-validate every host.
+- [x] `textures` group → gate on `TEXTURES`. → Done. Refinement: `textures.wgsl` itself (the
+      `TextureInfo`/`TextureInfoRaw` structs) STAYS always-included — the always-present
+      `material.wgsl` accessor `material_load_texture_info -> TextureInfo` references it (ABI-like,
+      same shape as light_access). Gated `texture_uvs.wgsl` + the generic `mipmap.wgsl` (within the
+      gradient match) + the Custom `material_uv` accessor on new `inc.textures`. PBR/Unlit/Toon/Flipbook
+      all declare TEXTURES (keep); for_custom keeps it (Tier A); skybox_only false. empty Custom
+      153,905 → 135,712 B (−18 KB). 33+254 green (naga all hosts). Ceiling 160K→142K.
 - [ ] Add `FragmentInputs` to `ShaderCacheKeyMaterialOpaque` and consume it in the
       compute template so the kernel computes/unpacks only declared inputs (TBN unpack,
       lights read, UV/vertex-color fetch). Today the opaque kernel is inert to
