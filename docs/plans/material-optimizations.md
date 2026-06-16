@@ -284,6 +284,13 @@ include set — split per module (one commit each), naga-validated. Entanglement
       LIGHT_ACCESS/TEXTURES/CAMERA/COLOR_SPACE; Flipbook TEXTURES/COLOR_SPACE. naga validates each →
       no first-party regression from any gate.
 
+> **Phase 4 end** — browser verification (rebuilt benchmark). N=256: noise cubes render correctly at
+> 60 fps, clean console, per-material WGSL 169.7 → **142.1 KB** (the empty-includes Custom material
+> drops all 5 gated modules). Per-material total: 273 (orig) → 201 (P0) → 170 (P3) → **142 (P4)**,
+> ~48% cut. Compile-time this run was environmentally noisy (52 s @256 — heavy machine load this
+> session; shaders are smaller so it's not a regression); reliable timing + 512/1024 to be
+> re-measured unloaded. Size win is test-locked (size_regression). All Phase-4 items [x]/[~]-resolved.
+
 ### Phase 5 — de-duplicate the MSAA shading path (#5)
 
 Sequenced **after** Phases 2–4: the thing to extract is exactly the `{% if base == ... %}`
