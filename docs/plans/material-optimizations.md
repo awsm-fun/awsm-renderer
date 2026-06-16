@@ -316,34 +316,44 @@ Sequenced **after** Phases 2–4: the thing to extract is exactly the `{% if bas
 shading match, which those phases are still reshaping. After Phase 3 each pipeline emits one
 base's arm, so the factoring is "wrap the single rendered arm in a function, call it twice."
 
-- [ ] Factor the per-material shading glue (the `{% if base == ... %}` match producing
-      `(color, base_alpha)`, **plus** the instance-tint and wireframe blocks — also currently
-      copy-pasted in both) into one helper used by both `cs_opaque` and `shade_sample`. The
-      helper returns `(color, base_alpha)`; the caller decides the sink (`cs_opaque` →
-      `textureStore`, `cs_edge` → accumulate).
-- [ ] Note: the heavy per-base *bodies* (`compute_material_color`, `apply_lighting_per_froxel`,
-      `compute_toon_lit_color`, `custom_shade_dynamic`, …) are already defined once — only the
-      glue is duplicated, so the size win is ~10–15 KB at MSAA4 (not the full MSAA delta;
-      `msaa.wgsl` + `cs_edge` orchestration are inherent). The primary win is maintenance:
-      one shading path instead of two that already drift.
-- [ ] The Custom path already factors through `OpaqueShadingInput` + `custom_shade_dynamic`
-      (both call sites just build the struct from primary vs per-sample data), so for dynamic
-      materials this is nearly free.
-- [ ] Snags to handle explicitly (do **not** fold into the helper):
-      - PBR debug branch (`pbr_material.debug_bitmask != 0u`) does `textureStore` + early
-        `return` inside the body — keep it primary-only in `cs_opaque` around the shared call.
-      - `debug.normals` early-return stays primary-only.
-      - `shade_sample` already uses sample-0 depth via `get_standard_coordinates(coords, …)`
-        (workaround at `compute.wgsl:456`), so `world_position`/`surface_to_camera` are
-        identical primary-vs-sample; only normal/TBN/barycentric/instance_id/material-offset
-        are genuinely per-sample inputs to the helper.
+- [~] **Deferred (reward↓ risk↑, needs GPU verification).** The dedup factors the
+      `{% if base %}` shading glue + instance-tint + wireframe into one helper called by both
+      `cs_opaque` and `shade_sample`. Two things changed the calculus during this work:
+      (a) **Reward dropped:** MSAA is now OFF by default (the fairness fix), so the MSAA path
+      (`cs_edge`/`shade_sample`/`msaa.wgsl`) isn't even in the default benchmark shaders — the win is
+      limited to MSAA-on scenes, ~10–15 KB there, mostly maintenance not size.
+      (b) **Risk is unverifiable here:** the helper feeds the MSAA **edge-resolve** path, whose
+      first-party PBR visual output the `naga` net (compile-only) and the Custom-only benchmark
+      CANNOT validate — a subtle per-sample input-mapping slip would silently degrade PBR MSAA edges.
+      Doing a GPU-unverifiable refactor blind isn't worth a maintenance win. **Design note for a human
+      with a PBR+MSAA scene to verify against:** extract `fn shade_one(coords, sample_index, tbn,
+      world_normal, barycentric, instance_id, material_offset, tri_indices, attr offsets/strides,
+      uv/color set idx+counts, bary_derivs, camera, screen_dims, lights_info?) -> vec2<color,alpha>`
+      from the `cs_opaque` arm; call it from both entry points; keep the PBR `debug_bitmask`
+      `textureStore`+return and `debug.normals` early-return primary-only in `cs_opaque`;
+      `world_position`/`surface_to_camera` are identical primary-vs-sample (sample-0 depth workaround,
+      `compute.wgsl:456`) so only normal/TBN/barycentric/instance_id/material-offset are per-sample.
+      Validate by eyeballing PBR-material MSAA silhouette edges before/after.
 
 ### Phase 6 — (optional) generic lighting helpers for custom materials
 
-- [ ] Expose a small, documented Tier A lighting helper so a custom material can light
-      itself without reaching into PBR internals (e.g. iterate punctual + a simple
-      lambert / GGX-on-plain-params built on `brdf_primitives` + `light_access`). Lets
-      authors get “lit” cheaply; anything fancier they supply themselves.
+- [~] **Resolved as document-the-recipe (no new helper).** A custom material can already light
+      itself with the Tier-A modules now exposed — no PBR internals needed, so a dedicated helper
+      would be redundant surface area. **Recipe** (declare `light_access` [+ `camera` for view-dep
+      terms]; the kernel provides `input.world_normal` / `world_position` / `surface_to_camera`):
+      ```wgsl
+      let info = get_lights_info();
+      var lit = vec3<f32>(0.0);
+      for (var i = 0u; i < info.n_lights; i = i + 1u) {
+          let ls = light_sample(get_light(i), input.world_normal, input.world_position);
+          lit += base_color * ls.radiance * ls.n_dot_l;            // Lambert
+          // specular: declare `brdf` primitives and use fresnel_schlick / distribution_ggx /
+          // geometry_smith on plain params, or roll your own.
+      }
+      return OpaqueShadingOutput(lit, 1.0);
+      ```
+      Documented in the editor's `NEW_MATERIAL_WGSL` comment + the MCP `set_material_includes`
+      description. Adding a packaged `apply_lighting_generic()` is a future nicety, not needed now.
 
 ### Phase 7 — editor frontend + MCP integration (depends on Phase 2–4)
 
