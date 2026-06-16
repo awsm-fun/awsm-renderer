@@ -118,10 +118,15 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
 
 ### Phase 2 — split the mixed modules
 
-- [ ] Split `shared_wgsl/lighting/brdf.wgsl` into:
+- [x] Split `shared_wgsl/lighting/brdf.wgsl` into:
       - `brdf_primitives.wgsl` (Tier A): fresnel/ggx/smith, anisotropy/sheen/clearcoat
         math that takes plain params, IBL samplers.
       - `brdf_pbr.wgsl` (Tier B): `brdf_direct` / `brdf_ibl*` (operate on `PbrMaterialColor`).
+      → Done. Split at the PbrMaterialColor boundary (primitives 1–427, orchestrators
+      428–865); `brdf.wgsl` is now a 2-line aggregator including both in dependency order, so
+      all 3 includers (opaque/transparent/gate-test) stay byte-identical. 247 tests green
+      (incl. brdf_gate_tests + shader_completeness). Behavior-preserving; size unchanged (Phase 4
+      gates the halves independently).
 - [ ] Split the PBR-gradient half of `mipmap.wgsl` (`pbr_get_gradients`, Tier B) from
       its generic UV-derivative machinery (Tier A, gate on textures/UV).
 - [ ] Keep `apply_lighting.wgsl` and `material_color_calc.wgsl` as Tier B wholesale.
