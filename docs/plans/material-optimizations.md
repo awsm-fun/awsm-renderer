@@ -100,11 +100,21 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
 
 ### Phase 1 — taxonomy audit (design foundation, no behavior change)
 
-- [ ] Classify every shared/helper WGSL module as Tier A (generic) or Tier B
+- [x] Classify every shared/helper WGSL module as Tier A (generic) or Tier B
       (model-internal) per the table above; capture in a short doc comment in
       `shader_includes.rs` and in `opaque_kernel_includes.wgsl`.
-- [ ] For each module, list its callers and which `base`/include gates it.
+      → Done. Authoritative taxonomy table (module → tier → current-gate →
+      target-gate) added to `materials/src/shader_includes.rs` module doc; a
+      one-line pointer added to `opaque_kernel_includes.wgsl` (kept minimal to
+      avoid WGSL bloat). 247 tests green.
+- [x] For each module, list its callers and which `base`/include gates it.
       Output: a checklist of every `{% include %}` and whether it’s currently gated.
+      → Done — the "current gate" column of that table is the checklist; it shows
+      almost every Tier A module is currently `always` (why empty() still emits ~160 KB).
+
+> Phase 1 is doc-only (Rust doc + one WGSL comment line — no rendering-logic change),
+> so the phase-end browser run is skipped here; render verification resumes at Phase 2
+> where emitted WGSL logic actually changes. `cargo test -p awsm-renderer` (247) green.
 
 ### Phase 2 — split the mixed modules
 

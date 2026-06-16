@@ -13,6 +13,63 @@
 //! the actual `shared_wgsl/...` file in each pass host template). The materials
 //! crate owns the identities + the dependency closure; the renderer owns the
 //! file layout.
+//!
+//! # Module taxonomy (audit — Phase 1 of docs/plans/material-optimizations.md)
+//!
+//! Every WGSL module emitted into the opaque material kernel
+//! (`material_opaque_wgsl/opaque_kernel_includes.wgsl`), classified so the
+//! gating work (Phases 2–4) has a single source of truth. Two kinds:
+//!
+//! - **Tier A — generic helpers.** Reusable by ANY material incl. Custom
+//!   (dynamic). These are what a custom material may opt into via
+//!   [`ShaderIncludes`]. Target: emitted iff the material declares them.
+//! - **Tier B — shading-model internals.** Welded to a built-in family's types
+//!   (`PbrMaterial` / `PbrMaterialColor`, Toon/Unlit/Flipbook material structs).
+//!   NEVER reachable by a Custom material; emitted by `base`, not the custom menu.
+//! - **(scaffold)** — pass plumbing every kernel needs regardless of material
+//!   (frame globals, mesh-meta routing, the material storage accessor, standard
+//!   coords, MSAA sample fetch). Stays unconditional; not on the custom menu.
+//!
+//! | module (`*.wgsl`)            | tier      | current gate                  | target gate |
+//! |------------------------------|-----------|-------------------------------|-------------|
+//! | math                         | Tier A    | none (always)                 | MATH (or always — cheap) |
+//! | color_space                  | Tier A    | none (always)                 | COLOR_SPACE (or always — cheap) |
+//! | camera                       | Tier A    | none (always)                 | CAMERA (or always — cheap) |
+//! | textures                     | Tier A    | none (always)                 | TEXTURES |
+//! | texture_uvs (helper)         | Tier A    | none (always)                 | TEXTURES |
+//! | vertex_color / _attrib       | Tier A    | none (always)                 | VERTEX_COLOR |
+//! | light_access                 | Tier A    | none (always)                 | LIGHT_ACCESS |
+//! | extras                       | Tier A    | none (always)                 | EXTRAS |
+//! | skybox (helper)              | Tier A    | none (always)                 | SKYBOX |
+//! | brdf — primitives half       | Tier A    | `inc.brdf` (whole file)       | split → BRDF_PRIMITIVES (Phase 2) |
+//! | mipmap — UV-deriv half       | Tier A    | `mipmap` mode (whole file)    | TEXTURES (Phase 2 split) |
+//! | brdf — `*_direct/_ibl` half  | Tier B    | `inc.brdf`                    | base==Pbr (Phase 2 split → brdf_pbr) |
+//! | apply_lighting               | Tier B    | `inc.apply_lighting`          | base==Pbr |
+//! | material_color_calc (PBR)    | Tier B    | `inc.material_color_calc`     | base==Pbr |
+//! | material_color_calc (unlit)  | Tier B    | `base==Unlit`                 | base==Unlit (ok) |
+//! | mipmap — `pbr_get_gradients` | Tier B    | `inc.material_color_calc`     | base==Pbr (Phase 2 split) |
+//! | material_shading — pbr glue  | Tier B    | `inc.material_color_calc`     | base==Pbr |
+//! | materials_wgsl: pbr body     | Tier B    | `base.canonical_shader_id()`  | base==Pbr ONLY (Phase 3 — see #1) |
+//! | materials_wgsl: unlit/toon/flipbook | Tier B | (emitted for Custom too — BUG)| their base ONLY (Phase 3 — see #1) |
+//! | dynamic-material wrapper     | Custom    | `base==Custom`                | base==Custom (ok) |
+//! | frame_globals                | scaffold  | always                        | always |
+//! | material_mesh_meta           | scaffold  | always                        | always |
+//! | material (storage accessor)  | scaffold  | always                        | always |
+//! | transforms                   | scaffold  | always                        | always |
+//! | standard (coords)            | scaffold  | always                        | always |
+//! | positions                    | scaffold  | always                        | always |
+//! | debug (shared + helper)      | scaffold  | `debug.any()` (helper)        | unchanged |
+//! | msaa (sample fetch)          | scaffold  | `multisampled_geometry`       | unchanged |
+//!
+//! Key reads:
+//! - The "current gate" column is why even `ShaderIncludes::empty()` still emits
+//!   ~160 KB: almost every Tier A module is currently `always`, and the
+//!   first-party bodies are emitted even for Custom (the #1 bug).
+//! - `brdf.wgsl` and `mipmap.wgsl` are split-tier (A+B) → Phase 2 physically
+//!   splits them so each half can gate independently.
+//! - The [`ShaderIncludes`] menu below mixes Tier A (legit for Custom) with the
+//!   Tier B PBR bits (`APPLY_LIGHTING`, `BRDF`, `MATERIAL_COLOR_CALC`) — Phase 3
+//!   removes those from the custom-facing menu.
 
 /// Abstract identities of the optional shared shader modules a material may
 /// declare. A `u32` bitset (mirrors [`crate::pbr::PbrFeatures`]'s hand-rolled

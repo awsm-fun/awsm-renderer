@@ -4,6 +4,10 @@
 // bucket). Heavy shading includes (brdf/apply_lighting/material_color_calc) gate
 // themselves out via inc.* — so the skybox kernel (inc = skybox_only) gets only
 // the binding-struct + camera/math/skybox scaffolding.
+//
+// Module Tier A (generic) / Tier B (model-internal) / scaffold classification +
+// current-vs-target gating: see the taxonomy table in
+// `awsm-materials::shader_includes` (materials/src/shader_includes.rs).
 
 /*************** START color_space.wgsl ******************/
 {% include "shared_wgsl/color_space.wgsl" %}
