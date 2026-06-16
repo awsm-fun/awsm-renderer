@@ -194,6 +194,37 @@ base's arm, so the factoring is "wrap the single rendered arm in a function, cal
       lambert / GGX-on-plain-params built on `brdf_primitives` + `light_access`). Lets
       authors get “lit” cheaply; anything fancier they supply themselves.
 
+### Phase 7 — editor frontend + MCP integration (depends on Phase 2–4)
+
+When the taxonomy split lands, the custom-material **authoring surfaces** must expose the new
+Tier-A-only opt-in menu (the Tier-B PBR modules are no longer author-selectable), and the full
+helper catalog must be discoverable via MCP. Surfaces found:
+
+- **Editor** `packages/frontend/editor/src/controller/custom_material.rs`: `CustomMaterial`
+  carries `shader_includes: Mutable<Vec<String>>` + `fragment_inputs`, and `ALL_SHADER_INCLUDES`
+  (~line 142) / `ALL_FRAGMENT_INPUTS` (~line 158) drive the picker UI. Update these menus to the
+  Tier-A set (drop `apply_lighting`/`brdf`/`material_color_calc`; add `brdf_primitives` and any
+  newly-split keys). Default `fragment_inputs` already sensible (`normals`+`view_dir`).
+- **editor-protocol** `packages/mcp/editor-protocol/src/command.rs`:
+  `SetCustomMaterialShaderIncludes` / `SetCustomMaterialFragmentInputs` (Vec<String> keys) and
+  `project.rs` persistence stay structurally the same — but **migrate saved projects**: keys that
+  Phase 3 removes from the menu (`apply_lighting`/`brdf`/`material_color_calc`) must be dropped or
+  remapped on load (the "unknown keys are dropped" contract already covers forward-compat, but a
+  project that *relied* on those for PBR-like shading needs a note/upgrade path).
+- **MCP** `packages/mcp/src/mcp.rs:2070`: the `SetCustomMaterialShaderIncludes` tool description
+  **hardcodes** the legal key list (currently includes the Tier-B keys). Two tasks:
+  1. Update the legal-key list to the Tier-A menu.
+  2. **Expose the helper catalog via MCP** (the user's ask): add a query/tool that returns the
+     available Tier-A helpers — key, one-line description of what WGSL each provides, its
+     `FragmentInputs` deps — so an agent/editor discovers the opt-in set instead of relying on a
+     hardcoded string. Source it from `awsm_materials::ShaderIncludes` (single source of truth)
+     rather than duplicating the list.
+
+- [ ] Update editor `ALL_SHADER_INCLUDES` / picker UI to the Tier-A menu.
+- [ ] Update + (ideally) data-drive the MCP `SetCustomMaterialShaderIncludes` legal-key list.
+- [ ] Add an MCP query exposing the full Tier-A helper catalog (key + description + input deps).
+- [ ] Saved-project migration/notes for removed Tier-B keys.
+
 ### New finding (Phase 0) — per-material shader size grows ~O(N) → total ~O(N²)
 
 Measured per-material WGSL grew 201→215→241 KB as N went 256→512→1024. Cause: the
