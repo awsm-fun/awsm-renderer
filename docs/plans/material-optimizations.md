@@ -165,10 +165,12 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
       → Done. `all()` now omits the 3 Tier-B bits; `from_includes(all())` yields no Tier-B flags;
       explicit constants still map (first-party PBR unaffected). Custom declaring `all()`:
       264,896 → 196,638 B (−68 KB). 33+248 tests green.
-- [ ] **Item 2:** force the Tier-B flags OFF for `base == Custom` — a Custom material can never
+- [x] **Item 2:** force the Tier-B flags OFF for `base == Custom` — a Custom material can never
       enable `brdf`/`apply_lighting`/`material_color_calc` regardless of its declared includes
       (defense beyond `all()` being lean, e.g. an explicit `S::BRDF`). First-party keeps declaring
       its internals via `SHADER_INCLUDES` (the first-party-internal set — no new type needed).
+      → Done. Added `ShaderIncludeFlags::for_custom()` (masks Tier-B off); wired into the Custom
+      branch of both the opaque and transparent templates. 248 tests green.
 - [ ] **Item 3:** in `template.rs` (`TryFrom<&ShaderCacheKeyMaterialOpaque>`), `materials_wgsl` for
       `base == Custom` emits **nothing** (Custom only ever calls `custom_shade_dynamic`).
       First-party bases emit only their own fragment. Drop

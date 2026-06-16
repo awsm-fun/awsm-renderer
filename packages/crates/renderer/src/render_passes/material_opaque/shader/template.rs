@@ -323,11 +323,13 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // Custom (dynamic) materials carry their own author-declared
                 // include set; first-party bases use the canonical set. Skinny
                 // materials: a custom material that declares fewer modules gets
-                // a leaner Custom host shader.
+                // a leaner Custom host shader. `for_custom` forces the Tier-B
+                // PBR-internal flags OFF — a custom material can never enable
+                // brdf/apply_lighting/material_color_calc (Phase 3 item 2).
                 inc: if value.owns_skybox {
                     crate::dynamic_materials::ShaderIncludeFlags::skybox_only()
                 } else if let Some(d) = value.dynamic_shader.as_ref() {
-                    crate::dynamic_materials::ShaderIncludeFlags::from_includes(d.shader_includes)
+                    crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
                 } else {
                     crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
                 },

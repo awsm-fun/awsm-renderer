@@ -85,8 +85,11 @@ impl ShaderTemplateTransparentMaterialIncludes {
             // material_color_calc includes gate on exactly this transparent
             // material's feature-set (no uber all()).
             pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(cache_key.pbr_features),
+            // `for_custom` forces the Tier-B PBR-internal flags off — a custom
+            // material can never enable brdf/apply_lighting/material_color_calc
+            // on the transparent path either (Phase 3 item 2; parity with opaque).
             inc: if let Some(d) = cache_key.dynamic_shader.as_ref() {
-                crate::dynamic_materials::ShaderIncludeFlags::from_includes(d.shader_includes)
+                crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
             } else {
                 crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base)
             },

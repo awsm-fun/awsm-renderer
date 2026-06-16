@@ -297,6 +297,23 @@ impl ShaderIncludeFlags {
         }
     }
 
+    /// Build the gate flags for a CUSTOM (dynamic) material from its declared
+    /// include set, with every Tier-B (PBR-internal) module FORCED OFF. A custom
+    /// material can never enable `brdf` / `apply_lighting` / `material_color_calc`
+    /// — those are welded to the `PbrMaterial` / `PbrMaterialColor` types and are
+    /// emitted only for the built-in PBR base. This is defense beyond `all()`
+    /// being Tier-A-only (Phase 3 item 1): even an explicit `S::BRDF` in a
+    /// registration is ignored on the custom path. A custom material that wants
+    /// PBR-like shading supplies its own WGSL (optionally built on the generic
+    /// `brdf_primitives` Tier-A helpers).
+    pub fn for_custom(includes: awsm_materials::ShaderIncludes) -> Self {
+        let mut f = Self::from_includes(includes);
+        f.brdf = false;
+        f.apply_lighting = false;
+        f.material_color_calc = false;
+        f
+    }
+
     /// The canonical skybox-owner bucket (#13): it only writes the skybox on
     /// skybox/uncovered pixels — its material-shading body is gated out — so it
     /// needs none of the PBR shading modules even though its `base` is `Pbr`.
