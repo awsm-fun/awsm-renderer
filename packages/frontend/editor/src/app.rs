@@ -856,12 +856,14 @@ fn open_mcp_modal() {
             .style("flex-direction", "column")
             .style("gap", "14px")
             // Header: title on the left, Help on the right (easy to spot — the
-            // guide is the first thing a new user wants).
+            // guide is the first thing a new user wants). Right padding keeps the
+            // Help button clear of the modal's absolutely-positioned close X.
             .child(html!("div", {
                 .style("display", "flex")
                 .style("align-items", "center")
                 .style("justify-content", "space-between")
                 .style("gap", "8px")
+                .style("padding-right", "30px")
                 .child(html!("div", {
                     .style("font-size", "15px")
                     .style("font-weight", "600")
