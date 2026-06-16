@@ -140,6 +140,23 @@ fn code(text: &'static str) -> Dom {
     })
 }
 
+/// A captioned command: a muted caption line (e.g. the platform a command is
+/// for) above the copyable command box. The caption stays OUTSIDE the box so the
+/// copy button grabs only the command itself — no `#` comment to strip.
+fn command(caption: &str, cmd: &'static str) -> Dom {
+    html!("div", {
+        .style("display", "flex")
+        .style("flex-direction", "column")
+        .style("gap", "4px")
+        .child(html!("div", {
+            .style("font-size", "11px")
+            .style("color", "var(--text-3)")
+            .text(caption)
+        }))
+        .child(code(cmd))
+    })
+}
+
 /// Write `text` to the OS clipboard (fire-and-forget; the promise is driven to
 /// completion so the browser doesn't log an unhandled rejection).
 fn copy_to_clipboard(text: &str) {
@@ -197,9 +214,9 @@ fn mcp_section() -> Dom {
 
         h("1 · Install the server"),
         p("Prebuilt binaries — no toolchain needed:"),
-        code("# macOS / Linux\ncurl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.sh | sh"),
-        code("# Windows (PowerShell)\npowershell -ExecutionPolicy Bypass -c \"irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.ps1 | iex\""),
-        code("# From source (needs Rust)\ncargo install --git https://github.com/awsm-fun/awsm-renderer awsm-scene-mcp"),
+        command("macOS / Linux", "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.sh | sh"),
+        command("Windows (PowerShell)", "powershell -ExecutionPolicy Bypass -c \"irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.ps1 | iex\""),
+        command("From source (needs Rust)", "cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-scene-mcp"),
 
         h("2 · Run it in a terminal"),
         p("Start the server and leave it running (it defaults to port 9086):"),
@@ -224,8 +241,8 @@ fn mcp_section() -> Dom {
         code("http://127.0.0.1:9086/mcp"),
         p("A ready-to-use .mcp.json sits in the repo root. Register the server the way \
            your agent does — for example:"),
-        code("# Claude Code\nclaude mcp add --transport http awsm-scene http://127.0.0.1:9086/mcp"),
-        code("# .mcp.json (Claude Code / Cursor / others)\n{ \"mcpServers\": { \"awsm-scene\": { \"type\": \"http\", \"url\": \"http://127.0.0.1:9086/mcp\" } } }"),
+        command("Claude Code", "claude mcp add --transport http awsm-scene http://127.0.0.1:9086/mcp"),
+        command(".mcp.json (Claude Code / Cursor / others)", "{ \"mcpServers\": { \"awsm-scene\": { \"type\": \"http\", \"url\": \"http://127.0.0.1:9086/mcp\" } } }"),
         p("Then just ask: “add a tessellated sphere with a brushed-metal material”, or \
            “rough up that mesh and screenshot it”. The agent discovers every node and \
            command from the server's typed schema — no guesswork. If it reports “no \
