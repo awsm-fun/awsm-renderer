@@ -171,10 +171,13 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
       its internals via `SHADER_INCLUDES` (the first-party-internal set — no new type needed).
       → Done. Added `ShaderIncludeFlags::for_custom()` (masks Tier-B off); wired into the Custom
       branch of both the opaque and transparent templates. 248 tests green.
-- [ ] **Item 3:** in `template.rs` (`TryFrom<&ShaderCacheKeyMaterialOpaque>`), `materials_wgsl` for
+- [x] **Item 3:** in `template.rs` (`TryFrom<&ShaderCacheKeyMaterialOpaque>`), `materials_wgsl` for
       `base == Custom` emits **nothing** (Custom only ever calls `custom_shade_dynamic`).
       First-party bases emit only their own fragment. Drop
       `build_materials_wgsl_filtered(None)`-for-Custom entirely. (The ~33 KB dead-code kill.)
+      → Done. Custom now emits no first-party bodies. empty Custom shader 196,638 → 162,574 B
+      (−34 KB, the 4 dead first-party fragments). 248 tests green (incl. shader_completeness —
+      no dangling first-party loader refs on the Custom path).
 - [ ] **Item 4:** validation — render Custom × {empty, every Tier A bit} × {mips,no-mips} ×
       {msaa,no-msaa} and confirm each compiles (WGSL validation, not just string checks). Confirm no
       un-gated reference to `PbrMaterial`/toon/unlit/flipbook structs survives on the Custom path.

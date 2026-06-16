@@ -306,11 +306,19 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 // Skinny materials: emit only this pipeline's base material body
-                // (the dispatch references only that base's fragment). Custom
-                // (None) emits all — covers dynamic-material dispatch. The
-                // skybox-owner shades nothing (its body is gated out), so
-                // it carries no material fragment + no PBR shading includes.
-                materials_wgsl: if value.owns_skybox {
+                // (the dispatch references only that base's fragment).
+                //   - skybox-owner shades nothing (body gated out) → none.
+                //   - Custom (dynamic) shades ONLY via `custom_shade_dynamic`
+                //     (emitted in the dynamic-material wrapper); the first-party
+                //     PBR/Unlit/Toon/Flipbook bodies are never referenced, so
+                //     emit none of them. Previously `canonical_shader_id()` was
+                //     `None` for Custom → `build_materials_wgsl_filtered(None)`
+                //     emitted ALL four first-party bodies (~33 KB of dead WGSL)
+                //     into every dynamic pipeline. (Phase 3 item 3 — bug #1.)
+                //   - First-party bases emit exactly their own fragment.
+                materials_wgsl: if value.owns_skybox
+                    || value.base == crate::dynamic_materials::ShadingBase::Custom
+                {
                     String::new()
                 } else {
                     awsm_materials::registry::build_materials_wgsl_filtered(
