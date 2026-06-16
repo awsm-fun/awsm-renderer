@@ -213,10 +213,23 @@ real PBR scene. Before touching the gates we added a static validator.
 
 ### Phase 4 — complete the gating + wire FragmentInputs into the opaque path (#3, #4)
 
-- [ ] Gate the currently-unconditional Tier A modules in `opaque_kernel_includes.wgsl`
-      on the resolved include set: textures + texture_uvs + generic mipmap → `TEXTURES`;
-      light_access + the unconditional `get_lights_info()` call in `compute.wgsl` →
-      `LIGHT_ACCESS`/`LIGHTS`; vertex_color/_attrib → `VERTEX_COLOR`.
+Gate the currently-unconditional Tier A modules in `opaque_kernel_includes.wgsl` on the resolved
+include set — split per module (one commit each), naga-validated. Entanglement audit: `extras` +
+`skybox` have NO call site in the material kernel (clean); `light_access` has the unconditional
+`get_lights_info()` + the `shade_sample(... lights_info: LightsInfo)` signature; `textures` /
+`texture_uvs` / `vertex_color` are used by the Custom wrapper accessors (`material_uv` /
+`material_vertex_color`) — those gate together.
+
+- [x] `extras` → gate on `EXTRAS`. → Done. No call-site guards needed (only author WGSL declaring
+      EXTRAS calls `extras_load_*`; the `extras_pool` binding stays). Added `ShaderIncludeFlags.extras`.
+      empty Custom 162,574 → 161,295 B; `empty<all` now holds. naga-validated all first-party (PBR keeps
+      it; Unlit/Toon/Flipbook drop dead extras). 33+251 green.
+- [ ] `skybox` → gate on `SKYBOX` (sample_skybox only used by skybox_primary; set the flag for the
+      skybox-owner bucket).
+- [ ] `light_access` → gate on `LIGHT_ACCESS`/`LIGHTS` (guard the two `get_lights_info()` calls +
+      handle the `shade_sample` LightsInfo param; split light_access types vs accessors if needed).
+- [ ] `textures` + `texture_uvs` + generic `mipmap` + the `material_uv` accessor → gate on `TEXTURES`.
+- [ ] `vertex_color` + `vertex_color_attrib` + the `material_vertex_color` accessor → gate on `VERTEX_COLOR`.
 - [ ] Add `FragmentInputs` to `ShaderCacheKeyMaterialOpaque` and consume it in the
       compute template so the kernel computes/unpacks only declared inputs (TBN unpack,
       lights read, UV/vertex-color fetch). Today the opaque kernel is inert to

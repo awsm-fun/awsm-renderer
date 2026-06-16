@@ -73,9 +73,11 @@
 {% include "shared_wgsl/material.wgsl" %}
 /*************** END material.wgsl ******************/
 
+{% if inc.extras %}
 /*************** START extras.wgsl ******************/
 {% include "shared_wgsl/extras.wgsl" %}
 /*************** END extras.wgsl ******************/
+{% endif %}
 
 
 {% match mipmap %}

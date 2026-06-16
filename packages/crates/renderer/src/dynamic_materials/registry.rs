@@ -276,6 +276,12 @@ pub struct ShaderIncludeFlags {
     /// `material_shading.wgsl`, `pbr_get_gradients` in `mipmap.wgsl`). The unlit
     /// builder in the same file stays ungated.
     pub material_color_calc: bool,
+    /// `extras.wgsl` — the `extras_load_*` accessors over the extras storage
+    /// pool. Tier A (generic): only author/custom WGSL that declares `EXTRAS`
+    /// calls these; no first-party shading or kernel scaffolding does. The
+    /// `extras_pool` *binding* stays declared regardless (ABI); only the WGSL
+    /// accessor bodies are gated. (Phase 4)
+    pub extras: bool,
 }
 
 impl ShaderIncludeFlags {
@@ -294,6 +300,7 @@ impl ShaderIncludeFlags {
             brdf: i.contains(S::BRDF),
             apply_lighting: i.contains(S::APPLY_LIGHTING),
             material_color_calc: i.contains(S::MATERIAL_COLOR_CALC),
+            extras: i.contains(S::EXTRAS),
         }
     }
 
@@ -322,6 +329,7 @@ impl ShaderIncludeFlags {
             brdf: false,
             apply_lighting: false,
             material_color_calc: false,
+            extras: false,
         }
     }
 }
