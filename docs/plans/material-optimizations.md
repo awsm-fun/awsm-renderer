@@ -92,8 +92,11 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
       `fragment_inputs: FragmentInputs::empty()`. (API is `empty()`, not `none()`.)
       The noise body only reads `world_position` / `world_normal`, always provided.
       → Done. Swapped `all()`→`empty()` for both; noise body uses only WGSL built-ins + always-provided inputs.
-- [ ] Re-run the benchmark; record new per-material size + precompile in `report.md`.
+- [x] Re-run the benchmark; record new per-material size + precompile in `report.md`.
       Isolates "benchmark over-declared" from real engine cost.
+      → Done (fresh-context browser run). 256: 273→201 KB avg, 8.1→2.9 s. 512: 6.5 s. 1024:
+      28.7→14.8 s and **now renders at 30 fps with a clean console** (was blank + device loss) —
+      the ~66 KB/shader drop alone fixed the 1024 failure. Full table in report.md.
 
 ### Phase 1 — taxonomy audit (design foundation, no behavior change)
 
@@ -180,6 +183,20 @@ base's arm, so the factoring is "wrap the single rendered arm in a function, cal
       itself without reaching into PBR internals (e.g. iterate punctual + a simple
       lambert / GGX-on-plain-params built on `brdf_primitives` + `light_access`). Lets
       authors get “lit” cheaply; anything fancier they supply themselves.
+
+### New finding (Phase 0) — per-material shader size grows ~O(N) → total ~O(N²)
+
+Measured per-material WGSL grew 201→215→241 KB as N went 256→512→1024. Cause: the
+`bucket_entries` list is templated into the `ClassifyBuckets` struct in **every** per-material
+shader (`bind_groups.wgsl`), and it scales with the live bucket count. So each of N shaders
+carries an O(N) struct → total emitted WGSL is ~O(N²), and this term will dominate at high N
+no matter how lean Phases 1–5 make the per-material *base*.
+
+- [ ] **(candidate phase)** Stop embedding the full `bucket_entries`/`ClassifyBuckets` layout in
+      every per-material shader. Options: a fixed-size/runtime-indexed bucket table read from a
+      buffer instead of a templated struct; or only emit the offsets a given shader actually reads
+      (a shader needs its own bucket's offset, not all N). Needs a design pass — deferred until the
+      Tier-A/Tier-B split lands so we're not reshaping `bind_groups.wgsl` twice.
 
 ### Out of scope (tracked separately)
 
