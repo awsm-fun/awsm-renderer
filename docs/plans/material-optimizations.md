@@ -357,6 +357,34 @@ helper catalog must be discoverable via MCP. Surfaces found:
 - [ ] Add an MCP query exposing the full Tier-A helper catalog (key + description + input deps).
 - [ ] Saved-project migration/notes for removed Tier-B keys.
 
+### Finding — benchmark MSAA mismatch (unfair) + a big size/perf lever (user-spotted)
+
+The awsm benchmark never set anti-aliasing, so it used the renderer default **MSAA 4×**
+(`AntiAliasing::default()` → `msaa_sample_count: Some(4)`), while the Three.js side runs
+`WebGPURenderer({ antialias: false })` — **no AA**. So awsm was: (a) visually less aliased than
+three (the tell the user noticed), and (b) doing 4× sample shading + the deferred **edge-resolve
+compute pass** + MSAA G-buffer textures + carrying the ~25–30 KB MSAA edge path (`cs_edge` /
+`shade_sample` / `msaa.wgsl`) in **every** per-material shader. An unfair comparison on every axis
+(precompile, runtime, shader size, VRAM).
+
+- [x] Fix: benchmark now defaults MSAA **off** to match three (`with_anti_aliasing` with
+      `msaa_sample_count: None`), `?msaa=4` to opt in. Both engines now aliased = apples-to-apples.
+      Also drops the entire MSAA edge-resolve path from awsm's shaders (free size + perf win, separate
+      from any gating). Re-measure both engines matched; update report headline tables.
+
+### Finding — answer to "why 133 KB for a do-nothing shader vs three's 3 KB?"
+
+Section breakdown of the leanest Custom shader (empty includes, msaa4+mips, 133,216 B) post-gating:
+**84 KB (63%) is the unfenced top-level kernel** = `compute.wgsl` (`cs_opaque` + `cs_edge` +
+`shade_sample`) + `bind_groups` — the **deferred visibility-buffer RESOLVE kernel** (vis-buffer
+unpack, tile/bucket dispatch, attribute reconstruction, MSAA edge resolve, G-buffer write). The rest
+is the always-on scaffold it needs (math 6 KB, textures-structs 4.7, standard 4.1, mesh_meta 3.1,
+positions 2.7, camera 2.4, frame_globals 2.2, …). The material code itself is ~0 for a noise shader.
+**three is 3 KB because it's FORWARD** — fixed-function rasterization does interpolation/depth/MSAA;
+awsm's deferred-compute kernel re-implements all of it per pipeline. Levers: MSAA-off (above) removes
+~30 KB; the O(N²) bucket fix shrinks `bind_groups`; the core `cs_opaque` resolve (~40–50 KB) is the
+architectural floor (can't reach a forward fragment's size without being forward).
+
 ### New finding (Phase 0) — per-material shader size grows ~O(N) → total ~O(N²)
 
 Measured per-material WGSL grew 201→215→241 KB as N went 256→512→1024. Cause: the
