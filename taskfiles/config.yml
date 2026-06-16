@@ -11,7 +11,6 @@ vars:
   PATH_CRATE_RENDERER: '{{joinPath .PATH_CRATES "renderer"}}'
   PATH_CRATE_RENDERER_CORE: '{{joinPath .PATH_CRATES "renderer-core"}}'
   PATH_CRATE_MATERIALS: '{{joinPath .PATH_CRATES "materials"}}'
-  PATH_CRATE_SCENE_SCHEMA: '{{joinPath .PATH_CRATES "scene-schema"}}'
   PATH_CRATE_WEB_SHARED: '{{joinPath .PATH_FRONTENDS "web-shared"}}'
   PATH_FRONTEND_EDITOR: '{{joinPath .PATH_FRONTENDS "editor"}}'
   PATH_MEDIA_LOCAL: '{{joinPath .PATH_REPO_ROOT "media"}}'
