@@ -431,11 +431,13 @@ shader (`bind_groups.wgsl`), and it scales with the live bucket count. So each o
 carries an O(N) struct → total emitted WGSL is ~O(N²), and this term will dominate at high N
 no matter how lean Phases 1–5 make the per-material *base*.
 
-- [ ] **(candidate phase)** Stop embedding the full `bucket_entries`/`ClassifyBuckets` layout in
-      every per-material shader. Options: a fixed-size/runtime-indexed bucket table read from a
-      buffer instead of a templated struct; or only emit the offsets a given shader actually reads
-      (a shader needs its own bucket's offset, not all N). Needs a design pass — deferred until the
-      Tier-A/Tier-B split lands so we're not reshaping `bind_groups.wgsl` twice.
+- [x] **(candidate phase) DONE.** Stopped embedding the full `ClassifyBuckets` per-bucket field list
+      in every per-material shader. The classify *writer* already used a data-driven array layout
+      (`args: array<vec4<u32>,N>` + `offsets: array<u32,N>`, §4b); the per-material *reader* was the
+      only thing still declaring 2N named fields. Switched the reader to the same arrays
+      (byte-identical) and read `offsets[bucket_index]`. **Result (browser-verified): per-material
+      WGSL is now FLAT in N — 108.7 KB @256 = 108.8 KB @1024 (was 201→241 KB).** N=1024 renders
+      reliably at ~58 fps (was borderline 30 fps/blank). naga-validates all hosts; 34+254 green.
 
 ### Out of scope (tracked separately)
 
