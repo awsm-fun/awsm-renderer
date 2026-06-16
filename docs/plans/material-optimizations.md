@@ -263,6 +263,25 @@ include set — split per module (one commit each), naga-validated. Entanglement
       gradient match) + the Custom `material_uv` accessor on new `inc.textures`. PBR/Unlit/Toon/Flipbook
       all declare TEXTURES (keep); for_custom keeps it (Tier A); skybox_only false. empty Custom
       153,905 → 135,712 B (−18 KB). 33+254 green (naga all hosts). Ceiling 160K→142K.
+- [~] (user suggestion) Also gate the **textures.wgsl structs** so a textureless shader carries
+      nothing — **deferred, mostly ABI-blocked.** Attempted; naga caught it: `TextureTransform` is
+      **bind-group ABI** (`@group(0) @binding(9) var<storage,read> texture_transforms:
+      array<TextureTransform>`), so the structs must always be defined regardless of `inc.textures`
+      (same as light_access's `LightsInfoPacked`). Only ~2–3 KB of *functions* (`convert_texture_info`
+      etc.) are gateable, via a types/functions split across 4 hosts **including the naga-uncovered
+      masked pass** (`masked_alpha.wgsl` both includes textures.wgsl AND duplicates the accessors) —
+      poor ROI + real risk for a 2–3 KB slice of an 84 KB kernel floor. Reverted; revisit only if the
+      masked pass joins the naga net.
+- [~] (user suggestion) Wholesale-gate **math.wgsl** — **won't-do, kernel-core.** `compute.wgsl`
+      uses `join32` (visibility-buffer unpack), `U32_MAX` (skybox sentinel), plus `PI`/`EPSILON`/
+      `safe_normalize` in shared helpers — the resolve kernel needs math on every pixel regardless of
+      material, so it can't be opt-out without breaking the kernel.
+- [~] (user suggestion) Gate **mesh_meta.wgsl** — **won't-do, kernel-core.** The kernel reads
+      `material_mesh_metas[...]` per pixel (material offset + attribute offsets/strides) before any
+      material code runs; it's load-bearing scaffold, not material-optional.
+- [x] (user suggestion) **material_shading.wgsl MSAA part** — already gated: `msaa_load_sample_textures`
+      is inside `{% if multisampled_geometry %}`, and the PBR builder glue behind `inc.material_color_calc`.
+      No change needed.
 - [~] Add `FragmentInputs` to `ShaderCacheKeyMaterialOpaque` and consume it — **RESOLVED as
       won't-do (redundant on the opaque path).** Assessed against the actual kernel: the only
       unconditional per-pixel inputs are `standard_coordinates` (world_position + surface_to_camera),
