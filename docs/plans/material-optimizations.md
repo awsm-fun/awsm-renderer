@@ -228,10 +228,22 @@ include set — split per module (one commit each), naga-validated. Entanglement
       skybox-owner bucket). → Done. Added `ShaderIncludeFlags.skybox`; `skybox_only()` sets it true
       (the owner bucket calls sample_skybox). empty Custom 161,295 → 159,722 B. naga-validated the
       skybox-owner bucket + all material kernels (which drop the unused helper). 33+251 green.
-- [ ] `light_access` → gate on `LIGHT_ACCESS`/`LIGHTS` (guard the two `get_lights_info()` calls +
-      handle the `shade_sample` LightsInfo param; split light_access types vs accessors if needed).
+- [x] (prep) Extend the naga net to the empty opaque + transparent (first-party + Custom) templates —
+      the entangled modules touch those hosts. 5 wgsl_validation tests green at baseline. Committed.
+- [~] `light_access` → **SKIP (respect documented decision).** light_access.wgsl carries an explicit
+      "DELIBERATELY NOT skinny-gated" rationale: its packed structs are bind-group ABI
+      (`bind_groups.wgsl` declares `lights_info: LightsInfoPacked`) so must always be present, and the
+      author notes gating the accessors "would only entangle the per-pixel shade entry points (which
+      take `LightsInfo` for every material) for no real win" — the exact `shade_sample` entanglement.
+      The win is mostly comment bytes (negligible GPU/compile cost). Not worth overriding a reasoned,
+      documented design decision; the bind-group ABI makes a clean gate impossible anyway.
+- [~] `vertex_color` + `material_vertex_color` accessor → **SKIP (negligible).** `vertex_color.wgsl`
+      is ~75 bytes (just the `VertexColorInfo` struct); `vertex_color_attrib.wgsl` is small. Gating
+      saves ~nothing while adding the wrapper-accessor entanglement — not worth it.
 - [ ] `textures` + `texture_uvs` + generic `mipmap` + the `material_uv` accessor → gate on `TEXTURES`.
-- [ ] `vertex_color` + `vertex_color_attrib` + the `material_vertex_color` accessor → gate on `VERTEX_COLOR`.
+      The one substantial remaining gate (~25 KB). Entangled: the Custom `material_uv` wrapper accessor
+      uses texture_uvs; PBR/flipbook sample via the texture pool. Gate all on a new `inc.textures`;
+      first-party declares TEXTURES (PBR/Unlit/Toon/Flipbook all already do). naga-validate every host.
 - [ ] Add `FragmentInputs` to `ShaderCacheKeyMaterialOpaque` and consume it in the
       compute template so the kernel computes/unpacks only declared inputs (TBN unpack,
       lights read, UV/vertex-color fetch). Today the opaque kernel is inert to
