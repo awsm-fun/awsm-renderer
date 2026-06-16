@@ -153,16 +153,32 @@ mod tests {
 
     #[test]
     fn bucket_config_validation_bounds() {
-        assert!(BucketConfig { max_bucket_entries: 1 }.validate().is_ok());
-        assert!(BucketConfig { max_bucket_entries: 254 }.validate().is_ok());
-        assert!(BucketConfig { max_bucket_entries: 1024 }.validate().is_ok());
+        assert!(BucketConfig {
+            max_bucket_entries: 1
+        }
+        .validate()
+        .is_ok());
+        assert!(BucketConfig {
+            max_bucket_entries: 254
+        }
+        .validate()
+        .is_ok());
+        assert!(BucketConfig {
+            max_bucket_entries: 1024
+        }
+        .validate()
+        .is_ok());
         assert!(BucketConfig {
             max_bucket_entries: 65534
         }
         .validate()
         .is_ok());
         // Out of range.
-        assert!(BucketConfig { max_bucket_entries: 0 }.validate().is_err());
+        assert!(BucketConfig {
+            max_bucket_entries: 0
+        }
+        .validate()
+        .is_err());
         assert!(BucketConfig {
             max_bucket_entries: 65535
         }

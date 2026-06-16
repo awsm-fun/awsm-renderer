@@ -44,15 +44,33 @@ and there is no on/off switch; specialization is unconditional.
 
 ### Bucket cap
 
-The total number of distinct buckets (first-party feature-sets + custom
-registrations) is capped at `MAX_BUCKET_ENTRIES` = `MAX_BUCKET_WORDS × 32`
-(default `MAX_BUCKET_WORDS = 1`, i.e. **32 buckets** — the classify pass
-packs one bucket bit per `u32` of its tile mask). **Exceeding the cap is a
-hard error** (`AwsmDynamicMaterialError::BucketCapExceeded`), on both the
-custom-material registration path and the first-party render-loop
-reconcile — there is no silent fallback to a wrong/generic shader. To
-allow more buckets, raise `MAX_BUCKET_WORDS` in
-`crates/renderer/src/dynamic_materials/mod.rs` and rebuild.
+The number of co-resident **buckets** (distinct first-party feature-sets +
+custom registrations) is bounded by a **runtime-configurable** cap. It
+defaults to **32** and can be raised up to **65534** on the builder:
+
+```rust
+use awsm_renderer::dynamic_materials::BucketConfig;
+
+let renderer = AwsmRendererBuilder::new(gpu)
+    .with_bucket_config(BucketConfig { max_bucket_entries: 1024 })
+    // … other builder options …
+    .build()
+    .await?;
+```
+
+The cap sizes **nothing** per frame: every GPU encoding width is a pure
+function of the *live* bucket count, not the configured cap. The classify
+pass uses `ceil(live / 32)` `u32` tile-mask words, and the MSAA edge pass
+packs an 8-bit bucket id per sample while the live count fits in 254,
+widening to 16 bits automatically past that (up to the 65534 ceiling). So a
+typical (< 32 material) scene pays exactly what it did before, and raising
+the cap costs nothing until you actually register more materials.
+
+**Exceeding the configured cap is a hard error**
+(`AwsmDynamicMaterialError::BucketCapExceeded`), on both the custom-material
+registration path and the first-party render-loop reconcile — there is no
+silent fallback to a wrong/generic shader. Raise `max_bucket_entries` to
+admit more.
 
 ## Dynamic materials quick start
 

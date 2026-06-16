@@ -992,17 +992,13 @@ impl AwsmRendererBuilder {
     /// that can mint a bucket index the edge encoding can't represent. The
     /// cap sizes nothing per-frame — every GPU width follows the *live*
     /// bucket count, so a high cap costs nothing until the count grows.
-    pub fn with_bucket_config(
-        mut self,
-        config: crate::dynamic_materials::BucketConfig,
-    ) -> Self {
+    pub fn with_bucket_config(mut self, config: crate::dynamic_materials::BucketConfig) -> Self {
         let config = match config.validate() {
             Ok(()) => config,
             Err(msg) => {
-                let clamped = config.max_bucket_entries.clamp(
-                    1,
-                    crate::dynamic_materials::MAX_BUCKET_ENTRIES_CEILING,
-                );
+                let clamped = config
+                    .max_bucket_entries
+                    .clamp(1, crate::dynamic_materials::MAX_BUCKET_ENTRIES_CEILING);
                 tracing::warn!(
                     target: "awsm_renderer::dynamic_materials",
                     "with_bucket_config: {msg}; clamping to {clamped}"

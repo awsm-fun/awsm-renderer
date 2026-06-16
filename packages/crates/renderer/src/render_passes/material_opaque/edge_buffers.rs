@@ -343,7 +343,8 @@ pub fn sample_entries_per_bucket(bucket_count: u32, max_edge_budget: u32) -> u32
 
 /// Byte offset of the skybox sample-list region inside `data_buffer`.
 pub fn skybox_sample_list_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    let per_bucket_bytes = sample_entries_per_bucket(bucket_count, max_edge_budget).saturating_mul(4);
+    let per_bucket_bytes =
+        sample_entries_per_bucket(bucket_count, max_edge_budget).saturating_mul(4);
     sample_entries_offset(bucket_count, max_edge_budget)
         + bucket_count.saturating_mul(per_bucket_bytes)
 }
@@ -351,7 +352,8 @@ pub fn skybox_sample_list_offset(bucket_count: u32, max_edge_budget: u32) -> u32
 /// Total bytes for `data_buffer` (per-edge arrays + per-shader-id
 /// sample lists + skybox sample list).
 pub fn data_buffer_bytes(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    let per_bucket_bytes = sample_entries_per_bucket(bucket_count, max_edge_budget).saturating_mul(4);
+    let per_bucket_bytes =
+        sample_entries_per_bucket(bucket_count, max_edge_budget).saturating_mul(4);
     skybox_sample_list_offset(bucket_count, max_edge_budget) + per_bucket_bytes
 }
 
@@ -655,7 +657,10 @@ pub fn build_edge_layout_uniform_bytes(bucket_count: u32, max_edge_budget: u32) 
     // so a single base + the existing `sample_entries_per_bucket` field lets
     // both classify (append) and edge_resolve (read) index any bucket without
     // a per-bucket field array. Fixed-size uniform regardless of bucket count.
-    words.push(to_stride(sample_entries_offset(bucket_count, max_edge_budget)));
+    words.push(to_stride(sample_entries_offset(
+        bucket_count,
+        max_edge_budget,
+    )));
     // skybox_sample_list_base — region after all the per-bucket lists.
     words.push(to_stride(skybox_sample_list_offset(
         bucket_count,
@@ -800,7 +805,10 @@ mod tests {
     #[test]
     fn data_buffer_is_o_edge_budget_not_o_buckets_times_budget() {
         const WEBGPU_MIN_BINDING: u32 = 128 * 1024 * 1024; // guaranteed floor
-        for &budget in &[DEFAULT_MAX_EDGE_BUDGET_MOBILE, DEFAULT_MAX_EDGE_BUDGET_DESKTOP] {
+        for &budget in &[
+            DEFAULT_MAX_EDGE_BUDGET_MOBILE,
+            DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+        ] {
             // The supported target range (≤1024) fits the guaranteed floor.
             for &bucket_count in &[16u32, 254, 1024] {
                 let bytes = data_buffer_bytes(bucket_count, budget);
@@ -822,8 +830,8 @@ mod tests {
             // Sample-list total stays within the shared-pool envelope.
             let pool_entries = budget as u64 * SAMPLE_POOL_BUDGET_MULTIPLIER as u64;
             for &bucket_count in &[16u32, 254, 1024] {
-                let total = sample_entries_per_bucket(bucket_count, budget) as u64
-                    * bucket_count as u64;
+                let total =
+                    sample_entries_per_bucket(bucket_count, budget) as u64 * bucket_count as u64;
                 // ≤ pool (mid/high counts) or ≤ ceiling×count (low counts);
                 // ceiling×count at the smallest tested count (16) = 2*budget*16
                 // = 32*budget, still well-bounded. Assert it never explodes
@@ -844,8 +852,14 @@ mod tests {
         let ceiling = budget * SAMPLE_ENTRIES_PER_BUCKET_MULTIPLIER;
         for &bucket_count in &[1u32, 5, 16, 64, 254, 1024, 4096, 65534] {
             let per = sample_entries_per_bucket(bucket_count, budget);
-            assert!(per <= ceiling, "per-bucket {per} exceeds the 2×budget ceiling at {bucket_count} buckets");
-            assert!(per >= SAMPLE_ENTRIES_PER_BUCKET_FLOOR, "per-bucket {per} below floor at {bucket_count} buckets");
+            assert!(
+                per <= ceiling,
+                "per-bucket {per} exceeds the 2×budget ceiling at {bucket_count} buckets"
+            );
+            assert!(
+                per >= SAMPLE_ENTRIES_PER_BUCKET_FLOOR,
+                "per-bucket {per} below floor at {bucket_count} buckets"
+            );
         }
     }
 }

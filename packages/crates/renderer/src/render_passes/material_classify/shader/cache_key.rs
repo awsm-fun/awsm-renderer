@@ -1,8 +1,6 @@
 //! Shader cache key for the material classify compute pass.
 
-use crate::{
-    render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::ShaderCacheKey,
-};
+use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::ShaderCacheKey};
 
 /// Cache key for the classify compute pipeline.
 ///

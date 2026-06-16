@@ -286,9 +286,14 @@ mod tests {
         let cap_1024 = capped_bucket_capacity(requested, 1029);
         let bytes_1024 = (cap_1024 as u64) * 1029 * 8;
         assert!(
-            bytes_1024 <= MAX_CLASSIFY_TILE_BYTES as u64 + (MIN_CLASSIFY_BUCKET_CAPACITY as u64 * 1029 * 8),
+            bytes_1024
+                <= MAX_CLASSIFY_TILE_BYTES as u64
+                    + (MIN_CLASSIFY_BUCKET_CAPACITY as u64 * 1029 * 8),
             "1024-bucket tiles array {bytes_1024} B not bounded"
         );
-        assert!(bytes_1024 < 64 * 1024 * 1024, "1024-bucket tiles array should be well under 64 MB, got {bytes_1024}");
+        assert!(
+            bytes_1024 < 64 * 1024 * 1024,
+            "1024-bucket tiles array should be well under 64 MB, got {bytes_1024}"
+        );
     }
 }

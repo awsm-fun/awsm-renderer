@@ -3,8 +3,8 @@
 //! https://github.com/dakom/awsm-renderer/pull/99).
 
 use crate::{
-    dynamic_materials::BucketEntry,
-    render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::ShaderCacheKey,
+    dynamic_materials::BucketEntry, render_passes::shader_cache_key::ShaderCacheKeyRenderPass,
+    shaders::ShaderCacheKey,
 };
 
 /// Cache key for the global skybox_edge_resolve shader.
