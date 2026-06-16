@@ -148,21 +148,35 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
 
 ### Phase 3 — separate the custom menu from first-party internals (kills #1 + the dead 33 KB)
 
-- [ ] Make `ShaderIncludes` (the custom-facing menu) enumerate **only Tier A**. Remove
-      `MATERIAL_COLOR_CALC` / `APPLY_LIGHTING` / PBR-orchestrator `BRDF` from it.
-      `ShaderIncludes::all()` then means “all generic helpers” — a safe lazy default for
-      a custom material, no PBR internals.
-- [ ] Introduce a separate first-party-internal include set (e.g. `ModelInternals` or
-      per-base const) that PBR/Toon/Unlit/Flipbook declare for their own kernels. The
-      opaque template emits Tier B modules gated on `base`, not on the custom menu.
-- [ ] In `template.rs` (`TryFrom<&ShaderCacheKeyMaterialOpaque>`), `materials_wgsl` for
+> **Design refinement (found during impl):** two corrections to the original sketch:
+> 1. The Tier-B *constants* (`BRDF`/`APPLY_LIGHTING`/`MATERIAL_COLOR_CALC`) can't be deleted here —
+>    `pbr.rs` (first-party PBR declaration), `scene-loader/src/dynamic.rs`, and the editor bridge
+>    all reference them. Deleting them belongs with Phase 7 (the author-facing menu + string→include
+>    maps). Item 1's low-risk faithful form: redefine `all()` to Tier-A-only; keep the constants.
+> 2. "Gate Tier B on `base`" is WRONG — the SKYBOX bucket rides `base==Pbr` but must get NO Tier B
+>    (it shades nothing); the `inc` flags + `skybox_only()` already handle that. So keep the `inc`
+>    mechanism; the existing first-party `SHADER_INCLUDES` consts ARE the first-party-internal set.
+>    Enforcement for Custom = force the Tier-B flags OFF on the Custom path (not base-gating).
+
+- [x] **Item 1:** redefine `ShaderIncludes::all()` to be Tier-A-only (drop `BRDF` /
+      `APPLY_LIGHTING` / `MATERIAL_COLOR_CALC`). `all()` becomes “all generic helpers” — a safe
+      lazy default. Keep the Tier-B constants (first-party + scene-loader/editor use them; physical
+      menu removal is Phase 7). Update the `from_includes(all())` test + docs.
+      → Done. `all()` now omits the 3 Tier-B bits; `from_includes(all())` yields no Tier-B flags;
+      explicit constants still map (first-party PBR unaffected). Custom declaring `all()`:
+      264,896 → 196,638 B (−68 KB). 33+248 tests green.
+- [ ] **Item 2:** force the Tier-B flags OFF for `base == Custom` — a Custom material can never
+      enable `brdf`/`apply_lighting`/`material_color_calc` regardless of its declared includes
+      (defense beyond `all()` being lean, e.g. an explicit `S::BRDF`). First-party keeps declaring
+      its internals via `SHADER_INCLUDES` (the first-party-internal set — no new type needed).
+- [ ] **Item 3:** in `template.rs` (`TryFrom<&ShaderCacheKeyMaterialOpaque>`), `materials_wgsl` for
       `base == Custom` emits **nothing** (Custom only ever calls `custom_shade_dynamic`).
       First-party bases emit only their own fragment. Drop
-      `build_materials_wgsl_filtered(None)`-for-Custom entirely.
-- [ ] Validation: render Custom × {empty, every Tier A bit} × {mips,no-mips} × {msaa,no-msaa}
-      and confirm each compiles (WGSL validation, not just string checks). Confirm no
-      un-gated reference to `PbrMaterial`/toon/unlit/flipbook structs survives on the
-      Custom path.
+      `build_materials_wgsl_filtered(None)`-for-Custom entirely. (The ~33 KB dead-code kill.)
+- [ ] **Item 4:** validation — render Custom × {empty, every Tier A bit} × {mips,no-mips} ×
+      {msaa,no-msaa} and confirm each compiles (WGSL validation, not just string checks). Confirm no
+      un-gated reference to `PbrMaterial`/toon/unlit/flipbook structs survives on the Custom path.
+      Tighten the size_regression ceiling for empty-includes.
 
 ### Phase 4 — complete the gating + wire FragmentInputs into the opaque path (#3, #4)
 

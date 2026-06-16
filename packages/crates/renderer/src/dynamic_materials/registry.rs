@@ -1625,13 +1625,16 @@ mod tests {
         // Declaring the PBR material-color builder turns that gate on.
         let f = ShaderIncludeFlags::from_includes(S::MATERIAL_COLOR_CALC);
         assert!(f.material_color_calc);
-        // APPLY_LIGHTING transitively resolves to BRDF.
+        // APPLY_LIGHTING transitively resolves to BRDF (the explicit Tier-B
+        // constants still map — first-party PBR declares them this way).
         let f = ShaderIncludeFlags::from_includes(S::APPLY_LIGHTING);
         assert!(f.brdf);
         assert!(f.apply_lighting);
-        // The conservative all() set lights every gate (pre-skinny behaviour).
+        // Phase 3: `all()` is now Tier-A-only (generic helpers), so it lights
+        // NONE of the Tier-B PBR-internal gates. A custom material declaring
+        // `all()` no longer drags in the PBR shading stack.
         let f = ShaderIncludeFlags::from_includes(S::all());
-        assert!(f.brdf && f.apply_lighting && f.material_color_calc);
+        assert!(!f.brdf && !f.apply_lighting && !f.material_color_calc);
     }
 
     #[test]

@@ -129,8 +129,18 @@ impl ShaderIncludes {
     pub const fn empty() -> Self {
         Self(0)
     }
-    /// Every optional module — the conservative set for author-supplied
-    /// (dynamic) materials that may reference anything.
+    /// Every **Tier A (generic)** module — the conservative set a custom
+    /// (dynamic) material may safely opt into. As of Phase 3
+    /// (docs/plans/material-optimizations.md) this deliberately EXCLUDES the
+    /// Tier B PBR-internal modules (`APPLY_LIGHTING` / `BRDF` /
+    /// `MATERIAL_COLOR_CALC`): those are welded to the `PbrMaterial` /
+    /// `PbrMaterialColor` types and are emitted only for the built-in PBR base,
+    /// never reachable from a custom material. A custom material that wants
+    /// PBR-like shading supplies its own WGSL (optionally built on the generic
+    /// `brdf_primitives` helpers). So `all()` now means "all generic helpers",
+    /// a safe lazy default that no longer drags ~87 KB of PBR code into a shader
+    /// that doesn't use it. First-party PBR declares its Tier B modules
+    /// explicitly via `pbr::SHADER_INCLUDES` (the first-party-internal set).
     pub const fn all() -> Self {
         Self(
             Self::BIT_MATH
@@ -139,9 +149,6 @@ impl ShaderIncludes {
                 | Self::BIT_TEXTURES
                 | Self::BIT_VERTEX_COLOR
                 | Self::BIT_LIGHT_ACCESS
-                | Self::BIT_APPLY_LIGHTING
-                | Self::BIT_BRDF
-                | Self::BIT_MATERIAL_COLOR_CALC
                 | Self::BIT_SHADOWS
                 | Self::BIT_SKYBOX
                 | Self::BIT_EXTRAS,
