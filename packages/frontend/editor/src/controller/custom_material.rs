@@ -139,7 +139,15 @@ pub struct CustomMaterial {
     pub recompile_rev: Mutable<u64>,
 }
 
-/// Every `ShaderIncludes` flag, by key (order = display order).
+/// The custom-material-facing `ShaderIncludes` menu — the **Tier-A generic
+/// helpers** a custom material may opt into (order = display order). The Tier-B
+/// PBR-internal modules (`apply_lighting` / `brdf` / `material_color_calc`) are
+/// deliberately NOT offered: they're welded to the built-in `PbrMaterial` /
+/// `PbrMaterialColor` types and `ShaderIncludeFlags::for_custom` masks them off
+/// for any custom material, so selecting them would do nothing. A custom
+/// material that wants PBR-like shading writes its own WGSL (it can build on the
+/// generic `light_access` accessors + `brdf_primitives` helpers). See
+/// `awsm_materials::ShaderIncludes` + docs/plans/material-optimizations.md.
 pub const SHADER_INCLUDE_KEYS: &[&str] = &[
     "math",
     "camera",
@@ -147,9 +155,6 @@ pub const SHADER_INCLUDE_KEYS: &[&str] = &[
     "textures",
     "vertex_color",
     "light_access",
-    "apply_lighting",
-    "brdf",
-    "material_color_calc",
     "shadows",
     "skybox",
     "extras",
@@ -173,8 +178,9 @@ pub const NEW_MATERIAL_WGSL: &str = "\
 // Opaque material. Inputs arrive as fields on `input` (declare them in Pass
 // Dependencies): input.world_normal, input.surface_to_camera (normalized),
 // input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
-// `color` is linear HDR (tonemap is a later pass); it is UNLIT unless you call
-// apply_lighting(...). Must end in `return OpaqueShadingOutput(color, ao)`.
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT — to light it,
+// declare `light_access` and walk lights yourself (get_lights_info / get_light /
+// light_sample). Must end in `return OpaqueShadingOutput(color, ao)`.
 let n = normalize(input.world_normal);
 let v = input.surface_to_camera;          // already normalized (surface -> camera)
 let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
