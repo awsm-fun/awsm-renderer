@@ -178,10 +178,15 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
       → Done. Custom now emits no first-party bodies. empty Custom shader 196,638 → 162,574 B
       (−34 KB, the 4 dead first-party fragments). 248 tests green (incl. shader_completeness —
       no dangling first-party loader refs on the Custom path).
-- [ ] **Item 4:** validation — render Custom × {empty, every Tier A bit} × {mips,no-mips} ×
+- [x] **Item 4:** validation — render Custom × {empty, every Tier A bit} × {mips,no-mips} ×
       {msaa,no-msaa} and confirm each compiles (WGSL validation, not just string checks). Confirm no
       un-gated reference to `PbrMaterial`/toon/unlit/flipbook structs survives on the Custom path.
       Tighten the size_regression ceiling for empty-includes.
+      → Done. Added `custom_path_never_leaks_first_party_shading` (renders the full combo matrix incl.
+      an explicit Tier-B declaration; comment-stripped scan asserts no first-party shading body
+      (`pbr_get_material`/`compute_unlit_material_color`/…) or PBR type (`PbrMaterial(Color)`) leaks
+      into a Custom shader). Caught + fixed a false-positive from a header comment. Ceilings tightened
+      210K/280K → 170K/170K. GPU-level validation = the phase-end browser run. 33+249 tests green.
 
 ### Phase 4 — complete the gating + wire FragmentInputs into the opaque path (#3, #4)
 

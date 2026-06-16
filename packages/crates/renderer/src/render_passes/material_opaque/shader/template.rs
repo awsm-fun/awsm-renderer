@@ -1021,11 +1021,44 @@ mod size_regression {
             .expect("renders")
     }
 
+    /// Remove WGSL `//` line comments and `/* */` block comments so token scans
+    /// match real code, not prose. Non-nesting block handling is fine for our
+    /// generated shaders (the include fences are simple `/* ... */`).
+    fn strip_wgsl_comments(src: &str) -> String {
+        // Drop block comments first.
+        let mut out = String::with_capacity(src.len());
+        let bytes = src.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                // skip to closing */
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+            } else {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        // Then drop line comments.
+        out.lines()
+            .map(|l| match l.find("//") {
+                Some(p) => &l[..p],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     // Ceilings (bytes). Worst realistic config = MSAA4 + mips. Set with headroom
-    // above the Phase-2 measured sizes; TIGHTEN as Phases 3–5 shrink the shaders.
-    // (Phase 2 measured, empty includes: ~196 KB msaa4+mips; all(): ~262 KB.)
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 210_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 280_000;
+    // above the current measured sizes; TIGHTEN as Phases 4–5 shrink the shaders.
+    // Phase 3 (dead first-party bodies removed + all() Tier-A-only): empty AND
+    // all() both ~162.6 KB msaa4+mips (Tier A not gated until Phase 4, so they're
+    // equal for now). Was ~196 KB / ~262 KB at Phase 2.
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 170_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 170_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {
@@ -1056,6 +1089,69 @@ mod size_regression {
             empty.len(),
             all.len()
         );
+    }
+
+    // Phase 3 item 4 — Custom-path validation. Render the Custom kernel across
+    // {empty, all (Tier A), an explicit-Tier-B declaration} × {mips,no-mips} ×
+    // {msaa,no-msaa} and assert:
+    //   (a) every combo renders (template builds + into_source Ok), and
+    //   (b) NO first-party shading body or PBR type leaks into a Custom shader —
+    //       the dead-code kill (item 3) + Tier-B masking (item 2) hold even when
+    //       the registration tries to declare Tier B (S::all() is Tier-A-only,
+    //       but we also throw an explicit S::BRDF | MATERIAL_COLOR_CALC at it).
+    //
+    // These string assertions are the in-tree proxy for WGSL validation; the
+    // phase-end browser run GPU-compiles the empty-includes Custom shader.
+    #[test]
+    fn custom_path_never_leaks_first_party_shading() {
+        use awsm_materials::ShaderIncludes as S;
+        // Tier-B forced declaration — must still be stripped on the Custom path.
+        let tier_b = S::BRDF.union(S::APPLY_LIGHTING).union(S::MATERIAL_COLOR_CALC);
+        let include_sets = [S::empty(), S::all(), tier_b, S::all().union(tier_b)];
+        // Markers that must NEVER appear in a Custom shader: first-party shading
+        // bodies (materials_wgsl) + the PBR types they/the Tier-B modules use.
+        let forbidden = [
+            "fn pbr_get_material(",
+            "fn compute_unlit_material_color(",
+            "fn compute_toon_lit_color(",
+            "fn flipbook_finalize_color(",
+            "fn brdf_direct(",
+            "fn apply_lighting_per_froxel(",
+            "PbrMaterialColor",
+            "PbrMaterial",
+        ];
+        for inc in include_sets {
+            for msaa in [None, Some(4)] {
+                for mips in [false, true] {
+                    let raw = render_custom(inc, msaa, mips);
+                    // Strip comments before scanning — a comment mentioning
+                    // `PbrMaterial` is harmless; only TYPE refs in real code can
+                    // break compilation. (WGSL `//` line + `/* */` block comments;
+                    // our generated shaders never nest block comments.)
+                    let src = strip_wgsl_comments(&raw);
+                    // (a) renders (render_custom already unwraps build + source).
+                    assert!(
+                        src.contains("fn custom_shade_dynamic("),
+                        "Custom shader must emit the dynamic wrapper (inc={:?} msaa={:?} mips={})",
+                        inc.bits(),
+                        msaa,
+                        mips
+                    );
+                    // (b) no first-party / PBR leakage.
+                    for marker in forbidden {
+                        assert!(
+                            !src.contains(marker),
+                            "Custom shader leaked first-party/PBR token `{marker}` \
+                             (inc={:?} msaa={:?} mips={}) — Tier-B masking or the dead-code \
+                             kill regressed",
+                            inc.bits(),
+                            msaa,
+                            mips
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
