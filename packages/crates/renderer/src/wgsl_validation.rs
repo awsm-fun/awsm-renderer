@@ -21,9 +21,14 @@ use awsm_materials::MaterialShaderId;
 
 use crate::dynamic_materials::{BucketEntry, ShadingBase};
 use crate::render_passes::material_opaque::shader::cache_key::{
-    DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
+    DynamicShaderInfo, ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
 };
-use crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaque;
+use crate::render_passes::material_opaque::shader::template::{
+    ShaderTemplateMaterialOpaque, ShaderTemplateMaterialOpaqueEmpty,
+};
+use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
+use crate::render_passes::material_transparent::shader::template::ShaderTemplateMaterialTransparent;
+use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;
 
 /// Parse + validate `src` with naga; panic with a readable error on failure.
 fn naga_validate(src: &str, label: &str) {
@@ -140,6 +145,97 @@ fn custom_opaque_shaders_validate() {
         for (msaa, mips) in CONFIGS {
             let label = format!("opaque/custom inc={:?} msaa={msaa:?} mips={mips}", inc.bits());
             let src = render(&custom_key(inc, msaa, mips), &label);
+            naga_validate(&src, &label);
+        }
+    }
+}
+
+#[test]
+fn empty_opaque_shader_validates() {
+    // The no-geometry opaque template — also includes light_access etc., so
+    // Phase 4 gating must keep it valid.
+    for msaa in [None, Some(4)] {
+        let key = ShaderCacheKeyMaterialOpaqueEmpty {
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            msaa_sample_count: msaa,
+        };
+        let label = format!("opaque-empty msaa={msaa:?}");
+        let src = ShaderTemplateMaterialOpaqueEmpty::try_from(&key)
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+    }
+}
+
+fn transparent_first_party_key(base: ShadingBase, msaa: Option<u32>) -> ShaderCacheKeyMaterialTransparent {
+    ShaderCacheKeyMaterialTransparent {
+        instancing_transforms: false,
+        attributes: ShaderMaterialVertexAttributes {
+            normals: true,
+            tangents: true,
+            color_sets: None,
+            uv_sets: Some(1),
+        },
+        texture_pool_arrays_len: 1,
+        texture_pool_samplers_len: 1,
+        msaa_sample_count: msaa,
+        mipmaps: true,
+        base,
+        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        dispatch_hash: 0,
+        dynamic_shader_id: None,
+        dynamic_shader: None,
+        froxel_slice_count: crate::render_passes::light_culling::buffers::DEFAULT_SLICE_COUNT,
+    }
+}
+
+#[test]
+fn first_party_transparent_shaders_validate() {
+    for (base, name) in [
+        (ShadingBase::Pbr, "pbr"),
+        (ShadingBase::Unlit, "unlit"),
+        (ShadingBase::Toon, "toon"),
+        (ShadingBase::Flipbook, "flipbook"),
+    ] {
+        for msaa in [None, Some(4)] {
+            let label = format!("transparent/{name} msaa={msaa:?}");
+            let key = transparent_first_party_key(base, msaa);
+            let src = ShaderTemplateMaterialTransparent::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+        }
+    }
+}
+
+#[test]
+fn custom_transparent_shaders_validate() {
+    use awsm_materials::ShaderIncludes as S;
+    let dyn_id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
+    let tier_b = S::BRDF.union(S::APPLY_LIGHTING).union(S::MATERIAL_COLOR_CALC);
+    for inc in [S::empty(), S::all(), tier_b] {
+        for msaa in [None, Some(4)] {
+            let mut key = transparent_first_party_key(ShadingBase::Custom, msaa);
+            key.dispatch_hash = 1;
+            key.dynamic_shader_id = Some(dyn_id);
+            key.dynamic_shader = Some(DynamicShaderInfo {
+                shader_includes: inc,
+                struct_decl: "struct MaterialData { _pad: u32, };".to_string(),
+                loader_decl:
+                    "fn material_data_load(byte_offset: u32) -> MaterialData { return MaterialData(0u); }"
+                        .to_string(),
+                wgsl_fragment:
+                    "return TransparentShadingOutput(vec4<f32>(input.world_normal * 0.5 + 0.5, 0.5));"
+                        .to_string(),
+            });
+            let label = format!("transparent/custom inc={:?} msaa={msaa:?}", inc.bits());
+            let src = ShaderTemplateMaterialTransparent::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
             naga_validate(&src, &label);
         }
     }
