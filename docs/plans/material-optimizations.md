@@ -95,8 +95,10 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
 - [x] Re-run the benchmark; record new per-material size + precompile in `report.md`.
       Isolates "benchmark over-declared" from real engine cost.
       → Done (fresh-context browser run). 256: 273→201 KB avg, 8.1→2.9 s. 512: 6.5 s. 1024:
-      28.7→14.8 s and **now renders at 30 fps with a clean console** (was blank + device loss) —
-      the ~66 KB/shader drop alone fixed the 1024 failure. Full table in report.md.
+      28.7→14.8 s. **Correction (re-tested Phase 2):** 1024 is BORDERLINE, not reliably fixed —
+      it renders at 30 fps from a cold GPU (was always-blank before) but a slightly-pressured GPU
+      still tips into device loss. Reliable 1024 needs the Phase 3–5 size cuts + the O(N²) bucket
+      fix. Full table + correction in report.md.
 
 ### Phase 1 — taxonomy audit (design foundation, no behavior change)
 
@@ -137,6 +139,12 @@ Bindings stay full and pass-owned (stable ABI, ~free); gating targets WGSL *code
       `inc.apply_lighting`; every entry point takes `PbrMaterialColor`. `material_color_calc.wgsl`
       is two model-internal builders (PBR gated by `inc.material_color_calc`, unlit by
       `base==Unlit`) — no generic helpers mixed in to extract.
+
+> **Phase 2 end** — browser verification: 248 tests green + size-regression guard committed.
+> Benchmark per-material size unchanged vs Phase 0 (Custom shaders don't include brdf/mipmap, as
+> expected for a behavior-preserving split); N=256 clean at 60 fps; N=1024 confirmed borderline
+> (see Phase 0 correction). PBR-path correctness of the split rests on the test suite — the
+> Custom-only benchmark doesn't exercise it; a PBR-scene GPU validation would be stronger (flagged).
 
 ### Phase 3 — separate the custom menu from first-party internals (kills #1 + the dead 33 KB)
 
