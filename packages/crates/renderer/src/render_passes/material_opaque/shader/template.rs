@@ -952,6 +952,104 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Per-material shader SIZE regression guard (docs/plans/material-optimizations.md).
+//
+// Renders the opaque kernel for a representative Custom (dynamic) material and
+// asserts upper bounds on the emitted WGSL. Upper bounds are the right shape:
+// the optimization phases only SHRINK these shaders, so a passing bound stays
+// valid as sizes drop — the test fails only if a change REGROWS a shader (e.g.
+// re-introduces the PBR stack into a lean material). Tighten the CEILINGs as
+// Phases 3–5 land; the eprintln prints the live sizes for each run.
+//
+// Why Custom: the whole effort targets dynamic materials. A Custom material that
+// declares no includes is the leanest case; `all()` is the conservative case.
+#[cfg(test)]
+mod size_regression {
+    use super::*;
+    use crate::render_passes::material_opaque::shader::cache_key::{
+        DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
+    };
+    use awsm_materials::MaterialShaderId;
+
+    fn render_custom(
+        includes: awsm_materials::ShaderIncludes,
+        msaa: Option<u32>,
+        mipmaps: bool,
+    ) -> String {
+        let dyn_id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
+        let mut bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+        bucket_entries.push(crate::dynamic_materials::BucketEntry {
+            shader_id: dyn_id,
+            base: crate::dynamic_materials::ShadingBase::Custom,
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            name: "noise".to_string(),
+        });
+        let key = ShaderCacheKeyMaterialOpaque {
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            msaa_sample_count: msaa,
+            mipmaps,
+            shader_id: dyn_id,
+            base: crate::dynamic_materials::ShadingBase::Custom,
+            owns_skybox: false,
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            dispatch_hash: 1,
+            dynamic_shader: Some(DynamicShaderInfo {
+                shader_includes: includes,
+                struct_decl: "struct MaterialData { _pad: u32, };".to_string(),
+                loader_decl:
+                    "fn material_data_load(byte_offset: u32) -> MaterialData { return MaterialData(0u); }"
+                        .to_string(),
+                wgsl_fragment:
+                    "return OpaqueShadingOutput(input.world_normal * 0.5 + 0.5, 1.0);".to_string(),
+            }),
+            bucket_entries,
+        };
+        ShaderTemplateMaterialOpaque::try_from(&key)
+            .expect("template builds")
+            .into_source()
+            .expect("renders")
+    }
+
+    // Ceilings (bytes). Worst realistic config = MSAA4 + mips. Set with headroom
+    // above the Phase-2 measured sizes; TIGHTEN as Phases 3–5 shrink the shaders.
+    // (Phase 2 measured, empty includes: ~196 KB msaa4+mips; all(): ~262 KB.)
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 210_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 280_000;
+
+    #[test]
+    fn custom_shader_sizes_within_ceiling() {
+        let empty = render_custom(awsm_materials::ShaderIncludes::empty(), Some(4), true);
+        let all = render_custom(awsm_materials::ShaderIncludes::all(), Some(4), true);
+        eprintln!(
+            "[size_regression] Custom msaa4+mips — empty: {} B, all: {} B (delta {})",
+            empty.len(),
+            all.len(),
+            all.len() - empty.len()
+        );
+        assert!(
+            empty.len() < CEIL_EMPTY_MSAA4_MIPS,
+            "empty-includes Custom shader {} B exceeded ceiling {} B — a lean material regrew",
+            empty.len(),
+            CEIL_EMPTY_MSAA4_MIPS
+        );
+        assert!(
+            all.len() < CEIL_ALL_MSAA4_MIPS,
+            "all-includes Custom shader {} B exceeded ceiling {} B",
+            all.len(),
+            CEIL_ALL_MSAA4_MIPS
+        );
+        // Declaring fewer includes must never produce a LARGER shader.
+        assert!(
+            empty.len() <= all.len(),
+            "empty-includes ({} B) should not exceed all-includes ({} B)",
+            empty.len(),
+            all.len()
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // brdf.wgsl PBR feature-gating tests. Render the shared lobe template
 // standalone (it only references `pbr_features`) and assert the
 // specialize-only contract: feature presence is purely compile-time, and
