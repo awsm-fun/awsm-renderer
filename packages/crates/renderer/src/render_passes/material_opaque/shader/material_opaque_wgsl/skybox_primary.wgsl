@@ -17,14 +17,10 @@ fn main(
     @builtin(local_invocation_id) lid: vec3<u32>
 ) {
     // Same bucket-tile lookup as the material kernel — this pipeline is
-    // dispatched over the canonical skybox bucket's tile list.
-    let bucket_offset =
-    {%- for entry in bucket_entries -%}
-        {%- if shader_id == entry.shader_id -%}
-        classify_buckets.{{ entry.offset_field() }}
-        {%- endif -%}
-    {%- endfor -%}
-    ;
+    // dispatched over the canonical skybox bucket's tile list. The skybox bucket
+    // is reserved at index 0 (see `first_party_bucket_entries`), so read
+    // `offsets[0]` from the data-driven ClassifyBuckets layout.
+    let bucket_offset = classify_buckets.offsets[0u];
     let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
     let screen_dims = textureDimensions(opaque_tex);

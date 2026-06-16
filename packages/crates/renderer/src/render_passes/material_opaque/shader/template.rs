@@ -706,49 +706,40 @@ mod empty_registry_tests {
     }
 
     #[test]
-    fn empty_registry_preserves_classify_buckets_field_names() {
-        // The templated ClassifyBuckets struct walks bucket_entries.
-        // For the empty registry these are the four first-party
-        // materials in registration order, so the struct emits
-        // args_pbr / args_unlit / args_toon / args_flipbook plus
-        // their <name>_offset siblings — same as the hand-rolled
-        // pre-feature version.
+    fn classify_buckets_uses_data_driven_array_layout() {
+        // O(N²) fix: ClassifyBuckets is now `args`/`offsets` ARRAYS (indexed by
+        // bucket index), NOT 2N per-bucket named fields. The struct text is O(1)
+        // regardless of bucket count. Assert the arrays are present and the old
+        // per-name fields are GONE (so the struct stops growing with N).
         let wgsl = render_first_party_wgsl(MaterialShaderId::PBR, None);
-        for expected in [
-            "args_pbr",
-            "args_unlit",
-            "args_toon",
-            "args_flipbook",
-            "pbr_offset",
-            "unlit_offset",
-            "toon_offset",
-            "flipbook_offset",
-        ] {
+        assert!(
+            wgsl.contains("args: array<vec4<u32>,") && wgsl.contains("offsets: array<u32,"),
+            "ClassifyBuckets should declare `args`/`offsets` arrays"
+        );
+        for gone in ["args_pbr", "pbr_offset", "unlit_offset", "flipbook_offset"] {
             assert!(
-                wgsl.contains(expected),
-                "empty-registry ClassifyBuckets missing `{expected}`"
+                !wgsl.contains(gone),
+                "ClassifyBuckets still emits per-bucket named field `{gone}` (O(N) regression)"
             );
         }
     }
 
     #[test]
     fn empty_registry_bucket_offset_resolves() {
-        // A past bug we fixed was `let bucket_offset =;` when
-        // the lookup chain had no match. Verify the resolved
-        // expression isn't empty for every first-party shader_id.
-        for (shader_id, expected) in [
-            (MaterialShaderId::PBR, "classify_buckets.pbr_offset"),
-            (MaterialShaderId::UNLIT, "classify_buckets.unlit_offset"),
-            (MaterialShaderId::TOON, "classify_buckets.toon_offset"),
-            (
-                MaterialShaderId::FLIPBOOK,
-                "classify_buckets.flipbook_offset",
-            ),
+        // A past bug was `let bucket_offset =;` when the lookup chain had no
+        // match. With the data-driven layout the offset is read by bucket index
+        // from the `offsets` array; verify it resolves (non-empty) for every
+        // first-party shader_id.
+        for shader_id in [
+            MaterialShaderId::PBR,
+            MaterialShaderId::UNLIT,
+            MaterialShaderId::TOON,
+            MaterialShaderId::FLIPBOOK,
         ] {
             let wgsl = render_first_party_wgsl(shader_id, None);
             assert!(
-                wgsl.contains(expected),
-                "first-party {shader_id:?} pipeline's bucket_offset doesn't resolve to {expected}"
+                wgsl.contains("let bucket_offset = classify_buckets.offsets["),
+                "first-party {shader_id:?} pipeline's bucket_offset doesn't read offsets[bucket_index]"
             );
             assert!(
                 !wgsl.contains("let bucket_offset =;"),

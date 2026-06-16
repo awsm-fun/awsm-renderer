@@ -15,16 +15,11 @@ fn cs_opaque(
     // statically; `workgroup_id.x` is the bucket entry index;
     // `local_invocation_id.xy` is the 8×8 thread → pixel offset.
     // Templated bucket_offset lookup — the pipeline is specialized
-    // for one shader_id, so the askama if-branch resolves to exactly
-    // one entry at template-render time. Walks the same bucket_entries
-    // list the classify-pass template walks.
-    let bucket_offset =
-    {%- for entry in bucket_entries -%}
-        {%- if shader_id == entry.shader_id -%}
-        classify_buckets.{{ entry.offset_field() }}
-        {%- endif -%}
-    {%- endfor -%}
-    ;
+    // for one shader_id. Data-driven layout: read this pipeline's own tile
+    // offset by its bucket index (resolved at template-render time, same value
+    // the old per-name `<name>_offset` field held) from the `offsets` array —
+    // no O(N) per-bucket field walk.
+    let bucket_offset = classify_buckets.offsets[{{ bucket_index }}u];
     let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
     let screen_dims = textureDimensions(opaque_tex);

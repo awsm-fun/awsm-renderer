@@ -54,13 +54,14 @@ struct TransformPacked {
 // Read-only view of the classify-pass output. Layout MUST match the
 // classify-pass writer's `ClassifyOutput` struct byte-for-byte —
 // both are templated from the same `bucket_entries`.
+// Data-driven layout (matches the classify writer's `ClassifyOutput`, §4b):
+// `args`/`offsets` arrays indexed by bucket index, byte-identical to the old 2N
+// named per-bucket fields but O(1) struct text (the O(N²) fix — a 1024-bucket
+// scene no longer embeds 2048 field decls in every shader). Reads only
+// `offsets[bucket_index]`; `args` is host-consumed (indirect dispatch), layout-only.
 struct ClassifyBuckets {
-{% for entry in bucket_entries %}
-    {{ entry.args_field() }}: vec4<u32>,
-{% endfor %}
-{% for entry in bucket_entries %}
-    {{ entry.offset_field() }}: u32,
-{% endfor %}
+    args: array<vec4<u32>, {{ bucket_entries.len() }}u>,
+    offsets: array<u32, {{ bucket_entries.len() }}u>,
     bucket_capacity: u32,
 {% for pad in pad_words_iter %}
     _pad_align_{{ pad }}: u32,
