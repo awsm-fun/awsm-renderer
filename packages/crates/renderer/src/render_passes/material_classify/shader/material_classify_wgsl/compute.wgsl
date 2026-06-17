@@ -52,46 +52,13 @@ fn view_space_depth(camera: Camera, depth: f32, pixel_coords: vec2<f32>, screen_
 const SID_SKYBOX: u32 = 0xFFFFFFFEu;
 const SID_EMPTY: u32 = 0xFFFFFFFFu;
 
-// Append one distinct sample-bucket's (edge_id, sample_mask) entry to its
-// sample list (§4c). `bk` is a bucket index (or SID_SKYBOX / SID_EMPTY).
-// The 4-bit sample mask is built from which of the 4 per-sample bucket ids
-// (`s0..s3`) equal `bk`. O(1) per distinct bucket — replaces the old
-// O(buckets) per-bucket `mask_<i>` accumulation + append loop. The per-bucket
-// sample list is at `per_shader_sample_list_base + bk *
-// sample_entries_per_bucket` (lists are contiguous + uniformly sized — no
-// per-bucket base array needed). Only storage accesses are dynamically
-// indexed (safe); the caller keeps per-sample locals static (Tint scar).
-fn append_edge_sample(bk: u32, s0: u32, s1: u32, s2: u32, s3: u32, edge_id: u32) {
-    if (bk == SID_EMPTY) { return; } // unmapped sample → no list
-    var m: u32 = 0u;
-    if (s0 == bk) { m |= 1u; }
-    if (s1 == bk) { m |= 2u; }
-    if (s2 == bk) { m |= 4u; }
-    if (s3 == bk) { m |= 8u; }
-    if (m == 0u) { return; }
-    let packed = (edge_id & 0x00FFFFFFu) | ((m & 0xFFu) << 24u);
-    if (bk == SID_SKYBOX) {
-        // Skybox → dedicated skybox sample list. workgroup_count_x grows
-        // every 64th slot to match skybox_edge_resolve's @workgroup_size(64).
-        let slot = atomicAdd(&edge_data[edge_layout.skybox_count_index], 1u);
-        if ((slot & 63u) == 0u) {
-            atomicAdd(&edge_buffers.skybox_edge_args.workgroup_count_x, 1u);
-        }
-        if (slot < edge_layout.sample_entries_per_bucket) {
-            atomicStore(&edge_data[edge_layout.skybox_sample_list_base + slot], packed);
-        }
-    } else {
-        // Real bucket → its per-bucket sample list, indexed by `bk`.
-        let slot = atomicAdd(&edge_data[edge_layout.per_shader_count_base + bk], 1u);
-        if ((slot & 63u) == 0u) {
-            atomicAdd(&edge_buffers.per_shader_edge_args[bk].workgroup_count_x, 1u);
-        }
-        if (slot < edge_layout.sample_entries_per_bucket) {
-            let list_base = edge_layout.per_shader_sample_list_base + bk * edge_layout.sample_entries_per_bucket;
-            atomicStore(&edge_data[list_base + slot], packed);
-        }
-    }
-}
+// (Unified-edge U2b-3) The per-bucket + skybox edge-SAMPLE-LIST machinery
+// (`append_edge_sample`) was removed: those lists fed only the legacy
+// cs_edge / skybox_edge_resolve pipelines, which are gone. The unified
+// `cs_shade` kernel drives edge shading from the per-pixel edge-id texture +
+// the packed slot map instead, so classify no longer appends sample-list
+// entries (and `data_buffer` no longer allocates the lists). SID_SKYBOX /
+// SID_EMPTY below are still used by the slot_map pack.
 {% endif %}
 
 // Workgroup-shared bucket mask. One bit per registered bucket; the SKYBOX
@@ -625,19 +592,11 @@ fn cs_main(
                     atomicStore(&edge_data[accum_clear_base + ci], 0u);
                 }
 
-                // Append each distinct sample-bucket's (edge_id, mask)
-                // entry to its sample list (§4c) — O(distinct buckets in
-                // this pixel) ≤ 4, never O(total buckets). `seen_0..seen_3`
-                // are the distinct sid values computed above (skybox is its
-                // own distinct value 0xFE; unmapped 0xFF is skipped in the
-                // helper). Unrolled over the 4 `seen_*` slots so no dynamic
-                // indexing into per-sample locals occurs (Naga/Tint scar);
-                // the helper builds each bucket's sample mask from the 4
-                // sids and does the (dynamically-indexed) storage append.
-                append_edge_sample(seen_0, sid_0, sid_1, sid_2, sid_3, edge_id);
-                append_edge_sample(seen_1, sid_0, sid_1, sid_2, sid_3, edge_id);
-                append_edge_sample(seen_2, sid_0, sid_1, sid_2, sid_3, edge_id);
-                append_edge_sample(seen_3, sid_0, sid_1, sid_2, sid_3, edge_id);
+                // (Unified-edge U2b-3) Sample-list append removed — see the
+                // note where `append_edge_sample` used to be defined. cs_shade
+                // reads the packed slot map (above) + the per-pixel edge-id
+                // texture to drive per-sample edge shading, so no per-bucket
+                // lists are built.
                 // Final blend args: one workgroup per edge pixel
                 // (workgroup_size = 64, so divide by 64).
                 if ((edge_id & 63u) == 0u) {

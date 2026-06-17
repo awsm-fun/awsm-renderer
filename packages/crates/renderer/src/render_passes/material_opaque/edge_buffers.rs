@@ -349,12 +349,19 @@ pub fn skybox_sample_list_offset(bucket_count: u32, max_edge_budget: u32) -> u32
         + bucket_count.saturating_mul(per_bucket_bytes)
 }
 
-/// Total bytes for `data_buffer` (per-edge arrays + per-shader-id
-/// sample lists + skybox sample list).
+/// Total bytes for `data_buffer` (counter-mirror header + per-edge arrays:
+/// edge_to_xy + edge_slot_map + accumulator).
+///
+/// Unified-edge U2b-3: the trailing per-bucket + skybox edge-SAMPLE-LIST
+/// regions are no longer allocated — they fed only the deleted cs_edge /
+/// skybox_edge_resolve pipelines. The buffer now ends right after the
+/// accumulator (the last region `cs_shade` / `final_blend` read). The
+/// `sample_entries_offset` / `skybox_sample_list_offset` helpers + the
+/// matching `EdgeBufferLayout` uniform fields are now dead (they address
+/// offsets past the end of this shorter buffer, but nothing reads them since
+/// `append_edge_sample` is gone) and are removed in U3 along with the toggle.
 pub fn data_buffer_bytes(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    let per_bucket_bytes =
-        sample_entries_per_bucket(bucket_count, max_edge_budget).saturating_mul(4);
-    skybox_sample_list_offset(bucket_count, max_edge_budget) + per_bucket_bytes
+    accumulator_offset(bucket_count, max_edge_budget) + accumulator_bytes(max_edge_budget)
 }
 
 /// Composite GPU buffers for the MSAA edge-resolve flow.

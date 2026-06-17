@@ -182,14 +182,25 @@ the current HEAD. Every stage below must reproduce these **byte-identically** (e
     changed + recompiled — cs_shade output unchanged.) **Pipelines/material under MSAA: 3 → 2** (cs_opaque +
     cs_edge + cs_shade → cs_opaque [no-MSAA only, still compiled] + cs_shade); skybox_edge_resolve global
     pipeline gone.
-  - **U2b-3 — buffer-layout surgery (memory win).** Drop `append_edge_sample` + the per-bucket + skybox
-    sample-list regions + per_shader/skybox indirect args from classify compute.wgsl + edge_buffers.rs
-    `EdgeBufferLayout` (per_shader_count_base, skybox_count_index, per_shader_sample_list_base,
-    skybox_sample_list_base, sample_entries_per_bucket) + the edge_layout uniform + bind groups. Keep:
-    edge_count, edge_to_xy, edge_slot_map, accumulator (+ its clear), final_blend args, edge_overflow_count.
-    The kept-region offsets shift — classify (writer) + cs_shade + final_blend all read them via the
-    edge_layout uniform, so parity holds iff the layout calc + upload stay consistent. GPU-verify offsets
-    (MSAA, prep on+off, all models). Measure classify atomic/memory traffic dropped + record in spec.
+  - **U2b-3 [DONE] — drop the dead edge-sample-list machinery (memory + classify-atomic win).** Removed
+    `append_edge_sample` (fn + its 4 call sites) from classify compute.wgsl, and truncated the `data_buffer`
+    to end right after the accumulator (`data_buffer_bytes = accumulator_offset + accumulator_bytes`) —
+    dropping the per-bucket + skybox sample-list pool. **Minimal-risk approach: the kept-region offsets did
+    NOT shift** — the counter-mirror header + edge_to_xy + edge_slot_map + accumulator keep byte-identical
+    offsets, so cs_shade/final_blend read exactly the same locations (byte-parity is near-trivial, not
+    offset-dependent). The 5 now-dead `EdgeBufferLayout` uniform/struct fields (per_shader_count_base,
+    skybox_count_index, per_shader_sample_list_base, skybox_sample_list_base, sample_entries_per_bucket —
+    mirrored in 4 WGSL files: material_opaque/final_blend/classify/material_prep) + the dead args_buffer
+    skybox/per_shader indirect slots now address offsets past the shorter buffer but are READ BY NOBODY
+    (append was their only consumer); they are removed in U3 with the toggle (deferred to avoid the 4-way
+    struct-mirror lockstep risk in this commit). 261+34 green (updated the U0-era wgsl_validation assertion
+    that required append_edge_sample to KEEP → now asserts it is REMOVED + edge_slot_map_base remains).
+    **GPU byte-parity VERIFIED (max-diff 0, 0 pixels):** MetalRoughSpheres + SheenChair prep-OFF == baseline;
+    SheenChair prep-ON == prep-off baseline (validates prep + U2b-3 together). **Memory: data_buffer
+    ~56 MB → 36 MB** at bucket_count=5 / max_edge_budget=524288 (the ~20 MB sample-list pool dropped; scales
+    with sample_entries_per_bucket × (buckets+1)). **Classify atomic traffic: 4 append_edge_sample calls per
+    edge pixel removed** (each up to ~2 atomicAdd + 1 atomicStore + per-bucket/skybox count atomicAdds).
+    **This completes U2.**
 - **U2 (orig) — flip + delete.** Make `cs_shade` the only path: classify emits any-sample `tile_mask` +
   `edge_id_tex` only; drop `append_edge_sample` + per-bucket edge-sample lists + their per-bucket indirect
   args; delete `cs_opaque`/`cs_edge`/`skybox_primary`/`skybox_edge_resolve` entry points + their pipelines.

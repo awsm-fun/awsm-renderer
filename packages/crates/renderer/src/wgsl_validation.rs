@@ -511,11 +511,18 @@ fn material_classify_shader_validates() {
         on.contains("ubucket1"),
         "unified_edge=true MSAA must build the ANY-sample tile_mask (4-sample OR)"
     );
-    // The existing edge-sample-list machinery must remain INTACT alongside it
-    // (U0 only ADDS edge_id_tex; U2 removes the lists).
+    // Unified-edge U2b-3: the per-bucket + skybox edge-SAMPLE-LIST machinery
+    // (`append_edge_sample`) is REMOVED — it fed only the deleted cs_edge /
+    // skybox_edge_resolve pipelines. cs_shade drives edge shading from the
+    // edge-id texture + the packed slot map, so the slot-map pack (edge_data
+    // store of `slot_map` / the 16-bit `slot_base` form) must remain.
     assert!(
-        on.contains("fn append_edge_sample("),
-        "unified_edge=true must KEEP the existing edge-sample-list machinery (append_edge_sample)"
+        !on.contains("fn append_edge_sample("),
+        "U2b-3: append_edge_sample (edge-sample lists) must be REMOVED"
+    );
+    assert!(
+        on.contains("edge_slot_map_base"),
+        "cs_shade still needs the slot_map pack — edge_slot_map_base must remain"
     );
 }
 
