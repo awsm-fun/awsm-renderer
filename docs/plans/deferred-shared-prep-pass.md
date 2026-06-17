@@ -113,6 +113,13 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
 
 0. **Config + buffers scaffolding.** Builder flags; allocate the attr G-buffer + shadow buffer +
    bind-group layouts. No behavior change (nothing reads them yet).
+   - [x] **0a — config type + module.** `render_passes::material_prep::PrepPassConfig` (enabled /
+     `max_shadow_casters_per_pixel` K=4 default, ceiling 16 / `reconstruct_world_pos`) + `material_prep`
+     module scaffold. Compiles green, inert. (split from 0 for a safe first increment)
+   - [ ] **0b — builder wiring.** `with_prep_pass` / `with_max_shadow_casters_per_pixel` /
+     `with_prep_reconstruct_world_pos` on `AwsmRendererBuilder`; store `PrepPassConfig` on `AwsmRenderer`.
+   - [ ] **0c — buffers + bind-group layouts.** Allocate attr G-buffer (world_pos fp32, UVs, vcolor) +
+     K-layer shadow buffer + compact edge buffer + their bind-group layouts. Inert.
 1. **Prep pass — attributes.** New compute pass after classify: interpolate world_pos + UVs + vertex
    colors into the G-buffer (dispatched over covered tiles). Validate output vs in-shader values (a
    debug compare). No material reads yet.

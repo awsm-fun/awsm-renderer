@@ -10,6 +10,7 @@ pub mod lines;
 pub mod material_classify;
 pub mod material_decal;
 pub mod material_opaque;
+pub mod material_prep;
 pub mod material_transparent;
 pub mod occlusion;
 pub mod shader_cache_key;
