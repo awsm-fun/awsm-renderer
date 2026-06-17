@@ -489,6 +489,7 @@ name = "awsm-scene-loader"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "awsm-curves",
  "awsm-materials",
  "awsm-meshgen",
  "awsm-renderer",

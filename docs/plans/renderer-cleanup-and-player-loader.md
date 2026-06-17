@@ -263,7 +263,28 @@ on the trait (static-dispatch wasm; no Send). 259+34+25 green, warning-free.
 impl for `HashMap<String,Vec<u8>>` (model-test path unchanged). Loader pulls lazily;
 `on_phase` still reports progress.
 
-### B3 — R3: full NodeKind coverage
+### B3 [DONE] — R3: full NodeKind coverage
+Implemented the remaining `materialize` arms (wired into `NodeHandles`; world matrices composed by hand via
+a threaded `parent_world: Mat4` since `get_world` isn't folded mid-load):
+- **Line** → `add_line_strip` (LinePoint pos/color, world-baked) + `ensure_line_pipelines_compiled`; `NodeHandles.line`.
+- **Sprite** → `awsm_meshgen::sprite_quad` scaled by `size`; Unlit (tint+texture) or FlipBook (atlas/grid/fps)
+  when `flipbook` Some; billboard via the EXISTING `AwsmRenderer::set_mesh_billboard_mode` (no new renderer API).
+- **Decal** → resolve `cfg.texture` to a flat pool index (`array*64+layer`, matching the decal shader packing) +
+  node world Mat4 → `insert_decal`; `FeatureNotEnabled` → one-time warn + skip; `NodeHandles.decal`.
+- **InstancesAlongCurve** → look up `curve_node`'s `CurveDef`, Catmull-Rom sample (via `awsm-curves`, respects
+  closed/tension/sample_count), arc-length place every `spacing` (+ side_offset/orient_to_tangent), resolve
+  `source_node` first mesh, `enable_mesh_instancing_opaque`.
+- **Curve / Group / Collider** → no renderable (no-op). **ParticleEmitter** → documented clean-skip + one-time
+  warn (no renderer particle pass; particles are gameplay-owned).
+Added `awsm-curves` dep; extended `AnimResolveMaps` with `lines`/`decals`; a Phase-3a `finalize_gpu_textures`
+re-commit covers sprite/decal textures staged after Phase 2. `populate_awsm_scene` public sig unchanged;
+259+34+25 green, warning-free, clippy clean. **Documented caveats / follow-ons:** decal texture index assumes
+≤64 pool layers/array (`DECAL_POOL_LAYERS_PER_ARRAY`, matches shader — confirm pool never exceeds); InstancesAlongCurve
+does not yet apply `per_instance_colors` or per-instance `shadow` (opaque-instancing takes transforms only) and
+relies on DFS order (source before instances, best-effort + warn); ParticleEmitter unrendered (future renderer
+particle-pass effort).
+
+### B3 (orig) — R3: full NodeKind coverage
 Add Sprite, ParticleEmitter (CPU; opaque + transparent-blend), Line (fat polyline),
 InstancesAlongCurve (place a source node along a `Curve`); Curve = data only; Collider
 skipped; Decal if feasible else documented-unsupported + clean skip. If the renderer

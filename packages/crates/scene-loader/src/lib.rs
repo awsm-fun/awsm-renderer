@@ -25,6 +25,19 @@
 //! pin). Remaining follow-on: driving a skinned mesh's rig glb joints from our
 //! Transform tracks (skin correspondence — the rig still poses at bind pose, and
 //! its bone tracks currently target the scene bone nodes, not the glb joints).
+//!
+//! Beyond meshes/lights/cameras the loader also materializes the remaining
+//! authored [`NodeKind`](awsm_scene::NodeKind)s: **lines** (fat-line strips,
+//! world-baked), **sprites** (unlit / flipbook textured quads, optionally
+//! billboarded), **decals** (oriented-cube projections, skipped with a one-time
+//! warn when the renderer's `decals` feature is off), and **instances-along-curve**
+//! (GPU-instanced copies of a source mesh placed along a `Curve` by arc length).
+//! `Curve` / `Group` / `Collider` carry no runtime renderable.
+//!
+//! **`ParticleEmitter` is a documented gap**: the loader has no renderer particle
+//! pass to drive, so emitter nodes are cleanly skipped (one-time warn). Particles
+//! are owned by the game, which simulates them and updates its own per-frame
+//! mesh/line buffers; the loader only carries the authored node's transform.
 
 pub mod animation;
 pub mod assets;
@@ -55,10 +68,11 @@ use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOpts};
 use awsm_scene::{
-    mesh_glb_filename, AssetId, AssetSource, CameraConfig, EditorNode, MaterialInstance,
-    MaterialShading, NodeId, NodeKind, RuntimeMesh, Scene, Trs, ASSETS_DIR,
+    mesh_glb_filename, AssetId, AssetSource, CameraConfig, CurveDef, DecalConfig, EditorNode,
+    InstancesAlongCurveDef, LineDef, MaterialInstance, MaterialShading, NodeId, NodeKind,
+    RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
 };
-use glam::{Quat, Vec3};
+use glam::{Mat4, Quat, Vec3, Vec4};
 
 /// The renderer handles a single materialized scene node produced, keyed back to
 /// its [`NodeId`] in [`LoadedScene::nodes`]. A player drives named nodes every
@@ -208,6 +222,7 @@ pub async fn populate_awsm_scene(
             scene,
             node,
             None,
+            glam::Mat4::IDENTITY,
             assets,
             &mut maps,
             placeholder,
@@ -218,6 +233,13 @@ pub async fn populate_awsm_scene(
         )
         .await?;
     }
+
+    // ── Phase 3a: commit any textures staged while materializing ──────────────
+    // Phase 2's `finalize_gpu_textures` covers material textures (built in Phase
+    // 1). `Sprite` / `Decal` nodes resolve their textures HERE in Phase 3 (their
+    // material isn't in `collect_renderables`), so re-finalize to upload anything
+    // newly staged. Idempotent — a no-op when no sprite/decal added a texture.
+    renderer.finalize_gpu_textures().await?;
 
     // ── Assemble per-NodeId handles (R1) ──────────────────────────────────────
     // Every materialized node owns a transform; attach whatever mesh/light/camera
@@ -233,8 +255,8 @@ pub async fn populate_awsm_scene(
                 light: maps.lights.get(&node_id).copied(),
                 camera: maps.cameras.get(&node_id).copied(),
                 camera_config: maps.camera_configs.get(&node_id).cloned(),
-                line: None,
-                decal: None,
+                line: maps.lines.get(&node_id).copied(),
+                decal: maps.decals.get(&node_id).copied(),
             },
         );
     }
@@ -279,6 +301,7 @@ async fn materialize(
     scene: &Scene,
     node: &EditorNode,
     parent: Option<TransformKey>,
+    parent_world: glam::Mat4,
     assets: &impl SceneAssets,
     maps: &mut AnimResolveMaps,
     placeholder: MaterialKey,
@@ -287,9 +310,15 @@ async fn materialize(
     total: usize,
     loaded: &mut LoadedScene,
 ) -> Result<()> {
-    let tk = renderer
-        .transforms
-        .insert(trs_to_transform(&node.transform), parent);
+    let local = trs_to_transform(&node.transform);
+    // World matrix for THIS node, composed up the chain by hand. We can't rely on
+    // `renderer.transforms.get_world(tk)` here: `transforms.insert` seeds a node's
+    // world matrix with its *local* matrix and only the later `update()` pass folds
+    // in ancestors. Line / Decal nodes need the resolved world transform *now*
+    // (the fat-line API bakes world-space points; a decal takes a world `Mat4`), so
+    // we accumulate it through the recursion instead.
+    let node_world = parent_world * local.to_matrix();
+    let tk = renderer.transforms.insert(local, parent);
     // Record this node's transform key for animation Transform tracks.
     maps.transforms.insert(node.id, tk);
     // The material key built for this node in Phase 1 (placeholder if unassigned
@@ -414,8 +443,32 @@ async fn materialize(
             // projection/behavior (exposed via NodeHandles.camera_config).
             maps.camera_configs.insert(node.id, cfg.clone());
         }
-        // Follow-on: our-clip (animation) wiring.
-        _ => {}
+        NodeKind::Line(def) => {
+            materialize_line(renderer, def, node.id, node_world, maps).await?;
+        }
+        NodeKind::Sprite(def) => {
+            materialize_sprite(renderer, assets, def, node.id, tk, maps, loaded).await?;
+        }
+        NodeKind::Decal(cfg) => {
+            materialize_decal(renderer, assets, cfg, node.id, node_world, maps).await?;
+        }
+        NodeKind::InstancesAlongCurve(def) => {
+            materialize_instances_along_curve(renderer, scene, def, maps)?;
+        }
+        // A bare `Curve` is data-only: it emits no renderer node. It's consumed
+        // by `InstancesAlongCurve` (and sweeps at bake time), which look the curve
+        // up directly from `scene` by `NodeId` — no per-node renderer resource.
+        NodeKind::Curve(_) => {}
+        // B3: clean-skip — the loader has no renderer particle pass to drive.
+        // The game owns particle simulation (it updates its own per-frame
+        // mesh/line buffers), so materializing an emitter here would render
+        // nothing. Warned once (see `warn_particle_skip`) + documented on
+        // `populate_awsm_scene`.
+        NodeKind::ParticleEmitter(_) => warn_particle_skip(),
+        // `Group` (pure transform parent) and `Collider` (editor-only wireframe;
+        // no runtime renderable) need nothing further here. `Mesh` /
+        // `SkinnedMesh` / `Light` / `Camera` are handled by the arms above.
+        NodeKind::Group | NodeKind::Collider(_) => {}
     }
 
     for child in &node.children {
@@ -424,6 +477,7 @@ async fn materialize(
             scene,
             child,
             Some(tk),
+            node_world,
             assets,
             maps,
             placeholder,
@@ -435,6 +489,348 @@ async fn materialize(
         .await?;
     }
     Ok(())
+}
+
+/// Materialize a [`NodeKind::Line`] into a renderer fat-line strip.
+///
+/// The screen-space fat-line API ([`AwsmRenderer::add_line_strip`]) takes
+/// world-space points with no transform of its own, so we bake the node's world
+/// transform (`node_world`, accumulated through the materialize recursion) into
+/// each authored [`LinePoint::pos`](awsm_scene::LinePoint) before handing them
+/// over. Colours pass through verbatim. Records the [`LineKey`] into
+/// `maps.lines` so the `NodeHandles` assembly can wire `NodeHandles.line`.
+///
+/// Compiles the line pipelines once (idempotent — `ensure_line_pipelines_compiled`
+/// early-returns after the first compile), so the strip draws on the first frame
+/// rather than warn-skipping until the next pipeline-ready drive.
+async fn materialize_line(
+    renderer: &mut AwsmRenderer,
+    def: &LineDef,
+    node_id: NodeId,
+    node_world: Mat4,
+    maps: &mut AnimResolveMaps,
+) -> Result<()> {
+    if def.points.len() < 2 {
+        // Fewer than 2 points has no segment to draw; `add_line_strip` would
+        // return `None` anyway. Skip without minting a (never-drawn) entry.
+        return Ok(());
+    }
+    let positions: Vec<Vec3> = def
+        .points
+        .iter()
+        .map(|p| node_world.transform_point3(Vec3::from_array(p.pos)))
+        .collect();
+    let colors: Vec<Vec4> = def
+        .points
+        .iter()
+        .map(|p| Vec4::from_array(p.color))
+        .collect();
+    if let Some(key) =
+        renderer.add_line_strip(&positions, &colors, def.width_px, def.depth_test_always)?
+    {
+        maps.lines.insert(node_id, key);
+        // Drive the (cold-boot-lazy) line pipeline compile now; idempotent.
+        renderer.ensure_line_pipelines_compiled().await?;
+    }
+    Ok(())
+}
+
+/// Materialize a [`NodeKind::Sprite`] into a textured quad rooted under the node's
+/// transform `tk`.
+///
+/// Geometry is `awsm_meshgen::sprite_quad` (a unit XY quad facing +Z) scaled by
+/// `def.size`. The material is **Unlit** (tint + optional texture) when
+/// `def.flipbook` is `None`, or a **FlipBook** material sampling `def.texture` as
+/// an N×M atlas when `Some` — both bind the texture into their base-color /
+/// atlas slot exactly like the editor's sprite bridge. Records the mesh key into
+/// `maps.meshes` + `maps.node_meshes` so the `NodeHandles` assembly + the
+/// morph-target animation path pick it up.
+///
+/// Billboarding: when `def.billboard != BillboardMode::None`, sets the renderer
+/// mesh's billboard mode via the existing
+/// [`AwsmRenderer::set_mesh_billboard_mode`] (the `Mesh.billboard_mode` field the
+/// vertex shader already reads — see `apply_vertex.wgsl`). `None` leaves the quad
+/// world-aligned as authored.
+async fn materialize_sprite(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    def: &SpriteDef,
+    node_id: NodeId,
+    tk: TransformKey,
+    maps: &mut AnimResolveMaps,
+    loaded: &mut LoadedScene,
+) -> Result<()> {
+    use awsm_renderer::materials::flipbook::{FlipBookMaterial, FlipBookMode};
+    use awsm_renderer::materials::unlit::UnlitMaterial;
+    use awsm_renderer::meshes::mesh::BillboardMode as RBillboard;
+    use awsm_scene::{BillboardMode, FlipBookModeDef, SpriteAlphaMode};
+    use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
+
+    let alpha = match def.alpha_mode {
+        SpriteAlphaMode::Opaque => MaterialAlphaMode::Opaque,
+        SpriteAlphaMode::Mask { cutoff_x1000 } => MaterialAlphaMode::Mask {
+            cutoff: cutoff_x1000 as f32 / 1000.0,
+        },
+        SpriteAlphaMode::Blend => MaterialAlphaMode::Blend,
+    };
+    // The sprite atlas / texture is colour data → sRGB + albedo mips, like a
+    // base-color slot. `None` keeps the slot unbound (a flat-tint sprite).
+    let tex = match &def.texture {
+        Some(t) => texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await,
+        None => None,
+    };
+
+    let material = match &def.flipbook {
+        Some(fb) => {
+            let mut m = FlipBookMaterial::new(alpha, true);
+            m.tint = def.tint;
+            m.cols = fb.cols.max(1);
+            m.rows = fb.rows.max(1);
+            m.frame_count = fb.frame_count.max(1);
+            m.fps = fb.fps;
+            m.time_offset = fb.time_offset;
+            m.mode = match fb.mode {
+                FlipBookModeDef::Loop => FlipBookMode::Loop,
+                FlipBookModeDef::PingPong => FlipBookMode::PingPong,
+                FlipBookModeDef::Clamp => FlipBookMode::Clamp,
+                FlipBookModeDef::Once => FlipBookMode::Once,
+            };
+            m.flip_y = fb.flip_y;
+            m.atlas_tex = tex;
+            Material::FlipBook(Box::new(m))
+        }
+        None => {
+            let mut m = UnlitMaterial::new(alpha, true);
+            m.base_color_factor = def.tint;
+            m.base_color_tex = tex;
+            Material::Unlit(m)
+        }
+    };
+    let mat = renderer.materials.insert(
+        material,
+        &renderer.textures,
+        &renderer.dynamic_materials,
+        &renderer.extras_pool,
+    );
+
+    let md = awsm_meshgen::sprite_quad(def.size[0], def.size[1]);
+    let key = renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
+
+    let rbillboard = match def.billboard {
+        BillboardMode::None => RBillboard::None,
+        BillboardMode::YAxis => RBillboard::YAxis,
+        BillboardMode::Full => RBillboard::Full,
+    };
+    if !matches!(rbillboard, RBillboard::None) {
+        renderer.set_mesh_billboard_mode(key, rbillboard)?;
+    }
+
+    maps.meshes.entry(node_id).or_insert(key);
+    maps.node_meshes.entry(node_id).or_default().push(key);
+    loaded.meshes.push(key);
+    Ok(())
+}
+
+/// Materialize a [`NodeKind::Decal`] into a renderer projection decal.
+///
+/// The decal is an oriented unit cube in world space — the node's `node_world`
+/// matrix (accumulated through the recursion) supplies position / orientation /
+/// size directly, matching the editor's `materialize_decal` (which reads the
+/// node's world matrix). Records the [`DecalKey`] into `maps.decals` for
+/// `NodeHandles.decal`.
+///
+/// Texture wiring: the renderer's decal `texture_index` is a *flat* texture-pool
+/// index (`array_index * 64 + layer_index`, per the decal shader's hard-coded
+/// 64-layers-per-array convention). When `cfg.texture` resolves to a pooled
+/// texture we derive that index from `renderer.textures.get_entry`; otherwise we
+/// fall back to index `0` (the editor's own decal bridge always passes `0` — it
+/// does not wire decal textures at all — so an untextured decal here matches the
+/// editor exactly). When the renderer's `decals` feature is off, `insert_decal`
+/// returns [`AwsmDecalError::FeatureNotEnabled`]; we warn once and skip.
+async fn materialize_decal(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    cfg: &DecalConfig,
+    node_id: NodeId,
+    node_world: Mat4,
+    maps: &mut AnimResolveMaps,
+) -> Result<()> {
+    use awsm_renderer::decals::AwsmDecalError;
+    use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
+
+    // Resolve the decal texture to a flat pool index, mirroring the decal
+    // shader's `array_index * 64 + layer_index` packing. `None` (no texture, or
+    // it failed to load / isn't pooled) → index 0, as the editor bridge does.
+    let texture_index = match &cfg.texture {
+        Some(t) => {
+            match texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await {
+                Some(mt) => renderer
+                    .textures
+                    .get_entry(mt.key)
+                    .map(|e| (e.array_index as u32) * DECAL_POOL_LAYERS_PER_ARRAY + e.layer_index as u32)
+                    .unwrap_or(0),
+                None => 0,
+            }
+        }
+        None => 0,
+    };
+
+    match renderer.insert_decal(node_world, texture_index, cfg.alpha) {
+        Ok(key) => {
+            maps.decals.insert(node_id, key);
+        }
+        Err(AwsmDecalError::FeatureNotEnabled) => warn_decal_feature_off(),
+        Err(err) => tracing::warn!("scene-loader: insert_decal failed: {err:?}"),
+    }
+    Ok(())
+}
+
+/// Layers-per-texture-array assumed by the decal shader's flat-index unpacking
+/// (`texture_index % 64`, `texture_index / 64` in `material_decal_wgsl`). The
+/// scene loader packs the decal `texture_index` with the same constant so a
+/// resolved decal texture lands on the layer the shader samples.
+const DECAL_POOL_LAYERS_PER_ARRAY: u32 = 64;
+
+/// Materialize a [`NodeKind::InstancesAlongCurve`]: place copies of a source
+/// node's mesh along a Catmull-Rom curve via GPU instancing.
+///
+/// Looks the `curve_node` up directly in `scene` (a [`NodeKind::Curve`]) and the
+/// `source_node`'s already-materialized first mesh key up in `maps.meshes`
+/// (`source_node` must be materialized before this node — true when it precedes
+/// the instances node in DFS order, which the typical authoring layout
+/// satisfies; resolved best-effort otherwise). Samples the curve by arc length,
+/// dropping a copy every `spacing` units, offsetting `side_offset` along the
+/// frame normal and (when `orient_to_tangent`) rotating +Z to the tangent. Hands
+/// the resulting `Vec<Transform>` to
+/// [`AwsmRenderer::enable_mesh_instancing_opaque`](awsm_renderer::AwsmRenderer).
+///
+/// Limitations (documented best-effort): the source node's *local* transform is
+/// not re-composed into each instance (the curve frame fully defines placement);
+/// `per_instance_colors` and the per-instance `shadow` config are not yet applied
+/// (the opaque instancing path takes transforms only) — both are follow-ons.
+fn materialize_instances_along_curve(
+    renderer: &mut AwsmRenderer,
+    scene: &Scene,
+    def: &InstancesAlongCurveDef,
+    maps: &mut AnimResolveMaps,
+) -> Result<()> {
+    let Some(curve) = find_curve(&scene.nodes, def.curve_node) else {
+        tracing::warn!(
+            "scene-loader: InstancesAlongCurve references missing/non-curve node {:?}",
+            def.curve_node
+        );
+        return Ok(());
+    };
+    let Some(&source_mesh) = maps.meshes.get(&def.source_node) else {
+        // The source isn't materialized (yet) — e.g. it follows this node in DFS
+        // order, or isn't a mesh-bearing node. Best-effort skip with a warn.
+        tracing::warn!(
+            "scene-loader: InstancesAlongCurve source node {:?} has no materialized mesh \
+             (must precede the instances node) — skipped",
+            def.source_node
+        );
+        return Ok(());
+    };
+
+    let transforms = curve_instance_transforms(curve, def);
+    if transforms.is_empty() {
+        return Ok(());
+    }
+    if let Err(err) = renderer.enable_mesh_instancing_opaque(source_mesh, &transforms) {
+        tracing::warn!("scene-loader: enable_mesh_instancing_opaque failed: {err}");
+    }
+    Ok(())
+}
+
+/// Find a [`NodeKind::Curve`]'s [`CurveDef`] by `NodeId` anywhere in the tree.
+fn find_curve(nodes: &[EditorNode], id: NodeId) -> Option<&CurveDef> {
+    for n in nodes {
+        if n.id == id {
+            if let NodeKind::Curve(def) = &n.kind {
+                return Some(def);
+            }
+        }
+        if let Some(found) = find_curve(&n.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Sample `curve` by arc length and build one [`Transform`] per placed instance,
+/// spacing copies `def.spacing` apart, offsetting `def.side_offset` along the
+/// frame normal, and (when `def.orient_to_tangent`) orienting +Z to the tangent.
+fn curve_instance_transforms(curve: &CurveDef, def: &InstancesAlongCurveDef) -> Vec<Transform> {
+    use awsm_curves::{Curve3, FrameSequence};
+
+    let points: Vec<Vec3> = curve
+        .control_points
+        .iter()
+        .map(|p| Vec3::from_array(*p))
+        .collect();
+    if points.len() < 2 {
+        return Vec::new();
+    }
+    let mut crom = awsm_curves::CatmullRomCurve::new(points, curve.closed);
+    crom.tension = curve.tension;
+
+    let sample_count = curve.sample_count.max(2) as usize;
+    let total_len = crom.total_length(sample_count);
+    let spacing = def.spacing.max(1.0e-3);
+    if total_len <= 0.0 {
+        return Vec::new();
+    }
+    // A parallel-transport frame set gives a stable normal for `side_offset` +
+    // a tangent for `orient_to_tangent` (Z+ → tangent, Y+ → normal).
+    let frames = FrameSequence::parallel_transport(&crom, sample_count, Vec3::Y);
+
+    // Walk arc length in `spacing` steps, mapping each arc-distance to a frame by
+    // its normalized parameter (uniform-`t` frames; good enough for placement).
+    let mut out = Vec::new();
+    let mut dist = 0.0_f32;
+    while dist <= total_len + 1.0e-4 {
+        let t = (dist / total_len).clamp(0.0, 1.0);
+        let frame_pos = (t * (sample_count - 1) as f32).round() as usize;
+        let frame = &frames.frames[frame_pos.min(frames.frames.len() - 1)];
+        let position = frame.position + frame.normal * def.side_offset;
+        let rotation = if def.orient_to_tangent {
+            frame.rotation()
+        } else {
+            Quat::IDENTITY
+        };
+        out.push(Transform {
+            translation: position,
+            rotation,
+            scale: Vec3::ONE,
+        });
+        dist += spacing;
+    }
+    out
+}
+
+/// One-time warn that `ParticleEmitter` nodes aren't rendered by the loader.
+fn warn_particle_skip() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            "ParticleEmitter not rendered by the loader: no renderer particle pass; the game \
+             drives particles via its own per-frame mesh/line updates"
+        );
+    }
+}
+
+/// One-time warn that a `Decal` node was skipped because the renderer's `decals`
+/// feature is off.
+fn warn_decal_feature_off() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            "scene-loader: Decal node skipped — the renderer's `decals` feature is off, so the \
+             per-decal GPU pass doesn't exist (would render as 'decal missing')"
+        );
+    }
 }
 
 /// Load a glb (`assets/<leaf>`) rooted under `parent` (or the renderer root when

@@ -31,9 +31,11 @@ use awsm_renderer::animation::{
     LightParam, TargetMask,
 };
 use awsm_renderer::cameras::CameraKey;
+use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::MaterialKey;
 use awsm_renderer::meshes::MeshKey;
+use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::transforms::TransformKey;
 use awsm_renderer::AwsmRenderer;
 use awsm_scene::animation::{BuiltinParamKind, CameraParamKind, LightParamKind, TrackTarget};
@@ -51,6 +53,15 @@ pub struct AnimResolveMaps {
     pub lights: HashMap<NodeId, LightKey>,
     /// Camera nodes → their camera key (registered in the renderer cameras store).
     pub cameras: HashMap<NodeId, CameraKey>,
+    /// `Line` nodes → their inserted [`LineKey`]. Captured here (mirroring
+    /// `cameras` / `node_meshes`) so the `NodeHandles` assembly can wire the line
+    /// handle back per node. No animation target resolves against lines today;
+    /// the map exists purely for the player-grade `NodeHandles.line`.
+    pub lines: HashMap<NodeId, LineKey>,
+    /// `Decal` nodes → their inserted [`DecalKey`] (present only when the
+    /// renderer's `decals` feature is on; otherwise the decal is cleanly skipped
+    /// and no entry is recorded). Powers the player-grade `NodeHandles.decal`.
+    pub decals: HashMap<NodeId, DecalKey>,
     /// Mesh/skinned nodes → their first renderer mesh key (morph-weight target).
     pub meshes: HashMap<NodeId, MeshKey>,
     /// Mesh/skinned nodes → ALL their renderer mesh keys (a glb node destructures
