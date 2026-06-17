@@ -276,6 +276,41 @@ pub struct ShaderIncludeFlags {
     /// `material_shading.wgsl`, `pbr_get_gradients` in `mipmap.wgsl`). The unlit
     /// builder in the same file stays ungated.
     pub material_color_calc: bool,
+    /// `extras.wgsl` — the `extras_load_*` accessors over the extras storage
+    /// pool. Tier A (generic): only author/custom WGSL that declares `EXTRAS`
+    /// calls these; no first-party shading or kernel scaffolding does. The
+    /// `extras_pool` *binding* stays declared regardless (ABI); only the WGSL
+    /// accessor bodies are gated. (Phase 4)
+    pub extras: bool,
+    /// `skybox.wgsl` helper — `sample_skybox`. Tier A: in the opaque pass only
+    /// the skybox-owner bucket (`skybox_primary`) calls it; the material kernel
+    /// (`compute.wgsl`) never does. A custom material that declares `SKYBOX` may
+    /// sample it too. (Phase 4)
+    pub skybox: bool,
+    /// `light_access.wgsl` accessor FUNCTIONS (get_lights_info / get_light /
+    /// light_sample / …). Tier A: a material/scene with no lighting opts out
+    /// completely. The structs (`light_access_types.wgsl`) stay always-included
+    /// (bind-group ABI); only the accessor bodies + the kernel's
+    /// `get_lights_info()` calls + `shade_sample` `lights_info` param gate on
+    /// this. PBR/Toon declare LIGHT_ACCESS (and APPLY_LIGHTING resolves to it).
+    /// (Phase 4)
+    pub light_access: bool,
+    /// Texture sampling code: `texture_uvs.wgsl` (UV computation + texture-pool
+    /// sampling) + the generic UV-derivative half of `mipmap.wgsl` + the Custom
+    /// `material_uv` wrapper accessor. Tier A: a material that samples no textures
+    /// opts out. NOTE: `textures.wgsl` itself (the `TextureInfo`/`TextureInfoRaw`
+    /// descriptor structs) stays ALWAYS-included — the always-present
+    /// `material.wgsl` storage accessor (`material_load_texture_info -> TextureInfo`)
+    /// references the types (ABI-like). PBR/Unlit/Toon/Flipbook all declare
+    /// TEXTURES. (Phase 4)
+    pub textures: bool,
+    /// Per-vertex COLOR attribute code: `vertex_color.wgsl` (the
+    /// `VertexColorInfo` struct) + `vertex_color_attrib.wgsl` (the `vertex_color`
+    /// fetch fn) + the Custom `material_vertex_color` accessor. Tier A. The only
+    /// first-party caller is the PBR builder's `{% if pbr_features.vertex_color %}`
+    /// block (PBR declares VERTEX_COLOR so always keeps it); Unlit/Toon/Flipbook
+    /// never read vertex colour. (Phase 4)
+    pub vertex_color: bool,
 }
 
 impl ShaderIncludeFlags {
@@ -294,7 +329,29 @@ impl ShaderIncludeFlags {
             brdf: i.contains(S::BRDF),
             apply_lighting: i.contains(S::APPLY_LIGHTING),
             material_color_calc: i.contains(S::MATERIAL_COLOR_CALC),
+            extras: i.contains(S::EXTRAS),
+            skybox: i.contains(S::SKYBOX),
+            light_access: i.contains(S::LIGHT_ACCESS),
+            textures: i.contains(S::TEXTURES),
+            vertex_color: i.contains(S::VERTEX_COLOR),
         }
+    }
+
+    /// Build the gate flags for a CUSTOM (dynamic) material from its declared
+    /// include set, with every Tier-B (PBR-internal) module FORCED OFF. A custom
+    /// material can never enable `brdf` / `apply_lighting` / `material_color_calc`
+    /// — those are welded to the `PbrMaterial` / `PbrMaterialColor` types and are
+    /// emitted only for the built-in PBR base. This is defense beyond `all()`
+    /// being Tier-A-only (Phase 3 item 1): even an explicit `S::BRDF` in a
+    /// registration is ignored on the custom path. A custom material that wants
+    /// PBR-like shading supplies its own WGSL (optionally built on the generic
+    /// `brdf_primitives` Tier-A helpers).
+    pub fn for_custom(includes: awsm_materials::ShaderIncludes) -> Self {
+        let mut f = Self::from_includes(includes);
+        f.brdf = false;
+        f.apply_lighting = false;
+        f.material_color_calc = false;
+        f
     }
 
     /// The canonical skybox-owner bucket (#13): it only writes the skybox on
@@ -305,6 +362,17 @@ impl ShaderIncludeFlags {
             brdf: false,
             apply_lighting: false,
             material_color_calc: false,
+            extras: false,
+            // The skybox-owner bucket (skybox_primary) is the one place that
+            // actually calls `sample_skybox`, so it keeps the skybox helper.
+            skybox: true,
+            // Skybox-owner shades no geometry → no light accessors.
+            light_access: false,
+            // Skybox-owner samples only the skybox cubemap (via sample_skybox),
+            // never the texture pool → no texture sampling code.
+            textures: false,
+            // Skybox-owner reads no per-vertex colour.
+            vertex_color: false,
         }
     }
 }
@@ -516,6 +584,13 @@ pub struct DynamicMaterials {
     /// frame; now the per-frame probe uses `(u64, Option<u32>)`
     /// instead so neither side allocates on the hot path.
     dispatch_hash_cache: u64,
+    /// Registration ceiling — how many co-resident buckets the registry
+    /// accepts (the cap-check sites compare against this). Defaults to
+    /// [`MAX_BUCKET_ENTRIES`] (32) so behavior is identical to today unless
+    /// the builder sets a [`BucketConfig`](crate::dynamic_materials::BucketConfig).
+    /// Does NOT size any per-frame shader/buffer — those follow the live
+    /// count (§0). Validated `1..=65534` by the builder before it lands here.
+    max_bucket_entries: usize,
 }
 
 impl DynamicMaterials {
@@ -533,7 +608,22 @@ impl DynamicMaterials {
             next_dynamic_id: MaterialShaderId::DYNAMIC_START,
             bucket_entries_cache: first_party_bucket_entries(),
             dispatch_hash_cache: 0,
+            max_bucket_entries: MAX_BUCKET_ENTRIES,
         }
+    }
+
+    /// Sets the registration ceiling (from the builder's resolved
+    /// [`BucketConfig`](crate::dynamic_materials::BucketConfig)). The caller
+    /// must have validated `1..=65534` already. Does not resize anything —
+    /// per-frame widths follow the live count (§0).
+    pub fn set_max_bucket_entries(&mut self, cap: u32) {
+        self.max_bucket_entries = cap as usize;
+    }
+
+    /// The configured registration ceiling (default 32). Cap-check sites
+    /// compare the prospective bucket count against this.
+    pub fn max_bucket_entries(&self) -> usize {
+        self.max_bucket_entries
     }
 
     /// Resolve a first-party feature-set to its bucket `shader_id`,
@@ -868,10 +958,10 @@ impl DynamicMaterials {
             }
         }
         let final_count = self.bucket_entries_cache.len() + new_buckets;
-        if final_count > MAX_BUCKET_ENTRIES {
+        if final_count > self.max_bucket_entries {
             return Err(AwsmDynamicMaterialError::BucketCapExceeded {
                 would_be: final_count,
-                max: MAX_BUCKET_ENTRIES,
+                max: self.max_bucket_entries,
             });
         }
         Ok(())
@@ -1084,10 +1174,11 @@ impl crate::AwsmRenderer {
         // contract must hold even at the cap.
         if !self.dynamic_materials.would_be_idempotent(&registration) {
             let current_len = bucket_entries(&self.dynamic_materials).len();
-            if current_len >= MAX_BUCKET_ENTRIES {
+            let cap = self.dynamic_materials.max_bucket_entries();
+            if current_len >= cap {
                 return Err(AwsmDynamicMaterialError::BucketCapExceeded {
                     would_be: current_len + 1,
-                    max: MAX_BUCKET_ENTRIES,
+                    max: cap,
                 });
             }
         }
@@ -1247,10 +1338,11 @@ impl crate::AwsmRenderer {
             // (raise MAX_BUCKET_WORDS) and propagates out of the render loop.
             let mut resolved: Vec<(crate::materials::MaterialKey, MaterialShaderId)> =
                 Vec::with_capacity(wants.len());
+            let cap = self.dynamic_materials.max_bucket_entries();
             for (key, base, features) in wants {
                 let id = self
                     .dynamic_materials
-                    .resolve_first_party_variant_or_cap_err(base, features, MAX_BUCKET_ENTRIES)?;
+                    .resolve_first_party_variant_or_cap_err(base, features, cap)?;
                 resolved.push((key, id));
             }
             // Stamp the resolved id into each material's payload (re-packs
@@ -1601,13 +1693,16 @@ mod tests {
         // Declaring the PBR material-color builder turns that gate on.
         let f = ShaderIncludeFlags::from_includes(S::MATERIAL_COLOR_CALC);
         assert!(f.material_color_calc);
-        // APPLY_LIGHTING transitively resolves to BRDF.
+        // APPLY_LIGHTING transitively resolves to BRDF (the explicit Tier-B
+        // constants still map — first-party PBR declares them this way).
         let f = ShaderIncludeFlags::from_includes(S::APPLY_LIGHTING);
         assert!(f.brdf);
         assert!(f.apply_lighting);
-        // The conservative all() set lights every gate (pre-skinny behaviour).
+        // Phase 3: `all()` is now Tier-A-only (generic helpers), so it lights
+        // NONE of the Tier-B PBR-internal gates. A custom material declaring
+        // `all()` no longer drags in the PBR shading stack.
         let f = ShaderIncludeFlags::from_includes(S::all());
-        assert!(f.brdf && f.apply_lighting && f.material_color_calc);
+        assert!(!f.brdf && !f.apply_lighting && !f.material_color_calc);
     }
 
     #[test]
@@ -1801,6 +1896,40 @@ mod tests {
             AwsmDynamicMaterialError::BucketCapExceeded { .. }
         ));
         assert_eq!(dm.bucket_entries_cached().len(), MAX_BUCKET_ENTRIES);
+    }
+
+    #[test]
+    fn configurable_cap_admits_up_to_and_rejects_past_the_configured_ceiling() {
+        // Default is the historical 32.
+        let dm = DynamicMaterials::new();
+        assert_eq!(dm.max_bucket_entries(), MAX_BUCKET_ENTRIES);
+
+        // Raise the cap and confirm the registry fills to exactly the new
+        // ceiling, then hard-errors on the next genuinely-new variant. The
+        // runtime cap-check sites read `max_bucket_entries()`, so this test
+        // drives them through the same accessor.
+        let cap = 100usize;
+        let mut dm = DynamicMaterials::new();
+        dm.set_max_bucket_entries(cap as u32);
+        assert_eq!(dm.max_bucket_entries(), cap);
+
+        let configured = dm.max_bucket_entries();
+        let mut i = 0u32;
+        while dm.bucket_entries_cached().len() < cap {
+            dm.resolve_first_party_variant_or_cap_err(ShadingBase::Pbr, i, configured)
+                .expect("should resolve below the configured cap");
+            i += 1;
+        }
+        assert_eq!(dm.bucket_entries_cached().len(), cap);
+
+        let err = dm
+            .resolve_first_party_variant_or_cap_err(ShadingBase::Pbr, 999_999, configured)
+            .expect_err("a new variant past the configured cap must error");
+        assert!(matches!(
+            err,
+            AwsmDynamicMaterialError::BucketCapExceeded { max, .. } if max == cap
+        ));
+        assert_eq!(dm.bucket_entries_cached().len(), cap);
     }
 
     #[test]

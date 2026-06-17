@@ -11,13 +11,9 @@ use crate::render_passes::{
     material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify,
     material_decal::classify::shader::cache_key::ShaderCacheKeyDecalClassify,
     material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal,
-    material_opaque::shader::cache_key::{
-        ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
-    },
-    material_opaque::shader::edge_cache_key::{
-        ShaderCacheKeyMaterialEdgeResolve, ShaderCacheKeyMaterialFinalBlend,
-        ShaderCacheKeyMaterialSkyboxEdgeResolve,
-    },
+    material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque,
+    material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialFinalBlend,
+    material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep,
     material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent,
     occlusion::shader::cache_key::{
         ShaderCacheKeyOcclusionCompaction, ShaderCacheKeyOcclusionCull,
@@ -36,15 +32,11 @@ pub enum ShaderCacheKeyRenderPass {
     HzbReduce(ShaderCacheKeyHzbReduce),
     LightCulling(ShaderCacheKeyLightCulling),
     MaterialClassify(ShaderCacheKeyMaterialClassify),
+    /// Plan B shared prep pass (docs/plans/deferred-shared-prep-pass.md).
+    MaterialPrep(ShaderCacheKeyMaterialPrep),
     DecalClassify(ShaderCacheKeyDecalClassify),
     MaterialDecal(ShaderCacheKeyMaterialDecal),
     MaterialOpaque(ShaderCacheKeyMaterialOpaque),
-    MaterialOpaqueEmpty(ShaderCacheKeyMaterialOpaqueEmpty),
-    /// Per-shader-id MSAA edge-resolve — see Priority 3 in
-    /// https://github.com/dakom/awsm-renderer/pull/99.
-    MaterialEdgeResolve(ShaderCacheKeyMaterialEdgeResolve),
-    /// Global skybox-sample MSAA edge-resolve.
-    MaterialSkyboxEdgeResolve(ShaderCacheKeyMaterialSkyboxEdgeResolve),
     /// Global final-blend compositor for the MSAA edge-resolve flow.
     MaterialFinalBlend(ShaderCacheKeyMaterialFinalBlend),
     MaterialTransparent(ShaderCacheKeyMaterialTransparent),

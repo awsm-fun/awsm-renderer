@@ -4,12 +4,12 @@ Pure-CPU particle simulator. No `awsm-renderer` dep.
 
 ## What's here
 
-- `Emitter` — spawn rate, burst count, max-alive cap, loop vs one-shot, world-space vs emitter-local, lifetime range, initial speed, etc.
+- `Emitter` — spawn rate, burst count, max-alive cap, `one_shot`, `EmitterSpace` (`World` / `Local`), lifetime / initial-speed / size ranges, `forces`, etc.
 - `SpawnShape { Point, Sphere, Cone }`.
 - `Force { Gravity, LinearDrag }`.
-- `Particle` data laid out **struct-of-arrays** to match the layout a GPU compute backend would write.
-- Per-life parameter curves via `awsm-curves::Curve1<T>`: `color_over_life`, `size_over_life`, `alpha_over_life`.
-- `Simulator::tick(dt)` advances state and exposes a packed `[InstanceAttr]` slice that the renderer's per-instance attribute path consumes directly.
+- Particle state held **struct-of-arrays** internally (positions / velocities / ages / lifetimes / base sizes), matching the layout a GPU compute backend would write.
+- Per-life parameters via `ColorOverLife` and `SizeOverLife` enums (`Const` / `Linear`, sampled over normalized age `t`). Alpha is folded into `color_over_life`'s `.a` channel — there is no separate `alpha_over_life`.
+- `Simulator::tick(dt, emitter, emitter_world_pos)` advances state and repacks the `Vec<InstanceAttr>` (`position(3) | size(1) | color(4)`, 32 bytes) that the renderer's per-instance attribute path consumes directly.
 
 ## Stance
 

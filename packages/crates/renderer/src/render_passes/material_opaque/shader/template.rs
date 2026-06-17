@@ -5,9 +5,7 @@ use awsm_materials::MaterialShaderId;
 
 use crate::dynamic_materials::ShadingBase;
 use crate::{
-    render_passes::material_opaque::shader::cache_key::{
-        ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
-    },
+    render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque,
     shaders::{AwsmShaderError, Result},
 };
 
@@ -48,6 +46,19 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// `return 1.0` (true on the transparent pass — sampling its own
     /// depth target would be a feedback loop, so SSCS is disabled).
     pub sscs_available: bool,
+    /// Whether the ~50 KB shadow SAMPLING block in
+    /// `shared_wgsl/shadow/bind_groups.wgsl` is emitted. Set from
+    /// `inc.apply_lighting` (the only caller of `sample_shadow_*`), so
+    /// materials that don't run first-party lighting drop it. The shadow
+    /// bind group + structs are always emitted (ABI) regardless.
+    pub needs_shadow_sampling: bool,
+    /// Plan B (stage 5a): `prep_enabled` (ANY AA). When true, the gated
+    /// `prep_uv` / `prep_vcolor` / `prep_shadow_visibility` sampled
+    /// `texture_2d_array<f32>` declarations are emitted in the MAIN bind
+    /// group so the shared `texture_uv()` / `vertex_color()` / shadow
+    /// helpers can `textureLoad` them. Extended from the 2b `prep_read`
+    /// (which was no-MSAA only) so `cs_opaque` reads prep under MSAA too.
+    pub prep_present: bool,
 }
 
 /// Compute shader template for the opaque material pass.
@@ -130,6 +141,61 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// their `classify_buckets.<name>_offset` field. Mirrors the
     /// classify-pass template's `bucket_entries`.
     pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
+    /// Bucket index this shader_id occupies inside `bucket_entries`
+    /// (§ Part B — the unified module). Hard-coded into the merged
+    /// `cs_edge` entry point's `{{ bucket_index }}u` slot-match in the
+    /// slot_map scan + the per-shader entry-count read — same as the
+    /// former standalone `edge_resolve.wgsl`. Resolved from the
+    /// shader_id's position in `bucket_entries` at template-render time
+    /// (0 for the SKYBOX bucket, which renders `skybox_primary` and so
+    /// never emits `cs_edge`).
+    pub bucket_index: u32,
+    /// Edge `edge_slot_map` packing width (8 or 16), §5 — derived from
+    /// the live bucket count. Gates the `cs_edge` slot_map read between
+    /// one u32/edge (8-bit, ≤254 buckets) and two u32/edge (16-bit, for over
+    /// 254 buckets). Only consumed inside the `{% if multisampled_geometry %}`
+    /// `cs_edge` block; inert on the singlesampled module.
+    pub edge_slot_bits: u32,
+    /// Plan B (stage 5a): `prep_enabled` (ANY AA). When true, the shared
+    /// `PrepReadContext` (`g_prep_ctx`) is emitted, each entry point sets
+    /// its mode (cs_opaque → PRIMARY, cs_edge → RECOMPUTE), and the shared
+    /// `texture_uv()` / `vertex_color()` / shadow helpers branch on
+    /// `g_prep_ctx.mode` to read the prep-materialized array textures (PRIMARY)
+    /// instead of recomputing. Extended from the 2b `prep_read` (no-MSAA only)
+    /// so `cs_opaque` reads prep under MSAA too. The recompute body stays
+    /// available because cs_edge=RECOMPUTE falls through to it.
+    pub prep_present: bool,
+    /// Plan B (stage 5a): `prep_enabled && msaa none`. When true, the
+    /// standalone `_texture_uv_per_vertex` / `_vertex_color_per_vertex`
+    /// recompute helpers are NOT emitted (the 2b size win) — there is no
+    /// `cs_edge` in the no-MSAA module, so nothing recomputes. Under MSAA
+    /// these helpers STAY (cs_edge=RECOMPUTE needs them). (The gradient-mips /
+    /// custom exceptions in the helper templates still apply.)
+    pub prep_drops_recompute: bool,
+    /// `MAX_PREP_UV_SETS` — clamp cap for the prep UV array layer index
+    /// in `texture_uv()` when `prep_read`. Inert otherwise.
+    pub max_prep_uv_sets: u32,
+    /// `MAX_PREP_COLOR_SETS` — clamp cap for the prep vcolor array layer
+    /// index in `vertex_color()` when `prep_read`. Inert otherwise.
+    pub max_prep_color_sets: u32,
+    /// Plan B (stage 5a): when true, the shared `sample_shadow_*` inline
+    /// shadow-sampling block compiles (the legacy path). Mirrors the
+    /// bind-group template's field of the same name so `apply_lighting.wgsl`
+    /// (in the compute include) can gate its inline `else` arm — under
+    /// MSAA+prep cs_edge=RECOMPUTE needs the inline sampler, so it stays;
+    /// under no-MSAA+prep cs_opaque=PRIMARY only, so it drops. Derived
+    /// `inc.apply_lighting && !prep_drops_recompute`.
+    pub needs_shadow_sampling: bool,
+    /// `K` — the per-pixel shadow-caster cap (`PrepPassConfig::clamped_k`),
+    /// matching the prep buffer's layer/slot count. Consumed by the
+    /// `{% if shadow_from_buffer %}` read path's `prep_shadow_read` bounds
+    /// check. Inert otherwise.
+    pub max_shadow_casters: u32,
+    /// Plan B (stage 5b-shadow): fixed width of the compact per-edge-sample
+    /// shadow texture. cs_edge maps `edge_pixel_id * MAX_SAMPLES + sample` to
+    /// `(idx % W, idx / W)`; MUST match material_prep's `EDGE_SHADOW_TEX_WIDTH`.
+    /// Only used inside the `{% if multisampled_geometry %}` EDGE-mode read.
+    pub edge_shadow_tex_width: u32,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -183,6 +249,26 @@ pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
     pub dynamic_loader_decl: String,
     pub dynamic_wgsl_fragment: String,
     pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
+    /// Always `false` for the skybox writer (the SKYBOX bucket never
+    /// reads prep attributes), but the shared `opaque_kernel_includes`
+    /// preamble references `prep_present` / `prep_drops_recompute`, so the
+    /// fields must exist for askama.
+    pub prep_present: bool,
+    pub prep_drops_recompute: bool,
+    /// Inert on the skybox writer (`prep_present` is false) but referenced by
+    /// the shared helper includes, so the fields must exist.
+    pub max_prep_uv_sets: u32,
+    pub max_prep_color_sets: u32,
+    /// Always `false` for the skybox writer (it never lights / samples
+    /// shadows), but `apply_lighting.wgsl` references `needs_shadow_sampling`,
+    /// so the field must exist for askama.
+    pub needs_shadow_sampling: bool,
+    /// Inert on the skybox writer; referenced by `apply_lighting.wgsl`.
+    pub max_shadow_casters: u32,
+    /// §5 edge slot-map width (8/16) — gates the skybox `cs_shade` arm's
+    /// slot_map scan + the widened skybox sentinel (0xFE → 0xFFFE). Derived
+    /// from the live bucket count.
+    pub edge_slot_bits: u32,
 }
 
 impl ShaderTemplateMaterialOpaqueSkyboxPrimary {
@@ -227,6 +313,17 @@ impl From<ShaderTemplateMaterialOpaqueCompute> for ShaderTemplateMaterialOpaqueS
             dynamic_loader_decl: c.dynamic_loader_decl,
             dynamic_wgsl_fragment: c.dynamic_wgsl_fragment,
             bucket_entries: c.bucket_entries,
+            // The skybox writer never reads prep attributes; carry the
+            // caps through inertly so the shared includes resolve.
+            prep_present: c.prep_present,
+            prep_drops_recompute: c.prep_drops_recompute,
+            max_prep_uv_sets: c.max_prep_uv_sets,
+            max_prep_color_sets: c.max_prep_color_sets,
+            // The skybox writer never lights; carry the inline-sampling gate
+            // through inertly so apply_lighting's gate resolves.
+            needs_shadow_sampling: false,
+            max_shadow_casters: c.max_shadow_casters,
+            edge_slot_bits: c.edge_slot_bits,
         }
     }
 }
@@ -245,6 +342,22 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
         let multisampled_geometry = value.msaa_sample_count.is_some();
         let msaa_sample_count = value.msaa_sample_count.unwrap_or_default();
         let debug = ShaderTemplateMaterialOpaqueDebug::new();
+        // Plan B (stage 5a): the single 2b `prep_read` notion is decomposed
+        // into three distinct conditions so the SAME shared helpers serve
+        // cs_opaque (PRIMARY) + cs_edge (RECOMPUTE) + the non-prep path.
+        //
+        //  1. `prep_present` = prep enabled, ANY AA. Emits the PrepReadContext
+        //     + the PRIMARY read branches + binds the prep textures to opaque.
+        //     This is the 5a change: cs_opaque reads prep under MSAA too.
+        //  2. `prep_drops_recompute` = prep enabled AND msaa off. Drops the
+        //     standalone recompute helpers (no cs_edge there). Under MSAA the
+        //     helpers STAY (cs_edge=RECOMPUTE uses them).
+        //  3. `needs_shadow_sampling` (below) = lighting AND !prep_drops_recompute.
+        let prep_present = value.prep_enabled;
+        let prep_drops_recompute = value.prep_enabled && value.msaa_sample_count.is_none();
+        let max_prep_uv_sets = crate::render_passes::material_prep::MAX_PREP_UV_SETS;
+        let max_prep_color_sets = crate::render_passes::material_prep::MAX_PREP_COLOR_SETS;
+        let max_shadow_casters = value.max_shadow_casters;
 
         let bucket_entries = value.bucket_entries.clone();
         let pad_words_iter: Vec<u32> = (0
@@ -252,6 +365,39 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 bucket_entries.len() as u32,
             ))
             .collect();
+        // § Part B (the unified module): the merged `cs_edge` entry point
+        // hard-codes this bucket's index for its slot-map scan + per-shader
+        // entry-count read. Resolve it from the shader_id's position in
+        // `bucket_entries`; default 0 if not found (the SKYBOX bucket
+        // renders `skybox_primary` and never emits `cs_edge`, so its value
+        // is inert).
+        let bucket_index = bucket_entries
+            .iter()
+            .position(|e| e.shader_id == value.shader_id)
+            .unwrap_or(0) as u32;
+        let edge_slot_bits =
+            crate::dynamic_materials::edge_slot_bits(bucket_entries.len() as u32) as u32;
+        // Compute the include set once so both the bind-group template (shadow
+        // sampling gate) and the compute template (everything else) agree.
+        // `for_custom` forces the Tier-B PBR-internal flags OFF — a custom
+        // material can never enable brdf/apply_lighting/material_color_calc.
+        let inc = if value.owns_skybox {
+            crate::dynamic_materials::ShaderIncludeFlags::skybox_only()
+        } else if let Some(d) = value.dynamic_shader.as_ref() {
+            crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
+        } else {
+            crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
+        };
+        // Plan B (stage 5b-shadow): drop the inline `sample_shadow_*` block in
+        // ANY-AA prep (was no-MSAA-only in 5a). Under no-MSAA+prep cs_opaque reads
+        // the full-screen buffer (PRIMARY, stage 4). Under MSAA+prep cs_opaque
+        // reads the full-screen buffer (PRIMARY) AND cs_edge reads the compact
+        // per-edge-sample buffer (EDGE, stage 5b) — so NOTHING inline-samples
+        // shadows in the MSAA opaque module, and the ~50 KB block drops (the MSAA
+        // analog of stage 4's no-MSAA win). Non-prep keeps it (byte-identical to
+        // today). Computed once so the bind-group template (the block emit) and
+        // the compute template (apply_lighting's inline `else` arm gate) agree.
+        let needs_shadow_sampling = inc.apply_lighting && !value.prep_enabled;
         let _self = Self {
             bind_groups: ShaderTemplateMaterialOpaqueBindGroups {
                 texture_pool_arrays_len,
@@ -262,8 +408,14 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 debug,
                 shadow_group_index: 3,
                 sscs_available: true,
+                // Plan B (stage 5a): drop the inline `sample_shadow_*` block
+                // only in no-MSAA+prep (cs_opaque=PRIMARY reads the buffer).
+                // Under MSAA+prep cs_edge=RECOMPUTE still inline-samples, so it
+                // stays. (See `needs_shadow_sampling` derivation above.)
+                needs_shadow_sampling,
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
+                prep_present,
             },
             compute: ShaderTemplateMaterialOpaqueCompute {
                 texture_pool_arrays_len,
@@ -279,11 +431,19 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 use_froxel_lights: true,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
                 // Skinny materials: emit only this pipeline's base material body
-                // (the dispatch references only that base's fragment). Custom
-                // (None) emits all — covers dynamic-material dispatch. The
-                // skybox-owner shades nothing (its body is gated out), so
-                // it carries no material fragment + no PBR shading includes.
-                materials_wgsl: if value.owns_skybox {
+                // (the dispatch references only that base's fragment).
+                //   - skybox-owner shades nothing (body gated out) → none.
+                //   - Custom (dynamic) shades ONLY via `custom_shade_dynamic`
+                //     (emitted in the dynamic-material wrapper); the first-party
+                //     PBR/Unlit/Toon/Flipbook bodies are never referenced, so
+                //     emit none of them. Previously `canonical_shader_id()` was
+                //     `None` for Custom → `build_materials_wgsl_filtered(None)`
+                //     emitted ALL four first-party bodies (~33 KB of dead WGSL)
+                //     into every dynamic pipeline. (Phase 3 item 3 — bug #1.)
+                //   - First-party bases emit exactly their own fragment.
+                materials_wgsl: if value.owns_skybox
+                    || value.base == crate::dynamic_materials::ShadingBase::Custom
+                {
                     String::new()
                 } else {
                     awsm_materials::registry::build_materials_wgsl_filtered(
@@ -294,16 +454,9 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 shader_id: value.shader_id,
                 base: value.base,
                 // Custom (dynamic) materials carry their own author-declared
-                // include set; first-party bases use the canonical set. Skinny
-                // materials: a custom material that declares fewer modules gets
-                // a leaner Custom host shader.
-                inc: if value.owns_skybox {
-                    crate::dynamic_materials::ShaderIncludeFlags::skybox_only()
-                } else if let Some(d) = value.dynamic_shader.as_ref() {
-                    crate::dynamic_materials::ShaderIncludeFlags::from_includes(d.shader_includes)
-                } else {
-                    crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
-                },
+                // include set; first-party bases use the canonical set (computed
+                // once as `inc` above and shared with the bind-group template).
+                inc,
                 owns_skybox: value.owns_skybox,
                 pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value
@@ -322,6 +475,21 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                     .map(|d| d.wgsl_fragment.clone())
                     .unwrap_or_default(),
                 bucket_entries,
+                bucket_index,
+                edge_slot_bits,
+                prep_present,
+                prep_drops_recompute,
+                max_prep_uv_sets,
+                max_prep_color_sets,
+                // Mirror of the bind-group gate: apply_lighting's inline `else`
+                // arm (the legacy `sample_shadow_*` path) is emitted only when
+                // the inline sampler is compiled. Under MSAA+prep cs_edge needs
+                // it; under no-MSAA+prep cs_opaque=PRIMARY reads the buffer so
+                // it's dropped.
+                needs_shadow_sampling,
+                max_shadow_casters,
+                edge_shadow_tex_width:
+                    crate::render_passes::material_prep::buffers::EDGE_SHADOW_TEX_WIDTH,
             },
         };
 
@@ -446,107 +614,6 @@ impl ShaderTemplateMaterialOpaque {
     }
 }
 
-impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqueEmpty {
-    type Error = AwsmShaderError;
-
-    fn try_from(value: &ShaderCacheKeyMaterialOpaqueEmpty) -> Result<Self> {
-        // The empty variant is built at builder time only — no dynamic
-        // materials exist yet, so the first-party bucket list is the
-        // right value. If dynamic registrations ever needed to feed
-        // the empty path, ShaderCacheKeyMaterialOpaqueEmpty would grow
-        // the same bucket_entries field as ShaderCacheKeyMaterialOpaque.
-        let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
-        let pad_words_iter: Vec<u32> = (0
-            ..crate::render_passes::material_classify::shader::template::pad_words_count(
-                bucket_entries.len() as u32,
-            ))
-            .collect();
-        Ok(Self {
-            texture_pool_arrays_len: value.texture_pool_arrays_len,
-            texture_pool_samplers_len: value.texture_pool_samplers_len,
-            multisampled_geometry: value.msaa_sample_count.is_some(),
-            unlit: true,
-            shadow_group_index: 3,
-            shadows_enabled: false,
-            sscs_available: false,
-            use_froxel_lights: false,
-            froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
-            materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
-            shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
-            bucket_entries,
-            pad_words_iter,
-        })
-    }
-}
-
-/// Empty shader template used when no opaque geometry is present.
-#[derive(Template, Debug)]
-#[template(path = "material_opaque_wgsl/empty.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateMaterialOpaqueEmpty {
-    pub texture_pool_arrays_len: u32,
-    pub texture_pool_samplers_len: u32,
-    pub multisampled_geometry: bool,
-    pub unlit: bool,
-    /// Bind-group slot index the shadow declarations should occupy.
-    pub shadow_group_index: u32,
-    /// Mirror of the opaque-compute flag. The empty template has no
-    /// real geometry so shadow sampling is irrelevant; left `false`
-    /// to keep the WGSL minimal.
-    pub shadows_enabled: bool,
-    /// Mirror of the opaque-compute flag. The empty template never
-    /// runs SSCS, but the shared shadow include needs the symbol.
-    pub sscs_available: bool,
-    /// Mirror of the opaque-compute flag. The empty template doesn't
-    /// emit the per-froxel walk either, but the shared `lights.wgsl`
-    /// references the symbol so it must be declared.
-    pub use_froxel_lights: bool,
-    /// Mirror of the opaque-compute field. Unused in the empty path
-    /// (the `{% if use_froxel_lights %}` gate is closed) but askama
-    /// type-checks every `{{ var }}` reference even inside a closed
-    /// gate, so the field has to exist.
-    pub froxel_slice_count: u32,
-    /// Concatenated `wgsl_fragment()` of every enabled material — see
-    /// `awsm_materials::registry::build_materials_wgsl`.
-    pub materials_wgsl: String,
-    /// Generated `const SHADER_ID_X: u32 = N;` lines — see
-    /// `awsm_materials::registry::build_shader_id_consts`.
-    pub shader_id_consts: String,
-    /// Mirror of the opaque-compute field. The templated
-    /// `ClassifyBuckets` struct in bind_groups.wgsl walks this list to
-    /// keep its layout aligned with the classify-pass writer's struct.
-    pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
-    /// Mirror of the opaque-compute field — trailing alignment-pad
-    /// u32 indices for the templated `ClassifyBuckets` struct.
-    pub pad_words_iter: Vec<u32>,
-}
-
-impl ShaderTemplateMaterialOpaqueEmpty {
-    /// Renders the empty opaque shader into WGSL.
-    pub fn into_source(self) -> Result<String> {
-        let source = self.render()?;
-        // print_shader_source(&source, true);
-
-        //debug_unique_string(1, &source, || print_shader_source(&source, false));
-
-        Ok(source)
-    }
-
-    /// Returns an optional debug label for shader compilation.
-    pub fn debug_label(&self) -> Option<&str> {
-        Some("Material Opaque Empty")
-    }
-
-    /// Returns true if the shader includes IBL lighting.
-    pub fn has_lighting_ibl(&self) -> bool {
-        false
-    }
-
-    /// Returns true if the shader includes punctual lighting.
-    pub fn has_lighting_punctual(&self) -> bool {
-        false
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Empty-registry guarantee tests
 // ─────────────────────────────────────────────────────────────────────
@@ -571,23 +638,23 @@ mod empty_registry_tests {
     use crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque;
     use awsm_materials::MaterialShaderId;
 
-    // Dual-context invariant: the custom author accessors must exist IDENTICALLY
-    // in BOTH the primary opaque-compute kernel AND the edge-resolve kernel (a
-    // custom fragment is compiled into both — an accessor present in one but not
-    // the other fails pipeline compile only in the missing variant). These
-    // assert against the source WGSL directly (include_str!) so the guard can't
-    // drift from the rendered templates. (Whether a non-zero set visually differs
-    // is a separate GPU state-2 confirm — needs a multi-UV asset the repo lacks.)
+    // Custom author accessors must exist in the opaque-compute kernel includes.
+    // Since the opaque-shade + edge-resolve kernels were unified into one shader
+    // module (the `cs_opaque` + `cs_edge` entry points both include
+    // `opaque_kernel_includes.wgsl`), a single source covers both contexts — an
+    // accessor missing here fails pipeline compile for both. This asserts against
+    // the source WGSL directly (include_str!) so the guard can't drift from the
+    // rendered templates. (Whether a non-zero set visually differs is a separate
+    // GPU state-2 confirm — needs a multi-UV asset the repo lacks.)
     const OPAQUE_KERNEL_WGSL: &str =
         include_str!("material_opaque_wgsl/opaque_kernel_includes.wgsl");
-    const EDGE_RESOLVE_WGSL: &str = include_str!("material_opaque_wgsl/edge_resolve.wgsl");
 
     #[test]
     fn custom_attribute_accessors_exist_in_both_opaque_kernels() {
-        for (name, src) in [
-            ("opaque_kernel_includes", OPAQUE_KERNEL_WGSL),
-            ("edge_resolve", EDGE_RESOLVE_WGSL),
-        ] {
+        // One shared opaque-kernel include file (the legacy `edge_resolve` kernel
+        // it used to also cover was removed with the cs_edge split).
+        let (name, src) = ("opaque_kernel_includes", OPAQUE_KERNEL_WGSL);
+        {
             assert!(
                 src.contains("fn material_uv(input: OpaqueShadingInput"),
                 "{name}.wgsl missing material_uv(input, set) accessor (dual-context invariant)"
@@ -627,6 +694,8 @@ mod empty_registry_tests {
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
             mipmaps: true,
+            prep_enabled: false,
+            max_shadow_casters: 4,
             shader_id,
             base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
             owns_skybox: shader_id == MaterialShaderId::SKYBOX,
@@ -670,49 +739,40 @@ mod empty_registry_tests {
     }
 
     #[test]
-    fn empty_registry_preserves_classify_buckets_field_names() {
-        // The templated ClassifyBuckets struct walks bucket_entries.
-        // For the empty registry these are the four first-party
-        // materials in registration order, so the struct emits
-        // args_pbr / args_unlit / args_toon / args_flipbook plus
-        // their <name>_offset siblings — same as the hand-rolled
-        // pre-feature version.
+    fn classify_buckets_uses_data_driven_array_layout() {
+        // O(N²) fix: ClassifyBuckets is now `args`/`offsets` ARRAYS (indexed by
+        // bucket index), NOT 2N per-bucket named fields. The struct text is O(1)
+        // regardless of bucket count. Assert the arrays are present and the old
+        // per-name fields are GONE (so the struct stops growing with N).
         let wgsl = render_first_party_wgsl(MaterialShaderId::PBR, None);
-        for expected in [
-            "args_pbr",
-            "args_unlit",
-            "args_toon",
-            "args_flipbook",
-            "pbr_offset",
-            "unlit_offset",
-            "toon_offset",
-            "flipbook_offset",
-        ] {
+        assert!(
+            wgsl.contains("args: array<vec4<u32>,") && wgsl.contains("offsets: array<u32,"),
+            "ClassifyBuckets should declare `args`/`offsets` arrays"
+        );
+        for gone in ["args_pbr", "pbr_offset", "unlit_offset", "flipbook_offset"] {
             assert!(
-                wgsl.contains(expected),
-                "empty-registry ClassifyBuckets missing `{expected}`"
+                !wgsl.contains(gone),
+                "ClassifyBuckets still emits per-bucket named field `{gone}` (O(N) regression)"
             );
         }
     }
 
     #[test]
     fn empty_registry_bucket_offset_resolves() {
-        // A past bug we fixed was `let bucket_offset =;` when
-        // the lookup chain had no match. Verify the resolved
-        // expression isn't empty for every first-party shader_id.
-        for (shader_id, expected) in [
-            (MaterialShaderId::PBR, "classify_buckets.pbr_offset"),
-            (MaterialShaderId::UNLIT, "classify_buckets.unlit_offset"),
-            (MaterialShaderId::TOON, "classify_buckets.toon_offset"),
-            (
-                MaterialShaderId::FLIPBOOK,
-                "classify_buckets.flipbook_offset",
-            ),
+        // A past bug was `let bucket_offset =;` when the lookup chain had no
+        // match. With the data-driven layout the offset is read by bucket index
+        // from the `offsets` array; verify it resolves (non-empty) for every
+        // first-party shader_id.
+        for shader_id in [
+            MaterialShaderId::PBR,
+            MaterialShaderId::UNLIT,
+            MaterialShaderId::TOON,
+            MaterialShaderId::FLIPBOOK,
         ] {
             let wgsl = render_first_party_wgsl(shader_id, None);
             assert!(
-                wgsl.contains(expected),
-                "first-party {shader_id:?} pipeline's bucket_offset doesn't resolve to {expected}"
+                wgsl.contains("let bucket_offset = classify_buckets.offsets["),
+                "first-party {shader_id:?} pipeline's bucket_offset doesn't read offsets[bucket_index]"
             );
             assert!(
                 !wgsl.contains("let bucket_offset =;"),
@@ -922,6 +982,211 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             !source.contains("material_data_load"),
             "first-party transparent pipeline accidentally emits the dynamic loader"
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Per-material shader SIZE regression guard.
+//
+// Renders the opaque kernel for a representative Custom (dynamic) material and
+// asserts upper bounds on the emitted WGSL. Upper bounds are the right shape:
+// the optimization phases only SHRINK these shaders, so a passing bound stays
+// valid as sizes drop — the test fails only if a change REGROWS a shader (e.g.
+// re-introduces the PBR stack into a lean material). Tighten the CEILINGs as
+// Phases 3–5 land; the eprintln prints the live sizes for each run.
+//
+// Why Custom: the whole effort targets dynamic materials. A Custom material that
+// declares no includes is the leanest case; `all()` is the conservative case.
+#[cfg(test)]
+mod size_regression {
+    use super::*;
+    use crate::render_passes::material_opaque::shader::cache_key::{
+        DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
+    };
+    use awsm_materials::MaterialShaderId;
+
+    fn render_custom(
+        includes: awsm_materials::ShaderIncludes,
+        msaa: Option<u32>,
+        mipmaps: bool,
+    ) -> String {
+        let dyn_id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
+        let mut bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+        bucket_entries.push(crate::dynamic_materials::BucketEntry {
+            shader_id: dyn_id,
+            base: crate::dynamic_materials::ShadingBase::Custom,
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            name: "noise".to_string(),
+        });
+        let key = ShaderCacheKeyMaterialOpaque {
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            msaa_sample_count: msaa,
+            mipmaps,
+            prep_enabled: false,
+            max_shadow_casters: 4,
+            shader_id: dyn_id,
+            base: crate::dynamic_materials::ShadingBase::Custom,
+            owns_skybox: false,
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            dispatch_hash: 1,
+            dynamic_shader: Some(DynamicShaderInfo {
+                shader_includes: includes,
+                struct_decl: "struct MaterialData { _pad: u32, };".to_string(),
+                loader_decl:
+                    "fn material_data_load(byte_offset: u32) -> MaterialData { return MaterialData(0u); }"
+                        .to_string(),
+                wgsl_fragment:
+                    "return OpaqueShadingOutput(input.world_normal * 0.5 + 0.5, 1.0);".to_string(),
+            }),
+            bucket_entries,
+        };
+        ShaderTemplateMaterialOpaque::try_from(&key)
+            .expect("template builds")
+            .into_source()
+            .expect("renders")
+    }
+
+    /// Remove WGSL `//` line comments and `/* */` block comments so token scans
+    /// match real code, not prose. Non-nesting block handling is fine for our
+    /// generated shaders (the include fences are simple `/* ... */`).
+    fn strip_wgsl_comments(src: &str) -> String {
+        // Drop block comments first.
+        let mut out = String::with_capacity(src.len());
+        let bytes = src.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                // skip to closing */
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+            } else {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        // Then drop line comments.
+        out.lines()
+            .map(|l| match l.find("//") {
+                Some(p) => &l[..p],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // Ceilings (bytes). Worst realistic config = MSAA4 + mips. Set with headroom
+    // above the current measured sizes; TIGHTEN as further work shrinks the shaders.
+    // History (msaa4+mips empty / all): Phase 2 ~196 / ~262 KB → Phase 3 ~162.6 KB
+    // both → Phase 4 gating → shadow-sampling gate (apply_lighting only): the ~50 KB
+    // PCSS/EVSM/cascade/cube block now drops from every non-lighting Custom shader,
+    // landing at **83.3 KB empty / 113.6 KB all**. Unified-edge removal: the merged
+    // `cs_shade` entry point is now UNCONDITIONAL under MSAA (it was the default-on
+    // production path), so the measured MSAA4 sizes included it: ~90.7 KB / ~126.7 KB.
+    // **A2 (compile invariant):** the MSAA module no longer carries the dead
+    // `cs_opaque` entry (non-MSAA dispatches it; MSAA dispatches only `cs_shade`),
+    // so the MSAA4 module shrank to **~82.0 KB empty / ~118.0 KB all** — ceilings
+    // re-tightened (reverses the unified-edge raise).
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 84_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 120_000;
+
+    #[test]
+    fn custom_shader_sizes_within_ceiling() {
+        let empty = render_custom(awsm_materials::ShaderIncludes::empty(), Some(4), true);
+        let all = render_custom(awsm_materials::ShaderIncludes::all(), Some(4), true);
+        eprintln!(
+            "[size_regression] Custom msaa4+mips — empty: {} B, all: {} B (delta {})",
+            empty.len(),
+            all.len(),
+            all.len() - empty.len()
+        );
+        assert!(
+            empty.len() < CEIL_EMPTY_MSAA4_MIPS,
+            "empty-includes Custom shader {} B exceeded ceiling {} B — a lean material regrew",
+            empty.len(),
+            CEIL_EMPTY_MSAA4_MIPS
+        );
+        assert!(
+            all.len() < CEIL_ALL_MSAA4_MIPS,
+            "all-includes Custom shader {} B exceeded ceiling {} B",
+            all.len(),
+            CEIL_ALL_MSAA4_MIPS
+        );
+        // Declaring fewer includes must never produce a LARGER shader.
+        assert!(
+            empty.len() <= all.len(),
+            "empty-includes ({} B) should not exceed all-includes ({} B)",
+            empty.len(),
+            all.len()
+        );
+    }
+
+    // Phase 3 item 4 — Custom-path validation. Render the Custom kernel across
+    // {empty, all (Tier A), an explicit-Tier-B declaration} × {mips,no-mips} ×
+    // {msaa,no-msaa} and assert:
+    //   (a) every combo renders (template builds + into_source Ok), and
+    //   (b) NO first-party shading body or PBR type leaks into a Custom shader —
+    //       the dead-code kill (item 3) + Tier-B masking (item 2) hold even when
+    //       the registration tries to declare Tier B (S::all() is Tier-A-only,
+    //       but we also throw an explicit S::BRDF | MATERIAL_COLOR_CALC at it).
+    //
+    // These string assertions are the in-tree proxy for WGSL validation; the
+    // phase-end browser run GPU-compiles the empty-includes Custom shader.
+    #[test]
+    fn custom_path_never_leaks_first_party_shading() {
+        use awsm_materials::ShaderIncludes as S;
+        // Tier-B forced declaration — must still be stripped on the Custom path.
+        let tier_b = S::BRDF
+            .union(S::APPLY_LIGHTING)
+            .union(S::MATERIAL_COLOR_CALC);
+        let include_sets = [S::empty(), S::all(), tier_b, S::all().union(tier_b)];
+        // Markers that must NEVER appear in a Custom shader: first-party shading
+        // bodies (materials_wgsl) + the PBR types they/the Tier-B modules use.
+        let forbidden = [
+            "fn pbr_get_material(",
+            "fn compute_unlit_material_color(",
+            "fn compute_toon_lit_color(",
+            "fn flipbook_finalize_color(",
+            "fn brdf_direct(",
+            "fn apply_lighting_per_froxel(",
+            "PbrMaterialColor",
+            "PbrMaterial",
+        ];
+        for inc in include_sets {
+            for msaa in [None, Some(4)] {
+                for mips in [false, true] {
+                    let raw = render_custom(inc, msaa, mips);
+                    // Strip comments before scanning — a comment mentioning
+                    // `PbrMaterial` is harmless; only TYPE refs in real code can
+                    // break compilation. (WGSL `//` line + `/* */` block comments;
+                    // our generated shaders never nest block comments.)
+                    let src = strip_wgsl_comments(&raw);
+                    // (a) renders (render_custom already unwraps build + source).
+                    assert!(
+                        src.contains("fn custom_shade_dynamic("),
+                        "Custom shader must emit the dynamic wrapper (inc={:?} msaa={:?} mips={})",
+                        inc.bits(),
+                        msaa,
+                        mips
+                    );
+                    // (b) no first-party / PBR leakage.
+                    for marker in forbidden {
+                        assert!(
+                            !src.contains(marker),
+                            "Custom shader leaked first-party/PBR token `{marker}` \
+                             (inc={:?} msaa={:?} mips={}) — Tier-B masking or the dead-code \
+                             kill regressed",
+                            inc.bits(),
+                            msaa,
+                            mips
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -528,6 +528,7 @@ impl AwsmRenderer {
                 anti_aliasing: &self.anti_aliasing,
                 shadows: &self.shadows,
                 material_classify_buffers: &self.material_classify_buffers,
+                material_bucket_lut: &self.material_bucket_lut,
                 light_culling_buffers: &self.light_culling_buffers,
                 material_edge_buffers: self.material_edge_buffers.as_ref(),
                 material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
@@ -543,6 +544,16 @@ impl AwsmRenderer {
                 compaction_buffers: self.compaction_buffers.as_ref(),
                 coverage_buffers: self.coverage_buffers.as_ref(),
                 features: &self.features,
+                // Stage 5b-shadow: clone the prep pass's compact edge-shadow view
+                // (owned, not a borrow) so this shared read doesn't conflict with
+                // the `&mut self.render_passes` argument below. `None` unless prep
+                // + MSAA. Bound at opaque group(0) binding 27 for cs_edge's EDGE read.
+                prep_edge_shadow_view: self
+                    .render_passes
+                    .material_prep
+                    .as_ref()
+                    .and_then(|p| p.edge_shadow.as_ref())
+                    .map(|b| b.sampled_view.clone()),
             },
             &mut self.render_passes,
             self.picker.as_mut(),
@@ -594,6 +605,7 @@ impl AwsmRenderer {
                 crate::optimization_policy::FrameOptimizations::default(),
             ),
             viewport_size,
+            prep_config: &self.prep_config,
         };
 
         // Snapshot per-opaque-renderable info that the occlusion + indirect-
@@ -865,6 +877,27 @@ impl AwsmRenderer {
             self.render_passes.material_classify.render(&ctx)?;
         }
 
+        // Material prep (Plan B) — shared, material-independent per-pixel
+        // resolve. `Some` only when `PrepPassConfig.enabled`, so this is the
+        // gate: with the flag off the pass is `None` and the legacy path is
+        // byte-identical. Dispatched between classify and opaque; its outputs
+        // are inert (unread) until later Plan B stages consume them.
+        if let Some(prep) = self.render_passes.material_prep.as_ref() {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                Some(tracing::span!(tracing::Level::INFO, "Material Prep RenderPass").entered())
+            } else {
+                None
+            };
+            prep.render(&ctx)?;
+            // Stage 5b-shadow: after the full-screen cs_prep, fill the compact
+            // per-edge-sample shadow texture (MSAA only — no-op otherwise) so the
+            // MSAA `cs_edge` reads it instead of inline-sampling shadow maps.
+            // classify already populated edge_to_xy + edge_count this frame
+            // (classify → prep → opaque ordering); concurrent edge-buffer READ is
+            // safe within the frame encoder.
+            prep.render_edge(&ctx)?;
+        }
+
         {
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Material Opaque RenderPass").entered())
@@ -872,18 +905,23 @@ impl AwsmRenderer {
                 None
             };
 
-            self.render_passes
-                .material_opaque
-                .render(&ctx, renderables.opaque)?;
-
-            // Per-shader-id MSAA edge-resolve + final blend (Priority
-            // 3 in https://github.com/dakom/awsm-renderer/pull/99). No-op when MSAA
-            // is off or the edge_resolve pipelines haven't been
-            // submitted-and-resolved yet (warn-and-skip per
-            // pipeline_scheduler::warn_pipeline_not_compiled).
-            self.render_passes
-                .material_opaque
-                .render_edge_resolve(&ctx)?;
+            // Unified-edge (U2b, `docs/plans/unified-edge-shading.md`): under MSAA
+            // the renderer shades through the merged `cs_shade` path (one kernel:
+            // interior sample-0 → opaque_tex + edge per-sample → accumulator) +
+            // the unchanged final_blend — the ONLY MSAA shading path now. The
+            // legacy cs_opaque + cs_edge + skybox_primary + skybox_edge_resolve +
+            // render_edge_resolve dispatch is gone (U1/U2a GPU-verified cs_shade
+            // byte-identical max-diff 0). No-MSAA falls through to render()
+            // (cs_opaque + skybox_primary; no edges to resolve).
+            if ctx.anti_aliasing.msaa_sample_count.is_some() {
+                self.render_passes
+                    .material_opaque
+                    .render_shade(&ctx, renderables.opaque)?;
+            } else {
+                self.render_passes
+                    .material_opaque
+                    .render(&ctx, renderables.opaque)?;
+            }
         }
 
         // Kick the edge-overflow readback copy. `copy_buffer_to_buffer`
@@ -1874,6 +1912,10 @@ pub struct RenderContext<'a> {
     /// `getCurrentTexture().getSize()`, which is small (~0.1–1 µs) but
     /// happens at multiple pass-level call sites per frame.
     pub viewport_size: (u32, u32),
+    /// Plan B shared-prep config. Inert today — the prep pass is dispatched
+    /// only when `render_passes.material_prep` is `Some` (i.e. when this is
+    /// enabled). Threaded through so later stages can branch shading on it.
+    pub prep_config: &'a crate::render_passes::material_prep::PrepPassConfig,
 }
 
 impl<'a> RenderContext<'a> {

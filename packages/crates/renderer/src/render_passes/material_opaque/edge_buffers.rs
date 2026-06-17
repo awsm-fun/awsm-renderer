@@ -119,16 +119,6 @@ pub fn note_edge_overflow_observed(overflow_count: u32, max_edge_budget: u32) {
     }
 }
 
-/// Default per-shader-id sample-list capacity in entries (each entry is
-/// 4 bytes: `(edge_pixel_id:24, sample_mask:8)`). At 4 entries per pixel
-/// worst-case (one per MSAA sample), 4 × MAX_EDGE_BUDGET would be the
-/// pathological upper bound; in practice ~1.5 × MAX_EDGE_BUDGET total
-/// across all buckets is plenty.
-///
-/// Per-bucket capacity is computed as `MAX_EDGE_BUDGET × 2` so even a
-/// single shader_id owning every edge fits without saturating.
-pub const SAMPLE_ENTRIES_PER_BUCKET_MULTIPLIER: u32 = 2;
-
 /// Maximum edge_pixel_id allocated by classify before the overflow tail
 /// kicks in. Sized for desktop targets; mobile profiles override via
 /// [`MaterialEdgeBuffers::new_with_budget`].
@@ -209,9 +199,12 @@ pub const ACCUMULATOR_SLOT_BYTES: u32 = 16;
 pub const ARGS_COUNTERS_BYTES: u32 = 16;
 
 /// Total bytes for the `args_buffer`.
-pub fn args_buffer_bytes(bucket_count: u32) -> u32 {
-    // counters + final_blend + skybox + per-shader
-    ARGS_COUNTERS_BYTES + (2u32.saturating_add(bucket_count)).saturating_mul(INDIRECT_ARGS_STRIDE)
+///
+/// Unified-edge U3b: only the `final_blend` indirect-args slot remains (the
+/// skybox_edge + per-shader cs_edge slots drove deleted dispatches). Fixed 32 B.
+pub fn args_buffer_bytes(_bucket_count: u32) -> u32 {
+    // counters (16 B) + final_blend (16 B)
+    ARGS_COUNTERS_BYTES + INDIRECT_ARGS_STRIDE
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -255,31 +248,32 @@ pub fn data_edge_count_offset() -> u32 {
     0
 }
 
-/// Byte offset of the per-bucket entry count for `bucket_index` inside
-/// `data_buffer`.
-pub fn data_per_shader_count_offset(bucket_index: u32) -> u32 {
-    16 + bucket_index.saturating_mul(4)
-}
-
-/// Byte offset of the skybox entry count inside `data_buffer`.
-pub fn data_skybox_count_offset(bucket_count: u32) -> u32 {
-    16 + bucket_count.saturating_mul(4)
-}
-
 /// Byte offset of `edge_to_xy` inside `data_buffer`. Follows the
 /// counter-mirror header.
 pub fn edge_to_xy_offset(bucket_count: u32) -> u32 {
     data_header_bytes(bucket_count)
 }
 
-/// Byte offset of `edge_slot_map` inside `data_buffer`.
+/// Byte offset of `edge_slot_map` inside `data_buffer`. (Follows
+/// `edge_to_xy`, which is always 1 word/edge regardless of slot width.)
 pub fn edge_slot_map_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
     edge_to_xy_offset(bucket_count) + max_edge_budget.saturating_mul(4)
 }
 
-/// Byte offset of `accumulator` inside `data_buffer`.
+/// Bytes of the `edge_slot_map` region: `max_edge_budget × slot_words × 4`
+/// (§5). 8-bit packs 4 samples into 1 word/edge (≤254 buckets); 16-bit
+/// needs 2 words/edge (>254). `slot_words` derives from the live bucket
+/// count, so the 8-bit layout is byte-identical to today below 255 buckets.
+pub fn edge_slot_map_bytes(bucket_count: u32, max_edge_budget: u32) -> u32 {
+    let slot_words = crate::dynamic_materials::edge_slot_words_per_edge(bucket_count);
+    max_edge_budget.saturating_mul(4).saturating_mul(slot_words)
+}
+
+/// Byte offset of `accumulator` inside `data_buffer`. Chains off the
+/// (slot-width-dependent) `edge_slot_map` region size.
 pub fn accumulator_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    edge_slot_map_offset(bucket_count, max_edge_budget) + max_edge_budget.saturating_mul(4)
+    edge_slot_map_offset(bucket_count, max_edge_budget)
+        + edge_slot_map_bytes(bucket_count, max_edge_budget)
 }
 
 /// Total size of the accumulator array, in bytes.
@@ -289,29 +283,19 @@ pub fn accumulator_bytes(max_edge_budget: u32) -> u32 {
         .saturating_mul(ACCUMULATOR_SLOT_BYTES)
 }
 
-/// Byte offset of the first per-shader-id sample-list entry inside
-/// `data_buffer`.
-pub fn sample_entries_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    accumulator_offset(bucket_count, max_edge_budget) + accumulator_bytes(max_edge_budget)
-}
-
-/// Per-bucket sample-list capacity (in entries; each entry 4 bytes).
-pub fn sample_entries_per_bucket(max_edge_budget: u32) -> u32 {
-    max_edge_budget.saturating_mul(SAMPLE_ENTRIES_PER_BUCKET_MULTIPLIER)
-}
-
-/// Byte offset of the skybox sample-list region inside `data_buffer`.
-pub fn skybox_sample_list_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    let per_bucket_bytes = sample_entries_per_bucket(max_edge_budget).saturating_mul(4);
-    sample_entries_offset(bucket_count, max_edge_budget)
-        + bucket_count.saturating_mul(per_bucket_bytes)
-}
-
-/// Total bytes for `data_buffer` (per-edge arrays + per-shader-id
-/// sample lists + skybox sample list).
+/// Total bytes for `data_buffer` (counter-mirror header + per-edge arrays:
+/// edge_to_xy + edge_slot_map + accumulator).
+///
+/// Unified-edge U2b-3: the trailing per-bucket + skybox edge-SAMPLE-LIST
+/// regions are no longer allocated — they fed only the deleted cs_edge /
+/// skybox_edge_resolve pipelines. The buffer now ends right after the
+/// accumulator (the last region `cs_shade` / `final_blend` read). The
+/// `sample_entries_offset` / `skybox_sample_list_offset` helpers + the
+/// matching `EdgeBufferLayout` uniform fields are now dead (they address
+/// offsets past the end of this shorter buffer, but nothing reads them since
+/// `append_edge_sample` is gone) and are removed in U3 along with the toggle.
 pub fn data_buffer_bytes(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    let per_bucket_bytes = sample_entries_per_bucket(max_edge_budget).saturating_mul(4);
-    skybox_sample_list_offset(bucket_count, max_edge_budget) + per_bucket_bytes
+    accumulator_offset(bucket_count, max_edge_budget) + accumulator_bytes(max_edge_budget)
 }
 
 /// Composite GPU buffers for the MSAA edge-resolve flow.
@@ -392,6 +376,22 @@ impl MaterialEdgeBuffers {
         let max_edge_budget = max_edge_budget.max(1);
         let args_size_bytes = args_buffer_bytes(bucket_count);
         let data_size_bytes = data_buffer_bytes(bucket_count, max_edge_budget);
+
+        // §4e budget boot-log: total sample memory is now O(edge_budget),
+        // not O(buckets × edge_budget). Surface the data-buffer size so an
+        // allocation failure (create_buffer below returns a loud Err if it
+        // exceeds the device's maxStorageBufferBindingSize) is never a
+        // silent mystery. At 1024 buckets / 512K budget this is ~52 MB
+        // (was ~4 GB pre-§4e — which simply failed to allocate).
+        tracing::info!(
+            target: "awsm_renderer::edge_buffers",
+            "MaterialEdgeBuffers alloc: bucket_count={}, max_edge_budget={}, \
+             data_buffer={:.1} MB, args_buffer={} B",
+            bucket_count,
+            max_edge_budget,
+            data_size_bytes as f64 / (1024.0 * 1024.0),
+            args_size_bytes,
+        );
 
         let args_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
@@ -539,69 +539,39 @@ impl MaterialEdgeBuffers {
     pub fn final_blend_args_offset() -> u32 {
         ARGS_COUNTERS_BYTES
     }
-
-    /// Byte offset of the `skybox_edge` indirect-arg slot in
-    /// `args_buffer`.
-    pub fn skybox_edge_args_offset() -> u32 {
-        ARGS_COUNTERS_BYTES + INDIRECT_ARGS_STRIDE
-    }
-
-    /// Byte offset of the per-shader-id indirect-arg slot for bucket
-    /// `bucket_index` in `args_buffer`. Passed to
-    /// `dispatch_workgroups_indirect`.
-    pub fn per_shader_args_offset(bucket_index: u32) -> u32 {
-        ARGS_COUNTERS_BYTES + 2 * INDIRECT_ARGS_STRIDE + bucket_index * INDIRECT_ARGS_STRIDE
-    }
 }
 
-/// Build the `EdgeBufferLayout` uniform-data payload for the
-/// classify + edge_resolve shaders. The shader-side struct is
-/// templated per bucket count (one `<name>_sample_list_base: u32`
-/// field per bucket entry), so the payload size grows with bucket
-/// count. Padded to 16-byte alignment for WebGPU uniform-buffer
-/// requirements.
+/// Build the `EdgeBufferLayout` uniform-data payload for the classify +
+/// cs_shade + final_blend + prep shaders. Padded to 16-byte alignment for
+/// WebGPU uniform-buffer requirements.
+///
+/// Unified-edge U3b: the dead per-bucket/skybox sample-list + count fields were
+/// removed (their consumer `append_edge_sample` + the cs_edge / skybox_edge_resolve
+/// pipelines are gone). The kept `*_base` VALUES (byte offsets into `edge_data`)
+/// are UNCHANGED — `data_header_bytes` / `edge_to_xy_offset` / `edge_slot_map_offset`
+/// / `accumulator_offset` are untouched, so the kept data_buffer regions did not
+/// move; only the uniform-struct slots compact. The push order here MUST match
+/// the WGSL `EdgeBufferLayout` struct field order in ALL FOUR mirrors
+/// (material_opaque, final_blend, classify, material_prep).
 ///
 /// Layout (all u32, in declaration order):
 ///   max_edge_budget
-///   edge_count_index               (u32-stride into edge_data; 0)
-///   per_shader_count_base          (first per-bucket counter; bucket counts follow as a contiguous array)
-///   skybox_count_index             (skybox entry counter)
+///   edge_count_index   (u32-stride into edge_data; 0)
 ///   edge_to_xy_base
 ///   edge_slot_map_base
 ///   accumulator_base
-///   <first_party_0>_sample_list_base
-///   <first_party_1>_sample_list_base
-///   ... (bucket_count entries total)
-///   skybox_sample_list_base
-///   sample_entries_per_bucket
-///
-/// All `*_base` values are u32-stride indices from the start of the
-/// `edge_data` storage buffer.
 pub fn build_edge_layout_uniform_bytes(bucket_count: u32, max_edge_budget: u32) -> Vec<u8> {
     let to_stride = |byte_off: u32| -> u32 { byte_off / 4 };
 
-    let mut words: Vec<u32> = Vec::with_capacity(8 + bucket_count as usize);
+    let mut words: Vec<u32> = Vec::with_capacity(8);
     words.push(max_edge_budget);
     words.push(to_stride(data_edge_count_offset())); // edge_count index
-    words.push(to_stride(data_per_shader_count_offset(0))); // per_shader_count_base
-    words.push(to_stride(data_skybox_count_offset(bucket_count))); // skybox_count_index
     words.push(to_stride(edge_to_xy_offset(bucket_count)));
     words.push(to_stride(edge_slot_map_offset(
         bucket_count,
         max_edge_budget,
     )));
     words.push(to_stride(accumulator_offset(bucket_count, max_edge_budget)));
-    let per_bucket = sample_entries_per_bucket(max_edge_budget);
-    let base = sample_entries_offset(bucket_count, max_edge_budget);
-    for i in 0..bucket_count {
-        words.push(to_stride(base + i * per_bucket * 4)); // 4 bytes per sample entry (packed u32)
-    }
-    // skybox_sample_list_base — extra slot after the per-bucket lists.
-    words.push(to_stride(skybox_sample_list_offset(
-        bucket_count,
-        max_edge_budget,
-    )));
-    words.push(per_bucket);
 
     // Pad to 16-byte alignment (WebGPU uniform-buffer requirement).
     while (words.len() * 4) % 16 != 0 {
@@ -640,35 +610,19 @@ pub fn build_edge_layout_uniform(
 /// module-level docs: 2 atomic counters + 8B pad + 1 final_blend args
 /// slot + 1 skybox_edge args slot + bucket_count per-shader-id args
 /// slots.
-pub fn write_args_header(dst: &mut [u8], bucket_count: u32) {
+pub fn write_args_header(dst: &mut [u8], _bucket_count: u32) {
     let one = 1u32.to_ne_bytes();
     // Counters: both zero (default).
     // (bytes [0, 4) and [4, 8) are already zeroed by vec![0u8; ...].)
     // 8-byte alignment pad: zeros.
 
-    // final_blend args slot at byte offset 16.
+    // final_blend args slot at byte offset 16 (the only indirect slot left
+    // after U3b — skybox_edge + per-shader cs_edge slots were removed).
     let final_blend_base = ARGS_COUNTERS_BYTES as usize;
     dst[final_blend_base..final_blend_base + 4].copy_from_slice(&[0; 4]); // x
     dst[final_blend_base + 4..final_blend_base + 8].copy_from_slice(&one); // y
     dst[final_blend_base + 8..final_blend_base + 12].copy_from_slice(&one); // z
     dst[final_blend_base + 12..final_blend_base + 16].copy_from_slice(&[0; 4]); // pad
-
-    // skybox_edge args slot at byte offset 32.
-    let skybox_base = (ARGS_COUNTERS_BYTES + INDIRECT_ARGS_STRIDE) as usize;
-    dst[skybox_base..skybox_base + 4].copy_from_slice(&[0; 4]); // x
-    dst[skybox_base + 4..skybox_base + 8].copy_from_slice(&one); // y
-    dst[skybox_base + 8..skybox_base + 12].copy_from_slice(&one); // z
-    dst[skybox_base + 12..skybox_base + 16].copy_from_slice(&[0; 4]); // pad
-
-    // Per-shader-id args slots.
-    let per_shader_base = (ARGS_COUNTERS_BYTES + 2 * INDIRECT_ARGS_STRIDE) as usize;
-    for bucket in 0..bucket_count as usize {
-        let base = per_shader_base + bucket * INDIRECT_ARGS_STRIDE as usize;
-        dst[base..base + 4].copy_from_slice(&[0; 4]); // x
-        dst[base + 4..base + 8].copy_from_slice(&one); // y
-        dst[base + 8..base + 12].copy_from_slice(&one); // z
-        dst[base + 12..base + 16].copy_from_slice(&[0; 4]); // pad
-    }
 }
 
 #[cfg(test)]
@@ -700,34 +654,37 @@ mod tests {
         }
     }
 
+    /// §4e / §7.4 allocation guarantee: `data_buffer_bytes` is `O(edge_budget)`,
+    /// NOT `O(buckets × edge_budget)`. The pre-§4e sizing was
+    /// `bucket_count × 2 × budget × 4` ≈ **4 GB** at 1024 buckets / 512K
+    /// budget — past every `maxStorageBufferBindingSize`, so the buffer
+    /// literally failed to allocate. Post-§4e it must fit the WebGPU-
+    /// guaranteed 128 MiB floor at the 1024 target.
     #[test]
-    fn data_buffer_layout_is_monotonic_and_starts_after_header() {
-        // The data_buffer carries a counter-mirror header at offset 0
-        // (since `92ca74e` — the 10-storage-buffer-cap workaround that
-        // mirrors classify's atomic counters into the data_buffer so
-        // the resolve shaders don't need to bind args_buffer
-        // separately). Each region must come after the previous one;
-        // `edge_to_xy` specifically lives immediately after the
-        // header.
-        for bucket_count in [1u32, 4, 17] {
-            for max_edge_budget in [1024u32, 65536] {
-                let header = data_header_bytes(bucket_count);
-                let xy = edge_to_xy_offset(bucket_count);
-                let slot_map = edge_slot_map_offset(bucket_count, max_edge_budget);
-                let accum = accumulator_offset(bucket_count, max_edge_budget);
-                let entries = sample_entries_offset(bucket_count, max_edge_budget);
-
-                // Counter-mirror header is at offset 0; edge_to_xy
-                // starts right after it.
-                assert_eq!(xy, header,
-                    "edge_to_xy must start right after the counter-mirror header (bucket_count={bucket_count})");
-
-                // Layout is monotonic: header → edge_to_xy →
-                // edge_slot_map → accumulator → sample lists.
-                assert!(xy < slot_map);
-                assert!(slot_map < accum);
-                assert!(accum < entries);
+    fn data_buffer_is_o_edge_budget_not_o_buckets_times_budget() {
+        const WEBGPU_MIN_BINDING: u32 = 128 * 1024 * 1024; // guaranteed floor
+        for &budget in &[
+            DEFAULT_MAX_EDGE_BUDGET_MOBILE,
+            DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+        ] {
+            // The supported target range (≤1024) fits the guaranteed floor.
+            for &bucket_count in &[16u32, 254, 1024] {
+                let bytes = data_buffer_bytes(bucket_count, budget);
+                assert!(
+                    bytes <= WEBGPU_MIN_BINDING,
+                    "data_buffer {bytes} B at {bucket_count} buckets / {budget} budget exceeds the 128 MiB floor"
+                );
             }
+            // Flatness: going from 16 → 1024 buckets must NOT scale the
+            // buffer ~64×. The sample-list pool is shared, so the only
+            // growth is the tiny per-bucket header/args region. Allow a
+            // generous 2× envelope.
+            let at_16 = data_buffer_bytes(16, budget) as u64;
+            let at_1024 = data_buffer_bytes(1024, budget) as u64;
+            assert!(
+                at_1024 <= at_16 * 2,
+                "data_buffer grew {at_16}→{at_1024} (>2×) from 16→1024 buckets — sample memory is not O(edge_budget)"
+            );
         }
     }
 }

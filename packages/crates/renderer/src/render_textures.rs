@@ -24,6 +24,14 @@ pub struct RenderTextures {
     /// [`RenderTexturesInner`] so the gated `decal_color` allocation
     /// can be skipped when `features.decals == false`.
     features: RendererFeatures,
+    /// Plan B: when `true`, allocate the prep pass's UV/vcolor output textures
+    /// (gated like `decal_color` to avoid VRAM when the feature is off). Captured
+    /// at construction from `PrepPassConfig.enabled`.
+    prep_enabled: bool,
+    /// Plan B Stage 3: number of `Rgba8unorm` layers for the prep shadow-visibility
+    /// array (4 shadow slots packed per texel). From
+    /// `PrepPassConfig::shadow_visibility_layers()`. Only used when `prep_enabled`.
+    prep_shadow_layers: u32,
     frame_count: u32,
     inner: Option<RenderTexturesInner>,
     /// Render-texture generations retired by a recreate but NOT yet
@@ -89,6 +97,8 @@ impl RenderTextures {
         gpu: &AwsmRendererWebGpu,
         formats: RenderTextureFormats,
         features: &RendererFeatures,
+        prep_enabled: bool,
+        prep_shadow_layers: u32,
     ) -> Result<Self> {
         // Two distinct blit pipeline variants: the `None` (single-
         // sample) variant is used by *both* the opaque→transparent
@@ -121,6 +131,8 @@ impl RenderTextures {
         Ok(Self {
             formats,
             features: features.clone(),
+            prep_enabled,
+            prep_shadow_layers,
             frame_count: 0,
             inner: None,
             pending_destroy: Vec::new(),
@@ -236,6 +248,8 @@ impl RenderTextures {
                 current_size.1,
                 anti_aliasing,
                 &self.features,
+                self.prep_enabled,
+                self.prep_shadow_layers,
                 needs_opaque_mip_chain,
                 needs_hud_depth,
             )?;
@@ -315,6 +329,15 @@ pub struct RenderTextureViews {
     /// ~16 MB at 4K.
     pub decal_color: Option<web_sys::GpuTextureView>,
 
+    /// Plan B prep-pass output views (None when the prep feature is off).
+    pub prep_uv: Option<web_sys::GpuTextureView>,
+    pub prep_vcolor: Option<web_sys::GpuTextureView>,
+    /// Plan B Stage 3: per-pixel shadow-visibility view (Rgba8unorm array).
+    pub prep_shadow_visibility: Option<web_sys::GpuTextureView>,
+    /// U0: per-pixel edge-id view (R32Uint). `None` when MSAA is off.
+    /// Written by classify (storage texture); read by nobody in U0.
+    pub edge_id: Option<web_sys::GpuTextureView>,
+
     // Output from composite pass
     pub composite: web_sys::GpuTextureView,
     pub transparent_to_composite_blit_bind_group_no_anti_alias: Option<web_sys::GpuBindGroup>,
@@ -377,6 +400,10 @@ impl RenderTextureViews {
             transparent: inner.transparent_view.clone(),
             decal_color: inner.decal_color_view.clone(),
             // ^ `Option::clone()` — stays `None` when decals are gated off.
+            prep_uv: inner.prep_uv_view.clone(),
+            prep_vcolor: inner.prep_vcolor_view.clone(),
+            prep_shadow_visibility: inner.prep_shadow_visibility_view.clone(),
+            edge_id: inner.edge_id_view.clone(),
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
             // ^ `Option::clone()` — `None` until T2.6's sticky flag
@@ -440,6 +467,23 @@ pub struct RenderTexturesInner {
     pub decal_color: Option<web_sys::GpuTexture>,
     pub decal_color_view: Option<web_sys::GpuTextureView>,
 
+    /// Plan B prep-pass outputs (None when `prep_enabled == false`).
+    pub prep_uv: Option<web_sys::GpuTexture>,
+    pub prep_uv_view: Option<web_sys::GpuTextureView>,
+    pub prep_vcolor: Option<web_sys::GpuTexture>,
+    pub prep_vcolor_view: Option<web_sys::GpuTextureView>,
+    /// Plan B Stage 3: per-pixel shadow-visibility (Rgba8unorm array, 4 packed
+    /// slots/texel). `None` when `prep_enabled == false`.
+    pub prep_shadow_visibility: Option<web_sys::GpuTexture>,
+    pub prep_shadow_visibility_view: Option<web_sys::GpuTextureView>,
+
+    /// U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id texture
+    /// (R32Uint, one word/pixel). Classify writes the compact edge_pixel_id /
+    /// U32_MAX sentinel; the future unified kernel reads it. `None` when
+    /// MSAA is off.
+    pub edge_id: Option<web_sys::GpuTexture>,
+    pub edge_id_view: Option<web_sys::GpuTextureView>,
+
     pub depth: web_sys::GpuTexture,
     pub depth_view: web_sys::GpuTextureView,
 
@@ -484,6 +528,8 @@ impl RenderTexturesInner {
         height: u32,
         anti_aliasing: AntiAliasing,
         features: &RendererFeatures,
+        prep_enabled: bool,
+        prep_shadow_layers: u32,
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
     ) -> Result<Self> {
@@ -782,6 +828,160 @@ impl RenderTexturesInner {
             None => None,
         };
 
+        // Plan B prep-pass outputs (gated on `prep_enabled` to avoid VRAM when
+        // the feature is off): interpolated UV + vertex color, storage-written by
+        // the prep compute pass and texture-read by the slim per-material shader.
+        // Stage 2a: array textures — one layer per UV / color set. `cs_prep`
+        // writes layers `0..min(set_count, cap)`; the slim shader reads
+        // `prep_*[set_index]`.
+        let prep_uv = if prep_enabled {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        TextureFormat::Rg32float,
+                        Extent3d::new(
+                            width,
+                            Some(height),
+                            Some(crate::render_passes::material_prep::MAX_PREP_UV_SETS),
+                        ),
+                        TextureUsage::new()
+                            .with_storage_binding()
+                            .with_texture_binding(),
+                    )
+                    .with_label("PrepUv")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let prep_uv_view = match prep_uv.as_ref() {
+            Some(tex) => Some(
+                tex.create_view_with_descriptor(
+                    &TextureViewDescriptor::new(Some("PrepUv"))
+                        .with_dimension(TextureViewDimension::N2dArray)
+                        .with_array_layer_count(
+                            crate::render_passes::material_prep::MAX_PREP_UV_SETS,
+                        )
+                        .into(),
+                )
+                .map_err(|e| {
+                    AwsmRenderTextureError::CreateTextureView(format!("prep_uv: {e:?}"))
+                })?,
+            ),
+            None => None,
+        };
+        let prep_vcolor = if prep_enabled {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        TextureFormat::Rgba32float,
+                        Extent3d::new(
+                            width,
+                            Some(height),
+                            Some(crate::render_passes::material_prep::MAX_PREP_COLOR_SETS),
+                        ),
+                        TextureUsage::new()
+                            .with_storage_binding()
+                            .with_texture_binding(),
+                    )
+                    .with_label("PrepVColor")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let prep_vcolor_view = match prep_vcolor.as_ref() {
+            Some(tex) => Some(
+                tex.create_view_with_descriptor(
+                    &TextureViewDescriptor::new(Some("PrepVColor"))
+                        .with_dimension(TextureViewDimension::N2dArray)
+                        .with_array_layer_count(
+                            crate::render_passes::material_prep::MAX_PREP_COLOR_SETS,
+                        )
+                        .into(),
+                )
+                .map_err(|e| {
+                    AwsmRenderTextureError::CreateTextureView(format!("prep_vcolor: {e:?}"))
+                })?,
+            ),
+            None => None,
+        };
+        // Stage 3a: per-pixel shadow-visibility buffer — Rgba8unorm array, 4
+        // shadow slots packed per texel (channel = slot % 4, layer = slot / 4).
+        // Inert until Stage 3b binds it + cs_prep writes it.
+        let prep_shadow_visibility = if prep_enabled {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        TextureFormat::Rgba8unorm,
+                        Extent3d::new(width, Some(height), Some(prep_shadow_layers.max(1))),
+                        TextureUsage::new()
+                            .with_storage_binding()
+                            .with_texture_binding(),
+                    )
+                    .with_label("PrepShadowVisibility")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let prep_shadow_visibility_view = match prep_shadow_visibility.as_ref() {
+            Some(tex) => Some(
+                tex.create_view_with_descriptor(
+                    &TextureViewDescriptor::new(Some("PrepShadowVisibility"))
+                        .with_dimension(TextureViewDimension::N2dArray)
+                        .with_array_layer_count(prep_shadow_layers.max(1))
+                        .into(),
+                )
+                .map_err(|e| {
+                    AwsmRenderTextureError::CreateTextureView(format!(
+                        "prep_shadow_visibility: {e:?}"
+                    ))
+                })?,
+            ),
+            None => None,
+        };
+
+        // U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id texture
+        // — R32Uint, one word/pixel, NEVER multisampled (one value per pixel,
+        // not per sample). Classify binds it as a `texture_storage_2d<r32uint,
+        // write>` to write the compact edge_pixel_id / U32_MAX sentinel, so it
+        // needs STORAGE_BINDING; TEXTURE_BINDING is added for the future
+        // unified kernel's read. Gated on MSAA: the edge-id texture only feeds
+        // the MSAA `cs_shade` edge branch, so a no-MSAA build allocates nothing.
+        // classify only declares/binds the edge_id texture under MSAA
+        // (`emit_edge_data` ≡ MSAA), so this stays in lockstep with the shader.
+        let edge_id = if anti_aliasing.msaa_sample_count.is_some() {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        TextureFormat::R32uint,
+                        Extent3d::new(width, Some(height), Some(1)),
+                        TextureUsage::new()
+                            .with_storage_binding()
+                            .with_texture_binding(),
+                    )
+                    .with_label("EdgeId")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let edge_id_view = match edge_id.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("edge_id: {e:?}"))
+            })?),
+            None => None,
+        };
+
         let transparent_view = transparent.create_view().map_err(|e| {
             AwsmRenderTextureError::CreateTextureView(format!("transparent: {e:?}"))
         })?;
@@ -862,6 +1062,15 @@ impl RenderTexturesInner {
 
             decal_color,
             decal_color_view,
+            prep_uv,
+            prep_uv_view,
+            prep_vcolor,
+            prep_vcolor_view,
+            prep_shadow_visibility,
+            prep_shadow_visibility_view,
+
+            edge_id,
+            edge_id_view,
 
             depth,
             depth_view,
@@ -898,6 +1107,18 @@ impl RenderTexturesInner {
         self.opaque.destroy();
         self.transparent.destroy();
         if let Some(tex) = self.decal_color {
+            tex.destroy();
+        }
+        if let Some(tex) = self.prep_uv {
+            tex.destroy();
+        }
+        if let Some(tex) = self.prep_vcolor {
+            tex.destroy();
+        }
+        if let Some(tex) = self.prep_shadow_visibility {
+            tex.destroy();
+        }
+        if let Some(tex) = self.edge_id {
             tex.destroy();
         }
         self.depth.destroy();

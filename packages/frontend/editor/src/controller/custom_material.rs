@@ -139,21 +139,20 @@ pub struct CustomMaterial {
     pub recompile_rev: Mutable<u64>,
 }
 
-/// Every `ShaderIncludes` flag, by key (order = display order).
-pub const SHADER_INCLUDE_KEYS: &[&str] = &[
-    "math",
-    "camera",
-    "color_space",
-    "textures",
-    "vertex_color",
-    "light_access",
-    "apply_lighting",
-    "brdf",
-    "material_color_calc",
-    "shadows",
-    "skybox",
-    "extras",
-];
+/// The custom-material-facing `ShaderIncludes` menu — the **Tier-A generic
+/// helpers** a custom material may opt into (display order). Derived from the
+/// single source of truth, `awsm_materials::ShaderIncludes::tier_a_catalog()`,
+/// so it can't drift from the engine's actual gate set. The Tier-B PBR-internal
+/// modules (`apply_lighting`/`brdf`/`material_color_calc`) are excluded there:
+/// `ShaderIncludeFlags::for_custom` masks them, so offering them would do
+/// nothing. A custom material that wants PBR-like shading writes its own WGSL
+/// (building on `light_access` + the generic `brdf_primitives` helpers).
+pub static SHADER_INCLUDE_KEYS: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        awsm_materials::ShaderIncludes::tier_a_catalog()
+            .map(|(key, _desc)| key)
+            .collect()
+    });
 
 /// Every `FragmentInputs` flag, by key.
 pub const FRAGMENT_INPUT_KEYS: &[&str] = &[
@@ -173,8 +172,9 @@ pub const NEW_MATERIAL_WGSL: &str = "\
 // Opaque material. Inputs arrive as fields on `input` (declare them in Pass
 // Dependencies): input.world_normal, input.surface_to_camera (normalized),
 // input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
-// `color` is linear HDR (tonemap is a later pass); it is UNLIT unless you call
-// apply_lighting(...). Must end in `return OpaqueShadingOutput(color, ao)`.
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT — to light it,
+// declare `light_access` and walk lights yourself (get_lights_info / get_light /
+// light_sample). Must end in `return OpaqueShadingOutput(color, ao)`.
 let n = normalize(input.world_normal);
 let v = input.surface_to_camera;          // already normalized (surface -> camera)
 let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);

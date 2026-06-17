@@ -36,35 +36,39 @@ use awsm_scene::{
     MaterialInstance, Scene, UniformValue as SUniformValue,
 };
 
+use crate::assets::SceneAssets;
+
 /// Register every custom-WGSL material the scene declares, returning a map from
 /// the material's `AssetId` (what a node's [`MaterialInstance::asset`] carries)
 /// to its registered [`MaterialShaderId`]. A custom material whose folder files
 /// are missing or malformed is skipped (its assigned nodes fall back to the
 /// magenta placeholder). Compilation is render-driven — the caller's
 /// `wait_for_pipelines_ready` (Phase 4) drives it.
-pub fn register_custom_materials(
+pub async fn register_custom_materials(
     renderer: &mut AwsmRenderer,
     scene: &Scene,
-    assets: &HashMap<String, Vec<u8>>,
+    assets: &impl SceneAssets,
 ) -> HashMap<AssetId, MaterialShaderId> {
     let mut out = HashMap::new();
     for cm in &scene.custom_materials {
         let folder = cm.folder.to_string_lossy();
-        let Some(json) = assets.get(&format!("{folder}/material.json")) else {
+        let Ok(json) = assets.fetch(&format!("{folder}/material.json")).await else {
             continue;
         };
-        let Some(wgsl) = assets.get(&format!("{folder}/material.wgsl")) else {
+        let Ok(wgsl) = assets.fetch(&format!("{folder}/material.wgsl")).await else {
             continue;
         };
-        let Ok(def) = serde_json::from_slice::<MaterialDefinition>(json) else {
+        let Ok(def) = serde_json::from_slice::<MaterialDefinition>(&json) else {
             continue;
         };
-        let wgsl = String::from_utf8_lossy(wgsl).into_owned();
+        let wgsl = String::from_utf8_lossy(&wgsl).into_owned();
         // Optional 2nd alpha-only WGSL window (masked cutouts). Absent for
         // opaque/blend materials and older bundles → no cutout (back-compat).
         let alpha_wgsl = assets
-            .get(&format!("{folder}/material.alpha.wgsl"))
-            .map(|b| String::from_utf8_lossy(b).into_owned());
+            .fetch(&format!("{folder}/material.alpha.wgsl"))
+            .await
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).into_owned());
         let reg = registration_from_definition(&cm.id, &def, wgsl, alpha_wgsl);
         if let Ok(shader_id) = renderer.register_material(reg) {
             out.insert(cm.id, shader_id);
@@ -83,7 +87,7 @@ pub async fn build_custom_material(
     renderer: &mut AwsmRenderer,
     shader_id: MaterialShaderId,
     inst: &MaterialInstance,
-    assets: &HashMap<String, Vec<u8>>,
+    assets: &impl SceneAssets,
 ) -> Option<Material> {
     // Snapshot everything we need from the registration up front, then DROP the
     // borrow — binding textures below needs `&mut renderer`.
@@ -164,7 +168,7 @@ pub async fn build_custom_material(
     for (i, name) in buffer_slots.iter().enumerate() {
         if let Some(bref) = inst.buffer_overrides.get(name) {
             let path = bref.path.to_string_lossy();
-            if let Some(bytes) = assets.get(path.as_ref()) {
+            if let Ok(bytes) = assets.fetch(path.as_ref()).await {
                 buffers[i] = Some(
                     bytes
                         .chunks_exact(4)
@@ -315,21 +319,10 @@ fn default_value_for(ty: FieldType) -> UniformValue {
 fn includes_from_keys(keys: &[String]) -> ShaderIncludes {
     let mut s = ShaderIncludes::empty();
     for k in keys {
-        s = s.union(match k.as_str() {
-            "math" => ShaderIncludes::MATH,
-            "camera" => ShaderIncludes::CAMERA,
-            "color_space" => ShaderIncludes::COLOR_SPACE,
-            "textures" => ShaderIncludes::TEXTURES,
-            "vertex_color" => ShaderIncludes::VERTEX_COLOR,
-            "light_access" => ShaderIncludes::LIGHT_ACCESS,
-            "apply_lighting" => ShaderIncludes::APPLY_LIGHTING,
-            "brdf" => ShaderIncludes::BRDF,
-            "material_color_calc" => ShaderIncludes::MATERIAL_COLOR_CALC,
-            "shadows" => ShaderIncludes::SHADOWS,
-            "skybox" => ShaderIncludes::SKYBOX,
-            "extras" => ShaderIncludes::EXTRAS,
-            _ => ShaderIncludes::empty(),
-        });
+        // Single source of truth: awsm_materials::ShaderIncludes::KEY_TABLE.
+        // Unknown keys are dropped; Tier-B keys still parse for back-compat but
+        // are masked off for custom materials by ShaderIncludeFlags::for_custom.
+        s = s.union(ShaderIncludes::from_key(k).unwrap_or_else(ShaderIncludes::empty));
     }
     s
 }

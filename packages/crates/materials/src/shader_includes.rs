@@ -13,6 +13,63 @@
 //! the actual `shared_wgsl/...` file in each pass host template). The materials
 //! crate owns the identities + the dependency closure; the renderer owns the
 //! file layout.
+//!
+//! # Module taxonomy (audit)
+//!
+//! Every WGSL module emitted into the opaque material kernel
+//! (`material_opaque_wgsl/opaque_kernel_includes.wgsl`), classified so the
+//! gating work (Phases 2–4) has a single source of truth. Two kinds:
+//!
+//! - **Tier A — generic helpers.** Reusable by ANY material incl. Custom
+//!   (dynamic). These are what a custom material may opt into via
+//!   [`ShaderIncludes`]. Target: emitted iff the material declares them.
+//! - **Tier B — shading-model internals.** Welded to a built-in family's types
+//!   (`PbrMaterial` / `PbrMaterialColor`, Toon/Unlit/Flipbook material structs).
+//!   NEVER reachable by a Custom material; emitted by `base`, not the custom menu.
+//! - **(scaffold)** — pass plumbing every kernel needs regardless of material
+//!   (frame globals, mesh-meta routing, the material storage accessor, standard
+//!   coords, MSAA sample fetch). Stays unconditional; not on the custom menu.
+//!
+//! | module (`*.wgsl`)            | tier      | current gate                  | target gate |
+//! |------------------------------|-----------|-------------------------------|-------------|
+//! | math                         | Tier A    | none (always)                 | MATH (or always — cheap) |
+//! | color_space                  | Tier A    | none (always)                 | COLOR_SPACE (or always — cheap) |
+//! | camera                       | Tier A    | none (always)                 | CAMERA (or always — cheap) |
+//! | textures                     | Tier A    | none (always)                 | TEXTURES |
+//! | texture_uvs (helper)         | Tier A    | none (always)                 | TEXTURES |
+//! | vertex_color / _attrib       | Tier A    | none (always)                 | VERTEX_COLOR |
+//! | light_access                 | Tier A    | none (always)                 | LIGHT_ACCESS |
+//! | extras                       | Tier A    | none (always)                 | EXTRAS |
+//! | skybox (helper)              | Tier A    | none (always)                 | SKYBOX |
+//! | brdf — primitives half       | Tier A    | `inc.brdf` (whole file)       | split → BRDF_PRIMITIVES (Phase 2) |
+//! | mipmap — UV-deriv half       | Tier A    | `mipmap` mode (whole file)    | TEXTURES (Phase 2 split) |
+//! | brdf — `*_direct/_ibl` half  | Tier B    | `inc.brdf`                    | base==Pbr (Phase 2 split → brdf_pbr) |
+//! | apply_lighting               | Tier B    | `inc.apply_lighting`          | base==Pbr |
+//! | material_color_calc (PBR)    | Tier B    | `inc.material_color_calc`     | base==Pbr |
+//! | material_color_calc (unlit)  | Tier B    | `base==Unlit`                 | base==Unlit (ok) |
+//! | mipmap — `pbr_get_gradients` | Tier B    | `inc.material_color_calc`     | base==Pbr (Phase 2 split) |
+//! | material_shading — pbr glue  | Tier B    | `inc.material_color_calc`     | base==Pbr |
+//! | materials_wgsl: pbr body     | Tier B    | `base.canonical_shader_id()`  | base==Pbr ONLY (Phase 3 — see #1) |
+//! | materials_wgsl: unlit/toon/flipbook | Tier B | (emitted for Custom too — BUG)| their base ONLY (Phase 3 — see #1) |
+//! | dynamic-material wrapper     | Custom    | `base==Custom`                | base==Custom (ok) |
+//! | frame_globals                | scaffold  | always                        | always |
+//! | material_mesh_meta           | scaffold  | always                        | always |
+//! | material (storage accessor)  | scaffold  | always                        | always |
+//! | transforms                   | scaffold  | always                        | always |
+//! | standard (coords)            | scaffold  | always                        | always |
+//! | positions                    | scaffold  | always                        | always |
+//! | debug (shared + helper)      | scaffold  | `debug.any()` (helper)        | unchanged |
+//! | msaa (sample fetch)          | scaffold  | `multisampled_geometry`       | unchanged |
+//!
+//! Key reads:
+//! - The "current gate" column is why even `ShaderIncludes::empty()` still emits
+//!   ~160 KB: almost every Tier A module is currently `always`, and the
+//!   first-party bodies are emitted even for Custom (the #1 bug).
+//! - `brdf.wgsl` and `mipmap.wgsl` are split-tier (A+B) → Phase 2 physically
+//!   splits them so each half can gate independently.
+//! - The [`ShaderIncludes`] menu below mixes Tier A (legit for Custom) with the
+//!   Tier B PBR bits (`APPLY_LIGHTING`, `BRDF`, `MATERIAL_COLOR_CALC`) — Phase 3
+//!   removes those from the custom-facing menu.
 
 /// Abstract identities of the optional shared shader modules a material may
 /// declare. A `u32` bitset (mirrors [`crate::pbr::PbrFeatures`]'s hand-rolled
@@ -72,8 +129,17 @@ impl ShaderIncludes {
     pub const fn empty() -> Self {
         Self(0)
     }
-    /// Every optional module — the conservative set for author-supplied
-    /// (dynamic) materials that may reference anything.
+    /// Every **Tier A (generic)** module — the conservative set a custom
+    /// (dynamic) material may safely opt into. This deliberately EXCLUDES the
+    /// Tier B PBR-internal modules (`APPLY_LIGHTING` / `BRDF` /
+    /// `MATERIAL_COLOR_CALC`): those are welded to the `PbrMaterial` /
+    /// `PbrMaterialColor` types and are emitted only for the built-in PBR base,
+    /// never reachable from a custom material. A custom material that wants
+    /// PBR-like shading supplies its own WGSL (optionally built on the generic
+    /// `brdf_primitives` helpers). So `all()` now means "all generic helpers",
+    /// a safe lazy default that no longer drags ~87 KB of PBR code into a shader
+    /// that doesn't use it. First-party PBR declares its Tier B modules
+    /// explicitly via `pbr::SHADER_INCLUDES` (the first-party-internal set).
     pub const fn all() -> Self {
         Self(
             Self::BIT_MATH
@@ -82,14 +148,116 @@ impl ShaderIncludes {
                 | Self::BIT_TEXTURES
                 | Self::BIT_VERTEX_COLOR
                 | Self::BIT_LIGHT_ACCESS
-                | Self::BIT_APPLY_LIGHTING
-                | Self::BIT_BRDF
-                | Self::BIT_MATERIAL_COLOR_CALC
                 | Self::BIT_SHADOWS
                 | Self::BIT_SKYBOX
                 | Self::BIT_EXTRAS,
         )
     }
+
+    /// The single-source key table: `(key, bit, tier_a, description)`. The
+    /// authoring string keys, their bits, whether they're offered on the
+    /// custom-material (Tier-A) menu, and a one-line description. Editor pickers,
+    /// the scene-loader / editor-bridge string parsers, and the MCP catalog all
+    /// derive from THIS — no duplicated key lists. Tier-B entries (the PBR
+    /// internals) stay in the table for back-compat parsing of old saved
+    /// projects, but `tier_a` is false so they're never offered to custom
+    /// materials (and `ShaderIncludeFlags::for_custom` masks them anyway).
+    pub const KEY_TABLE: &'static [(&'static str, Self, bool, &'static str)] = &[
+        (
+            "math",
+            Self::MATH,
+            true,
+            "Basic math helpers (constants, clamping, etc.)",
+        ),
+        (
+            "camera",
+            Self::CAMERA,
+            true,
+            "Camera uniform + view/projection access",
+        ),
+        (
+            "color_space",
+            Self::COLOR_SPACE,
+            true,
+            "Linear/sRGB + tonemap-adjacent helpers",
+        ),
+        (
+            "textures",
+            Self::TEXTURES,
+            true,
+            "Texture-pool sampling + UV helpers",
+        ),
+        (
+            "vertex_color",
+            Self::VERTEX_COLOR,
+            true,
+            "Per-vertex COLOR_n attribute access",
+        ),
+        (
+            "light_access",
+            Self::LIGHT_ACCESS,
+            true,
+            "Punctual light access: get_lights_info / get_light / light_sample",
+        ),
+        (
+            "shadows",
+            Self::SHADOWS,
+            true,
+            "Shadow-map sampling helpers",
+        ),
+        (
+            "skybox",
+            Self::SKYBOX,
+            true,
+            "Skybox cubemap sampling (sample_skybox)",
+        ),
+        (
+            "extras",
+            Self::EXTRAS,
+            true,
+            "Extras storage-pool accessors (extras_load_*)",
+        ),
+        (
+            "apply_lighting",
+            Self::APPLY_LIGHTING,
+            false,
+            "(PBR-internal) apply_lighting orchestration — NOT available to custom materials",
+        ),
+        (
+            "brdf",
+            Self::BRDF,
+            false,
+            "(PBR-internal) PBR BRDF orchestrators — NOT available to custom materials",
+        ),
+        (
+            "material_color_calc",
+            Self::MATERIAL_COLOR_CALC,
+            false,
+            "(PBR-internal) PbrMaterialColor builder — NOT available to custom materials",
+        ),
+    ];
+
+    /// Parse an authoring string key (e.g. `"light_access"`) to its include bit.
+    /// `None` for unknown keys. The single source for the scene-loader + editor
+    /// bridge string→include parsers (back-compat: Tier-B keys still parse, but
+    /// `for_custom` masks them on the custom path).
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::KEY_TABLE
+            .iter()
+            .find(|(k, ..)| *k == key)
+            .map(|(_, bit, ..)| *bit)
+    }
+
+    /// The custom-material-facing **Tier-A** helper catalog: `(key, description)`
+    /// for every generic module a custom material may opt into. Drives the editor
+    /// picker + the MCP helper catalog. Excludes the Tier-B PBR internals.
+    pub fn tier_a_catalog() -> impl Iterator<Item = (&'static str, &'static str)> {
+        Self::KEY_TABLE
+            .iter()
+            .filter(|(.., tier_a, _)| *tier_a)
+            .map(|(k, _, _, desc)| (*k, *desc))
+    }
+
     pub const fn bits(self) -> u32 {
         self.0
     }
@@ -248,6 +416,44 @@ impl core::ops::BitOr for FragmentInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_table_is_single_source_of_truth() {
+        // from_key round-trips every table key.
+        for (k, bit, _, _) in ShaderIncludes::KEY_TABLE {
+            assert_eq!(
+                ShaderIncludes::from_key(k),
+                Some(*bit),
+                "from_key({k}) drifted"
+            );
+        }
+        assert_eq!(ShaderIncludes::from_key("nonsense"), None);
+
+        // The Tier-A catalog == exactly the bits in `all()` (the custom menu).
+        // If a new generic module is added, this forces updating the catalog too.
+        let catalog_union = ShaderIncludes::tier_a_catalog()
+            .map(|(k, _)| ShaderIncludes::from_key(k).unwrap())
+            .fold(ShaderIncludes::empty(), |a, b| a.union(b));
+        assert_eq!(
+            catalog_union.bits(),
+            ShaderIncludes::all().bits(),
+            "tier_a_catalog must cover exactly ShaderIncludes::all() (the custom-facing menu)"
+        );
+
+        // The Tier-B PBR internals are in the table (back-compat parsing) but NOT
+        // in the Tier-A catalog (never offered to custom materials).
+        let tier_a_keys: Vec<_> = ShaderIncludes::tier_a_catalog().map(|(k, _)| k).collect();
+        for forbidden in ["apply_lighting", "brdf", "material_color_calc"] {
+            assert!(
+                ShaderIncludes::from_key(forbidden).is_some(),
+                "{forbidden} must still parse (back-compat)"
+            );
+            assert!(
+                !tier_a_keys.contains(&forbidden),
+                "{forbidden} must NOT be on the custom Tier-A menu"
+            );
+        }
+    }
 
     #[test]
     fn closure_pulls_transitive_deps() {

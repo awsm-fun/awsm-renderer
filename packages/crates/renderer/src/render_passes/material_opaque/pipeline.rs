@@ -1,8 +1,8 @@
 //! Material opaque pass pipeline setup.
 //!
 //! Pipelines are cached per `(msaa_sample_count, mipmaps, shader_id)`.
-//! **Nothing first-party is compiled at construction.** Cold boot emits only
-//! the empty-opaque kernel for the active MSAA; each of the first-party shaders
+//! **Nothing first-party is compiled at construction.** Cold boot compiles zero
+//! opaque pipelines; each of the first-party shaders
 //! ([`OPAQUE_SHADER_IDS`]: PBR / Unlit / Toon / Flipbook) compiles lazily — on
 //! first actual use — via the render-driven [`crate::AwsmRenderer::ensure_scene_pipelines`].
 //! So a project that uses none of them pays zero material-shader compile cost at
@@ -16,7 +16,6 @@ use crate::anti_alias::AntiAliasing;
 use crate::error::Result;
 use crate::pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey};
 use crate::pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey};
-use crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaqueEmpty;
 use crate::render_passes::{
     material_opaque::{
         bind_group::MaterialOpaqueBindGroups, shader::cache_key::ShaderCacheKeyMaterialOpaque,
@@ -49,24 +48,18 @@ pub(crate) struct OpaqueShaderDesc {
 
 /// Compute pipelines for the opaque material pass.
 ///
-/// `main` is keyed by `(msaa, mipmaps, shader_id)`; `empty_*` are the
-/// "no geometry — just skybox" fallbacks (one per MSAA mode).
+/// `main` is keyed by `(msaa, mipmaps, shader_id)`.
 ///
 /// **Lazy-pool semantics:** at construction time `main` starts **empty** —
-/// boot compiles 0 first-party material pipelines, only 1 empty pipeline for
-/// the active MSAA. Each first-party shader_id is compiled on first use (and
-/// each msaa/mipmap variant on demand) via
+/// boot compiles 0 opaque pipelines. Each first-party shader_id is compiled
+/// on first use (and each msaa/mipmap variant on demand) via
 /// [`crate::AwsmRenderer::ensure_scene_pipelines`] (a material registers /
 /// a live bucket needs it) or [`crate::AwsmRenderer::set_anti_aliasing`]
-/// (msaa/mipmap change). Both lookups (`get_compute_pipeline_key`,
-/// `get_empty_compute_pipeline_key`) return `Option`, so the dispatch path's
-/// "skip if missing" branch is the right behavior before the compile lands.
+/// (msaa/mipmap change). The lookup (`get_compute_pipeline_key`) returns
+/// `Option`, so the dispatch path's "skip if missing" branch is the right
+/// behavior before the compile lands.
 pub struct MaterialOpaquePipelines {
     main: HashMap<PipelineKeyId, ComputePipelineKey>,
-    /// `None` until the user-facing config selects MSAA=Some(4) AT
-    /// LEAST once. Same for the singlesampled twin.
-    msaa_4_empty_compute_pipeline_key: Option<ComputePipelineKey>,
-    singlesampled_empty_compute_pipeline_key: Option<ComputePipelineKey>,
 }
 
 /// Every opaque-compute pipeline the renderer can build per config. `SKYBOX` is
@@ -86,8 +79,6 @@ const OPAQUE_SHADER_IDS: &[MaterialShaderId] = &[
 #[derive(Clone, Copy, Debug)]
 pub enum OpaquePipelineSlot {
     Main(PipelineKeyId),
-    EmptyMsaa4,
-    EmptySingle,
 }
 
 /// Pre-resolved opaque pipeline descriptors — the output of
@@ -106,11 +97,11 @@ impl MaterialOpaquePipelines {
     ///
     /// Two batched compile passes (shader compiles, then compute-pipeline
     /// compiles) via `ensure_keys`. Because [`Self::shader_descriptors_and_layouts`]
-    /// runs with `include_first_party = false`, the eager set here is just the
-    /// single empty-opaque kernel — no first-party material shaders are compiled
-    /// at boot (they're lazy; see the module + `OPAQUE_SHADER_IDS` docs). The
-    /// batched shape is retained because the same `ensure_keys` primitives absorb
-    /// the on-demand opaque + decal + transparent recompiles into shared batches.
+    /// runs with `include_first_party = false`, the eager set here is empty —
+    /// no opaque material shaders are compiled at boot (they're lazy; see the
+    /// module + `OPAQUE_SHADER_IDS` docs). The batched shape is retained because
+    /// the same `ensure_keys` primitives absorb the on-demand opaque + decal +
+    /// transparent recompiles into shared batches.
     ///
     /// Thin wrapper over [`Self::build_descriptors`] +
     /// [`Self::from_resolved`]. The pooled-finalize path
@@ -152,20 +143,19 @@ impl MaterialOpaquePipelines {
     /// config. Sync, no `ensure_keys`. Pure cache-key construction.
     ///
     /// **Lazy-pool reduction:** an early build compiled all
-    /// `[Some(4), None] × [true, false] × 4 shader_ids = 16` main variants +
-    /// 2 empty variants = 18 entries; a later step cut that to `4 main + 1 empty`
-    /// (the active config's first-party set). This call now goes the whole way:
-    /// with `include_first_party = false` it emits `0 main + 1 empty = 1` at
-    /// boot. First-party material variants compile on demand via
-    /// [`crate::AwsmRenderer::ensure_scene_pipelines`] (first use) and the
-    /// other msaa/mipmap variants when the user changes MSAA / mipmap mode.
+    /// `[Some(4), None] × [true, false] × 4 shader_ids = 16` main variants;
+    /// a later step cut that to `4 main` (the active config's first-party set).
+    /// This call now goes the whole way: with `include_first_party = false` it
+    /// emits `0` descriptors at boot. First-party material variants compile on
+    /// demand via [`crate::AwsmRenderer::ensure_scene_pipelines`] (first use)
+    /// and the other msaa/mipmap variants when the user changes MSAA / mipmap mode.
     fn shader_descriptors_and_layouts(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &MaterialOpaqueBindGroups,
     ) -> Result<Vec<OpaqueShaderDesc>> {
         // First-party extension: the eager-batch
-        // path (called from `AwsmRendererBuilder::build`) emits ONLY
-        // the empty-opaque pipeline. First-party material opaque
+        // path (called from `AwsmRendererBuilder::build`) emits NO
+        // opaque pipelines. First-party material opaque
         // pipelines (PBR / UNLIT / TOON / FLIPBOOK) defer until the
         // render-driven `ensure_scene_pipelines` compiles them — a
         // gltf-driven material register flags the reconcile that drives it.
@@ -175,6 +165,8 @@ impl MaterialOpaquePipelines {
         // `register_material` call), so the empty-state bucket list
         // is exactly `first_party_bucket_entries()`.
         let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+        let prep_enabled = ctx.prep_config.enabled;
+        let max_shadow_casters = ctx.prep_config.clamped_k();
         Self::shader_descriptors_for_config_with(
             ctx.gpu,
             ctx.bind_group_layouts,
@@ -183,13 +175,15 @@ impl MaterialOpaquePipelines {
             ctx.anti_aliasing,
             &bucket_entries,
             false,
+            prep_enabled,
+            max_shadow_casters,
         )
     }
 
     /// Extension to first-party materials: emit
     /// shader descriptors with the OPAQUE_SHADER_IDS iteration
-    /// gated by `include_first_party`. When `false`, only the
-    /// empty-opaque pipeline is emitted — first-party pipelines
+    /// gated by `include_first_party`. When `false`, NO descriptors
+    /// are emitted — first-party pipelines
     /// (PBR / UNLIT / TOON / FLIPBOOK) compile lazily via the
     /// render-driven `AwsmRenderer::ensure_scene_pipelines` once a
     /// material registers. Cold-boot on a zero-scene compiles 0 material
@@ -202,26 +196,23 @@ impl MaterialOpaquePipelines {
         anti_aliasing: &AntiAliasing,
         bucket_entries: &[crate::dynamic_materials::BucketEntry],
         include_first_party: bool,
+        prep_enabled: bool,
+        max_shadow_casters: u32,
     ) -> Result<Vec<OpaqueShaderDesc>> {
         // Which (main_bgl, slot) is active? Only emit the descriptors
         // for the live MSAA branch — the other half stays uncompiled
         // until the next `recompile_for_anti_aliasing` lands.
-        let (active_msaa, main_bgl, empty_slot) = match anti_aliasing.msaa_sample_count {
+        let (active_msaa, main_bgl) = match anti_aliasing.msaa_sample_count {
             Some(4) => (
                 Some(4_u32),
                 bind_groups.multisampled_main_bind_group_layout_key,
-                OpaquePipelineSlot::EmptyMsaa4,
             ),
             // Treat any other request (None or unsupported sample count)
             // as singlesampled. The dispatch path's `get_compute_pipeline_key`
             // already returns `None` for unsupported sample counts, so the
             // worst case is a skipped opaque dispatch (renderer falls back
             // to clear color), not a panic.
-            _ => (
-                None,
-                bind_groups.singlesampled_main_bind_group_layout_key,
-                OpaquePipelineSlot::EmptySingle,
-            ),
+            _ => (None, bind_groups.singlesampled_main_bind_group_layout_key),
         };
         let active_mipmaps = anti_aliasing.mipmap;
 
@@ -239,10 +230,17 @@ impl MaterialOpaquePipelines {
         let texture_pool_arrays_len = bind_groups.texture_pool_arrays_len;
         let texture_pool_samplers_len = bind_groups.texture_pool_sampler_keys.len() as u32;
 
-        let mut shader_descs: Vec<OpaqueShaderDesc> =
-            Vec::with_capacity(OPAQUE_SHADER_IDS.len() + 1);
+        let mut shader_descs: Vec<OpaqueShaderDesc> = Vec::with_capacity(OPAQUE_SHADER_IDS.len());
 
-        if include_first_party {
+        // Compile invariant (David): the opaque module emits `cs_opaque` (the
+        // `main` pipeline entry) ONLY for non-MSAA. Under MSAA the bucket is
+        // shaded by `cs_shade` (built by the edge-pipeline path), and the MSAA
+        // module omits `cs_opaque` — so building a `main` cs_opaque pipeline under
+        // MSAA would fail pipeline-create. Emit the first-party `main` descriptors
+        // for non-MSAA only; under MSAA this returns empty (cs_shade is built
+        // elsewhere; `get_compute_pipeline_key` returns None under MSAA, and
+        // render() is never called there — render_shade is).
+        if include_first_party && active_msaa.is_none() {
             for &shader_id in OPAQUE_SHADER_IDS {
                 shader_descs.push(OpaqueShaderDesc {
                     shader_cache: ShaderCacheKeyMaterialOpaque {
@@ -250,6 +248,8 @@ impl MaterialOpaquePipelines {
                         texture_pool_samplers_len,
                         msaa_sample_count: active_msaa,
                         mipmaps: active_mipmaps,
+                        prep_enabled,
+                        max_shadow_casters,
                         shader_id,
                         base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
                         owns_skybox: shader_id == MaterialShaderId::SKYBOX,
@@ -282,16 +282,6 @@ impl MaterialOpaquePipelines {
                 });
             }
         }
-        shader_descs.push(OpaqueShaderDesc {
-            shader_cache: ShaderCacheKeyMaterialOpaqueEmpty {
-                texture_pool_arrays_len,
-                texture_pool_samplers_len,
-                msaa_sample_count: active_msaa,
-            }
-            .into(),
-            layout_key,
-            slot: empty_slot,
-        });
 
         Ok(shader_descs)
     }
@@ -333,7 +323,17 @@ impl MaterialOpaquePipelines {
         for d in shader_descs {
             let shader_key = shaders.get_key(gpu, d.shader_cache.clone()).await?;
             shader_cache_keys.push(d.shader_cache);
-            pipeline_cache_keys.push(ComputePipelineCacheKey::new(shader_key, d.layout_key));
+            // § Part B (the "1024 fix"): a material's opaque module now exposes
+            // TWO `@compute` entry points (`cs_opaque` + `cs_edge`), so the
+            // opaque pipeline must name `cs_opaque` explicitly — WebGPU rejects
+            // an implicit entry point on a multi-entry module.
+            let cache_key = match d.slot {
+                OpaquePipelineSlot::Main(_) => {
+                    ComputePipelineCacheKey::new(shader_key, d.layout_key)
+                        .with_entry_point("cs_opaque")
+                }
+            };
+            pipeline_cache_keys.push(cache_key);
             slots.push(d.slot);
         }
 
@@ -349,39 +349,23 @@ impl MaterialOpaquePipelines {
     /// `ComputePipelines::ensure_keys` call). Sync; the caller is
     /// responsible for running the actual pipeline compile.
     ///
-    /// Both empty-pipeline fields default to `None`. The initial
-    /// build fills the one matching the live MSAA state; the other
-    /// stays `None` until the user calls `set_anti_aliasing`. The
-    /// dispatch path's `get_empty_compute_pipeline_key` already
-    /// returns `Option`, so a `None` there safely skips the empty
-    /// dispatch (which is a no-op render-target clear anyway).
+    /// At boot the slot list is empty (no opaque pipelines compiled
+    /// eagerly); `main` is filled lazily on first use.
     pub fn from_resolved(
         slots: Vec<OpaquePipelineSlot>,
         pipeline_keys: Vec<ComputePipelineKey>,
     ) -> Self {
         let mut main = HashMap::with_capacity(OPAQUE_SHADER_IDS.len() * 4);
-        let mut msaa_4_empty_compute_pipeline_key: Option<ComputePipelineKey> = None;
-        let mut singlesampled_empty_compute_pipeline_key: Option<ComputePipelineKey> = None;
 
         for (slot, key) in slots.into_iter().zip(pipeline_keys) {
             match slot {
                 OpaquePipelineSlot::Main(id) => {
                     main.insert(id, key);
                 }
-                OpaquePipelineSlot::EmptyMsaa4 => {
-                    msaa_4_empty_compute_pipeline_key = Some(key);
-                }
-                OpaquePipelineSlot::EmptySingle => {
-                    singlesampled_empty_compute_pipeline_key = Some(key);
-                }
             }
         }
 
-        Self {
-            main,
-            msaa_4_empty_compute_pipeline_key,
-            singlesampled_empty_compute_pipeline_key,
-        }
+        Self { main }
     }
 
     /// Merge a fresh batch of resolved pipelines into `self` without
@@ -399,31 +383,7 @@ impl MaterialOpaquePipelines {
                 OpaquePipelineSlot::Main(id) => {
                     self.main.insert(id, key);
                 }
-                OpaquePipelineSlot::EmptyMsaa4 => {
-                    self.msaa_4_empty_compute_pipeline_key = Some(key);
-                }
-                OpaquePipelineSlot::EmptySingle => {
-                    self.singlesampled_empty_compute_pipeline_key = Some(key);
-                }
             }
-        }
-    }
-
-    /// Returns the empty pipeline key for the current MSAA state.
-    /// Returns `None` if the variant hasn't been compiled yet — the
-    /// dispatch path treats that as "skip the empty pass", which is
-    /// a no-op render-target clear so the renderer continues drawing.
-    /// The caller is expected to have invoked
-    /// [`crate::AwsmRenderer::set_anti_aliasing`] before changing MSAA mode,
-    /// which ensures the variant is compiled before the next render.
-    pub fn get_empty_compute_pipeline_key(
-        &self,
-        anti_aliasing: &AntiAliasing,
-    ) -> Option<ComputePipelineKey> {
-        match anti_aliasing.msaa_sample_count {
-            Some(4) => self.msaa_4_empty_compute_pipeline_key,
-            None => self.singlesampled_empty_compute_pipeline_key,
-            _ => None,
         }
     }
 
@@ -473,10 +433,7 @@ impl MaterialOpaquePipelines {
             .filter(|displaced| *displaced != pipeline_key)
     }
 
-    /// Clear every per-shader-id opaque pipeline entry. The empty-slot
-    /// pipelines (`msaa_4_empty_compute_pipeline_key` /
-    /// `singlesampled_empty_compute_pipeline_key`) are preserved —
-    /// they don't depend on the bucket layout.
+    /// Clear every per-shader-id opaque pipeline entry.
     ///
     /// Used by `AwsmRenderer::register_material` to invalidate stale
     /// (shader_id, msaa, mipmaps) entries before relaunching the

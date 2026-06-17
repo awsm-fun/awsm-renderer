@@ -19,6 +19,8 @@ awsm-renderer-gltf = { workspace = true }
 awsm-materials = { workspace = true }
 # Player-lean meshgen (default = primitives only) for `RuntimeMesh::Primitive`.
 awsm-meshgen = { workspace = true }
+# Catmull-Rom curve sampling for `InstancesAlongCurve` (point/tangent/arc-length).
+awsm-curves = { workspace = true }
 # The runtime Scene schema we load.
 awsm-scene = { workspace = true }
 glam = { workspace = true }

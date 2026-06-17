@@ -359,6 +359,57 @@ impl MaterialOpaqueBindGroups {
             BindGroupResource::Buffer(BufferBinding::new(&ctx.extras_pool.buffer)),
         ));
 
+        // Plan B (stage 5a): prep_uv (binding 24) + prep_vcolor (binding 25) +
+        // prep_shadow_visibility (binding 26) for the PRIMARY `cs_opaque` read —
+        // now under MSAA too (the prep textures are full-res sample-0). The prep
+        // views are `Some` only when the prep pass is enabled, so gating on `Some`
+        // matches the layout's `prep_enabled` (`prep_present`) gate exactly (any AA).
+        if ctx.render_texture_views.prep_uv.is_some() {
+            let prep_uv = ctx.render_texture_views.prep_uv.as_ref().ok_or_else(|| {
+                AwsmBindGroupError::NotFound("Material Opaque - prep_uv".to_string())
+            })?;
+            let prep_vcolor = ctx
+                .render_texture_views
+                .prep_vcolor
+                .as_ref()
+                .ok_or_else(|| {
+                    AwsmBindGroupError::NotFound("Material Opaque - prep_vcolor".to_string())
+                })?;
+            entries.push(BindGroupEntry::new(
+                entries.len() as u32,
+                BindGroupResource::TextureView(Cow::Borrowed(prep_uv)),
+            ));
+            entries.push(BindGroupEntry::new(
+                entries.len() as u32,
+                BindGroupResource::TextureView(Cow::Borrowed(prep_vcolor)),
+            ));
+            // Plan B (stage 4): prep_shadow_visibility (binding 26).
+            let prep_shadow_visibility = ctx
+                .render_texture_views
+                .prep_shadow_visibility
+                .as_ref()
+                .ok_or_else(|| {
+                AwsmBindGroupError::NotFound("Material Opaque - prep_shadow_visibility".to_string())
+            })?;
+            entries.push(BindGroupEntry::new(
+                entries.len() as u32,
+                BindGroupResource::TextureView(Cow::Borrowed(prep_shadow_visibility)),
+            ));
+            // Plan B (stage 5b-shadow): prep_edge_shadow (binding 27) — only under
+            // MSAA. cs_edge (EDGE) reads the compact per-edge-sample shadow buffer
+            // here. The view is the prep pass's edge_shadow.sampled_view, cloned
+            // into the recreate context (so the borrow doesn't conflict).
+            if ctx.anti_aliasing.msaa_sample_count.is_some() {
+                let prep_edge_shadow = ctx.prep_edge_shadow_view.as_ref().ok_or_else(|| {
+                    AwsmBindGroupError::NotFound("Material Opaque - prep_edge_shadow".to_string())
+                })?;
+                entries.push(BindGroupEntry::new(
+                    entries.len() as u32,
+                    BindGroupResource::TextureView(Cow::Borrowed(prep_edge_shadow)),
+                ));
+            }
+        }
+
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts
                 .get(if ctx.anti_aliasing.msaa_sample_count.is_some() {
@@ -479,7 +530,14 @@ async fn create_main_bind_group_layout_key(
     ctx: &mut RenderPassInitContext<'_>,
     multisampled_geometry: bool,
 ) -> Result<BindGroupLayoutKey> {
-    let entries = vec![
+    // Plan B (stage 5a): the PRIMARY `cs_opaque` reads the prep-materialized
+    // UV / vcolor / shadow array textures instead of recomputing — now under
+    // MSAA too (cs_opaque is the primary sample-0 read; cs_edge still recomputes
+    // per-sample). So BOTH the singlesampled AND multisampled layouts gain the
+    // sampled `texture_2d_array` entries when prep is enabled (the prep textures
+    // are full-res sample-0, identical for both layouts).
+    let prep_enabled = ctx.prep_config.enabled;
+    let mut entries = vec![
         // Visibility data texture
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Texture(
@@ -726,6 +784,75 @@ async fn create_main_bind_group_layout_key(
             visibility_compute: true,
         },
     ];
+
+    // Plan B (stage 5a): prep_uv (binding 24) + prep_vcolor (binding 25),
+    // sampled `texture_2d_array` (UnfilterableFloat — rg32float / rgba32float
+    // are unfilterable; `textureLoad` needs no sampler). On BOTH layouts when
+    // prep is enabled (matches the template's `prep_present = prep_enabled`,
+    // any AA). The prep textures are full-res sample-0, so the same entries
+    // apply regardless of MSAA.
+    if prep_enabled {
+        // prep_uv
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Texture(
+                TextureBindingLayout::new()
+                    .with_view_dimension(TextureViewDimension::N2dArray)
+                    .with_sample_type(TextureSampleType::UnfilterableFloat)
+                    .with_multisampled(false),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+        // prep_vcolor
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Texture(
+                TextureBindingLayout::new()
+                    .with_view_dimension(TextureViewDimension::N2dArray)
+                    .with_sample_type(TextureSampleType::UnfilterableFloat)
+                    .with_multisampled(false),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+        // Plan B (stage 4): prep_shadow_visibility (binding 26), sampled
+        // `texture_2d_array` of the per-pixel packed shadow-visibility buffer
+        // (Rgba8unorm — filterable, so Float sample type; `textureLoad` reads
+        // it without a sampler). The no-MSAA primary `cs_opaque` reads it via
+        // `prep_shadow_read` (apply_lighting `shadow_from_buffer`) instead of
+        // sampling shadow maps inline. Same gate as prep_uv/prep_vcolor.
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Texture(
+                TextureBindingLayout::new()
+                    .with_view_dimension(TextureViewDimension::N2dArray)
+                    .with_sample_type(TextureSampleType::Float)
+                    .with_multisampled(false),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+        // Plan B (stage 5b-shadow): prep_edge_shadow (binding 27), sampled
+        // `texture_2d_array` of the compact per-edge-sample shadow buffer. ONLY
+        // under MSAA (no edges otherwise) — matches the WGSL's
+        // `{% if multisampled_geometry %}` gate at binding 27. cs_edge (EDGE)
+        // reads it; cs_opaque (PRIMARY) ignores it. A texture (not a storage
+        // buffer) so it doesn't count against cs_edge's 10-storage-buffer cap.
+        if multisampled_geometry {
+            entries.push(BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Texture(
+                    TextureBindingLayout::new()
+                        .with_view_dimension(TextureViewDimension::N2dArray)
+                        .with_sample_type(TextureSampleType::Float)
+                        .with_multisampled(false),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            });
+        }
+    }
 
     Ok(ctx
         .bind_group_layouts

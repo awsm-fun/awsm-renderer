@@ -129,6 +129,12 @@ pub struct AwsmRenderer {
     /// buckets + indirect-dispatch args the opaque material pipelines
     /// consume.
     pub material_classify_buffers: render_passes::material_classify::buffers::ClassifyBuffers,
+    /// `shader_id → bucket_index` lookup table (§4a) bound read-only into
+    /// the classify pass — the O(1) replacement for the old per-pixel
+    /// `shader_id == SHADER_ID_*` if/else chain. Rebuilt only when the
+    /// bucket set changes (`relayout_bucket_buffers`), independent of the
+    /// classify buckets (which realloc on viewport resize).
+    pub material_bucket_lut: render_passes::material_classify::bucket_lut::MaterialBucketLut,
     /// GPU light-culling froxel buffers (per-frame params uniform +
     /// per-froxel counts + flat indices + overflow counter). Owned at
     /// the top level so the per-frame `ensure_viewport` / `write_params`
@@ -248,6 +254,10 @@ pub struct AwsmRenderer {
     pub render_passes: RenderPasses,
     pub environment: Environment,
     pub anti_aliasing: AntiAliasing,
+    /// Plan B shared-prep + deferred-shadow config, captured at build time
+    /// (`docs/plans/deferred-shared-prep-pass.md`). Inert until the prep pass is
+    /// wired in; later stages read `prep_config.enabled` to choose the path.
+    pub prep_config: crate::render_passes::material_prep::PrepPassConfig,
     pub post_processing: PostProcessing,
     /// GPU mesh-picking subsystem. `None` when
     /// `features.picking == false` (the default for library /
@@ -788,6 +798,14 @@ pub struct AwsmRendererBuilder {
     /// edge_overflow_count via CPU readback can also grow the budget
     /// at runtime via [`AwsmRenderer::set_max_edge_budget`].
     max_edge_budget: Option<u32>,
+    /// Registration ceiling for co-resident material buckets (§2). `None`
+    /// → default 32 (identical to today). Set via
+    /// [`AwsmRendererBuilder::with_bucket_config`]; validated `1..=65534`.
+    bucket_config: Option<crate::dynamic_materials::BucketConfig>,
+    /// Plan B shared-prep + deferred-shadow config
+    /// (`docs/plans/deferred-shared-prep-pass.md`). Inert until the prep pass is
+    /// wired in; `enabled` defaults `false` (legacy recompute-in-shader path).
+    prep_config: crate::render_passes::material_prep::PrepPassConfig,
     /// Adaptive runtime policy. Defaults to `Auto` mode for the
     /// gpu_culling path; library consumers can override at build time
     /// (or via `AwsmRenderer::set_optimization_policy` later) to force
@@ -886,6 +904,8 @@ impl AwsmRendererBuilder {
             shadows_config: None,
             features: RendererFeatures::default(),
             max_edge_budget: None,
+            bucket_config: None,
+            prep_config: crate::render_passes::material_prep::PrepPassConfig::default(),
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
             phase_handler: None,
             scene_spatial_config: None,
@@ -971,6 +991,52 @@ impl AwsmRendererBuilder {
     /// fires (indicating overflow this session).
     pub fn with_max_edge_budget(mut self, budget: u32) -> Self {
         self.max_edge_budget = Some(budget.max(1));
+        self
+    }
+
+    /// Sets the registration ceiling for co-resident material buckets
+    /// (`docs/plans/increase-materials.md` §2). Default is 32 (identical to
+    /// today). Valid range `1..=65534`; an out-of-range value is clamped
+    /// into range here and logged, so the builder never produces a registry
+    /// that can mint a bucket index the edge encoding can't represent. The
+    /// cap sizes nothing per-frame — every GPU width follows the *live*
+    /// bucket count, so a high cap costs nothing until the count grows.
+    pub fn with_bucket_config(mut self, config: crate::dynamic_materials::BucketConfig) -> Self {
+        let config = match config.validate() {
+            Ok(()) => config,
+            Err(msg) => {
+                let clamped = config
+                    .max_bucket_entries
+                    .clamp(1, crate::dynamic_materials::MAX_BUCKET_ENTRIES_CEILING);
+                tracing::warn!(
+                    target: "awsm_renderer::dynamic_materials",
+                    "with_bucket_config: {msg}; clamping to {clamped}"
+                );
+                crate::dynamic_materials::BucketConfig {
+                    max_bucket_entries: clamped,
+                }
+            }
+        };
+        self.bucket_config = Some(config);
+        self
+    }
+
+    /// Plan B (`docs/plans/deferred-shared-prep-pass.md`) A/B flag. `false`
+    /// (default) keeps the legacy path where every per-material kernel
+    /// reconstructs attributes + samples shadows inline; `true` routes through
+    /// the shared prep pass + slim per-material shading. Inert until the prep
+    /// pass is wired in (later stages).
+    pub fn with_prep_pass(mut self, enabled: bool) -> Self {
+        self.prep_config.enabled = enabled;
+        self
+    }
+
+    /// Max shadow casters that can overlap a single pixel (`K`) — sizes the
+    /// per-pixel shadow-visibility buffer. Clamped to
+    /// `1..=PrepPassConfig::MAX_SHADOW_CASTERS_PER_PIXEL_CEILING`.
+    pub fn with_max_shadow_casters_per_pixel(mut self, k: u32) -> Self {
+        self.prep_config.max_shadow_casters_per_pixel =
+            k.clamp(1, crate::render_passes::material_prep::PrepPassConfig::MAX_SHADOW_CASTERS_PER_PIXEL_CEILING);
         self
     }
 
@@ -1127,6 +1193,8 @@ impl AwsmRendererBuilder {
             shadows_config,
             mut features,
             max_edge_budget,
+            bucket_config,
+            prep_config,
             optimization_policy,
             phase_handler,
             scene_spatial_config,
@@ -1259,6 +1327,14 @@ impl AwsmRendererBuilder {
         // construction) to the post-await sync block.
         let formats_for_textures = render_texture_formats.clone();
         let bind_groups = BindGroups::new(&features);
+        // Resolved edge-pixel budget — mirrors what `MaterialEdgeBuffers` uses
+        // (the builder override or the desktop default). Sizes the prep pass's
+        // compact per-edge-sample shadow texture (Stage 5b-shadow). Computed here
+        // since the edge buffers themselves are allocated further below.
+        let resolved_max_edge_budget = max_edge_budget.unwrap_or(
+            crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+        );
+
         let mut render_pass_init = RenderPassInitContext {
             gpu: &gpu,
             bind_group_layouts: &mut bind_group_layouts,
@@ -1270,6 +1346,8 @@ impl AwsmRendererBuilder {
             features: &features,
             anti_aliasing: &anti_aliasing,
             post_processing: &post_processing,
+            prep_config: &prep_config,
+            max_edge_budget: resolved_max_edge_budget,
         };
 
         // Phase A of RenderPasses (bind groups + shader cache key
@@ -1311,9 +1389,15 @@ impl AwsmRendererBuilder {
             },
             RenderPasses::describe_shaders(&mut render_pass_init, &features),
             async {
-                RenderTextures::new(&gpu, formats_for_textures, &features)
-                    .await
-                    .map_err(crate::error::AwsmError::from)
+                RenderTextures::new(
+                    &gpu,
+                    formats_for_textures,
+                    &features,
+                    prep_config.enabled,
+                    prep_config.shadow_visibility_layers(),
+                )
+                .await
+                .map_err(crate::error::AwsmError::from)
             },
         )?;
         // Move `render_pass_init` into a discard binding so its
@@ -1376,6 +1460,14 @@ impl AwsmRendererBuilder {
                 &gpu,
                 1024,
                 first_party_bucket_count,
+            )?;
+        // Seed the bucket LUT from the first-party entries so a scene that
+        // never registers a dynamic material still classifies correctly;
+        // `relayout_bucket_buffers` rebuilds it as the registry grows.
+        let material_bucket_lut =
+            render_passes::material_classify::bucket_lut::MaterialBucketLut::new(
+                &gpu,
+                &crate::dynamic_materials::first_party_bucket_entries(),
             )?;
 
         // Light-culling froxel buffers. Sized to a tiny placeholder
@@ -1572,6 +1664,8 @@ impl AwsmRendererBuilder {
             features: &features,
             anti_aliasing: &anti_aliasing,
             post_processing: &post_processing,
+            prep_config: &prep_config,
+            max_edge_budget: resolved_max_edge_budget,
         };
         let render_passes_descs =
             RenderPasses::describe_pipelines(render_passes_plan, &mut render_pass_init, &features)
@@ -1737,6 +1831,8 @@ impl AwsmRendererBuilder {
                     &anti_aliasing,
                     color_wgsl,
                     None,
+                    prep_config.enabled,
+                    prep_config.clamped_k(),
                 )
                 .await?;
         }
@@ -1752,6 +1848,7 @@ impl AwsmRendererBuilder {
             recommended_shadow_quality_tier,
             light_buckets: LightMeshBuckets::default(),
             material_classify_buffers,
+            material_bucket_lut,
             light_culling_buffers,
             light_culling_debug_heatmap: 0,
             debug_view_mode: 0,
@@ -1792,6 +1889,7 @@ impl AwsmRendererBuilder {
             logging,
             render_textures,
             anti_aliasing,
+            prep_config,
             post_processing,
             picker,
             lines,
@@ -1825,6 +1923,15 @@ impl AwsmRendererBuilder {
             animations,
             cameras: crate::cameras::Cameras::new(),
         };
+
+        // Apply the configured registration ceiling (§2). Validated +
+        // clamped in `with_bucket_config`, so this only sets the field; it
+        // sizes nothing per-frame (widths follow the live count, §0).
+        if let Some(bucket_config) = bucket_config {
+            _self
+                .dynamic_materials
+                .set_max_bucket_entries(bucket_config.max_bucket_entries);
+        }
 
         // Initial AA + PP state — the effects + display pipelines we
         // installed in the cross-tail pool above already match the
@@ -1884,9 +1991,6 @@ impl AwsmRendererBuilder {
                 1
             };
             let mut eager_passes: Vec<PipelineGroupDef> = vec![
-                PipelineGroupDef::Pass(PassDef::OpaqueEmpty {
-                    snapshot: snapshot.clone(),
-                }),
                 PipelineGroupDef::Pass(PassDef::ClassifyMsaa {
                     samples: active_msaa_samples,
                     snapshot: snapshot.clone(),
@@ -1904,9 +2008,6 @@ impl AwsmRendererBuilder {
                 }));
             }
             if edge_resolve_enabled {
-                eager_passes.push(PipelineGroupDef::Pass(PassDef::EdgeResolveSkybox {
-                    snapshot: snapshot.clone(),
-                }));
                 eager_passes.push(PipelineGroupDef::Pass(PassDef::EdgeResolveBlend {
                     snapshot: snapshot.clone(),
                 }));
@@ -2108,9 +2209,21 @@ impl AwsmRenderer {
         {
             self.material_edge_layout_uniform = Some(uniform);
         }
+        // Stage 5b-shadow: resize the prep pass's compact edge-shadow texture to
+        // match the new budget (else cs_prep_edge writes / cs_edge reads beyond
+        // the texture's row count for the overflow edges). The opaque main bind
+        // group re-clones the new view next frame (TextureViewRecreate below
+        // fans out to OpaqueMain).
+        if let Some(prep) = self.render_passes.material_prep.as_mut() {
+            prep.set_max_edge_budget(&self.gpu, new_budget)?;
+        }
         // Mark dependent bind groups for recreation.
         self.bind_groups
             .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
+        // The opaque main bind group binds the compact edge-shadow texture
+        // (binding 27); rebind it against the resized view.
+        self.bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
         tracing::info!(
             target: "awsm_renderer::edge_resolve",
             "set_max_edge_budget: edge budget grown to {} (was tracked via overflow CPU surface)",

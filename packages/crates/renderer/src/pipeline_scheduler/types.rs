@@ -154,12 +154,6 @@ pub enum MaterialDefKind {
 /// carries only the data its build path needs.
 #[derive(Clone, Debug)]
 pub enum PassDef {
-    /// The empty opaque compute pipeline — runs on skybox-only frames
-    /// and the bucket-skip path. Always eager.
-    OpaqueEmpty {
-        /// Renderer-config snapshot this pipeline is keyed on.
-        snapshot: PipelineConfigSnapshot,
-    },
     /// MSAA variant of the classify compute pass.
     ClassifyMsaa {
         /// MSAA sample count this pipeline targets.
@@ -209,12 +203,6 @@ pub enum PassDef {
     },
     /// Depth-of-field post-fx pipelines.
     Dof,
-    /// Priority-3 MSAA-edge-resolve helpers (shared across all
-    /// materials).
-    EdgeResolveSkybox {
-        /// Renderer-config snapshot this pipeline is keyed on.
-        snapshot: PipelineConfigSnapshot,
-    },
     /// MSAA-edge-resolve helper for transparent (Blend) materials.
     EdgeResolveBlend {
         /// Renderer-config snapshot this pipeline is keyed on.
@@ -227,8 +215,6 @@ pub enum PassDef {
 /// scheduler.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PassKind {
-    /// The empty opaque compute pipeline (skybox-only / bucket-skip path).
-    OpaqueEmpty,
     /// MSAA variant of the classify compute pass, parametrised by sample count.
     ClassifyMsaa {
         /// MSAA sample count.
@@ -262,8 +248,6 @@ pub enum PassKind {
     Smaa,
     /// Depth-of-field post-fx pipelines.
     Dof,
-    /// MSAA-edge-resolve helper for skybox.
-    EdgeResolveSkybox,
     /// MSAA-edge-resolve helper for transparent (Blend) materials.
     EdgeResolveBlend,
     /// Layout-level owner for the opaque MSAA edge-resolve pipeline set
@@ -280,7 +264,6 @@ impl PassDef {
     /// Project the def to its identifying [`PassKind`].
     pub fn kind(&self) -> PassKind {
         match self {
-            Self::OpaqueEmpty { .. } => PassKind::OpaqueEmpty,
             Self::ClassifyMsaa { samples, .. } => PassKind::ClassifyMsaa { samples: *samples },
             Self::GeometryMsaa { samples, .. } => PassKind::GeometryMsaa { samples: *samples },
             Self::Display => PassKind::Display,
@@ -293,7 +276,6 @@ impl PassDef {
             Self::Bloom { .. } => PassKind::Bloom,
             Self::Smaa { .. } => PassKind::Smaa,
             Self::Dof => PassKind::Dof,
-            Self::EdgeResolveSkybox { .. } => PassKind::EdgeResolveSkybox,
             Self::EdgeResolveBlend { .. } => PassKind::EdgeResolveBlend,
         }
     }

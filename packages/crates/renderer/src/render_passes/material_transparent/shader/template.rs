@@ -61,6 +61,24 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// transparent shader (whose `materials_wgsl` only carries its own fragment)
     /// doesn't reference the other family's material struct.
     pub base: ShadingBase,
+    /// Plan B (stage 5a): always `false` on the transparent pass — the forward
+    /// transparent fragment samples shadow maps inline (it shades its own
+    /// pixels back-to-front, with no prep buffer / no `g_prep_ctx`). Present
+    /// because the shared `apply_lighting.wgsl` gates the runtime PrepReadContext
+    /// select on it; `false` keeps the legacy inline-only path (byte-identical).
+    pub prep_present: bool,
+    /// Plan B: emit the inline `sample_shadow_*` path. Transparent always lights
+    /// inline (`inc.apply_lighting`), so the cascade-selection / inline-sample
+    /// arms in apply_lighting are gated on it (mirrors the opaque template).
+    pub needs_shadow_sampling: bool,
+    /// Inert on the transparent pass (`prep_present` is false), but the
+    /// shared `apply_lighting.wgsl`'s `prep_shadow_read` references it.
+    pub max_shadow_casters: u32,
+    /// Always `false` on the transparent pass (forward, no edge buffer), but the
+    /// shared `apply_lighting.wgsl`'s `prep_shadow_read` gates the EDGE-mode
+    /// `prep_edge_shadow` read on it; the field must exist for askama type-check
+    /// even though the enclosing `{% if prep_present %}` is always false here.
+    pub multisampled_geometry: bool,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -85,12 +103,31 @@ impl ShaderTemplateTransparentMaterialIncludes {
             // material_color_calc includes gate on exactly this transparent
             // material's feature-set (no uber all()).
             pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(cache_key.pbr_features),
+            // `for_custom` forces the Tier-B PBR-internal flags off — a custom
+            // material can never enable brdf/apply_lighting/material_color_calc
+            // on the transparent path either (Phase 3 item 2; parity with opaque).
             inc: if let Some(d) = cache_key.dynamic_shader.as_ref() {
-                crate::dynamic_materials::ShaderIncludeFlags::from_includes(d.shader_includes)
+                crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
             } else {
                 crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base)
             },
             base: cache_key.base,
+            // Transparent keeps inline shadow sampling (forward pass, own
+            // pixels, no prep buffer) — never reads the prep shadow buffer.
+            prep_present: false,
+            // Inline shadow sampling is emitted whenever this material runs
+            // first-party lighting (the only `sample_shadow_*` caller).
+            needs_shadow_sampling: if let Some(d) = cache_key.dynamic_shader.as_ref() {
+                crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
+                    .apply_lighting
+            } else {
+                crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base)
+                    .apply_lighting
+            },
+            max_shadow_casters: 4,
+            // Transparent is a forward pass with no edge buffer; inert (the EDGE
+            // branch lives under the always-false `prep_present` gate).
+            multisampled_geometry: false,
         }
     }
 
@@ -131,17 +168,30 @@ pub struct ShaderTemplateTransparentMaterialBindGroups {
     /// to a depth texture it can sample on the same frame without a
     /// feedback loop. `false` here makes `apply_sscs` short-circuit.
     pub sscs_available: bool,
+    /// Emit the shadow SAMPLING block only when this material runs
+    /// first-party lighting (`inc.apply_lighting`) — the only caller of
+    /// `sample_shadow_*`. Custom materials force it off. The shadow bind
+    /// group + structs stay (ABI). Parity with the opaque path.
+    pub needs_shadow_sampling: bool,
 }
 
 impl ShaderTemplateTransparentMaterialBindGroups {
     /// Creates a bind group template from the cache key.
     pub fn new(cache_key: &ShaderCacheKeyMaterialTransparent) -> Self {
+        // Same include resolution as the main transparent template, so the
+        // shadow-sampling gate matches `apply_lighting`'s presence.
+        let inc = if let Some(d) = cache_key.dynamic_shader.as_ref() {
+            crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
+        } else {
+            crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base)
+        };
         Self {
             texture_pool_arrays_len: cache_key.texture_pool_arrays_len,
             texture_pool_samplers_len: cache_key.texture_pool_samplers_len,
             multisampled_geometry: cache_key.msaa_sample_count.is_some(),
             shadow_group_index: 1,
             sscs_available: false,
+            needs_shadow_sampling: inc.apply_lighting,
         }
     }
 }

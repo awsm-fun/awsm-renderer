@@ -1,9 +1,6 @@
 //! Shader cache key for the material classify compute pass.
 
-use crate::{
-    dynamic_materials::BucketEntry, render_passes::shader_cache_key::ShaderCacheKeyRenderPass,
-    shaders::ShaderCacheKey,
-};
+use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::ShaderCacheKey};
 
 /// Cache key for the classify compute pipeline.
 ///
@@ -12,19 +9,20 @@ use crate::{
 ///   is sampled either single- or multisampled; the classify shader
 ///   only reads sample 0 either way, but the declared binding type
 ///   has to match.
-/// - `bucket_entries` — the full registered-bucket list (first-party +
-///   currently-registered dynamic materials), in shader-id-sorted
-///   order. The templated `ClassifyOutput` struct + per-bucket extract
-///   loop walk this list, so any change here changes the shader
-///   source. Carries the strings so the cache hash naturally
-///   disambiguates two registries with the same bucket count but
-///   different registered names. An empty list (zero dynamic materials
-///   registered, no first-party features either) collapses to a stable
-///   empty hash — the pre-feature compiled-WGSL sentinel.
+/// - `bucket_count` — the number of registered buckets (first-party +
+///   currently-registered dynamic materials). Since §4a-§4d the classify
+///   shader is **identity-independent**: it routes per-pixel/per-sample via
+///   the `bucket_lut` storage buffer (not codegen'd per-bucket arms) and
+///   sizes its `ClassifyOutput`/`tile_mask` from the count alone — so the
+///   shader TEXT is a pure function of `(msaa, bucket_count, emit_edge_data)`
+///   and never the bucket *identities*. Keying on the count (not the full
+///   entry list) means two registries with the same count but different
+///   materials share one compiled classify shader → no recompile on a
+///   same-count identity change (§4d recompile reduction).
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeyMaterialClassify {
     pub msaa_sample_count: Option<u32>,
-    pub bucket_entries: Vec<BucketEntry>,
+    pub bucket_count: u32,
     /// When `true`, the classify shader also emits per-edge data into
     /// the [`MaterialEdgeBuffers`](crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers)
     /// buffer (edge_pixel_id allocation, edge_to_xy, edge_slot_map,
@@ -36,9 +34,9 @@ pub struct ShaderCacheKeyMaterialClassify {
 }
 
 impl ShaderCacheKeyMaterialClassify {
-    /// Convenience — `bucket_entries.len() as u32`.
+    /// The live bucket count this classify shader is specialized for.
     pub fn bucket_count(&self) -> u32 {
-        self.bucket_entries.len() as u32
+        self.bucket_count
     }
 }
 

@@ -2067,7 +2067,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the ShaderIncludes a custom material's WGSL needs (`keys`). Legal: math, camera, color_space, textures, vertex_color, light_access, apply_lighting, brdf, material_color_calc, shadows, skybox, extras. Unknown keys are dropped."
+        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras. The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + the generic brdf primitives). Unknown keys are dropped. Call material_helper_catalog for descriptions."
     )]
     async fn set_material_includes(
         &self,

@@ -146,6 +146,7 @@ impl AwsmRenderer {
             anti_aliasing: &self.anti_aliasing,
             shadows: &self.shadows,
             material_classify_buffers: &self.material_classify_buffers,
+            material_bucket_lut: &self.material_bucket_lut,
             light_culling_buffers: &self.light_culling_buffers,
             material_edge_buffers: self.material_edge_buffers.as_ref(),
             material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
@@ -161,6 +162,12 @@ impl AwsmRenderer {
             compaction_buffers: self.compaction_buffers.as_ref(),
             coverage_buffers: self.coverage_buffers.as_ref(),
             features: &self.features,
+            prep_edge_shadow_view: self
+                .render_passes
+                .material_prep
+                .as_ref()
+                .and_then(|p| p.edge_shadow.as_ref())
+                .map(|b| b.sampled_view.clone()),
         };
         if let Some(p) = self.picker.as_mut() {
             p.recreate_bind_group(&ctx)?;

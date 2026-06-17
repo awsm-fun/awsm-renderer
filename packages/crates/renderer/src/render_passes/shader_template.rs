@@ -12,13 +12,9 @@ use crate::{
         material_classify::shader::template::ShaderTemplateMaterialClassify,
         material_decal::classify::shader::template::ShaderTemplateDecalClassify,
         material_decal::shader::template::ShaderTemplateMaterialDecal,
-        material_opaque::shader::edge_template::{
-            ShaderTemplateMaterialEdgeResolve, ShaderTemplateMaterialFinalBlend,
-            ShaderTemplateMaterialSkyboxEdgeResolve,
-        },
-        material_opaque::shader::template::{
-            ShaderTemplateMaterialOpaque, ShaderTemplateMaterialOpaqueEmpty,
-        },
+        material_opaque::shader::edge_template::ShaderTemplateMaterialFinalBlend,
+        material_opaque::shader::template::ShaderTemplateMaterialOpaque,
+        material_prep::shader::template::ShaderTemplateMaterialPrep,
         material_transparent::shader::template::ShaderTemplateMaterialTransparent,
         occlusion::shader::template::{
             ShaderTemplateOcclusionCompaction, ShaderTemplateOcclusionCull,
@@ -37,12 +33,10 @@ pub enum ShaderTemplateRenderPass {
     HzbReduce(ShaderTemplateHzbReduce),
     LightCulling(ShaderTemplateLightCulling),
     MaterialClassify(ShaderTemplateMaterialClassify),
+    MaterialPrep(ShaderTemplateMaterialPrep),
     DecalClassify(ShaderTemplateDecalClassify),
     MaterialDecal(ShaderTemplateMaterialDecal),
     MaterialOpaque(ShaderTemplateMaterialOpaque),
-    MaterialOpaqueEmpty(ShaderTemplateMaterialOpaqueEmpty),
-    MaterialEdgeResolve(ShaderTemplateMaterialEdgeResolve),
-    MaterialSkyboxEdgeResolve(ShaderTemplateMaterialSkyboxEdgeResolve),
     MaterialFinalBlend(ShaderTemplateMaterialFinalBlend),
     MaterialTransparent(ShaderTemplateMaterialTransparent),
     OcclusionCull(ShaderTemplateOcclusionCull),
@@ -77,6 +71,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::MaterialClassify(cache_key) => Ok(
                 ShaderTemplateRenderPass::MaterialClassify(cache_key.try_into()?),
             ),
+            ShaderCacheKeyRenderPass::MaterialPrep(cache_key) => Ok(
+                ShaderTemplateRenderPass::MaterialPrep(cache_key.try_into()?),
+            ),
             ShaderCacheKeyRenderPass::DecalClassify(cache_key) => Ok(
                 ShaderTemplateRenderPass::DecalClassify(cache_key.try_into()?),
             ),
@@ -85,15 +82,6 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ),
             ShaderCacheKeyRenderPass::MaterialOpaque(cache_key) => Ok(
                 ShaderTemplateRenderPass::MaterialOpaque(cache_key.try_into()?),
-            ),
-            ShaderCacheKeyRenderPass::MaterialOpaqueEmpty(cache_key) => Ok(
-                ShaderTemplateRenderPass::MaterialOpaqueEmpty(cache_key.try_into()?),
-            ),
-            ShaderCacheKeyRenderPass::MaterialEdgeResolve(cache_key) => Ok(
-                ShaderTemplateRenderPass::MaterialEdgeResolve(cache_key.try_into()?),
-            ),
-            ShaderCacheKeyRenderPass::MaterialSkyboxEdgeResolve(cache_key) => Ok(
-                ShaderTemplateRenderPass::MaterialSkyboxEdgeResolve(cache_key.try_into()?),
             ),
             ShaderCacheKeyRenderPass::MaterialFinalBlend(cache_key) => Ok(
                 ShaderTemplateRenderPass::MaterialFinalBlend(cache_key.try_into()?),
@@ -128,12 +116,10 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::MaterialPrep(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::DecalClassify(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialDecal(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialOpaque(tmpl) => tmpl.into_source(),
-            ShaderTemplateRenderPass::MaterialOpaqueEmpty(tmpl) => tmpl.into_source(),
-            ShaderTemplateRenderPass::MaterialEdgeResolve(tmpl) => tmpl.into_source(),
-            ShaderTemplateRenderPass::MaterialSkyboxEdgeResolve(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialFinalBlend(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialTransparent(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::OcclusionCull(tmpl) => tmpl.into_source(),
@@ -155,12 +141,10 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::MaterialPrep(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::DecalClassify(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialDecal(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialOpaque(tmpl) => tmpl.debug_label(),
-            ShaderTemplateRenderPass::MaterialOpaqueEmpty(tmpl) => tmpl.debug_label(),
-            ShaderTemplateRenderPass::MaterialEdgeResolve(tmpl) => tmpl.debug_label(),
-            ShaderTemplateRenderPass::MaterialSkyboxEdgeResolve(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialFinalBlend(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialTransparent(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::OcclusionCull(tmpl) => tmpl.debug_label(),

@@ -62,6 +62,17 @@
 
 
 fn texture_uv(attribute_data_offset: u32, triangle_indices: vec3<u32>, barycentric: vec3<f32>, tex_info: TextureInfo, vertex_attribute_stride: u32, uv_sets_index: u32) -> vec2<f32> {
+{% if prep_present %}
+    // Stage 5a: shared helper branches on the per-thread PrepReadContext mode.
+    // PRIMARY (cs_opaque) reads the prep-materialized UV array (parity-exact:
+    // prep used the same barycentric + fp32 interp + visibility sample 0). Clamp
+    // the set index to the cap; sets beyond the cap are vanishingly rare. Any
+    // other mode (RECOMPUTE for cs_edge — and EDGE in 5b) falls through to the
+    // geometry-pool recompute below.
+    if (g_prep_ctx.mode == PREP_MODE_PRIMARY) {
+        return textureLoad(prep_uv, g_prep_ctx.coords, i32(min(tex_info.uv_set_index, {{ max_prep_uv_sets }}u - 1u)), 0).xy;
+    }
+{% endif %}{% if !prep_drops_recompute %}
     let uv0 = _texture_uv_per_vertex(attribute_data_offset, tex_info.uv_set_index, triangle_indices.x, vertex_attribute_stride, uv_sets_index);
     let uv1 = _texture_uv_per_vertex(attribute_data_offset, tex_info.uv_set_index, triangle_indices.y, vertex_attribute_stride, uv_sets_index);
     let uv2 = _texture_uv_per_vertex(attribute_data_offset, tex_info.uv_set_index, triangle_indices.z, vertex_attribute_stride, uv_sets_index);
@@ -69,8 +80,22 @@ fn texture_uv(attribute_data_offset: u32, triangle_indices: vec3<u32>, barycentr
     let interpolated_uv = barycentric.x * uv0 + barycentric.y * uv1 + barycentric.z * uv2;
 
     return interpolated_uv;
+{% else %}
+    // no-MSAA+prep: the PRIMARY return above always fires; this is unreachable
+    // but WGSL requires a return on all paths.
+    return vec2<f32>(0.0);
+{% endif %}
 }
 
+{# Drop the geometry-pool recompute helper only when nothing references it:
+   `prep_drops_recompute` (no-MSAA+prep) routes `texture_uv` to the prep array
+   and has no cs_edge, so the recompute body never runs. Under MSAA+prep the
+   helper STAYS (cs_edge=RECOMPUTE inlines the recompute body, which calls it).
+   The gradient mipmap path (`get_uv_derivatives`) still needs raw per-vertex
+   UVs (UV gradients are recomputed, never materialized — Plan B decision #2),
+   and the custom `material_uv` accessor (emitted only for `base == Custom` +
+   `inc.textures`) calls it directly. Keep it emitted in any of those cases. #}
+{% if !prep_drops_recompute || mipmap.is_gradient() || (base == ShadingBase::Custom && inc.textures) %}
 fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_index: u32, vertex_attribute_stride: u32, uv_sets_index: u32) -> vec2<f32> {
     // First get to the right vertex, THEN to the right UV set within that vertex
     let vertex_start = attribute_data_offset + (vertex_index * vertex_attribute_stride);
@@ -84,6 +109,7 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
 
     return uv;
 }
+{% endif %}
 
 
 {% match mipmap %}

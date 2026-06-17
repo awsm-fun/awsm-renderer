@@ -54,13 +54,14 @@ struct TransformPacked {
 // Read-only view of the classify-pass output. Layout MUST match the
 // classify-pass writer's `ClassifyOutput` struct byte-for-byte —
 // both are templated from the same `bucket_entries`.
+// Data-driven layout (matches the classify writer's `ClassifyOutput`, §4b):
+// `args`/`offsets` arrays indexed by bucket index, byte-identical to the old 2N
+// named per-bucket fields but O(1) struct text (the O(N²) fix — a 1024-bucket
+// scene no longer embeds 2048 field decls in every shader). Reads only
+// `offsets[bucket_index]`; `args` is host-consumed (indirect dispatch), layout-only.
 struct ClassifyBuckets {
-{% for entry in bucket_entries %}
-    {{ entry.args_field() }}: vec4<u32>,
-{% endfor %}
-{% for entry in bucket_entries %}
-    {{ entry.offset_field() }}: u32,
-{% endfor %}
+    args: array<vec4<u32>, {{ bucket_entries.len() }}u>,
+    offsets: array<u32, {{ bucket_entries.len() }}u>,
     bucket_capacity: u32,
 {% for pad in pad_words_iter %}
     _pad_align_{{ pad }}: u32,
@@ -79,6 +80,34 @@ struct ClassifyBuckets {
 // `crates/renderer/src/dynamic_materials/extras_pool.rs` for the
 // host-side allocator.
 @group(0) @binding(23) var<storage, read> extras_pool: array<u32>;
+
+{% if prep_present %}
+// Plan B (stage 5a): the shared prep pass materialized interpolated UV
+// sets + vertex color into these array textures (layer = set index).
+// `cs_opaque` (PRIMARY) reads them via `textureLoad` instead of recomputing
+// from the geometry pool — now under MSAA too (the prep textures are full-res
+// sample-0). Sampled `texture_2d_array<f32>` (the rg32float / rgba32float
+// storage views read back as f32).
+@group(0) @binding(24) var prep_uv: texture_2d_array<f32>;
+@group(0) @binding(25) var prep_vcolor: texture_2d_array<f32>;
+// Plan B (stage 4/5a): the prep pass's per-pixel packed shadow-visibility
+// buffer (Rgba8unorm array — 4 slots/texel: slot j -> layer j/4, channel j%4).
+// `cs_opaque` (PRIMARY) reads it via `prep_shadow_read` instead of sampling
+// shadow maps inline. Declared whenever the prep bind group is present
+// (binding 26, ANY AA); only READ on the PRIMARY mode path in apply_lighting.
+@group(0) @binding(26) var prep_shadow_visibility: texture_2d_array<f32>;
+{% if multisampled_geometry %}
+// Plan B (stage 5b-shadow): the compact per-edge-sample shadow buffer
+// `cs_prep_edge` fills. `cs_edge` (EDGE mode) reads it via `prep_shadow_read`
+// instead of inline-sampling shadow maps — which is what lets the inline
+// `sample_shadow_*` block (~50 KB) drop from the MSAA opaque module. Declared on
+// the shared group(0) so BOTH entry points (cs_opaque PRIMARY + cs_edge EDGE)
+// see it; only cs_edge actually reads it. A TEXTURE (not a storage buffer) so it
+// doesn't count against cs_edge's 10-storage-buffer cap. Binding 27, gated
+// prep_present + MSAA.
+@group(0) @binding(27) var prep_edge_shadow: texture_2d_array<f32>;
+{% endif %}
+{% endif %}
 
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;
 // `lights` is a uniform array.
@@ -133,3 +162,52 @@ struct CullParams {
 
 // === Shadow bind group (group 3) ===
 {% include "shared_wgsl/shadow/bind_groups.wgsl" %}
+
+// ─────────────────────────────────────────────────────────────────
+// Group(3) extension for the UNIFIED `cs_edge` entry point (§ Part B —
+// the "1024 fix"). Under MSAA this module exposes BOTH `cs_opaque`
+// (the material kernel) and `cs_edge` (the per-shader MSAA edge
+// resolve) so a material compiles ONE shader module instead of two.
+//
+// `cs_edge` needs the edge-resolve data buffer (read-write storage) +
+// the edge-layout uniform, appended to the shadow group at bindings
+// 10/11 exactly as the standalone `edge_resolve_bind_groups.wgsl` did
+// (so its binding ABI is byte-identical). `cs_opaque` never references
+// these, so the opaque pipeline layout (shadows only) stays valid —
+// WebGPU validates the bind-group layout per entry point.
+//
+// Gated on `multisampled_geometry`: there are no edges without MSAA,
+// so the singlesampled module carries no `cs_edge` and no edge
+// bindings.
+{% if multisampled_geometry %}
+// data_buffer: small counter-mirror header + edge_to_xy + edge_slot_map
+// + accumulator + sample lists, indexed via the EdgeBufferLayout
+// uniform's u32-stride offsets.
+@group({{ shadow_group_index }}) @binding(10) var<storage, read_write> edge_data: array<u32>;
+
+// Unified-edge U3b: the dead per-bucket/skybox sample-list + count fields were
+// removed (append_edge_sample / cs_edge / skybox_edge_resolve are gone). Kept
+// fields are u32-stride indices into `edge_data`; their VALUES are unchanged
+// (the kept data_buffer regions did not move) — only the uniform slots compact.
+// Field order MUST match the Rust builder `build_edge_layout_uniform_bytes` +
+// the other 3 WGSL mirrors (classify, final_blend, material_prep).
+struct EdgeBufferLayout {
+    max_edge_budget: u32,
+    edge_count_index: u32,
+    edge_to_xy_base: u32,
+    edge_slot_map_base: u32,
+    accumulator_base: u32,
+};
+
+@group({{ shadow_group_index }}) @binding(11) var<uniform> edge_layout: EdgeBufferLayout;
+
+// Unified-edge (U1): the per-pixel edge-id texture classify writes (the
+// compact `edge_pixel_id` at edge pixels, `U32_MAX` sentinel at non-edge
+// in-bounds pixels). ONLY the `cs_shade` entry point reads it — it branches
+// interior-vs-edge on the sentinel and uses the compact id as the
+// accumulator base. `cs_opaque`/`cs_edge` never reference it, so their
+// pipeline layouts (which omit binding 12) stay valid; WebGPU validates
+// bind-group layouts per entry point. Read-only storage texture (binding 12,
+// appended LAST so it never perturbs the edge_data/edge_layout indices).
+@group({{ shadow_group_index }}) @binding(12) var edge_id_tex: texture_storage_2d<r32uint, read>;
+{% endif %}

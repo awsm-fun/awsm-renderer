@@ -10,6 +10,7 @@ pub mod lines;
 pub mod material_classify;
 pub mod material_decal;
 pub mod material_opaque;
+pub mod material_prep;
 pub mod material_transparent;
 pub mod occlusion;
 pub mod shader_cache_key;
@@ -38,6 +39,7 @@ use crate::{
         material_classify::render_pass::MaterialClassifyRenderPass,
         material_decal::render_pass::MaterialDecalRenderPass,
         material_opaque::render_pass::MaterialOpaqueRenderPass,
+        material_prep::render_pass::MaterialPrepRenderPass,
         material_transparent::render_pass::MaterialTransparentRenderPass,
         occlusion::compaction::CompactionRenderPass, occlusion::render_pass::OcclusionRenderPass,
     },
@@ -71,6 +73,11 @@ pub struct RenderPasses {
     pub occlusion_compaction: Option<CompactionRenderPass>,
     pub light_culling: LightCullingRenderPass,
     pub material_classify: MaterialClassifyRenderPass,
+    /// Shared material-prep compute pass (Plan B). `None` unless
+    /// `PrepPassConfig.enabled` — with the flag off the legacy per-material
+    /// path is byte-identical. Dispatched between classify and opaque; its
+    /// outputs are inert (unread) until later Plan B stages consume them.
+    pub material_prep: Option<MaterialPrepRenderPass>,
     /// Decal classify + shading + composite pass. `None` when
     /// `features.decals == false`.
     pub material_decal: Option<MaterialDecalRenderPass>,
@@ -120,6 +127,9 @@ struct RenderPassesBindings {
     occlusion_bg: Option<occlusion::bind_group::OcclusionBindGroups>,
     compaction_bg: Option<occlusion::compaction::CompactionBindGroups>,
     light_culling: LightCullingRenderPass,
+    /// Built eagerly (like `light_culling`) and passed straight through to
+    /// `from_resolved`. `None` unless `PrepPassConfig.enabled`.
+    material_prep: Option<MaterialPrepRenderPass>,
     classify_bg: material_classify::bind_group::MaterialClassifyBindGroups,
     decal_bg: Option<material_decal::bind_group::MaterialDecalBindGroups>,
     decal_classify_bg: Option<material_decal::classify::bind_group::DecalClassifyBindGroups>,
@@ -328,6 +338,13 @@ impl RenderPasses {
             None
         };
         let light_culling = LightCullingRenderPass::new(ctx).await?;
+        // Shared material-prep compute pass (Plan B). Built eagerly (both MSAA
+        // variants) only when enabled; `None` keeps the legacy path unchanged.
+        let material_prep = if ctx.prep_config.enabled {
+            Some(MaterialPrepRenderPass::new(ctx).await?)
+        } else {
+            None
+        };
         let classify_bg =
             material_classify::bind_group::MaterialClassifyBindGroups::new(ctx).await?;
         let (decal_bg, decal_classify_bg) = if features.decals {
@@ -418,6 +435,7 @@ impl RenderPasses {
                 occlusion_bg,
                 compaction_bg,
                 light_culling,
+                material_prep,
                 classify_bg,
                 decal_bg,
                 decal_classify_bg,
@@ -650,6 +668,7 @@ impl RenderPasses {
             occlusion_bg,
             compaction_bg,
             light_culling,
+            material_prep,
             classify_bg,
             decal_bg,
             decal_classify_bg,
@@ -806,6 +825,7 @@ impl RenderPasses {
             occlusion_compaction,
             light_culling,
             material_classify,
+            material_prep,
             material_decal,
             material_opaque,
             material_transparent,
@@ -845,4 +865,11 @@ pub struct RenderPassInitContext<'a> {
     /// Same role as `anti_aliasing`: lazy-pool passes only compile
     /// the live-config variant up-front.
     pub post_processing: &'a crate::post_process::PostProcessing,
+    /// Plan B shared-prep config. Construction gates the prep pass on
+    /// `prep_config.enabled`; `None` (default) keeps the legacy path.
+    pub prep_config: &'a crate::render_passes::material_prep::PrepPassConfig,
+    /// Resolved edge-pixel budget (matches `MaterialEdgeBuffers::max_edge_budget`).
+    /// Sizes the prep pass's compact per-edge-sample shadow texture (Stage
+    /// 5b-shadow); only consulted by the MSAA prep pipeline.
+    pub max_edge_budget: u32,
 }

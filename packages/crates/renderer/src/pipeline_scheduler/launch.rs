@@ -237,6 +237,18 @@ impl crate::AwsmRenderer {
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
         }
+        // Rebuild + upload the `shader_id → bucket_index` LUT (§4a) for the
+        // new bucket set. This is the only site the LUT changes (the bucket
+        // set just changed); a buffer-grow forces the classify bind group to
+        // rebind. Done here — not in `ClassifyBuffers` — because the LUT must
+        // survive viewport-resize reallocs of the classify buckets.
+        if self
+            .material_bucket_lut
+            .ensure(&self.gpu, self.dynamic_materials.bucket_entries_cached())?
+        {
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
+        }
         // Edge buffers + edge-layout uniform (MSAA only). The edge
         // args/data buffers live on the classify multi-sampled bind group
         // (binding 4/5) — the classify recreate mark covers them too.
@@ -442,7 +454,7 @@ impl crate::AwsmRenderer {
         shader_jobs.push(
             ShaderCacheKeyMaterialClassify {
                 msaa_sample_count: active_msaa,
-                bucket_entries: entries.to_vec(),
+                bucket_count: entries.len() as u32,
                 emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(&self.gpu),
             }
             .into(),
@@ -455,12 +467,19 @@ impl crate::AwsmRenderer {
         // contract) while its 2nd alpha-only WGSL discards cutouts in the masked
         // visibility raster. Only BLEND targets the transparent contract.
         // First-party variants (no registration) always build.
-        let build_opaque = reg.as_ref().is_none_or(|r| {
-            matches!(
-                r.alpha_mode,
-                MaterialAlphaMode::Opaque | MaterialAlphaMode::Mask { .. }
-            )
-        });
+        //
+        // Compile invariant (David): the opaque module emits `cs_opaque` ONLY for
+        // non-MSAA. Under MSAA the bucket is shaded by `cs_shade` (built by
+        // `launch_edge_resolve_compile` below) and the MSAA module has no
+        // `cs_opaque` entry, so a `.with_entry_point("cs_opaque")` pipeline would
+        // fail to create. Gate the opaque (cs_opaque) build to non-MSAA.
+        let build_opaque = active_msaa.is_none()
+            && reg.as_ref().is_none_or(|r| {
+                matches!(
+                    r.alpha_mode,
+                    MaterialAlphaMode::Opaque | MaterialAlphaMode::Mask { .. }
+                )
+            });
         if build_opaque {
             shader_jobs.push(
                 ShaderCacheKeyMaterialOpaque {
@@ -468,6 +487,8 @@ impl crate::AwsmRenderer {
                     texture_pool_samplers_len,
                     msaa_sample_count: active_msaa,
                     mipmaps: active_mipmaps,
+                    prep_enabled: self.prep_config.enabled,
+                    max_shadow_casters: self.prep_config.clamped_k(),
                     shader_id,
                     base,
                     owns_skybox,
@@ -509,7 +530,17 @@ impl crate::AwsmRenderer {
                     }
                 }
             };
-            compute_jobs.push((slot, ComputePipelineCacheKey::new(shader_key, layout)));
+            // § Part B (the "1024 fix"): the opaque module now exposes TWO
+            // `@compute` entry points (`cs_opaque` + `cs_edge`), so the opaque
+            // pipeline must name `cs_opaque` explicitly. Classify keeps its
+            // single default entry point.
+            let cache_key = match &slot {
+                LaunchSlot::Opaque { .. } => {
+                    ComputePipelineCacheKey::new(shader_key, layout).with_entry_point("cs_opaque")
+                }
+                LaunchSlot::Classify { .. } => ComputePipelineCacheKey::new(shader_key, layout),
+            };
+            compute_jobs.push((slot, cache_key));
         }
 
         // Cache-hit + cross-call waiter dedup. The classify cache key is
@@ -699,6 +730,8 @@ impl crate::AwsmRenderer {
                 &self.anti_aliasing,
                 color_wgsl,
                 Some(&self.dynamic_materials),
+                self.prep_config.enabled,
+                self.prep_config.clamped_k(),
             )? {
             Some(d) => d,
             None => return Ok(()),
@@ -711,19 +744,26 @@ impl crate::AwsmRenderer {
             .shaders
             .ensure_keys_sync_skip_validate(&self.gpu, descs.shader_cache_keys)?;
 
-        // Build compute pipeline cache keys per entry.
+        // Build compute pipeline cache keys per entry. § Part B: per-shader
+        // edge pipelines select the `cs_edge` entry point on the UNIFIED
+        // opaque shader module (`descs.entry_points`); skybox/final_blend
+        // keep their single default entry point.
         let mut compute_jobs: Vec<(EdgeLaunchSlot, ComputePipelineCacheKey)> =
             Vec::with_capacity(descs.slots.len());
-        for ((shader_key, layout_key), slot) in resolved_shader_keys
+        for (((shader_key, layout_key), entry_point), slot) in resolved_shader_keys
             .into_iter()
             .zip(descs.pipeline_layout_keys.iter().copied())
+            .zip(descs.entry_points.iter().cloned())
             .zip(descs.slots.iter().copied())
         {
             let edge_slot = EdgeLaunchSlot(slot);
-            compute_jobs.push((
-                edge_slot,
-                ComputePipelineCacheKey::new(shader_key, layout_key),
-            ));
+            let cache_key = match entry_point {
+                Some(name) => {
+                    ComputePipelineCacheKey::new(shader_key, layout_key).with_entry_point(&name)
+                }
+                None => ComputePipelineCacheKey::new(shader_key, layout_key),
+            };
+            compute_jobs.push((edge_slot, cache_key));
         }
 
         // Record what THIS layout wants — the authoritative install-validity
@@ -798,11 +838,10 @@ impl crate::AwsmRenderer {
                 .edge_pipelines
                 .mark_edge_key_in_flight(cache_key.clone());
             let target = match slot.0 {
-                EdgePipelineSlot::PerShader(id) => CompileInstallTarget::EdgeResolvePerShader {
+                EdgePipelineSlot::Shade(id) => CompileInstallTarget::EdgeResolveShade {
                     shader_id: id.shader_id,
                     mipmaps: id.mipmaps,
                 },
-                EdgePipelineSlot::Skybox => CompileInstallTarget::EdgeResolveSkybox,
                 EdgePipelineSlot::FinalBlend => CompileInstallTarget::EdgeResolveFinalBlend,
             };
             // Layout-level, not owned by any material: charge to the single
@@ -880,8 +919,7 @@ impl crate::AwsmRenderer {
         // bucket layout moved on while this compiled, so drop it. (`id` is
         // `PassKind::MaterialEdgeResolve`, `generation` is unused here.)
         match &target {
-            CompileInstallTarget::EdgeResolvePerShader { .. }
-            | CompileInstallTarget::EdgeResolveSkybox
+            CompileInstallTarget::EdgeResolveShade { .. }
             | CompileInstallTarget::EdgeResolveFinalBlend => {
                 self.render_passes
                     .material_opaque
@@ -1037,8 +1075,7 @@ impl crate::AwsmRenderer {
                     pipeline_key,
                 );
             }
-            CompileInstallTarget::EdgeResolvePerShader { .. }
-            | CompileInstallTarget::EdgeResolveSkybox
+            CompileInstallTarget::EdgeResolveShade { .. }
             | CompileInstallTarget::EdgeResolveFinalBlend => {
                 unreachable!("edge-resolve targets are installed by the layout-level branch")
             }
@@ -1094,8 +1131,7 @@ fn launch_slot_from_target(t: &CompileInstallTarget) -> LaunchSlot {
             msaa: *msaa,
             mipmaps: *mipmaps,
         },
-        CompileInstallTarget::EdgeResolvePerShader { .. }
-        | CompileInstallTarget::EdgeResolveSkybox
+        CompileInstallTarget::EdgeResolveShade { .. }
         | CompileInstallTarget::EdgeResolveFinalBlend => {
             unreachable!(
                 "launch_slot_from_target: edge variants route through edge_slot_from_target"
@@ -1110,8 +1146,7 @@ fn shader_id_from_target(t: &CompileInstallTarget) -> MaterialShaderId {
         // Classify target doesn't carry shader_id; sentinel value
         // (the install path doesn't read it for classify).
         CompileInstallTarget::ClassifyDynamic { .. } => MaterialShaderId::PBR,
-        CompileInstallTarget::EdgeResolvePerShader { .. }
-        | CompileInstallTarget::EdgeResolveSkybox
+        CompileInstallTarget::EdgeResolveShade { .. }
         | CompileInstallTarget::EdgeResolveFinalBlend => {
             unreachable!("shader_id_from_target: edge variants route through edge_slot_from_target")
         }
@@ -1122,8 +1157,7 @@ fn dispatch_hash_from_target(t: &CompileInstallTarget) -> u64 {
     match t {
         CompileInstallTarget::ClassifyDynamic { dispatch_hash, .. } => *dispatch_hash,
         CompileInstallTarget::OpaqueDynamic { .. } => 0,
-        CompileInstallTarget::EdgeResolvePerShader { .. }
-        | CompileInstallTarget::EdgeResolveSkybox
+        CompileInstallTarget::EdgeResolveShade { .. }
         | CompileInstallTarget::EdgeResolveFinalBlend => {
             unreachable!(
                 "dispatch_hash_from_target: edge variants route through edge_slot_from_target"
@@ -1217,10 +1251,10 @@ fn install_edge_per_pass(
     slot: &EdgePipelineSlot,
     pipeline_key: crate::pipelines::compute_pipeline::ComputePipelineKey,
 ) {
-    // Drop a late per-shader edge resolution for a now-deleted bucket — same
-    // rationale as install_per_pass. Skybox / final-blend are global (no
-    // per-bucket key) so they're always installed.
-    if let EdgePipelineSlot::PerShader(id) = slot {
+    // Drop a late per-bucket edge resolution for a now-deleted bucket — same
+    // rationale as install_per_pass. Final-blend is global (no per-bucket key)
+    // so it's always installed.
+    if let EdgePipelineSlot::Shade(id) = slot {
         if !is_live_bucket(renderer, id.shader_id) {
             free_displaced_compute_pipeline(renderer, pipeline_key);
             return;
@@ -1230,11 +1264,7 @@ fn install_edge_per_pass(
     // Capture any pool key displaced by this install so we can free the orphaned
     // pipeline (part of the pipeline-leak fix — see install_per_pass).
     let displaced = match slot {
-        EdgePipelineSlot::PerShader(id) => edge.insert_per_shader_pipeline(*id, pipeline_key),
-        EdgePipelineSlot::Skybox => edge
-            .skybox_edge_resolve_pipeline_key
-            .replace(pipeline_key)
-            .filter(|old| *old != pipeline_key),
+        EdgePipelineSlot::Shade(id) => edge.insert_shade_pipeline(*id, pipeline_key),
         EdgePipelineSlot::FinalBlend => edge
             .final_blend_pipeline_key
             .replace(pipeline_key)
@@ -1251,13 +1281,12 @@ fn install_edge_per_pass(
 /// would panic.
 fn edge_slot_from_target(t: &CompileInstallTarget) -> EdgePipelineSlot {
     match t {
-        CompileInstallTarget::EdgeResolvePerShader { shader_id, mipmaps } => {
-            EdgePipelineSlot::PerShader(EdgeResolvePipelineKeyId {
+        CompileInstallTarget::EdgeResolveShade { shader_id, mipmaps } => {
+            EdgePipelineSlot::Shade(EdgeResolvePipelineKeyId {
                 shader_id: *shader_id,
                 mipmaps: *mipmaps,
             })
         }
-        CompileInstallTarget::EdgeResolveSkybox => EdgePipelineSlot::Skybox,
         CompileInstallTarget::EdgeResolveFinalBlend => EdgePipelineSlot::FinalBlend,
         _ => unreachable!("edge_slot_from_target called with non-edge variant"),
     }

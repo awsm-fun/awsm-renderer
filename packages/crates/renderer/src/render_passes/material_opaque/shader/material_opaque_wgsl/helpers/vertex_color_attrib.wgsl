@@ -1,4 +1,14 @@
 fn vertex_color(attribute_data_offset: u32, triangle_indices: vec3<u32>, barycentric: vec3<f32>, color_info: VertexColorInfo, vertex_attribute_stride: u32, color_sets_index: u32) -> vec4<f32> {
+{% if prep_present %}
+    // Stage 5a: shared helper branches on the per-thread PrepReadContext mode.
+    // PRIMARY (cs_opaque) reads the prep-materialized vertex-color array
+    // (parity-exact: same barycentric + fp32 interp + visibility sample 0).
+    // Clamp the set index to the cap. Other modes (RECOMPUTE for cs_edge — and
+    // EDGE in 5b) fall through to the geometry-pool recompute below.
+    if (g_prep_ctx.mode == PREP_MODE_PRIMARY) {
+        return textureLoad(prep_vcolor, g_prep_ctx.coords, i32(min(color_info.set_index, {{ max_prep_color_sets }}u - 1u)), 0);
+    }
+{% endif %}{% if !prep_drops_recompute %}
     let color0 = _vertex_color_per_vertex(attribute_data_offset, color_info.set_index, triangle_indices.x, vertex_attribute_stride, color_sets_index);
     let color1 = _vertex_color_per_vertex(attribute_data_offset, color_info.set_index, triangle_indices.y, vertex_attribute_stride, color_sets_index);
     let color2 = _vertex_color_per_vertex(attribute_data_offset, color_info.set_index, triangle_indices.z, vertex_attribute_stride, color_sets_index);
@@ -6,8 +16,18 @@ fn vertex_color(attribute_data_offset: u32, triangle_indices: vec3<u32>, barycen
     let interpolated_color = barycentric.x * color0 + barycentric.y * color1 + barycentric.z * color2;
 
     return interpolated_color;
+{% else %}
+    // no-MSAA+prep: the PRIMARY return above always fires; unreachable fallback.
+    return vec4<f32>(0.0);
+{% endif %}
 }
 
+{# `prep_drops_recompute` (no-MSAA+prep, no cs_edge) routes `vertex_color` to
+   the prep array and never runs the recompute body. Under MSAA+prep the helper
+   STAYS (cs_edge=RECOMPUTE inlines the recompute body, which calls it). The only
+   other caller is the custom `material_vertex_color` accessor (emitted only for
+   `base == Custom` + `inc.vertex_color`). Keep the helper when any still need it. #}
+{% if !prep_drops_recompute || (base == ShadingBase::Custom && inc.vertex_color) %}
 fn _vertex_color_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_index: u32, vertex_attribute_stride: u32, color_sets_index: u32) -> vec4<f32> {
     // First get to the right vertex, THEN to the right color set within that vertex.
     let vertex_start = attribute_data_offset + (vertex_index * vertex_attribute_stride);
@@ -22,3 +42,4 @@ fn _vertex_color_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_i
 
     return color;
 }
+{% endif %}{# keep recompute helper #}

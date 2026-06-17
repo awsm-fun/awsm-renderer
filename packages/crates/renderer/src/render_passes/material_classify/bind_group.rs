@@ -10,7 +10,8 @@ use std::borrow::Cow;
 
 use awsm_renderer_core::bind_groups::{
     BindGroupDescriptor, BindGroupEntry, BindGroupLayoutResource, BindGroupResource,
-    BufferBindingLayout, BufferBindingType, TextureBindingLayout,
+    BufferBindingLayout, BufferBindingType, StorageTextureAccess, StorageTextureBindingLayout,
+    TextureBindingLayout,
 };
 use awsm_renderer_core::buffers::BufferBinding;
 use awsm_renderer_core::texture::{TextureSampleType, TextureViewDimension};
@@ -148,6 +149,35 @@ impl MaterialClassifyBindGroups {
             // else: edge bindings absent — layout was built without
             // them too, so the bind group is valid with just the 4
             // base entries.
+        }
+
+        // bucket_lut (§4a) — appended LAST so its binding index is 4 in the
+        // singlesampled variant and 10 in the MSAA variant (after the 6 edge
+        // bindings), matching the templated WGSL `@binding` and the layout
+        // builder below (both also append it last). Always present: the
+        // per-pixel + per-sample bucket map needs it in every variant.
+        let bucket_lut_binding = entries.len() as u32;
+        entries.push(BindGroupEntry::new(
+            bucket_lut_binding,
+            BindGroupResource::Buffer(BufferBinding::new(&ctx.material_bucket_lut.buffer)),
+        ));
+
+        // U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id storage
+        // texture, bound LAST (after bucket_lut → binding 11 in the MSAA edge
+        // variant) so it never perturbs an existing binding index. Only present
+        // when the MSAA edge bindings exist (the same gate the layout uses) AND
+        // the gated `edge_id` view was allocated.
+        if msaa {
+            if let (true, Some(edge_id_view)) = (
+                ctx.material_edge_buffers.is_some() && ctx.material_edge_layout_uniform.is_some(),
+                ctx.render_texture_views.edge_id.as_ref(),
+            ) {
+                let edge_id_binding = entries.len() as u32;
+                entries.push(BindGroupEntry::new(
+                    edge_id_binding,
+                    BindGroupResource::TextureView(Cow::Borrowed(edge_id_view)),
+                ));
+            }
         }
 
         let descriptor = BindGroupDescriptor::new(
@@ -290,6 +320,38 @@ async fn create_bind_group_layout_key(
                     .with_view_dimension(TextureViewDimension::N2d)
                     .with_sample_type(TextureSampleType::UnfilterableFloat)
                     .with_multisampled(true),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+    }
+
+    // bucket_lut (§4a) — storage RO `array<u32>`. Appended LAST in both
+    // variants so its binding index is 4 (singlesampled) or 10 (after the 6
+    // MSAA edge bindings), matching `recreate()` + the templated WGSL.
+    entries.push(BindGroupLayoutCacheKeyEntry {
+        resource: BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+        ),
+        visibility_vertex: false,
+        visibility_fragment: false,
+        visibility_compute: true,
+    });
+
+    // U0 (`docs/plans/unified-edge-shading.md`): edge_id_tex — R32Uint
+    // storage texture (write). Appended AFTER bucket_lut so its binding index
+    // is 11 in the MSAA edge variant, matching `recreate()` + the templated
+    // `@binding(11)`. Present in the MSAA edge variant (the same gate
+    // `recreate()` checks).
+    if multisampled_geometry && edge_emit_supported(ctx) {
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::StorageTexture(
+                StorageTextureBindingLayout::new(
+                    awsm_renderer_core::texture::TextureFormat::R32uint,
+                )
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_access(StorageTextureAccess::WriteOnly),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

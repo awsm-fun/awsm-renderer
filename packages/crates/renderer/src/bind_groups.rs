@@ -50,6 +50,10 @@ pub struct BindGroupRecreateContext<'a> {
     /// the opaque dispatch.
     pub material_classify_buffers:
         &'a crate::render_passes::material_classify::buffers::ClassifyBuffers,
+    /// `shader_id → bucket_index` LUT (§4a), bound read-only into classify
+    /// as the O(1) per-pixel/per-sample bucket map.
+    pub material_bucket_lut:
+        &'a crate::render_passes::material_classify::bucket_lut::MaterialBucketLut,
     /// GPU light-culling froxel buffers (params uniform + per-froxel
     /// counts + flat indices + overflow counter). Bound RW on the cull
     /// pass; bound read-only by the transparent + opaque-oversized
@@ -95,6 +99,13 @@ pub struct BindGroupRecreateContext<'a> {
     /// Active feature gates — the dispatcher uses these to skip
     /// recreating bind groups for passes whose feature is disabled.
     pub features: &'a RendererFeatures,
+    /// Plan B (stage 5b-shadow): the prep pass's compact per-edge-sample shadow
+    /// texture (sampled view), bound at opaque group(0) binding 27 so `cs_edge`
+    /// (EDGE mode) reads it. `Some` only under prep + MSAA (the prep pass owns
+    /// the texture; cloned here so the recreate borrow doesn't conflict with the
+    /// `&mut render_passes` the dispatcher also takes). `None` otherwise → the
+    /// opaque main layout omits binding 27.
+    pub prep_edge_shadow_view: Option<web_sys::GpuTextureView>,
 }
 
 /// Reasons to recreate bind groups.
@@ -222,6 +233,7 @@ impl BindGroups {
             OcclusionCompaction,
             Coverage,
             MaterialClassify,
+            MaterialPrep,
             MaterialDecalMain,
             MaterialDecalComposite,
             MaterialDecalClassify,
@@ -254,10 +266,14 @@ impl BindGroups {
                 BindGroupCreate::LightsInfoCreate => {
                     functions_to_call.insert(FunctionToCall::OpaqueLights);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // Prep's group(1) binds lights_info / lights (Stage 3b).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::LightsResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueLights);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // Prep's group(1) binds the punctual-light buffer (Stage 3b).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::TransformsResize => {
                     functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
@@ -298,6 +314,10 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::Occlusion);
                     functions_to_call.insert(FunctionToCall::LightCulling);
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
+                    // Prep binds the visibility + barycentric views and its own
+                    // output storage textures (all recreated on resize). No-op
+                    // when prep is off (the dispatch arm skips when `None`).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
                     functions_to_call.insert(FunctionToCall::MaterialDecalComposite);
                     // The decal classify bind group binds the HZB view
@@ -368,11 +388,15 @@ impl BindGroups {
                     // geometry renders black until some unrelated event (e.g. a
                     // viewport resize) rebuilds the classify bind group.
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
+                    // Prep binds the per-mesh material-meta buffer (slot 3).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::MeshGeometryPoolResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
                     functions_to_call.insert(FunctionToCall::ShadowMasked);
+                    // Prep binds the merged geometry pool (storage slot 2).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::AntiAliasingChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -391,6 +415,9 @@ impl BindGroups {
                 BindGroupCreate::ShadowsResourcesChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueShadows);
                     functions_to_call.insert(FunctionToCall::TransparentShadows);
+                    // Prep's group(2) binds the shadow atlas / cube / cascade /
+                    // EVSM views + globals (Stage 3b — prep samples shadows).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::MaterialClassifyBuffersResize => {
                     // Classify rebuilds its own bind group; opaque
@@ -441,6 +468,9 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::LightCulling);
                     functions_to_call.insert(FunctionToCall::OpaqueLights);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // Prep's group(1) binds lights_storage + cull_params, both
+                    // reallocated on a froxel-buffer resize (Stage 3b).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
             }
         }
@@ -592,6 +622,13 @@ impl BindGroups {
                 }
                 FunctionToCall::MaterialClassify => {
                     render_passes.material_classify.bind_groups.recreate(&ctx)?;
+                }
+                FunctionToCall::MaterialPrep => {
+                    // Skip when prep is disabled (`None`) — the output storage
+                    // textures don't exist, so there's nothing to (re)bind.
+                    if let Some(prep) = render_passes.material_prep.as_mut() {
+                        prep.bind_groups.recreate(&ctx)?;
+                    }
                 }
                 FunctionToCall::Coverage => {
                     // Only rebuild the bind group that matches the

@@ -7,7 +7,7 @@
 
 Rust/WASM/WebGPU renderer for the web.
 
-It's specifically for the web in that it does uses the WebGPU API directly via the `web-sys` bindings as opposed to wgpu. While this is somewhat unconventional in the Rust ecosystem, it allows for a more direct mapping to the WebGPU API for precise control and understanding of how things work under the hood in a web context.
+It's specifically for the web in that it uses the WebGPU API directly via the `web-sys` bindings as opposed to wgpu. While this is somewhat unconventional in the Rust ecosystem, it allows for a more direct mapping to the WebGPU API for precise control and understanding of how things work under the hood in a web context.
 
 # STATUS
 
@@ -45,8 +45,8 @@ Updating the data is easy, using "keys" (TransformKey, MeshKey, MaterialKey, etc
 
 Nearly all the data goes through one of two mechanisms:
 
-  - **DyanmicUniformBuffer**: not just for uniforms, but rather for any data of a predetermined size. We take advantage of that property to more efficiently manage the buffer. 
-  - **DynamicStorageBuffer**: similar to above, but for heterogeneous data of varying size. We use more advanced techniques to manager the buffer efficiently while still keeping the API easy to use.
+  - **DynamicUniformBuffer**: not just for uniforms, but rather for any data of a predetermined size. We take advantage of that property to more efficiently manage the buffer. 
+  - **DynamicStorageBuffer**: similar to above, but for heterogeneous data of varying size. We use more advanced techniques to manage the buffer efficiently while still keeping the API easy to use.
 
 As the data grows, an occasional re-allocation is needed, but this is infrequent and handled automatically.
 
@@ -128,8 +128,8 @@ on crates.io before anything that needs it).
 | **awsm-renderer** | renderer-core, materials, scene, tangents | The WebGPU renderer engine |
 | **awsm-glb-export** | meshgen, tangents | Scene-complete glTF/GLB export IR + writer (no GPU) |
 | **awsm-gltf-convert** | glb-export, meshgen | Pure-data glTF → canonical-format normalizer (the shared import path) |
-| **awsm-renderer-gltf** | renderer, renderer-core, materials | glTF ingestion into the live renderer |
-| **awsm-scene-loader** | renderer, renderer-gltf, materials, meshgen, scene | Loads an awsm-scene bundle into the renderer (the player path) |
+| **awsm-renderer-gltf** | renderer, renderer-core, materials, tangents | glTF ingestion into the live renderer |
+| **awsm-scene-loader** | renderer, renderer-core, renderer-gltf, materials, meshgen, scene | Loads an awsm-scene bundle into the renderer (the player path) |
 
 # DEVELOPMENT
 

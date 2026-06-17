@@ -1852,7 +1852,7 @@ impl EditorController {
                         let prev = mat.shader_includes.get_cloned();
                         mat.shader_includes.set(validate_keys(
                             &includes,
-                            custom_material::SHADER_INCLUDE_KEYS,
+                            custom_material::SHADER_INCLUDE_KEYS.as_slice(),
                         ));
                         mark_material_draft(&mat);
                         self.dirty.set_neq(true);

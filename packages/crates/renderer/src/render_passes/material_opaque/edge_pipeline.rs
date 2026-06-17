@@ -32,11 +32,10 @@ use crate::pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey};
 use crate::pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey};
 use crate::render_passes::material_opaque::bind_group::MaterialOpaqueBindGroups;
 use crate::render_passes::material_opaque::edge_bind_group::MaterialEdgeBindGroupLayouts;
-use crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo;
-use crate::render_passes::material_opaque::shader::edge_cache_key::{
-    ShaderCacheKeyMaterialEdgeResolve, ShaderCacheKeyMaterialFinalBlend,
-    ShaderCacheKeyMaterialSkyboxEdgeResolve,
+use crate::render_passes::material_opaque::shader::cache_key::{
+    DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
 };
+use crate::render_passes::material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialFinalBlend;
 use crate::shaders::ShaderCacheKey;
 
 /// Lookup key for the per-shader-id edge_resolve pipeline cache.
@@ -53,10 +52,12 @@ pub struct EdgeResolvePipelineKeyId {
 /// Slot identity used by the descriptor → resolved-key fold.
 #[derive(Clone, Copy, Debug)]
 pub enum EdgePipelineSlot {
-    /// Per-shader-id edge resolve.
-    PerShader(EdgeResolvePipelineKeyId),
-    /// Global skybox edge resolve.
-    Skybox,
+    /// Unified-edge (U1) per-bucket `cs_shade` pipeline (one per bucket incl
+    /// SKYBOX). Same module as the bucket's opaque pipeline (`cs_shade` entry),
+    /// but bound to the shade-extended group(3) layout (adds edge_id_tex@12).
+    /// Dispatched over the bucket's tile list (interior → opaque_tex; edge
+    /// samples → accumulator). Built whenever MSAA is on.
+    Shade(EdgeResolvePipelineKeyId),
     /// Global final blend compositor.
     FinalBlend,
 }
@@ -68,13 +69,19 @@ pub enum EdgePipelineSlot {
 /// keys into `ComputePipelines::ensure_keys_prepare` and pushes the
 /// returned promises into the scheduler's `inflight_compile`).
 pub struct MaterialEdgePipelineDescriptors {
-    /// Shader cache key for each entry (per-shader + skybox + final_blend).
+    /// Shader cache key for each entry (per-bucket cs_shade + final_blend).
     pub shader_cache_keys: Vec<crate::shaders::ShaderCacheKey>,
     /// Pipeline-layout key per entry (parallel to `shader_cache_keys`
     /// and `slots`). The compile path combines this with the
     /// resolved shader key into the final `ComputePipelineCacheKey`.
     pub pipeline_layout_keys: Vec<PipelineLayoutKey>,
-    /// Install identity per entry (parallel to the above two).
+    /// Entry-point per entry (parallel to the above). `Some("cs_shade")`
+    /// for the per-bucket unified-edge pipelines, which select the
+    /// `cs_shade` entry point on the bucket's unified opaque module.
+    /// `None` for the global final-blend pipeline, which keeps its own
+    /// single-entry-point module.
+    pub entry_points: Vec<Option<String>>,
+    /// Install identity per entry (parallel to the above).
     pub slots: Vec<EdgePipelineSlot>,
 }
 
@@ -87,22 +94,18 @@ pub struct MaterialEdgePipelineDescriptors {
 /// eager set, but for cleanliness they're scheduler-managed and submit
 /// on first opaque material registration (see Stage 3.7 wiring TODO).
 pub struct MaterialEdgePipelines {
-    /// `(shader_id, mipmap) → pipeline key`. First-party + dynamic
-    /// shader_ids share this map; dispatch site walks
-    /// `bucket_entries_cached()` to enumerate them.
-    pub per_shader: HashMap<EdgeResolvePipelineKeyId, ComputePipelineKey>,
-    /// Global skybox-sample edge-resolve pipeline. `None` until the
-    /// first MSAA opaque material registers.
-    pub skybox_edge_resolve_pipeline_key: Option<ComputePipelineKey>,
+    /// Unified-edge (U1): `(shader_id, mipmap) → cs_shade pipeline key`, one
+    /// per bucket (incl SKYBOX). Populated whenever MSAA is on;
+    /// the MSAA dispatch (`render_shade`) drives these over the tile
+    /// lists in place of cs_opaque + cs_edge.
+    pub per_shader_shade: HashMap<EdgeResolvePipelineKeyId, ComputePipelineKey>,
+    /// Cached pipeline layout for the unified `cs_shade` pipelines (group(3)
+    /// = shade-extended shadows: shadows + edge_data@10 + edge_layout@11 +
+    /// edge_id_tex@12). `None` until the first edge build with the toggle on.
+    pub shade_layout_key: Option<PipelineLayoutKey>,
     /// Global final-blend compositor. `None` until the first MSAA
     /// opaque material registers.
     pub final_blend_pipeline_key: Option<ComputePipelineKey>,
-    /// Cached pipeline layout for per-shader-id edge_resolve. Reused
-    /// across every shader_id's compile since their bind-group shape
-    /// is identical (only the shading body differs).
-    pub edge_resolve_layout_key: Option<PipelineLayoutKey>,
-    /// Cached pipeline layout for skybox edge resolve.
-    pub skybox_edge_resolve_layout_key: Option<PipelineLayoutKey>,
     /// Cached pipeline layout for final blend.
     pub final_blend_layout_key: Option<PipelineLayoutKey>,
     /// The set of compute-pipeline cache keys the CURRENT bucket layout
@@ -136,11 +139,9 @@ impl MaterialEdgePipelines {
     /// the scheduler resolves their compile futures.
     pub fn new() -> Self {
         Self {
-            per_shader: HashMap::new(),
-            skybox_edge_resolve_pipeline_key: None,
+            per_shader_shade: HashMap::new(),
+            shade_layout_key: None,
             final_blend_pipeline_key: None,
-            edge_resolve_layout_key: None,
-            skybox_edge_resolve_layout_key: None,
             final_blend_layout_key: None,
             desired_keys: HashSet::new(),
             in_flight_keys: HashSet::new(),
@@ -181,20 +182,16 @@ impl MaterialEdgePipelines {
         self.in_flight_keys.remove(key);
     }
 
-    /// Returns the per-shader-id edge_resolve pipeline for the given
-    /// (shader_id, mipmap) config. `None` means the pipeline isn't yet
-    /// compiled; the dispatch site uses
-    /// `pipeline_scheduler::warn_pipeline_not_compiled` and skips that
-    /// shader_id's edge contribution for the frame.
-    pub fn get_per_shader_pipeline_key(
+    /// Unified-edge (U1): the `cs_shade` pipeline for `(shader_id, mipmap)`.
+    /// `None` (→ dispatch skips this bucket's shade) until compiled / when
+    /// MSAA is off / when the toggle is off.
+    pub fn get_shade_pipeline_key(
         &self,
         anti_aliasing: &AntiAliasing,
         shader_id: MaterialShaderId,
     ) -> Option<ComputePipelineKey> {
-        // Edge resolve only runs under MSAA — non-MSAA returns None so
-        // the dispatch site naturally short-circuits.
         anti_aliasing.msaa_sample_count?;
-        self.per_shader
+        self.per_shader_shade
             .get(&EdgeResolvePipelineKeyId {
                 mipmaps: anti_aliasing.mipmap,
                 shader_id,
@@ -202,47 +199,45 @@ impl MaterialEdgePipelines {
             .copied()
     }
 
-    /// Inserts a compiled per-shader-id pipeline. Called from the
-    /// scheduler resolution path.
-    /// Returns the DISPLACED pool key when this insert overwrote a different
-    /// existing per-shader entry, so the caller can free the orphaned pipeline
-    /// from the shared pool (the leak fix — re-installs under a new bucket layout
-    /// used to silently orphan the previous one). `None` when the slot was empty
-    /// or re-installed the identical key.
-    pub fn insert_per_shader_pipeline(
+    /// Unified-edge (U1): inserts a compiled `cs_shade` pipeline.
+    /// Returns the displaced pool key when this overwrote a different existing
+    /// entry (the leak fix).
+    pub fn insert_shade_pipeline(
         &mut self,
         key_id: EdgeResolvePipelineKeyId,
         pipeline_key: ComputePipelineKey,
     ) -> Option<ComputePipelineKey> {
-        self.per_shader
+        self.per_shader_shade
             .insert(key_id, pipeline_key)
             .filter(|displaced| *displaced != pipeline_key)
     }
 
-    /// Clear every per-shader-id edge_resolve pipeline entry, plus
-    /// the global skybox + final_blend keys. Used by
+    /// Number of per-bucket MSAA edge (`cs_shade`) pipeline keys held — a
+    /// leak/observability diagnostic surfaced in the editor's renderer-stats
+    /// readout. Post-unified-edge this counts the `cs_shade` pipelines (one per
+    /// bucket under MSAA); the legacy per-shader `cs_edge` map it used to count
+    /// was removed when those pipelines were deleted.
+    pub fn per_shader_len(&self) -> usize {
+        self.per_shader_shade.len()
+    }
+
+    /// Clear every per-bucket `cs_shade` pipeline entry, plus the global
+    /// final_blend key. Used by
     /// `AwsmRenderer::register_material` to invalidate stale edge
     /// chain entries before relaunching with the new bucket layout —
     /// see `MaterialOpaquePipelines::clear_dynamic_pipelines` for
     /// the full rationale. The dispatch site's `Option` guards in
-    /// `get_per_shader_pipeline_key` / `render_edge_resolve` skip
+    /// `get_shade_pipeline_key` / `render_shade` skip
     /// the affected work until the new compiles land.
-    /// Returns the dropped pool keys (per-shader + skybox + final-blend) so the
+    /// Returns the dropped pool keys (per-bucket cs_shade + final-blend) so the
     /// caller can free them from the shared compute-pipeline pool — the leak fix
     /// (these references were dropped while the GPU pipelines lingered in the pool
     /// forever).
     pub fn clear_dynamic_pipelines(&mut self) -> Vec<ComputePipelineKey> {
         let mut dropped: Vec<ComputePipelineKey> =
-            self.per_shader.drain().map(|(_, k)| k).collect();
-        dropped.extend(self.skybox_edge_resolve_pipeline_key.take());
+            self.per_shader_shade.drain().map(|(_, k)| k).collect();
         dropped.extend(self.final_blend_pipeline_key.take());
         dropped
-    }
-
-    /// Number of per-shader edge-resolve pipeline keys held (leak/observability
-    /// diagnostics — see `memory_stats`).
-    pub fn per_shader_len(&self) -> usize {
-        self.per_shader.len()
     }
 
     /// Build the descriptor list for the current bucket entries +
@@ -253,7 +248,7 @@ impl MaterialEdgePipelines {
     ///
     /// Also commits the per-pipeline-layout keys onto `self` (cheap
     /// hash registrations, no Dawn work) so subsequent
-    /// `get_per_shader_pipeline_key` / dispatch-site lookups can
+    /// `get_shade_pipeline_key` / dispatch-site lookups can
     /// observe them as the live layouts.
     ///
     /// Returns `None` when MSAA is off — no edges to resolve.
@@ -269,6 +264,8 @@ impl MaterialEdgePipelines {
         anti_aliasing: &AntiAliasing,
         color_wgsl_format: &str,
         dynamic_registry: Option<&DynamicMaterials>,
+        prep_enabled: bool,
+        max_shadow_casters: u32,
     ) -> Result<Option<MaterialEdgePipelineDescriptors>> {
         // No MSAA → no edges → no compile.
         if anti_aliasing.msaa_sample_count.is_none() {
@@ -288,69 +285,74 @@ impl MaterialEdgePipelines {
         // folded in so the layout fits in 4 bind groups (macOS Metal
         // caps at `maxBindGroups = 4`).
         let main_bgl = opaque_bind_groups.multisampled_main_bind_group_layout_key;
-        let edge_resolve_layout_key = pipeline_layouts.get_key(
-            gpu,
-            bind_group_layouts,
-            PipelineLayoutCacheKey::new(vec![
-                main_bgl,
-                opaque_bind_groups.lights_bind_group_layout_key,
-                opaque_bind_groups.texture_pool_textures_bind_group_layout_key,
-                edge_layouts.edge_resolve_extended_shadows_layout_key,
-            ]),
-        )?;
-        let skybox_edge_layout_key = pipeline_layouts.get_key(
-            gpu,
-            bind_group_layouts,
-            PipelineLayoutCacheKey::new(vec![edge_layouts.skybox_edge_group0_layout_key]),
-        )?;
         let final_blend_layout_key = pipeline_layouts.get_key(
             gpu,
             bind_group_layouts,
             PipelineLayoutCacheKey::new(vec![edge_layouts.final_blend_group0_layout_key]),
         )?;
 
-        self.edge_resolve_layout_key = Some(edge_resolve_layout_key);
-        self.skybox_edge_resolve_layout_key = Some(skybox_edge_layout_key);
         self.final_blend_layout_key = Some(final_blend_layout_key);
+
+        // Unified-edge (U1): the `cs_shade` pipeline layout — same 4 groups as
+        // the edge_resolve layout, but group(3) is the SHADE-extended shadows
+        // layout (adds edge_id_tex@12). Always built under MSAA (this function
+        // already early-returned when MSAA is off).
+        let shade_layout_key = pipeline_layouts.get_key(
+            gpu,
+            bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![
+                main_bgl,
+                opaque_bind_groups.lights_bind_group_layout_key,
+                opaque_bind_groups.texture_pool_textures_bind_group_layout_key,
+                edge_layouts.shade_extended_shadows_layout_key,
+            ]),
+        )?;
+        self.shade_layout_key = Some(shade_layout_key);
 
         // Per-shader-id edge_resolve shader keys + slots.
         let mut shader_cache_keys: Vec<ShaderCacheKey> = Vec::new();
         let mut slots: Vec<EdgePipelineSlot> = Vec::new();
         let mut pipeline_layout_keys: Vec<PipelineLayoutKey> = Vec::new();
+        let mut entry_points: Vec<Option<String>> = Vec::new();
 
-        for (bucket_index, entry) in bucket_entries.iter().enumerate() {
-            // A dynamic-range shader_id is one of TWO things:
-            //   1. A genuine author registration (`Custom` base) — needs
-            //      its `DynamicShaderInfo` triple (struct_decl /
-            //      loader_decl / wgsl_fragment) templated into the
-            //      edge_resolve shader.
-            //   2. A first-party feature-set VARIANT (e.g. a specialized
-            //      PBR bucket) — has a dynamic-range id but NO custom
-            //      registration. It compiles the built-in PBR/Toon body
-            //      (`dynamic_shader = None`, `dispatch_hash = 0`), exactly
-            //      like a canonical bucket. Skipping it here
-            //      (the old `registry.get(...).else { continue }`) left the
-            //      variant's per-shader edge pipeline unbuilt → dead MSAA
-            //      for every mesh using a specialized first-party material.
-            // Only a dynamic id that is NEITHER (removed between submit and
-            // build) is skipped.
-            let (dispatch_hash, dynamic_shader) = if entry.shader_id.is_dynamic() {
-                let Some(registry) = dynamic_registry else {
-                    continue;
-                };
-                match registry.get(entry.shader_id) {
-                    // A Blend/Mask dynamic material is transparent-only — it has
-                    // no opaque silhouette to resolve, and its author body
-                    // targets the transparent contract (returns
-                    // `TransparentShadingOutput`, which won't compile in the
-                    // edge-resolve opaque wrapper). Skip it.
-                    Some(reg)
-                        if !matches!(reg.alpha_mode, awsm_materials::MaterialAlphaMode::Opaque) =>
-                    {
-                        continue
-                    }
-                    Some(reg) => {
-                        let info = DynamicShaderInfo {
+        // § Part B: the unified opaque module key carries the GLOBAL
+        // dispatch_hash uniformly across EVERY bucket (the opaque compile in
+        // `pipeline_scheduler::launch::ensure_bucket_pipelines` passes the same
+        // `dispatch_hash_cached()` to every bucket — canonical, first-party
+        // variant, or custom). The edge build must use that SAME value so its
+        // opaque key hashes to the live opaque module (and the two pipelines
+        // share ONE module). The empty-registry sentinel is a stable 0.
+        let global_dispatch_hash = dynamic_registry
+            .map(|r| r.dispatch_hash_cached())
+            .unwrap_or(0);
+
+        // Unified-edge (U1): build a `cs_shade` pipeline for EVERY bucket
+        // (incl SKYBOX). cs_shade lives in the SAME module as the bucket's
+        // opaque pipeline (compute.wgsl for materials, skybox_primary.wgsl for
+        // the SKYBOX bucket) — built with the per-bucket `owns_skybox` so the
+        // right module's `cs_shade` arm compiles. Bound to the shade-extended
+        // group(3) layout (edge_id_tex@12); dispatched over the bucket's tile
+        // list by `render_shade` in place of cs_opaque + cs_edge.
+        {
+            for entry in bucket_entries.iter() {
+                let owns_skybox = entry.shader_id == MaterialShaderId::SKYBOX;
+                // Same dynamic-shader resolution as the cs_edge loop above
+                // (skip transparent-only customs; first-party variants build
+                // with None). The SKYBOX bucket carries no dynamic shader.
+                let dynamic_shader = if !owns_skybox && entry.shader_id.is_dynamic() {
+                    let Some(registry) = dynamic_registry else {
+                        continue;
+                    };
+                    match registry.get(entry.shader_id) {
+                        Some(reg)
+                            if !matches!(
+                                reg.alpha_mode,
+                                awsm_materials::MaterialAlphaMode::Opaque
+                            ) =>
+                        {
+                            continue
+                        }
+                        Some(reg) => Some(DynamicShaderInfo {
                             shader_includes: reg.shader_includes.resolve(),
                             struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
                                 "MaterialData",
@@ -362,55 +364,52 @@ impl MaterialEdgePipelines {
                                 &reg.layout,
                             ),
                             wgsl_fragment: reg.wgsl_fragment.clone(),
-                        };
-                        (registry.dispatch_hash_cached(), Some(info))
+                        }),
+                        None if registry.first_party_variant_of(entry.shader_id).is_some() => None,
+                        None => continue,
                     }
-                    None if registry.first_party_variant_of(entry.shader_id).is_some() => (0, None),
-                    None => continue,
-                }
-            } else {
-                (0, None)
-            };
-            let key = ShaderCacheKeyMaterialEdgeResolve {
-                texture_pool_arrays_len,
-                texture_pool_samplers_len,
-                mipmaps,
-                shader_id: entry.shader_id,
-                base: entry.base,
-                dispatch_hash,
-                dynamic_shader,
-                bucket_entries: bucket_entries.to_vec(),
-                bucket_index: bucket_index as u32,
-            };
-            shader_cache_keys.push(ShaderCacheKey::from(key));
-            slots.push(EdgePipelineSlot::PerShader(EdgeResolvePipelineKeyId {
-                mipmaps,
-                shader_id: entry.shader_id,
-            }));
-            pipeline_layout_keys.push(edge_resolve_layout_key);
+                } else {
+                    None
+                };
+                let key = ShaderCacheKeyMaterialOpaque {
+                    texture_pool_arrays_len,
+                    texture_pool_samplers_len,
+                    msaa_sample_count: anti_aliasing.msaa_sample_count,
+                    mipmaps,
+                    prep_enabled,
+                    max_shadow_casters,
+                    shader_id: entry.shader_id,
+                    base: entry.base,
+                    owns_skybox,
+                    pbr_features: entry.pbr_features,
+                    dispatch_hash: global_dispatch_hash,
+                    dynamic_shader,
+                    bucket_entries: bucket_entries.to_vec(),
+                };
+                shader_cache_keys.push(ShaderCacheKey::from(key));
+                slots.push(EdgePipelineSlot::Shade(EdgeResolvePipelineKeyId {
+                    mipmaps,
+                    shader_id: entry.shader_id,
+                }));
+                pipeline_layout_keys.push(shade_layout_key);
+                entry_points.push(Some("cs_shade".to_string()));
+            }
         }
 
-        // Global skybox-edge shader.
-        shader_cache_keys.push(ShaderCacheKey::from(
-            ShaderCacheKeyMaterialSkyboxEdgeResolve {
-                bucket_entries: bucket_entries.to_vec(),
-            },
-        ));
-        slots.push(EdgePipelineSlot::Skybox);
-        pipeline_layout_keys.push(skybox_edge_layout_key);
-
-        // Global final-blend shader.
+        // Global final-blend shader. Keeps its own single-entry module.
         shader_cache_keys.push(ShaderCacheKey::from(ShaderCacheKeyMaterialFinalBlend {
             bucket_entries: bucket_entries.to_vec(),
             color_format: color_wgsl_format.to_string(),
         }));
         slots.push(EdgePipelineSlot::FinalBlend);
         pipeline_layout_keys.push(final_blend_layout_key);
+        entry_points.push(None);
 
         Ok(Some(MaterialEdgePipelineDescriptors {
             shader_cache_keys,
             slots,
             pipeline_layout_keys,
+            entry_points,
         }))
     }
 
@@ -445,6 +444,8 @@ impl MaterialEdgePipelines {
         anti_aliasing: &AntiAliasing,
         color_wgsl_format: &str,
         dynamic_registry: Option<&DynamicMaterials>,
+        prep_enabled: bool,
+        max_shadow_casters: u32,
     ) -> Result<()> {
         let Some(descs) = self.build_descriptors(
             gpu,
@@ -456,6 +457,8 @@ impl MaterialEdgePipelines {
             anti_aliasing,
             color_wgsl_format,
             dynamic_registry,
+            prep_enabled,
+            max_shadow_casters,
         )?
         else {
             return Ok(());
@@ -473,7 +476,17 @@ impl MaterialEdgePipelines {
         let pipeline_cache_keys: Vec<ComputePipelineCacheKey> = shader_keys
             .iter()
             .zip(descs.pipeline_layout_keys.iter())
-            .map(|(sk, lk)| ComputePipelineCacheKey::new(*sk, *lk))
+            .zip(descs.entry_points.iter())
+            .map(|((sk, lk), ep)| {
+                let base = ComputePipelineCacheKey::new(*sk, *lk);
+                // § Part B: per-shader edge pipelines select `cs_edge` on the
+                // unified opaque module; skybox/final_blend keep their single
+                // default entry point.
+                match ep {
+                    Some(name) => base.with_entry_point(name),
+                    None => base,
+                }
+            })
             .collect();
         // Record this layout's edge key set as the authoritative "desired"
         // set, so any still-in-flight scheduler edge compile built against a
@@ -496,11 +509,8 @@ impl MaterialEdgePipelines {
     ) {
         for (slot, key) in slots.into_iter().zip(pipeline_keys) {
             match slot {
-                EdgePipelineSlot::PerShader(id) => {
-                    self.per_shader.insert(id, key);
-                }
-                EdgePipelineSlot::Skybox => {
-                    self.skybox_edge_resolve_pipeline_key = Some(key);
+                EdgePipelineSlot::Shade(id) => {
+                    self.per_shader_shade.insert(id, key);
                 }
                 EdgePipelineSlot::FinalBlend => {
                     self.final_blend_pipeline_key = Some(key);

@@ -2,19 +2,26 @@
 
 Pure-CPU mesh + texture-pixel generators. No `awsm-renderer` dep.
 
+Feature-gated: `primitives` + `mesh_data` (glam-only) always compile, so a plain
+`awsm-meshgen` dep is the player-lean build. Recipe **types** opt in via `recipes`;
+the modifier/SDF/sweep/edit/texture **execution** + heavy deps opt in via `authoring`.
+
 ## What's here
 
-- `MeshData { positions, normals, uvs, indices, colors }` — plain data, the renderer's raw-mesh API input.
-- Primitives: `plane`, `box`, `sphere`, `cylinder`, `cone`, `torus`, sprite quad.
-- `sweep_along_curve` with cross-section variants: `Strip`, `Tube`, `Wall`, `Profile(Vec<Vec2>)`.
-- Procedural texture helpers: `checker`, `gradient`, `noise`. Output is raw RGBA bytes — texture *upload* is the renderer's job.
+- `MeshData { positions, normals, uvs, colors, indices }` — plain data, the renderer's raw-mesh API input. `normals`/`uvs`/`colors` are `Option`; positions are `[f32; 3]`, indices `u32`. Includes `compute_vertex_normals`.
+- Primitives (always available): `plane`, `box`, `sphere`, `cylinder`, `cone`, `torus`, `sprite_quad`, plus `primitive_mesh` dispatching a scene `PrimitiveShape`.
+- `sweep_along_curve` with cross-section variants: `Strip`, `Tube`, `Wall`, `Profile { points, closed }`. (`authoring`)
+- Modifier stack + recipe eval: `apply_modifiers`, `lathe`, `superquadric`, `evaluate`, plus mesh `edit`/selection, `expr`, and `stats` (`mesh_stats`, `cross_section_profile`). (`authoring`)
+- SDF → triangles via surface nets (`sdf`, `sdf_mesh`). (`authoring`)
+- Procedural texture helpers: `checker_rgba`, `gradient_rgba`, `noise_rgba`. Output is raw RGBA bytes — texture *upload* is the renderer's job. (`authoring`)
 
 ## What's not here
 
-- Materials. `MaterialDef` lives in `lockstep-game-data` because it references lockstep `AssetId`s. This crate has no material type.
-- GPU buffer types. `MeshData` is `Vec<f32>` / `Vec<u32>` only.
+- Materials. The runtime material schema (`MaterialDef`) lives in `awsm-scene`; authoring/recipe wiring is in `awsm-editor-protocol`. This crate has no material type.
+- GPU buffer types. `MeshData` is plain `Vec`s only.
 
 ## Companion crates
 
-- `awsm-curves` — sweep generators take a `Curve3`.
-- `awsm-geometry` — primitives use AABB for bounds computation.
+- `awsm-curves` — `sweep_along_curve` takes a `Curve3`. (`authoring`-only dep)
+- `awsm-geometry` — bounds computation. (`authoring`-only dep)
+- `awsm-scene` — `PrimitiveShape` input to `primitive_mesh`.

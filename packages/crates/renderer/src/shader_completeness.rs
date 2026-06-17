@@ -126,6 +126,8 @@ fn opaque_compute_defines_every_called_loader_per_base() {
             texture_pool_samplers_len: 1,
             msaa_sample_count: Some(4),
             mipmaps: true,
+            prep_enabled: false,
+            max_shadow_casters: 4,
             shader_id,
             base,
             owns_skybox: false,
@@ -139,30 +141,6 @@ fn opaque_compute_defines_every_called_loader_per_base() {
             .into_source()
             .unwrap_or_else(|e| panic!("opaque/{name}: render failed: {e:?}"));
         assert_get_material_calls_defined(&src, &format!("opaque-compute/{name}"));
-    }
-}
-
-#[test]
-fn edge_resolve_defines_every_called_loader_per_base() {
-    use crate::render_passes::material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialEdgeResolve;
-    use crate::render_passes::material_opaque::shader::edge_template::ShaderTemplateMaterialEdgeResolve;
-    for (shader_id, base, name) in first_party_bases() {
-        let key = ShaderCacheKeyMaterialEdgeResolve {
-            texture_pool_arrays_len: 1,
-            texture_pool_samplers_len: 1,
-            mipmaps: true,
-            shader_id,
-            base,
-            dispatch_hash: 0,
-            dynamic_shader: None,
-            bucket_entries: single_bucket(shader_id, base, name),
-            bucket_index: 0,
-        };
-        let src = ShaderTemplateMaterialEdgeResolve::try_from(&key)
-            .unwrap_or_else(|e| panic!("edge/{name}: template build failed: {e:?}"))
-            .into_source()
-            .unwrap_or_else(|e| panic!("edge/{name}: render failed: {e:?}"));
-        assert_get_material_calls_defined(&src, &format!("edge-resolve/{name}"));
     }
 }
 

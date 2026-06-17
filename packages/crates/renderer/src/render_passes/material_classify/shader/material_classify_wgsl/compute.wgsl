@@ -16,8 +16,12 @@
 // The bit constants + the shader_id → bit dispatch chain + the
 // per-bucket extract block are all walked from the same
 // `bucket_entries` list the templated `ClassifyOutput` struct uses.
-
-{{ shader_id_consts|safe }}
+//
+// §4a/§4c made the per-pixel + per-sample maps data-driven (`bucket_lut`)
+// and the fan-out + append index-driven, so the old per-bucket
+// `SHADER_ID_<NAME>` / `BUCKET_BIT_<NAME>` constants are no longer
+// referenced — the classify shader text now depends only on counts/widths
+// (bucket_count, n_words, edge_slot_bits), never on bucket identities.
 
 {% include "shared_wgsl/math.wgsl" %}
 
@@ -38,20 +42,30 @@ fn view_space_depth(camera: Camera, depth: f32, pixel_coords: vec2<f32>, screen_
     let view_pos = view_pos_h.xyz / view_pos_h.w;
     return view_pos.z;
 }
+
+// Full-u32 edge-sample sentinels (§5), width-INDEPENDENT: a real bucket
+// index (0..65533) can never equal these, so `sid`/`seen`/append logic needs
+// no per-width branching. The slot_map PACK truncates them to the
+// width-correct packed sentinel (`& 0xFF` → 0xFE/0xFF for 8-bit; `& 0xFFFF`
+// → 0xFFFE/0xFFFF for 16-bit), so the 8-bit packed output is byte-identical
+// to before.
+const SID_SKYBOX: u32 = 0xFFFFFFFEu;
+const SID_EMPTY: u32 = 0xFFFFFFFFu;
+
+// (Unified-edge U2b-3) The per-bucket + skybox edge-SAMPLE-LIST machinery
+// (`append_edge_sample`) was removed: those lists fed only the legacy
+// cs_edge / skybox_edge_resolve pipelines, which are gone. The unified
+// `cs_shade` kernel drives edge shading from the per-pixel edge-id texture +
+// the packed slot map instead, so classify no longer appends sample-list
+// entries (and `data_buffer` no longer allocates the lists). SID_SKYBOX /
+// SID_EMPTY below are still used by the slot_map pack.
 {% endif %}
 
-// Bits in the workgroup-shared mask. One per registered bucket; the
-// SKYBOX bucket is at index 0 (its id is 0, sorting ahead of every real
-// material) so the skybox routing (which assigns `BUCKET_BIT_SKYBOX` for
-// fully-uncovered pixels) maps cleanly to word 0, bit 0.
-// Each bucket lives in word `index / 32` at bit `index % 32`;
-// `tile_mask` is `array<atomic<u32>, n_words>` so the bucket budget can
-// exceed 32 by raising `MAX_BUCKET_WORDS` (n_words). At n_words == 1
-// this is equivalent to the original single-word `1u << index`.
-{% for entry in bucket_entries %}
-const {{ entry.bucket_bit_const() }}: u32 = (1u << {{ loop.index0 % 32 }}u);
-{% endfor %}
-
+// Workgroup-shared bucket mask. One bit per registered bucket; the SKYBOX
+// bucket is at index 0 (id 0 sorts first) → word 0, bit 0. Each bucket lives
+// in word `index / 32` at bit `index % 32`; `tile_mask` is
+// `array<atomic<u32>, n_words>` (n_words = ceil(live_count / 32)) so the
+// bucket budget grows past 32 as the live count crosses each word boundary.
 var<workgroup> tile_mask: array<atomic<u32>, {{ n_words }}u>;
 
 @compute @workgroup_size(8, 8, 1)
@@ -74,20 +88,23 @@ fn cs_main(
     let coords = vec2<i32>(wg.xy * 8u + lid.xy);
     let in_bounds = coords.x < i32(screen_dims.x) && coords.y < i32(screen_dims.y);
 
-    // `local_word` selects which `tile_mask[]` word this pixel's bucket
-    // bit lives in (bucket index / 32); `local_bit` is the bit within
-    // that word. At n_words == 1 `local_word` is always 0.
-    var local_word: u32 = 0u;
-    var local_bit: u32 = 0u;
+    // Per-pixel map → O(1) LUT load (§4a). `bucket_lut[raw_sid]` replaces
+    // the old O(buckets) `shader_id == SHADER_ID_*` if/else chain: one
+    // dependent load, warp-coherent (neighbouring pixels share a material →
+    // same slot). `bucket_index == 0xFFFFFFFF` (NOT_FOUND) reproduces the
+    // old "no arm matched" fall-through — the pixel contributes no bucket
+    // bit. The bucket index's word is `bucket_index / 32`, its bit
+    // `bucket_index % 32`; at n_words == 1 the word is always 0.
+    var bucket_index: u32 = 0xFFFFFFFFu;
     if in_bounds {
         let vis = textureLoad(visibility_data_tex, coords, 0);
         let tri = join32(vis.x, vis.y);
         if tri == U32_MAX {
             // Fully-uncovered ("sky") pixel → the dedicated SKYBOX bucket
-            // (index 0 → word 0), whose opaque pipeline is the
-            // `skybox_primary` writer. See material_opaque/.../skybox_primary.wgsl.
-            local_word = 0u;
-            local_bit = BUCKET_BIT_SKYBOX;
+            // (index 0, since id 0 sorts first), whose opaque pipeline is the
+            // `skybox_primary` writer. Routed directly — sky pixels carry no
+            // material payload to look up. See skybox_primary.wgsl.
+            bucket_index = 0u;
         } else {
             let meta_offset = join32(vis.z, vis.w);
             let mesh_meta = material_mesh_metas[meta_offset / 256u];
@@ -95,12 +112,7 @@ fn cs_main(
                 // shader_id is stored as the first u32 of each
                 // material payload; `material_offset` is in bytes.
                 let shader_id = materials_data[mesh_meta.material_offset / 4u];
-                {% for entry in bucket_entries %}
-                {% if loop.first %}if{% else %}else if{% endif %} shader_id == {{ entry.shader_id_const() }} {
-                    local_word = {{ loop.index0 / 32 }}u;
-                    local_bit = {{ entry.bucket_bit_const() }};
-                }
-                {% endfor %}
+                bucket_index = bucket_lut[shader_id];
             }
             // HUD pixels are redrawn by the transparency pass — skip
             // them in classify so the opaque pipelines don't process
@@ -108,33 +120,88 @@ fn cs_main(
         }
     }
 
-    if local_bit != 0u {
-        atomicOr(&tile_mask[local_word], local_bit);
+    if bucket_index != 0xFFFFFFFFu {
+        atomicOr(&tile_mask[bucket_index / 32u], 1u << (bucket_index % 32u));
     }
+    {% if multisampled_geometry %}
+    // Unified-edge ANY-sample tile_mask (U0). The sample-0 `bucket_index`
+    // OR above runs UNCHANGED (so the `unified_edge=false` WGSL is byte
+    // -identical); this block ADDS samples 1..3 so a bucket's tile list
+    // covers tiles where it appears at ANY sample (atomicOr is idempotent,
+    // so re-OR'ing sample 0 here is unnecessary — only 1..3 are added).
+    // This makes an edge-only material's tiles reachable by its own
+    // (future) unified dispatch. Inert in U0: the extra tiles only add a
+    // few check-and-skip lanes to the existing per-pixel shader_id guard in
+    // cs_opaque → same output. Per-sample bucket id derived the same way the
+    // sample-0 path does (sky → bucket 0; HUD → skip; else bucket_lut).
+    // Unrolled (no dynamic indexing into per-sample locals).
+    if in_bounds {
+        let uv1 = textureLoad(visibility_data_tex, coords, 1);
+        let uv2 = textureLoad(visibility_data_tex, coords, 2);
+        let uv3 = textureLoad(visibility_data_tex, coords, 3);
+        let utri1 = join32(uv1.x, uv1.y);
+        let utri2 = join32(uv2.x, uv2.y);
+        let utri3 = join32(uv3.x, uv3.y);
+        var ubucket1: u32 = 0xFFFFFFFFu;
+        if utri1 == U32_MAX {
+            ubucket1 = 0u;
+        } else {
+            let mm = material_mesh_metas[join32(uv1.z, uv1.w) / 256u];
+            if mm.is_hud == 0u { ubucket1 = bucket_lut[materials_data[mm.material_offset / 4u]]; }
+        }
+        var ubucket2: u32 = 0xFFFFFFFFu;
+        if utri2 == U32_MAX {
+            ubucket2 = 0u;
+        } else {
+            let mm = material_mesh_metas[join32(uv2.z, uv2.w) / 256u];
+            if mm.is_hud == 0u { ubucket2 = bucket_lut[materials_data[mm.material_offset / 4u]]; }
+        }
+        var ubucket3: u32 = 0xFFFFFFFFu;
+        if utri3 == U32_MAX {
+            ubucket3 = 0u;
+        } else {
+            let mm = material_mesh_metas[join32(uv3.z, uv3.w) / 256u];
+            if mm.is_hud == 0u { ubucket3 = bucket_lut[materials_data[mm.material_offset / 4u]]; }
+        }
+        if ubucket1 != 0xFFFFFFFFu {
+            atomicOr(&tile_mask[ubucket1 / 32u], 1u << (ubucket1 % 32u));
+        }
+        if ubucket2 != 0xFFFFFFFFu {
+            atomicOr(&tile_mask[ubucket2 / 32u], 1u << (ubucket2 % 32u));
+        }
+        if ubucket3 != 0xFFFFFFFFu {
+            atomicOr(&tile_mask[ubucket3 / 32u], 1u << (ubucket3 % 32u));
+        }
+    }
+    {% endif %}
     workgroupBarrier();
 
     if lii == 0u {
-        // Snapshot every mask word once (avoids a per-bucket atomic
-        // load). `mask_word_<w>` is read by each bucket's extract block
-        // via its word index `index / 32`.
-        {% for w in words_iter %}
-        let mask_word_{{ w }} = atomicLoad(&tile_mask[{{ w }}u]);
-        {% endfor %}
         let tile = vec2<u32>(wg.xy);
 
-        // One extract block per registered bucket. The atomic returns
-        // the previous count, which also doubles as the next free
-        // index into the tile array at
-        // `classify_output.<name>_offset + index`.
-        {% for entry in bucket_entries %}
-        if (mask_word_{{ loop.index0 / 32 }} & {{ entry.bucket_bit_const() }}) != 0u {
-            let idx_{{ loop.index0 }} = atomicAdd(&classify_output.{{ entry.args_field() }}.workgroup_count_x, 1u);
-            let slot_{{ loop.index0 }} = classify_output.{{ entry.offset_field() }} + idx_{{ loop.index0 }};
-            if slot_{{ loop.index0 }} < classify_output.{{ entry.offset_field() }} + classify_output.bucket_capacity {
-                classify_output.tiles[slot_{{ loop.index0 }}] = tile;
+        // Data-driven fan-out (§4b): iterate only the bucket bits
+        // actually set in this tile's mask — `O(active buckets in tile)`,
+        // never `O(total buckets)`. A typical tile touches 1–3 materials,
+        // so this is ~1–3 iterations whether the registry holds 16 or
+        // 1024 buckets. `firstTrailingBit` walks the set bits of each
+        // mask word; `bucket_index = w*32 + bit` indexes the `args` /
+        // `offsets` arrays directly. The atomicAdd returns the previous
+        // count, which doubles as the next free slot into the bucket's
+        // `tiles` sub-range at `offsets[bucket_index] + idx`.
+        for (var w = 0u; w < {{ n_words }}u; w = w + 1u) {
+            var bits = atomicLoad(&tile_mask[w]);
+            while (bits != 0u) {
+                let b = firstTrailingBit(bits);
+                bits = bits & (bits - 1u);
+                let bucket_index = w * 32u + b;
+                let idx = atomicAdd(&classify_output.args[bucket_index].workgroup_count_x, 1u);
+                let base = classify_output.offsets[bucket_index];
+                let slot = base + idx;
+                if slot < base + classify_output.bucket_capacity {
+                    classify_output.tiles[slot] = tile;
+                }
             }
         }
-        {% endfor %}
     }
 
     {% if emit_edge_data && multisampled_geometry %}
@@ -160,6 +227,13 @@ fn cs_main(
     // observed CPU-side; the full atomic-add fallback (a hash-bucketed
     // overflow accumulator region) is parked as Block C.2 future work.
     if (in_bounds) {
+        // Unified-edge (U0): initialize this pixel's edge-id to the
+        // U32_MAX sentinel ("not an edge pixel"). Edge pixels overwrite
+        // it with their compact edge_pixel_id below. Every in-bounds pixel
+        // is written exactly once here, so non-edge pixels reliably read
+        // the sentinel without a separate per-frame clear. Inert in U0
+        // (edge_id_tex is unread).
+        textureStore(edge_id_tex, coords, vec4<u32>(0xFFFFFFFFu, 0u, 0u, 0u));
         // Scan 4 samples — FULLY-STATIC version, no dynamic indexing
         // anywhere. Naga/Tint silently no-op'd dynamic-index writes
         // into both `vec4<u32>` and (turns out per the user's repro)
@@ -182,69 +256,67 @@ fn cs_main(
         let mat_off_3 = join32(v3.z, v3.w);
 
         // Helper bucket-id derivation, inlined per sample.
-        // `sample_sid` semantics: 0xFEu = skybox/uncovered/HUD,
-        // [0, bucket_count) = real bucket, 0xFFu = sentinel-unmapped
-        // (shouldn't happen in practice; treated like skybox below).
-        var sid_0: u32 = 0xFFu;
+        // Per-sample map → O(1) LUT load (§4a), one per sample. `sid_s`
+        // is SID_SKYBOX (skybox/uncovered/HUD), a real bucket index
+        // [0, bucket_count), or SID_EMPTY (unmapped NOT_FOUND fall-through —
+        // the data-driven form of the old "no arm matched"). Width-independent
+        // full-u32 sentinels (§5) so the same code serves 8- and 16-bit slot
+        // widths; they truncate at the slot_map pack. Each `sid_s` stays a
+        // static local — no dynamic indexing into per-sample locals (Naga/Tint
+        // scar, :163); only the `bucket_lut` storage load is dynamically
+        // indexed, which is safe.
+        var sid_0: u32 = SID_EMPTY;
         if (tri_0 == U32_MAX) {
-            sid_0 = 0xFEu;
+            sid_0 = SID_SKYBOX;
         } else {
             let mm = material_mesh_metas[mat_off_0 / 256u];
-            if (mm.is_hud == 1u) { sid_0 = 0xFEu; }
+            if (mm.is_hud == 1u) { sid_0 = SID_SKYBOX; }
             else {
-                let raw_sid = materials_data[mm.material_offset / 4u];
-                {% for entry in bucket_entries %}
-                if (raw_sid == {{ entry.shader_id_const() }}) { sid_0 = {{ loop.index0 }}u; }
-                {% endfor %}
+                let bi = bucket_lut[materials_data[mm.material_offset / 4u]];
+                if (bi != 0xFFFFFFFFu) { sid_0 = bi; }
             }
         }
-        var sid_1: u32 = 0xFFu;
+        var sid_1: u32 = SID_EMPTY;
         if (tri_1 == U32_MAX) {
-            sid_1 = 0xFEu;
+            sid_1 = SID_SKYBOX;
         } else {
             let mm = material_mesh_metas[mat_off_1 / 256u];
-            if (mm.is_hud == 1u) { sid_1 = 0xFEu; }
+            if (mm.is_hud == 1u) { sid_1 = SID_SKYBOX; }
             else {
-                let raw_sid = materials_data[mm.material_offset / 4u];
-                {% for entry in bucket_entries %}
-                if (raw_sid == {{ entry.shader_id_const() }}) { sid_1 = {{ loop.index0 }}u; }
-                {% endfor %}
+                let bi = bucket_lut[materials_data[mm.material_offset / 4u]];
+                if (bi != 0xFFFFFFFFu) { sid_1 = bi; }
             }
         }
-        var sid_2: u32 = 0xFFu;
+        var sid_2: u32 = SID_EMPTY;
         if (tri_2 == U32_MAX) {
-            sid_2 = 0xFEu;
+            sid_2 = SID_SKYBOX;
         } else {
             let mm = material_mesh_metas[mat_off_2 / 256u];
-            if (mm.is_hud == 1u) { sid_2 = 0xFEu; }
+            if (mm.is_hud == 1u) { sid_2 = SID_SKYBOX; }
             else {
-                let raw_sid = materials_data[mm.material_offset / 4u];
-                {% for entry in bucket_entries %}
-                if (raw_sid == {{ entry.shader_id_const() }}) { sid_2 = {{ loop.index0 }}u; }
-                {% endfor %}
+                let bi = bucket_lut[materials_data[mm.material_offset / 4u]];
+                if (bi != 0xFFFFFFFFu) { sid_2 = bi; }
             }
         }
-        var sid_3: u32 = 0xFFu;
+        var sid_3: u32 = SID_EMPTY;
         if (tri_3 == U32_MAX) {
-            sid_3 = 0xFEu;
+            sid_3 = SID_SKYBOX;
         } else {
             let mm = material_mesh_metas[mat_off_3 / 256u];
-            if (mm.is_hud == 1u) { sid_3 = 0xFEu; }
+            if (mm.is_hud == 1u) { sid_3 = SID_SKYBOX; }
             else {
-                let raw_sid = materials_data[mm.material_offset / 4u];
-                {% for entry in bucket_entries %}
-                if (raw_sid == {{ entry.shader_id_const() }}) { sid_3 = {{ loop.index0 }}u; }
-                {% endfor %}
+                let bi = bucket_lut[materials_data[mm.material_offset / 4u]];
+                if (bi != 0xFFFFFFFFu) { sid_3 = bi; }
             }
         }
 
         // Build the distinct-shader-id list (`seen[0..seen_count)`) by
         // explicit static comparisons. Static `seen_*` vars avoid the
-        // dynamic-write-into-array problem.
+        // dynamic-write-into-array problem. Unused slots = SID_EMPTY.
         var seen_0: u32 = sid_0;
-        var seen_1: u32 = 0xFFu;
-        var seen_2: u32 = 0xFFu;
-        var seen_3: u32 = 0xFFu;
+        var seen_1: u32 = SID_EMPTY;
+        var seen_2: u32 = SID_EMPTY;
+        var seen_3: u32 = SID_EMPTY;
         var seen_count: u32 = 1u;
 
         if (sid_1 != seen_0) {
@@ -264,8 +336,6 @@ fn cs_main(
             else if (seen_count == 3u) { seen_3 = sid_3; }
             seen_count = seen_count + 1u;
         }
-
-        var slot_map: u32 = 0xFFFFFFFFu;
 
         // Edge pixel: 2+ distinct shader_ids (counts skybox as one)
         // OR samples cover different meshes (different mat_off).
@@ -477,13 +547,32 @@ fn cs_main(
                 let packed_xy = (u32(coords.x) & 0xFFFFu) | ((u32(coords.y) & 0xFFFFu) << 16u);
                 atomicStore(&edge_data[edge_layout.edge_to_xy_base + edge_id], packed_xy);
 
-                // Pack slot_map: 4 bytes, each byte is a bucket index
-                // (or 0xFE for skybox, 0xFF for empty slot).
-                slot_map = (seen_0 & 0xFFu)
+                // Unified-edge (U0): mirror the compact edge_pixel_id into
+                // the per-pixel edge-id texture. Overwrites the U32_MAX
+                // sentinel written above for this pixel. WRITTEN-only in U0
+                // (the future unified kernel reads it to branch
+                // interior-vs-edge + index the per-sample accumulator). The
+                // existing edge-sample-list machinery (append_edge_sample
+                // below) stays INTACT alongside it.
+                textureStore(edge_id_tex, coords, vec4<u32>(edge_id, 0u, 0u, 0u));
+
+                // Pack the slot_map (§5): the 4 per-sample bucket ids, each
+                // truncated to the slot width. 8-bit (≤254 buckets): one u32
+                // (4×8) — byte-identical to before, sentinels 0xFE/0xFF.
+                // 16-bit (>254): two u32 (4×16), sentinels 0xFFFE/0xFFFF.
+                {% if edge_slot_bits == 16 %}
+                let slot_base = edge_layout.edge_slot_map_base + edge_id * 2u;
+                atomicStore(&edge_data[slot_base],
+                    (seen_0 & 0xFFFFu) | ((seen_1 & 0xFFFFu) << 16u));
+                atomicStore(&edge_data[slot_base + 1u],
+                    (seen_2 & 0xFFFFu) | ((seen_3 & 0xFFFFu) << 16u));
+                {% else %}
+                let slot_map = (seen_0 & 0xFFu)
                     | ((seen_1 & 0xFFu) << 8u)
                     | ((seen_2 & 0xFFu) << 16u)
                     | ((seen_3 & 0xFFu) << 24u);
                 atomicStore(&edge_data[edge_layout.edge_slot_map_base + edge_id], slot_map);
+                {% endif %}
 
                 // Clear this edge pixel's 4 accumulator slots (4 vec4<f32>
                 // = 16 u32 words) so a bucket whose per-shader edge_resolve
@@ -499,73 +588,11 @@ fn cs_main(
                     atomicStore(&edge_data[accum_clear_base + ci], 0u);
                 }
 
-                // For each per-shader sample mask: append (edge_id,
-                // sample_mask) to that bucket's sample list. Skybox
-                // samples route to the skybox sample list (separate
-                // reserved region). Unrolled per-sample to avoid any
-                // dynamic indexing into per-sample arrays.
-                var skybox_mask: u32 = 0u;
-                {% for entry in bucket_entries %}
-                var mask_{{ loop.index0 }}: u32 = 0u;
-                {% endfor %}
-
-                // Sample 0
-                if (sid_0 == 0xFEu) { skybox_mask |= 1u; }
-                {% for entry in bucket_entries %}
-                else if (sid_0 == {{ loop.index0 }}u) { mask_{{ loop.index0 }} |= 1u; }
-                {% endfor %}
-                // Sample 1
-                if (sid_1 == 0xFEu) { skybox_mask |= 2u; }
-                {% for entry in bucket_entries %}
-                else if (sid_1 == {{ loop.index0 }}u) { mask_{{ loop.index0 }} |= 2u; }
-                {% endfor %}
-                // Sample 2
-                if (sid_2 == 0xFEu) { skybox_mask |= 4u; }
-                {% for entry in bucket_entries %}
-                else if (sid_2 == {{ loop.index0 }}u) { mask_{{ loop.index0 }} |= 4u; }
-                {% endfor %}
-                // Sample 3
-                if (sid_3 == 0xFEu) { skybox_mask |= 8u; }
-                {% for entry in bucket_entries %}
-                else if (sid_3 == {{ loop.index0 }}u) { mask_{{ loop.index0 }} |= 8u; }
-                {% endfor %}
-                // Append per-bucket entries. The slot is allocated via
-                // the data-side per-bucket counter (which doubles as
-                // edge_resolve's `entry_count` thread-bound). The
-                // args-side `workgroup_count_x` only needs to grow
-                // every 64th slot, matching edge_resolve's
-                // `@workgroup_size(64)` — without that gate we'd
-                // dispatch 64× more workgroups than needed (each would
-                // early-exit via the `thread_index >= entry_count`
-                // check, but the wasted dispatch overhead adds up at
-                // high edge density).
-                {% for entry in bucket_entries %}
-                if (mask_{{ loop.index0 }} != 0u) {
-                    let slot_idx_{{ loop.index0 }} = atomicAdd(&edge_data[edge_layout.per_shader_count_base + {{ loop.index0 }}u], 1u);
-                    if ((slot_idx_{{ loop.index0 }} & 63u) == 0u) {
-                        atomicAdd(&edge_buffers.{{ entry.args_field() }}_edge.workgroup_count_x, 1u);
-                    }
-                    if (slot_idx_{{ loop.index0 }} < edge_layout.sample_entries_per_bucket) {
-                        let entry_packed_{{ loop.index0 }} = (edge_id & 0x00FFFFFFu) | ((mask_{{ loop.index0 }} & 0xFFu) << 24u);
-                        atomicStore(&edge_data[edge_layout.{{ entry.args_field() }}_sample_list_base + slot_idx_{{ loop.index0 }}], entry_packed_{{ loop.index0 }});
-                    }
-                }
-                {% endfor %}
-                // Skybox sample list — same allocator pattern as the
-                // per-bucket case above. Slot via the data-side counter
-                // (read by skybox_edge_resolve as `entry_count`); the
-                // workgroup_count_x in args_buffer grows every 64th
-                // slot to match skybox_edge_resolve's @workgroup_size(64).
-                if (skybox_mask != 0u) {
-                    let sky_slot_idx = atomicAdd(&edge_data[edge_layout.skybox_count_index], 1u);
-                    if ((sky_slot_idx & 63u) == 0u) {
-                        atomicAdd(&edge_buffers.skybox_edge_args.workgroup_count_x, 1u);
-                    }
-                    if (sky_slot_idx < edge_layout.sample_entries_per_bucket) {
-                        let sky_entry_packed = (edge_id & 0x00FFFFFFu) | ((skybox_mask & 0xFFu) << 24u);
-                        atomicStore(&edge_data[edge_layout.skybox_sample_list_base + sky_slot_idx], sky_entry_packed);
-                    }
-                }
+                // (Unified-edge U2b-3) Sample-list append removed — see the
+                // note where `append_edge_sample` used to be defined. cs_shade
+                // reads the packed slot map (above) + the per-pixel edge-id
+                // texture to drive per-sample edge shading, so no per-bucket
+                // lists are built.
                 // Final blend args: one workgroup per edge pixel
                 // (workgroup_size = 64, so divide by 64).
                 if ((edge_id & 63u) == 0u) {
