@@ -141,12 +141,13 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      off-by-default flag is untestable + churns; instead allocate the **UV + vcolor** attr buffers (NO
      world-pos buffer — decision #2 corrected) + K-layer R8 shadow array + compact edge buffer +
      bind-group layouts *with* the pipeline/dispatch wiring, conditionally on `enabled`, where used.
-   - [ ] **1a — real attribute body (UV + vcolor).** Replace the placeholder `cs_prep`: read
-     mesh-meta + triangle indices + barycentric, interpolate **UV sets + vertex color** from the
-     geometry pool (reuse `_texture_uv_per_vertex` / `vertex_color` logic), write to the UV/vcolor
-     outputs. Swap the scaffold's `world_pos_out` for `uv_out`/`vcolor_out`. (World-pos is NOT written —
-     the slim shader keeps `get_standard_coordinates` from depth.) Add geometry-pool/mesh-meta bindings;
-     naga-validate.
+   - [x] **1a — real attribute body (UV0 + vcolor0).** `cs_prep` now reads mesh-meta + triangle
+     indices + barycentric and interpolates UV0 + vertex-color-0 from the geometry pool, writing
+     `uv_out` (rg32float) + `vcolor_out` (rgba32float). Bindings: visibility/barycentric textures +
+     `visibility_data` pool + `material_mesh_metas`. World-pos NOT written. naga-green (renamed `meta`→
+     `mesh_meta`, a WGSL reserved word); 255 tests pass. NOTE: only UV set 0 / color set 0 for now —
+     multi-UV-set materialization is a follow-up; attr-fetch helpers inlined (mirror
+     `_texture_uv_per_vertex`/`_vertex_color_per_vertex`), TODO to share for guaranteed parity.
    - [ ] **1b — pipeline + buffers + dispatch.** Allocate UV/vcolor outputs (conditionally on
      `enabled`), build the bind group(s)/pipeline, dispatch between classify and opaque. GPU-verify the
      pass runs + writes (debug readback / view) — flag-on vs off, clean console.
