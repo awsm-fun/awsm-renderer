@@ -124,8 +124,21 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      shadow-caster enumeration-order contract: directional prefix then per-froxel punctual), included by
      `apply_lighting`. Behavior-identical refactor; naga-green; the prep pass will include the same file
      so shadow slots align.
-   - [ ] **0c-buffers — buffers + bind-group layouts.** Allocate attr G-buffer (world_pos fp32, UVs,
-     vcolor) + K-layer R8 shadow buffer + compact edge buffer + their bind-group layouts. Inert.
+   - [x] **0c-shader-scaffold — prep shader registration.** `material_prep/shader/{cache_key,template,
+     material_prep_wgsl/{bind_groups,compute}}` + `ShaderCacheKeyRenderPass::MaterialPrep` +
+     `ShaderTemplateRenderPass::MaterialPrep` arms + askama dir. Minimal valid `cs_prep` (reads
+     visibility sample 0, writes a sentinel to an `rgba32float` world_pos storage texture). naga-test
+     `material_prep_shader_validates` (MSAA on+off); 255 tests green.
+   - [ ] **0c-buffers — FOLDED into the pipeline-wiring sub-stage.** Inert GPU allocation behind an
+     off-by-default flag is untestable + churns; instead allocate the attr G-buffer (world_pos
+     Rgba32float + UVs/vcolor) + K-layer R8 shadow array + compact edge buffer + bind-group layouts
+     *with* the pipeline/dispatch wiring, conditionally on `enabled`, where they're first used.
+   - [ ] **1a — real attribute body.** Replace the placeholder `cs_prep` with perspective-correct
+     world_pos (shared with positions.wgsl) + UV/vcolor interpolation; add the geometry-pool/mesh-meta
+     bindings. naga-validate.
+   - [ ] **1b — pipeline + buffers + dispatch.** Allocate outputs (conditionally on `enabled`), build
+     the bind group(s)/pipeline, dispatch between classify and opaque. GPU-verify the pass runs +
+     writes (debug readback / view) — flag-on vs off, clean console.
 1. **Prep pass — attributes.** New compute pass after classify: interpolate world_pos + UVs + vertex
    colors into the G-buffer (dispatched over covered tiles). Validate output vs in-shader values (a
    debug compare). No material reads yet.

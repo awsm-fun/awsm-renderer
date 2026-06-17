@@ -11,6 +11,7 @@ dirs = [
     "src/render_passes/material_decal/shader",
     "src/render_passes/material_decal/classify/shader",
     "src/render_passes/material_opaque/shader",
+    "src/render_passes/material_prep/shader",
     "src/render_passes/material_transparent/shader",
     "src/render_passes/occlusion/shader",
     "src/render_passes/display/shader",

@@ -17,6 +17,7 @@ use crate::render_passes::{
     material_opaque::shader::edge_cache_key::{
         ShaderCacheKeyMaterialFinalBlend, ShaderCacheKeyMaterialSkyboxEdgeResolve,
     },
+    material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep,
     material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent,
     occlusion::shader::cache_key::{
         ShaderCacheKeyOcclusionCompaction, ShaderCacheKeyOcclusionCull,
@@ -35,6 +36,8 @@ pub enum ShaderCacheKeyRenderPass {
     HzbReduce(ShaderCacheKeyHzbReduce),
     LightCulling(ShaderCacheKeyLightCulling),
     MaterialClassify(ShaderCacheKeyMaterialClassify),
+    /// Plan B shared prep pass (docs/plans/deferred-shared-prep-pass.md).
+    MaterialPrep(ShaderCacheKeyMaterialPrep),
     DecalClassify(ShaderCacheKeyDecalClassify),
     MaterialDecal(ShaderCacheKeyMaterialDecal),
     MaterialOpaque(ShaderCacheKeyMaterialOpaque),

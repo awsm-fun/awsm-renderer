@@ -7,9 +7,12 @@
 //! per-pixel shadow-visibility terms. Per-material kernels then read those
 //! buffers instead of recomputing them, so the per-material module shrinks.
 //!
-//! Stage 0 (this commit) lands only [`PrepPassConfig`] — the build-time knobs
-//! every later stage keys on. The pass, its buffers, and bind groups arrive in
-//! the subsequent stages (see the spec's "Implementation stages").
+//! Stage 0 lands [`PrepPassConfig`] — the build-time knobs every later stage
+//! keys on. The pass shader scaffold lives in [`shader`]; its buffers, bind
+//! groups, and dispatch wiring arrive in the subsequent stages (see the spec's
+//! "Implementation stages").
+
+pub mod shader;
 
 /// Build-time configuration for the shared prep + deferred-shadow path.
 ///

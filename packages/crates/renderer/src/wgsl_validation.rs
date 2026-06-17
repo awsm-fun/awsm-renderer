@@ -154,6 +154,26 @@ fn first_party_opaque_shaders_validate() {
 }
 
 #[test]
+fn material_prep_shader_validates() {
+    use crate::render_passes::material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep;
+    use crate::render_passes::material_prep::shader::template::ShaderTemplateMaterialPrep;
+    for msaa in [None, Some(4u32)] {
+        let label = format!("material_prep msaa={msaa:?}");
+        let src = ShaderTemplateMaterialPrep::try_from(&ShaderCacheKeyMaterialPrep {
+            msaa_sample_count: msaa,
+        })
+        .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+        .into_source()
+        .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn cs_prep("),
+            "{label}: prep module missing `fn cs_prep` entry point"
+        );
+    }
+}
+
+#[test]
 fn custom_opaque_shaders_validate() {
     use awsm_materials::ShaderIncludes as S;
     // empty (leanest), all (Tier-A), and an explicit Tier-B declaration (must
