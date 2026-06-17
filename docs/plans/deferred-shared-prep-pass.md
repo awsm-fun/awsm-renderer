@@ -263,7 +263,20 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      sinking effort (he's deep in the adjacent MSAA/grouping area via uber-shader).
 6. **Finalize.** Drop the obsolete `reconstruct_world_pos` field; consider making `with_prep_pass`
    default-on / removing the A/B flag; re-dump `reports/awsm-dumps/`; update `report.md`; tighten ceilings.
-7. **Custom materials use froxel-culled lights (David-requested).** Today `light_access.wgsl` (the
+7. **[DONE]** **Custom materials use froxel-culled lights (David-requested).** Custom opaque kernels now
+   expose `material_pixel_light_count(input)` + `material_pixel_light(input, i)` (in the Custom wrapper of
+   `opaque_kernel_includes.wgsl`, gated `inc.light_access`) which wrap the **froxel_walk.wgsl SSOT** —
+   directional prefix then this pixel's froxel punctual slice — so a custom material iterates ONLY the
+   lights affecting the pixel, identical enumeration to built-in `apply_lighting_per_froxel`. froxel_walk
+   is pulled into the custom kernel via a new `{% if inc.light_access && !inc.apply_lighting %}` include
+   (custom never has APPLY_LIGHTING, which is PBR-internal; built-ins keep getting it via apply_lighting,
+   so no double-include, no built-in change). `cull_params`/`lights_storage`/`camera_raw` were already
+   bound for opaque. Author recipe is the comment above the accessors (loop `0..material_pixel_light_count`,
+   `material_pixel_light(input,i)` → `light_sample`). naga test `custom_froxel_lights_accessors_validate`
+   (asserts it validates + froxel_walk present); 258+34 green. Additive (existing custom materials using
+   `get_light` unaffected); default render byte-identical. RESIDUAL (low-risk): a live editor/MCP custom
+   froxel-lit material GPU check — recipe documented in-code; correctness is structural (shared SSOT).
+   --- original note: --- Today `light_access.wgsl` (the
    custom-material lighting surface) only exposes `get_light(i)` over ALL `n_lights` + `get_n_directional()`
    — so a custom material that lights itself iterates EVERY light, missing the deferred froxel cull that
    built-ins get via `apply_lighting_per_froxel`. Fix: expose the `froxel_walk.wgsl` SSOT to custom

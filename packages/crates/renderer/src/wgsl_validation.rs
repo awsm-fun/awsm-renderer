@@ -338,6 +338,67 @@ fn custom_opaque_shaders_validate() {
 }
 
 #[test]
+fn custom_froxel_lights_accessors_validate() {
+    // Stage 7: a custom material with LIGHT_ACCESS can iterate the per-pixel
+    // froxel-culled lights via material_pixel_light_count / material_pixel_light
+    // (which wrap the froxel_walk SSOT). Assert it validates AND that froxel_walk
+    // got pulled into the Custom kernel (custom never has APPLY_LIGHTING, so the
+    // `light_access && !apply_lighting` include path must supply it).
+    use awsm_materials::ShaderIncludes as S;
+    let dyn_id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
+    let mut bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+    bucket_entries.push(BucketEntry {
+        shader_id: dyn_id,
+        base: ShadingBase::Custom,
+        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        name: "froxel_lit".to_string(),
+    });
+    let fragment = "var c = vec3<f32>(0.0);\n\
+        let n = material_pixel_light_count(input);\n\
+        for (var i = 0u; i < n; i = i + 1u) {\n\
+            let l = material_pixel_light(input, i);\n\
+            let s = light_sample(l, input.world_normal, input.world_position);\n\
+            c = c + s.radiance * s.n_dot_l;\n\
+        }\n\
+        return OpaqueShadingOutput(c, 1.0);";
+    for (msaa, mips) in CONFIGS {
+        let key = ShaderCacheKeyMaterialOpaque {
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            msaa_sample_count: msaa,
+            mipmaps: mips,
+            prep_enabled: false,
+            max_shadow_casters: 4,
+            shader_id: dyn_id,
+            base: ShadingBase::Custom,
+            owns_skybox: false,
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            dispatch_hash: 1,
+            dynamic_shader: Some(DynamicShaderInfo {
+                shader_includes: S::LIGHT_ACCESS,
+                struct_decl: "struct MaterialData { _pad: u32, };".to_string(),
+                loader_decl:
+                    "fn material_data_load(byte_offset: u32) -> MaterialData { return MaterialData(0u); }"
+                        .to_string(),
+                wgsl_fragment: fragment.to_string(),
+            }),
+            bucket_entries: bucket_entries.clone(),
+        };
+        let label = format!("opaque/custom-froxel-lit msaa={msaa:?} mips={mips}");
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn froxel_base_for_pixel("),
+            "{label}: froxel_walk SSOT not pulled into the custom LIGHT_ACCESS kernel"
+        );
+        assert!(
+            src.contains("fn material_pixel_light("),
+            "{label}: custom froxel-light accessor missing"
+        );
+    }
+}
+
+#[test]
 fn empty_opaque_shader_validates() {
     // The no-geometry opaque template — also includes light_access etc., so
     // Phase 4 gating must keep it valid.
