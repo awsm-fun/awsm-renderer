@@ -38,10 +38,13 @@ use std::collections::HashMap;
 use animation::AnimResolveMaps;
 use anyhow::{anyhow, Result};
 use awsm_renderer::animation::AnimationClipKey;
+use awsm_renderer::cameras::CameraKey;
+use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
 use awsm_renderer::meshes::MeshKey;
+use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::{AwsmRenderer, LoadPhase};
@@ -49,8 +52,8 @@ use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOpts};
 use awsm_scene::{
-    mesh_glb_filename, AssetId, AssetSource, EditorNode, MaterialInstance, MaterialShading, NodeId,
-    NodeKind, RuntimeMesh, Scene, Trs, ASSETS_DIR,
+    mesh_glb_filename, AssetId, AssetSource, CameraConfig, EditorNode, MaterialInstance,
+    MaterialShading, NodeId, NodeKind, RuntimeMesh, Scene, Trs, ASSETS_DIR,
 };
 use glam::{Quat, Vec3};
 
@@ -60,8 +63,52 @@ use glam::{Quat, Vec3};
 /// next load. Only the *visible* resources (meshes + lights) are tracked;
 /// orphaned transforms / materials are invisible and cleared on a full renderer
 /// rebuild.
+/// The renderer handles a single materialized scene node produced, keyed back to
+/// its [`NodeId`] in [`LoadedScene::nodes`]. A player drives named nodes every
+/// frame through these: read/set the `transform`, hide via the `meshes`, attach a
+/// camera rig to a `camera`/`camera_config`, etc. Non-applicable fields are empty
+/// / `None` (e.g. a `Light` node has an empty `meshes` + a `Some(light)`).
+#[derive(Clone, Debug, Default)]
+pub struct NodeHandles {
+    /// The node's local transform key (always present — every node gets one).
+    /// Drive it via `renderer.transforms.set_local(handle.transform, ..)`.
+    pub transform: TransformKey,
+    /// Every renderer mesh this node produced (a glb node destructures into one
+    /// key per primitive). Empty for non-mesh nodes. Hide the whole node with
+    /// `renderer.meshes.set_mesh_hidden(key, true)` over these.
+    pub meshes: Vec<MeshKey>,
+    /// `Some` for `Light` nodes — the inserted [`LightKey`].
+    pub light: Option<LightKey>,
+    /// `Some` for `Camera` nodes — the registered renderer [`CameraKey`].
+    pub camera: Option<CameraKey>,
+    /// `Some` for `Camera` nodes — the authored [`CameraConfig`], handed to the
+    /// consumer's camera rig (projection/near/far/behavior) alongside `camera`.
+    pub camera_config: Option<CameraConfig>,
+    /// `Some` for `Line` nodes — the inserted [`LineKey`].
+    pub line: Option<LineKey>,
+    /// `Some` for `Decal` nodes (only when the renderer's `decals` feature is on;
+    /// otherwise the decal is cleanly skipped at load).
+    pub decal: Option<DecalKey>,
+}
+
+/// The renderer resources `populate_awsm_scene` / [`load_scene_for_player`]
+/// created, returned so a host can drive and tear down the loaded scene.
+///
+/// [`nodes`](Self::nodes) is the player-grade addition: a `NodeId → `
+/// [`NodeHandles`] map of the **static** (non-prefab) world, so a game can drive
+/// authored nodes by id every frame. [`prefabs`](Self::prefabs) holds prefab-root
+/// templates to instantiate on demand. The flat [`meshes`](Self::meshes) /
+/// [`lights`](Self::lights) / [`clips`](Self::clips) vecs are retained for
+/// back-compat (the model-test round-trip) and for teardown.
 #[derive(Default, Debug)]
 pub struct LoadedScene {
+    /// `NodeId → ` [`NodeHandles`] for every materialized **non-prefab** node —
+    /// the live static world the player drives. (Prefab-root subtrees are in
+    /// [`prefabs`](Self::prefabs) instead, materialized hidden.)
+    pub nodes: HashMap<NodeId, NodeHandles>,
+    /// Prefab-root `NodeId → ` template. Each is materialized once (hidden) and
+    /// instantiated cheaply on demand via [`PrefabTemplate::instantiate`].
+    pub prefabs: HashMap<NodeId, PrefabTemplate>,
     pub meshes: Vec<MeshKey>,
     pub lights: Vec<LightKey>,
     /// Animation clips inserted into `renderer.animations` (the scene's
@@ -69,6 +116,21 @@ pub struct LoadedScene {
     /// remove them on the next load — like meshes/lights, they live outside any
     /// per-node tracking. The mixer is rebuilt wholesale on each load.
     pub clips: Vec<AnimationClipKey>,
+}
+
+/// A prefab-root subtree, materialized once (hidden) as a reusable template.
+/// Cheaply cloned into live instances via [`Self::instantiate`]. Opaque: holds
+/// the hidden materialized handles + the per-node metadata an instance needs.
+///
+/// (B4 fills in the instancing body; B1 introduces the type so [`LoadedScene`]
+/// can carry the map.)
+#[derive(Default, Debug)]
+pub struct PrefabTemplate {
+    /// Per-node handles of the hidden template subtree (kept for B4 instancing +
+    /// so callers can inspect the template's shape). Same `NodeId`s the instances
+    /// reproduce. (Populated + consumed by B4's `instantiate`.)
+    #[allow(dead_code)]
+    pub(crate) nodes: HashMap<NodeId, NodeHandles>,
 }
 
 /// Load a runtime [`Scene`] into the renderer as one batched, phased pass.
@@ -160,6 +222,26 @@ pub async fn populate_awsm_scene(
         .await?;
     }
 
+    // ── Assemble per-NodeId handles (R1) ──────────────────────────────────────
+    // Every materialized node owns a transform; attach whatever mesh/light/camera
+    // keys it produced. This is the player-grade map the loader used to discard
+    // (it lived only in the private `AnimResolveMaps`). Prefab separation (B4)
+    // will later route prefab-root subtrees into `loaded.prefabs` instead.
+    for (&node_id, &tk) in &maps.transforms {
+        loaded.nodes.insert(
+            node_id,
+            NodeHandles {
+                transform: tk,
+                meshes: maps.node_meshes.get(&node_id).cloned().unwrap_or_default(),
+                light: maps.lights.get(&node_id).copied(),
+                camera: maps.cameras.get(&node_id).copied(),
+                camera_config: maps.camera_configs.get(&node_id).cloned(),
+                line: None,
+                decal: None,
+            },
+        );
+    }
+
     // ── Phase 3b: load animation clips + the NLA mixer ────────────────────────
     // Now that every node's transform / material / light / camera / mesh key
     // exists, lower the scene's clips + mixer against them and insert into the
@@ -229,6 +311,7 @@ async fn materialize(
                         let md = awsm_meshgen::primitive_mesh(shape);
                         let key = renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
                         maps.meshes.entry(node.id).or_insert(key);
+                        maps.node_meshes.entry(node.id).or_default().push(key);
                         loaded.meshes.push(key);
                     }
                     AssetSource::Mesh(RuntimeMesh::Glb) => {
@@ -245,6 +328,10 @@ async fn materialize(
                         if let Some(&first) = keys.first() {
                             maps.meshes.entry(node.id).or_insert(first);
                         }
+                        maps.node_meshes
+                            .entry(node.id)
+                            .or_default()
+                            .extend(keys.iter().copied());
                         loaded.meshes.extend(keys);
                     }
                     // A Mesh node always references an AssetSource::Mesh; other
@@ -278,6 +365,10 @@ async fn materialize(
             if let Some(&first) = keys.first() {
                 maps.meshes.entry(node.id).or_insert(first);
             }
+            maps.node_meshes
+                .entry(node.id)
+                .or_default()
+                .extend(keys.iter().copied());
             // Bind each skeleton bone (NodeId) → the rig glb's baked joint
             // transform (by the joint's clean-glb node index), so our clips'
             // Transform tracks drive the joints the skin reads. (Empty `joints`
@@ -322,6 +413,9 @@ async fn materialize(
                 .cameras
                 .insert(camera::camera_params_from_config(cfg));
             maps.cameras.insert(node.id, ck);
+            // Keep the authored config too, so the player's camera rig gets the
+            // projection/behavior (exposed via NodeHandles.camera_config).
+            maps.camera_configs.insert(node.id, cfg.clone());
         }
         // Follow-on: our-clip (animation) wiring.
         _ => {}

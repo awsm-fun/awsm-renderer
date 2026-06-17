@@ -230,7 +230,19 @@ public API (types + signatures) into this doc before coding. Decide: does the re
 expose enough for Sprite/ParticleEmitter/Line/Decal, or is a small renderer-side public
 API needed too (R3 says the renderer is the right owner of "how to render X")?
 
-### B1 — R1: per-`NodeId` handles
+### B1 [DONE] — R1: per-`NodeId` handles
+Added `pub struct NodeHandles { transform, meshes, light, camera, camera_config, line, decal }` + extended
+`LoadedScene` with `nodes: HashMap<NodeId, NodeHandles>` + `prefabs: HashMap<NodeId, PrefabTemplate>`
+(flat `meshes`/`lights`/`clips` kept for back-compat — no literal construction anywhere, so additive). Stopped
+discarding the per-node maps: extended `AnimResolveMaps` with `node_meshes: HashMap<NodeId, Vec<MeshKey>>`
+(all keys/node; `meshes` stays first-key-only for the single-target animation path) + `camera_configs:
+HashMap<NodeId, CameraConfig>`; `materialize` records both; after the materialize loop, `populate_awsm_scene`
+assembles `loaded.nodes` from the maps. `PrefabTemplate` introduced as a placeholder (B4 fills instancing).
+259+34+25 green, warning-free. Acceptance met: `loaded.nodes[&id].transform` is a live `TransformKey`.
+(Note: SheenChair etc. load via `populate_gltf`, not `populate_awsm_scene`, so this additive change doesn't
+touch the model-view render path; scene-loader tests are the gate.)
+
+### B1 (orig) — R1: per-`NodeId` handles
 `NodeHandles { transform, meshes, light, camera }` + `LoadedScene { nodes:
 HashMap<NodeId,NodeHandles>, prefabs, clips, + teardown handles }`. Stop discarding the
 internal node→key map. Acceptance: `loaded.nodes[&id].transform` is a live key.
