@@ -1388,9 +1388,15 @@ impl AwsmRendererBuilder {
             },
             RenderPasses::describe_shaders(&mut render_pass_init, &features),
             async {
-                RenderTextures::new(&gpu, formats_for_textures, &features, prep_config.enabled)
-                    .await
-                    .map_err(crate::error::AwsmError::from)
+                RenderTextures::new(
+                    &gpu,
+                    formats_for_textures,
+                    &features,
+                    prep_config.enabled,
+                    prep_config.shadow_visibility_layers(),
+                )
+                .await
+                .map_err(crate::error::AwsmError::from)
             },
         )?;
         // Move `render_pass_init` into a discard binding so its

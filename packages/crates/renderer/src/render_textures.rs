@@ -28,6 +28,10 @@ pub struct RenderTextures {
     /// (gated like `decal_color` to avoid VRAM when the feature is off). Captured
     /// at construction from `PrepPassConfig.enabled`.
     prep_enabled: bool,
+    /// Plan B Stage 3: number of `Rgba8unorm` layers for the prep shadow-visibility
+    /// array (4 shadow slots packed per texel). From
+    /// `PrepPassConfig::shadow_visibility_layers()`. Only used when `prep_enabled`.
+    prep_shadow_layers: u32,
     frame_count: u32,
     inner: Option<RenderTexturesInner>,
     /// Render-texture generations retired by a recreate but NOT yet
@@ -94,6 +98,7 @@ impl RenderTextures {
         formats: RenderTextureFormats,
         features: &RendererFeatures,
         prep_enabled: bool,
+        prep_shadow_layers: u32,
     ) -> Result<Self> {
         // Two distinct blit pipeline variants: the `None` (single-
         // sample) variant is used by *both* the opaque→transparent
@@ -127,6 +132,7 @@ impl RenderTextures {
             formats,
             features: features.clone(),
             prep_enabled,
+            prep_shadow_layers,
             frame_count: 0,
             inner: None,
             pending_destroy: Vec::new(),
@@ -243,6 +249,7 @@ impl RenderTextures {
                 anti_aliasing,
                 &self.features,
                 self.prep_enabled,
+                self.prep_shadow_layers,
                 needs_opaque_mip_chain,
                 needs_hud_depth,
             )?;
@@ -325,6 +332,8 @@ pub struct RenderTextureViews {
     /// Plan B prep-pass output views (None when the prep feature is off).
     pub prep_uv: Option<web_sys::GpuTextureView>,
     pub prep_vcolor: Option<web_sys::GpuTextureView>,
+    /// Plan B Stage 3: per-pixel shadow-visibility view (Rgba8unorm array).
+    pub prep_shadow_visibility: Option<web_sys::GpuTextureView>,
 
     // Output from composite pass
     pub composite: web_sys::GpuTextureView,
@@ -390,6 +399,7 @@ impl RenderTextureViews {
             // ^ `Option::clone()` — stays `None` when decals are gated off.
             prep_uv: inner.prep_uv_view.clone(),
             prep_vcolor: inner.prep_vcolor_view.clone(),
+            prep_shadow_visibility: inner.prep_shadow_visibility_view.clone(),
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
             // ^ `Option::clone()` — `None` until T2.6's sticky flag
@@ -458,6 +468,10 @@ pub struct RenderTexturesInner {
     pub prep_uv_view: Option<web_sys::GpuTextureView>,
     pub prep_vcolor: Option<web_sys::GpuTexture>,
     pub prep_vcolor_view: Option<web_sys::GpuTextureView>,
+    /// Plan B Stage 3: per-pixel shadow-visibility (Rgba8unorm array, 4 packed
+    /// slots/texel). `None` when `prep_enabled == false`.
+    pub prep_shadow_visibility: Option<web_sys::GpuTexture>,
+    pub prep_shadow_visibility_view: Option<web_sys::GpuTextureView>,
 
     pub depth: web_sys::GpuTexture,
     pub depth_view: web_sys::GpuTextureView,
@@ -504,6 +518,7 @@ impl RenderTexturesInner {
         anti_aliasing: AntiAliasing,
         features: &RendererFeatures,
         prep_enabled: bool,
+        prep_shadow_layers: u32,
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
     ) -> Result<Self> {
@@ -884,6 +899,43 @@ impl RenderTexturesInner {
             ),
             None => None,
         };
+        // Stage 3a: per-pixel shadow-visibility buffer — Rgba8unorm array, 4
+        // shadow slots packed per texel (channel = slot % 4, layer = slot / 4).
+        // Inert until Stage 3b binds it + cs_prep writes it.
+        let prep_shadow_visibility = if prep_enabled {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        TextureFormat::Rgba8unorm,
+                        Extent3d::new(width, Some(height), Some(prep_shadow_layers.max(1))),
+                        TextureUsage::new()
+                            .with_storage_binding()
+                            .with_texture_binding(),
+                    )
+                    .with_label("PrepShadowVisibility")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let prep_shadow_visibility_view = match prep_shadow_visibility.as_ref() {
+            Some(tex) => Some(
+                tex.create_view_with_descriptor(
+                    &TextureViewDescriptor::new(Some("PrepShadowVisibility"))
+                        .with_dimension(TextureViewDimension::N2dArray)
+                        .with_array_layer_count(prep_shadow_layers.max(1))
+                        .into(),
+                )
+                .map_err(|e| {
+                    AwsmRenderTextureError::CreateTextureView(format!(
+                        "prep_shadow_visibility: {e:?}"
+                    ))
+                })?,
+            ),
+            None => None,
+        };
 
         let transparent_view = transparent.create_view().map_err(|e| {
             AwsmRenderTextureError::CreateTextureView(format!("transparent: {e:?}"))
@@ -969,6 +1021,8 @@ impl RenderTexturesInner {
             prep_uv_view,
             prep_vcolor,
             prep_vcolor_view,
+            prep_shadow_visibility,
+            prep_shadow_visibility_view,
 
             depth,
             depth_view,
@@ -1011,6 +1065,9 @@ impl RenderTexturesInner {
             tex.destroy();
         }
         if let Some(tex) = self.prep_vcolor {
+            tex.destroy();
+        }
+        if let Some(tex) = self.prep_shadow_visibility {
             tex.destroy();
         }
         self.depth.destroy();
