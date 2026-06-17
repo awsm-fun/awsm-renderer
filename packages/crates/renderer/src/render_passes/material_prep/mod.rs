@@ -77,4 +77,15 @@ impl PrepPassConfig {
         self.max_shadow_casters_per_pixel
             .clamp(1, Self::MAX_SHADOW_CASTERS_PER_PIXEL_CEILING)
     }
+
+    /// Number of `Rgba8unorm` array layers for the shadow-visibility buffer
+    /// (Stage 3): 4 shadow slots are packed per texel (one per channel), so the
+    /// layer count is `ceil(K / 4)`. Slot `j` → layer `j / 4`, channel `j % 4`.
+    /// Packing keeps the buffer at 4 bytes/px for the default K=4 (vs an
+    /// `R32float` K-array's 4·K bytes/px), preserving decision #2's 4K-bandwidth
+    /// safety. `R8unorm` storage is avoided (it needs the optional
+    /// `r8unorm-storage` WebGPU feature; `Rgba8unorm` is core-guaranteed).
+    pub fn shadow_visibility_layers(&self) -> u32 {
+        self.clamped_k().div_ceil(4)
+    }
 }

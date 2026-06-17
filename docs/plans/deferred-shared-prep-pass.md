@@ -184,7 +184,40 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      no longer emitted (prep-off keeps them verbatim). Measure size drop; GPU-verify parity (Iridescence
      + an alpha model, MSAA on AND off, flag on vs off); tighten ceilings.
 3. **Prep pass — shadow sampling.** Add the K-layer shadow visibility buffer + the froxel-order slot
-   model + overflow logging. Prep includes `shadow/bind_groups.wgsl` (sampling).
+   model + overflow logging. Prep includes `shadow/bind_groups.wgsl` (sampling). **Locked decisions
+   (verified against code):**
+   - **Output format = `Rgba8unorm` array, PACKED 4 slots/texel (NOT `R8unorm`).** `R8unorm` storage
+     needs the optional `r8unorm-storage` WebGPU feature (not core-guaranteed); `Rgba8unorm` is core +
+     already the renderer's storage idiom. Packing 4 shadow factors per texel also keeps memory at
+     4 bytes/px for K=4 (33 MB @4K) — an `R32float` K-array would be 133 MB @4K, reintroducing the very
+     4K-bandwidth risk decision #2 eliminated. Layout: `texture_2d_array<rgba8unorm, write>`,
+     `ceil(clamped_k()/4)` layers; **slot j → layer `j/4`, channel `j%4`**. `cs_prep` accumulates a vec4
+     per layer and `textureStore`s once per 4 slots. (Add `PrepPassConfig::shadow_visibility_layers()`
+     = `clamped_k().div_ceil(4)`.)
+   - **Prep writes its OWN shadow loop — does NOT include `apply_lighting.wgsl`** (that computes BRDF).
+     Prep includes `froxel_walk.wgsl` (SSOT) + `light_access(_types).wgsl` + `shadow/bind_groups.wgsl`
+     (`needs_shadow_sampling=true`) + `standard.wgsl` (`get_standard_coordinates` for world-pos from
+     depth) + `math.wgsl` (`unpack_normal_tangent`). It walks the CANONICAL order (directional prefix via
+     `get_n_directional`/`get_directional_light_index`, then per-froxel punctual via
+     `froxel_base_for_pixel`/`froxel_light_count` + `lights_storage`), and for each light with
+     `shadow_index != SHADOW_INDEX_NONE` computes `visibility = sample_shadow_directional(...)` —
+     **matching `apply_lighting_per_froxel` exactly**, incl. the directional `* apply_sscs(...)` leg
+     (lines 186–189) and NO sscs for punctual — writing it to slot j (j = j-th shadowed light, clamp to
+     `clamped_k()`).
+   - **`receive_shadows` is NOT applied in prep** (slot model is material-independent): prep stores the
+     raw sampled visibility (as if `receive_shadows=1`); stage 4's lighting loop applies the per-mesh
+     `receive_shadows`/`shadow_receiver_gate` at READ time (chooses slot j vs 1.0).
+   - **Parity-critical:** the slot `j` advances per shadowed light in canonical order **independent of**
+     the lighting loop's range-reject / `kind==1` `continue`s — so in stage 4 the lighting loop must also
+     advance j for EVERY shadowed light (applying range-reject only to the contribution, not the slot).
+   - **Bind groups:** prep group(0) gains `depth_tex` (`texture_depth_2d`), `normal_tangent_tex`
+     (`texture_2d<f32>`), `camera_raw`, `shadow_visibility_out`; new group(1) = lights (lights_info,
+     lights, lights_storage, cull_params — mirror opaque's group(1)); new group(2) = shadows
+     (`shadow_group_index=2`, the 10 entries from `shadow_bind_group_layout_entries(true)` /
+     `build_shadow_bind_group_entries(ctx.shadows)`). No-MSAA only (sample 0) for stage 3; MSAA edge is
+     stage 5. Split into **3a** (allocate the gated `shadow_visibility` array texture in render_textures
+     + RenderTextureViews + destroy + the layers helper — inert, mirrors 1b/2a) then **3b** (the bindings
+     + includes + `cs_prep` shadow loop). Inert overall (lighting still samples inline until stage 4).
 4. **Lighting reads shadow buffer.** `apply_lighting` `shadow_from_buffer=true` for opaque; remove
    `sample_shadow_*` from opaque modules (first-party PBR drops ~50 KB). Transparent unchanged
    (`shadow_from_buffer=false`). Visual parity on the shadowed dish; measure PBR size.
