@@ -164,9 +164,25 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
    (`shadow_from_buffer=false`). Visual parity on the shadowed dish; measure PBR size.
 5. **Edges (Option B).** Prep emits the compact per-edge-sample attr+shadow buffer; `cs_edge` reads it;
    drop reconstruction from the MSAA module. naga + visual MSAA-on parity; measure MSAA module size.
-6. **Finalize.** Pick `prep_reconstruct_world_pos` default from 4K numbers; consider making
-   `with_prep_pass` default-on / removing the A/B flag; re-dump `reports/awsm-dumps/`; update
-   `report.md`; tighten all ceilings.
+6. **Finalize.** Drop the obsolete `reconstruct_world_pos` field; consider making `with_prep_pass`
+   default-on / removing the A/B flag; re-dump `reports/awsm-dumps/`; update `report.md`; tighten ceilings.
+7. **Custom materials use froxel-culled lights (David-requested).** Today `light_access.wgsl` (the
+   custom-material lighting surface) only exposes `get_light(i)` over ALL `n_lights` + `get_n_directional()`
+   — so a custom material that lights itself iterates EVERY light, missing the deferred froxel cull that
+   built-ins get via `apply_lighting_per_froxel`. Fix: expose the `froxel_walk.wgsl` SSOT to custom
+   kernels (a Tier-A helper that returns `froxel_base_for_pixel`/`froxel_light_count` + the per-froxel
+   light indices), and bind `cull_params` + `lights_storage` for Custom opaque kernels (they aren't today).
+   Document the recipe (editor `NEW_MATERIAL_WGSL` + MCP). Verify a custom lighting material iterates only
+   the froxel's lights. Independent of the prep pass but same lighting domain — uses the SSOT already in.
+
+## After this loop completes (per David): continue to `uber-shader.md`
+
+When all stages above are `[x]` and the stage-6 sweep passes, do NOT stop — continue to implement
+`docs/plans/uber-shader.md`, **first re-reading + adjusting it** for what changed here: the
+`froxel_walk.wgsl` SSOT now exists; the prep pass + UV/vcolor/shadow buffers are the inputs an
+uber-shader consumes; world-pos is depth-reconstructed (not a buffer); decision #2 is corrected. Honor
+uber-shader.md's own decision gates (selective grouping policy + the MSAA cross-group edge caution) —
+settle those in the spec before coding. Then set a NEW `/loop` for the uber-shader work.
 
 ## Implementation recipe (grounded in the code — built from `material_classify` as template)
 
