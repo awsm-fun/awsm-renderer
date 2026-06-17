@@ -919,7 +919,14 @@ impl AwsmRendererBuilder {
             max_edge_budget: None,
             bucket_config: None,
             prep_config: crate::render_passes::material_prep::PrepPassConfig::default(),
-            unified_edge: false,
+            // Unified-edge (U2, `docs/plans/unified-edge-shading.md`): default ON.
+            // Under MSAA the renderer now shades through the merged `cs_shade`
+            // kernel (interior sample-0 → opaque_tex + edge per-sample →
+            // accumulator) + final_blend, in place of cs_opaque + cs_edge +
+            // skybox_primary + skybox_edge_resolve. U1 GPU-verified this path
+            // byte-identical (max-diff 0). `with_unified_edge(false)` still
+            // selects the legacy path (kept through U2 for A/B; removed in U3).
+            unified_edge: true,
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
             phase_handler: None,
             scene_spatial_config: None,

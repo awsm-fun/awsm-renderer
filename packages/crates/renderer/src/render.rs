@@ -907,16 +907,18 @@ impl AwsmRenderer {
                 None
             };
 
-            // Unified-edge (U1, `docs/plans/unified-edge-shading.md`): with the
-            // build-time toggle ON *and* MSAA active, dispatch the merged
-            // `cs_shade` path (one kernel: interior sample-0 → opaque_tex +
+            // Unified-edge (U2, `docs/plans/unified-edge-shading.md`): the toggle
+            // is now ON by default, so under MSAA the renderer shades through the
+            // merged `cs_shade` path (one kernel: interior sample-0 → opaque_tex +
             // edge per-sample → accumulator) + the unchanged final_blend, in
             // place of cs_opaque + cs_edge + skybox_primary + skybox_edge_resolve
             // + final_blend. Reuses the SAME accumulator + edge_slot_map +
-            // final_blend resolve, so the output is byte-identical to the
-            // toggle-OFF path (the parent GPU-verifies). cs_shade exists only
-            // under MSAA, so no-MSAA + toggle-on falls through to the normal
-            // render() path (which has no edges to resolve anyway → identical).
+            // final_blend resolve, so the output is byte-identical to the legacy
+            // path (U1 GPU-verified max-diff 0). cs_shade exists only under MSAA,
+            // so no-MSAA falls through to the normal render() path (which has no
+            // edges to resolve anyway → identical). `with_unified_edge(false)`
+            // still selects the legacy path (kept for A/B through U2; U2b deletes
+            // the legacy kernels, U3 removes the toggle).
             if ctx.unified_edge && ctx.anti_aliasing.msaa_sample_count.is_some() {
                 self.render_passes
                     .material_opaque

@@ -149,7 +149,22 @@ the current HEAD. Every stage below must reproduce these **byte-identically** (e
     cs_opaque/cs_edge/skybox_primary/skybox_edge_resolve. Toggle-ON GPU-verify BYTE-IDENTICAL vs toggle-OFF
     across the full matrix (MSAA on/off, prep on/off, all models, multi-material edges, sky edges). Hard
     gate — iterate.
-- **U2 — flip + delete.** Make `cs_shade` the only path: classify emits any-sample `tile_mask` +
+- **U2a [DONE] — flip the default ON.** `with_unified_edge` now defaults `true`, so the default build
+  shades through `cs_shade` + `final_blend` under MSAA (legacy cs_opaque+cs_edge+skybox_primary+
+  skybox_edge_resolve now reachable only via `with_unified_edge(false)`, kept for A/B until U2b). Two-line
+  change: builder default `false`→`true`; edge_id_tex alloc now gated `unified_edge && msaa` (every other
+  unified gate was already MSAA-safe — classify's `unified_edge && emit_edge_data` with `emit_edge_data ≡
+  MSAA`; material_opaque's edge_id_tex@12 nested under `{% if multisampled_geometry %}`; the cs_shade
+  pipeline build early-returns under no-MSAA). 261+34 green. **GPU byte-parity VERIFIED (max-diff 0, 0
+  pixels):** default build (cs_shade) == legacy baseline anchors on MetalRoughSpheres (silhouette) and
+  SheenChair (multi-material fabric+wood + self-shadow + sky edges), MSAA, prep off.
+- **U2b — delete the legacy MSAA kernels.** Now that cs_shade is the verified default, delete cs_edge +
+  skybox_edge_resolve entry points + their pipelines + `render_edge_resolve` + `append_edge_sample` + the
+  per-bucket edge-sample lists + their per-bucket indirect args (from classify + edge_buffers layout). Keep
+  cs_opaque + skybox_primary (the no-MSAA path) + final_blend + edge_slot_map + accumulator + edge_to_xy +
+  edge_count + final_blend args. Force the MSAA dispatch unconditional (legacy A/B path goes away). Re-verify
+  byte-parity vs anchors. Measure pipelines/material + classify memory/atomic traffic + MSAA shader surface.
+- **U2 (orig) — flip + delete.** Make `cs_shade` the only path: classify emits any-sample `tile_mask` +
   `edge_id_tex` only; drop `append_edge_sample` + per-bucket edge-sample lists + their per-bucket indirect
   args; delete `cs_opaque`/`cs_edge`/`skybox_primary`/`skybox_edge_resolve` entry points + their pipelines.
   Keep `final_blend` + `edge_slot_map` + the accumulator (still used by `cs_shade`/resolve). Re-verify

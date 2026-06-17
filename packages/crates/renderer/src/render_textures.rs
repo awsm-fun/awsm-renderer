@@ -963,9 +963,12 @@ impl RenderTexturesInner {
         // not per sample). Classify binds it as a `texture_storage_2d<r32uint,
         // write>` to write the compact edge_pixel_id / U32_MAX sentinel, so it
         // needs STORAGE_BINDING; TEXTURE_BINDING is added for the future
-        // unified kernel's read. Gated on `unified_edge` to avoid the
-        // screen-sized allocation when the toggle is off (the default).
-        let edge_id = if unified_edge {
+        // unified kernel's read. Gated on `unified_edge` AND MSAA: the edge-id
+        // texture only feeds the MSAA `cs_shade` edge branch, so a no-MSAA
+        // build allocates nothing even with the toggle on (now the default).
+        // classify only declares/binds the edge_id texture under MSAA
+        // (`emit_edge_data` ≡ MSAA), so this stays in lockstep with the shader.
+        let edge_id = if unified_edge && anti_aliasing.msaa_sample_count.is_some() {
             Some(
                 gpu.create_texture(
                     &TextureDescriptor::new(
