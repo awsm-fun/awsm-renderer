@@ -380,6 +380,20 @@ impl MaterialOpaqueBindGroups {
                 entries.len() as u32,
                 BindGroupResource::TextureView(Cow::Borrowed(prep_vcolor)),
             ));
+            // Plan B (stage 4): prep_shadow_visibility (binding 26).
+            let prep_shadow_visibility = ctx
+                .render_texture_views
+                .prep_shadow_visibility
+                .as_ref()
+                .ok_or_else(|| {
+                    AwsmBindGroupError::NotFound(
+                        "Material Opaque - prep_shadow_visibility".to_string(),
+                    )
+                })?;
+            entries.push(BindGroupEntry::new(
+                entries.len() as u32,
+                BindGroupResource::TextureView(Cow::Borrowed(prep_shadow_visibility)),
+            ));
         }
 
         let descriptor = BindGroupDescriptor::new(
@@ -782,6 +796,23 @@ async fn create_main_bind_group_layout_key(
                 TextureBindingLayout::new()
                     .with_view_dimension(TextureViewDimension::N2dArray)
                     .with_sample_type(TextureSampleType::UnfilterableFloat)
+                    .with_multisampled(false),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+        // Plan B (stage 4): prep_shadow_visibility (binding 26), sampled
+        // `texture_2d_array` of the per-pixel packed shadow-visibility buffer
+        // (Rgba8unorm — filterable, so Float sample type; `textureLoad` reads
+        // it without a sampler). The no-MSAA primary `cs_opaque` reads it via
+        // `prep_shadow_read` (apply_lighting `shadow_from_buffer`) instead of
+        // sampling shadow maps inline. Same gate as prep_uv/prep_vcolor.
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::Texture(
+                TextureBindingLayout::new()
+                    .with_view_dimension(TextureViewDimension::N2dArray)
+                    .with_sample_type(TextureSampleType::Float)
                     .with_multisampled(false),
             ),
             visibility_vertex: false,

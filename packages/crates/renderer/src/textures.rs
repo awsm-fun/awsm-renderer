@@ -685,6 +685,7 @@ impl AwsmRenderer {
                     color_wgsl,
                     Some(&self.dynamic_materials),
                     self.prep_config.enabled,
+                    self.prep_config.clamped_k(),
                 )
                 .await?;
         }

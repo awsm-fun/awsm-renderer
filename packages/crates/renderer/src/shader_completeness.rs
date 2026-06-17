@@ -127,6 +127,7 @@ fn opaque_compute_defines_every_called_loader_per_base() {
             msaa_sample_count: Some(4),
             mipmaps: true,
             prep_enabled: false,
+            max_shadow_casters: 4,
             shader_id,
             base,
             owns_skybox: false,

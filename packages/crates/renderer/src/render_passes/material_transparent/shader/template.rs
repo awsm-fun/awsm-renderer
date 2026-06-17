@@ -61,6 +61,14 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// transparent shader (whose `materials_wgsl` only carries its own fragment)
     /// doesn't reference the other family's material struct.
     pub base: ShadingBase,
+    /// Plan B (stage 4): always `false` on the transparent pass — the forward
+    /// transparent fragment samples shadow maps inline (it shades its own
+    /// pixels back-to-front, with no prep buffer). Present because the shared
+    /// `apply_lighting.wgsl` gates the buffer-read path on it.
+    pub shadow_from_buffer: bool,
+    /// Inert on the transparent pass (`shadow_from_buffer` is false), but the
+    /// shared `apply_lighting.wgsl`'s `prep_shadow_read` references it.
+    pub max_shadow_casters: u32,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -94,6 +102,10 @@ impl ShaderTemplateTransparentMaterialIncludes {
                 crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base)
             },
             base: cache_key.base,
+            // Transparent keeps inline shadow sampling (forward pass, own
+            // pixels, no prep buffer) — never reads the prep shadow buffer.
+            shadow_from_buffer: false,
+            max_shadow_casters: 4,
         }
     }
 

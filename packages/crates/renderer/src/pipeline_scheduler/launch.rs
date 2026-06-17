@@ -481,6 +481,7 @@ impl crate::AwsmRenderer {
                     msaa_sample_count: active_msaa,
                     mipmaps: active_mipmaps,
                     prep_enabled: self.prep_config.enabled,
+                    max_shadow_casters: self.prep_config.clamped_k(),
                     shader_id,
                     base,
                     owns_skybox,
@@ -723,6 +724,7 @@ impl crate::AwsmRenderer {
                 color_wgsl,
                 Some(&self.dynamic_materials),
                 self.prep_config.enabled,
+                self.prep_config.clamped_k(),
             )? {
             Some(d) => d,
             None => return Ok(()),

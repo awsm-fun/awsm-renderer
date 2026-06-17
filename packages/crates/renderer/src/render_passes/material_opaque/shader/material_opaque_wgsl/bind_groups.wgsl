@@ -89,6 +89,13 @@ struct ClassifyBuckets {
 // (the rg32float / rgba32float storage views read back as f32).
 @group(0) @binding(24) var prep_uv: texture_2d_array<f32>;
 @group(0) @binding(25) var prep_vcolor: texture_2d_array<f32>;
+// Plan B (stage 4): the prep pass's per-pixel packed shadow-visibility buffer
+// (Rgba8unorm array — 4 slots/texel: slot j -> layer j/4, channel j%4). The
+// opaque lighting loop reads it via `prep_shadow_read` instead of sampling
+// shadow maps inline (apply_lighting `shadow_from_buffer`). Declared whenever
+// the prep bind group is present (binding 26); only READ when
+// `shadow_from_buffer` (= apply_lighting && prep_read).
+@group(0) @binding(26) var prep_shadow_visibility: texture_2d_array<f32>;
 {% endif %}
 
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;

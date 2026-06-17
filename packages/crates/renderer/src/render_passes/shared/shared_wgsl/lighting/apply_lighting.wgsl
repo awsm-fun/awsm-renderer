@@ -39,7 +39,7 @@ fn apply_lighting(
     {% endif %}
 
     {% if has_lighting_punctual() %}
-        {% if shadows_enabled %}
+        {% if shadows_enabled && !shadow_from_buffer %}
             // View-space z (positive forward) for cascade selection.
             let view_z_for_shadow = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
         {% endif %}
@@ -47,11 +47,16 @@ fn apply_lighting(
             let light = get_light(i);
             let light_brdf = light_sample(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
-            {% if shadows_enabled %}
+            {% if shadows_enabled && !shadow_from_buffer %}
                 // Modulate by shadow visibility (1.0 = lit, 0.0 = fully
                 // shadowed). `shadow_index == SHADOW_INDEX_NONE` short-
                 // circuits to 1.0; the cascade selector walks
                 // descriptors descriptor_base..base+count.
+                // NOTE: this flat (non-froxel) `apply_lighting` is the
+                // transparent-pass surface; opaque calls the froxel variants
+                // below. When `shadow_from_buffer` (opaque prep-read) it isn't
+                // called, and the inline sampler is dropped (the size win), so
+                // the shadow branch collapses to the unshadowed accumulation.
                 var visibility: f32 = 1.0;
                 if receive_shadows != 0u {
                     visibility = sample_shadow_directional(
@@ -75,7 +80,7 @@ fn apply_lighting(
                 color += direct;
             {% endif %}
         }
-        {% if shadows_enabled %}
+        {% if shadows_enabled && !shadow_from_buffer %}
             // Cascade-debug overlay (uses the dominant directional
             // light's descriptor base, fetched via light 0's
             // `shadow_index` — sufficient until phase 4 surfaces a
@@ -118,6 +123,23 @@ fn apply_lighting(
 // shared with the Plan B prep pass — keep them aligned for deferred shadows).
 {% include "shared_wgsl/lighting/froxel_walk.wgsl" %}
 
+{% if shadow_from_buffer %}
+// Plan B (stage 4): read the prep pass's per-pixel packed shadow-visibility
+// buffer instead of sampling shadow maps inline. `slot` is the j-th shadowed
+// light in the canonical froxel walk (directional prefix then per-froxel
+// punctual) — the SAME order `cs_prep` wrote, so slot j here matches layer
+// j/4 / channel j%4 there. Slots >= K (clamped per-pixel caster cap) overflow
+// to lit (1.0), matching prep's clamp-and-skip.
+fn prep_shadow_read(pixel_xy: vec2<f32>, slot: u32) -> f32 {
+    if (slot >= {{ max_shadow_casters }}u) {
+        return 1.0;
+    }
+    let c = vec2<i32>(i32(pixel_xy.x), i32(pixel_xy.y));
+    let texel = textureLoad(prep_shadow_visibility, c, i32(slot / 4u), 0);
+    return texel[slot % 4u];
+}
+{% endif %}
+
 fn apply_lighting_per_froxel(
     material_color: PbrMaterialColor,
     surface_to_camera: vec3<f32>,
@@ -153,7 +175,9 @@ fn apply_lighting_per_froxel(
 
     {% if has_lighting_punctual() %}
         let view_z = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
-        {% if shadows_enabled %}
+        {% if shadows_enabled && !shadow_from_buffer %}
+            // Only the inline-sampling path consumes the cascade-selection
+            // view-z; the buffer path reads precomputed visibility.
             let view_z_for_shadow = view_z;
         {% endif %}
 
@@ -167,6 +191,13 @@ fn apply_lighting_per_froxel(
         }
         {% endif %}
 
+        {% if shadow_from_buffer %}
+        // Plan B (stage 4): j-th shadowed light in the canonical froxel walk.
+        // Advances for EVERY shadowed light (independent of receive_shadows /
+        // range-reject) so the slot stays aligned with what `cs_prep` wrote.
+        var shadow_slot: u32 = 0u;
+        {% endif %}
+
         // Directional walk — bounded to the directional-light prefix
         // (see get_n_directional / get_directional_light_index).
         let n_directional = get_n_directional();
@@ -174,7 +205,16 @@ fn apply_lighting_per_froxel(
             let light = get_light(get_directional_light_index(d));
             let light_brdf = light_sample(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
-            {% if shadows_enabled %}
+            {% if shadow_from_buffer %}
+                var visibility: f32 = 1.0;
+                if light.shadow_index != SHADOW_INDEX_NONE {
+                    // Advance the slot for every shadowed directional (prep did
+                    // too); apply receive_shadows at read time.
+                    visibility = select(1.0, prep_shadow_read(pixel_xy, shadow_slot), receive_shadows != 0u);
+                    shadow_slot = shadow_slot + 1u;
+                }
+                color += direct * visibility;
+            {% else if shadows_enabled %}
                 var visibility: f32 = 1.0;
                 if receive_shadows != 0u {
                     visibility = sample_shadow_directional(
@@ -202,37 +242,59 @@ fn apply_lighting_per_froxel(
                 let li = lights_storage[base + 1u + i];
                 let light = get_light(li);
                 // Defensive — directional shouldn't appear in the slice.
+                // (Prep `continue`s on kind==1 BEFORE the shadow check too, so
+                // prep + read skip identical lights and the slot stays aligned.)
                 if light.kind == 1u {
                     continue;
                 }
-                // Range reject: the froxel bins every light whose bounding
-                // sphere touches the froxel volume — large distant froxels
-                // over-include lights that can't reach this pixel. Skip them
-                // for the cost of one dot product, before light_sample.
-                let to_light = light.position - world_position;
-                if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
-                    continue;
-                }
-                let light_brdf = light_sample(light, material_color.normal, world_position);
-                let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
-                {% if shadows_enabled %}
+                {% if shadow_from_buffer %}
+                    // Resolve + advance the slot for a shadowed light BEFORE the
+                    // range-reject continue — prep advanced its slot for every
+                    // shadowed light regardless of range, so the read must too.
                     var visibility: f32 = 1.0;
-                    if receive_shadows != 0u {
-                        visibility = sample_shadow_directional(
-                            light.shadow_index,
-                            world_position,
-                            shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
-                            view_z_for_shadow,
-                        );
+                    if light.shadow_index != SHADOW_INDEX_NONE {
+                        visibility = select(1.0, prep_shadow_read(pixel_xy, shadow_slot), receive_shadows != 0u);
+                        shadow_slot = shadow_slot + 1u;
                     }
+                    // Range reject: skip this light's CONTRIBUTION (the slot has
+                    // already advanced above).
+                    let to_light = light.position - world_position;
+                    if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
+                        continue;
+                    }
+                    let light_brdf = light_sample(light, material_color.normal, world_position);
+                    let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
                     color += direct * visibility;
                 {% else %}
-                    color += direct;
+                    // Range reject: the froxel bins every light whose bounding
+                    // sphere touches the froxel volume — large distant froxels
+                    // over-include lights that can't reach this pixel. Skip them
+                    // for the cost of one dot product, before light_sample.
+                    let to_light = light.position - world_position;
+                    if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
+                        continue;
+                    }
+                    let light_brdf = light_sample(light, material_color.normal, world_position);
+                    let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+                    {% if shadows_enabled %}
+                        var visibility: f32 = 1.0;
+                        if receive_shadows != 0u {
+                            visibility = sample_shadow_directional(
+                                light.shadow_index,
+                                world_position,
+                                shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
+                                view_z_for_shadow,
+                            );
+                        }
+                        color += direct * visibility;
+                    {% else %}
+                        color += direct;
+                    {% endif %}
                 {% endif %}
             }
         }
 
-        {% if shadows_enabled %}
+        {% if shadows_enabled && !shadow_from_buffer %}
             if lights_info.n_lights > 0u {
                 color = debug_cascade_tint(
                     color,
@@ -283,7 +345,9 @@ fn apply_lighting_per_froxel_with_transmission(
 
     {% if has_lighting_punctual() %}
         let view_z = -(camera_raw.view * vec4<f32>(world_position, 1.0)).z;
-        {% if shadows_enabled %}
+        {% if shadows_enabled && !shadow_from_buffer %}
+            // Only the inline-sampling path consumes the cascade-selection
+            // view-z; the buffer path reads precomputed visibility.
             let view_z_for_shadow = view_z;
         {% endif %}
 
@@ -297,12 +361,23 @@ fn apply_lighting_per_froxel_with_transmission(
         }
         {% endif %}
 
+        {% if shadow_from_buffer %}
+        var shadow_slot: u32 = 0u;
+        {% endif %}
+
         let n_directional = get_n_directional();
         for(var d = 0u; d < n_directional; d = d + 1u) {
             let light = get_light(get_directional_light_index(d));
             let light_brdf = light_sample(light, material_color.normal, world_position);
             let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
-            {% if shadows_enabled %}
+            {% if shadow_from_buffer %}
+                var visibility: f32 = 1.0;
+                if light.shadow_index != SHADOW_INDEX_NONE {
+                    visibility = select(1.0, prep_shadow_read(pixel_xy, shadow_slot), receive_shadows != 0u);
+                    shadow_slot = shadow_slot + 1u;
+                }
+                color += direct * visibility;
+            {% else if shadows_enabled %}
                 var visibility: f32 = 1.0;
                 if receive_shadows != 0u {
                     visibility = sample_shadow_directional(
@@ -331,34 +406,49 @@ fn apply_lighting_per_froxel_with_transmission(
                 if light.kind == 1u {
                     continue;
                 }
-                // Range reject: the froxel bins every light whose bounding
-                // sphere touches the froxel volume — large distant froxels
-                // over-include lights that can't reach this pixel. Skip them
-                // for the cost of one dot product, before light_sample.
-                let to_light = light.position - world_position;
-                if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
-                    continue;
-                }
-                let light_brdf = light_sample(light, material_color.normal, world_position);
-                let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
-                {% if shadows_enabled %}
+                {% if shadow_from_buffer %}
                     var visibility: f32 = 1.0;
-                    if receive_shadows != 0u {
-                        visibility = sample_shadow_directional(
-                            light.shadow_index,
-                            world_position,
-                            shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
-                            view_z_for_shadow,
-                        );
+                    if light.shadow_index != SHADOW_INDEX_NONE {
+                        visibility = select(1.0, prep_shadow_read(pixel_xy, shadow_slot), receive_shadows != 0u);
+                        shadow_slot = shadow_slot + 1u;
                     }
+                    let to_light = light.position - world_position;
+                    if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
+                        continue;
+                    }
+                    let light_brdf = light_sample(light, material_color.normal, world_position);
+                    let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
                     color += direct * visibility;
                 {% else %}
-                    color += direct;
+                    // Range reject: the froxel bins every light whose bounding
+                    // sphere touches the froxel volume — large distant froxels
+                    // over-include lights that can't reach this pixel. Skip them
+                    // for the cost of one dot product, before light_sample.
+                    let to_light = light.position - world_position;
+                    if light.range > 0.0 && dot(to_light, to_light) > light.range * light.range {
+                        continue;
+                    }
+                    let light_brdf = light_sample(light, material_color.normal, world_position);
+                    let direct = brdf_direct(material_color, light_brdf, surface_to_camera);
+                    {% if shadows_enabled %}
+                        var visibility: f32 = 1.0;
+                        if receive_shadows != 0u {
+                            visibility = sample_shadow_directional(
+                                light.shadow_index,
+                                world_position,
+                                shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
+                                view_z_for_shadow,
+                            );
+                        }
+                        color += direct * visibility;
+                    {% else %}
+                        color += direct;
+                    {% endif %}
                 {% endif %}
             }
         }
 
-        {% if shadows_enabled %}
+        {% if shadows_enabled && !shadow_from_buffer %}
             if lights_info.n_lights > 0u {
                 color = debug_cascade_tint(
                     color,

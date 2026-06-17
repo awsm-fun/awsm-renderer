@@ -1830,6 +1830,7 @@ impl AwsmRendererBuilder {
                     color_wgsl,
                     None,
                     prep_config.enabled,
+                    prep_config.clamped_k(),
                 )
                 .await?;
         }

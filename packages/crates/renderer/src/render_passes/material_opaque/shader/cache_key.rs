@@ -30,6 +30,14 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// kernel `cs_edge` needs per-sample data prep doesn't hold), so this
     /// is inert under MSAA but still carried accurately on the key.
     pub prep_enabled: bool,
+    /// Plan B (stage 4): `K` — the clamped per-pixel shadow-caster cap
+    /// (`PrepPassConfig::clamped_k`). Threaded onto the opaque key so the
+    /// `shadow_from_buffer` read path's slot bounds-check (`slot >= K`) and the
+    /// packed-layer index (`slot / 4`) match the prep buffer's K exactly. Inert
+    /// when `prep_read` is false (the `{% if shadow_from_buffer %}` block never
+    /// renders), but carried on the key so a K change still re-keys the
+    /// pipeline. Default 4.
+    pub max_shadow_casters: u32,
     pub shader_id: MaterialShaderId,
     /// Which built-in shading family this bucket's template body comes
     /// from. Decoupled from `shader_id` so a per-feature-set PBR variant

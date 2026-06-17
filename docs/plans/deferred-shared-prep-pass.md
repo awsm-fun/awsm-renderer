@@ -218,9 +218,18 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      stage 5. Split into **3a** (allocate the gated `shadow_visibility` array texture in render_textures
      + RenderTextureViews + destroy + the layers helper — inert, mirrors 1b/2a) then **3b** (the bindings
      + includes + `cs_prep` shadow loop). Inert overall (lighting still samples inline until stage 4).
-4. **Lighting reads shadow buffer.** `apply_lighting` `shadow_from_buffer=true` for opaque; remove
-   `sample_shadow_*` from opaque modules (first-party PBR drops ~50 KB). Transparent unchanged
-   (`shadow_from_buffer=false`). Visual parity on the shadowed dish; measure PBR size.
+4. **[DONE]** **Lighting reads shadow buffer.** `apply_lighting` `shadow_from_buffer=true` for opaque
+   (`= inc.apply_lighting && prep_read`); `needs_shadow_sampling = inc.apply_lighting && !prep_read` drops
+   `sample_shadow_*`/`apply_sscs` from the opaque module — **first-party PBR −54,515 B (~53 KB)** measured
+   (224,515 → 170,000 B, no-MSAA). Lighting walks froxel_walk SAME order, advances a shadow slot per
+   shadowed light (kind==1 continue first, then shadow predicate + slot++, THEN range-reject — so the
+   slot stays aligned with prep), reads `textureLoad(prep_shadow_visibility, coords, j/4, 0)[j%4]` gated
+   by `receive_shadows`, slot≥K → 1.0. Bound prep_shadow_visibility at opaque group(0) binding 26 (gated
+   prep_read). group(3) shadow maps kept bound-but-unsampled (reuses the existing needs_shadow_sampling=
+   false path; the size win is the dropped functions). Transparent unchanged (`shadow_from_buffer=false`).
+   **GPU-verified byte-identical** prep on vs off (MSAA off) on MetalRoughSpheres (visibility=1) AND
+   SheenChair (real self-shadow, visibility<1) — slot alignment correct, no shadows-on-wrong-lights;
+   8-bit shadow quantization is below the output LSB. 257+34 tests green.
 5. **Edges (Option B).** Prep emits the compact per-edge-sample attr+shadow buffer; `cs_edge` reads it;
    drop reconstruction from the MSAA module. naga + visual MSAA-on parity; measure MSAA module size.
 6. **Finalize.** Drop the obsolete `reconstruct_world_pos` field; consider making `with_prep_pass`

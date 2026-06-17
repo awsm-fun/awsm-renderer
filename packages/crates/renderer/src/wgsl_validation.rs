@@ -71,6 +71,7 @@ fn first_party_key_prep(
         msaa_sample_count: msaa,
         mipmaps,
         prep_enabled,
+        max_shadow_casters: 4,
         shader_id,
         base,
         owns_skybox,
@@ -100,6 +101,7 @@ fn custom_key(
         msaa_sample_count: msaa,
         mipmaps,
         prep_enabled: false,
+        max_shadow_casters: 4,
         shader_id: dyn_id,
         base: ShadingBase::Custom,
         owns_skybox: false,
@@ -208,6 +210,94 @@ fn opaque_prep_read_variant_validates() {
     assert!(
         !src.contains("fn _vertex_color_per_vertex("),
         "prep_read opaque module should drop the `_vertex_color_per_vertex` recompute helper"
+    );
+}
+
+#[test]
+fn opaque_shadow_from_buffer_variant_validates() {
+    // Plan B (stage 4): the PBR opaque kernel with prep enabled + MSAA off
+    // reads the prep pass's per-pixel shadow-visibility buffer instead of
+    // sampling shadow maps inline. Assert it (a) validates, (b) reads
+    // `prep_shadow_visibility` via textureLoad, and (c) DROPS the inline
+    // `sample_shadow_directional` definition (the ~50 KB win). Also build the
+    // prep-OFF and MSAA-on variants and assert they KEEP the inline sampler
+    // (byte-identical behavior to today). Mirrors
+    // `opaque_prep_read_variant_validates`.
+    let prep_key = first_party_key_prep(
+        MaterialShaderId::PBR,
+        ShadingBase::Pbr,
+        false,
+        None, // no MSAA → prep_read = true → shadow_from_buffer = true (PBR lights)
+        true,
+        true, // prep_enabled
+    );
+    let src = render(&prep_key, "opaque/pbr shadow_from_buffer");
+    naga_validate(&src, "opaque/pbr shadow_from_buffer");
+    assert!(
+        src.contains("fn cs_opaque("),
+        "shadow_from_buffer opaque module missing `fn cs_opaque`"
+    );
+    // (b) reads the prep shadow buffer.
+    assert!(
+        src.contains("textureLoad(prep_shadow_visibility"),
+        "shadow_from_buffer opaque module should `textureLoad(prep_shadow_visibility, ...)`"
+    );
+    assert!(
+        src.contains("var prep_shadow_visibility: texture_2d_array<f32>")
+            || src.contains("prep_shadow_visibility: texture_2d_array<f32>"),
+        "shadow_from_buffer opaque module should declare `prep_shadow_visibility` (binding 26)"
+    );
+    // (c) the inline shadow sampler is dropped (the size win).
+    assert!(
+        !src.contains("fn sample_shadow_directional"),
+        "shadow_from_buffer opaque module should DROP `fn sample_shadow_directional` (the inline sampler)"
+    );
+
+    // Control 1: prep OFF (no MSAA) keeps inline sampling, no buffer read.
+    let off_key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, None, true);
+    let off_src = render(&off_key, "opaque/pbr prep-off");
+    assert!(
+        off_src.contains("fn sample_shadow_directional"),
+        "prep-off PBR opaque must KEEP inline `fn sample_shadow_directional`"
+    );
+    assert!(
+        !off_src.contains("textureLoad(prep_shadow_visibility"),
+        "prep-off PBR opaque must NOT read the prep shadow buffer"
+    );
+
+    // Control 2: prep ON but MSAA on ⇒ prep_read false ⇒ inline sampling kept.
+    let msaa_key = first_party_key_prep(
+        MaterialShaderId::PBR,
+        ShadingBase::Pbr,
+        false,
+        Some(4), // MSAA on → prep_read = false → shadow_from_buffer = false
+        true,
+        true,
+    );
+    let msaa_src = render(&msaa_key, "opaque/pbr prep-on msaa4");
+    naga_validate(&msaa_src, "opaque/pbr prep-on msaa4");
+    assert!(
+        msaa_src.contains("fn sample_shadow_directional"),
+        "MSAA-on PBR opaque must KEEP inline `fn sample_shadow_directional` (prep_read false under MSAA)"
+    );
+    assert!(
+        !msaa_src.contains("textureLoad(prep_shadow_visibility"),
+        "MSAA-on PBR opaque must NOT read the prep shadow buffer"
+    );
+
+    // Measurement: report the prep-read (no-MSAA) PBR size vs prep-off.
+    eprintln!(
+        "[stage4] PBR opaque no-MSAA — prep-read(shadow_from_buffer): {} B, prep-off(inline): {} B (delta {})",
+        src.len(),
+        off_src.len(),
+        off_src.len() as i64 - src.len() as i64,
+    );
+    // The shadow-from-buffer variant must be SMALLER (the inline sampler drop).
+    assert!(
+        src.len() < off_src.len(),
+        "shadow_from_buffer PBR ({} B) should be smaller than prep-off inline PBR ({} B)",
+        src.len(),
+        off_src.len()
     );
 }
 

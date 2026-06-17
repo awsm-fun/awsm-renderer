@@ -171,6 +171,19 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// `MAX_PREP_COLOR_SETS` — clamp cap for the prep vcolor array layer
     /// index in `vertex_color()` when `prep_read`. Inert otherwise.
     pub max_prep_color_sets: u32,
+    /// Plan B (stage 4): when true, `apply_lighting_per_froxel*` read the
+    /// prep pass's per-pixel `prep_shadow_visibility` buffer (slot model,
+    /// froxel-order walk) instead of sampling shadow maps inline — so the
+    /// inline `sample_shadow_*` block is dropped from the opaque module
+    /// (`needs_shadow_sampling` is forced false in lockstep). Derived as
+    /// `shadows_enabled && prep_read`; false under MSAA / prep-off (byte-
+    /// identical inline sampling). Transparent stays false.
+    pub shadow_from_buffer: bool,
+    /// `K` — the per-pixel shadow-caster cap (`PrepPassConfig::clamped_k`),
+    /// matching the prep buffer's layer/slot count. Consumed by the
+    /// `{% if shadow_from_buffer %}` read path's `prep_shadow_read` bounds
+    /// check. Inert otherwise.
+    pub max_shadow_casters: u32,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -232,6 +245,12 @@ pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
     /// the shared helper includes, so the fields must exist.
     pub max_prep_uv_sets: u32,
     pub max_prep_color_sets: u32,
+    /// Always `false` for the skybox writer (it never reads the prep shadow
+    /// buffer), but `apply_lighting.wgsl` references `shadow_from_buffer`, so
+    /// the field must exist for askama.
+    pub shadow_from_buffer: bool,
+    /// Inert on the skybox writer; referenced by `apply_lighting.wgsl`.
+    pub max_shadow_casters: u32,
 }
 
 impl ShaderTemplateMaterialOpaqueSkyboxPrimary {
@@ -281,6 +300,10 @@ impl From<ShaderTemplateMaterialOpaqueCompute> for ShaderTemplateMaterialOpaqueS
             prep_read: c.prep_read,
             max_prep_uv_sets: c.max_prep_uv_sets,
             max_prep_color_sets: c.max_prep_color_sets,
+            // The skybox writer never reads the prep shadow buffer; carry the
+            // value through inertly so apply_lighting's gate resolves.
+            shadow_from_buffer: false,
+            max_shadow_casters: c.max_shadow_casters,
         }
     }
 }
@@ -306,6 +329,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
         let prep_read = value.prep_enabled && value.msaa_sample_count.is_none();
         let max_prep_uv_sets = crate::render_passes::material_prep::MAX_PREP_UV_SETS;
         let max_prep_color_sets = crate::render_passes::material_prep::MAX_PREP_COLOR_SETS;
+        let max_shadow_casters = value.max_shadow_casters;
 
         let bucket_entries = value.bucket_entries.clone();
         let pad_words_iter: Vec<u32> = (0
@@ -346,7 +370,13 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 debug,
                 shadow_group_index: 3,
                 sscs_available: true,
-                needs_shadow_sampling: inc.apply_lighting,
+                // Plan B (stage 4): when the opaque kernel reads the prep
+                // shadow-visibility buffer (`shadow_from_buffer`, below), the
+                // inline `sample_shadow_*` block is no longer called, so drop
+                // it. Otherwise keep it for lighting materials exactly as
+                // before (inc.apply_lighting). Non-lighting materials still
+                // drop it (inc.apply_lighting == false).
+                needs_shadow_sampling: inc.apply_lighting && !prep_read,
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
                 prep_read,
@@ -414,6 +444,13 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 prep_read,
                 max_prep_uv_sets,
                 max_prep_color_sets,
+                // Read the prep shadow buffer instead of inline sampling when
+                // the opaque kernel runs first-party lighting AND the prep
+                // read path is live (no-MSAA, prep on). `shadows_enabled` is
+                // always true for opaque compute, so `inc.apply_lighting`
+                // mirrors the old `needs_shadow_sampling` condition.
+                shadow_from_buffer: inc.apply_lighting && prep_read,
+                max_shadow_casters,
             },
         };
 
@@ -726,6 +763,7 @@ mod empty_registry_tests {
             msaa_sample_count: msaa,
             mipmaps: true,
             prep_enabled: false,
+            max_shadow_casters: 4,
             shader_id,
             base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
             owns_skybox: shader_id == MaterialShaderId::SKYBOX,
@@ -1054,6 +1092,7 @@ mod size_regression {
             msaa_sample_count: msaa,
             mipmaps,
             prep_enabled: false,
+            max_shadow_casters: 4,
             shader_id: dyn_id,
             base: crate::dynamic_materials::ShadingBase::Custom,
             owns_skybox: false,
