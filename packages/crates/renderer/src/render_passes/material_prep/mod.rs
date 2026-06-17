@@ -16,6 +16,18 @@ pub mod bind_group;
 pub mod render_pass;
 pub mod shader;
 
+/// Max UV sets materialized by the prep pass (Stage 2a). `prep_uv` is a
+/// `texture_2d_array` with this many layers; `cs_prep` writes layers
+/// `0..min(uv_set_count, MAX_PREP_UV_SETS)`. glTF content almost never exceeds
+/// 2 UV sets, so 4 is generous; a material referencing a set `>= cap` clamps to
+/// the last layer on read (slim shader, Stage 2b) — bounded + benign.
+pub const MAX_PREP_UV_SETS: u32 = 4;
+
+/// Max vertex-color sets materialized by the prep pass (Stage 2a). `prep_vcolor`
+/// is a `texture_2d_array` with this many layers. Vertex colors beyond set 0 are
+/// vanishingly rare; 2 is generous.
+pub const MAX_PREP_COLOR_SETS: u32 = 2;
+
 /// Build-time configuration for the shared prep + deferred-shadow path.
 ///
 /// Stored on the renderer at construction (mirrors `AntiAliasing` /

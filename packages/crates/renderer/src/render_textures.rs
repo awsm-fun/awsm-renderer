@@ -805,12 +805,19 @@ impl RenderTexturesInner {
         // Plan B prep-pass outputs (gated on `prep_enabled` to avoid VRAM when
         // the feature is off): interpolated UV + vertex color, storage-written by
         // the prep compute pass and texture-read by the slim per-material shader.
+        // Stage 2a: array textures — one layer per UV / color set. `cs_prep`
+        // writes layers `0..min(set_count, cap)`; the slim shader reads
+        // `prep_*[set_index]`.
         let prep_uv = if prep_enabled {
             Some(
                 gpu.create_texture(
                     &TextureDescriptor::new(
                         TextureFormat::Rg32float,
-                        Extent3d::new(width, Some(height), Some(1)),
+                        Extent3d::new(
+                            width,
+                            Some(height),
+                            Some(crate::render_passes::material_prep::MAX_PREP_UV_SETS),
+                        ),
                         TextureUsage::new()
                             .with_storage_binding()
                             .with_texture_binding(),
@@ -824,9 +831,19 @@ impl RenderTexturesInner {
             None
         };
         let prep_uv_view = match prep_uv.as_ref() {
-            Some(tex) => Some(tex.create_view().map_err(|e| {
-                AwsmRenderTextureError::CreateTextureView(format!("prep_uv: {e:?}"))
-            })?),
+            Some(tex) => Some(
+                tex.create_view_with_descriptor(
+                    &TextureViewDescriptor::new(Some("PrepUv"))
+                        .with_dimension(TextureViewDimension::N2dArray)
+                        .with_array_layer_count(
+                            crate::render_passes::material_prep::MAX_PREP_UV_SETS,
+                        )
+                        .into(),
+                )
+                .map_err(|e| {
+                    AwsmRenderTextureError::CreateTextureView(format!("prep_uv: {e:?}"))
+                })?,
+            ),
             None => None,
         };
         let prep_vcolor = if prep_enabled {
@@ -834,7 +851,11 @@ impl RenderTexturesInner {
                 gpu.create_texture(
                     &TextureDescriptor::new(
                         TextureFormat::Rgba32float,
-                        Extent3d::new(width, Some(height), Some(1)),
+                        Extent3d::new(
+                            width,
+                            Some(height),
+                            Some(crate::render_passes::material_prep::MAX_PREP_COLOR_SETS),
+                        ),
                         TextureUsage::new()
                             .with_storage_binding()
                             .with_texture_binding(),
@@ -848,9 +869,19 @@ impl RenderTexturesInner {
             None
         };
         let prep_vcolor_view = match prep_vcolor.as_ref() {
-            Some(tex) => Some(tex.create_view().map_err(|e| {
-                AwsmRenderTextureError::CreateTextureView(format!("prep_vcolor: {e:?}"))
-            })?),
+            Some(tex) => Some(
+                tex.create_view_with_descriptor(
+                    &TextureViewDescriptor::new(Some("PrepVColor"))
+                        .with_dimension(TextureViewDimension::N2dArray)
+                        .with_array_layer_count(
+                            crate::render_passes::material_prep::MAX_PREP_COLOR_SETS,
+                        )
+                        .into(),
+                )
+                .map_err(|e| {
+                    AwsmRenderTextureError::CreateTextureView(format!("prep_vcolor: {e:?}"))
+                })?,
+            ),
             None => None,
         };
 

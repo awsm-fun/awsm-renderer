@@ -165,7 +165,7 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
    STAY — Stage 2's only drop is the UV-interpolation + vertex-color recompute (`texture_uvs.wgsl`'s
    `_texture_uv_per_vertex` + `vertex_color_attrib.wgsl`'s `_vertex_color_per_vertex`). Measure size
    drop; visual parity; tighten ceilings. Split into:
-   - [ ] **2a — multi-set prep array outputs.** `texture_uv()`/`vertex_color()` are called ~25× with a
+   - [x] **2a — multi-set prep array outputs.** `texture_uv()`/`vertex_color()` are called ~25× with a
      *per-texture* `uv_set_index` (dynamic, from material data) — the slim shader can't know which sets a
      material samples at compile time, so prep must materialize **all present sets**, not just set 0 (as
      1a/1b's single-layer `Rg32float`/`Rgba32float` did). Rework prep outputs to **array textures**:

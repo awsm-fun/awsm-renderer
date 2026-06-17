@@ -184,22 +184,22 @@ fn create_bind_group_layout_key(
             visibility_fragment: false,
             visibility_compute: true,
         },
-        // 4 uv_out — storage texture (rg32float, write).
+        // 4 uv_out — storage texture ARRAY (rg32float, write), one layer per UV set.
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::StorageTexture(
                 StorageTextureBindingLayout::new(TextureFormat::Rg32float)
-                    .with_view_dimension(TextureViewDimension::N2d)
+                    .with_view_dimension(TextureViewDimension::N2dArray)
                     .with_access(StorageTextureAccess::WriteOnly),
             ),
             visibility_vertex: false,
             visibility_fragment: false,
             visibility_compute: true,
         },
-        // 5 vcolor_out — storage texture (rgba32float, write).
+        // 5 vcolor_out — storage texture ARRAY (rgba32float, write), one layer per color set.
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::StorageTexture(
                 StorageTextureBindingLayout::new(TextureFormat::Rgba32float)
-                    .with_view_dimension(TextureViewDimension::N2d)
+                    .with_view_dimension(TextureViewDimension::N2dArray)
                     .with_access(StorageTextureAccess::WriteOnly),
             ),
             visibility_vertex: false,

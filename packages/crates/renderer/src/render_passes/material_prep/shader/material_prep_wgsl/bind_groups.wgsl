@@ -23,6 +23,6 @@
 // Per-mesh metadata (offsets, strides, set indices).
 @group(0) @binding(3) var<storage, read> material_mesh_metas: array<MaterialMeshMeta>;
 
-// Materialized outputs (storage-write).
-@group(0) @binding(4) var uv_out: texture_storage_2d<rg32float, write>;
-@group(0) @binding(5) var vcolor_out: texture_storage_2d<rgba32float, write>;
+// Materialized outputs (storage-write ARRAYS — one layer per UV / color set).
+@group(0) @binding(4) var uv_out: texture_storage_2d_array<rg32float, write>;
+@group(0) @binding(5) var vcolor_out: texture_storage_2d_array<rgba32float, write>;

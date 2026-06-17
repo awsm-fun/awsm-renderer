@@ -27,6 +27,11 @@ pub struct ShaderTemplateMaterialPrepBindGroups {
 #[template(path = "material_prep_wgsl/compute.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateMaterialPrepCompute {
     pub multisampled_geometry: bool,
+    /// UV / color set layer caps — kept in lockstep with the array-texture
+    /// allocation (`render_textures.rs`) so the write loop never exceeds the
+    /// texture's layer count.
+    pub max_prep_uv_sets: u32,
+    pub max_prep_color_sets: u32,
 }
 
 impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
@@ -35,7 +40,11 @@ impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
         let multisampled_geometry = key.msaa_sample_count.is_some();
         Ok(ShaderTemplateMaterialPrep {
             bind_groups: ShaderTemplateMaterialPrepBindGroups { multisampled_geometry },
-            compute: ShaderTemplateMaterialPrepCompute { multisampled_geometry },
+            compute: ShaderTemplateMaterialPrepCompute {
+                multisampled_geometry,
+                max_prep_uv_sets: crate::render_passes::material_prep::MAX_PREP_UV_SETS,
+                max_prep_color_sets: crate::render_passes::material_prep::MAX_PREP_COLOR_SETS,
+            },
         })
     }
 }
