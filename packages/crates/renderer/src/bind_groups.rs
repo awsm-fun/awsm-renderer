@@ -226,6 +226,7 @@ impl BindGroups {
             OcclusionCompaction,
             Coverage,
             MaterialClassify,
+            MaterialPrep,
             MaterialDecalMain,
             MaterialDecalComposite,
             MaterialDecalClassify,
@@ -302,6 +303,10 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::Occlusion);
                     functions_to_call.insert(FunctionToCall::LightCulling);
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
+                    // Prep binds the visibility + barycentric views and its own
+                    // output storage textures (all recreated on resize). No-op
+                    // when prep is off (the dispatch arm skips when `None`).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
                     functions_to_call.insert(FunctionToCall::MaterialDecalComposite);
                     // The decal classify bind group binds the HZB view
@@ -372,11 +377,15 @@ impl BindGroups {
                     // geometry renders black until some unrelated event (e.g. a
                     // viewport resize) rebuilds the classify bind group.
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
+                    // Prep binds the per-mesh material-meta buffer (slot 3).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::MeshGeometryPoolResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
                     functions_to_call.insert(FunctionToCall::ShadowMasked);
+                    // Prep binds the merged geometry pool (storage slot 2).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::AntiAliasingChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -596,6 +605,13 @@ impl BindGroups {
                 }
                 FunctionToCall::MaterialClassify => {
                     render_passes.material_classify.bind_groups.recreate(&ctx)?;
+                }
+                FunctionToCall::MaterialPrep => {
+                    // Skip when prep is disabled (`None`) — the output storage
+                    // textures don't exist, so there's nothing to (re)bind.
+                    if let Some(prep) = render_passes.material_prep.as_mut() {
+                        prep.bind_groups.recreate(&ctx)?;
+                    }
                 }
                 FunctionToCall::Coverage => {
                     // Only rebuild the bind group that matches the

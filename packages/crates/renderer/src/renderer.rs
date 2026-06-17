@@ -1346,6 +1346,7 @@ impl AwsmRendererBuilder {
             features: &features,
             anti_aliasing: &anti_aliasing,
             post_processing: &post_processing,
+            prep_config: &prep_config,
         };
 
         // Phase A of RenderPasses (bind groups + shader cache key
@@ -1656,6 +1657,7 @@ impl AwsmRendererBuilder {
             features: &features,
             anti_aliasing: &anti_aliasing,
             post_processing: &post_processing,
+            prep_config: &prep_config,
         };
         let render_passes_descs =
             RenderPasses::describe_pipelines(render_passes_plan, &mut render_pass_init, &features)

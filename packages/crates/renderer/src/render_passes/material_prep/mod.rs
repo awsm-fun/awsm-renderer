@@ -12,6 +12,8 @@
 //! groups, and dispatch wiring arrive in the subsequent stages (see the spec's
 //! "Implementation stages").
 
+pub mod bind_group;
+pub mod render_pass;
 pub mod shader;
 
 /// Build-time configuration for the shared prep + deferred-shadow path.

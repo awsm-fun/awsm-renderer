@@ -145,6 +145,7 @@ impl AwsmRenderer {
                 features: &self.features,
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
             };
             self.render_passes
                 .material_opaque
@@ -163,6 +164,7 @@ impl AwsmRenderer {
                 features: &self.features,
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
             };
             self.render_passes
                 .material_transparent
@@ -181,6 +183,7 @@ impl AwsmRenderer {
                 features: &self.features,
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
             };
             Some(
                 decal
@@ -266,6 +269,7 @@ impl AwsmRenderer {
                 features: &self.features,
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
             };
             all_shader_keys.extend(
                 crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_shader_cache_keys(
@@ -311,6 +315,7 @@ impl AwsmRenderer {
                 features: &self.features,
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
             };
             let opaque_descs = crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_descriptors(
                 &mut render_pass_ctx,
@@ -441,6 +446,7 @@ impl AwsmRenderer {
                     features: &self.features,
                     anti_aliasing: &self.anti_aliasing,
                     post_processing: &self.post_processing,
+                    prep_config: &self.prep_config,
                 };
                 self.render_passes
                     .geometry
@@ -460,6 +466,7 @@ impl AwsmRenderer {
                 features: &self.features,
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
             };
             self.render_passes.geometry.masked_pipelines.relayout(
                 &mut ctx,

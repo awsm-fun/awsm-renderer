@@ -595,6 +595,7 @@ impl AwsmRenderer {
                 crate::optimization_policy::FrameOptimizations::default(),
             ),
             viewport_size,
+            prep_config: &self.prep_config,
         };
 
         // Snapshot per-opaque-renderable info that the occlusion + indirect-
@@ -864,6 +865,20 @@ impl AwsmRenderer {
             }
 
             self.render_passes.material_classify.render(&ctx)?;
+        }
+
+        // Material prep (Plan B) — shared, material-independent per-pixel
+        // resolve. `Some` only when `PrepPassConfig.enabled`, so this is the
+        // gate: with the flag off the pass is `None` and the legacy path is
+        // byte-identical. Dispatched between classify and opaque; its outputs
+        // are inert (unread) until later Plan B stages consume them.
+        if let Some(prep) = self.render_passes.material_prep.as_ref() {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                Some(tracing::span!(tracing::Level::INFO, "Material Prep RenderPass").entered())
+            } else {
+                None
+            };
+            prep.render(&ctx)?;
         }
 
         {
@@ -1875,6 +1890,10 @@ pub struct RenderContext<'a> {
     /// `getCurrentTexture().getSize()`, which is small (~0.1–1 µs) but
     /// happens at multiple pass-level call sites per frame.
     pub viewport_size: (u32, u32),
+    /// Plan B shared-prep config. Inert today — the prep pass is dispatched
+    /// only when `render_passes.material_prep` is `Some` (i.e. when this is
+    /// enabled). Threaded through so later stages can branch shading on it.
+    pub prep_config: &'a crate::render_passes::material_prep::PrepPassConfig,
 }
 
 impl<'a> RenderContext<'a> {

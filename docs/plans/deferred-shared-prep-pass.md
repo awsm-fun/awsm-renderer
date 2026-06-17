@@ -153,7 +153,7 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      RenderTextures::new → views() → RenderTexturesInner::new (mirrors `decal_color`); added to
      RenderTextureViews + destroy(); call site passes `prep_config.enabled`. Inert (unread), compiles
      green, 255 tests pass.
-   - [ ] **1b-pipeline — bind group + pipeline + dispatch.** material_prep/{bind_group.rs, render_pass.rs,
+   - [x] **1b-pipeline — bind group + pipeline + dispatch.** material_prep/{bind_group.rs, render_pass.rs,
      pipeline.rs} mirroring material_classify; wire into RenderPasses + build() + bind-groups recreate;
      dispatch between classify and opaque. GPU-verify flag-on renders identically to off + clean console.
 1. **Prep pass — attributes.** New compute pass after classify: interpolate **UVs + vertex colors**

@@ -252,6 +252,7 @@ impl AwsmRenderer {
                 features: &self.features,
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
             };
             let geometry_descs =
                 crate::render_passes::geometry::pipeline::GeometryPipelines::build_descriptors(
