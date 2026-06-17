@@ -17,9 +17,17 @@ single-branching-shading pass ("uber-shader", explicitly out of scope here) woul
    the pixel's froxel, in froxel-list order. Overflow (>K shadowed lights in a froxel) is **clamped +
    logged** (no silent cap). The per-material lighting loop walks the same froxel list in the same
    order, so its j-th shadowed light reads layer `j` — no per-pixel search needed.
-2. **World-position is materialized fp32** via the existing perspective-correct vertex interpolation
-   (`positions.wgsl::get_standard_coordinates` — NOT depth unprojection). UV sets stay **variable**
-   (the `uv_set_index` bitfield + `mesh_meta.uv_set_count`), stored up to the existing practical max.
+2. **CORRECTED (verified in code, approved by David):** world position is NOT materialized. `cs_opaque`
+   reconstructs it from **depth** via `standard.wgsl::get_standard_coordinates` (`depth_tex` → NDC →
+   `inv_proj` → `inv_view`), which is cheap (depth + 2 matrix muls; only `depth_tex` + `camera` bound)
+   — `positions.wgsl`'s vertex-interpolation is unused by the opaque kernel. So the slim shader KEEPS
+   computing world-pos from depth (parity-exact with `cs_opaque`), and the prep pass instead
+   materializes the **geometry-pool-fetch-heavy attributes**: interpolated **UV sets** (variable —
+   `uv_set_index` bitfield + `mesh_meta.uv_set_count`, up to the existing max) + **vertex color**. This
+   drops the ~100 MB fp32 world-pos buffer (the main 4K bandwidth risk) and the `reconstruct_world_pos`
+   tunable becomes obsolete (always reconstruct in-shader; the builder field can be removed in cleanup).
+   Net: smaller size win than first pitched (world-pos was never the expensive part), but the
+   deferred-shadow win + bandwidth-safety keep it worthwhile.
 3. **Edges = Option B (compact edge buffer).** The prep pass additionally emits a small
    per-edge-sample attribute+shadow buffer (edge pixels are a tiny fraction), and `cs_edge` *reads* it
    instead of reconstructing — so BOTH the primary and edge paths slim, and `cs_edge` collapses toward
@@ -58,16 +66,16 @@ Per-pixel, full-res (sample 0). Sizes shown @720p / @4K:
 
 | buffer | format | bytes/px | @720p | @4K | notes |
 |--------|--------|---------:|------:|----:|-------|
-| world_pos | fp32 ×3 (storage buf, packed) | 12 | 11 MB | 100 MB | biggest item; the prime bandwidth variable |
+| ~~world_pos~~ | — | — | — | — | **DROPPED** — reconstructed in-shader from depth (cheap), never materialized |
 | UV sets | RG16F × `uv_set_count` (cap) | 4·S | 4 MB·S | 33 MB·S | S = sets actually used |
 | vertex color | RGBA8 × color sets (cap) | 4·C | 4 MB·C | 33 MB·C | usually C≤1 |
 | shadow visibility | R8 × K layers | K | ~1 MB·K | 8 MB·K | K = per-pixel caster cap |
 | normal/tangent | (reuse `normal_tangent_tex`) | — | — | — | already materialized |
 | UV gradients | recompute from `barycentric_derivatives_tex` | — | — | — | don't materialize |
 
-- **world_pos is the bandwidth swing.** Default: materialize it (principle-consistent, precise). A
-  build-time flag `prep_reconstruct_world_pos` falls back to in-shader reconstruction (keeps
-  `positions.wgsl` in materials, saves ~100 MB @4K). Decide the default from the 4K measurement.
+- **No world-pos buffer** → the main 4K bandwidth swing is gone. The slim shader keeps the
+  depth-unprojection `get_standard_coordinates` (already in `standard.wgsl`, parity-exact). Remaining
+  prep buffers (UV/vcolor/shadow) are far smaller.
 - Each pixel is read by exactly one material pass, so materializing does NOT multiply reads by material
   count — total read traffic ≈ one full-res read regardless of N.
 
@@ -130,18 +138,21 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      visibility sample 0, writes a sentinel to an `rgba32float` world_pos storage texture). naga-test
      `material_prep_shader_validates` (MSAA on+off); 255 tests green.
    - [ ] **0c-buffers — FOLDED into the pipeline-wiring sub-stage.** Inert GPU allocation behind an
-     off-by-default flag is untestable + churns; instead allocate the attr G-buffer (world_pos
-     Rgba32float + UVs/vcolor) + K-layer R8 shadow array + compact edge buffer + bind-group layouts
-     *with* the pipeline/dispatch wiring, conditionally on `enabled`, where they're first used.
-   - [ ] **1a — real attribute body.** Replace the placeholder `cs_prep` with perspective-correct
-     world_pos (shared with positions.wgsl) + UV/vcolor interpolation; add the geometry-pool/mesh-meta
-     bindings. naga-validate.
-   - [ ] **1b — pipeline + buffers + dispatch.** Allocate outputs (conditionally on `enabled`), build
-     the bind group(s)/pipeline, dispatch between classify and opaque. GPU-verify the pass runs +
-     writes (debug readback / view) — flag-on vs off, clean console.
-1. **Prep pass — attributes.** New compute pass after classify: interpolate world_pos + UVs + vertex
-   colors into the G-buffer (dispatched over covered tiles). Validate output vs in-shader values (a
-   debug compare). No material reads yet.
+     off-by-default flag is untestable + churns; instead allocate the **UV + vcolor** attr buffers (NO
+     world-pos buffer — decision #2 corrected) + K-layer R8 shadow array + compact edge buffer +
+     bind-group layouts *with* the pipeline/dispatch wiring, conditionally on `enabled`, where used.
+   - [ ] **1a — real attribute body (UV + vcolor).** Replace the placeholder `cs_prep`: read
+     mesh-meta + triangle indices + barycentric, interpolate **UV sets + vertex color** from the
+     geometry pool (reuse `_texture_uv_per_vertex` / `vertex_color` logic), write to the UV/vcolor
+     outputs. Swap the scaffold's `world_pos_out` for `uv_out`/`vcolor_out`. (World-pos is NOT written —
+     the slim shader keeps `get_standard_coordinates` from depth.) Add geometry-pool/mesh-meta bindings;
+     naga-validate.
+   - [ ] **1b — pipeline + buffers + dispatch.** Allocate UV/vcolor outputs (conditionally on
+     `enabled`), build the bind group(s)/pipeline, dispatch between classify and opaque. GPU-verify the
+     pass runs + writes (debug readback / view) — flag-on vs off, clean console.
+1. **Prep pass — attributes.** New compute pass after classify: interpolate **UVs + vertex colors**
+   into the attr buffers (world-pos is NOT materialized — kept as depth-unprojection in the slim
+   shader). Dispatched over covered tiles. Validate output vs in-shader values. No material reads yet.
 2. **Slim `cs_opaque` (no-MSAA).** Behind `with_prep_pass`, `cs_opaque` reads the attr G-buffer instead
    of reconstructing; drop `positions`/`standard`/UV-interp includes from the no-MSAA module. Measure
    size drop; visual parity; tighten ceilings.
@@ -167,10 +178,11 @@ pipeline.rs, bind_group.rs, buffers.rs}` + `shader/{cache_key.rs, template.rs, m
 
 **Outputs / allocation** (`render_textures.rs` `RenderTexturesInner::new` + the `views()` resize path at
 the size-changed branch — add new fields there so they re-alloc on resize):
-- `world_pos` — `Rgba32float` storage texture (materialized; per locked decision — NOT depth). Skipped
-  when `reconstruct_world_pos`.
+- ~~`world_pos`~~ — NOT materialized (decision #2 corrected): the slim shader keeps depth-unprojection
+  `get_standard_coordinates`. Prep still computes world-pos locally (from depth) for shadow sampling,
+  but does not write it.
 - UV sets — store interpolated UVs (variable count, capped) — format `Rg16float` ×N (or packed); vcolor
-  `Rgba8unorm`.
+  `Rgba8unorm`. (These are the geometry-pool-fetch-heavy attrs worth materializing.)
 - `shadow_visibility` — **`R8unorm` `texture_2d_array`, K layers** (K = `PrepPassConfig::clamped_k()`),
   layer j = j-th shadowed froxel light. (Resolved ambiguity: R8unorm, not uint — it's a 0..1 factor.)
 - compact per-edge-sample buffer — storage buffer in `material_prep/buffers.rs` (own it here, like
@@ -179,7 +191,7 @@ the size-changed branch — add new fields there so they re-alloc on resize):
 **Bind groups** (`material_prep/bind_group.rs`, dual MSAA/non-MSAA layout like classify): inputs =
 visibility_data, barycentric(+derivatives), normal_tangent, camera, mesh-meta/material storage,
 `cull_params` + `lights_storage`, shadow maps (`shared_wgsl/shadow/bind_groups.wgsl` — prep is a shadow
-*sampler*); outputs = world_pos storage view + shadow_visibility + UV/vcolor + edge buffer. Rebuild on
+*sampler*); outputs = shadow_visibility + UV/vcolor + edge buffer (no world_pos output). Rebuild on
 `render_texture_views` recreate OR light-culling-buffer recreate.
 
 **Dispatch** (`render.rs`, between `material_classify.render()` and `material_opaque.render()`): gate on
