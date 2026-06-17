@@ -277,9 +277,24 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
        runtime-selected by mode (PRIMARY→buffer, else→inline). **GPU-verified BYTE-IDENTICAL** MSAA+prep vs
        MSAA+no-prep on SheenChair (textures+self-shadow+edges); no-prep byte-identical + no-MSAA+prep
        parity-equal (WGSL byte-diff). 258+34 green.
-     - **5b = compact buffer + prep-edge dispatch + cs_edge reads compact** (UV/vcolor, then shadow). The
-       fragile part. Drops recompute from cs_edge. MSAA-on parity gate (incl. silhouette edges).
-     - MSAA-on GPU parity is the gate for each; do NOT force a broken edge path.
+     - **5b REVISED (post-investigation 2026-06-17) — shadow-first, attrs deferred:**
+       - **5b-shadow [DO NOW] = compact per-edge-sample SHADOW buffer + cs_prep_edge + cs_edge reads it.**
+         This is the BIG MSAA win: it drops the inline `sample_shadow_*` (~50 KB) from the MSAA module
+         (the no-MSAA analog of stage 4), and the buffer is SMALL (~8 MB at the 512K edge ceiling,
+         Rgba8unorm-packed K slots). cs_prep_edge: indirect over `edge_count` (reuse the `final_blend_args`
+         DispatchIndirectArgs cell, which is already sized for all edges), one thread per edge pixel from
+         `edge_to_xy`, loops MSAA samples, walks froxel_walk + samples shadow maps **with the PER-SAMPLE
+         normal** (shade_sample uses sample-0 world-pos but per-sample normal for the bias — so the existing
+         full-screen `prep_shadow_visibility` CANNOT be reused for edge samples; a per-edge-sample shadow
+         buffer is required for parity). cs_edge `apply_lighting` EDGE mode reads it (slot j → packed),
+         dropping inline `sample_shadow_*` under MSAA → `needs_shadow_sampling` can finally go false under
+         MSAA. MSAA-on parity gate (SheenChair self-shadow + edges).
+       - **5b-attrs [DEFER — surfaced to David] = compact per-edge-sample UV/vcolor buffer.** SMALL size
+         win (UV recompute helpers are small vs the shadow code) for a LARGE VRAM cost (~48 MB set-0, up to
+         ~128 MB multi-set, at the 512K ceiling). Fails the "prep should always win or tiny diff" bar →
+         RECOMMEND deferring it; cs_edge keeps recomputing UV/vcolor (small residual). Revisit only if a
+         real workload shows the UV recompute matters, or with a much smaller edge-attr budget / f16.
+     - MSAA-on GPU parity is the gate; do NOT force a broken edge path.
    - **Still relevant (corrected per David 2026-06-17):** uber-shader does NOT collapse shading into one
      branching pass — it's *selective* grouping (some materials share a switch, not all), so the
      per-material `cs_edge` MSAA path persists and this slimming is NOT obviated. Deferral reason is now
