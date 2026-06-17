@@ -158,12 +158,29 @@ the current HEAD. Every stage below must reproduce these **byte-identically** (e
   pipeline build early-returns under no-MSAA). 261+34 green. **GPU byte-parity VERIFIED (max-diff 0, 0
   pixels):** default build (cs_shade) == legacy baseline anchors on MetalRoughSpheres (silhouette) and
   SheenChair (multi-material fabric+wood + self-shadow + sky edges), MSAA, prep off.
-- **U2b — delete the legacy MSAA kernels.** Now that cs_shade is the verified default, delete cs_edge +
-  skybox_edge_resolve entry points + their pipelines + `render_edge_resolve` + `append_edge_sample` + the
-  per-bucket edge-sample lists + their per-bucket indirect args (from classify + edge_buffers layout). Keep
-  cs_opaque + skybox_primary (the no-MSAA path) + final_blend + edge_slot_map + accumulator + edge_to_xy +
-  edge_count + final_blend args. Force the MSAA dispatch unconditional (legacy A/B path goes away). Re-verify
-  byte-parity vs anchors. Measure pipelines/material + classify memory/atomic traffic + MSAA shader surface.
+- **U2b — delete the legacy MSAA kernels** (sub-staged for safety; the only GPU-affecting steps are the
+  dispatch flip (U2b-1) and the buffer-offset shifts (U2b-3) — the pipeline-build deletion (U2b-2) is pure
+  dead-code removal since the legacy pipelines are no longer dispatched):
+  - **U2b-1 [DONE] — dispatch flip.** render.rs: under MSAA always dispatch `render_shade` (dropped the
+    `unified_edge &&` condition); no-MSAA → `render()` (cs_opaque + skybox_primary). Deleted the orphaned
+    `render_edge_resolve` method (its only caller was the legacy MSAA branch). The legacy
+    cs_edge/skybox_edge_resolve pipelines still COMPILE but are never dispatched (dead — removed in U2b-2).
+    261+34 green. **GPU byte-parity VERIFIED (max-diff 0, 0 pixels):** SheenChair MSAA prep-off == baseline
+    (default-build cs_shade dispatch is byte-identical to U2a by construction; this confirms the
+    render_edge_resolve deletion didn't perturb it).
+  - **U2b-2 — delete the dead legacy pipeline build + entry points.** Remove the cs_edge per-shader pipeline
+    build + skybox_edge_resolve pipeline + their layout/cache keys + scheduler-launch entries + the `cs_edge`
+    entry point (material_opaque compute.wgsl) + skybox_edge_resolve.wgsl + skybox_edge_bind_groups.wgsl +
+    edge_template/edge_cache_key entries for them. Pure dead-code (not dispatched). Keep cs_opaque +
+    skybox_primary (no-MSAA) + cs_shade + final_blend. Verify still compiles + renders == baseline.
+  - **U2b-3 — buffer-layout surgery (memory win).** Drop `append_edge_sample` + the per-bucket + skybox
+    sample-list regions + per_shader/skybox indirect args from classify compute.wgsl + edge_buffers.rs
+    `EdgeBufferLayout` (per_shader_count_base, skybox_count_index, per_shader_sample_list_base,
+    skybox_sample_list_base, sample_entries_per_bucket) + the edge_layout uniform + bind groups. Keep:
+    edge_count, edge_to_xy, edge_slot_map, accumulator (+ its clear), final_blend args, edge_overflow_count.
+    The kept-region offsets shift — classify (writer) + cs_shade + final_blend all read them via the
+    edge_layout uniform, so parity holds iff the layout calc + upload stay consistent. GPU-verify offsets
+    (MSAA, prep on+off, all models). Measure classify atomic/memory traffic dropped + record in spec.
 - **U2 (orig) — flip + delete.** Make `cs_shade` the only path: classify emits any-sample `tile_mask` +
   `edge_id_tex` only; drop `append_edge_sample` + per-bucket edge-sample lists + their per-bucket indirect
   args; delete `cs_opaque`/`cs_edge`/`skybox_primary`/`skybox_edge_resolve` entry points + their pipelines.

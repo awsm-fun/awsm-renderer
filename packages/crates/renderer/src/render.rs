@@ -907,19 +907,16 @@ impl AwsmRenderer {
                 None
             };
 
-            // Unified-edge (U2, `docs/plans/unified-edge-shading.md`): the toggle
-            // is now ON by default, so under MSAA the renderer shades through the
-            // merged `cs_shade` path (one kernel: interior sample-0 → opaque_tex +
-            // edge per-sample → accumulator) + the unchanged final_blend, in
-            // place of cs_opaque + cs_edge + skybox_primary + skybox_edge_resolve
-            // + final_blend. Reuses the SAME accumulator + edge_slot_map +
-            // final_blend resolve, so the output is byte-identical to the legacy
-            // path (U1 GPU-verified max-diff 0). cs_shade exists only under MSAA,
-            // so no-MSAA falls through to the normal render() path (which has no
-            // edges to resolve anyway → identical). `with_unified_edge(false)`
-            // still selects the legacy path (kept for A/B through U2; U2b deletes
-            // the legacy kernels, U3 removes the toggle).
-            if ctx.unified_edge && ctx.anti_aliasing.msaa_sample_count.is_some() {
+            // Unified-edge (U2b, `docs/plans/unified-edge-shading.md`): under MSAA
+            // the renderer shades through the merged `cs_shade` path (one kernel:
+            // interior sample-0 → opaque_tex + edge per-sample → accumulator) +
+            // the unchanged final_blend — the ONLY MSAA shading path now. The
+            // legacy cs_opaque + cs_edge + skybox_primary + skybox_edge_resolve +
+            // render_edge_resolve dispatch is gone (U1/U2a GPU-verified cs_shade
+            // byte-identical max-diff 0). No-MSAA falls through to render()
+            // (cs_opaque + skybox_primary; no edges to resolve). The `unified_edge`
+            // toggle no longer gates the dispatch — it is removed in U3.
+            if ctx.anti_aliasing.msaa_sample_count.is_some() {
                 self.render_passes
                     .material_opaque
                     .render_shade(&ctx, renderables.opaque)?;
@@ -927,15 +924,6 @@ impl AwsmRenderer {
                 self.render_passes
                     .material_opaque
                     .render(&ctx, renderables.opaque)?;
-
-                // Per-shader-id MSAA edge-resolve + final blend (Priority
-                // 3 in https://github.com/dakom/awsm-renderer/pull/99). No-op when MSAA
-                // is off or the edge_resolve pipelines haven't been
-                // submitted-and-resolved yet (warn-and-skip per
-                // pipeline_scheduler::warn_pipeline_not_compiled).
-                self.render_passes
-                    .material_opaque
-                    .render_edge_resolve(&ctx)?;
             }
         }
 
