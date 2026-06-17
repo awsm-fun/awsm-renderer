@@ -254,6 +254,10 @@ pub struct AwsmRenderer {
     pub render_passes: RenderPasses,
     pub environment: Environment,
     pub anti_aliasing: AntiAliasing,
+    /// Plan B shared-prep + deferred-shadow config, captured at build time
+    /// (`docs/plans/deferred-shared-prep-pass.md`). Inert until the prep pass is
+    /// wired in; later stages read `prep_config.enabled` to choose the path.
+    pub prep_config: crate::render_passes::material_prep::PrepPassConfig,
     pub post_processing: PostProcessing,
     /// GPU mesh-picking subsystem. `None` when
     /// `features.picking == false` (the default for library /
@@ -798,6 +802,10 @@ pub struct AwsmRendererBuilder {
     /// → default 32 (identical to today). Set via
     /// [`AwsmRendererBuilder::with_bucket_config`]; validated `1..=65534`.
     bucket_config: Option<crate::dynamic_materials::BucketConfig>,
+    /// Plan B shared-prep + deferred-shadow config
+    /// (`docs/plans/deferred-shared-prep-pass.md`). Inert until the prep pass is
+    /// wired in; `enabled` defaults `false` (legacy recompute-in-shader path).
+    prep_config: crate::render_passes::material_prep::PrepPassConfig,
     /// Adaptive runtime policy. Defaults to `Auto` mode for the
     /// gpu_culling path; library consumers can override at build time
     /// (or via `AwsmRenderer::set_optimization_policy` later) to force
@@ -897,6 +905,7 @@ impl AwsmRendererBuilder {
             features: RendererFeatures::default(),
             max_edge_budget: None,
             bucket_config: None,
+            prep_config: crate::render_passes::material_prep::PrepPassConfig::default(),
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
             phase_handler: None,
             scene_spatial_config: None,
@@ -1009,6 +1018,33 @@ impl AwsmRendererBuilder {
             }
         };
         self.bucket_config = Some(config);
+        self
+    }
+
+    /// Plan B (`docs/plans/deferred-shared-prep-pass.md`) A/B flag. `false`
+    /// (default) keeps the legacy path where every per-material kernel
+    /// reconstructs attributes + samples shadows inline; `true` routes through
+    /// the shared prep pass + slim per-material shading. Inert until the prep
+    /// pass is wired in (later stages).
+    pub fn with_prep_pass(mut self, enabled: bool) -> Self {
+        self.prep_config.enabled = enabled;
+        self
+    }
+
+    /// Max shadow casters that can overlap a single pixel (`K`) — sizes the
+    /// per-pixel shadow-visibility buffer. Clamped to
+    /// `1..=PrepPassConfig::MAX_SHADOW_CASTERS_PER_PIXEL_CEILING`.
+    pub fn with_max_shadow_casters_per_pixel(mut self, k: u32) -> Self {
+        self.prep_config.max_shadow_casters_per_pixel =
+            k.clamp(1, crate::render_passes::material_prep::PrepPassConfig::MAX_SHADOW_CASTERS_PER_PIXEL_CEILING);
+        self
+    }
+
+    /// World-position tunable for the prep pass. `false` (default) materializes
+    /// world position fp32; `true` reconstructs it in the slim shader (saves the
+    /// world-pos buffer's bandwidth — the main 4K cost). See the spec.
+    pub fn with_prep_reconstruct_world_pos(mut self, reconstruct: bool) -> Self {
+        self.prep_config.reconstruct_world_pos = reconstruct;
         self
     }
 
@@ -1166,6 +1202,7 @@ impl AwsmRendererBuilder {
             mut features,
             max_edge_budget,
             bucket_config,
+            prep_config,
             optimization_policy,
             phase_handler,
             scene_spatial_config,
@@ -1840,6 +1877,7 @@ impl AwsmRendererBuilder {
             logging,
             render_textures,
             anti_aliasing,
+            prep_config,
             post_processing,
             picker,
             lines,
