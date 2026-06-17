@@ -102,8 +102,8 @@ use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
 use awsm_renderer::meshes::MeshKey;
-use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::raw_mesh::RawMeshData;
+use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::{AwsmRenderer, LoadPhase};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
@@ -889,7 +889,10 @@ async fn capture_prefab(
     placeholder: MaterialKey,
     loaded: &mut LoadedScene,
 ) -> Result<PrefabTemplate> {
-    debug_assert!(parent.is_none(), "prefab root capture starts at the subtree root");
+    debug_assert!(
+        parent.is_none(),
+        "prefab root capture starts at the subtree root"
+    );
     // Pure structural plan first (DFS pre-order, parent wiring, nested-prefab
     // boundaries) — unit-tested independently of the GPU mesh build below.
     let layout = prefab_subtree_layout(node);
@@ -1041,7 +1044,8 @@ async fn build_node_meshes(
             // prefab template the joint binding is omitted (skin-correspondence is
             // a follow-on even outside prefabs); the rig poses at bind pose.
             let (glb_keys, _) =
-                load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat).await?;
+                load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
+                    .await?;
             keys.extend(glb_keys);
         }
         NodeKind::Sprite(def) => {
@@ -1150,8 +1154,8 @@ async fn build_sprite_mesh(
     use awsm_renderer::materials::flipbook::{FlipBookMaterial, FlipBookMode};
     use awsm_renderer::materials::unlit::UnlitMaterial;
     use awsm_renderer::meshes::mesh::BillboardMode as RBillboard;
-    use awsm_scene::{BillboardMode, FlipBookModeDef, SpriteAlphaMode};
     use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
+    use awsm_scene::{BillboardMode, FlipBookModeDef, SpriteAlphaMode};
 
     let alpha = match def.alpha_mode {
         SpriteAlphaMode::Opaque => MaterialAlphaMode::Opaque,
@@ -1163,7 +1167,9 @@ async fn build_sprite_mesh(
     // The sprite atlas / texture is colour data → sRGB + albedo mips, like a
     // base-color slot. `None` keeps the slot unbound (a flat-tint sprite).
     let tex = match &def.texture {
-        Some(t) => texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await,
+        Some(t) => {
+            texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await
+        }
         None => None,
     };
 
@@ -1247,11 +1253,14 @@ async fn materialize_decal(
     // it failed to load / isn't pooled) → index 0, as the editor bridge does.
     let texture_index = match &cfg.texture {
         Some(t) => {
-            match texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await {
+            match texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await
+            {
                 Some(mt) => renderer
                     .textures
                     .get_entry(mt.key)
-                    .map(|e| (e.array_index as u32) * DECAL_POOL_LAYERS_PER_ARRAY + e.layer_index as u32)
+                    .map(|e| {
+                        (e.array_index as u32) * DECAL_POOL_LAYERS_PER_ARRAY + e.layer_index as u32
+                    })
                     .unwrap_or(0),
                 None => 0,
             }

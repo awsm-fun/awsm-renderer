@@ -163,18 +163,78 @@ impl ShaderIncludes {
     /// projects, but `tier_a` is false so they're never offered to custom
     /// materials (and `ShaderIncludeFlags::for_custom` masks them anyway).
     pub const KEY_TABLE: &'static [(&'static str, Self, bool, &'static str)] = &[
-        ("math", Self::MATH, true, "Basic math helpers (constants, clamping, etc.)"),
-        ("camera", Self::CAMERA, true, "Camera uniform + view/projection access"),
-        ("color_space", Self::COLOR_SPACE, true, "Linear/sRGB + tonemap-adjacent helpers"),
-        ("textures", Self::TEXTURES, true, "Texture-pool sampling + UV helpers"),
-        ("vertex_color", Self::VERTEX_COLOR, true, "Per-vertex COLOR_n attribute access"),
-        ("light_access", Self::LIGHT_ACCESS, true, "Punctual light access: get_lights_info / get_light / light_sample"),
-        ("shadows", Self::SHADOWS, true, "Shadow-map sampling helpers"),
-        ("skybox", Self::SKYBOX, true, "Skybox cubemap sampling (sample_skybox)"),
-        ("extras", Self::EXTRAS, true, "Extras storage-pool accessors (extras_load_*)"),
-        ("apply_lighting", Self::APPLY_LIGHTING, false, "(PBR-internal) apply_lighting orchestration — NOT available to custom materials"),
-        ("brdf", Self::BRDF, false, "(PBR-internal) PBR BRDF orchestrators — NOT available to custom materials"),
-        ("material_color_calc", Self::MATERIAL_COLOR_CALC, false, "(PBR-internal) PbrMaterialColor builder — NOT available to custom materials"),
+        (
+            "math",
+            Self::MATH,
+            true,
+            "Basic math helpers (constants, clamping, etc.)",
+        ),
+        (
+            "camera",
+            Self::CAMERA,
+            true,
+            "Camera uniform + view/projection access",
+        ),
+        (
+            "color_space",
+            Self::COLOR_SPACE,
+            true,
+            "Linear/sRGB + tonemap-adjacent helpers",
+        ),
+        (
+            "textures",
+            Self::TEXTURES,
+            true,
+            "Texture-pool sampling + UV helpers",
+        ),
+        (
+            "vertex_color",
+            Self::VERTEX_COLOR,
+            true,
+            "Per-vertex COLOR_n attribute access",
+        ),
+        (
+            "light_access",
+            Self::LIGHT_ACCESS,
+            true,
+            "Punctual light access: get_lights_info / get_light / light_sample",
+        ),
+        (
+            "shadows",
+            Self::SHADOWS,
+            true,
+            "Shadow-map sampling helpers",
+        ),
+        (
+            "skybox",
+            Self::SKYBOX,
+            true,
+            "Skybox cubemap sampling (sample_skybox)",
+        ),
+        (
+            "extras",
+            Self::EXTRAS,
+            true,
+            "Extras storage-pool accessors (extras_load_*)",
+        ),
+        (
+            "apply_lighting",
+            Self::APPLY_LIGHTING,
+            false,
+            "(PBR-internal) apply_lighting orchestration — NOT available to custom materials",
+        ),
+        (
+            "brdf",
+            Self::BRDF,
+            false,
+            "(PBR-internal) PBR BRDF orchestrators — NOT available to custom materials",
+        ),
+        (
+            "material_color_calc",
+            Self::MATERIAL_COLOR_CALC,
+            false,
+            "(PBR-internal) PbrMaterialColor builder — NOT available to custom materials",
+        ),
     ];
 
     /// Parse an authoring string key (e.g. `"light_access"`) to its include bit.
@@ -361,7 +421,11 @@ mod tests {
     fn key_table_is_single_source_of_truth() {
         // from_key round-trips every table key.
         for (k, bit, _, _) in ShaderIncludes::KEY_TABLE {
-            assert_eq!(ShaderIncludes::from_key(k), Some(*bit), "from_key({k}) drifted");
+            assert_eq!(
+                ShaderIncludes::from_key(k),
+                Some(*bit),
+                "from_key({k}) drifted"
+            );
         }
         assert_eq!(ShaderIncludes::from_key("nonsense"), None);
 
@@ -380,8 +444,14 @@ mod tests {
         // in the Tier-A catalog (never offered to custom materials).
         let tier_a_keys: Vec<_> = ShaderIncludes::tier_a_catalog().map(|(k, _)| k).collect();
         for forbidden in ["apply_lighting", "brdf", "material_color_calc"] {
-            assert!(ShaderIncludes::from_key(forbidden).is_some(), "{forbidden} must still parse (back-compat)");
-            assert!(!tier_a_keys.contains(&forbidden), "{forbidden} must NOT be on the custom Tier-A menu");
+            assert!(
+                ShaderIncludes::from_key(forbidden).is_some(),
+                "{forbidden} must still parse (back-compat)"
+            );
+            assert!(
+                !tier_a_keys.contains(&forbidden),
+                "{forbidden} must NOT be on the custom Tier-A menu"
+            );
         }
     }
 

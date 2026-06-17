@@ -13,16 +13,14 @@
 
 use std::borrow::Cow;
 
-use awsm_renderer_core::bind_groups::{
-    BindGroupDescriptor, BindGroupEntry, BindGroupResource,
-};
+use awsm_renderer_core::bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource};
 use awsm_renderer_core::buffers::BufferBinding;
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 
 use crate::{
     error::Result,
-    pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey},
     pipeline_layouts::PipelineLayoutCacheKey,
+    pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey},
     render::RenderContext,
     render_passes::{
         material_opaque::edge_buffers::MaterialEdgeBuffers,

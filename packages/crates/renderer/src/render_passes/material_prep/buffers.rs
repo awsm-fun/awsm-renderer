@@ -91,20 +91,22 @@ impl EdgeShadowBuffer {
             .into(),
         )?;
 
-        let storage_view = texture.create_view_with_descriptor(
-            &TextureViewDescriptor::new(Some("PrepEdgeShadow storage"))
-                .with_dimension(TextureViewDimension::N2dArray)
-                .with_array_layer_count(layers)
-                .into(),
-        )
-        .map_err(AwsmCoreError::create_texture_view)?;
-        let sampled_view = texture.create_view_with_descriptor(
-            &TextureViewDescriptor::new(Some("PrepEdgeShadow sampled"))
-                .with_dimension(TextureViewDimension::N2dArray)
-                .with_array_layer_count(layers)
-                .into(),
-        )
-        .map_err(AwsmCoreError::create_texture_view)?;
+        let storage_view = texture
+            .create_view_with_descriptor(
+                &TextureViewDescriptor::new(Some("PrepEdgeShadow storage"))
+                    .with_dimension(TextureViewDimension::N2dArray)
+                    .with_array_layer_count(layers)
+                    .into(),
+            )
+            .map_err(AwsmCoreError::create_texture_view)?;
+        let sampled_view = texture
+            .create_view_with_descriptor(
+                &TextureViewDescriptor::new(Some("PrepEdgeShadow sampled"))
+                    .with_dimension(TextureViewDimension::N2dArray)
+                    .with_array_layer_count(layers)
+                    .into(),
+            )
+            .map_err(AwsmCoreError::create_texture_view)?;
 
         Ok(Self {
             texture,

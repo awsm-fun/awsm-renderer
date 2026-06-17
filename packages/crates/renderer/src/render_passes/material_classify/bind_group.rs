@@ -347,9 +347,11 @@ async fn create_bind_group_layout_key(
     if multisampled_geometry && edge_emit_supported(ctx) {
         entries.push(BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::StorageTexture(
-                StorageTextureBindingLayout::new(awsm_renderer_core::texture::TextureFormat::R32uint)
-                    .with_view_dimension(TextureViewDimension::N2d)
-                    .with_access(StorageTextureAccess::WriteOnly),
+                StorageTextureBindingLayout::new(
+                    awsm_renderer_core::texture::TextureFormat::R32uint,
+                )
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_access(StorageTextureAccess::WriteOnly),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

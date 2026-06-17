@@ -230,8 +230,7 @@ impl MaterialOpaquePipelines {
         let texture_pool_arrays_len = bind_groups.texture_pool_arrays_len;
         let texture_pool_samplers_len = bind_groups.texture_pool_sampler_keys.len() as u32;
 
-        let mut shader_descs: Vec<OpaqueShaderDesc> =
-            Vec::with_capacity(OPAQUE_SHADER_IDS.len());
+        let mut shader_descs: Vec<OpaqueShaderDesc> = Vec::with_capacity(OPAQUE_SHADER_IDS.len());
 
         // Compile invariant (David): the opaque module emits `cs_opaque` (the
         // `main` pipeline entry) ONLY for non-MSAA. Under MSAA the bucket is

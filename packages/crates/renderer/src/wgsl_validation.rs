@@ -31,7 +31,10 @@ use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttri
 fn naga_validate(src: &str, label: &str) {
     let module = match naga::front::wgsl::parse_str(src) {
         Ok(m) => m,
-        Err(e) => panic!("{label}: naga WGSL PARSE failed:\n{}", e.emit_to_string(src)),
+        Err(e) => panic!(
+            "{label}: naga WGSL PARSE failed:\n{}",
+            e.emit_to_string(src)
+        ),
     };
     let mut validator = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
@@ -135,7 +138,12 @@ fn first_party_opaque_shaders_validate() {
         (MaterialShaderId::PBR, ShadingBase::Pbr, false, "pbr"),
         (MaterialShaderId::UNLIT, ShadingBase::Unlit, false, "unlit"),
         (MaterialShaderId::TOON, ShadingBase::Toon, false, "toon"),
-        (MaterialShaderId::FLIPBOOK, ShadingBase::Flipbook, false, "flipbook"),
+        (
+            MaterialShaderId::FLIPBOOK,
+            ShadingBase::Flipbook,
+            false,
+            "flipbook",
+        ),
         (MaterialShaderId::SKYBOX, ShadingBase::Pbr, true, "skybox"),
     ];
     for (id, base, owns_skybox, name) in bases {
@@ -181,16 +189,19 @@ fn unified_shade_opaque_shaders_validate() {
         (MaterialShaderId::PBR, ShadingBase::Pbr, false, "pbr"),
         (MaterialShaderId::UNLIT, ShadingBase::Unlit, false, "unlit"),
         (MaterialShaderId::TOON, ShadingBase::Toon, false, "toon"),
-        (MaterialShaderId::FLIPBOOK, ShadingBase::Flipbook, false, "flipbook"),
+        (
+            MaterialShaderId::FLIPBOOK,
+            ShadingBase::Flipbook,
+            false,
+            "flipbook",
+        ),
         (MaterialShaderId::SKYBOX, ShadingBase::Pbr, true, "skybox"),
     ];
     for (id, base, owns_skybox, name) in bases {
         for prep in [false, true] {
             for mips in [false, true] {
-                let key =
-                    first_party_key_prep(id, base, owns_skybox, Some(4), mips, prep);
-                let label =
-                    format!("opaque-unified/{name} msaa=4 mips={mips} prep={prep}");
+                let key = first_party_key_prep(id, base, owns_skybox, Some(4), mips, prep);
+                let label = format!("opaque-unified/{name} msaa=4 mips={mips} prep={prep}");
                 let src = render(&key, &label);
                 naga_validate(&src, &label);
                 assert!(
@@ -390,8 +401,13 @@ fn opaque_shadow_from_buffer_variant_validates() {
 
     // Measurement: report the prep-read (no-MSAA) PBR size vs prep-off, and the
     // MSAA module size prep-on vs prep-off (the 5b-shadow drop).
-    let msaa_off_key =
-        first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, Some(4), true);
+    let msaa_off_key = first_party_key(
+        MaterialShaderId::PBR,
+        ShadingBase::Pbr,
+        false,
+        Some(4),
+        true,
+    );
     let msaa_off_src = render(&msaa_off_key, "opaque/pbr prep-off msaa4");
     eprintln!(
         "[stage4] PBR opaque no-MSAA — prep-read(shadow_from_buffer): {} B, prep-off(inline): {} B (delta {})",
@@ -531,10 +547,15 @@ fn custom_opaque_shaders_validate() {
     use awsm_materials::ShaderIncludes as S;
     // empty (leanest), all (Tier-A), and an explicit Tier-B declaration (must
     // still validate — Tier-B is masked off on the Custom path).
-    let tier_b = S::BRDF.union(S::APPLY_LIGHTING).union(S::MATERIAL_COLOR_CALC);
+    let tier_b = S::BRDF
+        .union(S::APPLY_LIGHTING)
+        .union(S::MATERIAL_COLOR_CALC);
     for inc in [S::empty(), S::all(), tier_b] {
         for (msaa, mips) in CONFIGS {
-            let label = format!("opaque/custom inc={:?} msaa={msaa:?} mips={mips}", inc.bits());
+            let label = format!(
+                "opaque/custom inc={:?} msaa={msaa:?} mips={mips}",
+                inc.bits()
+            );
             let src = render(&custom_key(inc, msaa, mips), &label);
             naga_validate(&src, &label);
         }
@@ -602,7 +623,10 @@ fn custom_froxel_lights_accessors_validate() {
     }
 }
 
-fn transparent_first_party_key(base: ShadingBase, msaa: Option<u32>) -> ShaderCacheKeyMaterialTransparent {
+fn transparent_first_party_key(
+    base: ShadingBase,
+    msaa: Option<u32>,
+) -> ShaderCacheKeyMaterialTransparent {
     ShaderCacheKeyMaterialTransparent {
         instancing_transforms: false,
         attributes: ShaderMaterialVertexAttributes {
@@ -648,7 +672,9 @@ fn first_party_transparent_shaders_validate() {
 fn custom_transparent_shaders_validate() {
     use awsm_materials::ShaderIncludes as S;
     let dyn_id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
-    let tier_b = S::BRDF.union(S::APPLY_LIGHTING).union(S::MATERIAL_COLOR_CALC);
+    let tier_b = S::BRDF
+        .union(S::APPLY_LIGHTING)
+        .union(S::MATERIAL_COLOR_CALC);
     for inc in [S::empty(), S::all(), tier_b] {
         for msaa in [None, Some(4)] {
             let mut key = transparent_first_party_key(ShadingBase::Custom, msaa);

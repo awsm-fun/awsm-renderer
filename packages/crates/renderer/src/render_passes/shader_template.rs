@@ -71,9 +71,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::MaterialClassify(cache_key) => Ok(
                 ShaderTemplateRenderPass::MaterialClassify(cache_key.try_into()?),
             ),
-            ShaderCacheKeyRenderPass::MaterialPrep(cache_key) => {
-                Ok(ShaderTemplateRenderPass::MaterialPrep(cache_key.try_into()?))
-            }
+            ShaderCacheKeyRenderPass::MaterialPrep(cache_key) => Ok(
+                ShaderTemplateRenderPass::MaterialPrep(cache_key.try_into()?),
+            ),
             ShaderCacheKeyRenderPass::DecalClassify(cache_key) => Ok(
                 ShaderTemplateRenderPass::DecalClassify(cache_key.try_into()?),
             ),

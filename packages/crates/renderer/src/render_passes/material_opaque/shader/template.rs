@@ -1136,7 +1136,9 @@ mod size_regression {
     fn custom_path_never_leaks_first_party_shading() {
         use awsm_materials::ShaderIncludes as S;
         // Tier-B forced declaration — must still be stripped on the Custom path.
-        let tier_b = S::BRDF.union(S::APPLY_LIGHTING).union(S::MATERIAL_COLOR_CALC);
+        let tier_b = S::BRDF
+            .union(S::APPLY_LIGHTING)
+            .union(S::MATERIAL_COLOR_CALC);
         let include_sets = [S::empty(), S::all(), tier_b, S::all().union(tier_b)];
         // Markers that must NEVER appear in a Custom shader: first-party shading
         // bodies (materials_wgsl) + the PBR types they/the Tier-B modules use.

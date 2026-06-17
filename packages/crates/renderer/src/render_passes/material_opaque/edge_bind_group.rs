@@ -143,7 +143,6 @@ fn build_extended_shadows_layout(
         .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)
 }
 
-
 fn build_final_blend_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindGroupLayoutKey> {
     // 0: edge_data    — storage RO (reads accumulator + edge_to_xy +
     //                   edge_count from its header).

@@ -153,25 +153,24 @@ impl MaterialPrepBindGroups {
         // absent the prep pass should never have been constructed. Treat a
         // missing view as a hard error (mirrors the opaque pass's Option-view
         // NotFound discipline).
-        let uv_out = ctx
-            .render_texture_views
-            .prep_uv
-            .as_ref()
-            .ok_or_else(|| AwsmBindGroupError::NotFound("Material Prep - uv_out".to_string()))?;
+        let uv_out =
+            ctx.render_texture_views.prep_uv.as_ref().ok_or_else(|| {
+                AwsmBindGroupError::NotFound("Material Prep - uv_out".to_string())
+            })?;
         let vcolor_out = ctx
             .render_texture_views
             .prep_vcolor
             .as_ref()
-            .ok_or_else(|| AwsmBindGroupError::NotFound("Material Prep - vcolor_out".to_string()))?;
-        let shadow_visibility_out =
-            ctx.render_texture_views
-                .prep_shadow_visibility
-                .as_ref()
-                .ok_or_else(|| {
-                    AwsmBindGroupError::NotFound(
-                        "Material Prep - shadow_visibility_out".to_string(),
-                    )
-                })?;
+            .ok_or_else(|| {
+                AwsmBindGroupError::NotFound("Material Prep - vcolor_out".to_string())
+            })?;
+        let shadow_visibility_out = ctx
+            .render_texture_views
+            .prep_shadow_visibility
+            .as_ref()
+            .ok_or_else(|| {
+                AwsmBindGroupError::NotFound("Material Prep - shadow_visibility_out".to_string())
+            })?;
 
         let entries = vec![
             // 0 visibility_data_tex.
@@ -184,7 +183,9 @@ impl MaterialPrepBindGroups {
             // 1 barycentric_tex.
             BindGroupEntry::new(
                 1,
-                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.barycentric)),
+                BindGroupResource::TextureView(Cow::Borrowed(
+                    &ctx.render_texture_views.barycentric,
+                )),
             ),
             // 2 visibility_data — merged geometry pool (storage RO).
             BindGroupEntry::new(
@@ -196,7 +197,9 @@ impl MaterialPrepBindGroups {
             // 3 material_mesh_metas — storage RO.
             BindGroupEntry::new(
                 3,
-                BindGroupResource::Buffer(BufferBinding::new(ctx.meshes.meta.material_gpu_buffer())),
+                BindGroupResource::Buffer(BufferBinding::new(
+                    ctx.meshes.meta.material_gpu_buffer(),
+                )),
             ),
             // 4 uv_out — storage texture (write).
             BindGroupEntry::new(4, BindGroupResource::TextureView(Cow::Borrowed(uv_out))),
@@ -264,7 +267,8 @@ impl MaterialPrepBindGroups {
         ];
 
         let descriptor = BindGroupDescriptor::new(
-            ctx.bind_group_layouts.get(self.lights_bind_group_layout_key)?,
+            ctx.bind_group_layouts
+                .get(self.lights_bind_group_layout_key)?,
             Some("Material Prep - Lights"),
             entries,
         );

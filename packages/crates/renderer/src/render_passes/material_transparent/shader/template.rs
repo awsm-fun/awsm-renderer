@@ -121,7 +121,8 @@ impl ShaderTemplateTransparentMaterialIncludes {
                 crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
                     .apply_lighting
             } else {
-                crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base).apply_lighting
+                crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base)
+                    .apply_lighting
             },
             max_shadow_casters: 4,
             // Transparent is a forward pass with no edge buffer; inert (the EDGE

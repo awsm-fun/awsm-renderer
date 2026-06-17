@@ -567,7 +567,10 @@ pub fn build_edge_layout_uniform_bytes(bucket_count: u32, max_edge_budget: u32) 
     words.push(max_edge_budget);
     words.push(to_stride(data_edge_count_offset())); // edge_count index
     words.push(to_stride(edge_to_xy_offset(bucket_count)));
-    words.push(to_stride(edge_slot_map_offset(bucket_count, max_edge_budget)));
+    words.push(to_stride(edge_slot_map_offset(
+        bucket_count,
+        max_edge_budget,
+    )));
     words.push(to_stride(accumulator_offset(bucket_count, max_edge_budget)));
 
     // Pad to 16-byte alignment (WebGPU uniform-buffer requirement).
@@ -684,5 +687,4 @@ mod tests {
             );
         }
     }
-
 }

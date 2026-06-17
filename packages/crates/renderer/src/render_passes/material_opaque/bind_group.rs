@@ -368,9 +368,13 @@ impl MaterialOpaqueBindGroups {
             let prep_uv = ctx.render_texture_views.prep_uv.as_ref().ok_or_else(|| {
                 AwsmBindGroupError::NotFound("Material Opaque - prep_uv".to_string())
             })?;
-            let prep_vcolor = ctx.render_texture_views.prep_vcolor.as_ref().ok_or_else(|| {
-                AwsmBindGroupError::NotFound("Material Opaque - prep_vcolor".to_string())
-            })?;
+            let prep_vcolor = ctx
+                .render_texture_views
+                .prep_vcolor
+                .as_ref()
+                .ok_or_else(|| {
+                    AwsmBindGroupError::NotFound("Material Opaque - prep_vcolor".to_string())
+                })?;
             entries.push(BindGroupEntry::new(
                 entries.len() as u32,
                 BindGroupResource::TextureView(Cow::Borrowed(prep_uv)),
@@ -385,10 +389,8 @@ impl MaterialOpaqueBindGroups {
                 .prep_shadow_visibility
                 .as_ref()
                 .ok_or_else(|| {
-                    AwsmBindGroupError::NotFound(
-                        "Material Opaque - prep_shadow_visibility".to_string(),
-                    )
-                })?;
+                AwsmBindGroupError::NotFound("Material Opaque - prep_shadow_visibility".to_string())
+            })?;
             entries.push(BindGroupEntry::new(
                 entries.len() as u32,
                 BindGroupResource::TextureView(Cow::Borrowed(prep_shadow_visibility)),
@@ -398,12 +400,9 @@ impl MaterialOpaqueBindGroups {
             // here. The view is the prep pass's edge_shadow.sampled_view, cloned
             // into the recreate context (so the borrow doesn't conflict).
             if ctx.anti_aliasing.msaa_sample_count.is_some() {
-                let prep_edge_shadow =
-                    ctx.prep_edge_shadow_view.as_ref().ok_or_else(|| {
-                        AwsmBindGroupError::NotFound(
-                            "Material Opaque - prep_edge_shadow".to_string(),
-                        )
-                    })?;
+                let prep_edge_shadow = ctx.prep_edge_shadow_view.as_ref().ok_or_else(|| {
+                    AwsmBindGroupError::NotFound("Material Opaque - prep_edge_shadow".to_string())
+                })?;
                 entries.push(BindGroupEntry::new(
                     entries.len() as u32,
                     BindGroupResource::TextureView(Cow::Borrowed(prep_edge_shadow)),
