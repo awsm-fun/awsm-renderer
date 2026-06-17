@@ -160,8 +160,29 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
    into the attr buffers (world-pos is NOT materialized — kept as depth-unprojection in the slim
    shader). Dispatched over covered tiles. Validate output vs in-shader values. No material reads yet.
 2. **Slim `cs_opaque` (no-MSAA).** Behind `with_prep_pass`, `cs_opaque` reads the attr G-buffer instead
-   of reconstructing; drop `positions`/`standard`/UV-interp includes from the no-MSAA module. Measure
-   size drop; visual parity; tighten ceilings.
+   of reconstructing the UV/vertex-color attributes. **NOTE (decision #2 reshapes the original drop
+   list):** world-pos is depth-reconstructed in the slim shader, so `positions.wgsl`/`standard.wgsl`
+   STAY — Stage 2's only drop is the UV-interpolation + vertex-color recompute (`texture_uvs.wgsl`'s
+   `_texture_uv_per_vertex` + `vertex_color_attrib.wgsl`'s `_vertex_color_per_vertex`). Measure size
+   drop; visual parity; tighten ceilings. Split into:
+   - [ ] **2a — multi-set prep array outputs.** `texture_uv()`/`vertex_color()` are called ~25× with a
+     *per-texture* `uv_set_index` (dynamic, from material data) — the slim shader can't know which sets a
+     material samples at compile time, so prep must materialize **all present sets**, not just set 0 (as
+     1a/1b's single-layer `Rg32float`/`Rgba32float` did). Rework prep outputs to **array textures**:
+     `prep_uv` → `texture_2d_array<rg32float>` with `MAX_PREP_UV_SETS` layers, `prep_vcolor` →
+     `texture_2d_array<rgba32float>` with `MAX_PREP_COLOR_SETS` layers. `cs_prep` loops `0..uv_set_count`
+     / `0..color_set_count` (from mesh-meta) writing each layer (`textureStore` with array layer).
+     Sets `>= cap` clamp to the last layer + log (mirrors the shadow-caster `K` overflow policy — caps
+     chosen generously: UV 4, color 2, covering virtually all glTF). render_textures alloc arrays;
+     bind_group storage-texture-array write; naga + tests green; inert (opaque still recomputes);
+     GPU-verify prep still runs clean.
+   - [ ] **2b — opaque reads arrays + drops recompute.** Thread `prep_enabled` through the opaque shader
+     cache key + template (distinct prep-on/off pipelines); add `prep_uv`/`prep_vcolor` array textures as
+     gated opaque bind-group inputs (sampled `texture_2d_array<f32>`); rewrite `texture_uv()`/
+     `vertex_color()` so prep-on reads `textureLoad(prep_*, coords, set_index, 0)` (parity-exact:
+     prep used the same barycentric + fp32 interp + sample 0) and the geometry-pool recompute helpers are
+     no longer emitted (prep-off keeps them verbatim). Measure size drop; GPU-verify parity (Iridescence
+     + an alpha model, MSAA on AND off, flag on vs off); tighten ceilings.
 3. **Prep pass — shadow sampling.** Add the K-layer shadow visibility buffer + the froxel-order slot
    model + overflow logging. Prep includes `shadow/bind_groups.wgsl` (sampling).
 4. **Lighting reads shadow buffer.** `apply_lighting` `shadow_from_buffer=true` for opaque; remove
@@ -203,8 +224,13 @@ the size-changed branch — add new fields there so they re-alloc on resize):
 - ~~`world_pos`~~ — NOT materialized (decision #2 corrected): the slim shader keeps depth-unprojection
   `get_standard_coordinates`. Prep still computes world-pos locally (from depth) for shadow sampling,
   but does not write it.
-- UV sets — store interpolated UVs (variable count, capped) — format `Rg16float` ×N (or packed); vcolor
-  `Rgba8unorm`. (These are the geometry-pool-fetch-heavy attrs worth materializing.)
+- UV sets — store interpolated UVs (variable count, capped). **Resolved (Stage 2a):** `texture_2d_array`,
+  `MAX_PREP_UV_SETS` layers; vcolor `texture_2d_array`, `MAX_PREP_COLOR_SETS` layers. **Format = `Rg32float`
+  / `Rgba32float` (full fp32), NOT the originally-guessed `Rg16float`/`Rgba8unorm`** — the slim shader must
+  read back a value bit-identical to the in-shader fp32 barycentric interpolation it replaces, so half/unorm
+  would drift visual parity. (These are the geometry-pool-fetch-heavy attrs worth materializing.) 1a/1b
+  shipped a single-layer MVP (set 0 only); 2a reworks to the array form so the recompute can be fully
+  dropped.
 - `shadow_visibility` — **`R8unorm` `texture_2d_array`, K layers** (K = `PrepPassConfig::clamped_k()`),
   layer j = j-th shadowed froxel light. (Resolved ambiguity: R8unorm, not uint — it's a 0..1 factor.)
 - compact per-edge-sample buffer — storage buffer in `material_prep/buffers.rs` (own it here, like
