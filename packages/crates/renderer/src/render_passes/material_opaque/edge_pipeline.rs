@@ -212,6 +212,15 @@ impl MaterialEdgePipelines {
             .filter(|displaced| *displaced != pipeline_key)
     }
 
+    /// Number of per-bucket MSAA edge (`cs_shade`) pipeline keys held — a
+    /// leak/observability diagnostic surfaced in the editor's renderer-stats
+    /// readout. Post-unified-edge this counts the `cs_shade` pipelines (one per
+    /// bucket under MSAA); the legacy per-shader `cs_edge` map it used to count
+    /// was removed when those pipelines were deleted.
+    pub fn per_shader_len(&self) -> usize {
+        self.per_shader_shade.len()
+    }
+
     /// Clear every per-bucket `cs_shade` pipeline entry, plus the global
     /// final_blend key. Used by
     /// `AwsmRenderer::register_material` to invalidate stale edge

@@ -152,8 +152,8 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     pub bucket_index: u32,
     /// Edge `edge_slot_map` packing width (8 or 16), §5 — derived from
     /// the live bucket count. Gates the `cs_edge` slot_map read between
-    /// one u32/edge (8-bit, ≤254 buckets) and two u32/edge (16-bit,
-    /// >254). Only consumed inside the `{% if multisampled_geometry %}`
+    /// one u32/edge (8-bit, ≤254 buckets) and two u32/edge (16-bit, for over
+    /// 254 buckets). Only consumed inside the `{% if multisampled_geometry %}`
     /// `cs_edge` block; inert on the singlesampled module.
     pub edge_slot_bits: u32,
     /// Plan B (stage 5a): `prep_enabled` (ANY AA). When true, the shared
@@ -651,7 +651,10 @@ mod empty_registry_tests {
 
     #[test]
     fn custom_attribute_accessors_exist_in_both_opaque_kernels() {
-        for (name, src) in [("opaque_kernel_includes", OPAQUE_KERNEL_WGSL)] {
+        // One shared opaque-kernel include file (the legacy `edge_resolve` kernel
+        // it used to also cover was removed with the cs_edge split).
+        let (name, src) = ("opaque_kernel_includes", OPAQUE_KERNEL_WGSL);
+        {
             assert!(
                 src.contains("fn material_uv(input: OpaqueShadingInput"),
                 "{name}.wgsl missing material_uv(input, set) accessor (dual-context invariant)"

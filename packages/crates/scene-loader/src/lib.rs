@@ -879,6 +879,7 @@ async fn materialize(
 /// `InstancesAlongCurve` nodes inside a prefab contribute only their transform
 /// node to the template (no per-instance light/camera/line/decal/instancing key
 /// is replayed yet — see [`PrefabTemplate`]).
+#[allow(clippy::too_many_arguments)]
 async fn capture_prefab(
     renderer: &mut AwsmRenderer,
     scene: &Scene,
@@ -927,7 +928,7 @@ async fn capture_prefab(
             build_node_meshes(renderer, scene, n, scratch, mat, assets, true).await?;
         nodes.push(PrefabNode {
             id: n.id,
-            local: n.transform.clone(),
+            local: n.transform,
             parent: step.parent,
             template_meshes,
         });
