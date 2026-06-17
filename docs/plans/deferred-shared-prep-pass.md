@@ -267,10 +267,16 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      shrink later via f16 / a smaller edge-attr budget). Reuse the existing `edge_layout` uniform offsets
      (no new layout fields) where possible.
    - **Sub-increment split (REVISED post-investigation — lower-risk first):**
-     - **5a = PrepReadContext + cs_opaque MSAA-primary reads prep** (arrays + shadow buffer); cs_edge sets
-       RECOMPUTE (unchanged, still correct). Slims the MSAA PRIMARY path (most pixels) WITHOUT touching the
-       fragile edge buffers. Gate: a prep-read-for-MSAA flag. GPU-verify MSAA-on, prep on vs off — non-edge
-       pixels match, edge pixels unchanged.
+     - **[DONE]** **5a = PrepReadContext + cs_opaque MSAA-primary reads prep** (arrays + shadow buffer);
+       cs_edge sets RECOMPUTE (unchanged). Shared `PrepReadContext { mode: RECOMPUTE|PRIMARY|(EDGE 5b),
+       coords }` var<private> replaces g_prep_coords; ONE texture_uv/vertex_color/shadow path branches on
+       mode (David's code-sharing goal). Flag decomposition: `prep_present = prep_enabled` (any AA; emits
+       PRIMARY branch + binds prep textures); `prep_drops_recompute = prep_enabled && msaa.is_none()` (drop
+       recompute helpers only no-MSAA, keep gradient exception); `needs_shadow_sampling = inc.apply_lighting
+       && !prep_drops_recompute` (keep sample_shadow_* under MSAA for cs_edge). apply_lighting shadow source
+       runtime-selected by mode (PRIMARY→buffer, else→inline). **GPU-verified BYTE-IDENTICAL** MSAA+prep vs
+       MSAA+no-prep on SheenChair (textures+self-shadow+edges); no-prep byte-identical + no-MSAA+prep
+       parity-equal (WGSL byte-diff). 258+34 green.
      - **5b = compact buffer + prep-edge dispatch + cs_edge reads compact** (UV/vcolor, then shadow). The
        fragile part. Drops recompute from cs_edge. MSAA-on parity gate (incl. silhouette edges).
      - MSAA-on GPU parity is the gate for each; do NOT force a broken edge path.

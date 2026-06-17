@@ -359,13 +359,12 @@ impl MaterialOpaqueBindGroups {
             BindGroupResource::Buffer(BufferBinding::new(&ctx.extras_pool.buffer)),
         ));
 
-        // Plan B (stage 2b): prep_uv (binding 24) + prep_vcolor (binding 25)
-        // for the no-MSAA primary `cs_opaque`. The prep views are `Some`
-        // only when the prep pass is enabled, so gating on `Some` AND msaa
-        // none matches the layout's `prep_enabled && !multisampled` exactly.
-        if ctx.anti_aliasing.msaa_sample_count.is_none()
-            && ctx.render_texture_views.prep_uv.is_some()
-        {
+        // Plan B (stage 5a): prep_uv (binding 24) + prep_vcolor (binding 25) +
+        // prep_shadow_visibility (binding 26) for the PRIMARY `cs_opaque` read —
+        // now under MSAA too (the prep textures are full-res sample-0). The prep
+        // views are `Some` only when the prep pass is enabled, so gating on `Some`
+        // matches the layout's `prep_enabled` (`prep_present`) gate exactly (any AA).
+        if ctx.render_texture_views.prep_uv.is_some() {
             let prep_uv = ctx.render_texture_views.prep_uv.as_ref().ok_or_else(|| {
                 AwsmBindGroupError::NotFound("Material Opaque - prep_uv".to_string())
             })?;
@@ -516,12 +515,12 @@ async fn create_main_bind_group_layout_key(
     ctx: &mut RenderPassInitContext<'_>,
     multisampled_geometry: bool,
 ) -> Result<BindGroupLayoutKey> {
-    // Plan B (stage 2b): the no-MSAA primary `cs_opaque` reads the
-    // prep-materialized UV / vcolor array textures instead of recomputing,
-    // so the singlesampled layout gains two sampled `texture_2d_array`
-    // entries when prep is enabled. The multisampled layout is left
-    // unchanged (prep_read is false under MSAA — the edge kernel needs
-    // per-sample data prep doesn't hold).
+    // Plan B (stage 5a): the PRIMARY `cs_opaque` reads the prep-materialized
+    // UV / vcolor / shadow array textures instead of recomputing — now under
+    // MSAA too (cs_opaque is the primary sample-0 read; cs_edge still recomputes
+    // per-sample). So BOTH the singlesampled AND multisampled layouts gain the
+    // sampled `texture_2d_array` entries when prep is enabled (the prep textures
+    // are full-res sample-0, identical for both layouts).
     let prep_enabled = ctx.prep_config.enabled;
     let mut entries = vec![
         // Visibility data texture
@@ -771,13 +770,13 @@ async fn create_main_bind_group_layout_key(
         },
     ];
 
-    // Plan B (stage 2b): prep_uv (binding 24) + prep_vcolor (binding 25),
+    // Plan B (stage 5a): prep_uv (binding 24) + prep_vcolor (binding 25),
     // sampled `texture_2d_array` (UnfilterableFloat — rg32float / rgba32float
-    // are unfilterable; `textureLoad` needs no sampler). Only on the
-    // singlesampled layout when prep is enabled (matches the template's
-    // `prep_read = prep_enabled && msaa none`). The multisampled layout
-    // never gains these entries.
-    if prep_enabled && !multisampled_geometry {
+    // are unfilterable; `textureLoad` needs no sampler). On BOTH layouts when
+    // prep is enabled (matches the template's `prep_present = prep_enabled`,
+    // any AA). The prep textures are full-res sample-0, so the same entries
+    // apply regardless of MSAA.
+    if prep_enabled {
         // prep_uv
         entries.push(BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Texture(

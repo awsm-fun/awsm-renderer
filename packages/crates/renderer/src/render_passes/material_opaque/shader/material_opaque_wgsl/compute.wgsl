@@ -2,13 +2,16 @@
 // bucket uses skybox_primary.wgsl instead). Shared preamble is factored out.
 {% include "material_opaque_wgsl/opaque_kernel_includes.wgsl" %}
 
-{% if prep_read %}
-// Plan B (stage 2b): the no-MSAA variant has ONLY the cs_opaque entry
-// point (cs_edge is multisampled-gated), so a module var<private> for the
-// current pixel coords is safe — set once at cs_opaque entry and read by
-// the shared texture_uv() / vertex_color() helpers to textureLoad the prep
-// array textures at sample 0.
-var<private> g_prep_coords: vec2<i32>;
+{% if prep_present %}
+// Plan B (stage 5a): a per-thread context each entry point sets once, that the
+// shared texture_uv() / vertex_color() / shadow helpers branch on — so ONE set
+// of helpers serves cs_opaque (PRIMARY, reads the prep array at sample-0 coords)
+// AND cs_edge (RECOMPUTE for now — 5b will add EDGE) AND the non-prep path, with
+// no forked MSAA copies. (EDGE = 2u is reserved for 5b's compact edge buffer.)
+const PREP_MODE_RECOMPUTE: u32 = 0u;
+const PREP_MODE_PRIMARY: u32 = 1u;
+struct PrepReadContext { mode: u32, coords: vec2<i32> }
+var<private> g_prep_ctx: PrepReadContext;
 {% endif %}
 
 
@@ -31,7 +34,7 @@ fn cs_opaque(
     let bucket_offset = classify_buckets.offsets[{{ bucket_index }}u];
     let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
-    {% if prep_read %}g_prep_coords = coords;{% endif %}
+    {% if prep_present %}g_prep_ctx = PrepReadContext(PREP_MODE_PRIMARY, coords);{% endif %}
     let screen_dims = textureDimensions(opaque_tex);
     let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));
     let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
@@ -747,8 +750,14 @@ fn cs_edge(
     let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
     {% if inc.light_access %}
     let lights_info = get_lights_info();
-    {% endif %}
-
+    {% endif %}{% if prep_present %}
+    // Plan B (stage 5a): cs_edge stays RECOMPUTE — the shared texture_uv() /
+    // vertex_color() / shadow helpers recompute per-sample from the geometry
+    // pool exactly as before (mode != PRIMARY falls through to the recompute
+    // body). 5b will switch this to PREP_MODE_EDGE reading the compact
+    // per-edge-sample buffer. `coords` is unused by the reads in RECOMPUTE mode.
+    g_prep_ctx = PrepReadContext(PREP_MODE_RECOMPUTE, coords);
+{% endif %}
     var color_sum = vec3<f32>(0.0);
     var alpha_sum: f32 = 0.0;
     var sample_count: u32 = 0u;

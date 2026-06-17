@@ -265,12 +265,15 @@ fn opaque_shadow_from_buffer_variant_validates() {
         "prep-off PBR opaque must NOT read the prep shadow buffer"
     );
 
-    // Control 2: prep ON but MSAA on ⇒ prep_read false ⇒ inline sampling kept.
+    // Control 2 (stage 5a): prep ON + MSAA on ⇒ cs_opaque (PRIMARY) reads the
+    // prep buffer AND cs_edge (RECOMPUTE) keeps the inline sampler. So the MSAA
+    // module must BOTH read `prep_shadow_visibility` AND still define
+    // `fn sample_shadow_directional` (proving cs_edge's inline path survived).
     let msaa_key = first_party_key_prep(
         MaterialShaderId::PBR,
         ShadingBase::Pbr,
         false,
-        Some(4), // MSAA on → prep_read = false → shadow_from_buffer = false
+        Some(4), // MSAA on → prep_present = true, prep_drops_recompute = false
         true,
         true,
     );
@@ -278,11 +281,27 @@ fn opaque_shadow_from_buffer_variant_validates() {
     naga_validate(&msaa_src, "opaque/pbr prep-on msaa4");
     assert!(
         msaa_src.contains("fn sample_shadow_directional"),
-        "MSAA-on PBR opaque must KEEP inline `fn sample_shadow_directional` (prep_read false under MSAA)"
+        "MSAA+prep PBR opaque must KEEP inline `fn sample_shadow_directional` (cs_edge=RECOMPUTE inline-samples)"
     );
     assert!(
-        !msaa_src.contains("textureLoad(prep_shadow_visibility"),
-        "MSAA-on PBR opaque must NOT read the prep shadow buffer"
+        msaa_src.contains("textureLoad(prep_shadow_visibility"),
+        "MSAA+prep PBR opaque cs_opaque (PRIMARY) must READ the prep shadow buffer"
+    );
+    // The shared PrepReadContext mode-select must be present (the abstraction
+    // that lets cs_opaque read prep while cs_edge recomputes — no forked copies).
+    assert!(
+        msaa_src.contains("g_prep_ctx.mode == PREP_MODE_PRIMARY"),
+        "MSAA+prep PBR opaque must branch the shared helpers on g_prep_ctx.mode"
+    );
+    assert!(
+        msaa_src.contains("textureLoad(prep_uv,") && msaa_src.contains("textureLoad(prep_vcolor,"),
+        "MSAA+prep PBR opaque cs_opaque (PRIMARY) must read the prep UV/vcolor arrays"
+    );
+    // The recompute helpers STAY under MSAA+prep (cs_edge=RECOMPUTE needs them).
+    assert!(
+        msaa_src.contains("fn _texture_uv_per_vertex(")
+            && msaa_src.contains("fn _vertex_color_per_vertex("),
+        "MSAA+prep PBR opaque must KEEP the recompute helpers (cs_edge=RECOMPUTE uses them)"
     );
 
     // Measurement: report the prep-read (no-MSAA) PBR size vs prep-off.

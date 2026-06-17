@@ -54,11 +54,13 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// materials that don't run first-party lighting drop it. The shadow
     /// bind group + structs are always emitted (ABI) regardless.
     pub needs_shadow_sampling: bool,
-    /// Plan B (stage 2b): `prep_enabled && msaa none`. When true, the
-    /// gated `prep_uv` / `prep_vcolor` sampled `texture_2d_array<f32>`
-    /// declarations are emitted in the MAIN bind group so the slim
-    /// `texture_uv()` / `vertex_color()` can `textureLoad` them.
-    pub prep_read: bool,
+    /// Plan B (stage 5a): `prep_enabled` (ANY AA). When true, the gated
+    /// `prep_uv` / `prep_vcolor` / `prep_shadow_visibility` sampled
+    /// `texture_2d_array<f32>` declarations are emitted in the MAIN bind
+    /// group so the shared `texture_uv()` / `vertex_color()` / shadow
+    /// helpers can `textureLoad` them. Extended from the 2b `prep_read`
+    /// (which was no-MSAA only) so `cs_opaque` reads prep under MSAA too.
+    pub prep_present: bool,
 }
 
 /// Compute shader template for the opaque material pass.
@@ -156,29 +158,36 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// >254). Only consumed inside the `{% if multisampled_geometry %}`
     /// `cs_edge` block; inert on the singlesampled module.
     pub edge_slot_bits: u32,
-    /// Plan B (stage 2b): `prep_enabled && msaa none`. When true,
-    /// `cs_opaque` publishes its pixel coords into a `var<private>` so the
-    /// shared `texture_uv()` / `vertex_color()` helpers can read the
-    /// prep-materialized array textures instead of recomputing from the
-    /// geometry pool, and the `_texture_uv_per_vertex` /
-    /// `_vertex_color_per_vertex` recompute helpers are NOT emitted. False
-    /// under MSAA (the `cs_edge` per-sample path keeps recompute) and when
-    /// prep is off (byte-identical to the legacy shader).
-    pub prep_read: bool,
+    /// Plan B (stage 5a): `prep_enabled` (ANY AA). When true, the shared
+    /// `PrepReadContext` (`g_prep_ctx`) is emitted, each entry point sets
+    /// its mode (cs_opaque → PRIMARY, cs_edge → RECOMPUTE), and the shared
+    /// `texture_uv()` / `vertex_color()` / shadow helpers branch on
+    /// `g_prep_ctx.mode` to read the prep-materialized array textures (PRIMARY)
+    /// instead of recomputing. Extended from the 2b `prep_read` (no-MSAA only)
+    /// so `cs_opaque` reads prep under MSAA too. The recompute body stays
+    /// available because cs_edge=RECOMPUTE falls through to it.
+    pub prep_present: bool,
+    /// Plan B (stage 5a): `prep_enabled && msaa none`. When true, the
+    /// standalone `_texture_uv_per_vertex` / `_vertex_color_per_vertex`
+    /// recompute helpers are NOT emitted (the 2b size win) — there is no
+    /// `cs_edge` in the no-MSAA module, so nothing recomputes. Under MSAA
+    /// these helpers STAY (cs_edge=RECOMPUTE needs them). (The gradient-mips /
+    /// custom exceptions in the helper templates still apply.)
+    pub prep_drops_recompute: bool,
     /// `MAX_PREP_UV_SETS` — clamp cap for the prep UV array layer index
     /// in `texture_uv()` when `prep_read`. Inert otherwise.
     pub max_prep_uv_sets: u32,
     /// `MAX_PREP_COLOR_SETS` — clamp cap for the prep vcolor array layer
     /// index in `vertex_color()` when `prep_read`. Inert otherwise.
     pub max_prep_color_sets: u32,
-    /// Plan B (stage 4): when true, `apply_lighting_per_froxel*` read the
-    /// prep pass's per-pixel `prep_shadow_visibility` buffer (slot model,
-    /// froxel-order walk) instead of sampling shadow maps inline — so the
-    /// inline `sample_shadow_*` block is dropped from the opaque module
-    /// (`needs_shadow_sampling` is forced false in lockstep). Derived as
-    /// `shadows_enabled && prep_read`; false under MSAA / prep-off (byte-
-    /// identical inline sampling). Transparent stays false.
-    pub shadow_from_buffer: bool,
+    /// Plan B (stage 5a): when true, the shared `sample_shadow_*` inline
+    /// shadow-sampling block compiles (the legacy path). Mirrors the
+    /// bind-group template's field of the same name so `apply_lighting.wgsl`
+    /// (in the compute include) can gate its inline `else` arm — under
+    /// MSAA+prep cs_edge=RECOMPUTE needs the inline sampler, so it stays;
+    /// under no-MSAA+prep cs_opaque=PRIMARY only, so it drops. Derived
+    /// `inc.apply_lighting && !prep_drops_recompute`.
+    pub needs_shadow_sampling: bool,
     /// `K` — the per-pixel shadow-caster cap (`PrepPassConfig::clamped_k`),
     /// matching the prep buffer's layer/slot count. Consumed by the
     /// `{% if shadow_from_buffer %}` read path's `prep_shadow_read` bounds
@@ -239,16 +248,18 @@ pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
     pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
     /// Always `false` for the skybox writer (the SKYBOX bucket never
     /// reads prep attributes), but the shared `opaque_kernel_includes`
-    /// preamble references `prep_read`, so the field must exist for askama.
-    pub prep_read: bool,
-    /// Inert on the skybox writer (`prep_read` is false) but referenced by
+    /// preamble references `prep_present` / `prep_drops_recompute`, so the
+    /// fields must exist for askama.
+    pub prep_present: bool,
+    pub prep_drops_recompute: bool,
+    /// Inert on the skybox writer (`prep_present` is false) but referenced by
     /// the shared helper includes, so the fields must exist.
     pub max_prep_uv_sets: u32,
     pub max_prep_color_sets: u32,
-    /// Always `false` for the skybox writer (it never reads the prep shadow
-    /// buffer), but `apply_lighting.wgsl` references `shadow_from_buffer`, so
-    /// the field must exist for askama.
-    pub shadow_from_buffer: bool,
+    /// Always `false` for the skybox writer (it never lights / samples
+    /// shadows), but `apply_lighting.wgsl` references `needs_shadow_sampling`,
+    /// so the field must exist for askama.
+    pub needs_shadow_sampling: bool,
     /// Inert on the skybox writer; referenced by `apply_lighting.wgsl`.
     pub max_shadow_casters: u32,
 }
@@ -297,12 +308,13 @@ impl From<ShaderTemplateMaterialOpaqueCompute> for ShaderTemplateMaterialOpaqueS
             bucket_entries: c.bucket_entries,
             // The skybox writer never reads prep attributes; carry the
             // caps through inertly so the shared includes resolve.
-            prep_read: c.prep_read,
+            prep_present: c.prep_present,
+            prep_drops_recompute: c.prep_drops_recompute,
             max_prep_uv_sets: c.max_prep_uv_sets,
             max_prep_color_sets: c.max_prep_color_sets,
-            // The skybox writer never reads the prep shadow buffer; carry the
-            // value through inertly so apply_lighting's gate resolves.
-            shadow_from_buffer: false,
+            // The skybox writer never lights; carry the inline-sampling gate
+            // through inertly so apply_lighting's gate resolves.
+            needs_shadow_sampling: false,
             max_shadow_casters: c.max_shadow_casters,
         }
     }
@@ -322,11 +334,19 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
         let multisampled_geometry = value.msaa_sample_count.is_some();
         let msaa_sample_count = value.msaa_sample_count.unwrap_or_default();
         let debug = ShaderTemplateMaterialOpaqueDebug::new();
-        // Plan B (stage 2b): prep-read is correct ONLY for the no-MSAA
-        // primary `cs_opaque` (the prep textures hold sample-0 data; the
-        // MSAA edge kernel `cs_edge` needs per-sample values it can't get
-        // from prep). So gate on prep enabled AND msaa off.
-        let prep_read = value.prep_enabled && value.msaa_sample_count.is_none();
+        // Plan B (stage 5a): the single 2b `prep_read` notion is decomposed
+        // into three distinct conditions so the SAME shared helpers serve
+        // cs_opaque (PRIMARY) + cs_edge (RECOMPUTE) + the non-prep path.
+        //
+        //  1. `prep_present` = prep enabled, ANY AA. Emits the PrepReadContext
+        //     + the PRIMARY read branches + binds the prep textures to opaque.
+        //     This is the 5a change: cs_opaque reads prep under MSAA too.
+        //  2. `prep_drops_recompute` = prep enabled AND msaa off. Drops the
+        //     standalone recompute helpers (no cs_edge there). Under MSAA the
+        //     helpers STAY (cs_edge=RECOMPUTE uses them).
+        //  3. `needs_shadow_sampling` (below) = lighting AND !prep_drops_recompute.
+        let prep_present = value.prep_enabled;
+        let prep_drops_recompute = value.prep_enabled && value.msaa_sample_count.is_none();
         let max_prep_uv_sets = crate::render_passes::material_prep::MAX_PREP_UV_SETS;
         let max_prep_color_sets = crate::render_passes::material_prep::MAX_PREP_COLOR_SETS;
         let max_shadow_casters = value.max_shadow_casters;
@@ -360,6 +380,13 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
         } else {
             crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
         };
+        // Plan B (stage 5a): drop the inline `sample_shadow_*` block ONLY in
+        // no-MSAA+prep (cs_opaque=PRIMARY reads the buffer, no cs_edge). Under
+        // MSAA+prep cs_edge=RECOMPUTE inline-samples, so it STAYS; under no-prep
+        // it stays (byte-identical to today). Computed once so the bind-group
+        // template (the block emit) and the compute template (apply_lighting's
+        // inline `else` arm gate) agree.
+        let needs_shadow_sampling = inc.apply_lighting && !prep_drops_recompute;
         let _self = Self {
             bind_groups: ShaderTemplateMaterialOpaqueBindGroups {
                 texture_pool_arrays_len,
@@ -370,16 +397,14 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 debug,
                 shadow_group_index: 3,
                 sscs_available: true,
-                // Plan B (stage 4): when the opaque kernel reads the prep
-                // shadow-visibility buffer (`shadow_from_buffer`, below), the
-                // inline `sample_shadow_*` block is no longer called, so drop
-                // it. Otherwise keep it for lighting materials exactly as
-                // before (inc.apply_lighting). Non-lighting materials still
-                // drop it (inc.apply_lighting == false).
-                needs_shadow_sampling: inc.apply_lighting && !prep_read,
+                // Plan B (stage 5a): drop the inline `sample_shadow_*` block
+                // only in no-MSAA+prep (cs_opaque=PRIMARY reads the buffer).
+                // Under MSAA+prep cs_edge=RECOMPUTE still inline-samples, so it
+                // stays. (See `needs_shadow_sampling` derivation above.)
+                needs_shadow_sampling,
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
-                prep_read,
+                prep_present,
             },
             compute: ShaderTemplateMaterialOpaqueCompute {
                 texture_pool_arrays_len,
@@ -441,15 +466,16 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 bucket_entries,
                 bucket_index,
                 edge_slot_bits,
-                prep_read,
+                prep_present,
+                prep_drops_recompute,
                 max_prep_uv_sets,
                 max_prep_color_sets,
-                // Read the prep shadow buffer instead of inline sampling when
-                // the opaque kernel runs first-party lighting AND the prep
-                // read path is live (no-MSAA, prep on). `shadows_enabled` is
-                // always true for opaque compute, so `inc.apply_lighting`
-                // mirrors the old `needs_shadow_sampling` condition.
-                shadow_from_buffer: inc.apply_lighting && prep_read,
+                // Mirror of the bind-group gate: apply_lighting's inline `else`
+                // arm (the legacy `sample_shadow_*` path) is emitted only when
+                // the inline sampler is compiled. Under MSAA+prep cs_edge needs
+                // it; under no-MSAA+prep cs_opaque=PRIMARY reads the buffer so
+                // it's dropped.
+                needs_shadow_sampling,
                 max_shadow_casters,
             },
         };
@@ -605,7 +631,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             bucket_entries,
             pad_words_iter,
-            prep_read: false,
+            prep_present: false,
         })
     }
 }
@@ -654,8 +680,8 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// u32 indices for the templated `ClassifyBuckets` struct.
     pub pad_words_iter: Vec<u32>,
     /// Always `false` for the empty kernel (no geometry → no prep reads),
-    /// but `bind_groups.wgsl` references `prep_read`, so the field exists.
-    pub prep_read: bool,
+    /// but `bind_groups.wgsl` references `prep_present`, so the field exists.
+    pub prep_present: bool,
 }
 
 impl ShaderTemplateMaterialOpaqueEmpty {

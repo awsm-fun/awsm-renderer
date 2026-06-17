@@ -61,12 +61,17 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// transparent shader (whose `materials_wgsl` only carries its own fragment)
     /// doesn't reference the other family's material struct.
     pub base: ShadingBase,
-    /// Plan B (stage 4): always `false` on the transparent pass — the forward
+    /// Plan B (stage 5a): always `false` on the transparent pass — the forward
     /// transparent fragment samples shadow maps inline (it shades its own
-    /// pixels back-to-front, with no prep buffer). Present because the shared
-    /// `apply_lighting.wgsl` gates the buffer-read path on it.
-    pub shadow_from_buffer: bool,
-    /// Inert on the transparent pass (`shadow_from_buffer` is false), but the
+    /// pixels back-to-front, with no prep buffer / no `g_prep_ctx`). Present
+    /// because the shared `apply_lighting.wgsl` gates the runtime PrepReadContext
+    /// select on it; `false` keeps the legacy inline-only path (byte-identical).
+    pub prep_present: bool,
+    /// Plan B: emit the inline `sample_shadow_*` path. Transparent always lights
+    /// inline (`inc.apply_lighting`), so the cascade-selection / inline-sample
+    /// arms in apply_lighting are gated on it (mirrors the opaque template).
+    pub needs_shadow_sampling: bool,
+    /// Inert on the transparent pass (`prep_present` is false), but the
     /// shared `apply_lighting.wgsl`'s `prep_shadow_read` references it.
     pub max_shadow_casters: u32,
 }
@@ -104,7 +109,15 @@ impl ShaderTemplateTransparentMaterialIncludes {
             base: cache_key.base,
             // Transparent keeps inline shadow sampling (forward pass, own
             // pixels, no prep buffer) — never reads the prep shadow buffer.
-            shadow_from_buffer: false,
+            prep_present: false,
+            // Inline shadow sampling is emitted whenever this material runs
+            // first-party lighting (the only `sample_shadow_*` caller).
+            needs_shadow_sampling: if let Some(d) = cache_key.dynamic_shader.as_ref() {
+                crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
+                    .apply_lighting
+            } else {
+                crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base).apply_lighting
+            },
             max_shadow_casters: 4,
         }
     }
