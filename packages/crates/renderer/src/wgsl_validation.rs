@@ -143,18 +143,25 @@ fn first_party_opaque_shaders_validate() {
             let label = format!("opaque/{name} msaa={msaa:?} mips={mips}");
             let src = render(&first_party_key(id, base, owns_skybox, msaa, mips), &label);
             naga_validate(&src, &label);
-            // Entry-point existence guard: the launcher creates every opaque
-            // bucket's pipeline with `.with_entry_point("cs_opaque")` — so the
-            // module MUST define `fn cs_opaque`. naga only checks the module
-            // *compiles*, not that the requested entry point exists; a missing
-            // one fails at pipeline-create time on a real GPU (it's how the
-            // skybox writer's `fn main` slipped through the 1024 module
-            // unification until model-tests caught it).
-            assert!(
-                src.contains("fn cs_opaque("),
-                "{label}: opaque module missing `fn cs_opaque` entry point \
-                 (launcher requests it → pipeline-create would fail on GPU)"
-            );
+            // Compile invariant (David): a module carries ONLY the entry points
+            // its AA config dispatches. Non-MSAA → `cs_opaque` (render() path);
+            // MSAA → `cs_shade` (render_shade), NEVER `cs_opaque`. naga only checks
+            // the module compiles, not that the requested entry point exists; a
+            // missing one fails at pipeline-create on a real GPU (it's how the
+            // skybox writer's `fn main` slipped through the 1024 unification until
+            // model-tests caught it). So assert the RIGHT kernel per config + the
+            // ABSENCE of the cross-AA kernel.
+            if msaa.is_some() {
+                assert!(
+                    src.contains("fn cs_shade(") && !src.contains("fn cs_opaque("),
+                    "{label}: MSAA opaque module must define `fn cs_shade` and NOT `fn cs_opaque`"
+                );
+            } else {
+                assert!(
+                    src.contains("fn cs_opaque(") && !src.contains("fn cs_shade("),
+                    "{label}: non-MSAA opaque module must define `fn cs_opaque` and NOT `fn cs_shade`"
+                );
+            }
         }
     }
 }
@@ -191,10 +198,11 @@ fn unified_shade_opaque_shaders_validate() {
                     "{label}: unified opaque module missing `fn cs_shade` entry point \
                      (dispatch requests it → pipeline-create would fail on GPU)"
                 );
-                // cs_opaque always coexists (the no-MSAA interior path).
+                // Invariant (A2): under MSAA the module is cs_shade ONLY — no
+                // `cs_opaque` (the no-MSAA interior entry is never compiled here).
                 assert!(
-                    src.contains("fn cs_opaque("),
-                    "{label}: unified module dropped `fn cs_opaque`"
+                    !src.contains("fn cs_opaque("),
+                    "{label}: MSAA module must NOT carry `fn cs_opaque` (cross-AA code)"
                 );
                 // The edge-id texture binding cs_shade reads must be declared.
                 assert!(

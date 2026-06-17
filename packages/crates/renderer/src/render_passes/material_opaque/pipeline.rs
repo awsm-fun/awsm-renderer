@@ -233,7 +233,15 @@ impl MaterialOpaquePipelines {
         let mut shader_descs: Vec<OpaqueShaderDesc> =
             Vec::with_capacity(OPAQUE_SHADER_IDS.len());
 
-        if include_first_party {
+        // Compile invariant (David): the opaque module emits `cs_opaque` (the
+        // `main` pipeline entry) ONLY for non-MSAA. Under MSAA the bucket is
+        // shaded by `cs_shade` (built by the edge-pipeline path), and the MSAA
+        // module omits `cs_opaque` — so building a `main` cs_opaque pipeline under
+        // MSAA would fail pipeline-create. Emit the first-party `main` descriptors
+        // for non-MSAA only; under MSAA this returns empty (cs_shade is built
+        // elsewhere; `get_compute_pipeline_key` returns None under MSAA, and
+        // render() is never called there — render_shade is).
+        if include_first_party && active_msaa.is_none() {
             for &shader_id in OPAQUE_SHADER_IDS {
                 shader_descs.push(OpaqueShaderDesc {
                     shader_cache: ShaderCacheKeyMaterialOpaque {

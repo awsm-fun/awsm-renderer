@@ -467,12 +467,19 @@ impl crate::AwsmRenderer {
         // contract) while its 2nd alpha-only WGSL discards cutouts in the masked
         // visibility raster. Only BLEND targets the transparent contract.
         // First-party variants (no registration) always build.
-        let build_opaque = reg.as_ref().is_none_or(|r| {
-            matches!(
-                r.alpha_mode,
-                MaterialAlphaMode::Opaque | MaterialAlphaMode::Mask { .. }
-            )
-        });
+        //
+        // Compile invariant (David): the opaque module emits `cs_opaque` ONLY for
+        // non-MSAA. Under MSAA the bucket is shaded by `cs_shade` (built by
+        // `launch_edge_resolve_compile` below) and the MSAA module has no
+        // `cs_opaque` entry, so a `.with_entry_point("cs_opaque")` pipeline would
+        // fail to create. Gate the opaque (cs_opaque) build to non-MSAA.
+        let build_opaque = active_msaa.is_none()
+            && reg.as_ref().is_none_or(|r| {
+                matches!(
+                    r.alpha_mode,
+                    MaterialAlphaMode::Opaque | MaterialAlphaMode::Mask { .. }
+                )
+            });
         if build_opaque {
             shader_jobs.push(
                 ShaderCacheKeyMaterialOpaque {

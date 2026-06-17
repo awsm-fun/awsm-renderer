@@ -34,6 +34,11 @@ fn prep_edge_shadow_xy(edge_pixel_id: u32, sample: u32) -> vec2<i32> {
 {% endif %}
 
 
+{% if !multisampled_geometry %}
+// Non-MSAA interior shading. Under MSAA the renderer dispatches `cs_shade`
+// (interior + edge in one kernel) instead, so `cs_opaque` is NOT emitted in
+// the multisampled module — invariant: a compiled module carries only the
+// entry points its AA config dispatches (no cross-AA code).
 @compute @workgroup_size(8, 8)
 fn cs_opaque(
     @builtin(workgroup_id) wg_id: vec3<u32>,
@@ -409,6 +414,7 @@ fn cs_opaque(
     // Write to output texture for non-edge pixel
     textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
 }
+{% endif %}
 
 fn get_triangle_indices(attribute_indices_offset: u32, triangle_index: u32) -> vec3<u32> {
     let base = attribute_indices_offset + (triangle_index * 3u);

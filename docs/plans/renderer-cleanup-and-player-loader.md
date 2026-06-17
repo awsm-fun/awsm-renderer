@@ -67,7 +67,21 @@ count **5 → 4** + one fewer compiled pipeline per AA flip. Verify the count dr
 byte-parity. (Investigate first that nothing — prewarm readiness gating, tests — needs
 it; delegate the mechanical multi-file deletion, then GPU-verify.)
 
-### A2 — split cs_opaque / cs_shade by MSAA (the invariant)
+### A2 [DONE] — split cs_opaque / cs_shade by MSAA (the invariant)
+Gated `cs_opaque` to `{% if !multisampled_geometry %}` in compute.wgsl + skybox_primary.wgsl (cs_shade
+already `{% if multisampled_geometry %}`), so a compiled opaque module carries EXACTLY one kernel:
+non-MSAA → cs_opaque; MSAA → cs_shade. Build side: gated the per-bucket opaque build (launch.rs
+`build_opaque`) + the first-party `main` descriptor loop (pipeline.rs `shader_descriptors_for_config_with`)
+to `active_msaa.is_none()` — under MSAA nothing builds a `.with_entry_point("cs_opaque")` pipeline (would
+fail create now); cs_shade is built by the edge path (`launch_edge_resolve_compile`, already MSAA-only).
+naga tests flipped to assert the invariant (MSAA module has cs_shade & NOT cs_opaque; non-MSAA the reverse).
+261+34+25 green. **GPU-VERIFIED:** MSAA SheenChair + MetalRoughSpheres == baseline (max-diff 0), only a
+benign first-frame final_blend warmup warn, NO cs_opaque pipeline-create error; no-MSAA renders correctly
+via cs_opaque (97% identical to the MSAA capture, differences only at antialiased edges). **MSAA opaque
+module shrank ~90.7 KB → 82.0 KB empty / ~126.7 KB → 118.0 KB all** (cs_opaque dropped) — size_regression
+ceilings re-tightened (94K→84K, 132K→120K).
+
+### A2 (orig) — split cs_opaque / cs_shade by MSAA (the invariant)
 Today the opaque module emits `cs_opaque` unconditionally + `cs_shade` under
 `{% if multisampled_geometry %}`. Under MSAA `cs_opaque` is built (lazy `main` map +
 the eager set) but dispatched only at no-MSAA (render.rs: `msaa ? render_shade :

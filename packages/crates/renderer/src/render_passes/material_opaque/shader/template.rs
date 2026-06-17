@@ -1082,10 +1082,13 @@ mod size_regression {
     // PCSS/EVSM/cascade/cube block now drops from every non-lighting Custom shader,
     // landing at **83.3 KB empty / 113.6 KB all**. Unified-edge removal: the merged
     // `cs_shade` entry point is now UNCONDITIONAL under MSAA (it was the default-on
-    // production path), so the measured MSAA4 sizes include it: **~90.7 KB empty /
-    // ~126.7 KB all**.
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 94_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 132_000;
+    // production path), so the measured MSAA4 sizes included it: ~90.7 KB / ~126.7 KB.
+    // **A2 (compile invariant):** the MSAA module no longer carries the dead
+    // `cs_opaque` entry (non-MSAA dispatches it; MSAA dispatches only `cs_shade`),
+    // so the MSAA4 module shrank to **~82.0 KB empty / ~118.0 KB all** — ceilings
+    // re-tightened (reverses the unified-edge raise).
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 84_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 120_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

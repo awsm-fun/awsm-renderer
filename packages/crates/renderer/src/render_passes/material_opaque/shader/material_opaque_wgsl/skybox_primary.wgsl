@@ -18,6 +18,9 @@
 // skybox bucket's pipeline failed to create ("entry point cs_opaque doesn't
 // exist") the moment a scene with an environment compiled it — latent because
 // the cube benchmark sets no skybox. This is the skybox writer (no cs_edge).
+// Invariant: non-MSAA only — under MSAA the skybox bucket dispatches the
+// `cs_shade` arm below, so `cs_opaque` is not emitted in the multisampled module.
+{% if !multisampled_geometry %}
 @compute @workgroup_size(8, 8)
 fn cs_opaque(
     @builtin(workgroup_id) wg_id: vec3<u32>,
@@ -51,6 +54,7 @@ fn cs_opaque(
         textureStore(opaque_tex, coords, color);
     }
 }
+{% endif %}
 
 {% if multisampled_geometry %}
 // ════════════════════════════════════════════════════════════════════
