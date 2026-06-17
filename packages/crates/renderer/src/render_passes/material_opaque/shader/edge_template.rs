@@ -1,70 +1,13 @@
-//! Askama templates for the global skybox_edge_resolve + final_blend
-//! shaders (the MSAA edge-resolve flow).
+//! Askama template for the global final_blend shader (the MSAA
+//! edge-resolve flow's compositor).
 
 use askama::Template;
 
 use crate::{
     dynamic_materials::BucketEntry,
-    render_passes::material_opaque::shader::edge_cache_key::{
-        ShaderCacheKeyMaterialFinalBlend, ShaderCacheKeyMaterialSkyboxEdgeResolve,
-    },
+    render_passes::material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialFinalBlend,
     shaders::{AwsmShaderError, Result},
 };
-
-// ─────────────────────────────────────────────────────────────────────
-// Skybox edge resolve template.
-// ─────────────────────────────────────────────────────────────────────
-
-pub struct ShaderTemplateMaterialSkyboxEdgeResolve {
-    pub bind_groups: ShaderTemplateMaterialSkyboxEdgeBindGroups,
-    pub compute: ShaderTemplateMaterialSkyboxEdgeCompute,
-}
-
-#[derive(Template, Debug)]
-#[template(
-    path = "material_opaque_wgsl/skybox_edge_bind_groups.wgsl",
-    whitespace = "minimize"
-)]
-pub struct ShaderTemplateMaterialSkyboxEdgeBindGroups {
-    pub bucket_entries: Vec<BucketEntry>,
-}
-
-#[derive(Template, Debug)]
-#[template(
-    path = "material_opaque_wgsl/skybox_edge_resolve.wgsl",
-    whitespace = "minimize"
-)]
-pub struct ShaderTemplateMaterialSkyboxEdgeCompute {
-    /// §5 edge slot-map width (8/16); gates the slot_map read + the widened
-    /// skybox sentinel. Derived from the live bucket count.
-    pub edge_slot_bits: u32,
-}
-
-impl TryFrom<&ShaderCacheKeyMaterialSkyboxEdgeResolve> for ShaderTemplateMaterialSkyboxEdgeResolve {
-    type Error = AwsmShaderError;
-    fn try_from(value: &ShaderCacheKeyMaterialSkyboxEdgeResolve) -> Result<Self> {
-        let edge_slot_bits =
-            crate::dynamic_materials::edge_slot_bits(value.bucket_entries.len() as u32) as u32;
-        Ok(Self {
-            bind_groups: ShaderTemplateMaterialSkyboxEdgeBindGroups {
-                bucket_entries: value.bucket_entries.clone(),
-            },
-            compute: ShaderTemplateMaterialSkyboxEdgeCompute { edge_slot_bits },
-        })
-    }
-}
-
-impl ShaderTemplateMaterialSkyboxEdgeResolve {
-    pub fn into_source(self) -> Result<String> {
-        let bind_groups_source = self.bind_groups.render()?;
-        let compute_source = self.compute.render()?;
-        Ok(format!("{}\n{}", bind_groups_source, compute_source))
-    }
-
-    pub fn debug_label(&self) -> Option<&str> {
-        Some("Material Skybox Edge Resolve")
-    }
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Final blend template.

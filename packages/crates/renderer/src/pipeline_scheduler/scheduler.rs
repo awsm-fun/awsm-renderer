@@ -78,19 +78,6 @@ pub enum CompileInstallTarget {
         /// Mipmap-gradient variant on or off.
         mipmaps: bool,
     },
-    /// Compute: per-shader-id MSAA `edge_resolve` pipeline. Each
-    /// registered first-party + dynamic shader_id has one of these,
-    /// keyed on `(shader_id, mipmaps)`. The shader cache key also
-    /// captures `bucket_entries` so any new dynamic-material
-    /// registration invalidates and recompiles every existing
-    /// per-shader edge_resolve pipeline.
-    EdgeResolvePerShader {
-        /// Shader-id of the material whose edge contribution this
-        /// pipeline shades.
-        shader_id: awsm_materials::MaterialShaderId,
-        /// Mipmap-gradient variant.
-        mipmaps: bool,
-    },
     /// Compute: unified-edge (U1) per-bucket `cs_shade` pipeline. One per
     /// bucket (incl SKYBOX), keyed `(shader_id, mipmaps)`. Same module as
     /// the bucket's opaque pipeline (`cs_shade` entry), bound to the
@@ -103,16 +90,10 @@ pub enum CompileInstallTarget {
         /// Mipmap-gradient variant.
         mipmaps: bool,
     },
-    /// Compute: global `skybox_edge_resolve` pipeline (shades skybox
-    /// MSAA samples at edge pixels). Keyed only on `bucket_entries`;
-    /// recompiled on every dynamic-material register so the templated
-    /// bucket-list constants match the classify pass.
-    EdgeResolveSkybox,
     /// Compute: global `final_blend` pipeline (the post-resolve
     /// compositor that reads up-to-4 accumulator slots per edge
     /// pixel + writes the weighted average to `opaque_tex`). Keyed
-    /// on `bucket_entries` + the runtime color format; recompiled
-    /// alongside skybox edge resolve.
+    /// on `bucket_entries` + the runtime color format.
     EdgeResolveFinalBlend,
 }
 

@@ -168,11 +168,20 @@ the current HEAD. Every stage below must reproduce these **byte-identically** (e
     261+34 green. **GPU byte-parity VERIFIED (max-diff 0, 0 pixels):** SheenChair MSAA prep-off == baseline
     (default-build cs_shade dispatch is byte-identical to U2a by construction; this confirms the
     render_edge_resolve deletion didn't perturb it).
-  - **U2b-2 — delete the dead legacy pipeline build + entry points.** Remove the cs_edge per-shader pipeline
-    build + skybox_edge_resolve pipeline + their layout/cache keys + scheduler-launch entries + the `cs_edge`
-    entry point (material_opaque compute.wgsl) + skybox_edge_resolve.wgsl + skybox_edge_bind_groups.wgsl +
-    edge_template/edge_cache_key entries for them. Pure dead-code (not dispatched). Keep cs_opaque +
-    skybox_primary (no-MSAA) + cs_shade + final_blend. Verify still compiles + renders == baseline.
+  - **U2b-2 [DONE] — delete the dead legacy pipeline build + entry points.** Removed the cs_edge per-shader
+    pipeline build + skybox_edge_resolve pipeline + their layout/cache keys (`edge_resolve_*` +
+    `skybox_edge_*` layout keys, `per_shader` map, `EdgePipelineSlot::PerShader`/`::Skybox`,
+    `CompileInstallTarget::EdgeResolvePerShader`/`EdgeResolveSkybox`, `PassDef`/`PassKind::EdgeResolveSkybox`,
+    `ShaderCacheKeyMaterialSkyboxEdgeResolve`) + scheduler-launch/install arms + the `cs_edge` entry point
+    (material_opaque compute.wgsl) + deleted skybox_edge_resolve.wgsl + skybox_edge_bind_groups.wgsl.
+    Simplified `build_edge_bind_groups` → returns only the final_blend group. Pure dead-code (not
+    dispatched). Kept cs_opaque + skybox_primary (no-MSAA) + cs_shade + final_blend + accumulator +
+    edge_slot_map. 14 files touched + 2 WGSL deleted; warning-free build, 261+34 green. **GPU byte-parity
+    VERIFIED (max-diff 0, 0 pixels):** SheenChair (multi-material + sky edges, now ALL through cs_shade) and
+    MetalRoughSpheres == baseline, MSAA prep-off. (cs_edge + cs_shade share compute.wgsl, so the module text
+    changed + recompiled — cs_shade output unchanged.) **Pipelines/material under MSAA: 3 → 2** (cs_opaque +
+    cs_edge + cs_shade → cs_opaque [no-MSAA only, still compiled] + cs_shade); skybox_edge_resolve global
+    pipeline gone.
   - **U2b-3 — buffer-layout surgery (memory win).** Drop `append_edge_sample` + the per-bucket + skybox
     sample-list regions + per_shader/skybox indirect args from classify compute.wgsl + edge_buffers.rs
     `EdgeBufferLayout` (per_shader_count_base, skybox_count_index, per_shader_sample_list_base,

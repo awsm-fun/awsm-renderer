@@ -1,40 +1,37 @@
-//! Bind groups for the per-shader-id edge_resolve / skybox_edge_resolve /
-//! final_blend pipelines (Priority 3 in https://github.com/dakom/awsm-renderer/pull/99).
+//! Bind groups for the unified-edge `cs_shade` + global `final_blend`
+//! pipelines (Priority 3 in https://github.com/dakom/awsm-renderer/pull/99).
 //!
 //! These bind groups all reference the **data_buffer half** of
 //! `MaterialEdgeBuffers` (the storage-writable side). The args_buffer
 //! half is NOT bound here — it's used only as the `Indirect` source
 //! when the render pass calls `dispatch_workgroups_indirect_with_u32`.
-//! Splitting them this way is what lets the new edge-resolve path
+//! Splitting them this way is what lets the edge-resolve path
 //! pass WebGPU validation; binding the args buffer as Storage *while*
 //! using it as Indirect in the same compute pass is rejected.
 //!
-//! Three bind-group shapes, one per pipeline kind:
+//! Two bind-group shapes, one per pipeline kind:
 //!
-//! 1. **EdgeResolveBindGroups** — for `material_edge_resolve_{shader_id}`.
-//!    Shares the primary opaque pipeline's group(0) / lights /
+//! 1. **Shade extended-shadows (group 3)** — for the unified `cs_shade`
+//!    entry point. Shares the primary opaque pipeline's group(0) / lights /
 //!    texture-pool binding shape, then extends group(3) (shadows) with
-//!    two extra bindings at the end carrying the data buffer
-//!    (read-write storage) + the edge-layout uniform. This folds what
-//!    was previously a separate group(4) into shadows so the layout
-//!    fits in 4 bind groups — required to activate on devices with
+//!    extra bindings at the end carrying the data buffer (read-write
+//!    storage) + the edge-layout uniform + `edge_id_tex`. This folds what
+//!    was previously a separate group into shadows so the layout fits in
+//!    4 bind groups — required to activate on devices with
 //!    `maxBindGroups = 4` (macOS Metal in particular).
 //!
-//! 2. **SkyboxEdgeResolveBindGroups** — for `skybox_edge_resolve`.
-//!    Compact: data buffer + layout + camera + skybox tex/sampler.
-//!
-//! 3. **FinalBlendBindGroups** — for `final_blend`.
+//! 2. **FinalBlend (group 0)** — for `final_blend`.
 //!    Compact: read-only data buffer + layout + the opaque storage tex.
 //!    Also reads the args_buffer's `edge_count` counter — but that's
 //!    bound at a separate slot because of the Indirect/Storage split.
 //!
-//! All three bind-group layouts are constructed lazily — when the edge
+//! Both bind-group layouts are constructed lazily — when the edge
 //! pipelines are first compiled (post-cold-boot, per the scheduler-managed
 //! lifecycle). Cached on `MaterialEdgeBindGroups` for subsequent use.
 
 use awsm_renderer_core::bind_groups::{
-    BindGroupLayoutResource, BufferBindingLayout, BufferBindingType, SamplerBindingLayout,
-    SamplerBindingType, StorageTextureAccess, StorageTextureBindingLayout, TextureBindingLayout,
+    BindGroupLayoutResource, BufferBindingLayout, BufferBindingType, StorageTextureAccess,
+    StorageTextureBindingLayout,
 };
 use awsm_renderer_core::texture::{TextureSampleType, TextureViewDimension};
 
@@ -50,30 +47,10 @@ use crate::render_passes::RenderPassInitContext;
 /// (no per-frame variation); the *bind groups* themselves are built
 /// lazily via `recreate()` when the edge buffer is first allocated.
 pub struct MaterialEdgeBindGroupLayouts {
-    /// Layout for the per-shader-id edge_resolve pipelines' **group(3)**
-    /// — the shadow bind-group layout extended with the edge buffer
-    /// (read-write storage) + edge-layout uniform appended at the end
-    /// (bindings 10 and 11).
-    ///
-    /// The edge_resolve pipeline layout is 4 groups: main(0) / lights(1)
-    /// / texture-pool(2) / extended-shadows(3). At dispatch time the
-    /// render pass builds the extended shadow bind group fresh each
-    /// frame (10 shadow resources + 2 edge resources) and binds it at
-    /// slot 3 in place of the primary opaque pipeline's plain shadow
-    /// bind group.
-    pub edge_resolve_extended_shadows_layout_key: BindGroupLayoutKey,
-
     /// Unified-edge (U1): group(3) layout for the merged `cs_shade` entry
     /// point — the extended-shadows layout (shadows + edge_data@10 +
-    /// edge_layout@11) with `edge_id_tex`@12 appended. Distinct from
-    /// `edge_resolve_extended_shadows_layout_key` (which `cs_edge` uses and
-    /// must stay untouched for the toggle-OFF path) so adding edge_id_tex
-    /// never perturbs the cs_edge / toggle-OFF binding ABI.
+    /// edge_layout@11) with `edge_id_tex`@12 appended.
     pub shade_extended_shadows_layout_key: BindGroupLayoutKey,
-
-    /// Layout for the global skybox_edge_resolve pipeline (single
-    /// bind group at group(0)).
-    pub skybox_edge_group0_layout_key: BindGroupLayoutKey,
 
     /// Layout for the global final_blend pipeline (single bind
     /// group at group(0)).
@@ -85,15 +62,11 @@ impl MaterialEdgeBindGroupLayouts {
     /// `BindGroupLayouts`; cheap on subsequent calls with the same
     /// renderer config.
     pub fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let edge_resolve_extended_shadows_layout_key = build_extended_shadows_layout(ctx, false)?;
         let shade_extended_shadows_layout_key = build_extended_shadows_layout(ctx, true)?;
-        let skybox_edge_group0_layout_key = build_skybox_edge_layout(ctx)?;
         let final_blend_group0_layout_key = build_final_blend_layout(ctx)?;
 
         Ok(Self {
-            edge_resolve_extended_shadows_layout_key,
             shade_extended_shadows_layout_key,
-            skybox_edge_group0_layout_key,
             final_blend_group0_layout_key,
         })
     }
@@ -170,59 +143,6 @@ fn build_extended_shadows_layout(
         .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)
 }
 
-fn build_skybox_edge_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindGroupLayoutKey> {
-    // 0: edge_data    — storage RW (accumulator + sample list writes;
-    //                   reads entry-count mirrors from its header).
-    // 1: edge_layout  — uniform.
-    // 2: camera_raw   — uniform (vec4 array).
-    // 3: skybox_tex   — texture_cube.
-    // 4: skybox_smp   — sampler.
-    let entries = vec![
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Buffer(
-                BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Texture(
-                TextureBindingLayout::new().with_view_dimension(TextureViewDimension::Cube),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-        BindGroupLayoutCacheKeyEntry {
-            resource: BindGroupLayoutResource::Sampler(
-                SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
-            ),
-            visibility_vertex: false,
-            visibility_fragment: false,
-            visibility_compute: true,
-        },
-    ];
-    Ok(ctx
-        .bind_group_layouts
-        .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)
-}
 
 fn build_final_blend_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindGroupLayoutKey> {
     // 0: edge_data    — storage RO (reads accumulator + edge_to_xy +

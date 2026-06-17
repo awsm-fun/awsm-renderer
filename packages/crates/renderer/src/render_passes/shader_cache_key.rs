@@ -14,9 +14,7 @@ use crate::render_passes::{
     material_opaque::shader::cache_key::{
         ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
     },
-    material_opaque::shader::edge_cache_key::{
-        ShaderCacheKeyMaterialFinalBlend, ShaderCacheKeyMaterialSkyboxEdgeResolve,
-    },
+    material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialFinalBlend,
     material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep,
     material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent,
     occlusion::shader::cache_key::{
@@ -42,8 +40,6 @@ pub enum ShaderCacheKeyRenderPass {
     MaterialDecal(ShaderCacheKeyMaterialDecal),
     MaterialOpaque(ShaderCacheKeyMaterialOpaque),
     MaterialOpaqueEmpty(ShaderCacheKeyMaterialOpaqueEmpty),
-    /// Global skybox-sample MSAA edge-resolve.
-    MaterialSkyboxEdgeResolve(ShaderCacheKeyMaterialSkyboxEdgeResolve),
     /// Global final-blend compositor for the MSAA edge-resolve flow.
     MaterialFinalBlend(ShaderCacheKeyMaterialFinalBlend),
     MaterialTransparent(ShaderCacheKeyMaterialTransparent),

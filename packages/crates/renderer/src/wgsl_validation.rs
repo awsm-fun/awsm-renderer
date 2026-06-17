@@ -153,19 +153,12 @@ fn first_party_opaque_shaders_validate() {
             // *compiles*, not that the requested entry point exists; a missing
             // one fails at pipeline-create time on a real GPU (it's how the
             // skybox writer's `fn main` slipped through the 1024 module
-            // unification until model-tests caught it). The MSAA path also
-            // needs `cs_edge` — except the skybox writer (no edge resolve).
+            // unification until model-tests caught it).
             assert!(
                 src.contains("fn cs_opaque("),
                 "{label}: opaque module missing `fn cs_opaque` entry point \
                  (launcher requests it → pipeline-create would fail on GPU)"
             );
-            if msaa.is_some() && !owns_skybox {
-                assert!(
-                    src.contains("fn cs_edge("),
-                    "{label}: MSAA opaque module missing `fn cs_edge` entry point"
-                );
-            }
         }
     }
 }
@@ -179,8 +172,8 @@ fn unified_shade_opaque_shaders_validate() {
     // base (incl SKYBOX + Custom) × prep on/off × mips on/off — cs_shade is
     // MSAA-only (there are no edges otherwise), so only the MSAA config carries
     // it. Asserts the entry point exists (the dispatch selects it by name →
-    // pipeline-create would fail on GPU if absent) and that the OLD cs_opaque /
-    // cs_edge entry points still coexist (both paths present; toggle selects).
+    // pipeline-create would fail on GPU if absent) and that the cs_opaque
+    // entry point still coexists (the no-MSAA interior path).
     let bases = [
         (MaterialShaderId::PBR, ShadingBase::Pbr, false, "pbr"),
         (MaterialShaderId::UNLIT, ShadingBase::Unlit, false, "unlit"),
@@ -203,17 +196,11 @@ fn unified_shade_opaque_shaders_validate() {
                     "{label}: unified opaque module missing `fn cs_shade` entry point \
                      (dispatch requests it → pipeline-create would fail on GPU)"
                 );
-                // Both paths coexist: cs_opaque always; cs_edge on non-skybox.
+                // cs_opaque always coexists (the no-MSAA interior path).
                 assert!(
                     src.contains("fn cs_opaque("),
-                    "{label}: unified module dropped `fn cs_opaque` (toggle-OFF path)"
+                    "{label}: unified module dropped `fn cs_opaque`"
                 );
-                if !owns_skybox {
-                    assert!(
-                        src.contains("fn cs_edge("),
-                        "{label}: unified module dropped `fn cs_edge` (toggle-OFF path)"
-                    );
-                }
                 // The edge-id texture binding cs_shade reads must be declared.
                 assert!(
                     src.contains("var edge_id_tex: texture_storage_2d<r32uint, read>"),

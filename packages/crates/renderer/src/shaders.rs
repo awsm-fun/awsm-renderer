@@ -383,13 +383,10 @@ impl ShaderCacheKey {
                 // is stale only when the count changes; a same-count identity
                 // change reuses the compiled classify pipeline (§4d win).
                 Rp::MaterialClassify(k) => k.bucket_count != current_bucket_entries.len() as u32,
-                // The global MSAA edge-resolve compositors (skybox sampler +
-                // final blend) carry only the bucket list (no dispatch_hash);
-                // it still drifts on every registry change, minting a new key
-                // and orphaning the old compute pipeline. Sweep them by bucket set.
-                Rp::MaterialSkyboxEdgeResolve(k) => {
-                    k.bucket_entries.as_slice() != current_bucket_entries
-                }
+                // The global MSAA edge-resolve final-blend compositor carries
+                // only the bucket list (no dispatch_hash); it still drifts on
+                // every registry change, minting a new key and orphaning the old
+                // compute pipeline. Sweep it by bucket set.
                 Rp::MaterialFinalBlend(k) => k.bucket_entries.as_slice() != current_bucket_entries,
                 _ => false,
             },

@@ -2050,9 +2050,6 @@ impl AwsmRendererBuilder {
                 }));
             }
             if edge_resolve_enabled {
-                eager_passes.push(PipelineGroupDef::Pass(PassDef::EdgeResolveSkybox {
-                    snapshot: snapshot.clone(),
-                }));
                 eager_passes.push(PipelineGroupDef::Pass(PassDef::EdgeResolveBlend {
                     snapshot: snapshot.clone(),
                 }));

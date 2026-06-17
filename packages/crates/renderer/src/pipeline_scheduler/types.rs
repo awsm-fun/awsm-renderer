@@ -209,12 +209,6 @@ pub enum PassDef {
     },
     /// Depth-of-field post-fx pipelines.
     Dof,
-    /// Priority-3 MSAA-edge-resolve helpers (shared across all
-    /// materials).
-    EdgeResolveSkybox {
-        /// Renderer-config snapshot this pipeline is keyed on.
-        snapshot: PipelineConfigSnapshot,
-    },
     /// MSAA-edge-resolve helper for transparent (Blend) materials.
     EdgeResolveBlend {
         /// Renderer-config snapshot this pipeline is keyed on.
@@ -262,8 +256,6 @@ pub enum PassKind {
     Smaa,
     /// Depth-of-field post-fx pipelines.
     Dof,
-    /// MSAA-edge-resolve helper for skybox.
-    EdgeResolveSkybox,
     /// MSAA-edge-resolve helper for transparent (Blend) materials.
     EdgeResolveBlend,
     /// Layout-level owner for the opaque MSAA edge-resolve pipeline set
@@ -293,7 +285,6 @@ impl PassDef {
             Self::Bloom { .. } => PassKind::Bloom,
             Self::Smaa { .. } => PassKind::Smaa,
             Self::Dof => PassKind::Dof,
-            Self::EdgeResolveSkybox { .. } => PassKind::EdgeResolveSkybox,
             Self::EdgeResolveBlend { .. } => PassKind::EdgeResolveBlend,
         }
     }

@@ -834,15 +834,10 @@ impl crate::AwsmRenderer {
                 .edge_pipelines
                 .mark_edge_key_in_flight(cache_key.clone());
             let target = match slot.0 {
-                EdgePipelineSlot::PerShader(id) => CompileInstallTarget::EdgeResolvePerShader {
-                    shader_id: id.shader_id,
-                    mipmaps: id.mipmaps,
-                },
                 EdgePipelineSlot::Shade(id) => CompileInstallTarget::EdgeResolveShade {
                     shader_id: id.shader_id,
                     mipmaps: id.mipmaps,
                 },
-                EdgePipelineSlot::Skybox => CompileInstallTarget::EdgeResolveSkybox,
                 EdgePipelineSlot::FinalBlend => CompileInstallTarget::EdgeResolveFinalBlend,
             };
             // Layout-level, not owned by any material: charge to the single
@@ -920,9 +915,7 @@ impl crate::AwsmRenderer {
         // bucket layout moved on while this compiled, so drop it. (`id` is
         // `PassKind::MaterialEdgeResolve`, `generation` is unused here.)
         match &target {
-            CompileInstallTarget::EdgeResolvePerShader { .. }
-            | CompileInstallTarget::EdgeResolveShade { .. }
-            | CompileInstallTarget::EdgeResolveSkybox
+            CompileInstallTarget::EdgeResolveShade { .. }
             | CompileInstallTarget::EdgeResolveFinalBlend => {
                 self.render_passes
                     .material_opaque
@@ -1078,9 +1071,7 @@ impl crate::AwsmRenderer {
                     pipeline_key,
                 );
             }
-            CompileInstallTarget::EdgeResolvePerShader { .. }
-            | CompileInstallTarget::EdgeResolveShade { .. }
-            | CompileInstallTarget::EdgeResolveSkybox
+            CompileInstallTarget::EdgeResolveShade { .. }
             | CompileInstallTarget::EdgeResolveFinalBlend => {
                 unreachable!("edge-resolve targets are installed by the layout-level branch")
             }
@@ -1136,9 +1127,7 @@ fn launch_slot_from_target(t: &CompileInstallTarget) -> LaunchSlot {
             msaa: *msaa,
             mipmaps: *mipmaps,
         },
-        CompileInstallTarget::EdgeResolvePerShader { .. }
-        | CompileInstallTarget::EdgeResolveShade { .. }
-        | CompileInstallTarget::EdgeResolveSkybox
+        CompileInstallTarget::EdgeResolveShade { .. }
         | CompileInstallTarget::EdgeResolveFinalBlend => {
             unreachable!(
                 "launch_slot_from_target: edge variants route through edge_slot_from_target"
@@ -1153,9 +1142,7 @@ fn shader_id_from_target(t: &CompileInstallTarget) -> MaterialShaderId {
         // Classify target doesn't carry shader_id; sentinel value
         // (the install path doesn't read it for classify).
         CompileInstallTarget::ClassifyDynamic { .. } => MaterialShaderId::PBR,
-        CompileInstallTarget::EdgeResolvePerShader { .. }
-        | CompileInstallTarget::EdgeResolveShade { .. }
-        | CompileInstallTarget::EdgeResolveSkybox
+        CompileInstallTarget::EdgeResolveShade { .. }
         | CompileInstallTarget::EdgeResolveFinalBlend => {
             unreachable!("shader_id_from_target: edge variants route through edge_slot_from_target")
         }
@@ -1166,9 +1153,7 @@ fn dispatch_hash_from_target(t: &CompileInstallTarget) -> u64 {
     match t {
         CompileInstallTarget::ClassifyDynamic { dispatch_hash, .. } => *dispatch_hash,
         CompileInstallTarget::OpaqueDynamic { .. } => 0,
-        CompileInstallTarget::EdgeResolvePerShader { .. }
-        | CompileInstallTarget::EdgeResolveShade { .. }
-        | CompileInstallTarget::EdgeResolveSkybox
+        CompileInstallTarget::EdgeResolveShade { .. }
         | CompileInstallTarget::EdgeResolveFinalBlend => {
             unreachable!(
                 "dispatch_hash_from_target: edge variants route through edge_slot_from_target"
@@ -1262,10 +1247,10 @@ fn install_edge_per_pass(
     slot: &EdgePipelineSlot,
     pipeline_key: crate::pipelines::compute_pipeline::ComputePipelineKey,
 ) {
-    // Drop a late per-shader edge resolution for a now-deleted bucket — same
-    // rationale as install_per_pass. Skybox / final-blend are global (no
-    // per-bucket key) so they're always installed.
-    if let EdgePipelineSlot::PerShader(id) | EdgePipelineSlot::Shade(id) = slot {
+    // Drop a late per-bucket edge resolution for a now-deleted bucket — same
+    // rationale as install_per_pass. Final-blend is global (no per-bucket key)
+    // so it's always installed.
+    if let EdgePipelineSlot::Shade(id) = slot {
         if !is_live_bucket(renderer, id.shader_id) {
             free_displaced_compute_pipeline(renderer, pipeline_key);
             return;
@@ -1275,12 +1260,7 @@ fn install_edge_per_pass(
     // Capture any pool key displaced by this install so we can free the orphaned
     // pipeline (part of the pipeline-leak fix — see install_per_pass).
     let displaced = match slot {
-        EdgePipelineSlot::PerShader(id) => edge.insert_per_shader_pipeline(*id, pipeline_key),
         EdgePipelineSlot::Shade(id) => edge.insert_shade_pipeline(*id, pipeline_key),
-        EdgePipelineSlot::Skybox => edge
-            .skybox_edge_resolve_pipeline_key
-            .replace(pipeline_key)
-            .filter(|old| *old != pipeline_key),
         EdgePipelineSlot::FinalBlend => edge
             .final_blend_pipeline_key
             .replace(pipeline_key)
@@ -1297,19 +1277,12 @@ fn install_edge_per_pass(
 /// would panic.
 fn edge_slot_from_target(t: &CompileInstallTarget) -> EdgePipelineSlot {
     match t {
-        CompileInstallTarget::EdgeResolvePerShader { shader_id, mipmaps } => {
-            EdgePipelineSlot::PerShader(EdgeResolvePipelineKeyId {
-                shader_id: *shader_id,
-                mipmaps: *mipmaps,
-            })
-        }
         CompileInstallTarget::EdgeResolveShade { shader_id, mipmaps } => {
             EdgePipelineSlot::Shade(EdgeResolvePipelineKeyId {
                 shader_id: *shader_id,
                 mipmaps: *mipmaps,
             })
         }
-        CompileInstallTarget::EdgeResolveSkybox => EdgePipelineSlot::Skybox,
         CompileInstallTarget::EdgeResolveFinalBlend => EdgePipelineSlot::FinalBlend,
         _ => unreachable!("edge_slot_from_target called with non-edge variant"),
     }
