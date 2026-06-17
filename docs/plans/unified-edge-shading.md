@@ -1,8 +1,32 @@
 # Unified edge shading — one kernel for interior + edge (kill the cs_edge split)
 
-**Status:** implementation-ready spec. Do this **before** `uber-shader.md` (it stands alone and shrinks
-the surface the uber-shader later branches over). Composes with the prep pass
-(`deferred-shared-prep-pass.md`) — does not depend on it.
+**Status: COMPLETE** (material-increase, 2026-06-17). All stages U0–U3 landed + GPU byte-parity verified
+(max-diff 0) at every step; U4 updated `uber-shader.md` to reflect the outcome (commit 962cfd97). Composes
+with the prep pass (`deferred-shared-prep-pass.md`) — does not depend on it.
+
+**Outcome:** MSAA shading is now ONE `cs_shade` kernel per material pipeline (interior sample-0 →
+`opaque_tex`; edge samples → per-sample `accumulator`, write-target branch OUTSIDE the coloring) +
+`final_blend`. The legacy `cs_opaque`+`cs_edge`+`skybox_primary`+`skybox_edge_resolve`+`render_edge_resolve`
+MSAA path, the per-bucket edge-sample lists, and the `with_unified_edge` toggle are all gone.
+- **Pipelines/material under MSAA: 3 → 2** (cs_opaque [no-MSAA only] + cs_shade); the global
+  skybox_edge_resolve pipeline removed.
+- **Memory:** edge `data_buffer` ~56 MB → 36 MB (sample-list pool dropped, bucket=5/budget=524288);
+  `args_buffer` 128 B → 32 B; `EdgeBufferLayout` uniform 10 u32 → 5.
+- **Classify:** 4 `append_edge_sample` calls per edge pixel removed (atomic traffic).
+- **Byte-parity:** MetalRoughSpheres + SheenChair (multi-material + self-shadow + sky edges), MSAA, prep
+  ON and OFF — all max-diff 0 vs the pre-refactor baseline.
+
+**Follow-up flagged for David (NOT done — out of scope, his call):** the MSAA opaque module still emits
+`cs_opaque` (the no-MSAA interior entry) DEAD alongside `cs_shade` (render_shade dispatches only cs_shade
+under MSAA). Gating `cs_opaque` to non-MSAA + dropping the unused MSAA `cs_opaque` pipeline build would
+fully collapse the MSAA shader surface (and reverse the size-ceiling raise U3a took) — but it's
+GPU-affecting pipeline surgery, so left for David. Also: a few now-dead `pub` offset helpers + the
+`data_buffer` per-bucket count header region remain (harmless; kept so `edge_to_xy_base` doesn't shift).
+
+---
+
+**(original spec header)** Do this **before** `uber-shader.md` (it stands alone and shrinks
+the surface the uber-shader later branches over).
 
 ## Motivation
 
