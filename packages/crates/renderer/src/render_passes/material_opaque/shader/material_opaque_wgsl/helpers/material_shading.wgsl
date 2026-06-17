@@ -10,15 +10,17 @@
 // pipeline's SPIR-V — an O(N) bloat in the number of dynamic
 // materials. Stage 3's per-shader-id specialization eliminates that.
 //
-// What remains here:
-//   * `MsaaSampleTextures` — struct used by per-shader `edge_resolve.wgsl`
-//   * `msaa_load_sample_textures` — used by per-shader `edge_resolve.wgsl`
+// What remains here (ALL gated on `multisampled_geometry` — absent without MSAA):
+//   * `MsaaSampleTextures` — struct used by the `cs_edge` entry point
+//   * `msaa_load_sample_textures` — used by the `cs_edge` entry point
 //
 // Primary opaque (compute.wgsl) shades only sample-0 directly; the
 // final_blend dispatch overwrites edge pixels with the proper
 // 4-sample average from Stage 3's per-shader-id pipelines.
 
-// Texture data loaded for a single MSAA sample.
+{% if multisampled_geometry %}
+// Texture data loaded for a single MSAA sample. (Gated with its only consumer,
+// `msaa_load_sample_textures`, so the single-sampled module carries no MSAA code.)
 // `bary` carries the raw RGBA16uint texel for barycentric_tex: RG channels
 // are u16 fixed-point barycentric, BA channels are the per-fragment
 // instance_id (split via `join32` on read). Unpack to f32 / instance_id
@@ -30,7 +32,6 @@ struct MsaaSampleTextures {
     normal_tangent: vec4<f32>,
 }
 
-{% if multisampled_geometry %}
 // Load texture data for a single MSAA sample. Called by per-shader
 // `edge_resolve.wgsl` to pull a sample's visibility/barycentric/normal
 // data so it can be shaded with this pipeline's specialized
