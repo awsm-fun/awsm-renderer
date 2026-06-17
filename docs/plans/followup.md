@@ -112,3 +112,74 @@ model's pipelines before the first frame that shows it — `prewarm_pipelines` /
 `wait_for_pipelines_ready` already exist as the building blocks), but **verifying
 it needs a human wall-clock / eyes on a real cold load** — the agreed
 human-in-the-loop step.
+
+---
+
+## 4. Player-grade scene-loader follow-ons (crate `awsm-scene-loader`)
+
+The player-grade loader (`load_scene_for_player` / `populate_awsm_scene`, `materialize`
+in `lib.rs`) materializes every render `NodeKind` EXCEPT the items below. None are
+regressions — the pre-loader `materialize` dropped all of these in its `_ => {}`
+arm; the core of each is now wired, these are the unfinished dimensions. The
+renderer already exposes everything needed for (4.1)–(4.3); they were left as
+documented follow-ons, not blocked.
+
+### 4.1 ParticleEmitter rendering
+
+`NodeKind::ParticleEmitter(ParticleEmitterDef)` is currently a clean-skip (one-time
+`tracing::warn!` in `materialize`). **Correction to the earlier "no renderer particle
+pass" framing:** the renderer CAN render particles — `Meshes::enable_mesh_instancing_opaque`
++ per-frame `Meshes::set_mesh_instances` (transforms) + `Meshes::set_mesh_instance_attrs`
+(per-instance color + alpha + size) are exactly an instanced-billboard particle
+renderer. There is no dedicated particle pass and one isn't needed.
+
+What's actually unbuilt: `ParticleEmitterDef` (scene crate `particle.rs`) is a
+*simulation spec* — `spawn_rate`, `burst_count`, `max_alive`, `lifetime`,
+`initial_speed`, `forces: [ForceDef::Gravity{…}]`, `color_over_life`,
+`size_over_life` — so particles spawn/integrate/age/die EVERY frame. The loader is
+a one-shot pass and never ticks (same boundary as animation: it loads clips, the
+consumer drives the clock). Two designs to pick from:
+- **(A) Loader sets up, game ticks** — `materialize` builds the billboard quad
+  (reuse `build_sprite_mesh`) + `enable_mesh_instancing_opaque` at `max_alive`
+  capacity + the FlipBook/Unlit material, and returns an emitter handle (the mesh
+  key + the `ParticleEmitterDef`) in `NodeHandles`; the game runs the CPU sim and
+  calls `set_mesh_instances` / `set_mesh_instance_attrs` each frame. Matches the
+  loader's existing "loads, doesn't drive" contract; still needs a few lines of
+  consumer per-kind code (the tick).
+- **(B) A renderer-side CPU particle component** that owns emitter state + ticks
+  itself in the render loop (spawn/integrate/cull → writes the instance buffers).
+  Net-new renderer module, but the only version that satisfies "renders with NO
+  consumer per-kind code". Bigger effort; could be its own small plan.
+
+(lockstep's `scene/particles.rs` is a reference CPU sim for either path.)
+
+### 4.2 InstancesAlongCurve per-instance attributes
+
+`materialize_instances_along_curve` places copies via `enable_mesh_instancing_opaque`
+(transforms only). `InstancesAlongCurveDef.per_instance_colors` is NOT applied yet —
+wire it through `Meshes::set_mesh_instance_attrs` (same API particles would use).
+Per-instance `shadow` (`InstancesAlongCurveDef.shadow`) is genuinely limited: shadow
+is a mesh-level flag, not per-instance — would need a renderer change to vary it per
+instance (low priority). Also: source-node resolution relies on DFS order (source
+materialized before the instances node) — currently best-effort with a warn; make it
+order-independent if it bites.
+
+### 4.3 Prefab non-mesh children
+
+`PrefabTemplate::instantiate` replays MESH nodes cheaply (`duplicate_mesh_with_transform`,
+shared GPU buffers). Light / Camera / Line / Decal nodes inside a prefab contribute
+only their transform to each instance — they aren't re-created per instance (there's
+no `duplicate_*` for them). To replay them, `instantiate` would re-call
+`insert_light` / `add_line_strip` / `insert_decal` per instance from the captured
+`PrefabNode` metadata (extend `PrefabNode` to carry the light/line/decal config, not
+just `template_meshes`). Straightforward, just unwired.
+
+### 4.4 Decal texture-index ≤64-layer assumption
+
+`materialize_decal` resolves a decal's texture to a flat pool index as
+`array_index * 64 + layer_index` (the `DECAL_POOL_LAYERS_PER_ARRAY` const in
+scene-loader), matching the decal shader's `texture_index % 64` packing. If the
+texture pool ever grows an array past 64 layers, a decal texture landing on
+`layer >= 64` would index wrong. Either confirm the pool never exceeds 64
+layers/array, or unify the constant between the shader and the loader so they can't
+drift.
