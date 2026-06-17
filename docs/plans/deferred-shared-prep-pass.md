@@ -247,15 +247,33 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      shared fn → differentiate by a per-kernel `var<private>` mode set at each entry point (cs_opaque →
      read prep array at g_prep_coords sample 0; cs_edge → read compact edge buffer at the current
      edge-sample id). This is why 2b/4 deliberately scoped prep-read to `msaa.is_none()`.
-   - **Compact buffer:** add a per-edge-sample attr+shadow region keyed by the existing edge-sample id
-     (edge_pixel_id × samples), populated by an extension of the prep pass (which must run after classify's
-     edge emission + bind the edge buffers + walk the edge-sample list, computing UV/vcolor/shadow at each
-     edge sample). Sized off the existing per-bucket edge budget. Likely its OWN storage buffer (own it in
-     `material_prep/` like `material_opaque/edge_buffers.rs`).
-   - **Sub-increment split:** 5a = prep extension writes compact per-edge-sample UV/vcolor + cs_edge reads
-     them (drop UV/vcolor recompute from the MSAA module; keep shadow inline); 5b = compact edge SHADOW +
-     extend cs_opaque MSAA-primary to prep-read sample-0 arrays/shadow (drop shadow sampling from the MSAA
-     module). MSAA-on GPU parity is the gate for each.
+   - **Code-sharing mechanism (David's hard goal) = `PrepReadContext` var<private>** (refactor of the 2b
+     `g_prep_coords`): a per-thread context each entry point sets once, that `texture_uv`/`vertex_color`
+     branch on — `{ mode: PRIMARY (read prep array at coords sample 0) | EDGE (read compact buffer at
+     edge_attr_base) | RECOMPUTE }`. ONE shared helper serves cs_opaque (primary), cs_edge (per-sample),
+     and the non-prep path — no forked MSAA copies. cs_opaque sets PRIMARY; cs_edge sets EDGE per sample
+     (or RECOMPUTE until 5b lands); non-prep sets RECOMPUTE.
+   - **prep-edge dispatch (material-independent, reuses prep interpolation):** a new `cs_prep_edge` entry
+     in the prep module, dispatched INDIRECT over `edge_count` (one thread per edge pixel from
+     `edge_to_xy`, loops its MSAA samples), reading vis/bary/normal per-sample (`msaa_load_sample_textures`)
+     and interpolating UV/vcolor with the SAME `prep_uv_at`/`prep_vcolor_at` helpers cs_prep uses for
+     sample 0 → writes the compact buffer at `edge_pixel_id * MAX_SAMPLES + sample`. Inserted in render.rs
+     between prep and opaque (classify already populated `edge_to_xy` + the edge counters — verified
+     ordering classify→prep→opaque; edge buffers concurrent-read is safe within the frame's encoder).
+   - **Compact buffer:** own it in `material_prep/` (storage buffer), keyed `edge_pixel_id*MAX_SAMPLES+s`.
+     **VRAM note:** sized at `max_edge_budget` (512K desktop) × samples × attrs — store **UV0 + vcolor0
+     (set 0) first** (the dominant case; multi-set edge is a follow-up) to bound it (~tens of MB at the
+     512K ceiling, same ballpark as the existing 37 MB accumulator; only allocated under prep+MSAA; can
+     shrink later via f16 / a smaller edge-attr budget). Reuse the existing `edge_layout` uniform offsets
+     (no new layout fields) where possible.
+   - **Sub-increment split (REVISED post-investigation — lower-risk first):**
+     - **5a = PrepReadContext + cs_opaque MSAA-primary reads prep** (arrays + shadow buffer); cs_edge sets
+       RECOMPUTE (unchanged, still correct). Slims the MSAA PRIMARY path (most pixels) WITHOUT touching the
+       fragile edge buffers. Gate: a prep-read-for-MSAA flag. GPU-verify MSAA-on, prep on vs off — non-edge
+       pixels match, edge pixels unchanged.
+     - **5b = compact buffer + prep-edge dispatch + cs_edge reads compact** (UV/vcolor, then shadow). The
+       fragile part. Drops recompute from cs_edge. MSAA-on parity gate (incl. silhouette edges).
+     - MSAA-on GPU parity is the gate for each; do NOT force a broken edge path.
    - **Still relevant (corrected per David 2026-06-17):** uber-shader does NOT collapse shading into one
      branching pass — it's *selective* grouping (some materials share a switch, not all), so the
      per-material `cs_edge` MSAA path persists and this slimming is NOT obviated. Deferral reason is now
