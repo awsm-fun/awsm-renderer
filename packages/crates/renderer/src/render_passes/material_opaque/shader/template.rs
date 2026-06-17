@@ -48,6 +48,12 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// `return 1.0` (true on the transparent pass — sampling its own
     /// depth target would be a feedback loop, so SSCS is disabled).
     pub sscs_available: bool,
+    /// Whether the ~50 KB shadow SAMPLING block in
+    /// `shared_wgsl/shadow/bind_groups.wgsl` is emitted. Set from
+    /// `inc.apply_lighting` (the only caller of `sample_shadow_*`), so
+    /// materials that don't run first-party lighting drop it. The shadow
+    /// bind group + structs are always emitted (ABI) regardless.
+    pub needs_shadow_sampling: bool,
 }
 
 /// Compute shader template for the opaque material pass.
@@ -279,6 +285,17 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
             .unwrap_or(0) as u32;
         let edge_slot_bits =
             crate::dynamic_materials::edge_slot_bits(bucket_entries.len() as u32) as u32;
+        // Compute the include set once so both the bind-group template (shadow
+        // sampling gate) and the compute template (everything else) agree.
+        // `for_custom` forces the Tier-B PBR-internal flags OFF — a custom
+        // material can never enable brdf/apply_lighting/material_color_calc.
+        let inc = if value.owns_skybox {
+            crate::dynamic_materials::ShaderIncludeFlags::skybox_only()
+        } else if let Some(d) = value.dynamic_shader.as_ref() {
+            crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
+        } else {
+            crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
+        };
         let _self = Self {
             bind_groups: ShaderTemplateMaterialOpaqueBindGroups {
                 texture_pool_arrays_len,
@@ -289,6 +306,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 debug,
                 shadow_group_index: 3,
                 sscs_available: true,
+                needs_shadow_sampling: inc.apply_lighting,
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
             },
@@ -329,18 +347,9 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 shader_id: value.shader_id,
                 base: value.base,
                 // Custom (dynamic) materials carry their own author-declared
-                // include set; first-party bases use the canonical set. Skinny
-                // materials: a custom material that declares fewer modules gets
-                // a leaner Custom host shader. `for_custom` forces the Tier-B
-                // PBR-internal flags OFF — a custom material can never enable
-                // brdf/apply_lighting/material_color_calc (Phase 3 item 2).
-                inc: if value.owns_skybox {
-                    crate::dynamic_materials::ShaderIncludeFlags::skybox_only()
-                } else if let Some(d) = value.dynamic_shader.as_ref() {
-                    crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
-                } else {
-                    crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
-                },
+                // include set; first-party bases use the canonical set (computed
+                // once as `inc` above and shared with the bind-group template).
+                inc,
                 owns_skybox: value.owns_skybox,
                 pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value
@@ -508,6 +517,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             shadow_group_index: 3,
             shadows_enabled: false,
             sscs_available: false,
+            needs_shadow_sampling: false,
             use_froxel_lights: false,
             froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
@@ -535,6 +545,10 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// Mirror of the opaque-compute flag. The empty template never
     /// runs SSCS, but the shared shadow include needs the symbol.
     pub sscs_available: bool,
+    /// Always `false` — the empty kernel never lights, so the shared
+    /// shadow include drops its sampling block (the bind group + structs
+    /// still emit as ABI).
+    pub needs_shadow_sampling: bool,
     /// Mirror of the opaque-compute flag. The empty template doesn't
     /// emit the per-froxel walk either, but the shared `lights.wgsl`
     /// references the symbol so it must be declared.
@@ -1044,12 +1058,13 @@ mod size_regression {
     }
 
     // Ceilings (bytes). Worst realistic config = MSAA4 + mips. Set with headroom
-    // above the current measured sizes; TIGHTEN as Phases 4–5 shrink the shaders.
-    // Phase 3 (dead first-party bodies removed + all() Tier-A-only): empty AND
-    // all() both ~162.6 KB msaa4+mips (Tier A not gated until Phase 4, so they're
-    // equal for now). Was ~196 KB / ~262 KB at Phase 2.
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 138_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 170_000;
+    // above the current measured sizes; TIGHTEN as further work shrinks the shaders.
+    // History (msaa4+mips empty / all): Phase 2 ~196 / ~262 KB → Phase 3 ~162.6 KB
+    // both → Phase 4 gating → shadow-sampling gate (apply_lighting only): the ~50 KB
+    // PCSS/EVSM/cascade/cube block now drops from every non-lighting Custom shader,
+    // landing at **83.3 KB empty / 113.6 KB all**.
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 88_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 120_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

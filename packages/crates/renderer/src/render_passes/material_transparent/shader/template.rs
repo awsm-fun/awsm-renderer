@@ -134,17 +134,30 @@ pub struct ShaderTemplateTransparentMaterialBindGroups {
     /// to a depth texture it can sample on the same frame without a
     /// feedback loop. `false` here makes `apply_sscs` short-circuit.
     pub sscs_available: bool,
+    /// Emit the shadow SAMPLING block only when this material runs
+    /// first-party lighting (`inc.apply_lighting`) — the only caller of
+    /// `sample_shadow_*`. Custom materials force it off. The shadow bind
+    /// group + structs stay (ABI). Parity with the opaque path.
+    pub needs_shadow_sampling: bool,
 }
 
 impl ShaderTemplateTransparentMaterialBindGroups {
     /// Creates a bind group template from the cache key.
     pub fn new(cache_key: &ShaderCacheKeyMaterialTransparent) -> Self {
+        // Same include resolution as the main transparent template, so the
+        // shadow-sampling gate matches `apply_lighting`'s presence.
+        let inc = if let Some(d) = cache_key.dynamic_shader.as_ref() {
+            crate::dynamic_materials::ShaderIncludeFlags::for_custom(d.shader_includes)
+        } else {
+            crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base)
+        };
         Self {
             texture_pool_arrays_len: cache_key.texture_pool_arrays_len,
             texture_pool_samplers_len: cache_key.texture_pool_samplers_len,
             multisampled_geometry: cache_key.msaa_sample_count.is_some(),
             shadow_group_index: 1,
             sscs_available: false,
+            needs_shadow_sampling: inc.apply_lighting,
         }
     }
 }

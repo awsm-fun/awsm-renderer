@@ -52,8 +52,18 @@ struct ShadowDescriptorArray {
 @group({{ shadow_group_index }}) @binding(8) var shadow_cascade_array: texture_depth_2d_array;
 @group({{ shadow_group_index }}) @binding(9) var shadow_cube_2d_array: texture_depth_2d_array;
 
-// Sentinel for "no shadow" — packed into `LightPacked.row4.z`.
+// Sentinel for "no shadow" — packed into `LightPacked.row4.z`. Kept ungated:
+// `apply_lighting` compares against it even before any shadow sample, and an
+// unused const is free.
 const SHADOW_INDEX_NONE: u32 = 0xFFFFFFFFu;
+
+// ── Shadow SAMPLING (PCSS / PCF / EVSM / cube + SSCS) ───────────────────────
+// Called ONLY from `apply_lighting`, so the whole block is gated on
+// `needs_shadow_sampling` (= inc.apply_lighting). Materials that don't run
+// first-party lighting (every custom material + unlit/toon/flipbook + the empty
+// kernel) drop this ~50 KB of WGSL entirely. The bind group + structs above stay
+// (ABI — the pipeline layout always has the shadow group).
+{% if needs_shadow_sampling %}
 
 // 16 Poisson-distributed samples in `[-1, 1]^2`. Used by both the
 // PCSS blocker search and the variable-kernel PCF pass. The same
@@ -1188,3 +1198,5 @@ fn debug_cascade_tint(
     let tint = select(pcf_palette[picked_idx], evsm_palette[picked_idx], is_evsm);
     return mix(base_color, tint, 0.35);
 }
+
+{% endif %}{# end needs_shadow_sampling — shadow sampling functions #}
