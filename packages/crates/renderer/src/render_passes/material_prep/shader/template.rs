@@ -20,6 +20,21 @@ pub struct ShaderTemplateMaterialPrep {
 pub struct ShaderTemplateMaterialPrepBindGroups {
     /// Visibility texture sample count (true = multisampled binding type).
     pub multisampled_geometry: bool,
+    /// Stage 3b: emit the shadow-feature bindings + lighting/shadow includes.
+    /// Always `true` for the prep variant (prep is only built when enabled, and
+    /// it always computes shadow visibility); the gate keeps the prep-disabled /
+    /// no-shadow source byte-identical to the pre-3b scaffold.
+    pub shadows: bool,
+    /// Compile the shadow-SAMPLING bodies (`{% if needs_shadow_sampling %}` in
+    /// `shadow/bind_groups.wgsl`). `true` — prep is a shadow sampler.
+    pub needs_shadow_sampling: bool,
+    /// SSCS availability (`apply_sscs` reads `depth_tex` + `camera_raw`). Prep
+    /// binds both, so `true` (matches the opaque pass for parity).
+    pub sscs_available: bool,
+    /// Bind-group slot the shadow bindings live at (group 2 for prep).
+    pub shadow_group_index: u32,
+    /// Z-slice count for `froxel_walk.wgsl` (`FROXEL_SLICE_COUNT`).
+    pub froxel_slice_count: u32,
 }
 
 /// Compute body (`cs_prep`).
@@ -32,18 +47,34 @@ pub struct ShaderTemplateMaterialPrepCompute {
     /// texture's layer count.
     pub max_prep_uv_sets: u32,
     pub max_prep_color_sets: u32,
+    /// Stage 3b: emit the shadow-loop body in `cs_prep`. See the BindGroups
+    /// `shadows` field — always `true` for the prep variant.
+    pub shadows: bool,
+    /// `K` — the clamped per-pixel shadow-caster cap. The loop stops storing
+    /// once `slot >= K` (and the packed-layer count is `ceil(K/4)`).
+    pub max_shadow_casters: u32,
 }
 
 impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
     type Error = AwsmShaderError;
     fn try_from(key: &ShaderCacheKeyMaterialPrep) -> Result<Self> {
         let multisampled_geometry = key.msaa_sample_count.is_some();
+        let froxel_slice_count = crate::render_passes::light_culling::DEFAULT_SLICE_COUNT;
         Ok(ShaderTemplateMaterialPrep {
-            bind_groups: ShaderTemplateMaterialPrepBindGroups { multisampled_geometry },
+            bind_groups: ShaderTemplateMaterialPrepBindGroups {
+                multisampled_geometry,
+                shadows: true,
+                needs_shadow_sampling: true,
+                sscs_available: true,
+                shadow_group_index: 2,
+                froxel_slice_count,
+            },
             compute: ShaderTemplateMaterialPrepCompute {
                 multisampled_geometry,
                 max_prep_uv_sets: crate::render_passes::material_prep::MAX_PREP_UV_SETS,
                 max_prep_color_sets: crate::render_passes::material_prep::MAX_PREP_COLOR_SETS,
+                shadows: true,
+                max_shadow_casters: key.max_shadow_casters,
             },
         })
     }

@@ -62,12 +62,16 @@ impl MaterialPrepRenderPass {
         };
         let pipeline = ctx.pipelines.compute.get(pipeline_key)?;
         let bind_group = self.bind_groups.get_bind_group()?;
+        let lights_bind_group = self.bind_groups.get_lights_bind_group()?;
+        let shadows_bind_group = self.bind_groups.get_shadows_bind_group()?;
 
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
             &ComputePassDescriptor::new(Some("Material Prep Pass")).into(),
         ));
         compute_pass.set_pipeline(pipeline);
         compute_pass.set_bind_group(0, bind_group, None)?;
+        compute_pass.set_bind_group(1, lights_bind_group, None)?;
+        compute_pass.set_bind_group(2, shadows_bind_group, None)?;
 
         let workgroups_x = ctx.render_texture_views.width.div_ceil(8);
         let workgroups_y = ctx.render_texture_views.height.div_ceil(8);
@@ -92,7 +96,11 @@ async fn build_pipeline(
     let pipeline_layout_key = ctx.pipeline_layouts.get_key(
         ctx.gpu,
         ctx.bind_group_layouts,
-        PipelineLayoutCacheKey::new(vec![bgl_key]),
+        PipelineLayoutCacheKey::new(vec![
+            bgl_key,
+            bind_groups.lights_bind_group_layout_key,
+            bind_groups.shadows_bind_group_layout_key,
+        ]),
     )?;
     let shader_key = ctx
         .shaders
@@ -100,6 +108,7 @@ async fn build_pipeline(
             ctx.gpu,
             ShaderCacheKeyMaterialPrep {
                 msaa_sample_count: if multisampled_geometry { Some(4) } else { None },
+                max_shadow_casters: ctx.prep_config.clamped_k(),
             },
         )
         .await?;

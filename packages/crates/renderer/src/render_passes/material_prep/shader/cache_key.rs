@@ -13,6 +13,10 @@ use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeyMaterialPrep {
     pub msaa_sample_count: Option<u32>,
+    /// `K` — the clamped per-pixel shadow-caster cap (`PrepPassConfig::clamped_k`).
+    /// Threaded into the key so the prep pipeline varies with K (the shadow
+    /// loop's slot clamp + the packed-layer count derive from it).
+    pub max_shadow_casters: u32,
 }
 
 impl From<ShaderCacheKeyMaterialPrep> for ShaderCacheKey {

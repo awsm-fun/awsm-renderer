@@ -219,6 +219,7 @@ fn material_prep_shader_validates() {
         let label = format!("material_prep msaa={msaa:?}");
         let src = ShaderTemplateMaterialPrep::try_from(&ShaderCacheKeyMaterialPrep {
             msaa_sample_count: msaa,
+            max_shadow_casters: 4,
         })
         .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
         .into_source()

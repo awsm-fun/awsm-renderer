@@ -259,10 +259,14 @@ impl BindGroups {
                 BindGroupCreate::LightsInfoCreate => {
                     functions_to_call.insert(FunctionToCall::OpaqueLights);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // Prep's group(1) binds lights_info / lights (Stage 3b).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::LightsResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueLights);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // Prep's group(1) binds the punctual-light buffer (Stage 3b).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::TransformsResize => {
                     functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
@@ -404,6 +408,9 @@ impl BindGroups {
                 BindGroupCreate::ShadowsResourcesChange => {
                     functions_to_call.insert(FunctionToCall::OpaqueShadows);
                     functions_to_call.insert(FunctionToCall::TransparentShadows);
+                    // Prep's group(2) binds the shadow atlas / cube / cascade /
+                    // EVSM views + globals (Stage 3b — prep samples shadows).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::MaterialClassifyBuffersResize => {
                     // Classify rebuilds its own bind group; opaque
@@ -454,6 +461,9 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::LightCulling);
                     functions_to_call.insert(FunctionToCall::OpaqueLights);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // Prep's group(1) binds lights_storage + cull_params, both
+                    // reallocated on a froxel-buffer resize (Stage 3b).
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
             }
         }
