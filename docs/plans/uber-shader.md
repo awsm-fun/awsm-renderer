@@ -27,10 +27,11 @@ deferred decoupling is exactly what makes one shading pass possible — that asy
 
 - **Precompile collapse.** Today ~230 s to compile 1024 modules. A bounded-variant uber-shader is
   **one** compile — a massive cut to the original precompile showstopper (for real scenes; see scope).
-- **The MSAA edge machinery dissolves.** The accumulator / slot-map / per-shader-`cs_edge` /
-  `final_blend` dance exists only because shading is split across pipelines. With one branching shading
-  pass, a single `cs_edge` shades all 4 samples (branch per sample), averages, writes — no accumulator,
-  no `final_blend`. The edge complexity is the *same symptom* as the per-material floor.
+- **The MSAA edge machinery can shrink** (but does NOT fully dissolve unless there's a single global
+  group — see the MSAA caution below). The accumulator / slot-map / per-shader-`cs_edge` /
+  `final_blend` dance exists only because shading is split across pipelines; collapsing shading reduces
+  the number of pieces. The edge complexity is the *same symptom* as the per-material floor — but it is
+  also where this whole effort has repeatedly bitten us, so it gets its own caution.
 
 ## The hard scope condition (this is probably "what killed us before")
 
@@ -76,6 +77,33 @@ N from 1 (today) to 1024 (one global) — that directly measures the grouping sw
 
 ⇒ `uber-shader.md` exists to force these decisions at implementation start. Do not begin coding the
 uber-shader until the grouping policy + authoring surface are specified.
+
+## MSAA — handle with extreme care (decide jointly with grouping)
+
+MSAA is where this architecture keeps biting us, and the uber-shader does NOT make it free. Pin these
+down *before* coding:
+
+- **Edges only "dissolve" at the single-global-group extreme.** At an MSAA edge pixel, the 4 samples can
+  belong to materials in **different groups** (different branching pipelines). A group's `cs_edge` can
+  only shade *its own* samples, so the per-edge-pixel **accumulator + `final_blend`** (or an equivalent
+  cross-group combine) is **still required** the moment there is more than one group. So: with selective
+  grouping (the chosen design), MSAA edge resolve does **not** auto-simplify — it must be designed
+  *together with* the grouping policy, not assumed away. Only one global group removes it entirely.
+- **Per-sample branch divergence at edges is inherent.** Within one group's `cs_edge`, an edge pixel's
+  samples may hit up to 4 different variants → 4-way divergence per edge pixel. Edge pixels are a small
+  fraction, but the cost is real and concentrated.
+- **Consumes Plan B Option B.** The uber-shader's `cs_edge` reads the compact per-edge-sample
+  attribute+shadow buffer (Plan B), branching per sample. The grouping must be consistent with how that
+  buffer is keyed.
+- **Correctness is visual-only.** MSAA edge output cannot be naga-checked; it must match the
+  per-material reference exactly (sample weighting, sample-count division, skybox edge samples). Keep
+  the pre-uber edge path behind a flag until parity is proven, and verify model-tests MSAA-on visually.
+- **Skybox edges + transparency.** Skybox samples at edges (`skybox_edge_resolve`) and the
+  forward transparent path (its own MSAA handling) are separate and must keep working — confirm they're
+  unaffected or explicitly migrated.
+
+Decision gate: the MSAA edge story (cross-group combine, divergence budget, parity verification) is a
+**required part of the grouping spec** — do not start the uber-shader until it's written down.
 
 ## Costs / risks to design against
 
