@@ -313,7 +313,32 @@ cheap (duplicate mesh handles / shared GPU buffers — the `duplicate_mesh_with_
 refcount pattern; no re-parse/re-upload). Twice → two independent instances sharing
 geometry.
 
-### B5 — R6: visibility + teardown
+### B5 [DONE] — R6: visibility + teardown
+Threaded `parent_effective_visible` through `materialize` (`effective = parent_effective && node.visible`) →
+hidden nodes' meshes (incl sprites) get `set_mesh_hidden(true)`; a hidden Group hides its whole subtree;
+lines/decals of a hidden node are skipped; lights still insert (documented minor gap — hidden node's light
+still emits). `pub fn set_node_visible(renderer, &NodeHandles, bool)` toggles mesh visibility (mesh-only;
+documented). Extended `LoadedScene` with teardown-tracking `lines`/`decals`/`transforms` (+ existing
+meshes/lights/clips; prefab-template meshes + scratch transforms tracked in capture_prefab). `LoadedScene::
+teardown(self, renderer)` frees meshes→lights→clips→lines→decals→transforms (no leak on reload);
+`PrefabInstance::teardown(self, renderer)` frees an instance's duplicated meshes + transforms (shared
+template buffers untouched; caller tears instances down before the scene).
+
+### B6 [DONE] — R4 + entry point + docs (Part B COMPLETE)
+`pub async fn load_scene_for_player(renderer, scene, assets: &impl SceneAssets, on_phase) -> Result<LoadedScene>`
+is the generic player entry; `populate_awsm_scene` is now a thin wrapper (public `&HashMap` sig unchanged via
+the blanket impl — model-test round-trip intact). R4 publics: `load_glb_under`, `mesh_data_to_raw`, and a new
+`pub async fn materialize_node_mesh(renderer, scene, node, assets, material) -> Result<Vec<MeshKey>>`. Full
+rustdoc on every public item + a crate-level `rust,no_run` example (load → drive a node transform → instantiate
+a prefab → teardown) that compiles as a doctest. 320 lib + 1 doctest green, warning-free; only lib.rs changed.
+
+**Consumer-contract reconcile (vs `awsm-renderer-improvements.md`):** final API is a superset/close match —
+`NodeHandles.camera` is split into `camera: Option<CameraKey>` + `camera_config: Option<CameraConfig>` (the
+doc folded both into one `camera`); `LoadedScene` adds flat `meshes/lights/lines/decals/transforms` for
+teardown; `PrefabTemplate::instantiate` returns `Result<PrefabInstance>` (doc omitted the Result). R1–R6 are
+satisfied; lockstep adapts to these final signatures (per the doc's own "requirements are the contract" note).
+
+### B5 (orig) — R6: visibility + teardown
 Honor `EditorNode.visible` at load; one documented call to toggle a materialized node's
 visibility via its `NodeHandles`; `LoadedScene` teardown unloads
 meshes/lights/clips/instances with no leak across reload.

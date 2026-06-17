@@ -38,6 +38,48 @@
 //! pass to drive, so emitter nodes are cleanly skipped (one-time warn). Particles
 //! are owned by the game, which simulates them and updates its own per-frame
 //! mesh/line buffers; the loader only carries the authored node's transform.
+//!
+//! # Example
+//!
+//! Load a bundle for a player, drive an authored node, instantiate a prefab, then
+//! tear the whole load down for a reload. (Won't run — it needs a live GPU
+//! [`AwsmRenderer`]; written `no_run` so it still type-checks.)
+//!
+//! ```rust,no_run
+//! use awsm_scene_loader::{load_scene_for_player, set_node_visible};
+//! use awsm_renderer::{AwsmRenderer, transforms::Transform};
+//! use awsm_scene::{Scene, NodeId, Trs};
+//!
+//! async fn run(
+//!     renderer: &mut AwsmRenderer,
+//!     scene: &Scene,
+//!     assets: &std::collections::HashMap<String, Vec<u8>>,
+//!     some_node: NodeId,
+//!     prefab_root: NodeId,
+//! ) -> anyhow::Result<()> {
+//!     // Load the scene (in-memory `HashMap` satisfies `&impl SceneAssets`).
+//!     let loaded = load_scene_for_player(renderer, scene, assets, |_phase| {}).await?;
+//!
+//!     // Drive an authored node by id: read its transform handle, move it.
+//!     if let Some(handles) = loaded.nodes.get(&some_node) {
+//!         renderer
+//!             .transforms
+//!             .set_local(handles.transform, Transform::default())?;
+//!         // Hide/show just that node's meshes.
+//!         set_node_visible(renderer, handles, false);
+//!     }
+//!
+//!     // Instantiate a prefab at a world transform (cheap GPU-buffer-sharing clone).
+//!     if let Some(template) = loaded.prefabs.get(&prefab_root) {
+//!         let _instance = template.instantiate(renderer, Trs::default())?;
+//!     }
+//!
+//!     // On reload: free everything the load created (instances are the caller's
+//!     // responsibility — tear them down first via `PrefabInstance::teardown`).
+//!     loaded.teardown(renderer);
+//!     Ok(())
+//! }
+//! ```
 
 pub mod animation;
 pub mod assets;
@@ -86,7 +128,7 @@ pub struct NodeHandles {
     pub transform: TransformKey,
     /// Every renderer mesh this node produced (a glb node destructures into one
     /// key per primitive). Empty for non-mesh nodes. Hide the whole node with
-    /// `renderer.meshes.set_mesh_hidden(key, true)` over these.
+    /// `renderer.set_mesh_hidden(key, true)` over these (or [`set_node_visible`]).
     pub meshes: Vec<MeshKey>,
     /// `Some` for `Light` nodes — the inserted [`LightKey`].
     pub light: Option<LightKey>,
@@ -120,13 +162,31 @@ pub struct LoadedScene {
     /// Prefab-root `NodeId → ` template. Each is materialized once (hidden) and
     /// instantiated cheaply on demand via [`PrefabTemplate::instantiate`].
     pub prefabs: HashMap<NodeId, PrefabTemplate>,
+    /// Every renderer [`MeshKey`] the load created — the static world's meshes
+    /// **and** every hidden prefab-template mesh. Retained for the model-test
+    /// round-trip and consumed by [`teardown`](Self::teardown).
     pub meshes: Vec<MeshKey>,
+    /// Every [`LightKey`] the load inserted. Freed by [`teardown`](Self::teardown)
+    /// via [`AwsmRenderer::remove_light`].
     pub lights: Vec<LightKey>,
     /// Animation clips inserted into `renderer.animations` (the scene's
     /// `StoredAnimation`s lowered to runtime clip groups). Tracked so a host can
     /// remove them on the next load — like meshes/lights, they live outside any
     /// per-node tracking. The mixer is rebuilt wholesale on each load.
     pub clips: Vec<AnimationClipKey>,
+    /// Every [`LineKey`] the load created (one per materialized `Line` node).
+    /// Freed by [`teardown`](Self::teardown). Tracked here (not just on
+    /// `NodeHandles`) so teardown frees lines without re-walking `nodes`.
+    pub lines: Vec<LineKey>,
+    /// Every [`DecalKey`] the load created (one per materialized `Decal` node,
+    /// when the renderer's `decals` feature is on). Freed by
+    /// [`teardown`](Self::teardown).
+    pub decals: Vec<DecalKey>,
+    /// Every [`TransformKey`] the load inserted — the static world's per-node
+    /// transforms **plus** each prefab template's hidden scratch + per-node
+    /// transforms. Freed last by [`teardown`](Self::teardown) (after the meshes
+    /// rooted under them). Collected from `maps.transforms` + prefab capture.
+    pub transforms: Vec<TransformKey>,
 }
 
 /// A prefab-root subtree, materialized **once** (hidden) as a reusable template,
@@ -280,6 +340,90 @@ pub struct PrefabInstance {
     pub nodes: HashMap<NodeId, NodeHandles>,
 }
 
+impl LoadedScene {
+    /// Free every renderer resource this load created, so a reload doesn't leak.
+    /// **Consumes** the scene.
+    ///
+    /// Frees, in order: every [`MeshKey`] in [`meshes`](Self::meshes) (the static
+    /// world's meshes **and** every hidden prefab-template mesh) via
+    /// `renderer.remove_mesh`; every [`LightKey`] via
+    /// [`AwsmRenderer::remove_light`]; every [`AnimationClipKey`] via
+    /// `renderer.animations.remove_clip`; every [`LineKey`] /
+    /// [`DecalKey`] via [`AwsmRenderer::remove_line`] /
+    /// [`AwsmRenderer::remove_decal`]; and finally every [`TransformKey`] (the
+    /// static world's per-node transforms **plus** each prefab template's scratch
+    /// transform) via `renderer.transforms.remove` — transforms last, after the
+    /// meshes rooted under them.
+    ///
+    /// **Not** freed (caller's responsibility): resources created **after** the
+    /// load from a [`PrefabTemplate`]. A live [`PrefabInstance`] mints its own
+    /// fresh transforms + duplicated meshes at
+    /// [`instantiate`](PrefabTemplate::instantiate) time, which this load never saw
+    /// — tear an instance down with [`PrefabInstance::teardown`] before calling
+    /// this (this frees the hidden *templates*, but a duplicate that outlives its
+    /// template's GPU buffers is undefined).
+    pub fn teardown(self, renderer: &mut AwsmRenderer) {
+        for mesh in self.meshes {
+            renderer.remove_mesh(mesh);
+        }
+        for light in self.lights {
+            renderer.remove_light(light);
+        }
+        for clip in self.clips {
+            renderer.animations.remove_clip(clip);
+        }
+        for line in self.lines {
+            renderer.remove_line(line);
+        }
+        for decal in self.decals {
+            renderer.remove_decal(decal);
+        }
+        // Transforms last — meshes/lights bound to them are already gone.
+        for tk in self.transforms {
+            renderer.transforms.remove(tk);
+        }
+    }
+}
+
+impl PrefabInstance {
+    /// Free the fresh transforms + duplicated meshes this instance created (the
+    /// resources [`instantiate`](PrefabTemplate::instantiate) minted, which the
+    /// owning [`LoadedScene::teardown`] does not track). **Consumes** the instance.
+    ///
+    /// Removes every duplicated [`MeshKey`] across the instance's nodes, then every
+    /// per-node [`TransformKey`] (meshes first, transforms last). The shared
+    /// template GPU buffers stay alive — they belong to the still-loaded template
+    /// (freed by [`LoadedScene::teardown`]); only this instance's duplicates +
+    /// transform slots are released. Non-mesh instance nodes free only their
+    /// transform.
+    pub fn teardown(self, renderer: &mut AwsmRenderer) {
+        for handles in self.nodes.values() {
+            for &mesh in &handles.meshes {
+                renderer.remove_mesh(mesh);
+            }
+        }
+        for handles in self.nodes.values() {
+            renderer.transforms.remove(handles.transform);
+        }
+    }
+}
+
+/// Toggle the **mesh** visibility of a previously-loaded node (from
+/// [`LoadedScene::nodes`] or a [`PrefabInstance`]) — sets
+/// `renderer.set_mesh_hidden(k, !visible)` for every [`MeshKey`] in
+/// `handles.meshes` (per-key errors are ignored).
+///
+/// **Mesh-only:** a `Light` / `Line` / `Decal` / `Camera` node is *not* toggled by
+/// this helper (the renderer has no per-light/-line/-decal hide toggle today —
+/// honoring `visible` for those at load is done by skipping them; runtime toggling
+/// of those node kinds is a follow-on). For a mesh node (incl. sprites) it hides /
+/// shows the whole node.
+pub fn set_node_visible(renderer: &mut AwsmRenderer, handles: &NodeHandles, visible: bool) {
+    for &k in &handles.meshes {
+        let _ = renderer.set_mesh_hidden(k, !visible);
+    }
+}
+
 /// Load a runtime [`Scene`] into the renderer as one batched, phased pass.
 /// Returns the [`LoadedScene`] handles for later teardown.
 ///
@@ -307,6 +451,33 @@ pub async fn populate_awsm_scene(
     renderer: &mut AwsmRenderer,
     scene: &Scene,
     assets: &HashMap<String, Vec<u8>>,
+    on_phase: impl FnMut(LoadPhase),
+) -> Result<LoadedScene> {
+    // The `&HashMap<String, Vec<u8>>` satisfies `&impl SceneAssets` via the blanket
+    // impl in `assets`, so this is a thin forward to the generic player entry.
+    load_scene_for_player(renderer, scene, assets, on_phase).await
+}
+
+/// Load a runtime [`Scene`] into the renderer for a **player** — the generic,
+/// asset-source-agnostic entry behind [`populate_awsm_scene`]. Identical batched,
+/// phased pass; takes `assets: &impl `[`SceneAssets`] so a player can stream bundle
+/// bytes from disk/network/embed, not just an in-memory `HashMap`.
+///
+/// Returns a [`LoadedScene`] whose [`nodes`](LoadedScene::nodes) map drives the
+/// static world by [`NodeId`] and whose [`prefabs`](LoadedScene::prefabs) are
+/// instantiated on demand. Tear the whole load down with
+/// [`LoadedScene::teardown`]. See [`populate_awsm_scene`] for the per-phase
+/// rationale (the two share this body), and the crate-level docs for an example.
+///
+/// Visibility (B5): a node authored `visible == false` (propagated through
+/// `Group`s to its descendants) has its meshes loaded hidden and its lines/decals
+/// skipped; its light, if any, is still inserted (a documented minor gap — a
+/// hidden node's light still emits — toggled later via [`set_node_visible`] only
+/// for meshes).
+pub async fn load_scene_for_player(
+    renderer: &mut AwsmRenderer,
+    scene: &Scene,
+    assets: &impl SceneAssets,
     mut on_phase: impl FnMut(LoadPhase),
 ) -> Result<LoadedScene> {
     // ── Phase 0: register custom-WGSL materials ──────────────────────────────
@@ -359,6 +530,9 @@ pub async fn populate_awsm_scene(
             node,
             None,
             glam::Mat4::IDENTITY,
+            // Roots have no parent to inherit from — start visible; each node's own
+            // `visible` flag (and ancestors') then gates the subtree.
+            true,
             assets,
             &mut maps,
             placeholder,
@@ -383,6 +557,9 @@ pub async fn populate_awsm_scene(
     // (it lived only in the private `AnimResolveMaps`). Prefab separation (B4)
     // will later route prefab-root subtrees into `loaded.prefabs` instead.
     for (&node_id, &tk) in &maps.transforms {
+        // Track every static-world transform for teardown (prefab template
+        // transforms are tracked separately in `capture_prefab`).
+        loaded.transforms.push(tk);
         loaded.nodes.insert(
             node_id,
             NodeHandles {
@@ -396,6 +573,11 @@ pub async fn populate_awsm_scene(
             },
         );
     }
+    // Track lines + decals for teardown (they live outside per-node tracking like
+    // meshes/lights). `maps.lights` is already mirrored into `loaded.lights` as
+    // lights are inserted; lines/decals are gathered here from the resolved maps.
+    loaded.lines.extend(maps.lines.values().copied());
+    loaded.decals.extend(maps.decals.values().copied());
 
     // ── Phase 3b: load animation clips + the NLA mixer ────────────────────────
     // Now that every node's transform / material / light / camera / mesh key
@@ -438,6 +620,7 @@ async fn materialize(
     node: &EditorNode,
     parent: Option<TransformKey>,
     parent_world: glam::Mat4,
+    parent_effective_visible: bool,
     assets: &impl SceneAssets,
     maps: &mut AnimResolveMaps,
     placeholder: MaterialKey,
@@ -446,6 +629,14 @@ async fn materialize(
     total: usize,
     loaded: &mut LoadedScene,
 ) -> Result<()> {
+    // Visibility (B5) propagates down the hierarchy: a node is effectively visible
+    // only if it AND every ancestor is. A `Group`/`Mesh`/etc. authored
+    // `visible == false` thus hides all descendants (the flag rides the recursion).
+    // Meshes of a hidden node are `set_mesh_hidden(true)`; lines/decals are SKIPPED
+    // entirely (cleaner than minting then hiding — the renderer has no per-line/
+    // -decal hide toggle). Lights of a hidden node are still inserted (known minor
+    // gap: a hidden node's light still emits — see `populate_awsm_scene` docs).
+    let effective_visible = parent_effective_visible && node.visible;
     // Prefab root: capture the whole subtree as a hidden, reusable template and
     // return BEFORE inserting any transform — so neither this node nor its
     // descendants enter the static world (`loaded.nodes` / `maps`). Instances are
@@ -600,13 +791,21 @@ async fn materialize(
             maps.camera_configs.insert(node.id, cfg.clone());
         }
         NodeKind::Line(def) => {
-            materialize_line(renderer, def, node.id, node_world, maps).await?;
+            // Skip a hidden node's line entirely — the renderer has no per-line
+            // hide toggle, so not creating it is the cleanest way to honor
+            // `visible == false` (documented on `populate_awsm_scene`).
+            if effective_visible {
+                materialize_line(renderer, def, node.id, node_world, maps).await?;
+            }
         }
         NodeKind::Sprite(def) => {
             materialize_sprite(renderer, assets, def, node.id, tk, maps, loaded).await?;
         }
         NodeKind::Decal(cfg) => {
-            materialize_decal(renderer, assets, cfg, node.id, node_world, maps).await?;
+            // Skip a hidden node's decal entirely (no per-decal hide toggle).
+            if effective_visible {
+                materialize_decal(renderer, assets, cfg, node.id, node_world, maps).await?;
+            }
         }
         NodeKind::InstancesAlongCurve(def) => {
             materialize_instances_along_curve(renderer, scene, def, maps)?;
@@ -627,6 +826,17 @@ async fn materialize(
         NodeKind::Group | NodeKind::Collider(_) => {}
     }
 
+    // Honor `visible == false` for this node's meshes (sprites included): hide
+    // every mesh key just added for it. Lines/decals were already skipped above;
+    // lights are intentionally still emitting (documented gap).
+    if !effective_visible {
+        if let Some(keys) = maps.node_meshes.get(&node.id) {
+            for &k in keys {
+                let _ = renderer.set_mesh_hidden(k, true);
+            }
+        }
+    }
+
     for child in &node.children {
         Box::pin(materialize(
             renderer,
@@ -634,6 +844,7 @@ async fn materialize(
             child,
             Some(tk),
             node_world,
+            effective_visible,
             assets,
             maps,
             placeholder,
@@ -718,6 +929,13 @@ async fn capture_prefab(
             template_meshes,
         });
     }
+
+    // Track the template's hidden meshes + scratch transform on `loaded` so
+    // `teardown` frees them (the templates never enter `loaded.nodes`/`maps`).
+    for pn in &nodes {
+        loaded.meshes.extend(pn.template_meshes.iter().copied());
+    }
+    loaded.transforms.push(scratch);
 
     Ok(PrefabTemplate {
         root: node.id,
@@ -1209,7 +1427,12 @@ fn warn_decal_feature_off() {
 /// places it); `None` for a self-placing rig glb that carries its own root
 /// hierarchy (see the SkinnedMesh arm — rooting it under the scene chain would
 /// double-apply the glTF's basis-conversion node).
-async fn load_glb_under(
+///
+/// Returns `(mesh keys, glb-node-index → baked-transform key)` — the latter lets a
+/// skinned-mesh consumer bind each skeleton joint (by its clean-glb node index) to
+/// drive the skin. Public (R4) so a host can load an individual bundle glb with
+/// our material-source semantics outside the full scene pass.
+pub async fn load_glb_under(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
     leaf: &str,
@@ -1279,6 +1502,32 @@ async fn load_glb_under(
     Ok((keys, node_index_transforms))
 }
 
+/// Materialize just one node's renderable **mesh(es)** with the given `material`,
+/// outside the full scene pass — the public (R4) wrapper over the loader's shared
+/// mesh-build path ([`build_node_meshes`]).
+///
+/// Inserts a fresh [`TransformKey`] from `node.transform` (rooted at the renderer
+/// root) and builds the node's geometry under it, returning the visible
+/// [`MeshKey`]s. Covers the mesh-bearing kinds the Mesh/SkinnedMesh/Sprite arms
+/// handle — `Mesh` (primitive + bare-geometry glb), `SkinnedMesh` (self-placing rig
+/// glb, rooted at the renderer root regardless of the inserted transform), and
+/// `Sprite` (which builds its own material, ignoring `material`); every other
+/// [`NodeKind`] returns an empty vec. The caller owns the returned keys (and the
+/// transform via the meshes) for later teardown — this does not track them on any
+/// [`LoadedScene`].
+pub async fn materialize_node_mesh(
+    renderer: &mut AwsmRenderer,
+    scene: &Scene,
+    node: &EditorNode,
+    assets: &impl SceneAssets,
+    material: MaterialKey,
+) -> Result<Vec<MeshKey>> {
+    let tk = renderer
+        .transforms
+        .insert(trs_to_transform(&node.transform), None);
+    build_node_meshes(renderer, scene, node, tk, material, assets, false).await
+}
+
 fn trs_to_transform(trs: &Trs) -> Transform {
     Transform {
         translation: Vec3::from_array(trs.translation),
@@ -1287,7 +1536,12 @@ fn trs_to_transform(trs: &Trs) -> Transform {
     }
 }
 
-fn mesh_data_to_raw(md: awsm_meshgen::MeshData) -> RawMeshData {
+/// Convert an [`awsm_meshgen::MeshData`] (the procedural/primitive mesh builder's
+/// output) into the renderer's [`RawMeshData`] upload struct — positions, normals,
+/// UV0, colors, and indices pass through; UV1 is always `None` (meshgen primitives
+/// carry a single UV set). Public (R4) so a host can feed a meshgen primitive into
+/// `renderer.add_raw_mesh` with the same conversion the loader uses.
+pub fn mesh_data_to_raw(md: awsm_meshgen::MeshData) -> RawMeshData {
     RawMeshData {
         positions: md.positions,
         normals: md.normals,
