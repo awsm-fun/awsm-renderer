@@ -684,6 +684,7 @@ impl AwsmRenderer {
                     &self.anti_aliasing,
                     color_wgsl,
                     Some(&self.dynamic_materials),
+                    self.prep_config.enabled,
                 )
                 .await?;
         }

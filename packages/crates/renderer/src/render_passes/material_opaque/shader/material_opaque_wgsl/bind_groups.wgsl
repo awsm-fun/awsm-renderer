@@ -81,6 +81,16 @@ struct ClassifyBuckets {
 // host-side allocator.
 @group(0) @binding(23) var<storage, read> extras_pool: array<u32>;
 
+{% if prep_read %}
+// Plan B (stage 2b): the shared prep pass materialized interpolated UV
+// sets + vertex color into these array textures (layer = set index). The
+// no-MSAA primary `cs_opaque` reads them via `textureLoad` instead of
+// recomputing from the geometry pool. Sampled `texture_2d_array<f32>`
+// (the rg32float / rgba32float storage views read back as f32).
+@group(0) @binding(24) var prep_uv: texture_2d_array<f32>;
+@group(0) @binding(25) var prep_vcolor: texture_2d_array<f32>;
+{% endif %}
+
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;
 // `lights` is a uniform array.
 // Uniform memory is constant-cached for the lockstep per-pixel walk;

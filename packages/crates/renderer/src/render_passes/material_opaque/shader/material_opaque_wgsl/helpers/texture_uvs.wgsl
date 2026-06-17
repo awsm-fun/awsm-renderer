@@ -62,6 +62,12 @@
 
 
 fn texture_uv(attribute_data_offset: u32, triangle_indices: vec3<u32>, barycentric: vec3<f32>, tex_info: TextureInfo, vertex_attribute_stride: u32, uv_sets_index: u32) -> vec2<f32> {
+{% if prep_read %}
+    // Stage 2b: read the prep-materialized UV array (parity-exact: prep used
+    // the same barycentric + fp32 interp + visibility sample 0). Clamp the set
+    // index to the cap; sets beyond the cap are vanishingly rare.
+    return textureLoad(prep_uv, g_prep_coords, i32(min(tex_info.uv_set_index, {{ max_prep_uv_sets }}u - 1u)), 0).xy;
+{% else %}
     let uv0 = _texture_uv_per_vertex(attribute_data_offset, tex_info.uv_set_index, triangle_indices.x, vertex_attribute_stride, uv_sets_index);
     let uv1 = _texture_uv_per_vertex(attribute_data_offset, tex_info.uv_set_index, triangle_indices.y, vertex_attribute_stride, uv_sets_index);
     let uv2 = _texture_uv_per_vertex(attribute_data_offset, tex_info.uv_set_index, triangle_indices.z, vertex_attribute_stride, uv_sets_index);
@@ -69,8 +75,16 @@ fn texture_uv(attribute_data_offset: u32, triangle_indices: vec3<u32>, barycentr
     let interpolated_uv = barycentric.x * uv0 + barycentric.y * uv1 + barycentric.z * uv2;
 
     return interpolated_uv;
+{% endif %}
 }
 
+{# Drop the geometry-pool recompute helper only when nothing references it:
+   prep_read routes `texture_uv` to the prep array, but the gradient mipmap
+   path (`get_uv_derivatives`) still needs raw per-vertex UVs (UV gradients
+   are recomputed, never materialized — Plan B decision #2), and the custom
+   `material_uv` accessor (emitted only for `base == Custom` + `inc.textures`)
+   calls it directly. So keep it emitted in any of those cases. #}
+{% if !prep_read || mipmap.is_gradient() || (base == ShadingBase::Custom && inc.textures) %}
 fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_index: u32, vertex_attribute_stride: u32, uv_sets_index: u32) -> vec2<f32> {
     // First get to the right vertex, THEN to the right UV set within that vertex
     let vertex_start = attribute_data_offset + (vertex_index * vertex_attribute_stride);
@@ -84,6 +98,7 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
 
     return uv;
 }
+{% endif %}
 
 
 {% match mipmap %}

@@ -480,6 +480,7 @@ impl crate::AwsmRenderer {
                     texture_pool_samplers_len,
                     msaa_sample_count: active_msaa,
                     mipmaps: active_mipmaps,
+                    prep_enabled: self.prep_config.enabled,
                     shader_id,
                     base,
                     owns_skybox,
@@ -721,6 +722,7 @@ impl crate::AwsmRenderer {
                 &self.anti_aliasing,
                 color_wgsl,
                 Some(&self.dynamic_materials),
+                self.prep_config.enabled,
             )? {
             Some(d) => d,
             None => return Ok(()),

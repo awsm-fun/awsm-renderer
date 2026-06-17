@@ -176,7 +176,7 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      chosen generously: UV 4, color 2, covering virtually all glTF). render_textures alloc arrays;
      bind_group storage-texture-array write; naga + tests green; inert (opaque still recomputes);
      GPU-verify prep still runs clean.
-   - [ ] **2b — opaque reads arrays + drops recompute.** Thread `prep_enabled` through the opaque shader
+   - [x] **2b — opaque reads arrays + drops recompute.** Thread `prep_enabled` through the opaque shader
      cache key + template (distinct prep-on/off pipelines); add `prep_uv`/`prep_vcolor` array textures as
      gated opaque bind-group inputs (sampled `texture_2d_array<f32>`); rewrite `texture_uv()`/
      `vertex_color()` so prep-on reads `textureLoad(prep_*, coords, set_index, 0)` (parity-exact:

@@ -278,6 +278,7 @@ impl MaterialEdgePipelines {
         anti_aliasing: &AntiAliasing,
         color_wgsl_format: &str,
         dynamic_registry: Option<&DynamicMaterials>,
+        prep_enabled: bool,
     ) -> Result<Option<MaterialEdgePipelineDescriptors>> {
         // No MSAA → no edges → no compile.
         if anti_aliasing.msaa_sample_count.is_none() {
@@ -421,6 +422,9 @@ impl MaterialEdgePipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps,
+                // prep_read derives false here (edge ⇒ MSAA), so this only
+                // keeps the cache key accurate; it doesn't change the WGSL.
+                prep_enabled,
                 shader_id: entry.shader_id,
                 base: entry.base,
                 owns_skybox: false,
@@ -496,6 +500,7 @@ impl MaterialEdgePipelines {
         anti_aliasing: &AntiAliasing,
         color_wgsl_format: &str,
         dynamic_registry: Option<&DynamicMaterials>,
+        prep_enabled: bool,
     ) -> Result<()> {
         let Some(descs) = self.build_descriptors(
             gpu,
@@ -507,6 +512,7 @@ impl MaterialEdgePipelines {
             anti_aliasing,
             color_wgsl_format,
             dynamic_registry,
+            prep_enabled,
         )?
         else {
             return Ok(());

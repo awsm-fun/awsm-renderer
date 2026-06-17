@@ -1823,6 +1823,7 @@ impl AwsmRendererBuilder {
                     &anti_aliasing,
                     color_wgsl,
                     None,
+                    prep_config.enabled,
                 )
                 .await?;
         }

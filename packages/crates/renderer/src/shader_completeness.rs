@@ -126,6 +126,7 @@ fn opaque_compute_defines_every_called_loader_per_base() {
             texture_pool_samplers_len: 1,
             msaa_sample_count: Some(4),
             mipmaps: true,
+            prep_enabled: false,
             shader_id,
             base,
             owns_skybox: false,

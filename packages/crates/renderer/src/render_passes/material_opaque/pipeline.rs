@@ -175,6 +175,7 @@ impl MaterialOpaquePipelines {
         // `register_material` call), so the empty-state bucket list
         // is exactly `first_party_bucket_entries()`.
         let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+        let prep_enabled = ctx.prep_config.enabled;
         Self::shader_descriptors_for_config_with(
             ctx.gpu,
             ctx.bind_group_layouts,
@@ -183,6 +184,7 @@ impl MaterialOpaquePipelines {
             ctx.anti_aliasing,
             &bucket_entries,
             false,
+            prep_enabled,
         )
     }
 
@@ -202,6 +204,7 @@ impl MaterialOpaquePipelines {
         anti_aliasing: &AntiAliasing,
         bucket_entries: &[crate::dynamic_materials::BucketEntry],
         include_first_party: bool,
+        prep_enabled: bool,
     ) -> Result<Vec<OpaqueShaderDesc>> {
         // Which (main_bgl, slot) is active? Only emit the descriptors
         // for the live MSAA branch — the other half stays uncompiled
@@ -250,6 +253,7 @@ impl MaterialOpaquePipelines {
                         texture_pool_samplers_len,
                         msaa_sample_count: active_msaa,
                         mipmaps: active_mipmaps,
+                        prep_enabled,
                         shader_id,
                         base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
                         owns_skybox: shader_id == MaterialShaderId::SKYBOX,

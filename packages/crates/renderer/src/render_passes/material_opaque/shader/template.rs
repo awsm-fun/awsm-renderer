@@ -54,6 +54,11 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// materials that don't run first-party lighting drop it. The shadow
     /// bind group + structs are always emitted (ABI) regardless.
     pub needs_shadow_sampling: bool,
+    /// Plan B (stage 2b): `prep_enabled && msaa none`. When true, the
+    /// gated `prep_uv` / `prep_vcolor` sampled `texture_2d_array<f32>`
+    /// declarations are emitted in the MAIN bind group so the slim
+    /// `texture_uv()` / `vertex_color()` can `textureLoad` them.
+    pub prep_read: bool,
 }
 
 /// Compute shader template for the opaque material pass.
@@ -151,6 +156,21 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// >254). Only consumed inside the `{% if multisampled_geometry %}`
     /// `cs_edge` block; inert on the singlesampled module.
     pub edge_slot_bits: u32,
+    /// Plan B (stage 2b): `prep_enabled && msaa none`. When true,
+    /// `cs_opaque` publishes its pixel coords into a `var<private>` so the
+    /// shared `texture_uv()` / `vertex_color()` helpers can read the
+    /// prep-materialized array textures instead of recomputing from the
+    /// geometry pool, and the `_texture_uv_per_vertex` /
+    /// `_vertex_color_per_vertex` recompute helpers are NOT emitted. False
+    /// under MSAA (the `cs_edge` per-sample path keeps recompute) and when
+    /// prep is off (byte-identical to the legacy shader).
+    pub prep_read: bool,
+    /// `MAX_PREP_UV_SETS` — clamp cap for the prep UV array layer index
+    /// in `texture_uv()` when `prep_read`. Inert otherwise.
+    pub max_prep_uv_sets: u32,
+    /// `MAX_PREP_COLOR_SETS` — clamp cap for the prep vcolor array layer
+    /// index in `vertex_color()` when `prep_read`. Inert otherwise.
+    pub max_prep_color_sets: u32,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -204,6 +224,14 @@ pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
     pub dynamic_loader_decl: String,
     pub dynamic_wgsl_fragment: String,
     pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
+    /// Always `false` for the skybox writer (the SKYBOX bucket never
+    /// reads prep attributes), but the shared `opaque_kernel_includes`
+    /// preamble references `prep_read`, so the field must exist for askama.
+    pub prep_read: bool,
+    /// Inert on the skybox writer (`prep_read` is false) but referenced by
+    /// the shared helper includes, so the fields must exist.
+    pub max_prep_uv_sets: u32,
+    pub max_prep_color_sets: u32,
 }
 
 impl ShaderTemplateMaterialOpaqueSkyboxPrimary {
@@ -248,6 +276,11 @@ impl From<ShaderTemplateMaterialOpaqueCompute> for ShaderTemplateMaterialOpaqueS
             dynamic_loader_decl: c.dynamic_loader_decl,
             dynamic_wgsl_fragment: c.dynamic_wgsl_fragment,
             bucket_entries: c.bucket_entries,
+            // The skybox writer never reads prep attributes; carry the
+            // caps through inertly so the shared includes resolve.
+            prep_read: c.prep_read,
+            max_prep_uv_sets: c.max_prep_uv_sets,
+            max_prep_color_sets: c.max_prep_color_sets,
         }
     }
 }
@@ -266,6 +299,13 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
         let multisampled_geometry = value.msaa_sample_count.is_some();
         let msaa_sample_count = value.msaa_sample_count.unwrap_or_default();
         let debug = ShaderTemplateMaterialOpaqueDebug::new();
+        // Plan B (stage 2b): prep-read is correct ONLY for the no-MSAA
+        // primary `cs_opaque` (the prep textures hold sample-0 data; the
+        // MSAA edge kernel `cs_edge` needs per-sample values it can't get
+        // from prep). So gate on prep enabled AND msaa off.
+        let prep_read = value.prep_enabled && value.msaa_sample_count.is_none();
+        let max_prep_uv_sets = crate::render_passes::material_prep::MAX_PREP_UV_SETS;
+        let max_prep_color_sets = crate::render_passes::material_prep::MAX_PREP_COLOR_SETS;
 
         let bucket_entries = value.bucket_entries.clone();
         let pad_words_iter: Vec<u32> = (0
@@ -309,6 +349,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 needs_shadow_sampling: inc.apply_lighting,
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
+                prep_read,
             },
             compute: ShaderTemplateMaterialOpaqueCompute {
                 texture_pool_arrays_len,
@@ -370,6 +411,9 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 bucket_entries,
                 bucket_index,
                 edge_slot_bits,
+                prep_read,
+                max_prep_uv_sets,
+                max_prep_color_sets,
             },
         };
 
@@ -524,6 +568,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
             bucket_entries,
             pad_words_iter,
+            prep_read: false,
         })
     }
 }
@@ -571,6 +616,9 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// Mirror of the opaque-compute field — trailing alignment-pad
     /// u32 indices for the templated `ClassifyBuckets` struct.
     pub pad_words_iter: Vec<u32>,
+    /// Always `false` for the empty kernel (no geometry → no prep reads),
+    /// but `bind_groups.wgsl` references `prep_read`, so the field exists.
+    pub prep_read: bool,
 }
 
 impl ShaderTemplateMaterialOpaqueEmpty {
@@ -677,6 +725,7 @@ mod empty_registry_tests {
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
             mipmaps: true,
+            prep_enabled: false,
             shader_id,
             base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
             owns_skybox: shader_id == MaterialShaderId::SKYBOX,
@@ -1004,6 +1053,7 @@ mod size_regression {
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
             mipmaps,
+            prep_enabled: false,
             shader_id: dyn_id,
             base: crate::dynamic_materials::ShadingBase::Custom,
             owns_skybox: false,

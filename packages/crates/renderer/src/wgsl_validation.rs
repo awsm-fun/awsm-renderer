@@ -54,11 +54,23 @@ fn first_party_key(
     msaa: Option<u32>,
     mipmaps: bool,
 ) -> ShaderCacheKeyMaterialOpaque {
+    first_party_key_prep(shader_id, base, owns_skybox, msaa, mipmaps, false)
+}
+
+fn first_party_key_prep(
+    shader_id: MaterialShaderId,
+    base: ShadingBase,
+    owns_skybox: bool,
+    msaa: Option<u32>,
+    mipmaps: bool,
+    prep_enabled: bool,
+) -> ShaderCacheKeyMaterialOpaque {
     ShaderCacheKeyMaterialOpaque {
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
         mipmaps,
+        prep_enabled,
         shader_id,
         base,
         owns_skybox,
@@ -87,6 +99,7 @@ fn custom_key(
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
         mipmaps,
+        prep_enabled: false,
         shader_id: dyn_id,
         base: ShadingBase::Custom,
         owns_skybox: false,
@@ -151,6 +164,51 @@ fn first_party_opaque_shaders_validate() {
             }
         }
     }
+}
+
+#[test]
+fn opaque_prep_read_variant_validates() {
+    // Plan B (stage 2b): the prep-read opaque variant (prep enabled + MSAA
+    // off) must compile, and `texture_uv()` / `vertex_color()` must read the
+    // prep array textures via `textureLoad` instead of recomputing from the
+    // geometry pool. PBR exercises both helpers. Mirrors
+    // `first_party_opaque_shaders_validate`'s helper, kept minimal.
+    // mips OFF: the gradient mipmap path (`get_uv_derivatives`) is the one
+    // remaining first-party caller of `_texture_uv_per_vertex` (UV gradients
+    // are recomputed, never materialized — Plan B decision #2), so the
+    // recompute-helper drop is observable only on the no-mips PBR variant.
+    let key = first_party_key_prep(
+        MaterialShaderId::PBR,
+        ShadingBase::Pbr,
+        false,
+        None,  // no MSAA → prep_read = true
+        false, // no mips → no get_uv_derivatives caller of _texture_uv_per_vertex
+        true,  // prep_enabled
+    );
+    let src = render(&key, "opaque/pbr prep_read");
+    naga_validate(&src, "opaque/pbr prep_read");
+    assert!(
+        src.contains("fn cs_opaque("),
+        "prep_read opaque module missing `fn cs_opaque`"
+    );
+    // The prep-materialized array textures must be both declared and read.
+    assert!(
+        src.contains("textureLoad(prep_uv,"),
+        "prep_read opaque module should `textureLoad(prep_uv, ...)` in texture_uv()"
+    );
+    assert!(
+        src.contains("textureLoad(prep_vcolor,"),
+        "prep_read opaque module should `textureLoad(prep_vcolor, ...)` in vertex_color()"
+    );
+    // The geometry-pool recompute helpers must NOT be emitted (the size win).
+    assert!(
+        !src.contains("fn _texture_uv_per_vertex("),
+        "prep_read opaque module should drop the `_texture_uv_per_vertex` recompute helper"
+    );
+    assert!(
+        !src.contains("fn _vertex_color_per_vertex("),
+        "prep_read opaque module should drop the `_vertex_color_per_vertex` recompute helper"
+    );
 }
 
 #[test]
@@ -278,4 +336,3 @@ fn custom_transparent_shaders_validate() {
         }
     }
 }
-

@@ -2,6 +2,15 @@
 // bucket uses skybox_primary.wgsl instead). Shared preamble is factored out.
 {% include "material_opaque_wgsl/opaque_kernel_includes.wgsl" %}
 
+{% if prep_read %}
+// Plan B (stage 2b): the no-MSAA variant has ONLY the cs_opaque entry
+// point (cs_edge is multisampled-gated), so a module var<private> for the
+// current pixel coords is safe — set once at cs_opaque entry and read by
+// the shared texture_uv() / vertex_color() helpers to textureLoad the prep
+// array textures at sample 0.
+var<private> g_prep_coords: vec2<i32>;
+{% endif %}
+
 
 @compute @workgroup_size(8, 8)
 fn cs_opaque(
@@ -22,6 +31,7 @@ fn cs_opaque(
     let bucket_offset = classify_buckets.offsets[{{ bucket_index }}u];
     let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
+    {% if prep_read %}g_prep_coords = coords;{% endif %}
     let screen_dims = textureDimensions(opaque_tex);
     let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));
     let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
