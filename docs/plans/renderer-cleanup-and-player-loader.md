@@ -104,7 +104,18 @@ render`). Fix to the invariant:
 - size_regression: with cs_opaque gone from the MSAA module, the MSAA module shrinks
   (reverses the U3a ceiling raise) — re-measure + tighten ceilings to the real values.
 
-### A3 — remove remaining dead helpers
+### A3 [DONE] — remove remaining dead helpers
+Removed the dead-since-U3b `pub fn` offset helpers (`data_per_shader_count_offset`,
+`data_skybox_count_offset`, `sample_entries_offset`, `sample_entries_per_bucket`,
+`skybox_sample_list_offset`, `skybox_edge_args_offset`, `per_shader_args_offset`) + their now-unused
+`SAMPLE_*` consts + 2 obsolete layout tests + the stale `sample_entries_per_bucket` field in the alloc-log
+line — all in edge_buffers.rs (zero live callers; only the removed sample-list feature used them). Pure
+Rust dead code: NO WGSL / pipeline / buffer-layout change (`data_header_bytes` kept intact), so GPU output
+is identical by construction. 259+34+25 green, warning-free. **Part A2-part-2 (shrink `data_header_bytes`
+to drop the dead per-bucket count region) DEFERRED** — it shifts edge_to_xy/slot_map/accumulator offsets
+(GPU-affecting) for a ~B*4-byte win; not worth the risk. **Part A COMPLETE.**
+
+### A3 (orig) — remove remaining dead helpers
 After A1/A2: drop the now-dead `pub` offset fns left from unified-edge U3b
 (`data_per_shader_count_offset`, `data_skybox_count_offset`, `sample_entries_offset`,
 `skybox_sample_list_offset`, `sample_entries_per_bucket`, `skybox_edge_args_offset`,

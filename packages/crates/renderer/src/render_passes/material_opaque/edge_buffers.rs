@@ -119,32 +119,6 @@ pub fn note_edge_overflow_observed(overflow_count: u32, max_edge_budget: u32) {
     }
 }
 
-/// Default per-shader-id sample-list capacity in entries (each entry is
-/// 4 bytes: `(edge_pixel_id:24, sample_mask:8)`). At 4 entries per pixel
-/// worst-case (one per MSAA sample), 4 × MAX_EDGE_BUDGET would be the
-/// pathological upper bound; in practice ~1.5 × MAX_EDGE_BUDGET total
-/// across all buckets is plenty.
-///
-/// Per-bucket capacity CEILING multiplier (`MAX_EDGE_BUDGET × 2`). Used as
-/// the upper bound in [`sample_entries_per_bucket`] so the §4e right-sizing
-/// never *increases* per-bucket memory above the historical value at low
-/// bucket counts (no typical-case regression).
-pub const SAMPLE_ENTRIES_PER_BUCKET_MULTIPLIER: u32 = 2;
-
-/// §4e shared-pool multiplier: total sample-list memory across ALL buckets
-/// is ≈ `POOL × max_edge_budget`, independent of bucket count. The physical
-/// ceiling on total edge samples is `4 × edge_count` (≤ 4 × max_edge_budget,
-/// 4 MSAA samples per edge pixel), so `POOL = 8` provisions ~2× the
-/// worst-case aggregate — enough headroom that per-bucket imbalance hits the
-/// existing `edge_overflow_count → set_max_edge_budget` grow path only on
-/// pathological frames, never the common case.
-pub const SAMPLE_POOL_BUDGET_MULTIPLIER: u32 = 8;
-
-/// Minimum per-bucket sample-list capacity, so very high bucket counts don't
-/// starve any single bucket below a usable floor. At the 1024 target the
-/// even share already exceeds this; it only binds past ~4096 buckets.
-pub const SAMPLE_ENTRIES_PER_BUCKET_FLOOR: u32 = 1024;
-
 /// Maximum edge_pixel_id allocated by classify before the overflow tail
 /// kicks in. Sized for desktop targets; mobile profiles override via
 /// [`MaterialEdgeBuffers::new_with_budget`].
@@ -274,17 +248,6 @@ pub fn data_edge_count_offset() -> u32 {
     0
 }
 
-/// Byte offset of the per-bucket entry count for `bucket_index` inside
-/// `data_buffer`.
-pub fn data_per_shader_count_offset(bucket_index: u32) -> u32 {
-    16 + bucket_index.saturating_mul(4)
-}
-
-/// Byte offset of the skybox entry count inside `data_buffer`.
-pub fn data_skybox_count_offset(bucket_count: u32) -> u32 {
-    16 + bucket_count.saturating_mul(4)
-}
-
 /// Byte offset of `edge_to_xy` inside `data_buffer`. Follows the
 /// counter-mirror header.
 pub fn edge_to_xy_offset(bucket_count: u32) -> u32 {
@@ -318,38 +281,6 @@ pub fn accumulator_bytes(max_edge_budget: u32) -> u32 {
     max_edge_budget
         .saturating_mul(ACCUMULATOR_SLOTS_PER_EDGE)
         .saturating_mul(ACCUMULATOR_SLOT_BYTES)
-}
-
-/// Byte offset of the first per-shader-id sample-list entry inside
-/// `data_buffer`.
-pub fn sample_entries_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    accumulator_offset(bucket_count, max_edge_budget) + accumulator_bytes(max_edge_budget)
-}
-
-/// Per-bucket sample-list capacity (in entries; each entry 4 bytes).
-/// Per-bucket sample-list capacity (in entries; each entry 4 bytes), §4e
-/// shape B. The per-bucket share of an `O(max_edge_budget)` shared pool —
-/// total = `bucket_count × this ≈ POOL × max_edge_budget`, independent of
-/// bucket count, so the data buffer stays allocatable at 1024+ buckets
-/// (vs the old `bucket_count × 2 × budget` which hit ~4 GB at 1024 and
-/// failed to allocate). `max(FLOOR, even-share)` then capped at the old
-/// `2 × budget` per-bucket so this never *increases* memory at low counts.
-pub fn sample_entries_per_bucket(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    let bucket_count = bucket_count.max(1);
-    let pool = max_edge_budget.saturating_mul(SAMPLE_POOL_BUDGET_MULTIPLIER);
-    let even_share = pool.div_ceil(bucket_count);
-    let ceiling = max_edge_budget.saturating_mul(SAMPLE_ENTRIES_PER_BUCKET_MULTIPLIER);
-    even_share
-        .max(SAMPLE_ENTRIES_PER_BUCKET_FLOOR)
-        .min(ceiling.max(SAMPLE_ENTRIES_PER_BUCKET_FLOOR))
-}
-
-/// Byte offset of the skybox sample-list region inside `data_buffer`.
-pub fn skybox_sample_list_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    let per_bucket_bytes =
-        sample_entries_per_bucket(bucket_count, max_edge_budget).saturating_mul(4);
-    sample_entries_offset(bucket_count, max_edge_budget)
-        + bucket_count.saturating_mul(per_bucket_bytes)
 }
 
 /// Total bytes for `data_buffer` (counter-mirror header + per-edge arrays:
@@ -455,10 +386,9 @@ impl MaterialEdgeBuffers {
         tracing::info!(
             target: "awsm_renderer::edge_buffers",
             "MaterialEdgeBuffers alloc: bucket_count={}, max_edge_budget={}, \
-             sample_entries_per_bucket={}, data_buffer={:.1} MB, args_buffer={} B",
+             data_buffer={:.1} MB, args_buffer={} B",
             bucket_count,
             max_edge_budget,
-            sample_entries_per_bucket(bucket_count, max_edge_budget),
             data_size_bytes as f64 / (1024.0 * 1024.0),
             args_size_bytes,
         );
@@ -609,19 +539,6 @@ impl MaterialEdgeBuffers {
     pub fn final_blend_args_offset() -> u32 {
         ARGS_COUNTERS_BYTES
     }
-
-    /// Byte offset of the `skybox_edge` indirect-arg slot in
-    /// `args_buffer`.
-    pub fn skybox_edge_args_offset() -> u32 {
-        ARGS_COUNTERS_BYTES + INDIRECT_ARGS_STRIDE
-    }
-
-    /// Byte offset of the per-shader-id indirect-arg slot for bucket
-    /// `bucket_index` in `args_buffer`. Passed to
-    /// `dispatch_workgroups_indirect`.
-    pub fn per_shader_args_offset(bucket_index: u32) -> u32 {
-        ARGS_COUNTERS_BYTES + 2 * INDIRECT_ARGS_STRIDE + bucket_index * INDIRECT_ARGS_STRIDE
-    }
 }
 
 /// Build the `EdgeBufferLayout` uniform-data payload for the classify +
@@ -734,37 +651,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn data_buffer_layout_is_monotonic_and_starts_after_header() {
-        // The data_buffer carries a counter-mirror header at offset 0
-        // (since `92ca74e` — the 10-storage-buffer-cap workaround that
-        // mirrors classify's atomic counters into the data_buffer so
-        // the resolve shaders don't need to bind args_buffer
-        // separately). Each region must come after the previous one;
-        // `edge_to_xy` specifically lives immediately after the
-        // header.
-        for bucket_count in [1u32, 4, 17] {
-            for max_edge_budget in [1024u32, 65536] {
-                let header = data_header_bytes(bucket_count);
-                let xy = edge_to_xy_offset(bucket_count);
-                let slot_map = edge_slot_map_offset(bucket_count, max_edge_budget);
-                let accum = accumulator_offset(bucket_count, max_edge_budget);
-                let entries = sample_entries_offset(bucket_count, max_edge_budget);
-
-                // Counter-mirror header is at offset 0; edge_to_xy
-                // starts right after it.
-                assert_eq!(xy, header,
-                    "edge_to_xy must start right after the counter-mirror header (bucket_count={bucket_count})");
-
-                // Layout is monotonic: header → edge_to_xy →
-                // edge_slot_map → accumulator → sample lists.
-                assert!(xy < slot_map);
-                assert!(slot_map < accum);
-                assert!(accum < entries);
-            }
-        }
-    }
-
     /// §4e / §7.4 allocation guarantee: `data_buffer_bytes` is `O(edge_budget)`,
     /// NOT `O(buckets × edge_budget)`. The pre-§4e sizing was
     /// `bucket_count × 2 × budget × 4` ≈ **4 GB** at 1024 buckets / 512K
@@ -796,39 +682,7 @@ mod tests {
                 at_1024 <= at_16 * 2,
                 "data_buffer grew {at_16}→{at_1024} (>2×) from 16→1024 buckets — sample memory is not O(edge_budget)"
             );
-            // Sample-list total stays within the shared-pool envelope.
-            let pool_entries = budget as u64 * SAMPLE_POOL_BUDGET_MULTIPLIER as u64;
-            for &bucket_count in &[16u32, 254, 1024] {
-                let total =
-                    sample_entries_per_bucket(bucket_count, budget) as u64 * bucket_count as u64;
-                // ≤ pool (mid/high counts) or ≤ ceiling×count (low counts);
-                // ceiling×count at the smallest tested count (16) = 2*budget*16
-                // = 32*budget, still well-bounded. Assert it never explodes
-                // past 32× budget (the low-count ceiling regime).
-                assert!(
-                    total <= pool_entries.max(budget as u64 * 32),
-                    "sample-list total {total} entries at {bucket_count} buckets exceeds the O(budget) envelope"
-                );
-            }
         }
     }
 
-    /// Per-bucket sizing never exceeds the historical `2 × budget` (no
-    /// typical-case memory regression) and stays ≥ the floor.
-    #[test]
-    fn sample_entries_per_bucket_bounded_above_and_below() {
-        let budget = DEFAULT_MAX_EDGE_BUDGET_DESKTOP;
-        let ceiling = budget * SAMPLE_ENTRIES_PER_BUCKET_MULTIPLIER;
-        for &bucket_count in &[1u32, 5, 16, 64, 254, 1024, 4096, 65534] {
-            let per = sample_entries_per_bucket(bucket_count, budget);
-            assert!(
-                per <= ceiling,
-                "per-bucket {per} exceeds the 2×budget ceiling at {bucket_count} buckets"
-            );
-            assert!(
-                per >= SAMPLE_ENTRIES_PER_BUCKET_FLOOR,
-                "per-bucket {per} below floor at {bucket_count} buckets"
-            );
-        }
-    }
 }
