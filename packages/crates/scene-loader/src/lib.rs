@@ -129,19 +129,155 @@ pub struct LoadedScene {
     pub clips: Vec<AnimationClipKey>,
 }
 
-/// A prefab-root subtree, materialized once (hidden) as a reusable template.
-/// Cheaply cloned into live instances via [`Self::instantiate`]. Opaque: holds
-/// the hidden materialized handles + the per-node metadata an instance needs.
+/// A prefab-root subtree, materialized **once** (hidden) as a reusable template,
+/// then cheaply cloned into live instances via [`Self::instantiate`].
 ///
-/// (B4 fills in the instancing body; B1 introduces the type so [`LoadedScene`]
-/// can carry the map.)
-#[derive(Default, Debug)]
+/// The template is *replayable structural metadata*, not a live set of handles:
+/// it records every node's authored local transform, its parent within the
+/// subtree, and the hidden template [`MeshKey`]s to duplicate. Instancing walks
+/// that metadata to insert a fresh transform per node and
+/// `duplicate_mesh_with_transform` the template meshes — each duplicate shares
+/// the template's GPU geometry + material buffers, so an instance costs a handful
+/// of transform slots + mesh-instance records, not a re-upload.
+///
+/// Opaque by contract: the fields are private; inspect the shape via
+/// [`root_id`](Self::root_id) / [`node_ids`](Self::node_ids).
+///
+/// **Coverage (B4):** mesh-bearing prefab nodes are replayed per instance —
+/// `Mesh` (primitive + bare-geometry glb), `SkinnedMesh` (rig glb), and `Sprite`.
+/// Their transforms are always replayed (so an instance reproduces the full
+/// authored hierarchy), but `Light` / `Camera` / `Line` / `Decal` /
+/// `InstancesAlongCurve` *inside* a prefab are **not** yet re-created per
+/// instance (only their transform node is). Wiring those per-instance is the B4
+/// follow-on (they need per-instance light/camera/line/decal keys, not a cheap
+/// GPU-buffer share). A **nested** prefab child is captured as its own template
+/// in [`LoadedScene::prefabs`] — it is never inlined into its parent template.
+#[derive(Debug)]
 pub struct PrefabTemplate {
-    /// Per-node handles of the hidden template subtree (kept for B4 instancing +
-    /// so callers can inspect the template's shape). Same `NodeId`s the instances
-    /// reproduce. (Populated + consumed by B4's `instantiate`.)
-    #[allow(dead_code)]
-    pub(crate) nodes: HashMap<NodeId, NodeHandles>,
+    /// The prefab-root [`NodeId`] (the node authored with `prefab == true`).
+    root: NodeId,
+    /// The subtree in DFS pre-order (every parent precedes its children) so
+    /// [`instantiate`](Self::instantiate) can wire each new transform under its
+    /// already-inserted parent in a single forward pass.
+    nodes: Vec<PrefabNode>,
+}
+
+/// One node of a captured [`PrefabTemplate`] subtree: enough to replay it into a
+/// fresh instance.
+#[derive(Debug)]
+struct PrefabNode {
+    /// The authored [`NodeId`] (reproduced verbatim on every instance, so callers
+    /// can address instance nodes by the same id as the template).
+    id: NodeId,
+    /// The node's authored **local** transform. The subtree root's local is
+    /// replaced by the caller's `world_trs` at instantiate time (anchoring the
+    /// instance); every other node keeps its authored local under its parent.
+    local: Trs,
+    /// Parent **within this subtree** (`None` for the subtree root). Mapped through
+    /// the per-instance `NodeId → TransformKey` table during instantiate.
+    parent: Option<NodeId>,
+    /// The hidden template [`MeshKey`]s this node produced (one per primitive). An
+    /// instance `duplicate_mesh_with_transform`s each under the node's fresh
+    /// transform. Empty for non-mesh nodes.
+    template_meshes: Vec<MeshKey>,
+}
+
+impl PrefabTemplate {
+    /// The prefab-root [`NodeId`] (the node authored with `prefab == true`).
+    pub fn root_id(&self) -> NodeId {
+        self.root
+    }
+
+    /// Every [`NodeId`] in the template subtree (root first, then descendants in
+    /// DFS pre-order) — the same ids an instance reproduces in
+    /// [`PrefabInstance::nodes`].
+    pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.nodes.iter().map(|n| n.id)
+    }
+
+    /// Instantiate the template into a fresh, live [`PrefabInstance`] anchored at
+    /// `world_trs`.
+    ///
+    /// Walks the template in DFS pre-order (parents first), inserting a new
+    /// [`TransformKey`] per node — the **subtree root** gets `world_trs` (its
+    /// authored local is *replaced*, anchoring the instance in the world), every
+    /// other node keeps its authored local under its already-inserted parent. Each
+    /// node's hidden template meshes are `duplicate_mesh_with_transform`d under its
+    /// new transform — the duplicates **share** the template's GPU geometry +
+    /// material buffers (the cheap part) and are explicitly un-hidden (a duplicate
+    /// inherits the hidden template's flag).
+    ///
+    /// Two calls produce two `PrefabInstance`s with independent transforms + mesh
+    /// keys over the same shared GPU buffers. Non-mesh prefab nodes contribute only
+    /// their transform (see [`PrefabTemplate`] coverage / follow-on notes).
+    pub fn instantiate(
+        &self,
+        renderer: &mut AwsmRenderer,
+        world_trs: Trs,
+    ) -> Result<PrefabInstance> {
+        // template NodeId → freshly-inserted instance TransformKey.
+        let mut tk_for: HashMap<NodeId, TransformKey> = HashMap::with_capacity(self.nodes.len());
+        let mut nodes: HashMap<NodeId, NodeHandles> = HashMap::with_capacity(self.nodes.len());
+        let mut root_tk: Option<TransformKey> = None;
+
+        for pn in &self.nodes {
+            // Root anchors at world_trs (replacing its authored local); others keep
+            // their authored local under their (already-inserted) parent.
+            let (local, parent_tk) = match pn.parent {
+                None => (trs_to_transform(&world_trs), None),
+                Some(parent_id) => (trs_to_transform(&pn.local), tk_for.get(&parent_id).copied()),
+            };
+            let tk = renderer.transforms.insert(local, parent_tk);
+            tk_for.insert(pn.id, tk);
+            if pn.parent.is_none() {
+                root_tk = Some(tk);
+            }
+
+            // Duplicate the hidden template meshes under the fresh transform and
+            // un-hide each duplicate (it inherits the template's hidden flag).
+            let mut mesh_keys = Vec::with_capacity(pn.template_meshes.len());
+            for &template_key in &pn.template_meshes {
+                let new_key = renderer.duplicate_mesh_with_transform(template_key, tk)?;
+                renderer.set_mesh_hidden(new_key, false)?;
+                mesh_keys.push(new_key);
+            }
+
+            nodes.insert(
+                pn.id,
+                NodeHandles {
+                    transform: tk,
+                    meshes: mesh_keys,
+                    // B4 follow-on: light/camera/line/decal inside a prefab are not
+                    // yet replayed per instance (only the transform is).
+                    ..Default::default()
+                },
+            );
+        }
+
+        let root = root_tk.ok_or_else(|| anyhow!("prefab template has no root node"))?;
+        Ok(PrefabInstance { root, nodes })
+    }
+}
+
+/// A live, cheaply-cloned instance of a [`PrefabTemplate`] — fresh transforms +
+/// duplicated meshes (sharing the template's GPU buffers), addressable by the
+/// template's authored [`NodeId`]s.
+///
+/// Two [`instantiate`](PrefabTemplate::instantiate) calls yield two
+/// `PrefabInstance`s with **independent** [`root`](Self::root) transforms and
+/// independent mesh keys, but the same underlying GPU geometry/material — move one
+/// instance's `root` and the others stay put.
+#[derive(Clone, Debug)]
+pub struct PrefabInstance {
+    /// The instance's root [`TransformKey`] (anchored at the `world_trs` passed to
+    /// [`instantiate`](PrefabTemplate::instantiate)). Drive the whole instance by
+    /// moving this transform.
+    pub root: TransformKey,
+    /// `NodeId → ` [`NodeHandles`] for every node in the instance, keyed by the
+    /// **template's** authored ids. Mesh-bearing nodes carry their fresh visible
+    /// mesh keys; non-mesh nodes carry only their transform (see
+    /// [`PrefabTemplate`] coverage notes).
+    pub nodes: HashMap<NodeId, NodeHandles>,
 }
 
 /// Load a runtime [`Scene`] into the renderer as one batched, phased pass.
@@ -310,6 +446,26 @@ async fn materialize(
     total: usize,
     loaded: &mut LoadedScene,
 ) -> Result<()> {
+    // Prefab root: capture the whole subtree as a hidden, reusable template and
+    // return BEFORE inserting any transform — so neither this node nor its
+    // descendants enter the static world (`loaded.nodes` / `maps`). Instances are
+    // minted later, on demand, via `PrefabTemplate::instantiate`.
+    if node.prefab {
+        let tmpl = capture_prefab(
+            renderer,
+            scene,
+            node,
+            None,
+            assets,
+            &maps.node_materials,
+            placeholder,
+            loaded,
+        )
+        .await?;
+        loaded.prefabs.insert(node.id, tmpl);
+        return Ok(());
+    }
+
     let local = trs_to_transform(&node.transform);
     // World matrix for THIS node, composed up the chain by hand. We can't rely on
     // `renderer.transforms.get_world(tk)` here: `transforms.insert` seeds a node's
@@ -491,6 +647,202 @@ async fn materialize(
     Ok(())
 }
 
+/// Capture a prefab-root subtree as a reusable [`PrefabTemplate`].
+///
+/// Walks the subtree in DFS pre-order, materializing each node's meshes **hidden**
+/// (so the template never draws) and recording a [`PrefabNode`] per node — its
+/// authored local transform, its parent within the subtree, and the hidden
+/// template mesh keys. The template meshes are inserted under a single shared
+/// scratch [`TransformKey`] (placement doesn't matter — they're hidden and only
+/// ever duplicated under fresh instance transforms), reusing the same mesh-build
+/// paths the normal `Mesh` / `SkinnedMesh` / `Sprite` arms use via
+/// [`build_node_meshes`].
+///
+/// `parent` is the parent **`NodeId` within the subtree** (`None` for the root).
+///
+/// **Nested prefab:** a child authored with `prefab == true` is captured as its
+/// OWN [`PrefabTemplate`] into `loaded.prefabs` and is NOT inlined here — the
+/// recursion stops at it (its descendants belong to the nested template).
+///
+/// **B4 follow-on:** `Light` / `Camera` / `Line` / `Decal` /
+/// `InstancesAlongCurve` nodes inside a prefab contribute only their transform
+/// node to the template (no per-instance light/camera/line/decal/instancing key
+/// is replayed yet — see [`PrefabTemplate`]).
+async fn capture_prefab(
+    renderer: &mut AwsmRenderer,
+    scene: &Scene,
+    node: &EditorNode,
+    parent: Option<NodeId>,
+    assets: &impl SceneAssets,
+    node_materials: &HashMap<NodeId, MaterialKey>,
+    placeholder: MaterialKey,
+    loaded: &mut LoadedScene,
+) -> Result<PrefabTemplate> {
+    debug_assert!(parent.is_none(), "prefab root capture starts at the subtree root");
+    // Pure structural plan first (DFS pre-order, parent wiring, nested-prefab
+    // boundaries) — unit-tested independently of the GPU mesh build below.
+    let layout = prefab_subtree_layout(node);
+
+    // A single hidden scratch transform anchors every template mesh; instances
+    // never reuse it (they duplicate the meshes under their own transforms).
+    let scratch = renderer.transforms.insert(Transform::default(), None);
+
+    let mut nodes = Vec::with_capacity(layout.len());
+    for step in &layout {
+        let n = step.node;
+        if step.nested_prefab {
+            // Nested prefab → captured as its OWN template; not inlined here.
+            let tmpl = Box::pin(capture_prefab(
+                renderer,
+                scene,
+                n,
+                None,
+                assets,
+                node_materials,
+                placeholder,
+                loaded,
+            ))
+            .await?;
+            loaded.prefabs.insert(n.id, tmpl);
+            continue;
+        }
+        let mat = node_materials.get(&n.id).copied().unwrap_or(placeholder);
+        // Build this node's meshes (hidden) under the scratch transform; non-mesh
+        // kinds yield an empty vec (their transform is still recorded).
+        let template_meshes =
+            build_node_meshes(renderer, scene, n, scratch, mat, assets, true).await?;
+        nodes.push(PrefabNode {
+            id: n.id,
+            local: n.transform.clone(),
+            parent: step.parent,
+            template_meshes,
+        });
+    }
+
+    Ok(PrefabTemplate {
+        root: node.id,
+        nodes,
+    })
+}
+
+/// One node of a [`prefab_subtree_layout`] plan: the node, its parent within the
+/// subtree (`None` for the root), and whether it is a **nested** prefab boundary
+/// (captured as its own template, descendants excluded from this plan).
+struct PrefabLayoutStep<'a> {
+    node: &'a EditorNode,
+    parent: Option<NodeId>,
+    nested_prefab: bool,
+}
+
+/// Compute the capture plan for a prefab-root subtree: a DFS pre-order list
+/// (parents before children) of every node, its in-subtree parent, and whether it
+/// is a nested-prefab boundary.
+///
+/// The traversal *stops descending* at a nested prefab (a non-root child with
+/// `prefab == true`): that child appears in the plan flagged `nested_prefab` (so
+/// [`capture_prefab`] captures it as its own template) but its descendants do NOT
+/// — they belong to the nested template. Pure (no renderer) so it is unit-tested.
+fn prefab_subtree_layout(root: &EditorNode) -> Vec<PrefabLayoutStep<'_>> {
+    fn walk<'a>(
+        node: &'a EditorNode,
+        parent: Option<NodeId>,
+        is_root: bool,
+        out: &mut Vec<PrefabLayoutStep<'a>>,
+    ) {
+        // A non-root node flagged prefab is a nested boundary: record it, stop.
+        if !is_root && node.prefab {
+            out.push(PrefabLayoutStep {
+                node,
+                parent,
+                nested_prefab: true,
+            });
+            return;
+        }
+        out.push(PrefabLayoutStep {
+            node,
+            parent,
+            nested_prefab: false,
+        });
+        for child in &node.children {
+            walk(child, Some(node.id), false, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, None, true, &mut out);
+    out
+}
+
+/// Build the renderer meshes for one node under `tk` with material `mat`, the
+/// shared mesh-construction path used by both the live `materialize` arms and
+/// prefab [`capture_prefab`]. Covers `Mesh` (primitive + bare-geometry glb),
+/// `SkinnedMesh` (rig glb), and `Sprite`; every other [`NodeKind`] yields no mesh
+/// (an empty vec). When `hidden` is set, each produced mesh is hidden immediately
+/// (the prefab-template case) — the caller's instances un-hide their duplicates.
+///
+/// Does NOT touch `maps` / `loaded` / progress: it returns the keys so the caller
+/// records them where they belong (live arms push into `maps`/`loaded`; the
+/// prefab path stores them on the template). Sprites build their own material
+/// here (sprites aren't in Phase-1 `collect_renderables`), so `mat` is ignored
+/// for the `Sprite` arm.
+async fn build_node_meshes(
+    renderer: &mut AwsmRenderer,
+    scene: &Scene,
+    node: &EditorNode,
+    tk: TransformKey,
+    mat: MaterialKey,
+    assets: &impl SceneAssets,
+    hidden: bool,
+) -> Result<Vec<MeshKey>> {
+    let mut keys: Vec<MeshKey> = Vec::new();
+    match &node.kind {
+        NodeKind::Mesh { mesh, .. } => {
+            if let Some(entry) = scene.assets.get(mesh.0) {
+                match &entry.source {
+                    AssetSource::Mesh(RuntimeMesh::Primitive(shape)) => {
+                        let md = awsm_meshgen::primitive_mesh(shape);
+                        let key = renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
+                        keys.push(key);
+                    }
+                    AssetSource::Mesh(RuntimeMesh::Glb) => {
+                        let (glb_keys, _) = load_glb_under(
+                            renderer,
+                            assets,
+                            &mesh_glb_filename(mesh.0),
+                            Some(tk),
+                            mat,
+                        )
+                        .await?;
+                        keys.extend(glb_keys);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        NodeKind::SkinnedMesh { skin, .. } => {
+            // Self-placing rig glb (rooted at None, like the live arm). For a
+            // prefab template the joint binding is omitted (skin-correspondence is
+            // a follow-on even outside prefabs); the rig poses at bind pose.
+            let (glb_keys, _) =
+                load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat).await?;
+            keys.extend(glb_keys);
+        }
+        NodeKind::Sprite(def) => {
+            let key = build_sprite_mesh(renderer, assets, def, tk).await?;
+            keys.push(key);
+        }
+        // Non-mesh kinds: no geometry to share. Their transform is still recorded
+        // by the caller; per-instance light/camera/line/decal wiring is a B4
+        // follow-on (see `PrefabTemplate`).
+        _ => {}
+    }
+    if hidden {
+        for &k in &keys {
+            renderer.set_mesh_hidden(k, true)?;
+        }
+    }
+    Ok(keys)
+}
+
 /// Materialize a [`NodeKind::Line`] into a renderer fat-line strip.
 ///
 /// The screen-space fat-line API ([`AwsmRenderer::add_line_strip`]) takes
@@ -560,6 +912,23 @@ async fn materialize_sprite(
     maps: &mut AnimResolveMaps,
     loaded: &mut LoadedScene,
 ) -> Result<()> {
+    let key = build_sprite_mesh(renderer, assets, def, tk).await?;
+    maps.meshes.entry(node_id).or_insert(key);
+    maps.node_meshes.entry(node_id).or_default().push(key);
+    loaded.meshes.push(key);
+    Ok(())
+}
+
+/// Build a sprite's Unlit/FlipBook material + textured quad under `tk`, returning
+/// the mesh key. Shared by the live `Sprite` arm ([`materialize_sprite`]) and
+/// prefab capture ([`build_node_meshes`]); the caller records the key. Sprites
+/// build their own material here (they aren't in Phase-1 `collect_renderables`).
+async fn build_sprite_mesh(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    def: &SpriteDef,
+    tk: TransformKey,
+) -> Result<MeshKey> {
     use awsm_renderer::materials::flipbook::{FlipBookMaterial, FlipBookMode};
     use awsm_renderer::materials::unlit::UnlitMaterial;
     use awsm_renderer::meshes::mesh::BillboardMode as RBillboard;
@@ -625,10 +994,7 @@ async fn materialize_sprite(
         renderer.set_mesh_billboard_mode(key, rbillboard)?;
     }
 
-    maps.meshes.entry(node_id).or_insert(key);
-    maps.node_meshes.entry(node_id).or_default().push(key);
-    loaded.meshes.push(key);
-    Ok(())
+    Ok(key)
 }
 
 /// Materialize a [`NodeKind::Decal`] into a renderer projection decal.
@@ -1103,4 +1469,90 @@ fn insert_placeholder_material(renderer: &mut AwsmRenderer) -> MaterialKey {
         &renderer.dynamic_materials,
         &renderer.extras_pool,
     )
+}
+
+#[cfg(test)]
+mod prefab_tests {
+    //! Prefab capture/instancing is exercised here through its pure structural
+    //! core, [`prefab_subtree_layout`] — the production traversal `capture_prefab`
+    //! drives (DFS pre-order, parent wiring, nested-prefab boundaries).
+    //!
+    //! The full `populate_awsm_scene` → `instantiate` round-trip is NOT unit-tested
+    //! natively: it needs a live `AwsmRenderer`, which requires a GPU/WebGPU device
+    //! (the renderer runs on wasm). That path is covered by the browser round-trip
+    //! harness instead; unit-testing it here would block on an un-unit-testable GPU
+    //! dependency, so we test the part we can pin down without a device.
+    use super::prefab_subtree_layout;
+    use awsm_scene::{EditorNode, NodeId, NodeKind};
+
+    fn node(id: NodeId, prefab: bool, children: Vec<EditorNode>) -> EditorNode {
+        EditorNode {
+            id,
+            name: String::new(),
+            transform: Default::default(),
+            kind: NodeKind::Group,
+            locked: false,
+            visible: true,
+            prefab,
+            children,
+        }
+    }
+
+    // The layout is the plan `capture_prefab` replays: root first (parent None),
+    // then descendants in DFS pre-order, each wired to its in-subtree parent.
+    #[test]
+    fn layout_is_dfs_preorder_with_parent_wiring() {
+        // root ── child1 ── grandchild
+        //      └─ child2
+        let (root, child1, grandchild, child2) =
+            (NodeId::new(), NodeId::new(), NodeId::new(), NodeId::new());
+        let tree = node(
+            root,
+            true,
+            vec![
+                node(child1, false, vec![node(grandchild, false, vec![])]),
+                node(child2, false, vec![]),
+            ],
+        );
+
+        let layout = prefab_subtree_layout(&tree);
+        let plan: Vec<_> = layout
+            .iter()
+            .map(|s| (s.node.id, s.parent, s.nested_prefab))
+            .collect();
+
+        assert_eq!(
+            plan,
+            vec![
+                (root, None, false),
+                (child1, Some(root), false),
+                (grandchild, Some(child1), false),
+                (child2, Some(root), false),
+            ]
+        );
+    }
+
+    // A nested prefab child is recorded as a boundary (so `capture_prefab` captures
+    // it as its OWN template) and its descendants are NOT inlined into the parent.
+    #[test]
+    fn nested_prefab_is_a_boundary_and_excludes_its_descendants() {
+        // root ── nested(prefab) ── deep
+        let (root, nested, deep) = (NodeId::new(), NodeId::new(), NodeId::new());
+        let tree = node(
+            root,
+            true,
+            vec![node(nested, true, vec![node(deep, false, vec![])])],
+        );
+
+        let layout = prefab_subtree_layout(&tree);
+        let ids: Vec<_> = layout.iter().map(|s| s.node.id).collect();
+
+        // `deep` belongs to the nested template, not this plan.
+        assert_eq!(ids, vec![root, nested]);
+        let nested_step = layout.iter().find(|s| s.node.id == nested).unwrap();
+        assert!(nested_step.nested_prefab);
+        assert_eq!(nested_step.parent, Some(root));
+        // The root is never itself a nested boundary.
+        assert!(!layout[0].nested_prefab);
+    }
 }

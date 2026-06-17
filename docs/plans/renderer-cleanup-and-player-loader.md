@@ -291,7 +291,22 @@ skipped; Decal if feasible else documented-unsupported + clean skip. If the rend
 lacks a primitive, expose+document the minimal public renderer API for it. Each kind
 renders through the loader with no consumer per-kind code.
 
-### B4 — R2: prefab templates + instancing
+### B4 [DONE] — R2: prefab templates + instancing
+`PrefabTemplate { root: NodeId, nodes: Vec<PrefabNode{ id, local: Trs, parent: Option<NodeId>, template_meshes:
+Vec<MeshKey> }> }` (opaque fields + `root_id()`/`node_ids()` accessors) + `pub struct PrefabInstance { root:
+TransformKey, nodes: HashMap<NodeId, NodeHandles> }`. `materialize` early-returns at the top when
+`node.prefab` → `capture_prefab` materializes the subtree HIDDEN (shared `build_node_meshes`/`build_sprite_mesh`
+helpers; meshes `set_mesh_hidden(true)`) + records the DFS-preorder structural plan, storing the template in
+`loaded.prefabs` and EXCLUDING the subtree from `loaded.nodes`/`maps` (so animation + the static world skip it).
+Nested prefab roots become their own templates (boundary, not inlined). `PrefabTemplate::instantiate(&self,
+renderer, world_trs)` replays: fresh transforms (subtree root at `world_trs`), each template mesh
+`duplicate_mesh_with_transform` (shares GPU geometry+material) + un-hidden → `PrefabInstance` keyed by the same
+NodeIds; two calls → independent instances sharing buffers. 259+34+27 green (2 new pure-traversal unit tests;
+full round-trip needs a live GPU renderer → browser harness). populate_awsm_scene sig unchanged.
+**Follow-on (documented):** Light/Camera/Line/Decal/InstancesAlongCurve inside a prefab contribute only their
+transform node — per-instance light/decal/line replay not yet wired (they aren't cheap GPU-buffer shares).
+
+### B4 (orig) — R2: prefab templates + instancing
 `prefab==true` subtrees → `PrefabTemplate` (materialized once, hidden);
 `PrefabTemplate::instantiate(renderer, world_trs) -> PrefabInstance { root, nodes }`,
 cheap (duplicate mesh handles / shared GPU buffers — the `duplicate_mesh_with_transform`
