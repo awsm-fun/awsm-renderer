@@ -138,6 +138,50 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
    `with_prep_pass` default-on / removing the A/B flag; re-dump `reports/awsm-dumps/`; update
    `report.md`; tighten all ceilings.
 
+## Implementation recipe (grounded in the code — built from `material_classify` as template)
+
+The prep pass is a compute pass shaped exactly like `material_classify`; only inputs (vis-buffer + froxel
+light list) and outputs (world_pos, UVs/vcolor, shadow visibility, compact edge) differ.
+
+**Module skeleton** (mirror `render_passes/material_classify/`): `material_prep/{render_pass.rs,
+pipeline.rs, bind_group.rs, buffers.rs}` + `shader/{cache_key.rs, template.rs, material_prep_wgsl/
+{bind_groups.wgsl, compute.wgsl}}`. `mod.rs` already holds `PrepPassConfig`.
+
+**Outputs / allocation** (`render_textures.rs` `RenderTexturesInner::new` + the `views()` resize path at
+the size-changed branch — add new fields there so they re-alloc on resize):
+- `world_pos` — `Rgba32float` storage texture (materialized; per locked decision — NOT depth). Skipped
+  when `reconstruct_world_pos`.
+- UV sets — store interpolated UVs (variable count, capped) — format `Rg16float` ×N (or packed); vcolor
+  `Rgba8unorm`.
+- `shadow_visibility` — **`R8unorm` `texture_2d_array`, K layers** (K = `PrepPassConfig::clamped_k()`),
+  layer j = j-th shadowed froxel light. (Resolved ambiguity: R8unorm, not uint — it's a 0..1 factor.)
+- compact per-edge-sample buffer — storage buffer in `material_prep/buffers.rs` (own it here, like
+  `material_opaque/edge_buffers.rs`), allocated in `build()`; only when MSAA.
+
+**Bind groups** (`material_prep/bind_group.rs`, dual MSAA/non-MSAA layout like classify): inputs =
+visibility_data, barycentric(+derivatives), normal_tangent, camera, mesh-meta/material storage,
+`cull_params` + `lights_storage`, shadow maps (`shared_wgsl/shadow/bind_groups.wgsl` — prep is a shadow
+*sampler*); outputs = world_pos storage view + shadow_visibility + UV/vcolor + edge buffer. Rebuild on
+`render_texture_views` recreate OR light-culling-buffer recreate.
+
+**Dispatch** (`render.rs`, between `material_classify.render()` and `material_opaque.render()`): gate on
+`prep_config.enabled`; `dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1)` (one wg/8×8 tile,
+same grain as classify).
+
+**FROXEL SINGLE SOURCE OF TRUTH (do this first, stage 3 prereq):** extract `froxel_base_for_pixel` + the
+per-froxel light-index walk out of `shared_wgsl/lighting/apply_lighting.wgsl` (the
+`apply_lighting_per_froxel` loop) into a new `shared_wgsl/lighting/froxel_walk.wgsl`, included by BOTH
+`apply_lighting` and the prep shader. Prep writes `shadow_visibility[j]` for the j-th shadowed light in
+that walk; the per-material lighting loop reads `shadow_visibility[j]` for its j-th shadowed light. Same
+include = same order = aligned slots. This is the spec's CRITICAL invariant — must be one file.
+
+**Pipeline/cache:** `ShaderCacheKeyMaterialPrep { msaa_sample_count, /* gated on enabled at build */ }`;
+`MaterialPrepPipelines::build_descriptors` returns empty when `!enabled` so it's zero-cost off.
+
+**Revised sub-stage order** (replaces the coarse 0c): 0c-froxel (extract `froxel_walk.wgsl`,
+naga-green, behavior-identical) → 0c-buffers (allocate outputs + bind-group layouts, inert) → then
+stage 1+. Each its own commit.
+
 ## Measurement gates (record before/after at N=256 and 1024, AA off, 1280×720 AND 3840×2160)
 
 1. Per-material module size (bytes) — expect large drop on the no-MSAA path; PBR drops shadow.
