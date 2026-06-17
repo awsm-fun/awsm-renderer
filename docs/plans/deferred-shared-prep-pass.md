@@ -230,8 +230,36 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
    **GPU-verified byte-identical** prep on vs off (MSAA off) on MetalRoughSpheres (visibility=1) AND
    SheenChair (real self-shadow, visibility<1) — slot alignment correct, no shadows-on-wrong-lights;
    8-bit shadow quantization is below the output LSB. 257+34 tests green.
-5. **Edges (Option B).** Prep emits the compact per-edge-sample attr+shadow buffer; `cs_edge` reads it;
-   drop reconstruction from the MSAA module. naga + visual MSAA-on parity; measure MSAA module size.
+5. **Edges (Option B) — DESIGNED, deferred behind 7 + the reconstruct-cleanup (see "Stage ordering" below).**
+   Prep emits the compact per-edge-sample attr+shadow buffer; `cs_edge` reads it; drop reconstruction from
+   the MSAA module. naga + visual MSAA-on parity; measure MSAA module size. **Design (investigated):**
+   - The MSAA module is the renderer's most fragile area (the "1024-fix" unified `cs_opaque`+`cs_edge`
+     module + the packed `edge_buffers.rs` data_buffer: edge_to_xy / edge_slot_map / per-bucket sample
+     lists / accumulator). `cs_edge` runs one thread per packed `(edge_pixel_id, sample_mask)` entry and
+     calls `shade_sample(coords, s)` per set sample, which reads vis/bary/normal **per-sample** but
+     world-pos at **sample 0** (deliberate — see the in-code NOTE: per-sample depth caused silhouette
+     wireframe artifacts). So only UV/vcolor + (optionally) shadow need per-edge-sample materialization;
+     world-pos stays sample-0 depth-reconstructed (consistent with decision #2).
+   - **COUPLING (the hard part):** under MSAA the SAME `texture_uv`/`vertex_color` helpers serve BOTH
+     `cs_opaque` (primary, sample 0) AND `cs_edge` (sample s). To slim the MSAA module, BOTH must stop
+     recomputing: `cs_opaque` reads the prep sample-0 arrays (extend the 2b prep-read to the MSAA primary),
+     and `cs_edge` reads the compact per-edge-sample buffer. They need DIFFERENT prep sources from the same
+     shared fn → differentiate by a per-kernel `var<private>` mode set at each entry point (cs_opaque →
+     read prep array at g_prep_coords sample 0; cs_edge → read compact edge buffer at the current
+     edge-sample id). This is why 2b/4 deliberately scoped prep-read to `msaa.is_none()`.
+   - **Compact buffer:** add a per-edge-sample attr+shadow region keyed by the existing edge-sample id
+     (edge_pixel_id × samples), populated by an extension of the prep pass (which must run after classify's
+     edge emission + bind the edge buffers + walk the edge-sample list, computing UV/vcolor/shadow at each
+     edge sample). Sized off the existing per-bucket edge budget. Likely its OWN storage buffer (own it in
+     `material_prep/` like `material_opaque/edge_buffers.rs`).
+   - **Sub-increment split:** 5a = prep extension writes compact per-edge-sample UV/vcolor + cs_edge reads
+     them (drop UV/vcolor recompute from the MSAA module; keep shadow inline); 5b = compact edge SHADOW +
+     extend cs_opaque MSAA-primary to prep-read sample-0 arrays/shadow (drop shadow sampling from the MSAA
+     module). MSAA-on GPU parity is the gate for each.
+   - **⚠️ May be obviated by `uber-shader.md` (David's live work):** if shading collapses into a single
+     branching pass, the per-material `cs_edge` recompute slimming could be done differently or become
+     moot. DECIDE WITH DAVID before sinking effort into this fragile stage (it interacts with his uber
+     direction). Until then, deferred.
 6. **Finalize.** Drop the obsolete `reconstruct_world_pos` field; consider making `with_prep_pass`
    default-on / removing the A/B flag; re-dump `reports/awsm-dumps/`; update `report.md`; tighten ceilings.
 7. **Custom materials use froxel-culled lights (David-requested).** Today `light_access.wgsl` (the
@@ -243,14 +271,25 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
    Document the recipe (editor `NEW_MATERIAL_WGSL` + MCP). Verify a custom lighting material iterates only
    the froxel's lights. Independent of the prep pass but same lighting domain — uses the SSOT already in.
 
-## After this loop completes (per David): continue to `uber-shader.md`
+## Stage ordering (updated 2026-06-17, mid-loop)
 
-When all stages above are `[x]` and the stage-6 sweep passes, do NOT stop — continue to implement
-`docs/plans/uber-shader.md`, **first re-reading + adjusting it** for what changed here: the
-`froxel_walk.wgsl` SSOT now exists; the prep pass + UV/vcolor/shadow buffers are the inputs an
-uber-shader consumes; world-pos is depth-reconstructed (not a buffer); decision #2 is corrected. Honor
-uber-shader.md's own decision gates (selective grouping policy + the MSAA cross-group edge caution) —
-settle those in the spec before coding. Then set a NEW `/loop` for the uber-shader work.
+The no-MSAA headline wins are landed + GPU-verified (2b UV materialization, 4 shadow-buffer = PBR
+−53 KB). Remaining stages are reordered by value/risk:
+1. **Stage 7 next** (custom-material froxel lights) — independent of the prep pass, David-requested,
+   lower-risk; uses the froxel_walk SSOT already in.
+2. **reconstruct_world_pos cleanup** (part of 6) — obsolete field (decision #2), pure mechanical removal.
+3. **Stage 5** (MSAA edge slim) — DESIGNED above but **deferred + flagged to David**: it's the most
+   fragile area AND may be obviated by his live `uber-shader.md` work. Decide with David before tackling.
+4. **Stage 6 default-on decision** — recommend to David, don't force (flipping the default needs broad
+   GPU-verify + interacts with whether Stage 5 lands).
+
+## After this loop completes: HAND OFF to David for `uber-shader.md`
+
+**(Updated per David 2026-06-17 — supersedes the old "auto-continue" note.)** Do **NOT** auto-start
+`uber-shader.md` — David is editing it live in another session and will kick off its implementation
+himself. When Plan B's remaining stages are done (or blocked on the Stage 5 / default-on decisions
+above), STOP the loop, post the concise before/after summary, and tell David Plan B is complete and
+uber-shader awaits his go-ahead. (See memory `uber-shader-needs-kickoff`.)
 
 ## Implementation recipe (grounded in the code — built from `material_classify` as template)
 
