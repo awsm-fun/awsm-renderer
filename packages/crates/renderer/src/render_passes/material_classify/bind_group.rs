@@ -165,9 +165,9 @@ impl MaterialClassifyBindGroups {
         // U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id storage
         // texture, bound LAST (after bucket_lut → binding 11 in the MSAA edge
         // variant) so it never perturbs an existing binding index. Only present
-        // when `unified_edge` AND the MSAA edge bindings exist (the same gate
-        // the layout uses) AND the gated `edge_id` view was allocated.
-        if msaa && ctx.unified_edge {
+        // when the MSAA edge bindings exist (the same gate the layout uses) AND
+        // the gated `edge_id` view was allocated.
+        if msaa {
             if let (true, Some(edge_id_view)) = (
                 ctx.material_edge_buffers.is_some() && ctx.material_edge_layout_uniform.is_some(),
                 ctx.render_texture_views.edge_id.as_ref(),
@@ -342,10 +342,9 @@ async fn create_bind_group_layout_key(
     // U0 (`docs/plans/unified-edge-shading.md`): edge_id_tex — R32Uint
     // storage texture (write). Appended AFTER bucket_lut so its binding index
     // is 11 in the MSAA edge variant, matching `recreate()` + the templated
-    // `@binding(11)`. Only present in the MSAA edge variant when
-    // `unified_edge` is on (the same gate `recreate()` checks), so the
-    // `unified_edge == false` layout is byte-identical to before.
-    if multisampled_geometry && edge_emit_supported(ctx) && ctx.unified_edge {
+    // `@binding(11)`. Present in the MSAA edge variant (the same gate
+    // `recreate()` checks).
+    if multisampled_geometry && edge_emit_supported(ctx) {
         entries.push(BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::StorageTexture(
                 StorageTextureBindingLayout::new(awsm_renderer_core::texture::TextureFormat::R32uint)

@@ -208,8 +208,30 @@ the current HEAD. Every stage below must reproduce these **byte-identically** (e
   byte-parity. Measure: pipelines-per-material halved, classify memory/atomic traffic dropped, MSAA shader
   surface collapsed. (The per-sample-accumulator + `edge_slot_map` removal can be a separate optional
   follow-up after this lands.)
-- **U3 — cleanup.** Remove the toggle + any dead edge_buffers fields (sample lists, slot_map). Update
-  size_regression + naga tests. Final byte-parity sweep.
+- **U3 — cleanup** (sub-staged):
+  - **U3a [DONE] — remove the `with_unified_edge` toggle.** Deleted `with_unified_edge` + the `unified_edge`
+    field from AwsmRenderer/builder + its threading through 25 files (bind_groups, picker, anti_alias,
+    textures, render_textures, render_passes, render.rs RenderContext + recreate ctx, both classify +
+    opaque pipeline/cache_key/template, edge_pipeline, launch, shader_completeness, wgsl_validation).
+    Collapsed all 7 WGSL gates: `{% if unified_edge && multisampled_geometry %}` → `{% if multisampled_geometry %}`,
+    `{% if unified_edge && emit_edge_data %}` → `{% if emit_edge_data %}`, and the bare `{% if unified_edge %}`
+    wrappers (edge_id_tex sentinel + compact write in classify; edge_id_tex@12 binding + cs_shade entry in
+    opaque; skybox cs_shade arm) → unconditional within their MSAA-gated parents. edge_id_tex alloc + cs_shade
+    pipeline build now gated purely on MSAA. Behavior-preserving (the collapsed gates were already
+    always-true under MSAA, which is the only path). Dropped the now-impossible `unified_off_opaque_wgsl_unchanged`
+    test (260+34 green). **GPU byte-parity VERIFIED (max-diff 0, 0 pixels):** MetalRoughSpheres + SheenChair
+    MSAA prep-off == baseline. **size_regression ceilings raised** (EMPTY_MSAA4_MIPS 88K→94K, ALL 120K→132K):
+    the old ceilings measured the dead toggle-OFF module (cs_opaque + cs_edge); the shipping MSAA module is
+    cs_opaque + cs_shade (cs_shade is a larger merged kernel). NOTE: the MSAA module still carries `cs_opaque`
+    (the no-MSAA interior entry) DEAD alongside cs_shade — gating cs_opaque to non-MSAA + dropping the
+    unused MSAA cs_opaque pipeline would further collapse the MSAA shader surface (efficiency follow-up,
+    flagged for David; out of U3 scope).
+  - **U3b — remove the dead EdgeBufferLayout fields + args slots** (the 5-way struct lockstep deferred from
+    U2b-3): drop per_shader_count_base / skybox_count_index / per_shader_sample_list_base /
+    skybox_sample_list_base / sample_entries_per_bucket from the Rust uniform builder + ALL FOUR WGSL mirrors
+    (material_opaque, final_blend, classify, material_prep) in lockstep (keep edge_to_xy_base/edge_slot_map_base/
+    accumulator_base offsets UNCHANGED), the dead args_buffer skybox/per_shader slots, and the now-unused
+    offset fns. GPU-verify byte-parity (the hard gate). Then U3 [DONE].
 
 ## Testing strategy (David: "tested carefully")
 

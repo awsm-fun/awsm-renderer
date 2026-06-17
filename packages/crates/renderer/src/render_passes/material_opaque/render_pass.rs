@@ -127,7 +127,7 @@ impl MaterialOpaqueRenderPass {
                 }
             };
 
-        // The per-pixel edge-id view classify wrote (gated on unified_edge).
+        // The per-pixel edge-id view classify wrote (gated on MSAA).
         let Some(edge_id_view) = ctx.render_texture_views.edge_id.as_ref() else {
             warn_pipeline_not_compiled("material_opaque::shade", "edge_id texture view missing");
             return Ok(());

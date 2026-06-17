@@ -147,7 +147,6 @@ impl AwsmRenderer {
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
-                unified_edge: self.unified_edge,
             };
             self.render_passes
                 .material_opaque
@@ -168,7 +167,6 @@ impl AwsmRenderer {
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
-                unified_edge: self.unified_edge,
             };
             self.render_passes
                 .material_transparent
@@ -189,7 +187,6 @@ impl AwsmRenderer {
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
-                unified_edge: self.unified_edge,
             };
             Some(
                 decal
@@ -277,7 +274,6 @@ impl AwsmRenderer {
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
-                unified_edge: self.unified_edge,
             };
             all_shader_keys.extend(
                 crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_shader_cache_keys(
@@ -325,7 +321,6 @@ impl AwsmRenderer {
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
-                unified_edge: self.unified_edge,
             };
             let opaque_descs = crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_descriptors(
                 &mut render_pass_ctx,
@@ -458,7 +453,6 @@ impl AwsmRenderer {
                     post_processing: &self.post_processing,
                     prep_config: &self.prep_config,
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
-                unified_edge: self.unified_edge,
                 };
                 self.render_passes
                     .geometry
@@ -480,7 +474,6 @@ impl AwsmRenderer {
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
-                unified_edge: self.unified_edge,
             };
             self.render_passes.geometry.masked_pipelines.relayout(
                 &mut ctx,
@@ -700,7 +693,6 @@ impl AwsmRenderer {
                     Some(&self.dynamic_materials),
                     self.prep_config.enabled,
                     self.prep_config.clamped_k(),
-                    self.unified_edge,
                 )
                 .await?;
         }

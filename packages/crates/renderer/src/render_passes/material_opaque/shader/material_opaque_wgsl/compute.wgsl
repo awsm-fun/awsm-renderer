@@ -687,7 +687,6 @@ fn shade_sample(
     return vec4<f32>(color, base_alpha);
 }
 
-{% if unified_edge %}
 // ════════════════════════════════════════════════════════════════════
 // UNIFIED MODULE — `cs_shade` entry point (U1, unified-edge-shading.md).
 //
@@ -1106,5 +1105,4 @@ fn cs_shade(
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
     edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
 }
-{% endif %}
 {% endif %}

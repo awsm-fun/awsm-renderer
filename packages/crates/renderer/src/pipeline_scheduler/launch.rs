@@ -456,7 +456,6 @@ impl crate::AwsmRenderer {
                 msaa_sample_count: active_msaa,
                 bucket_count: entries.len() as u32,
                 emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(&self.gpu),
-                unified_edge: self.unified_edge,
             }
             .into(),
         );
@@ -490,7 +489,6 @@ impl crate::AwsmRenderer {
                     dispatch_hash,
                     dynamic_shader: dynamic_shader.clone(),
                     bucket_entries: entries.to_vec(),
-                    unified_edge: self.unified_edge,
                 }
                 .into(),
             );
@@ -727,7 +725,6 @@ impl crate::AwsmRenderer {
                 Some(&self.dynamic_materials),
                 self.prep_config.enabled,
                 self.prep_config.clamped_k(),
-                self.unified_edge,
             )? {
             Some(d) => d,
             None => return Ok(()),

@@ -32,12 +32,6 @@ pub struct RenderTextures {
     /// array (4 shadow slots packed per texel). From
     /// `PrepPassConfig::shadow_visibility_layers()`. Only used when `prep_enabled`.
     prep_shadow_layers: u32,
-    /// U0 (`docs/plans/unified-edge-shading.md`): when `true`, allocate the
-    /// per-pixel `edge_id_tex` (R32Uint, one word/pixel) the classify pass
-    /// writes the compact edge_pixel_id / U32_MAX sentinel into. Gated like
-    /// `prep_*` to avoid the screen-sized allocation when the toggle is off.
-    /// Captured at construction from `AwsmRendererBuilder::with_unified_edge`.
-    unified_edge: bool,
     frame_count: u32,
     inner: Option<RenderTexturesInner>,
     /// Render-texture generations retired by a recreate but NOT yet
@@ -105,7 +99,6 @@ impl RenderTextures {
         features: &RendererFeatures,
         prep_enabled: bool,
         prep_shadow_layers: u32,
-        unified_edge: bool,
     ) -> Result<Self> {
         // Two distinct blit pipeline variants: the `None` (single-
         // sample) variant is used by *both* the opaque→transparent
@@ -140,7 +133,6 @@ impl RenderTextures {
             features: features.clone(),
             prep_enabled,
             prep_shadow_layers,
-            unified_edge,
             frame_count: 0,
             inner: None,
             pending_destroy: Vec::new(),
@@ -258,7 +250,6 @@ impl RenderTextures {
                 &self.features,
                 self.prep_enabled,
                 self.prep_shadow_layers,
-                self.unified_edge,
                 needs_opaque_mip_chain,
                 needs_hud_depth,
             )?;
@@ -343,7 +334,7 @@ pub struct RenderTextureViews {
     pub prep_vcolor: Option<web_sys::GpuTextureView>,
     /// Plan B Stage 3: per-pixel shadow-visibility view (Rgba8unorm array).
     pub prep_shadow_visibility: Option<web_sys::GpuTextureView>,
-    /// U0: per-pixel edge-id view (R32Uint). `None` when `unified_edge` is off.
+    /// U0: per-pixel edge-id view (R32Uint). `None` when MSAA is off.
     /// Written by classify (storage texture); read by nobody in U0.
     pub edge_id: Option<web_sys::GpuTextureView>,
 
@@ -489,7 +480,7 @@ pub struct RenderTexturesInner {
     /// U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id texture
     /// (R32Uint, one word/pixel). Classify writes the compact edge_pixel_id /
     /// U32_MAX sentinel; the future unified kernel reads it. `None` when
-    /// `unified_edge == false`.
+    /// MSAA is off.
     pub edge_id: Option<web_sys::GpuTexture>,
     pub edge_id_view: Option<web_sys::GpuTextureView>,
 
@@ -539,7 +530,6 @@ impl RenderTexturesInner {
         features: &RendererFeatures,
         prep_enabled: bool,
         prep_shadow_layers: u32,
-        unified_edge: bool,
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
     ) -> Result<Self> {
@@ -963,12 +953,11 @@ impl RenderTexturesInner {
         // not per sample). Classify binds it as a `texture_storage_2d<r32uint,
         // write>` to write the compact edge_pixel_id / U32_MAX sentinel, so it
         // needs STORAGE_BINDING; TEXTURE_BINDING is added for the future
-        // unified kernel's read. Gated on `unified_edge` AND MSAA: the edge-id
-        // texture only feeds the MSAA `cs_shade` edge branch, so a no-MSAA
-        // build allocates nothing even with the toggle on (now the default).
+        // unified kernel's read. Gated on MSAA: the edge-id texture only feeds
+        // the MSAA `cs_shade` edge branch, so a no-MSAA build allocates nothing.
         // classify only declares/binds the edge_id texture under MSAA
         // (`emit_edge_data` ≡ MSAA), so this stays in lockstep with the shader.
-        let edge_id = if unified_edge && anti_aliasing.msaa_sample_count.is_some() {
+        let edge_id = if anti_aliasing.msaa_sample_count.is_some() {
             Some(
                 gpu.create_texture(
                     &TextureDescriptor::new(

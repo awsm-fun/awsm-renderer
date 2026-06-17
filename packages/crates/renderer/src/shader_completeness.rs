@@ -135,9 +135,6 @@ fn opaque_compute_defines_every_called_loader_per_base() {
             dispatch_hash: 0,
             dynamic_shader: None,
             bucket_entries: single_bucket(shader_id, base, name),
-            // U1: exercise cs_shade's loader-completeness too (it calls the
-            // same per-base loaders cs_opaque/cs_edge do).
-            unified_edge: true,
         };
         let src = ShaderTemplateMaterialOpaque::try_from(&key)
             .unwrap_or_else(|e| panic!("opaque/{name}: template build failed: {e:?}"))

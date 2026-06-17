@@ -45,7 +45,7 @@ impl MaterialClassifyPipelines {
         ctx.shaders
             .ensure_keys(
                 ctx.gpu,
-                Self::shader_cache_keys(ctx.gpu, bucket_entries, ctx.anti_aliasing, ctx.unified_edge),
+                Self::shader_cache_keys(ctx.gpu, bucket_entries, ctx.anti_aliasing),
             )
             .await?;
         let descs = Self::build_descriptors(ctx, bind_groups, bucket_entries).await?;
@@ -69,7 +69,6 @@ impl MaterialClassifyPipelines {
         gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
         bucket_entries: &[BucketEntry],
         anti_aliasing: &AntiAliasing,
-        unified_edge: bool,
     ) -> Vec<ShaderCacheKey> {
         let active_msaa = match anti_aliasing.msaa_sample_count {
             Some(4) => Some(4),
@@ -84,8 +83,6 @@ impl MaterialClassifyPipelines {
             // below those limits, we fall back to the inline
             // `msaa_resolve_samples` path in the primary opaque shader.
             emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(gpu),
-            // U0 scaffolding (default false → byte-identical WGSL).
-            unified_edge,
         })]
     }
 
@@ -102,7 +99,6 @@ impl MaterialClassifyPipelines {
             bind_groups,
             bucket_entries,
             ctx.anti_aliasing,
-            ctx.unified_edge,
         )
         .await
     }
@@ -120,7 +116,6 @@ impl MaterialClassifyPipelines {
         bind_groups: &MaterialClassifyBindGroups,
         bucket_entries: &[BucketEntry],
         anti_aliasing: &AntiAliasing,
-        unified_edge: bool,
     ) -> Result<MaterialClassifyPrewarmDescriptors> {
         let (active_msaa, bgl_key) = match anti_aliasing.msaa_sample_count {
             Some(4) => (Some(4), bind_groups.multisampled_bind_group_layout_key),
@@ -140,7 +135,6 @@ impl MaterialClassifyPipelines {
                     msaa_sample_count: active_msaa,
                     bucket_count: bucket_entries.len() as u32,
                     emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(gpu),
-                    unified_edge,
                 },
             )
             .await?;

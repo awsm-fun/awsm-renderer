@@ -202,7 +202,7 @@ struct EdgeBufferLayout {
 @group(0) @binding(4) var<storage, read> bucket_lut: array<u32>;
 {% endif %}
 
-{% if unified_edge && emit_edge_data %}
+{% if emit_edge_data %}
 // Unified-edge per-pixel edge-id texture (U0). One R32Uint word/pixel:
 // the compact `edge_pixel_id` at edge pixels, or `U32_MAX` (sentinel) at
 // non-edge in-bounds pixels. Classify writes it during edge detection,

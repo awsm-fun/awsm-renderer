@@ -52,7 +52,7 @@ fn cs_opaque(
     }
 }
 
-{% if unified_edge && multisampled_geometry %}
+{% if multisampled_geometry %}
 // ════════════════════════════════════════════════════════════════════
 // UNIFIED MODULE — skybox `cs_shade` arm (U1, unified-edge-shading.md).
 //

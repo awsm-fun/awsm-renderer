@@ -79,7 +79,6 @@ fn first_party_key_prep(
         dispatch_hash: 0,
         dynamic_shader: None,
         bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
-        unified_edge: false,
     }
 }
 
@@ -120,7 +119,6 @@ fn custom_key(
                 .to_string(),
         }),
         bucket_entries,
-        unified_edge: false,
     }
 }
 
@@ -165,15 +163,15 @@ fn first_party_opaque_shaders_validate() {
 
 #[test]
 fn unified_shade_opaque_shaders_validate() {
-    // U1 (`docs/plans/unified-edge-shading.md`): with the unified-edge toggle
-    // on, the MSAA opaque module additionally emits the merged `cs_shade` entry
-    // point (interior sample-0 → opaque_tex + edge per-sample → accumulator) +
-    // the `edge_id_tex` group(3) binding it reads. naga-validate it across every
-    // base (incl SKYBOX + Custom) × prep on/off × mips on/off — cs_shade is
-    // MSAA-only (there are no edges otherwise), so only the MSAA config carries
-    // it. Asserts the entry point exists (the dispatch selects it by name →
-    // pipeline-create would fail on GPU if absent) and that the cs_opaque
-    // entry point still coexists (the no-MSAA interior path).
+    // U1 (`docs/plans/unified-edge-shading.md`): under MSAA the opaque module
+    // emits the merged `cs_shade` entry point (interior sample-0 → opaque_tex +
+    // edge per-sample → accumulator) + the `edge_id_tex` group(3) binding it
+    // reads. naga-validate it across every base (incl SKYBOX + Custom) × prep
+    // on/off × mips on/off — cs_shade is MSAA-only (there are no edges
+    // otherwise), so only the MSAA config carries it. Asserts the entry point
+    // exists (the dispatch selects it by name → pipeline-create would fail on
+    // GPU if absent) and that the cs_opaque entry point still coexists (the
+    // no-MSAA interior path).
     let bases = [
         (MaterialShaderId::PBR, ShadingBase::Pbr, false, "pbr"),
         (MaterialShaderId::UNLIT, ShadingBase::Unlit, false, "unlit"),
@@ -184,9 +182,8 @@ fn unified_shade_opaque_shaders_validate() {
     for (id, base, owns_skybox, name) in bases {
         for prep in [false, true] {
             for mips in [false, true] {
-                let mut key =
+                let key =
                     first_party_key_prep(id, base, owns_skybox, Some(4), mips, prep);
-                key.unified_edge = true;
                 let label =
                     format!("opaque-unified/{name} msaa=4 mips={mips} prep={prep}");
                 let src = render(&key, &label);
@@ -213,36 +210,13 @@ fn unified_shade_opaque_shaders_validate() {
     // Custom (dynamic) base under MSAA + unified — exercises the cs_shade
     // dynamic-wrapper arm (custom_shade_dynamic from both interior + edge).
     for mips in [false, true] {
-        let mut key = custom_key(awsm_materials::ShaderIncludes::all(), Some(4), mips);
-        key.unified_edge = true;
+        let key = custom_key(awsm_materials::ShaderIncludes::all(), Some(4), mips);
         let label = format!("opaque-unified/custom msaa=4 mips={mips}");
         let src = render(&key, &label);
         naga_validate(&src, &label);
         assert!(
             src.contains("fn cs_shade("),
             "{label}: unified Custom module missing `fn cs_shade`"
-        );
-    }
-}
-
-#[test]
-fn unified_off_opaque_wgsl_unchanged() {
-    // U1 invariant: with the toggle OFF the opaque WGSL is byte-identical to
-    // pre-U1 — no `cs_shade`, no `edge_id_tex`. (Toggle-OFF byte-parity of the
-    // OUTPUT is the parent's GPU check; this guards the WGSL doesn't drift.)
-    for (id, base, owns_skybox, name) in [
-        (MaterialShaderId::PBR, ShadingBase::Pbr, false, "pbr"),
-        (MaterialShaderId::SKYBOX, ShadingBase::Pbr, true, "skybox"),
-    ] {
-        let key = first_party_key(id, base, owns_skybox, Some(4), true);
-        let src = render(&key, &format!("opaque-unified-off/{name}"));
-        assert!(
-            !src.contains("fn cs_shade("),
-            "{name}: toggle-OFF opaque module must NOT emit cs_shade"
-        );
-        assert!(
-            !src.contains("edge_id_tex"),
-            "{name}: toggle-OFF opaque module must NOT declare edge_id_tex"
         );
     }
 }
@@ -444,16 +418,14 @@ fn opaque_shadow_from_buffer_variant_validates() {
 
 /// Render the material-classify shader (bind groups + compute concatenated)
 /// for a given config. Mirrors the renderer's `ShaderTemplateMaterialClassify`
-/// build path so the U0 `unified_edge` gating is exercised exactly as the
-/// pipeline cache does.
-fn render_classify(msaa: Option<u32>, emit_edge_data: bool, unified_edge: bool, label: &str) -> String {
+/// build path so the gating is exercised exactly as the pipeline cache does.
+fn render_classify(msaa: Option<u32>, emit_edge_data: bool, label: &str) -> String {
     use crate::render_passes::material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify;
     use crate::render_passes::material_classify::shader::template::ShaderTemplateMaterialClassify;
     ShaderTemplateMaterialClassify::try_from(&ShaderCacheKeyMaterialClassify {
         msaa_sample_count: msaa,
         bucket_count: crate::dynamic_materials::first_party_bucket_entries().len() as u32,
         emit_edge_data,
-        unified_edge,
     })
     .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
     .into_source()
@@ -463,53 +435,31 @@ fn render_classify(msaa: Option<u32>, emit_edge_data: bool, unified_edge: bool, 
 #[test]
 fn material_classify_shader_validates() {
     // U0 (`docs/plans/unified-edge-shading.md`): the classify shader must
-    // naga-validate for BOTH `unified_edge` states, including the MSAA edge
-    // path (the only path where the `unified_edge` branches render — they are
-    // gated `{% if unified_edge && multisampled_geometry %}` /
-    // `{% if unified_edge && emit_edge_data %}`).
+    // naga-validate per (msaa, emit) config, including the MSAA edge path.
     for (msaa, emit) in [(None, false), (Some(4u32), true)] {
-        for unified in [false, true] {
-            let label = format!("classify msaa={msaa:?} emit={emit} unified={unified}");
-            let src = render_classify(msaa, emit, unified, &label);
-            naga_validate(&src, &label);
-            assert!(
-                src.contains("fn cs_main("),
-                "{label}: classify module missing `fn cs_main` entry point"
-            );
-        }
-    }
-
-    // INERT INVARIANT: with `unified_edge = false` the rendered WGSL must be
-    // BYTE-IDENTICAL to the pre-toggle shader — i.e. the toggle's only effect
-    // is additive when ON. We verify it indirectly + robustly: the OFF source
-    // must contain NONE of the unified-edge tokens, in EITHER MSAA state.
-    for (msaa, emit) in [(None, false), (Some(4u32), true)] {
-        let off = render_classify(msaa, emit, false, "classify off");
+        let label = format!("classify msaa={msaa:?} emit={emit}");
+        let src = render_classify(msaa, emit, &label);
+        naga_validate(&src, &label);
         assert!(
-            !off.contains("edge_id_tex"),
-            "unified_edge=false (msaa={msaa:?}) must NOT declare/write edge_id_tex"
-        );
-        assert!(
-            !off.contains("ubucket1"),
-            "unified_edge=false (msaa={msaa:?}) must NOT emit the ANY-sample tile_mask branch"
+            src.contains("fn cs_main("),
+            "{label}: classify module missing `fn cs_main` entry point"
         );
     }
 
-    // With `unified_edge = true` on the MSAA edge path, both new scaffolds
-    // must render: the edge_id_tex storage texture (declared + written) and
-    // the ANY-sample tile_mask branch.
-    let on = render_classify(Some(4), true, true, "classify on");
+    // On the MSAA edge path, both edge scaffolds must render: the edge_id_tex
+    // storage texture (declared + written) and the ANY-sample tile_mask branch.
+    let on = render_classify(Some(4), true, "classify on");
     assert!(
         on.contains("var edge_id_tex: texture_storage_2d<r32uint, write>"),
-        "unified_edge=true MSAA must declare `edge_id_tex` storage texture (binding 11)"
+        "MSAA classify must declare `edge_id_tex` storage texture (binding 11)"
     );
     assert!(
         on.contains("textureStore(edge_id_tex,"),
-        "unified_edge=true MSAA must write `edge_id_tex`"
+        "MSAA classify must write `edge_id_tex`"
     );
     assert!(
         on.contains("ubucket1"),
-        "unified_edge=true MSAA must build the ANY-sample tile_mask (4-sample OR)"
+        "MSAA classify must build the ANY-sample tile_mask (4-sample OR)"
     );
     // Unified-edge U2b-3: the per-bucket + skybox edge-SAMPLE-LIST machinery
     // (`append_edge_sample`) is REMOVED — it fed only the deleted cs_edge /
@@ -631,7 +581,6 @@ fn custom_froxel_lights_accessors_validate() {
                 wgsl_fragment: fragment.to_string(),
             }),
             bucket_entries: bucket_entries.clone(),
-            unified_edge: false,
         };
         let label = format!("opaque/custom-froxel-lit msaa={msaa:?} mips={mips}");
         let src = render(&key, &label);

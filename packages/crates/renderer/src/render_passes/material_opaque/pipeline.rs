@@ -187,7 +187,6 @@ impl MaterialOpaquePipelines {
             false,
             prep_enabled,
             max_shadow_casters,
-            ctx.unified_edge,
         )
     }
 
@@ -209,7 +208,6 @@ impl MaterialOpaquePipelines {
         include_first_party: bool,
         prep_enabled: bool,
         max_shadow_casters: u32,
-        unified_edge: bool,
     ) -> Result<Vec<OpaqueShaderDesc>> {
         // Which (main_bgl, slot) is active? Only emit the descriptors
         // for the live MSAA branch — the other half stays uncompiled
@@ -281,7 +279,6 @@ impl MaterialOpaquePipelines {
                         dispatch_hash: 0,
                         dynamic_shader: None,
                         bucket_entries: bucket_entries.to_vec(),
-                        unified_edge,
                     }
                     .into(),
                     layout_key,

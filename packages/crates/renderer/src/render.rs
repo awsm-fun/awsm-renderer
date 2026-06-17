@@ -554,7 +554,6 @@ impl AwsmRenderer {
                     .as_ref()
                     .and_then(|p| p.edge_shadow.as_ref())
                     .map(|b| b.sampled_view.clone()),
-                unified_edge: self.unified_edge,
             },
             &mut self.render_passes,
             self.picker.as_mut(),
@@ -591,7 +590,6 @@ impl AwsmRenderer {
             live_light_count: self.lights.len() as u32,
             material_edge_buffers: self.material_edge_buffers.as_ref(),
             material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
-            unified_edge: self.unified_edge,
             bind_group_layouts: &self.bind_group_layouts,
             camera: &self.camera,
             environment: &self.environment,
@@ -914,8 +912,7 @@ impl AwsmRenderer {
             // legacy cs_opaque + cs_edge + skybox_primary + skybox_edge_resolve +
             // render_edge_resolve dispatch is gone (U1/U2a GPU-verified cs_shade
             // byte-identical max-diff 0). No-MSAA falls through to render()
-            // (cs_opaque + skybox_primary; no edges to resolve). The `unified_edge`
-            // toggle no longer gates the dispatch — it is removed in U3.
+            // (cs_opaque + skybox_primary; no edges to resolve).
             if ctx.anti_aliasing.msaa_sample_count.is_some() {
                 self.render_passes
                     .material_opaque
@@ -1865,11 +1862,6 @@ pub struct RenderContext<'a> {
         Option<&'a crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers>,
     /// `EdgeBufferLayout` uniform companion. Same `Some` discipline.
     pub material_edge_layout_uniform: Option<&'a web_sys::GpuBuffer>,
-    /// Unified-edge (U1) build-time toggle. When `true` (and MSAA on), the
-    /// opaque pass dispatches the merged `cs_shade` path + final_blend instead
-    /// of cs_opaque + cs_edge + skybox_primary + skybox_edge_resolve +
-    /// final_blend. See [`crate::AwsmRenderer::unified_edge`].
-    pub unified_edge: bool,
     /// Bind-group-layout cache. Used by passes that build their own
     /// runtime bind groups inside `render()` (e.g. material-opaque's
     /// edge-resolve helpers).

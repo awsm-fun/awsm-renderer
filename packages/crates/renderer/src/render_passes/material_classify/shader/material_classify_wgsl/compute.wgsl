@@ -123,7 +123,7 @@ fn cs_main(
     if bucket_index != 0xFFFFFFFFu {
         atomicOr(&tile_mask[bucket_index / 32u], 1u << (bucket_index % 32u));
     }
-    {% if unified_edge && multisampled_geometry %}
+    {% if multisampled_geometry %}
     // Unified-edge ANY-sample tile_mask (U0). The sample-0 `bucket_index`
     // OR above runs UNCHANGED (so the `unified_edge=false` WGSL is byte
     // -identical); this block ADDS samples 1..3 so a bucket's tile list
@@ -227,7 +227,6 @@ fn cs_main(
     // observed CPU-side; the full atomic-add fallback (a hash-bucketed
     // overflow accumulator region) is parked as Block C.2 future work.
     if (in_bounds) {
-        {% if unified_edge %}
         // Unified-edge (U0): initialize this pixel's edge-id to the
         // U32_MAX sentinel ("not an edge pixel"). Edge pixels overwrite
         // it with their compact edge_pixel_id below. Every in-bounds pixel
@@ -235,7 +234,6 @@ fn cs_main(
         // the sentinel without a separate per-frame clear. Inert in U0
         // (edge_id_tex is unread).
         textureStore(edge_id_tex, coords, vec4<u32>(0xFFFFFFFFu, 0u, 0u, 0u));
-        {% endif %}
         // Scan 4 samples — FULLY-STATIC version, no dynamic indexing
         // anywhere. Naga/Tint silently no-op'd dynamic-index writes
         // into both `vec4<u32>` and (turns out per the user's repro)
@@ -549,7 +547,6 @@ fn cs_main(
                 let packed_xy = (u32(coords.x) & 0xFFFFu) | ((u32(coords.y) & 0xFFFFu) << 16u);
                 atomicStore(&edge_data[edge_layout.edge_to_xy_base + edge_id], packed_xy);
 
-                {% if unified_edge %}
                 // Unified-edge (U0): mirror the compact edge_pixel_id into
                 // the per-pixel edge-id texture. Overwrites the U32_MAX
                 // sentinel written above for this pixel. WRITTEN-only in U0
@@ -558,7 +555,6 @@ fn cs_main(
                 // existing edge-sample-list machinery (append_edge_sample
                 // below) stays INTACT alongside it.
                 textureStore(edge_id_tex, coords, vec4<u32>(edge_id, 0u, 0u, 0u));
-                {% endif %}
 
                 // Pack the slot_map (§5): the 4 per-sample bucket ids, each
                 // truncated to the slot width. 8-bit (≤254 buckets): one u32
