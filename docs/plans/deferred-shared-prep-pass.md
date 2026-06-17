@@ -256,10 +256,11 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      them (drop UV/vcolor recompute from the MSAA module; keep shadow inline); 5b = compact edge SHADOW +
      extend cs_opaque MSAA-primary to prep-read sample-0 arrays/shadow (drop shadow sampling from the MSAA
      module). MSAA-on GPU parity is the gate for each.
-   - **⚠️ May be obviated by `uber-shader.md` (David's live work):** if shading collapses into a single
-     branching pass, the per-material `cs_edge` recompute slimming could be done differently or become
-     moot. DECIDE WITH DAVID before sinking effort into this fragile stage (it interacts with his uber
-     direction). Until then, deferred.
+   - **Still relevant (corrected per David 2026-06-17):** uber-shader does NOT collapse shading into one
+     branching pass — it's *selective* grouping (some materials share a switch, not all), so the
+     per-material `cs_edge` MSAA path persists and this slimming is NOT obviated. Deferral reason is now
+     ONLY the fragility/risk of this area — worth doing, but check approach/timing with David before
+     sinking effort (he's deep in the adjacent MSAA/grouping area via uber-shader).
 6. **Finalize.** Drop the obsolete `reconstruct_world_pos` field; consider making `with_prep_pass`
    default-on / removing the A/B flag; re-dump `reports/awsm-dumps/`; update `report.md`; tighten ceilings.
 7. **Custom materials use froxel-culled lights (David-requested).** Today `light_access.wgsl` (the
@@ -279,7 +280,8 @@ The no-MSAA headline wins are landed + GPU-verified (2b UV materialization, 4 sh
    lower-risk; uses the froxel_walk SSOT already in.
 2. **reconstruct_world_pos cleanup** (part of 6) — obsolete field (decision #2), pure mechanical removal.
 3. **Stage 5** (MSAA edge slim) — DESIGNED above but **deferred + flagged to David**: it's the most
-   fragile area AND may be obviated by his live `uber-shader.md` work. Decide with David before tackling.
+   fragile area (NOT obviated by uber-shader — that's selective grouping, the cs_edge path persists).
+   Check approach/timing with David before tackling.
 4. **Stage 6 default-on decision** — recommend to David, don't force (flipping the default needs broad
    GPU-verify + interacts with whether Stage 5 lands).
 
