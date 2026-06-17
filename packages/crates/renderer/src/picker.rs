@@ -162,6 +162,12 @@ impl AwsmRenderer {
             compaction_buffers: self.compaction_buffers.as_ref(),
             coverage_buffers: self.coverage_buffers.as_ref(),
             features: &self.features,
+            prep_edge_shadow_view: self
+                .render_passes
+                .material_prep
+                .as_ref()
+                .and_then(|p| p.edge_shadow.as_ref())
+                .map(|b| b.sampled_view.clone()),
         };
         if let Some(p) = self.picker.as_mut() {
             p.recreate_bind_group(&ctx)?;

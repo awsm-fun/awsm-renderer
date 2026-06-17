@@ -13,6 +13,7 @@
 //! "Implementation stages").
 
 pub mod bind_group;
+pub mod buffers;
 pub mod render_pass;
 pub mod shader;
 

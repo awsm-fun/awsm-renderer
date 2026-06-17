@@ -53,6 +53,16 @@ pub struct ShaderTemplateMaterialPrepCompute {
     /// `K` — the clamped per-pixel shadow-caster cap. The loop stops storing
     /// once `slot >= K` (and the packed-layer count is `ceil(K/4)`).
     pub max_shadow_casters: u32,
+    /// `ceil(K/4)` — the packed shadow-visibility layer count; the shared
+    /// `compute_shadow_visibility_packed` returns this many vec4 layers.
+    pub shadow_visibility_layers: u32,
+    /// MSAA sample count (4 under MSAA, 0 otherwise). cs_prep_edge loops
+    /// `0..msaa_sample_count` (only emitted on the MSAA module).
+    pub msaa_sample_count: u32,
+    /// Fixed width of the compact edge-shadow texture (Stage 5b-shadow). The
+    /// flat edge-sample index maps to `(idx % W, idx / W)`. Must match the
+    /// Rust-side allocation (`material_prep::buffers::EDGE_SHADOW_TEX_WIDTH`).
+    pub edge_shadow_tex_width: u32,
 }
 
 impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
@@ -75,6 +85,10 @@ impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
                 max_prep_color_sets: crate::render_passes::material_prep::MAX_PREP_COLOR_SETS,
                 shadows: true,
                 max_shadow_casters: key.max_shadow_casters,
+                shadow_visibility_layers: key.max_shadow_casters.div_ceil(4).max(1),
+                msaa_sample_count: key.msaa_sample_count.unwrap_or(0),
+                edge_shadow_tex_width:
+                    crate::render_passes::material_prep::buffers::EDGE_SHADOW_TEX_WIDTH,
             },
         })
     }

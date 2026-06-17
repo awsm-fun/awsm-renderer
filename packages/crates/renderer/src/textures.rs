@@ -146,6 +146,7 @@ impl AwsmRenderer {
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
             };
             self.render_passes
                 .material_opaque
@@ -165,6 +166,7 @@ impl AwsmRenderer {
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
             };
             self.render_passes
                 .material_transparent
@@ -184,6 +186,7 @@ impl AwsmRenderer {
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
             };
             Some(
                 decal
@@ -270,6 +273,7 @@ impl AwsmRenderer {
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
             };
             all_shader_keys.extend(
                 crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_shader_cache_keys(
@@ -316,6 +320,7 @@ impl AwsmRenderer {
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
             };
             let opaque_descs = crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines::build_descriptors(
                 &mut render_pass_ctx,
@@ -447,6 +452,7 @@ impl AwsmRenderer {
                     anti_aliasing: &self.anti_aliasing,
                     post_processing: &self.post_processing,
                     prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
                 };
                 self.render_passes
                     .geometry
@@ -467,6 +473,7 @@ impl AwsmRenderer {
                 anti_aliasing: &self.anti_aliasing,
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
             };
             self.render_passes.geometry.masked_pipelines.relayout(
                 &mut ctx,

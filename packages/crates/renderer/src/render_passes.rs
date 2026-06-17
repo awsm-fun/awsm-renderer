@@ -868,4 +868,8 @@ pub struct RenderPassInitContext<'a> {
     /// Plan B shared-prep config. Construction gates the prep pass on
     /// `prep_config.enabled`; `None` (default) keeps the legacy path.
     pub prep_config: &'a crate::render_passes::material_prep::PrepPassConfig,
+    /// Resolved edge-pixel budget (matches `MaterialEdgeBuffers::max_edge_budget`).
+    /// Sizes the prep pass's compact per-edge-sample shadow texture (Stage
+    /// 5b-shadow); only consulted by the MSAA prep pipeline.
+    pub max_edge_budget: u32,
 }

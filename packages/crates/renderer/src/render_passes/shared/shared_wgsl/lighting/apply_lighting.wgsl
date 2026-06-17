@@ -124,17 +124,28 @@ fn apply_lighting(
 {% include "shared_wgsl/lighting/froxel_walk.wgsl" %}
 
 {% if prep_present %}
-// Plan B (stage 4/5a): read the prep pass's per-pixel packed shadow-visibility
-// buffer instead of sampling shadow maps inline. `slot` is the j-th shadowed
-// light in the canonical froxel walk (directional prefix then per-froxel
-// punctual) — the SAME order `cs_prep` wrote, so slot j here matches layer
-// j/4 / channel j%4 there. Slots >= K (clamped per-pixel caster cap) overflow
-// to lit (1.0), matching prep's clamp-and-skip. Emitted whenever prep is present
-// (the PRIMARY-mode arm of the runtime select below calls it).
+// Plan B (stage 4/5a/5b): read a prep pass's packed shadow-visibility buffer
+// instead of sampling shadow maps inline. `slot` is the j-th shadowed light in
+// the canonical froxel walk (directional prefix then per-froxel punctual) — the
+// SAME order `cs_prep` / `cs_prep_edge` wrote, so slot j here matches layer j/4 /
+// channel j%4 there. Slots >= K (clamped per-pixel caster cap) overflow to lit
+// (1.0), matching prep's clamp-and-skip.
+//
+// The SOURCE is runtime-selected by the per-thread PrepReadContext mode:
+//   PRIMARY (cs_opaque) → full-screen prep_shadow_visibility at `pixel_xy`.
+//   EDGE    (cs_edge)   → compact prep_edge_shadow at `g_prep_ctx.edge_shadow_xy`
+//                         (the 2D texel for this edge_pixel × sample, set per
+//                         sample in cs_edge — Stage 5b-shadow).
 fn prep_shadow_read(pixel_xy: vec2<f32>, slot: u32) -> f32 {
     if (slot >= {{ max_shadow_casters }}u) {
         return 1.0;
     }
+{% if multisampled_geometry %}
+    if (g_prep_ctx.mode == PREP_MODE_EDGE) {
+        let texel = textureLoad(prep_edge_shadow, g_prep_ctx.edge_shadow_xy, i32(slot / 4u), 0);
+        return texel[slot % 4u];
+    }
+{% endif %}
     let c = vec2<i32>(i32(pixel_xy.x), i32(pixel_xy.y));
     let texel = textureLoad(prep_shadow_visibility, c, i32(slot / 4u), 0);
     return texel[slot % 4u];
@@ -212,7 +223,7 @@ fn apply_lighting_per_froxel(
                 // PrepReadContext mode. PRIMARY (cs_opaque) reads the prep buffer;
                 // any other mode (cs_edge=RECOMPUTE — EDGE in 5b) inline-samples.
                 var visibility: f32 = 1.0;
-                if (g_prep_ctx.mode == PREP_MODE_PRIMARY) {
+                if (g_prep_ctx.mode == PREP_MODE_PRIMARY || g_prep_ctx.mode == PREP_MODE_EDGE) {
                     if light.shadow_index != SHADOW_INDEX_NONE {
                         // Advance the slot for every shadowed directional (prep did
                         // too); apply receive_shadows at read time.
@@ -277,7 +288,7 @@ fn apply_lighting_per_froxel(
                     // range, so the read must too. Other mode (RECOMPUTE):
                     // inline-sample AFTER the range-reject (no slot).
                     var visibility: f32 = 1.0;
-                    if (g_prep_ctx.mode == PREP_MODE_PRIMARY) {
+                    if (g_prep_ctx.mode == PREP_MODE_PRIMARY || g_prep_ctx.mode == PREP_MODE_EDGE) {
                         if light.shadow_index != SHADOW_INDEX_NONE {
                             visibility = select(1.0, prep_shadow_read(pixel_xy, shadow_slot), receive_shadows != 0u);
                             shadow_slot = shadow_slot + 1u;
@@ -420,7 +431,7 @@ fn apply_lighting_per_froxel_with_transmission(
             {% if prep_present %}
                 // Stage 5a runtime select by PrepReadContext mode.
                 var visibility: f32 = 1.0;
-                if (g_prep_ctx.mode == PREP_MODE_PRIMARY) {
+                if (g_prep_ctx.mode == PREP_MODE_PRIMARY || g_prep_ctx.mode == PREP_MODE_EDGE) {
                     if light.shadow_index != SHADOW_INDEX_NONE {
                         visibility = select(1.0, prep_shadow_read(pixel_xy, shadow_slot), receive_shadows != 0u);
                         shadow_slot = shadow_slot + 1u;
@@ -474,7 +485,7 @@ fn apply_lighting_per_froxel_with_transmission(
                 }
                 {% if prep_present %}
                     var visibility: f32 = 1.0;
-                    if (g_prep_ctx.mode == PREP_MODE_PRIMARY) {
+                    if (g_prep_ctx.mode == PREP_MODE_PRIMARY || g_prep_ctx.mode == PREP_MODE_EDGE) {
                         if light.shadow_index != SHADOW_INDEX_NONE {
                             visibility = select(1.0, prep_shadow_read(pixel_xy, shadow_slot), receive_shadows != 0u);
                             shadow_slot = shadow_slot + 1u;

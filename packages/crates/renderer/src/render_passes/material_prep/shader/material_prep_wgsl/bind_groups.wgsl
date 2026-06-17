@@ -98,4 +98,33 @@ struct CullParams {
 // (sample_shadow_directional / apply_sscs / SHADOW_INDEX_NONE /
 // debug_cascade_tint). apply_sscs reads depth_tex + camera_raw (declared above).
 {% include "shared_wgsl/shadow/bind_groups.wgsl" %}
+
+{% if multisampled_geometry %}
+// ── Plan B Stage 5b-shadow — cs_prep_edge edge bindings (group 3) ────────────
+// Only present on the MSAA prep module (edges exist only under MSAA). cs_prep
+// does NOT reference these (its pipeline layout omits group 3); cs_prep_edge
+// reads edge_to_xy / edge_count from `edge_data` (RO is enough — prep never
+// writes the edge buffer), the layout offsets from `edge_layout`, and writes the
+// compact per-edge-sample shadow texture `edge_shadow_out`.
+@group(3) @binding(0) var<storage, read> edge_data: array<u32>;
+
+struct EdgeBufferLayout {
+    max_edge_budget: u32,
+    edge_count_index: u32,
+    per_shader_count_base: u32,
+    skybox_count_index: u32,
+    edge_to_xy_base: u32,
+    edge_slot_map_base: u32,
+    accumulator_base: u32,
+    per_shader_sample_list_base: u32,
+    skybox_sample_list_base: u32,
+    sample_entries_per_bucket: u32,
+};
+@group(3) @binding(1) var<uniform> edge_layout: EdgeBufferLayout;
+
+// Compact per-edge-sample packed shadow visibility (Rgba8unorm array; layer =
+// slot/4, keyed by `(edge_pixel_id * MAX_EDGE_SHADOW_SAMPLES + sample)` mapped to
+// 2D via EDGE_SHADOW_TEX_WIDTH).
+@group(3) @binding(2) var edge_shadow_out: texture_storage_2d_array<rgba8unorm, write>;
+{% endif %}
 {% endif %}

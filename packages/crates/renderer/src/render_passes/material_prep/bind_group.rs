@@ -55,6 +55,10 @@ pub struct MaterialPrepBindGroups {
     pub singlesampled_bind_group_layout_key: BindGroupLayoutKey,
     pub lights_bind_group_layout_key: BindGroupLayoutKey,
     pub shadows_bind_group_layout_key: BindGroupLayoutKey,
+    /// group(3) for `cs_prep_edge` (MSAA only): edge_data (RO storage) +
+    /// edge_layout (uniform) + edge_shadow_out (storage texture array, write).
+    /// `None` when the renderer is not MSAA (no edges, no cs_prep_edge pipeline).
+    pub edge_bind_group_layout_key: Option<BindGroupLayoutKey>,
     bind_group: Option<web_sys::GpuBindGroup>,
     lights_bind_group: Option<web_sys::GpuBindGroup>,
     shadows_bind_group: Option<web_sys::GpuBindGroup>,
@@ -76,11 +80,22 @@ impl MaterialPrepBindGroups {
             },
         )?;
 
+        // Stage 5b-shadow: the cs_prep_edge group(3) layout. Built eagerly
+        // whenever the prep pass exists (= prep enabled), NOT gated on the
+        // build-time MSAA state — the multisampled main layout is always built
+        // too, and edges can appear after an MSAA flip
+        // (`set_anti_aliasing(off → on)`). cs_prep_edge / the edge texture are
+        // dispatched/bound only when edges actually exist (render_edge no-ops
+        // without the edge buffers), so the unconditional build just guarantees
+        // the pipeline + texture are ready for the MSAA-on path.
+        let edge_bind_group_layout_key = Some(create_edge_bind_group_layout_key(ctx)?);
+
         Ok(Self {
             multisampled_bind_group_layout_key,
             singlesampled_bind_group_layout_key,
             lights_bind_group_layout_key,
             shadows_bind_group_layout_key,
+            edge_bind_group_layout_key,
             bind_group: None,
             lights_bind_group: None,
             shadows_bind_group: None,
@@ -337,6 +352,42 @@ fn create_main_bind_group_layout_key(
             BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
         )),
         // 9 shadow_visibility_out — storage texture ARRAY (rgba8unorm, write).
+        compute(BindGroupLayoutResource::StorageTexture(
+            StorageTextureBindingLayout::new(TextureFormat::Rgba8unorm)
+                .with_view_dimension(TextureViewDimension::N2dArray)
+                .with_access(StorageTextureAccess::WriteOnly),
+        )),
+    ];
+
+    Ok(ctx
+        .bind_group_layouts
+        .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)
+}
+
+/// group(3) layout for `cs_prep_edge` (Stage 5b-shadow, MSAA only):
+///   0 edge_data        — RO storage (edge_to_xy + edge_count mirror).
+///   1 edge_layout      — uniform (EdgeBufferLayout offsets).
+///   2 edge_shadow_out  — storage texture array (rgba8unorm, write).
+fn create_edge_bind_group_layout_key(
+    ctx: &mut RenderPassInitContext<'_>,
+) -> Result<BindGroupLayoutKey> {
+    let compute = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
+        resource,
+        visibility_vertex: false,
+        visibility_fragment: false,
+        visibility_compute: true,
+    };
+
+    let entries = vec![
+        // 0 edge_data — RO storage.
+        compute(BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+        )),
+        // 1 edge_layout — uniform.
+        compute(BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+        )),
+        // 2 edge_shadow_out — storage texture array (rgba8unorm, write).
         compute(BindGroupLayoutResource::StorageTexture(
             StorageTextureBindingLayout::new(TextureFormat::Rgba8unorm)
                 .with_view_dimension(TextureViewDimension::N2dArray)

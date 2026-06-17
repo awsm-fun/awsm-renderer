@@ -265,51 +265,86 @@ fn opaque_shadow_from_buffer_variant_validates() {
         "prep-off PBR opaque must NOT read the prep shadow buffer"
     );
 
-    // Control 2 (stage 5a): prep ON + MSAA on ⇒ cs_opaque (PRIMARY) reads the
-    // prep buffer AND cs_edge (RECOMPUTE) keeps the inline sampler. So the MSAA
-    // module must BOTH read `prep_shadow_visibility` AND still define
-    // `fn sample_shadow_directional` (proving cs_edge's inline path survived).
+    // Control 2 (stage 5b-shadow): prep ON + MSAA on ⇒ cs_opaque (PRIMARY) reads
+    // the full-screen prep buffer AND cs_edge (EDGE) reads the compact
+    // per-edge-sample buffer — so NOTHING inline-samples shadows, and the inline
+    // `sample_shadow_directional` DROPS from the MSAA module (the MSAA analog of
+    // stage 4's no-MSAA win). The recompute UV/vcolor helpers STAY (cs_edge still
+    // recomputes attributes — 5b-attrs deferred).
     let msaa_key = first_party_key_prep(
         MaterialShaderId::PBR,
         ShadingBase::Pbr,
         false,
-        Some(4), // MSAA on → prep_present = true, prep_drops_recompute = false
+        Some(4), // MSAA on → prep_present = true, needs_shadow_sampling = false (5b)
         true,
         true,
     );
     let msaa_src = render(&msaa_key, "opaque/pbr prep-on msaa4");
     naga_validate(&msaa_src, "opaque/pbr prep-on msaa4");
+    // (5b-shadow) The inline sampler is DROPPED under MSAA+prep — the ~50 KB win.
     assert!(
-        msaa_src.contains("fn sample_shadow_directional"),
-        "MSAA+prep PBR opaque must KEEP inline `fn sample_shadow_directional` (cs_edge=RECOMPUTE inline-samples)"
+        !msaa_src.contains("fn sample_shadow_directional"),
+        "MSAA+prep PBR opaque must DROP inline `fn sample_shadow_directional` (5b: cs_edge reads the compact edge-shadow buffer)"
     );
+    // cs_opaque (PRIMARY) reads the full-screen buffer; cs_edge (EDGE) reads the
+    // compact per-edge-sample buffer. Both reads must be present.
     assert!(
         msaa_src.contains("textureLoad(prep_shadow_visibility"),
-        "MSAA+prep PBR opaque cs_opaque (PRIMARY) must READ the prep shadow buffer"
+        "MSAA+prep PBR opaque cs_opaque (PRIMARY) must READ the full-screen prep shadow buffer"
     );
-    // The shared PrepReadContext mode-select must be present (the abstraction
-    // that lets cs_opaque read prep while cs_edge recomputes — no forked copies).
     assert!(
-        msaa_src.contains("g_prep_ctx.mode == PREP_MODE_PRIMARY"),
-        "MSAA+prep PBR opaque must branch the shared helpers on g_prep_ctx.mode"
+        msaa_src.contains("textureLoad(prep_edge_shadow"),
+        "MSAA+prep PBR opaque cs_edge (EDGE) must READ the compact per-edge-sample shadow buffer"
+    );
+    assert!(
+        msaa_src.contains("var prep_edge_shadow: texture_2d_array<f32>")
+            || msaa_src.contains("prep_edge_shadow: texture_2d_array<f32>"),
+        "MSAA+prep PBR opaque must declare `prep_edge_shadow` (binding 27)"
+    );
+    // The shared PrepReadContext mode-select must carry the EDGE arm (the
+    // abstraction that lets cs_opaque read PRIMARY while cs_edge reads EDGE — no
+    // forked copies).
+    assert!(
+        msaa_src.contains("g_prep_ctx.mode == PREP_MODE_EDGE"),
+        "MSAA+prep PBR opaque must branch the shared shadow read on the EDGE mode"
     );
     assert!(
         msaa_src.contains("textureLoad(prep_uv,") && msaa_src.contains("textureLoad(prep_vcolor,"),
         "MSAA+prep PBR opaque cs_opaque (PRIMARY) must read the prep UV/vcolor arrays"
     );
-    // The recompute helpers STAY under MSAA+prep (cs_edge=RECOMPUTE needs them).
+    // The recompute helpers STAY under MSAA+prep (cs_edge recomputes UV/vcolor —
+    // 5b-attrs deferred).
     assert!(
         msaa_src.contains("fn _texture_uv_per_vertex(")
             && msaa_src.contains("fn _vertex_color_per_vertex("),
-        "MSAA+prep PBR opaque must KEEP the recompute helpers (cs_edge=RECOMPUTE uses them)"
+        "MSAA+prep PBR opaque must KEEP the recompute helpers (cs_edge recomputes attrs; 5b-attrs deferred)"
     );
 
-    // Measurement: report the prep-read (no-MSAA) PBR size vs prep-off.
+    // Control 3 (stage 5b-shadow): prep ON + MSAA OFF still keeps the inline
+    // sampler DROPPED (stage 4) and reads only the full-screen buffer (no edges →
+    // no compact edge buffer / no EDGE read).
+    let no_msaa_src = render(&prep_key, "opaque/pbr prep-on no-msaa");
+    assert!(
+        !no_msaa_src.contains("textureLoad(prep_edge_shadow"),
+        "no-MSAA+prep PBR opaque must NOT read the compact edge buffer (no edges)"
+    );
+
+    // Measurement: report the prep-read (no-MSAA) PBR size vs prep-off, and the
+    // MSAA module size prep-on vs prep-off (the 5b-shadow drop).
+    let msaa_off_key =
+        first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, Some(4), true);
+    let msaa_off_src = render(&msaa_off_key, "opaque/pbr prep-off msaa4");
     eprintln!(
         "[stage4] PBR opaque no-MSAA — prep-read(shadow_from_buffer): {} B, prep-off(inline): {} B (delta {})",
         src.len(),
         off_src.len(),
         off_src.len() as i64 - src.len() as i64,
+    );
+    eprintln!(
+        "[stage5b] PBR opaque MSAA4 — prep-on(edge-shadow buffer): {} B, prep-off(inline): {} B (delta {})",
+        msaa_src.len(),
+        msaa_off_src.len(),
+        msaa_off_src.len() as i64 - msaa_src.len() as i64,
     );
     // The shadow-from-buffer variant must be SMALLER (the inline sampler drop).
     assert!(
@@ -317,6 +352,14 @@ fn opaque_shadow_from_buffer_variant_validates() {
         "shadow_from_buffer PBR ({} B) should be smaller than prep-off inline PBR ({} B)",
         src.len(),
         off_src.len()
+    );
+    // (5b-shadow) The MSAA prep-on module must be SMALLER than prep-off (inline
+    // sample_shadow_* dropped).
+    assert!(
+        msaa_src.len() < msaa_off_src.len(),
+        "5b: MSAA+prep PBR ({} B) should be smaller than MSAA prep-off inline PBR ({} B)",
+        msaa_src.len(),
+        msaa_off_src.len()
     );
 }
 
@@ -338,6 +381,29 @@ fn material_prep_shader_validates() {
             src.contains("fn cs_prep("),
             "{label}: prep module missing `fn cs_prep` entry point"
         );
+        // Stage 5b-shadow: the MSAA prep module ALSO carries `cs_prep_edge`
+        // (per-edge-sample shadow → compact edge buffer); the no-MSAA module does
+        // NOT (no edges). Both must validate via naga above. The shared
+        // shadow-visibility helper is the single source for both kernels.
+        assert!(
+            src.contains("fn compute_shadow_visibility_packed("),
+            "{label}: prep module missing shared `compute_shadow_visibility_packed` helper"
+        );
+        if msaa.is_some() {
+            assert!(
+                src.contains("fn cs_prep_edge("),
+                "{label}: MSAA prep module missing `fn cs_prep_edge` entry point"
+            );
+            assert!(
+                src.contains("textureStore(edge_shadow_out"),
+                "{label}: cs_prep_edge must write the compact edge-shadow texture"
+            );
+        } else {
+            assert!(
+                !src.contains("fn cs_prep_edge("),
+                "{label}: no-MSAA prep module must NOT emit `cs_prep_edge` (no edges)"
+            );
+        }
     }
 }
 

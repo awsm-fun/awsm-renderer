@@ -96,6 +96,17 @@ struct ClassifyBuckets {
 // shadow maps inline. Declared whenever the prep bind group is present
 // (binding 26, ANY AA); only READ on the PRIMARY mode path in apply_lighting.
 @group(0) @binding(26) var prep_shadow_visibility: texture_2d_array<f32>;
+{% if multisampled_geometry %}
+// Plan B (stage 5b-shadow): the compact per-edge-sample shadow buffer
+// `cs_prep_edge` fills. `cs_edge` (EDGE mode) reads it via `prep_shadow_read`
+// instead of inline-sampling shadow maps — which is what lets the inline
+// `sample_shadow_*` block (~50 KB) drop from the MSAA opaque module. Declared on
+// the shared group(0) so BOTH entry points (cs_opaque PRIMARY + cs_edge EDGE)
+// see it; only cs_edge actually reads it. A TEXTURE (not a storage buffer) so it
+// doesn't count against cs_edge's 10-storage-buffer cap. Binding 27, gated
+// prep_present + MSAA.
+@group(0) @binding(27) var prep_edge_shadow: texture_2d_array<f32>;
+{% endif %}
 {% endif %}
 
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;

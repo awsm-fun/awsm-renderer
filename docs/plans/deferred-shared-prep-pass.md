@@ -278,7 +278,16 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
        MSAA+no-prep on SheenChair (textures+self-shadow+edges); no-prep byte-identical + no-MSAA+prep
        parity-equal (WGSL byte-diff). 258+34 green.
      - **5b REVISED (post-investigation 2026-06-17) — shadow-first, attrs deferred:**
-       - **5b-shadow [DO NOW] = compact per-edge-sample SHADOW buffer + cs_prep_edge + cs_edge reads it.**
+       - **5b-shadow [DONE] = compact per-edge-sample SHADOW buffer + cs_prep_edge + cs_edge reads it.**
+         Landed: `material_prep/buffers.rs` EdgeShadowBuffer (Rgba8unorm texture_2d_array — a texture not an
+         11th storage buffer, dodging the macOS 10-storage cap; ~8 MB); `cs_prep_edge` indirect over
+         `final_blend_args` reuses the SHARED `compute_shadow_visibility_packed` helper (cs_prep calls it
+         sample-0/pixel-coords, cs_prep_edge per edge-sample with PER-SAMPLE normal); cs_edge reads it via
+         PrepReadContext EDGE mode (apply_lighting EDGE arm). `needs_shadow_sampling = apply_lighting &&
+         !prep_enabled` (any AA) → inline `sample_shadow_*`/`apply_sscs` DROPPED from the MSAA module
+         (**−46 KB**, PBR MSAA4+mips 247,887 → 201,623). **GPU-verified BYTE-IDENTICAL** MSAA+prep vs off
+         on SheenChair (self-shadow + silhouette edges — per-sample-normal parity confirmed). 258+34 green.
+       - ~~5b-shadow [DO NOW]~~ (superseded by the DONE line above):
          This is the BIG MSAA win: it drops the inline `sample_shadow_*` (~50 KB) from the MSAA module
          (the no-MSAA analog of stage 4), and the buffer is SMALL (~8 MB at the 512K edge ceiling,
          Rgba8unorm-packed K slots). cs_prep_edge: indirect over `edge_count` (reuse the `final_blend_args`

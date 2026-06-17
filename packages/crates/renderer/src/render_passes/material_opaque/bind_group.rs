@@ -393,6 +393,22 @@ impl MaterialOpaqueBindGroups {
                 entries.len() as u32,
                 BindGroupResource::TextureView(Cow::Borrowed(prep_shadow_visibility)),
             ));
+            // Plan B (stage 5b-shadow): prep_edge_shadow (binding 27) — only under
+            // MSAA. cs_edge (EDGE) reads the compact per-edge-sample shadow buffer
+            // here. The view is the prep pass's edge_shadow.sampled_view, cloned
+            // into the recreate context (so the borrow doesn't conflict).
+            if ctx.anti_aliasing.msaa_sample_count.is_some() {
+                let prep_edge_shadow =
+                    ctx.prep_edge_shadow_view.as_ref().ok_or_else(|| {
+                        AwsmBindGroupError::NotFound(
+                            "Material Opaque - prep_edge_shadow".to_string(),
+                        )
+                    })?;
+                entries.push(BindGroupEntry::new(
+                    entries.len() as u32,
+                    BindGroupResource::TextureView(Cow::Borrowed(prep_edge_shadow)),
+                ));
+            }
         }
 
         let descriptor = BindGroupDescriptor::new(
@@ -818,6 +834,25 @@ async fn create_main_bind_group_layout_key(
             visibility_fragment: false,
             visibility_compute: true,
         });
+        // Plan B (stage 5b-shadow): prep_edge_shadow (binding 27), sampled
+        // `texture_2d_array` of the compact per-edge-sample shadow buffer. ONLY
+        // under MSAA (no edges otherwise) — matches the WGSL's
+        // `{% if multisampled_geometry %}` gate at binding 27. cs_edge (EDGE)
+        // reads it; cs_opaque (PRIMARY) ignores it. A texture (not a storage
+        // buffer) so it doesn't count against cs_edge's 10-storage-buffer cap.
+        if multisampled_geometry {
+            entries.push(BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Texture(
+                    TextureBindingLayout::new()
+                        .with_view_dimension(TextureViewDimension::N2dArray)
+                        .with_sample_type(TextureSampleType::Float)
+                        .with_multisampled(false),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            });
+        }
     }
 
     Ok(ctx

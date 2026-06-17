@@ -99,6 +99,13 @@ pub struct BindGroupRecreateContext<'a> {
     /// Active feature gates — the dispatcher uses these to skip
     /// recreating bind groups for passes whose feature is disabled.
     pub features: &'a RendererFeatures,
+    /// Plan B (stage 5b-shadow): the prep pass's compact per-edge-sample shadow
+    /// texture (sampled view), bound at opaque group(0) binding 27 so `cs_edge`
+    /// (EDGE mode) reads it. `Some` only under prep + MSAA (the prep pass owns
+    /// the texture; cloned here so the recreate borrow doesn't conflict with the
+    /// `&mut render_passes` the dispatcher also takes). `None` otherwise → the
+    /// opaque main layout omits binding 27.
+    pub prep_edge_shadow_view: Option<web_sys::GpuTextureView>,
 }
 
 /// Reasons to recreate bind groups.

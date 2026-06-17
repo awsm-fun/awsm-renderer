@@ -1327,6 +1327,14 @@ impl AwsmRendererBuilder {
         // construction) to the post-await sync block.
         let formats_for_textures = render_texture_formats.clone();
         let bind_groups = BindGroups::new(&features);
+        // Resolved edge-pixel budget — mirrors what `MaterialEdgeBuffers` uses
+        // (the builder override or the desktop default). Sizes the prep pass's
+        // compact per-edge-sample shadow texture (Stage 5b-shadow). Computed here
+        // since the edge buffers themselves are allocated further below.
+        let resolved_max_edge_budget = max_edge_budget.unwrap_or(
+            crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+        );
+
         let mut render_pass_init = RenderPassInitContext {
             gpu: &gpu,
             bind_group_layouts: &mut bind_group_layouts,
@@ -1339,6 +1347,7 @@ impl AwsmRendererBuilder {
             anti_aliasing: &anti_aliasing,
             post_processing: &post_processing,
             prep_config: &prep_config,
+            max_edge_budget: resolved_max_edge_budget,
         };
 
         // Phase A of RenderPasses (bind groups + shader cache key
@@ -1656,6 +1665,7 @@ impl AwsmRendererBuilder {
             anti_aliasing: &anti_aliasing,
             post_processing: &post_processing,
             prep_config: &prep_config,
+            max_edge_budget: resolved_max_edge_budget,
         };
         let render_passes_descs =
             RenderPasses::describe_pipelines(render_passes_plan, &mut render_pass_init, &features)
@@ -2205,9 +2215,21 @@ impl AwsmRenderer {
         {
             self.material_edge_layout_uniform = Some(uniform);
         }
+        // Stage 5b-shadow: resize the prep pass's compact edge-shadow texture to
+        // match the new budget (else cs_prep_edge writes / cs_edge reads beyond
+        // the texture's row count for the overflow edges). The opaque main bind
+        // group re-clones the new view next frame (TextureViewRecreate below
+        // fans out to OpaqueMain).
+        if let Some(prep) = self.render_passes.material_prep.as_mut() {
+            prep.set_max_edge_budget(&self.gpu, new_budget)?;
+        }
         // Mark dependent bind groups for recreation.
         self.bind_groups
             .mark_create(crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize);
+        // The opaque main bind group binds the compact edge-shadow texture
+        // (binding 27); rebind it against the resized view.
+        self.bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
         tracing::info!(
             target: "awsm_renderer::edge_resolve",
             "set_max_edge_budget: edge budget grown to {} (was tracked via overflow CPU surface)",

@@ -74,6 +74,11 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// Inert on the transparent pass (`prep_present` is false), but the
     /// shared `apply_lighting.wgsl`'s `prep_shadow_read` references it.
     pub max_shadow_casters: u32,
+    /// Always `false` on the transparent pass (forward, no edge buffer), but the
+    /// shared `apply_lighting.wgsl`'s `prep_shadow_read` gates the EDGE-mode
+    /// `prep_edge_shadow` read on it; the field must exist for askama type-check
+    /// even though the enclosing `{% if prep_present %}` is always false here.
+    pub multisampled_geometry: bool,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -119,6 +124,9 @@ impl ShaderTemplateTransparentMaterialIncludes {
                 crate::dynamic_materials::ShaderIncludeFlags::for_base(cache_key.base).apply_lighting
             },
             max_shadow_casters: 4,
+            // Transparent is a forward pass with no edge buffer; inert (the EDGE
+            // branch lives under the always-false `prep_present` gate).
+            multisampled_geometry: false,
         }
     }
 

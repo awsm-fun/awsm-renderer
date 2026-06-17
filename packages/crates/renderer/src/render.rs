@@ -544,6 +544,16 @@ impl AwsmRenderer {
                 compaction_buffers: self.compaction_buffers.as_ref(),
                 coverage_buffers: self.coverage_buffers.as_ref(),
                 features: &self.features,
+                // Stage 5b-shadow: clone the prep pass's compact edge-shadow view
+                // (owned, not a borrow) so this shared read doesn't conflict with
+                // the `&mut self.render_passes` argument below. `None` unless prep
+                // + MSAA. Bound at opaque group(0) binding 27 for cs_edge's EDGE read.
+                prep_edge_shadow_view: self
+                    .render_passes
+                    .material_prep
+                    .as_ref()
+                    .and_then(|p| p.edge_shadow.as_ref())
+                    .map(|b| b.sampled_view.clone()),
             },
             &mut self.render_passes,
             self.picker.as_mut(),
@@ -879,6 +889,13 @@ impl AwsmRenderer {
                 None
             };
             prep.render(&ctx)?;
+            // Stage 5b-shadow: after the full-screen cs_prep, fill the compact
+            // per-edge-sample shadow texture (MSAA only — no-op otherwise) so the
+            // MSAA `cs_edge` reads it instead of inline-sampling shadow maps.
+            // classify already populated edge_to_xy + edge_count this frame
+            // (classify → prep → opaque ordering); concurrent edge-buffer READ is
+            // safe within the frame encoder.
+            prep.render_edge(&ctx)?;
         }
 
         {

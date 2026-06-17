@@ -3,15 +3,34 @@
 {% include "material_opaque_wgsl/opaque_kernel_includes.wgsl" %}
 
 {% if prep_present %}
-// Plan B (stage 5a): a per-thread context each entry point sets once, that the
+// Plan B (stage 5a/5b): a per-thread context each entry point sets once, that the
 // shared texture_uv() / vertex_color() / shadow helpers branch on — so ONE set
 // of helpers serves cs_opaque (PRIMARY, reads the prep array at sample-0 coords)
-// AND cs_edge (RECOMPUTE for now — 5b will add EDGE) AND the non-prep path, with
-// no forked MSAA copies. (EDGE = 2u is reserved for 5b's compact edge buffer.)
+// AND cs_edge (5b-shadow: EDGE reads the compact per-edge-sample shadow buffer;
+// UV/vcolor still RECOMPUTE — 5b-attrs deferred) AND the non-prep path, with no
+// forked MSAA copies.
+//   PRIMARY   — cs_opaque: shadow source = full-screen prep_shadow_visibility at
+//               `coords` (sample 0).
+//   EDGE      — cs_edge per sample: shadow source = compact prep_edge_shadow at
+//               `edge_shadow_xy` (= the 2D texel for this edge_pixel × sample);
+//               UV/vcolor recompute (5b-attrs deferred).
+//   RECOMPUTE — non-prep / fallback: inline-sample shadows + recompute attrs.
 const PREP_MODE_RECOMPUTE: u32 = 0u;
 const PREP_MODE_PRIMARY: u32 = 1u;
-struct PrepReadContext { mode: u32, coords: vec2<i32> }
+const PREP_MODE_EDGE: u32 = 2u;
+struct PrepReadContext { mode: u32, coords: vec2<i32>, edge_shadow_xy: vec2<i32> }
 var<private> g_prep_ctx: PrepReadContext;
+{% if multisampled_geometry %}
+// Stage 5b-shadow: the compact per-edge-sample shadow buffer key. MUST match
+// material_prep's cs_prep_edge: `idx = edge_pixel_id * MAX_EDGE_SHADOW_SAMPLES +
+// sample`, 2D coords `(idx % W, idx / W)`; layer = slot/4 (read in apply_lighting).
+const PREP_EDGE_SHADOW_SAMPLES: u32 = 4u;
+const PREP_EDGE_SHADOW_TEX_WIDTH: u32 = {{ edge_shadow_tex_width }}u;
+fn prep_edge_shadow_xy(edge_pixel_id: u32, sample: u32) -> vec2<i32> {
+    let idx = edge_pixel_id * PREP_EDGE_SHADOW_SAMPLES + sample;
+    return vec2<i32>(i32(idx % PREP_EDGE_SHADOW_TEX_WIDTH), i32(idx / PREP_EDGE_SHADOW_TEX_WIDTH));
+}
+{% endif %}
 {% endif %}
 
 
@@ -34,7 +53,7 @@ fn cs_opaque(
     let bucket_offset = classify_buckets.offsets[{{ bucket_index }}u];
     let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
-    {% if prep_present %}g_prep_ctx = PrepReadContext(PREP_MODE_PRIMARY, coords);{% endif %}
+    {% if prep_present %}g_prep_ctx = PrepReadContext(PREP_MODE_PRIMARY, coords, vec2<i32>(0, 0));{% endif %}
     let screen_dims = textureDimensions(opaque_tex);
     let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));
     let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
@@ -751,12 +770,13 @@ fn cs_edge(
     {% if inc.light_access %}
     let lights_info = get_lights_info();
     {% endif %}{% if prep_present %}
-    // Plan B (stage 5a): cs_edge stays RECOMPUTE — the shared texture_uv() /
-    // vertex_color() / shadow helpers recompute per-sample from the geometry
-    // pool exactly as before (mode != PRIMARY falls through to the recompute
-    // body). 5b will switch this to PREP_MODE_EDGE reading the compact
-    // per-edge-sample buffer. `coords` is unused by the reads in RECOMPUTE mode.
-    g_prep_ctx = PrepReadContext(PREP_MODE_RECOMPUTE, coords);
+    // Plan B (stage 5b-shadow): cs_edge reads the compact per-edge-sample shadow
+    // buffer (PREP_MODE_EDGE) instead of inline-sampling shadow maps. The
+    // `edge_shadow_xy` is set PER SAMPLE in the loop below (it keys on the sample
+    // id). UV/vcolor still RECOMPUTE — EDGE != PRIMARY so the shared
+    // texture_uv()/vertex_color() helpers fall through to the recompute body
+    // (5b-attrs deferred). `coords` is unused by the reads in EDGE mode.
+    g_prep_ctx = PrepReadContext(PREP_MODE_EDGE, coords, vec2<i32>(0, 0));
 {% endif %}
     var color_sum = vec3<f32>(0.0);
     var alpha_sum: f32 = 0.0;
@@ -764,6 +784,11 @@ fn cs_edge(
 
     for (var s = 0u; s < 4u; s++) {
         if ((sample_mask & (1u << s)) != 0u) {
+            {% if prep_present %}
+            // Point the EDGE shadow read at THIS sample's compact-buffer texel
+            // (matches cs_prep_edge's `edge_pixel_id * MAX_SAMPLES + sample` key).
+            g_prep_ctx.edge_shadow_xy = prep_edge_shadow_xy(edge_pixel_id, s);
+            {% endif %}
             let shaded = shade_sample(coords, s, camera, screen_dims, screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
             color_sum += shaded.rgb;
             alpha_sum += shaded.a;

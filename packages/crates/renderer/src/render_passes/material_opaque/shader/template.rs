@@ -193,6 +193,11 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// `{% if shadow_from_buffer %}` read path's `prep_shadow_read` bounds
     /// check. Inert otherwise.
     pub max_shadow_casters: u32,
+    /// Plan B (stage 5b-shadow): fixed width of the compact per-edge-sample
+    /// shadow texture. cs_edge maps `edge_pixel_id * MAX_SAMPLES + sample` to
+    /// `(idx % W, idx / W)`; MUST match material_prep's `EDGE_SHADOW_TEX_WIDTH`.
+    /// Only used inside the `{% if multisampled_geometry %}` EDGE-mode read.
+    pub edge_shadow_tex_width: u32,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -380,13 +385,16 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
         } else {
             crate::dynamic_materials::ShaderIncludeFlags::for_base(value.base)
         };
-        // Plan B (stage 5a): drop the inline `sample_shadow_*` block ONLY in
-        // no-MSAA+prep (cs_opaque=PRIMARY reads the buffer, no cs_edge). Under
-        // MSAA+prep cs_edge=RECOMPUTE inline-samples, so it STAYS; under no-prep
-        // it stays (byte-identical to today). Computed once so the bind-group
-        // template (the block emit) and the compute template (apply_lighting's
-        // inline `else` arm gate) agree.
-        let needs_shadow_sampling = inc.apply_lighting && !prep_drops_recompute;
+        // Plan B (stage 5b-shadow): drop the inline `sample_shadow_*` block in
+        // ANY-AA prep (was no-MSAA-only in 5a). Under no-MSAA+prep cs_opaque reads
+        // the full-screen buffer (PRIMARY, stage 4). Under MSAA+prep cs_opaque
+        // reads the full-screen buffer (PRIMARY) AND cs_edge reads the compact
+        // per-edge-sample buffer (EDGE, stage 5b) — so NOTHING inline-samples
+        // shadows in the MSAA opaque module, and the ~50 KB block drops (the MSAA
+        // analog of stage 4's no-MSAA win). Non-prep keeps it (byte-identical to
+        // today). Computed once so the bind-group template (the block emit) and
+        // the compute template (apply_lighting's inline `else` arm gate) agree.
+        let needs_shadow_sampling = inc.apply_lighting && !value.prep_enabled;
         let _self = Self {
             bind_groups: ShaderTemplateMaterialOpaqueBindGroups {
                 texture_pool_arrays_len,
@@ -477,6 +485,8 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // it's dropped.
                 needs_shadow_sampling,
                 max_shadow_casters,
+                edge_shadow_tex_width:
+                    crate::render_passes::material_prep::buffers::EDGE_SHADOW_TEX_WIDTH,
             },
         };
 
