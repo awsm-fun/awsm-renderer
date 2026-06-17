@@ -41,7 +41,17 @@ OpaqueEmpty, ClassifyMsaa, GeometryMsaa, Display, ScenePassClear [+HzbSeed]
 [+EdgeResolveBlend]) and the per-material MSAA pipeline count, so A1/A2 wins are
 measurable. Baseline anchors already exist.
 
-### A1 — delete the dead empty-opaque pipeline (the "5 pipelines" cruft)
+### A1 [DONE] — delete the dead empty-opaque pipeline (the "5 pipelines" cruft)
+Deleted `empty.wgsl` + `ShaderCacheKeyMaterialOpaqueEmpty` + `ShaderTemplateMaterialOpaqueEmpty` +
+the `MaterialOpaqueEmpty` shared-enum variants + `OpaquePipelineSlot::{EmptyMsaa4,EmptySingle}` + the two
+`*_empty_compute_pipeline_key` fields + `get_empty_compute_pipeline_key` + the empty-descriptor push +
+`PassDef`/`PassKind::OpaqueEmpty` + the eager-set push + the `empty_opaque_shader_validates` test. Boot now
+compiles 0 opaque pipelines (was 1 dead empty); the eager pass set is 5 → 4 (ClassifyMsaa, GeometryMsaa,
+Display, ScenePassClear [+HzbSeed][+EdgeResolveBlend]). 259+34 green, warning-free. **GPU byte-parity
+VERIFIED max-diff 0** (MetalRoughSpheres + SheenChair) + still renders (prewarm/readiness fine without it).
+This is the stale "5th compiling pipeline" David flagged.
+
+### A1 (orig) — delete the dead empty-opaque pipeline (the "5 pipelines" cruft)
 `get_empty_compute_pipeline_key` has **zero callers** repo-wide → the empty-opaque
 pipeline is compiled (eager `OpaqueEmpty` pass) but never dispatched. Classify routes
 uncovered/sky pixels to the **SKYBOX bucket** (dispatched in the bucket loop via

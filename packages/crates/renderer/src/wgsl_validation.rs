@@ -20,11 +20,9 @@ use awsm_materials::MaterialShaderId;
 
 use crate::dynamic_materials::{BucketEntry, ShadingBase};
 use crate::render_passes::material_opaque::shader::cache_key::{
-    DynamicShaderInfo, ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
+    DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
 };
-use crate::render_passes::material_opaque::shader::template::{
-    ShaderTemplateMaterialOpaque, ShaderTemplateMaterialOpaqueEmpty,
-};
+use crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaque;
 use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
 use crate::render_passes::material_transparent::shader::template::ShaderTemplateMaterialTransparent;
 use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;
@@ -593,25 +591,6 @@ fn custom_froxel_lights_accessors_validate() {
             src.contains("fn material_pixel_light("),
             "{label}: custom froxel-light accessor missing"
         );
-    }
-}
-
-#[test]
-fn empty_opaque_shader_validates() {
-    // The no-geometry opaque template — also includes light_access etc., so
-    // Phase 4 gating must keep it valid.
-    for msaa in [None, Some(4)] {
-        let key = ShaderCacheKeyMaterialOpaqueEmpty {
-            texture_pool_arrays_len: 1,
-            texture_pool_samplers_len: 1,
-            msaa_sample_count: msaa,
-        };
-        let label = format!("opaque-empty msaa={msaa:?}");
-        let src = ShaderTemplateMaterialOpaqueEmpty::try_from(&key)
-            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
-            .into_source()
-            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
-        naga_validate(&src, &label);
     }
 }
 

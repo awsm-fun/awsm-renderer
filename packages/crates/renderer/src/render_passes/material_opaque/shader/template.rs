@@ -5,9 +5,7 @@ use awsm_materials::MaterialShaderId;
 
 use crate::dynamic_materials::ShadingBase;
 use crate::{
-    render_passes::material_opaque::shader::cache_key::{
-        ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
-    },
+    render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque,
     shaders::{AwsmShaderError, Result},
 };
 
@@ -613,116 +611,6 @@ impl ShaderTemplateMaterialOpaque {
         } else {
             Some("Material Opaque")
         }
-    }
-}
-
-impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqueEmpty {
-    type Error = AwsmShaderError;
-
-    fn try_from(value: &ShaderCacheKeyMaterialOpaqueEmpty) -> Result<Self> {
-        // The empty variant is built at builder time only — no dynamic
-        // materials exist yet, so the first-party bucket list is the
-        // right value. If dynamic registrations ever needed to feed
-        // the empty path, ShaderCacheKeyMaterialOpaqueEmpty would grow
-        // the same bucket_entries field as ShaderCacheKeyMaterialOpaque.
-        let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
-        let pad_words_iter: Vec<u32> = (0
-            ..crate::render_passes::material_classify::shader::template::pad_words_count(
-                bucket_entries.len() as u32,
-            ))
-            .collect();
-        Ok(Self {
-            texture_pool_arrays_len: value.texture_pool_arrays_len,
-            texture_pool_samplers_len: value.texture_pool_samplers_len,
-            multisampled_geometry: value.msaa_sample_count.is_some(),
-            unlit: true,
-            shadow_group_index: 3,
-            shadows_enabled: false,
-            sscs_available: false,
-            needs_shadow_sampling: false,
-            use_froxel_lights: false,
-            froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
-            materials_wgsl: awsm_materials::registry::build_materials_wgsl(),
-            shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
-            bucket_entries,
-            pad_words_iter,
-            prep_present: false,
-        })
-    }
-}
-
-/// Empty shader template used when no opaque geometry is present.
-#[derive(Template, Debug)]
-#[template(path = "material_opaque_wgsl/empty.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateMaterialOpaqueEmpty {
-    pub texture_pool_arrays_len: u32,
-    pub texture_pool_samplers_len: u32,
-    pub multisampled_geometry: bool,
-    pub unlit: bool,
-    /// Bind-group slot index the shadow declarations should occupy.
-    pub shadow_group_index: u32,
-    /// Mirror of the opaque-compute flag. The empty template has no
-    /// real geometry so shadow sampling is irrelevant; left `false`
-    /// to keep the WGSL minimal.
-    pub shadows_enabled: bool,
-    /// Mirror of the opaque-compute flag. The empty template never
-    /// runs SSCS, but the shared shadow include needs the symbol.
-    pub sscs_available: bool,
-    /// Always `false` — the empty kernel never lights, so the shared
-    /// shadow include drops its sampling block (the bind group + structs
-    /// still emit as ABI).
-    pub needs_shadow_sampling: bool,
-    /// Mirror of the opaque-compute flag. The empty template doesn't
-    /// emit the per-froxel walk either, but the shared `lights.wgsl`
-    /// references the symbol so it must be declared.
-    pub use_froxel_lights: bool,
-    /// Mirror of the opaque-compute field. Unused in the empty path
-    /// (the `{% if use_froxel_lights %}` gate is closed) but askama
-    /// type-checks every `{{ var }}` reference even inside a closed
-    /// gate, so the field has to exist.
-    pub froxel_slice_count: u32,
-    /// Concatenated `wgsl_fragment()` of every enabled material — see
-    /// `awsm_materials::registry::build_materials_wgsl`.
-    pub materials_wgsl: String,
-    /// Generated `const SHADER_ID_X: u32 = N;` lines — see
-    /// `awsm_materials::registry::build_shader_id_consts`.
-    pub shader_id_consts: String,
-    /// Mirror of the opaque-compute field. The templated
-    /// `ClassifyBuckets` struct in bind_groups.wgsl walks this list to
-    /// keep its layout aligned with the classify-pass writer's struct.
-    pub bucket_entries: Vec<crate::dynamic_materials::BucketEntry>,
-    /// Mirror of the opaque-compute field — trailing alignment-pad
-    /// u32 indices for the templated `ClassifyBuckets` struct.
-    pub pad_words_iter: Vec<u32>,
-    /// Always `false` for the empty kernel (no geometry → no prep reads),
-    /// but `bind_groups.wgsl` references `prep_present`, so the field exists.
-    pub prep_present: bool,
-}
-
-impl ShaderTemplateMaterialOpaqueEmpty {
-    /// Renders the empty opaque shader into WGSL.
-    pub fn into_source(self) -> Result<String> {
-        let source = self.render()?;
-        // print_shader_source(&source, true);
-
-        //debug_unique_string(1, &source, || print_shader_source(&source, false));
-
-        Ok(source)
-    }
-
-    /// Returns an optional debug label for shader compilation.
-    pub fn debug_label(&self) -> Option<&str> {
-        Some("Material Opaque Empty")
-    }
-
-    /// Returns true if the shader includes IBL lighting.
-    pub fn has_lighting_ibl(&self) -> bool {
-        false
-    }
-
-    /// Returns true if the shader includes punctual lighting.
-    pub fn has_lighting_punctual(&self) -> bool {
-        false
     }
 }
 

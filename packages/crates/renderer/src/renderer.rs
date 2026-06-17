@@ -1991,9 +1991,6 @@ impl AwsmRendererBuilder {
                 1
             };
             let mut eager_passes: Vec<PipelineGroupDef> = vec![
-                PipelineGroupDef::Pass(PassDef::OpaqueEmpty {
-                    snapshot: snapshot.clone(),
-                }),
                 PipelineGroupDef::Pass(PassDef::ClassifyMsaa {
                     samples: active_msaa_samples,
                     snapshot: snapshot.clone(),

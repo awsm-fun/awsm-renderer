@@ -154,12 +154,6 @@ pub enum MaterialDefKind {
 /// carries only the data its build path needs.
 #[derive(Clone, Debug)]
 pub enum PassDef {
-    /// The empty opaque compute pipeline — runs on skybox-only frames
-    /// and the bucket-skip path. Always eager.
-    OpaqueEmpty {
-        /// Renderer-config snapshot this pipeline is keyed on.
-        snapshot: PipelineConfigSnapshot,
-    },
     /// MSAA variant of the classify compute pass.
     ClassifyMsaa {
         /// MSAA sample count this pipeline targets.
@@ -221,8 +215,6 @@ pub enum PassDef {
 /// scheduler.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PassKind {
-    /// The empty opaque compute pipeline (skybox-only / bucket-skip path).
-    OpaqueEmpty,
     /// MSAA variant of the classify compute pass, parametrised by sample count.
     ClassifyMsaa {
         /// MSAA sample count.
@@ -272,7 +264,6 @@ impl PassDef {
     /// Project the def to its identifying [`PassKind`].
     pub fn kind(&self) -> PassKind {
         match self {
-            Self::OpaqueEmpty { .. } => PassKind::OpaqueEmpty,
             Self::ClassifyMsaa { samples, .. } => PassKind::ClassifyMsaa { samples: *samples },
             Self::GeometryMsaa { samples, .. } => PassKind::GeometryMsaa { samples: *samples },
             Self::Display => PassKind::Display,

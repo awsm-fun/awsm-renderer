@@ -11,9 +11,7 @@ use crate::render_passes::{
     material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify,
     material_decal::classify::shader::cache_key::ShaderCacheKeyDecalClassify,
     material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal,
-    material_opaque::shader::cache_key::{
-        ShaderCacheKeyMaterialOpaque, ShaderCacheKeyMaterialOpaqueEmpty,
-    },
+    material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque,
     material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialFinalBlend,
     material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep,
     material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent,
@@ -39,7 +37,6 @@ pub enum ShaderCacheKeyRenderPass {
     DecalClassify(ShaderCacheKeyDecalClassify),
     MaterialDecal(ShaderCacheKeyMaterialDecal),
     MaterialOpaque(ShaderCacheKeyMaterialOpaque),
-    MaterialOpaqueEmpty(ShaderCacheKeyMaterialOpaqueEmpty),
     /// Global final-blend compositor for the MSAA edge-resolve flow.
     MaterialFinalBlend(ShaderCacheKeyMaterialFinalBlend),
     MaterialTransparent(ShaderCacheKeyMaterialTransparent),
