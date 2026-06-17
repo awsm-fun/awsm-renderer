@@ -139,7 +139,88 @@ should orient a newcomer).
 Keep `populate_awsm_scene` working (model-test page uses it) — layer it on the new path
 or leave alongside. Each stage: tests green + (where it renders) model-tests renders.
 
-### B0 — survey + design
+### B0 [DONE] — survey + design (the B-stage contract)
+
+**Survey findings (file refs in commit msg):**
+- `LoadedScene` today = `{ meshes: Vec<MeshKey>, lights: Vec<LightKey>, clips: Vec<AnimationClipKey> }`
+  (flat). The node→key maps ALREADY EXIST in the private `AnimResolveMaps` (animation.rs): `transforms`,
+  `lights`, `cameras`, `meshes`, `skin_joints`, `node_materials` (all `HashMap<NodeId, *Key>`) — built
+  across phases, dropped on return. R1 = stop dropping it.
+- `materialize` (lib.rs) handles Mesh / SkinnedMesh / Light / Camera (+ Group=transform); `_ => {}` for
+  Line / Decal / Sprite / ParticleEmitter / InstancesAlongCurve / Curve / Collider. It DOES recurse
+  `children` but does NOT read `node.prefab` or `node.visible`.
+- Renderer public APIs that EXIST (so the loader just needs to call them):
+  - Lines: `renderer.add_line_strip(&[Vec3], &[Vec4], width, depth_test_always) -> Result<Option<LineKey>>`
+    (+ `add_line_segments`, `remove_line`, `ensure_line_pipelines_compiled`).
+  - Decals: `renderer.insert_decal(transform: Mat4, texture_index: u32, alpha: f32) -> Result<DecalKey, AwsmDecalError>`
+    — errors `FeatureNotEnabled` when the `decals` feature is off.
+  - Instancing: `meshes.duplicate_mesh_with_transform(MeshKey, TransformKey) -> Result<MeshKey>` (cheap,
+    shares geometry+material buffers) and `meshes.enable_mesh_instancing_opaque(MeshKey, &[Transform])`.
+  - Transforms: `transforms.insert(Transform, parent) -> TransformKey`, `set_local`, `set_parent`, `remove`.
+  - Visibility: `meshes.set_mesh_hidden(MeshKey, bool)` (the only runtime visibility lever).
+  - Teardown: `meshes.remove_mesh(MeshKey)`, `lights.remove_light(LightKey)`,
+    `animations.remove_clip(AnimationClipKey)`, `transforms.remove(TransformKey)`.
+- NO renderer support (gaps): **Sprite** — no sprite primitive; must build a quad mesh + material
+  (FlipBook if `flipbook` else Unlit, with `tint`) + billboard (mesh has a `billboard_mode` field; runtime
+  setter not found → see B3). **ParticleEmitter** — no particle pass at all; needs a per-frame CPU sim
+  (gameplay, not loader) → documented clean-skip + flagged as a separate renderer effort.
+
+**Public API contract (Part B builds to this; lockstep adapts):**
+```rust
+// scene-loader public surface
+pub struct NodeHandles {
+    pub transform: TransformKey,
+    pub meshes: Vec<MeshKey>,             // empty for non-mesh nodes
+    pub light: Option<LightKey>,
+    pub camera: Option<CameraKey>,        // the renderer camera, if a Camera node
+    pub camera_config: Option<CameraConfig>, // authored config, for the consumer's camera rig (R1)
+    pub line: Option<LineKey>,            // Line nodes
+    pub decal: Option<DecalKey>,          // Decal nodes (when the decals feature is on)
+}
+pub struct LoadedScene {
+    pub nodes: HashMap<NodeId, NodeHandles>,        // static (non-prefab) world (R1)
+    pub prefabs: HashMap<NodeId, PrefabTemplate>,   // prefab roots (R2)
+    pub clips: Vec<AnimationClipKey>,
+    pub meshes: Vec<MeshKey>,  pub lights: Vec<LightKey>, // kept flat for back-compat + teardown
+    // (+ lines/decals/transforms collected internally for teardown)
+}
+impl LoadedScene { pub fn teardown(self, renderer: &mut AwsmRenderer); } // R6 (no leak on reload)
+
+pub struct PrefabTemplate { /* opaque: hidden materialized subtree + per-node metadata */ }
+pub struct PrefabInstance { pub root: TransformKey, pub nodes: HashMap<NodeId, NodeHandles> }
+impl PrefabTemplate {
+    pub fn instantiate(&self, renderer: &mut AwsmRenderer, world_trs: Trs) -> Result<PrefabInstance>; // R2
+}
+
+pub trait SceneAssets { async fn fetch(&self, bundle_relative_path: &str) -> Result<Vec<u8>>; } // R5
+impl SceneAssets for std::collections::HashMap<String, Vec<u8>> { /* blanket — model-test path */ }
+// static dispatch (`&impl SceneAssets`) — avoids dyn-async; native async-fn-in-trait (Rust 1.75+).
+
+pub async fn load_scene_for_player(                                   // R6 entry point
+    renderer: &mut AwsmRenderer, scene: &Scene, assets: &impl SceneAssets, on_phase: impl FnMut(LoadPhase),
+) -> Result<LoadedScene>;
+pub async fn populate_awsm_scene(/* unchanged sig */) -> Result<LoadedScene>; // thin wrapper over the above
+
+// R4 — public mesh materialization (hedge)
+pub async fn materialize_node_mesh(renderer, scene, node: &EditorNode, assets: &impl SceneAssets,
+    material: MaterialKey) -> Result<Vec<MeshKey>>;
+pub async fn load_glb_under(/* now pub */) -> ...;  pub fn mesh_data_to_raw(/* now pub */) -> ...;
+```
+
+**Per-NodeKind plan (B3):** Line → `add_line_strip`/`add_line_segments` (→ `NodeHandles.line`). Decal →
+`insert_decal` (texture via `texture::load_texture`; node transform → `Mat4`; if `decals` feature OFF,
+clean-skip + one-time warn). InstancesAlongCurve → eval the referenced `Curve(CurveDef)` (Catmull-Rom
+sample) → per-instance `Transform`s (spacing/side_offset/orient_to_tangent) → `enable_mesh_instancing_opaque`
+on the `source_node` mesh. Sprite → quad mesh (meshgen) + Unlit/FlipBook material + `tint`; billboard via a
+new tiny renderer setter if one's missing + cheap, else world-aligned quad + documented billboard caveat.
+Curve = data-only (consumed by Sprite-flipbook/Instances/camera). Collider = skip. **ParticleEmitter =
+documented clean-skip** (no renderer particle pass; CPU per-frame sim is gameplay — note loudly, recommend
+a future dedicated renderer particle pass; the game can drive its own via the mesh/line APIs meanwhile).
+
+**Renderer-side additions anticipated:** (a) maybe a runtime `meshes.set_billboard_mode(MeshKey, mode)` for
+sprites (only if not already settable at insert). Keep renderer additions minimal + documented.
+
+### B0 (orig) — survey + design
 Read `scene-loader/src/lib.rs` (`populate_awsm_scene`, `AnimResolveMaps`,
 `materialize`, `load_glb_under`, `mesh_data_to_raw`) + `scene/src/tree.rs`
 (`NodeKind`, `EditorNode`, `RuntimeMesh`, `Trs`, `Curve`). Confirm the renderer
