@@ -1,119 +1,157 @@
-# Plan B — shared attribute-prep pass (shrink the per-material resolve floor)
+# Plan B (spec) — shared prep + deferred-shadow pass; slim per-material shading
 
-**Status:** proposed (not started). Prereq done: shadow-sampling gate (commit `de6cd249`) took the
-leanest no-MSAA Custom shader from 110,730 → 60,335 B. This plan attacks the *next* ~half.
+**Status:** implementation-ready spec. Prereqs shipped: `MsaaSampleTextures` gate (`13e91e3e`),
+whole-block shadow-sampling gate behind `apply_lighting` (`de6cd249`).
 
-## Problem
+**Principle:** every per-pixel computation that is the *same regardless of material* runs ONCE in a
+shared pass and is written to a buffer; per-material kernels read those buffers and do only genuinely
+material-specific work (its texture sampling, normal-map application, BRDF/custom shading, light
+accumulation). This shrinks the per-material module (compile + size) and is the foundation a future
+single-branching-shading pass ("uber-shader", explicitly out of scope here) would build on.
 
-awsm shades opaque per **material bucket**: each unique material compiles its own `cs_opaque` compute
-kernel. Today every one of those kernels re-does the same material-agnostic prep **inline** before it
-shades:
+## Locked decisions
 
-- `material_mesh_metas[]` lookup (offsets)
-- barycentric unpack (from `barycentric_tex`)
-- triangle index fetch (from `visibility_data`)
-- world-position reconstruction (`get_standard_coordinates`)
-- TBN unpack (from `normal_tangent_tex`)
-- UV / vertex-color interpolation
+1. **Shadow storage = K visibility layers**, where K = max shadow casters that can overlap a *single
+   pixel* (NOT total scene casters). K is **configurable at `AwsmRenderer` build time**. Buffer is
+   `texture_2d_array<r8unorm>` (or storage buffer) of K layers; slot `j` = the j-th shadowed light in
+   the pixel's froxel, in froxel-list order. Overflow (>K shadowed lights in a froxel) is **clamped +
+   logged** (no silent cap). The per-material lighting loop walks the same froxel list in the same
+   order, so its j-th shadowed light reads layer `j` — no per-pixel search needed.
+2. **World-position is materialized fp32** via the existing perspective-correct vertex interpolation
+   (`positions.wgsl::get_standard_coordinates` — NOT depth unprojection). UV sets stay **variable**
+   (the `uv_set_index` bitfield + `mesh_meta.uv_set_count`), stored up to the existing practical max.
+3. **Edges = Option B (compact edge buffer).** The prep pass additionally emits a small
+   per-edge-sample attribute+shadow buffer (edge pixels are a tiny fraction), and `cs_edge` *reads* it
+   instead of reconstructing — so BOTH the primary and edge paths slim, and `cs_edge` collapses toward
+   "read + shade", reducing the edge complexity.
+4. **Transparent stays forward** (back-to-front fragment pass at its own pixels) — keeps inline
+   shadow+lighting. Out of scope.
+5. **Uber-shader is the north star, not now.** Per-material shading kernels are retained; this refactor
+   makes them thin and produces exactly the buffers an uber-shader would later consume.
 
-This prep is identical across materials but is duplicated ×N because **WGSL can't link shared function
-definitions across pipeline modules** — each module must contain everything it uses. The classify pass
-(`material_classify/compute.wgsl`) already visits every pixel but does **only** classification (bucket
-bitmask + per-bucket tile lists); it does none of the prep.
+## Pass architecture (opaque path)
 
-(Already materialized by the geometry pass and *not* recomputed: `normal_tangent_tex`, `barycentric_tex`.
-So the duplicated work is the mesh-meta lookup, world-pos reconstruct, triangle fetch, and UV/attr
-interpolation — plus all the helper includes those pull in: `standard`, `positions`, most of `math`,
-`camera`, `mesh_meta`.)
+```
+geometry / visibility (+ masked variant = alpha test)       [exists, unchanged]
+light culling (froxel)                                       [exists]
+shadow-map generation (shadow_masked)                        [exists]
+classify → per-bucket tile lists  (+ "covered tiles" list)   [exists; minor add]
+► RESOLVE-PREP pass (NEW, compute, per pixel over covered tiles):
+    - read vis-buffer + mesh_meta
+    - interpolate world_pos (fp32), UV sets, vertex colors    → attr G-buffer (full-res, sample 0)
+    - walk froxel light list; for each shadowed light sample
+      its shadow map (technique switch unchanged)            → shadow visibility buffer (K layers)
+    - for EDGE pixels: also emit per-sample attrs + shadow    → compact edge buffer (Option B)
+► per-material shading (SLIMMED):
+    - cs_opaque: read attr G-buffer + shadow buffer (sample 0), sample own textures,
+      apply normal map, run BRDF/custom, accumulate lights using precomputed shadow terms
+    - cs_edge:   read COMPACT EDGE buffer per sample, shade, accumulate (Option B)
+final_blend / skybox_edge_resolve (MSAA)                     [exists]
+```
 
-## Idea
+All shadow-sampling code now lives in: the **prep pass** (samples) + the **transparent** forward pass
+(inline). It is **removed from every opaque per-material kernel** (incl. first-party PBR).
 
-Do the prep **once** (fused into classify, or a dedicated attribute-resolve compute pass right after
-it), write a **thin G-buffer** of resolved per-pixel attributes + `material_offset`, then make each
-per-material kernel **read the G-buffer + sample its own textures + shade** — nothing else. This makes
-the per-material module shrink toward three's per-material size, and cuts precompile (cost ≈
-pipeline-count × module-size).
+## Buffers (formats + the bandwidth budget — the measured risk)
 
-This is the classic **visibility-buffer → deferred-material / "deferred texturing"** move; the split
-is legal because it happens at a **pass boundary** (buffer hand-off), not function linking.
+Per-pixel, full-res (sample 0). Sizes shown @720p / @4K:
 
-### What moves vs stays
+| buffer | format | bytes/px | @720p | @4K | notes |
+|--------|--------|---------:|------:|----:|-------|
+| world_pos | fp32 ×3 (storage buf, packed) | 12 | 11 MB | 100 MB | biggest item; the prime bandwidth variable |
+| UV sets | RG16F × `uv_set_count` (cap) | 4·S | 4 MB·S | 33 MB·S | S = sets actually used |
+| vertex color | RGBA8 × color sets (cap) | 4·C | 4 MB·C | 33 MB·C | usually C≤1 |
+| shadow visibility | R8 × K layers | K | ~1 MB·K | 8 MB·K | K = per-pixel caster cap |
+| normal/tangent | (reuse `normal_tangent_tex`) | — | — | — | already materialized |
+| UV gradients | recompute from `barycentric_derivatives_tex` | — | — | — | don't materialize |
 
-| work | destination |
-|------|-------------|
-| mesh_meta lookup, barycentric unpack, triangle fetch, world-pos reconstruct, TBN unpack, UV/attr interpolation | **shared prep pass** (once) |
-| material data load (`*_get_material`), the shading math (BRDF / custom body) | per-material (stays) |
-| **texture sampling** (material-specific bindings + UV transforms) | per-material (stays) — but reads the shared interpolated UV |
+- **world_pos is the bandwidth swing.** Default: materialize it (principle-consistent, precise). A
+  build-time flag `prep_reconstruct_world_pos` falls back to in-shader reconstruction (keeps
+  `positions.wgsl` in materials, saves ~100 MB @4K). Decide the default from the 4K measurement.
+- Each pixel is read by exactly one material pass, so materializing does NOT multiply reads by material
+  count — total read traffic ≈ one full-res read regardless of N.
 
-### Thin G-buffer contents (tune by measurement)
+## Shadow visibility — slot model
 
-- Reuse existing `normal_tangent_tex` + `barycentric_tex` (already written).
-- Add only what's actually recomputed today: interpolated UV set(s), and either store world-pos or keep
-  reconstructing it from depth (cheap — prefer reconstruct to save bandwidth).
-- `material_offset` per pixel (so the per-material kernel can load its material data without the
-  mesh-meta walk).
+- Prep pass, per pixel: `j = 0`; walk the pixel's froxel light list; for each light with
+  `shadow_index != NONE`: `if j < K { visibility[pixel][j] = sample_shadow_descriptor(light.shadow_index, world_pos, normal); j++ } else { overflow++ }`. Log per-frame overflow count once.
+- Per-material lighting loop: walk the SAME froxel list in the SAME order; maintain its own `j`; for
+  the j-th shadowed light, `vis = visibility[pixel][j]` (then apply `mesh_meta.receive_shadows`).
+- `receive_shadows` is per-mesh (read from `mesh_meta` — available in both passes); applied at *use*
+  time so the slot indexing stays material-independent in prep.
+- K default e.g. 4; builder setter `with_max_shadow_casters_per_pixel(k)`. Feeds the shader cache key
+  (pipelines vary with K) and the buffer allocation.
 
-## Trade-offs (the whole point of measuring)
+## apply_lighting — dual shadow source
 
-- **Win:** per-material module + precompile shrink a lot (drop `standard`/`positions`/`mesh_meta`/most
-  of `math`/`camera` + the inline interp from every material). Plausibly ~60 KB → ~25–35 KB; confirm.
-- **Cost:** a fatter G-buffer = more memory bandwidth, and awsm already loses to forward at 4K on
-  bandwidth (see report.md). Net runtime could go either way — **must** measure at high res.
-- **Granularity:** the shared pass computes the *union* of attributes any material needs (can't
-  per-material-gate UV like `inc.textures` does today), but it's one shader, paid once.
-- **ABI:** new G-buffer textures + bind-group layout changes; the per-material bind groups change shape.
+`apply_lighting.wgsl` gets a template flag `shadow_from_buffer`:
+- **opaque** (`true`): read `visibility[pixel][j]` — NO `sample_shadow_*` functions compiled in.
+- **transparent** (`false`): inline `sample_shadow_directional(...)` as today (forward, own pixels).
 
-## Measurement checklist (gate the merge on this)
+So the shadow-sampling functions are included by the **prep pass** and the **transparent** pass only.
 
-Render + measure both **before/after**, at N = 256 and 1024, AA off, at **1280×720 AND 3840×2160**:
+## What stays per-material (unchanged)
 
-1. **Per-material module size** (bytes) — expect a large drop. (`reports/awsm-dumps/` dump harness.)
-2. **Precompile time** (eager pipeline build) — expect a large drop (pipeline-count × smaller module).
-3. **Runtime FPS** at 720p *and* 4K — the risk metric (bandwidth). Must not regress meaningfully at 4K.
-4. **Correctness** — naga validation (existing `wgsl_validation` tests) + visual parity in model-tests
-   (PBR/IBL/transmission dish, alpha) + clean console.
-5. Memory: G-buffer VRAM delta at 4K.
+Material/texture param load, **texture sampling** (which textures, transforms, mip), **normal-map
+application**, **BRDF / toon / unlit / custom WGSL**, and the **light-accumulation loop** (reads the
+shadow buffer). The custom-material `OpaqueShadingInput` contract is unchanged — the kernel just
+populates it from the prep buffers instead of reconstructing, so existing custom shaders are unaffected.
 
-Land behind a flag (visibility-buffer recompute vs shared-prep) so the two can be A/B'd, then pick the
-default per the numbers (possibly res-dependent).
+## Build-time config (AwsmRenderer builder)
 
-## Stage: deferred shadow-sampling pass (decided with David — supersedes per-material gating)
+- `with_max_shadow_casters_per_pixel(k: u32)` (default e.g. 4) — K above.
+- `with_prep_pass(enabled: bool)` — A/B flag: off = current recompute-in-shader path; on = shared prep.
+  Lets us land incrementally and measure both. (Remove once on-by-default is proven.)
+- `prep_reconstruct_world_pos: bool` — world-pos materialize vs reconstruct (the bandwidth tunable).
 
-**Decision:** do NOT gate shadow sampling per-material by technique. Instead, move ALL shadow sampling
-into exactly **one** pass. Shadow *visibility* is material-independent (it depends only on
-world-pos/normal + lights + the shadow maps the `shadow_masked` generation pass already produced), so
-it factors out of per-material shading entirely. Per-material shaders then read a precomputed term and
-`mix` — a read, not the ~50 KB of PCSS/EVSM/cascade/cube/SSCS math. The whole technique-gating problem
-dissolves: all the technique code lives once, in this pass; the runtime `sample_shadow_descriptor`
-switch stays exactly as is.
+## Implementation stages (one per commit; each independently testable + green)
 
-This is strictly better than the per-material `apply_lighting` gate already shipped (`de6cd249`): that
-only helped materials that don't light; this removes shadow sampling from **every** material, including
-first-party PBR (~222 KB today, ~50 KB of it shadow).
+Each stage: `cargo test -p awsm-renderer -p awsm-materials --lib` green (naga validation +
+size_regression + completeness), and the renderer still renders model-tests correctly (PBR/IBL dish,
+alpha, shadows) with a clean console. Stages 0–2 add the buffer + slim the no-MSAA primary path; 3–4
+add deferred shadows; 5 handles edges (Option B); 6 finalizes.
 
-Design:
-- New pass after classification/prep, before per-material shading. Reads world-pos/normal (from the
-  prep G-buffer) + `mesh_meta.receive_shadows` (already exists — skip pixels that don't receive) + the
-  shadow maps + light/descriptor data. Picks technique per shadow-caster at runtime (unchanged switch).
-- Writes per-pixel shadow **visibility** to a buffer. NOTE it is per-(pixel, shadow-caster), not a single
-  scalar (a pixel can be lit by several shadowed lights). Storage options:
-  - **First cut:** sun/directional-only term, one R8/R16 per pixel — the dominant real case; trivial
-    buffer; point/cube casters can stay inline initially.
-  - **General:** per-(pixel, shadow-caster-slot) buffer bounded by max active casters (more bandwidth —
-    measure at 4K, awsm's weak axis).
-- Per-material shading: walks its froxel light list and, for each shadowed light, reads the precomputed
-  term indexed by the light's `shadow_index` (already in `LightPacked.row4.z`), multiplies into its own
-  BRDF result. The lighting math stays per-material; only the shadow *sampling* leaves.
+0. **Config + buffers scaffolding.** Builder flags; allocate the attr G-buffer + shadow buffer +
+   bind-group layouts. No behavior change (nothing reads them yet).
+1. **Prep pass — attributes.** New compute pass after classify: interpolate world_pos + UVs + vertex
+   colors into the G-buffer (dispatched over covered tiles). Validate output vs in-shader values (a
+   debug compare). No material reads yet.
+2. **Slim `cs_opaque` (no-MSAA).** Behind `with_prep_pass`, `cs_opaque` reads the attr G-buffer instead
+   of reconstructing; drop `positions`/`standard`/UV-interp includes from the no-MSAA module. Measure
+   size drop; visual parity; tighten ceilings.
+3. **Prep pass — shadow sampling.** Add the K-layer shadow visibility buffer + the froxel-order slot
+   model + overflow logging. Prep includes `shadow/bind_groups.wgsl` (sampling).
+4. **Lighting reads shadow buffer.** `apply_lighting` `shadow_from_buffer=true` for opaque; remove
+   `sample_shadow_*` from opaque modules (first-party PBR drops ~50 KB). Transparent unchanged
+   (`shadow_from_buffer=false`). Visual parity on the shadowed dish; measure PBR size.
+5. **Edges (Option B).** Prep emits the compact per-edge-sample attr+shadow buffer; `cs_edge` reads it;
+   drop reconstruction from the MSAA module. naga + visual MSAA-on parity; measure MSAA module size.
+6. **Finalize.** Pick `prep_reconstruct_world_pos` default from 4K numbers; consider making
+   `with_prep_pass` default-on / removing the A/B flag; re-dump `reports/awsm-dumps/`; update
+   `report.md`; tighten all ceilings.
 
-Correction recorded: shadow **technique** is light-driven (point→cube, directional→cascade; EVSM/PCSS
-are quality settings), NOT a material property — so there is no per-material "shadow sample type". The
-only per-material shadow input is `receive_shadows`, which already exists in `mesh_meta`.
+## Measurement gates (record before/after at N=256 and 1024, AA off, 1280×720 AND 3840×2160)
 
-Verify before building:
-- The froxel light-list → `shadow_index` read path (so the per-material lighting loop can fetch the
-  precomputed term per light) — the one place this can go subtly wrong.
-- Transparent pass also lights → needs the same buffer or its own handling.
-- 4K bandwidth of the visibility buffer.
+1. Per-material module size (bytes) — expect large drop on the no-MSAA path; PBR drops shadow.
+2. Precompile time — expect large drop (pipeline-count × smaller module).
+3. Runtime FPS at 720p AND 4K — the risk metric (bandwidth). Must not meaningfully regress at 4K; if it
+   does, prefer `prep_reconstruct_world_pos`/keep the A/B flag and document the res-dependent default.
+4. Correctness — naga; model-tests visual parity (PBR/IBL/transmission dish + shadows, alpha,
+   MSAA on/off); clean console.
+5. VRAM delta at 4K.
 
-This shares the prep-pass infrastructure (needs world-pos/normal), so it's a **stage of this plan**, not
-a separate effort: prep pass → shadow-sampling pass → lean per-material shading.
+## Risks
+
+- **Bandwidth at 4K** (world_pos buffer) — the main risk; the world-pos tunable + A/B flag exist for it.
+- **MSAA edge correctness** — Option B's per-edge-sample emission must match the old per-sample shading
+  exactly; verify visually (it can't be naga-checked) and keep the old path behind the A/B flag until
+  proven.
+- **Froxel slot alignment** — prep and lighting MUST walk the froxel list identically; a mismatch =
+  wrong shadows. Single source of truth for the walk order.
+- **Transparent divergence** — it keeps inline shadows; ensure the dual `shadow_from_buffer` flag keeps
+  both paths compiling (naga covers both).
+
+## Out of scope (separate future work)
+
+- Transparent path slimming.
+- The uber-shader (single branching shading dispatch) — this spec builds toward it but does not do it.
