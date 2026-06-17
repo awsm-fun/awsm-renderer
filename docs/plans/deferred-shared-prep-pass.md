@@ -77,22 +77,43 @@ Render + measure both **before/after**, at N = 256 and 1024, AA off, at **1280×
 Land behind a flag (visibility-buffer recompute vs shared-prep) so the two can be A/B'd, then pick the
 default per the numbers (possibly res-dependent).
 
-## Related follow-up — gate shadow sampling by *technique* (from David)
+## Stage: deferred shadow-sampling pass (decided with David — supersedes per-material gating)
 
-The shadow-sampling block (now gated as a whole behind `apply_lighting`) bundles **all** techniques:
-PCSS, PCF, EVSM, cube (point), cascade (directional), SSCS. A given scene rarely uses all of them — the
-technique is selected by **light type** (point→cube, directional→cascade) and **quality config**
-(EVSM on/off, PCSS on/off, SSCS on/off), which are *scene/renderer config*, not per-material.
+**Decision:** do NOT gate shadow sampling per-material by technique. Instead, move ALL shadow sampling
+into exactly **one** pass. Shadow *visibility* is material-independent (it depends only on
+world-pos/normal + lights + the shadow maps the `shadow_masked` generation pass already produced), so
+it factors out of per-material shading entirely. Per-material shaders then read a precomputed term and
+`mix` — a read, not the ~50 KB of PCSS/EVSM/cascade/cube/SSCS math. The whole technique-gating problem
+dissolves: all the technique code lives once, in this pass; the runtime `sample_shadow_descriptor`
+switch stays exactly as is.
 
-Proposal: add a static **shadow-feature variant** to the shader cache key (e.g. flags
-`uses_point_shadows`, `uses_directional_cascades`, `uses_evsm`, `uses_pcss`, `uses_sscs`) derived from
-the active shadow config / present light kinds, and gate each technique's functions on its flag. A
-directional-only PCF scene would then drop the cube + EVSM + PCSS code (a big further cut to lighting
-shaders).
+This is strictly better than the per-material `apply_lighting` gate already shipped (`de6cd249`): that
+only helped materials that don't light; this removes shadow sampling from **every** material, including
+first-party PBR (~222 KB today, ~50 KB of it shadow).
 
-- **Win:** lighting materials (incl. first-party PBR, currently ~222 KB) shrink to only the shadow code
-  the scene actually uses.
-- **Cost:** variant explosion (one pipeline set per shadow-feature combination). Mitigate by deriving a
-  single small enum/bitset of "shadow features in use" so common scenes share a variant.
-- Independent of the prep-pass work; can land first (smaller, mechanical, mirrors the apply_lighting
-  gate one level finer).
+Design:
+- New pass after classification/prep, before per-material shading. Reads world-pos/normal (from the
+  prep G-buffer) + `mesh_meta.receive_shadows` (already exists — skip pixels that don't receive) + the
+  shadow maps + light/descriptor data. Picks technique per shadow-caster at runtime (unchanged switch).
+- Writes per-pixel shadow **visibility** to a buffer. NOTE it is per-(pixel, shadow-caster), not a single
+  scalar (a pixel can be lit by several shadowed lights). Storage options:
+  - **First cut:** sun/directional-only term, one R8/R16 per pixel — the dominant real case; trivial
+    buffer; point/cube casters can stay inline initially.
+  - **General:** per-(pixel, shadow-caster-slot) buffer bounded by max active casters (more bandwidth —
+    measure at 4K, awsm's weak axis).
+- Per-material shading: walks its froxel light list and, for each shadowed light, reads the precomputed
+  term indexed by the light's `shadow_index` (already in `LightPacked.row4.z`), multiplies into its own
+  BRDF result. The lighting math stays per-material; only the shadow *sampling* leaves.
+
+Correction recorded: shadow **technique** is light-driven (point→cube, directional→cascade; EVSM/PCSS
+are quality settings), NOT a material property — so there is no per-material "shadow sample type". The
+only per-material shadow input is `receive_shadows`, which already exists in `mesh_meta`.
+
+Verify before building:
+- The froxel light-list → `shadow_index` read path (so the per-material lighting loop can fetch the
+  precomputed term per light) — the one place this can go subtly wrong.
+- Transparent pass also lights → needs the same buffer or its own handling.
+- 4K bandwidth of the visibility buffer.
+
+This shares the prep-pass infrastructure (needs world-pos/normal), so it's a **stage of this plan**, not
+a separate effort: prep pass → shadow-sampling pass → lean per-material shading.
