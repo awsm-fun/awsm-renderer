@@ -456,6 +456,7 @@ impl crate::AwsmRenderer {
                 msaa_sample_count: active_msaa,
                 bucket_count: entries.len() as u32,
                 emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(&self.gpu),
+                unified_edge: self.unified_edge,
             }
             .into(),
         );

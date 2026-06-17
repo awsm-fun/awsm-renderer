@@ -32,6 +32,12 @@ pub struct RenderTextures {
     /// array (4 shadow slots packed per texel). From
     /// `PrepPassConfig::shadow_visibility_layers()`. Only used when `prep_enabled`.
     prep_shadow_layers: u32,
+    /// U0 (`docs/plans/unified-edge-shading.md`): when `true`, allocate the
+    /// per-pixel `edge_id_tex` (R32Uint, one word/pixel) the classify pass
+    /// writes the compact edge_pixel_id / U32_MAX sentinel into. Gated like
+    /// `prep_*` to avoid the screen-sized allocation when the toggle is off.
+    /// Captured at construction from `AwsmRendererBuilder::with_unified_edge`.
+    unified_edge: bool,
     frame_count: u32,
     inner: Option<RenderTexturesInner>,
     /// Render-texture generations retired by a recreate but NOT yet
@@ -99,6 +105,7 @@ impl RenderTextures {
         features: &RendererFeatures,
         prep_enabled: bool,
         prep_shadow_layers: u32,
+        unified_edge: bool,
     ) -> Result<Self> {
         // Two distinct blit pipeline variants: the `None` (single-
         // sample) variant is used by *both* the opaque→transparent
@@ -133,6 +140,7 @@ impl RenderTextures {
             features: features.clone(),
             prep_enabled,
             prep_shadow_layers,
+            unified_edge,
             frame_count: 0,
             inner: None,
             pending_destroy: Vec::new(),
@@ -250,6 +258,7 @@ impl RenderTextures {
                 &self.features,
                 self.prep_enabled,
                 self.prep_shadow_layers,
+                self.unified_edge,
                 needs_opaque_mip_chain,
                 needs_hud_depth,
             )?;
@@ -334,6 +343,9 @@ pub struct RenderTextureViews {
     pub prep_vcolor: Option<web_sys::GpuTextureView>,
     /// Plan B Stage 3: per-pixel shadow-visibility view (Rgba8unorm array).
     pub prep_shadow_visibility: Option<web_sys::GpuTextureView>,
+    /// U0: per-pixel edge-id view (R32Uint). `None` when `unified_edge` is off.
+    /// Written by classify (storage texture); read by nobody in U0.
+    pub edge_id: Option<web_sys::GpuTextureView>,
 
     // Output from composite pass
     pub composite: web_sys::GpuTextureView,
@@ -400,6 +412,7 @@ impl RenderTextureViews {
             prep_uv: inner.prep_uv_view.clone(),
             prep_vcolor: inner.prep_vcolor_view.clone(),
             prep_shadow_visibility: inner.prep_shadow_visibility_view.clone(),
+            edge_id: inner.edge_id_view.clone(),
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
             // ^ `Option::clone()` — `None` until T2.6's sticky flag
@@ -473,6 +486,13 @@ pub struct RenderTexturesInner {
     pub prep_shadow_visibility: Option<web_sys::GpuTexture>,
     pub prep_shadow_visibility_view: Option<web_sys::GpuTextureView>,
 
+    /// U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id texture
+    /// (R32Uint, one word/pixel). Classify writes the compact edge_pixel_id /
+    /// U32_MAX sentinel; the future unified kernel reads it. `None` when
+    /// `unified_edge == false`.
+    pub edge_id: Option<web_sys::GpuTexture>,
+    pub edge_id_view: Option<web_sys::GpuTextureView>,
+
     pub depth: web_sys::GpuTexture,
     pub depth_view: web_sys::GpuTextureView,
 
@@ -519,6 +539,7 @@ impl RenderTexturesInner {
         features: &RendererFeatures,
         prep_enabled: bool,
         prep_shadow_layers: u32,
+        unified_edge: bool,
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
     ) -> Result<Self> {
@@ -937,6 +958,38 @@ impl RenderTexturesInner {
             None => None,
         };
 
+        // U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id texture
+        // — R32Uint, one word/pixel, NEVER multisampled (one value per pixel,
+        // not per sample). Classify binds it as a `texture_storage_2d<r32uint,
+        // write>` to write the compact edge_pixel_id / U32_MAX sentinel, so it
+        // needs STORAGE_BINDING; TEXTURE_BINDING is added for the future
+        // unified kernel's read. Gated on `unified_edge` to avoid the
+        // screen-sized allocation when the toggle is off (the default).
+        let edge_id = if unified_edge {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        TextureFormat::R32uint,
+                        Extent3d::new(width, Some(height), Some(1)),
+                        TextureUsage::new()
+                            .with_storage_binding()
+                            .with_texture_binding(),
+                    )
+                    .with_label("EdgeId")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let edge_id_view = match edge_id.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("edge_id: {e:?}"))
+            })?),
+            None => None,
+        };
+
         let transparent_view = transparent.create_view().map_err(|e| {
             AwsmRenderTextureError::CreateTextureView(format!("transparent: {e:?}"))
         })?;
@@ -1024,6 +1077,9 @@ impl RenderTexturesInner {
             prep_shadow_visibility,
             prep_shadow_visibility_view,
 
+            edge_id,
+            edge_id_view,
+
             depth,
             depth_view,
 
@@ -1068,6 +1124,9 @@ impl RenderTexturesInner {
             tex.destroy();
         }
         if let Some(tex) = self.prep_shadow_visibility {
+            tex.destroy();
+        }
+        if let Some(tex) = self.edge_id {
             tex.destroy();
         }
         self.depth.destroy();

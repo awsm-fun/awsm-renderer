@@ -254,6 +254,7 @@ impl AwsmRenderer {
                 post_processing: &self.post_processing,
                 prep_config: &self.prep_config,
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
+                unified_edge: self.unified_edge,
             };
             let geometry_descs =
                 crate::render_passes::geometry::pipeline::GeometryPipelines::build_descriptors(

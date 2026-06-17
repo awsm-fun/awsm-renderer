@@ -554,6 +554,7 @@ impl AwsmRenderer {
                     .as_ref()
                     .and_then(|p| p.edge_shadow.as_ref())
                     .map(|b| b.sampled_view.clone()),
+                unified_edge: self.unified_edge,
             },
             &mut self.render_passes,
             self.picker.as_mut(),

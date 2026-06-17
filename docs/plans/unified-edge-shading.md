@@ -114,10 +114,13 @@ resolve pass (over edge_to_xy): opaque_tex[xy] = average(accumulator[edge_id*4 +
 multi-material silhouettes (SheenChair, MetalRoughSpheres, a 2-material scene), with prep OFF *and* ON, at
 the current HEAD. Every stage below must reproduce these **byte-identically** (exclude the UI sidebar).
 
-- **U0 — baseline + scaffolding.** Capture baselines. Add `edge_id_tex` (R32uint screen texture, gated/
-  allocated; classify writes it during edge detection, alongside the existing `edge_to_xy`). Add the
-  any-sample `tile_mask` **behind a build-time toggle** so the old sample-0 path still runs by default.
-  Inert; old pipelines still used. Verify no change.
+- **U0 [DONE] — baseline + scaffolding.** `with_unified_edge(bool)` toggle (default false, threaded like
+  PrepPassConfig); `edge_id_tex` (R32Uint screen texture, gated alloc); classify (gated `{% if unified_edge %}`)
+  writes the compact edge_pixel_id / U32_MAX sentinel into edge_id_tex during the existing edge-detection
+  block (criteria unchanged) + builds an any-sample `tile_mask`; the old sample-0 path + edge-sample lists
+  + cs_opaque/cs_edge are untouched. Inert (edge_id_tex unread). 259+34 green; default render GPU-verified
+  BYTE-IDENTICAL to the HEAD baseline (MetalRoughSpheres). Note: false-path classify WGSL differs from HEAD
+  only in whitespace (askama `minimize` artifact) — behaviorally inert, naga-validated both toggle states.
 - **U1 — unified kernel, behind a toggle.** Add `cs_shade` as a new entry point that does the full
   interior+edge logic (per-sample accumulator). Wire a parallel dispatch path + resolve that uses it,
   selectable by the toggle, WITHOUT removing `cs_opaque`/`cs_edge`. With the toggle ON, GPU-verify

@@ -49,6 +49,10 @@ pub struct ShaderTemplateMaterialClassifyBindGroups {
     /// declarations (group(0) bindings 4 and 5). Priority 3 in
     /// https://github.com/dakom/awsm-renderer/pull/99.
     pub emit_edge_data: bool,
+    /// Unified-edge scaffolding (U0). When `true` (with `emit_edge_data`),
+    /// emit the `edge_id_tex` storage-texture binding (group(0) binding 11).
+    /// Default `false`. See [`ShaderCacheKeyMaterialClassify::unified_edge`].
+    pub unified_edge: bool,
 }
 
 /// Compute shader body for the classify pass.
@@ -79,6 +83,12 @@ pub struct ShaderTemplateMaterialClassifyCompute {
     /// (>254). Derived from `bucket_count` (in the cache key via
     /// `bucket_entries`), so writer + readers + buffer sizing all agree.
     pub edge_slot_bits: u32,
+    /// Unified-edge scaffolding (U0). When `true` (with `emit_edge_data` +
+    /// `multisampled_geometry`), the compute body builds the ANY-sample
+    /// `tile_mask` and writes `edge_id_tex`. Default `false` → byte-identical
+    /// to the pre-toggle WGSL. See
+    /// [`ShaderCacheKeyMaterialClassify::unified_edge`].
+    pub unified_edge: bool,
 }
 
 /// Returns the number of trailing `u32` padding words the templated
@@ -114,6 +124,7 @@ impl TryFrom<&ShaderCacheKeyMaterialClassify> for ShaderTemplateMaterialClassify
                 bucket_count,
                 pad_words_iter,
                 emit_edge_data: key.emit_edge_data,
+                unified_edge: key.unified_edge,
             },
             compute: ShaderTemplateMaterialClassifyCompute {
                 multisampled_geometry,
@@ -121,6 +132,7 @@ impl TryFrom<&ShaderCacheKeyMaterialClassify> for ShaderTemplateMaterialClassify
                 n_words: mask_words,
                 words_iter: (0..mask_words).collect(),
                 edge_slot_bits: crate::dynamic_materials::edge_slot_bits(bucket_count) as u32,
+                unified_edge: key.unified_edge,
             },
         })
     }

@@ -201,3 +201,14 @@ struct EdgeBufferLayout {
 {% else %}
 @group(0) @binding(4) var<storage, read> bucket_lut: array<u32>;
 {% endif %}
+
+{% if unified_edge && emit_edge_data %}
+// Unified-edge per-pixel edge-id texture (U0). One R32Uint word/pixel:
+// the compact `edge_pixel_id` at edge pixels, or `U32_MAX` (sentinel) at
+// non-edge in-bounds pixels. Classify writes it during edge detection,
+// alongside the existing per-bucket edge-sample lists. WRITTEN here but
+// READ BY NOBODY in U0 (inert); the future unified kernel consumes it.
+// Appended LAST (binding 11 in the MSAA edge variant) so it does not
+// perturb any existing binding index.
+@group(0) @binding(11) var edge_id_tex: texture_storage_2d<r32uint, write>;
+{% endif %}

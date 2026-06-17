@@ -258,6 +258,15 @@ pub struct AwsmRenderer {
     /// (`docs/plans/deferred-shared-prep-pass.md`). Inert until the prep pass is
     /// wired in; later stages read `prep_config.enabled` to choose the path.
     pub prep_config: crate::render_passes::material_prep::PrepPassConfig,
+    /// Unified-edge-shading scaffolding toggle (U0 of
+    /// `docs/plans/unified-edge-shading.md`). Default `false`. When `true`,
+    /// the classify pass additionally writes the per-pixel `edge_id_tex` and
+    /// builds an ANY-sample `tile_mask` (both consumed by the future unified
+    /// kernel; INERT in U0 — `edge_id_tex` is unread and the ANY-sample
+    /// tile_mask is render-parity). Threaded into the classify shader cache
+    /// key + `RenderTextures` (gates the `edge_id_tex` allocation). Set at
+    /// build time via [`AwsmRendererBuilder::with_unified_edge`].
+    pub unified_edge: bool,
     pub post_processing: PostProcessing,
     /// GPU mesh-picking subsystem. `None` when
     /// `features.picking == false` (the default for library /
@@ -806,6 +815,10 @@ pub struct AwsmRendererBuilder {
     /// (`docs/plans/deferred-shared-prep-pass.md`). Inert until the prep pass is
     /// wired in; `enabled` defaults `false` (legacy recompute-in-shader path).
     prep_config: crate::render_passes::material_prep::PrepPassConfig,
+    /// Unified-edge-shading scaffolding toggle (U0). Default `false` (legacy
+    /// sample-0 tile_mask + no `edge_id_tex`). See
+    /// [`AwsmRenderer::unified_edge`].
+    unified_edge: bool,
     /// Adaptive runtime policy. Defaults to `Auto` mode for the
     /// gpu_culling path; library consumers can override at build time
     /// (or via `AwsmRenderer::set_optimization_policy` later) to force
@@ -906,6 +919,7 @@ impl AwsmRendererBuilder {
             max_edge_budget: None,
             bucket_config: None,
             prep_config: crate::render_passes::material_prep::PrepPassConfig::default(),
+            unified_edge: false,
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
             phase_handler: None,
             scene_spatial_config: None,
@@ -1028,6 +1042,18 @@ impl AwsmRendererBuilder {
     /// pass is wired in (later stages).
     pub fn with_prep_pass(mut self, enabled: bool) -> Self {
         self.prep_config.enabled = enabled;
+        self
+    }
+
+    /// Unified-edge-shading scaffolding toggle (U0 of
+    /// `docs/plans/unified-edge-shading.md`). `false` (default) keeps the
+    /// legacy classify path (sample-0 `tile_mask`, no `edge_id_tex`); `true`
+    /// allocates the per-pixel `edge_id_tex` and makes classify write it +
+    /// build an ANY-sample `tile_mask`. INERT in U0 — the texture is unread
+    /// and the toggle is render-parity; it scaffolds the future unified
+    /// interior+edge kernel (U1+).
+    pub fn with_unified_edge(mut self, enabled: bool) -> Self {
+        self.unified_edge = enabled;
         self
     }
 
@@ -1195,6 +1221,7 @@ impl AwsmRendererBuilder {
             max_edge_budget,
             bucket_config,
             prep_config,
+            unified_edge,
             optimization_policy,
             phase_handler,
             scene_spatial_config,
@@ -1348,6 +1375,7 @@ impl AwsmRendererBuilder {
             post_processing: &post_processing,
             prep_config: &prep_config,
             max_edge_budget: resolved_max_edge_budget,
+            unified_edge,
         };
 
         // Phase A of RenderPasses (bind groups + shader cache key
@@ -1395,6 +1423,7 @@ impl AwsmRendererBuilder {
                     &features,
                     prep_config.enabled,
                     prep_config.shadow_visibility_layers(),
+                    unified_edge,
                 )
                 .await
                 .map_err(crate::error::AwsmError::from)
@@ -1666,6 +1695,7 @@ impl AwsmRendererBuilder {
             post_processing: &post_processing,
             prep_config: &prep_config,
             max_edge_budget: resolved_max_edge_budget,
+            unified_edge,
         };
         let render_passes_descs =
             RenderPasses::describe_pipelines(render_passes_plan, &mut render_pass_init, &features)
@@ -1890,6 +1920,7 @@ impl AwsmRendererBuilder {
             render_textures,
             anti_aliasing,
             prep_config,
+            unified_edge,
             post_processing,
             picker,
             lines,

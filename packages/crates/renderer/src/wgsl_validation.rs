@@ -363,6 +363,83 @@ fn opaque_shadow_from_buffer_variant_validates() {
     );
 }
 
+/// Render the material-classify shader (bind groups + compute concatenated)
+/// for a given config. Mirrors the renderer's `ShaderTemplateMaterialClassify`
+/// build path so the U0 `unified_edge` gating is exercised exactly as the
+/// pipeline cache does.
+fn render_classify(msaa: Option<u32>, emit_edge_data: bool, unified_edge: bool, label: &str) -> String {
+    use crate::render_passes::material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify;
+    use crate::render_passes::material_classify::shader::template::ShaderTemplateMaterialClassify;
+    ShaderTemplateMaterialClassify::try_from(&ShaderCacheKeyMaterialClassify {
+        msaa_sample_count: msaa,
+        bucket_count: crate::dynamic_materials::first_party_bucket_entries().len() as u32,
+        emit_edge_data,
+        unified_edge,
+    })
+    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+    .into_source()
+    .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"))
+}
+
+#[test]
+fn material_classify_shader_validates() {
+    // U0 (`docs/plans/unified-edge-shading.md`): the classify shader must
+    // naga-validate for BOTH `unified_edge` states, including the MSAA edge
+    // path (the only path where the `unified_edge` branches render — they are
+    // gated `{% if unified_edge && multisampled_geometry %}` /
+    // `{% if unified_edge && emit_edge_data %}`).
+    for (msaa, emit) in [(None, false), (Some(4u32), true)] {
+        for unified in [false, true] {
+            let label = format!("classify msaa={msaa:?} emit={emit} unified={unified}");
+            let src = render_classify(msaa, emit, unified, &label);
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("fn cs_main("),
+                "{label}: classify module missing `fn cs_main` entry point"
+            );
+        }
+    }
+
+    // INERT INVARIANT: with `unified_edge = false` the rendered WGSL must be
+    // BYTE-IDENTICAL to the pre-toggle shader — i.e. the toggle's only effect
+    // is additive when ON. We verify it indirectly + robustly: the OFF source
+    // must contain NONE of the unified-edge tokens, in EITHER MSAA state.
+    for (msaa, emit) in [(None, false), (Some(4u32), true)] {
+        let off = render_classify(msaa, emit, false, "classify off");
+        assert!(
+            !off.contains("edge_id_tex"),
+            "unified_edge=false (msaa={msaa:?}) must NOT declare/write edge_id_tex"
+        );
+        assert!(
+            !off.contains("ubucket1"),
+            "unified_edge=false (msaa={msaa:?}) must NOT emit the ANY-sample tile_mask branch"
+        );
+    }
+
+    // With `unified_edge = true` on the MSAA edge path, both new scaffolds
+    // must render: the edge_id_tex storage texture (declared + written) and
+    // the ANY-sample tile_mask branch.
+    let on = render_classify(Some(4), true, true, "classify on");
+    assert!(
+        on.contains("var edge_id_tex: texture_storage_2d<r32uint, write>"),
+        "unified_edge=true MSAA must declare `edge_id_tex` storage texture (binding 11)"
+    );
+    assert!(
+        on.contains("textureStore(edge_id_tex,"),
+        "unified_edge=true MSAA must write `edge_id_tex`"
+    );
+    assert!(
+        on.contains("ubucket1"),
+        "unified_edge=true MSAA must build the ANY-sample tile_mask (4-sample OR)"
+    );
+    // The existing edge-sample-list machinery must remain INTACT alongside it
+    // (U0 only ADDS edge_id_tex; U2 removes the lists).
+    assert!(
+        on.contains("fn append_edge_sample("),
+        "unified_edge=true must KEEP the existing edge-sample-list machinery (append_edge_sample)"
+    );
+}
+
 #[test]
 fn material_prep_shader_validates() {
     use crate::render_passes::material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep;

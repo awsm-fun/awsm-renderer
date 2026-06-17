@@ -31,6 +31,17 @@ pub struct ShaderCacheKeyMaterialClassify {
     /// multi-sampled visibility texture (so the single-sampled variant
     /// can still compile with this off as a zero-cost no-op).
     pub emit_edge_data: bool,
+    /// Unified-edge scaffolding toggle (U0 of
+    /// `docs/plans/unified-edge-shading.md`). Default `false`. When `true`
+    /// (AND `emit_edge_data` — i.e. the MSAA edge path), the classify shader
+    /// additionally (a) builds an ANY-sample `tile_mask` (OR all 4 samples'
+    /// bucket indices, not just sample 0) and (b) writes the per-pixel
+    /// `edge_id_tex` (R32Uint: compact edge_pixel_id / U32_MAX) alongside the
+    /// existing edge-sample-list machinery. INERT in U0 — `edge_id_tex` is
+    /// written but read by nobody, and the ANY-sample tile_mask only adds a
+    /// few check-and-skip tiles to cs_opaque (same output). When `false` the
+    /// rendered WGSL is byte-identical to before this toggle existed.
+    pub unified_edge: bool,
 }
 
 impl ShaderCacheKeyMaterialClassify {

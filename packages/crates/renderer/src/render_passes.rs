@@ -405,6 +405,7 @@ impl RenderPasses {
             ctx.gpu,
             &first_party_entries,
             ctx.anti_aliasing,
+            ctx.unified_edge,
         ));
         if let Some(bg) = coverage_bg_single.as_ref() {
             shader_cache_keys.extend(CoveragePipelines::shader_cache_keys(bg));
@@ -872,4 +873,9 @@ pub struct RenderPassInitContext<'a> {
     /// Sizes the prep pass's compact per-edge-sample shadow texture (Stage
     /// 5b-shadow); only consulted by the MSAA prep pipeline.
     pub max_edge_budget: u32,
+    /// Unified-edge scaffolding toggle (U0 of
+    /// `docs/plans/unified-edge-shading.md`). Default `false`. Threaded into
+    /// the classify shader cache key so the `edge_id_tex` write + ANY-sample
+    /// `tile_mask` branches render. INERT in U0.
+    pub unified_edge: bool,
 }

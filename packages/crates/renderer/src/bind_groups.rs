@@ -106,6 +106,11 @@ pub struct BindGroupRecreateContext<'a> {
     /// `&mut render_passes` the dispatcher also takes). `None` otherwise → the
     /// opaque main layout omits binding 27.
     pub prep_edge_shadow_view: Option<web_sys::GpuTextureView>,
+    /// U0 (`docs/plans/unified-edge-shading.md`): unified-edge scaffolding
+    /// toggle. When `true`, the classify bind group binds the per-pixel
+    /// `edge_id_tex` storage texture (the `render_texture_views.edge_id` view)
+    /// at binding 11 so the classify shader can write it. Default `false`.
+    pub unified_edge: bool,
 }
 
 /// Reasons to recreate bind groups.

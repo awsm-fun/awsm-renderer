@@ -156,6 +156,57 @@ fn cs_main(
     if bucket_index != 0xFFFFFFFFu {
         atomicOr(&tile_mask[bucket_index / 32u], 1u << (bucket_index % 32u));
     }
+    {% if unified_edge && multisampled_geometry %}
+    // Unified-edge ANY-sample tile_mask (U0). The sample-0 `bucket_index`
+    // OR above runs UNCHANGED (so the `unified_edge=false` WGSL is byte
+    // -identical); this block ADDS samples 1..3 so a bucket's tile list
+    // covers tiles where it appears at ANY sample (atomicOr is idempotent,
+    // so re-OR'ing sample 0 here is unnecessary — only 1..3 are added).
+    // This makes an edge-only material's tiles reachable by its own
+    // (future) unified dispatch. Inert in U0: the extra tiles only add a
+    // few check-and-skip lanes to the existing per-pixel shader_id guard in
+    // cs_opaque → same output. Per-sample bucket id derived the same way the
+    // sample-0 path does (sky → bucket 0; HUD → skip; else bucket_lut).
+    // Unrolled (no dynamic indexing into per-sample locals).
+    if in_bounds {
+        let uv1 = textureLoad(visibility_data_tex, coords, 1);
+        let uv2 = textureLoad(visibility_data_tex, coords, 2);
+        let uv3 = textureLoad(visibility_data_tex, coords, 3);
+        let utri1 = join32(uv1.x, uv1.y);
+        let utri2 = join32(uv2.x, uv2.y);
+        let utri3 = join32(uv3.x, uv3.y);
+        var ubucket1: u32 = 0xFFFFFFFFu;
+        if utri1 == U32_MAX {
+            ubucket1 = 0u;
+        } else {
+            let mm = material_mesh_metas[join32(uv1.z, uv1.w) / 256u];
+            if mm.is_hud == 0u { ubucket1 = bucket_lut[materials_data[mm.material_offset / 4u]]; }
+        }
+        var ubucket2: u32 = 0xFFFFFFFFu;
+        if utri2 == U32_MAX {
+            ubucket2 = 0u;
+        } else {
+            let mm = material_mesh_metas[join32(uv2.z, uv2.w) / 256u];
+            if mm.is_hud == 0u { ubucket2 = bucket_lut[materials_data[mm.material_offset / 4u]]; }
+        }
+        var ubucket3: u32 = 0xFFFFFFFFu;
+        if utri3 == U32_MAX {
+            ubucket3 = 0u;
+        } else {
+            let mm = material_mesh_metas[join32(uv3.z, uv3.w) / 256u];
+            if mm.is_hud == 0u { ubucket3 = bucket_lut[materials_data[mm.material_offset / 4u]]; }
+        }
+        if ubucket1 != 0xFFFFFFFFu {
+            atomicOr(&tile_mask[ubucket1 / 32u], 1u << (ubucket1 % 32u));
+        }
+        if ubucket2 != 0xFFFFFFFFu {
+            atomicOr(&tile_mask[ubucket2 / 32u], 1u << (ubucket2 % 32u));
+        }
+        if ubucket3 != 0xFFFFFFFFu {
+            atomicOr(&tile_mask[ubucket3 / 32u], 1u << (ubucket3 % 32u));
+        }
+    }
+    {% endif %}
     workgroupBarrier();
 
     if lii == 0u {
@@ -209,6 +260,15 @@ fn cs_main(
     // observed CPU-side; the full atomic-add fallback (a hash-bucketed
     // overflow accumulator region) is parked as Block C.2 future work.
     if (in_bounds) {
+        {% if unified_edge %}
+        // Unified-edge (U0): initialize this pixel's edge-id to the
+        // U32_MAX sentinel ("not an edge pixel"). Edge pixels overwrite
+        // it with their compact edge_pixel_id below. Every in-bounds pixel
+        // is written exactly once here, so non-edge pixels reliably read
+        // the sentinel without a separate per-frame clear. Inert in U0
+        // (edge_id_tex is unread).
+        textureStore(edge_id_tex, coords, vec4<u32>(0xFFFFFFFFu, 0u, 0u, 0u));
+        {% endif %}
         // Scan 4 samples — FULLY-STATIC version, no dynamic indexing
         // anywhere. Naga/Tint silently no-op'd dynamic-index writes
         // into both `vec4<u32>` and (turns out per the user's repro)
@@ -521,6 +581,17 @@ fn cs_main(
                 // go through the atomic interface).
                 let packed_xy = (u32(coords.x) & 0xFFFFu) | ((u32(coords.y) & 0xFFFFu) << 16u);
                 atomicStore(&edge_data[edge_layout.edge_to_xy_base + edge_id], packed_xy);
+
+                {% if unified_edge %}
+                // Unified-edge (U0): mirror the compact edge_pixel_id into
+                // the per-pixel edge-id texture. Overwrites the U32_MAX
+                // sentinel written above for this pixel. WRITTEN-only in U0
+                // (the future unified kernel reads it to branch
+                // interior-vs-edge + index the per-sample accumulator). The
+                // existing edge-sample-list machinery (append_edge_sample
+                // below) stays INTACT alongside it.
+                textureStore(edge_id_tex, coords, vec4<u32>(edge_id, 0u, 0u, 0u));
+                {% endif %}
 
                 // Pack the slot_map (§5): the 4 per-sample bucket ids, each
                 // truncated to the slot width. 8-bit (≤254 buckets): one u32
