@@ -119,8 +119,13 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
    - [x] **0b — builder wiring.** `with_prep_pass` / `with_max_shadow_casters_per_pixel` /
      `with_prep_reconstruct_world_pos` on `AwsmRendererBuilder`; `PrepPassConfig` flows builder→build()→
      `AwsmRenderer.prep_config`. Inert, compiles green, 254 tests pass.
-   - [ ] **0c — buffers + bind-group layouts.** Allocate attr G-buffer (world_pos fp32, UVs, vcolor) +
-     K-layer shadow buffer + compact edge buffer + their bind-group layouts. Inert.
+   - [x] **0c-froxel — single source of truth.** Extracted `froxel_base_for_pixel` + constants + new
+     `froxel_light_count()` into `shared_wgsl/lighting/froxel_walk.wgsl` (with the canonical
+     shadow-caster enumeration-order contract: directional prefix then per-froxel punctual), included by
+     `apply_lighting`. Behavior-identical refactor; naga-green; the prep pass will include the same file
+     so shadow slots align.
+   - [ ] **0c-buffers — buffers + bind-group layouts.** Allocate attr G-buffer (world_pos fp32, UVs,
+     vcolor) + K-layer R8 shadow buffer + compact edge buffer + their bind-group layouts. Inert.
 1. **Prep pass — attributes.** New compute pass after classify: interpolate world_pos + UVs + vertex
    colors into the G-buffer (dispatched over covered tiles). Validate output vs in-shader values (a
    debug compare). No material reads yet.
