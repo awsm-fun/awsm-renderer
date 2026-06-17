@@ -309,8 +309,21 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      per-material `cs_edge` MSAA path persists and this slimming is NOT obviated. Deferral reason is now
      ONLY the fragility/risk of this area — worth doing, but check approach/timing with David before
      sinking effort (he's deep in the adjacent MSAA/grouping area via uber-shader).
-6. **Finalize.** Drop the obsolete `reconstruct_world_pos` field; consider making `with_prep_pass`
-   default-on / removing the A/B flag; re-dump `reports/awsm-dumps/`; update `report.md`; tighten ceilings.
+6. **Finalize.**
+   - **[DONE] reconstruct_world_pos** field + builder removed (a9feac41).
+   - **[DONE] Measurements (per-shader size, prep on vs off):** no-MSAA PBR 224,516 → 174,280 B (**−50 KB**,
+     mostly the dropped inline shadow sampling); MSAA-4+mips PBR 247,887 → 201,623 B (**−46 KB**). All
+     prep-on paths GPU-verified **byte-identical** to prep-off (MultiUv, MetalRoughSpheres, SheenChair;
+     MSAA on AND off). The runtime SWEEP (N=256/1024 × 720p/4K × AA) is NOT run — the
+     `experiments/compare-threejs-materials` benchmark infra isn't present in this worktree; needs that to
+     confirm the prep-pass runtime cost is win-or-tiny-diff before flipping the default.
+   - **[HELD for David] default-on.** Direction is `with_prep_pass` default-on (keep the A/B flag), per
+     David — BUT held because (a) David is actively rethinking the edge/uber-shader architecture (the
+     edge machinery 5b touches may be reshaped by the uber-shader's single-pass model), and (b) the
+     runtime sweep can't be run here. Flag stays **default-off**; flip on David's explicit go once the
+     direction + a runtime measurement are settled. (Implementation is otherwise complete + verified.)
+   - size_regression ceilings: the default (non-prep) variants are unchanged; the prep deltas are asserted
+     by the new naga tests. Re-tighten when default-on flips.
 7. **[DONE]** **Custom materials use froxel-culled lights (David-requested).** Custom opaque kernels now
    expose `material_pixel_light_count(input)` + `material_pixel_light(input, i)` (in the Custom wrapper of
    `opaque_kernel_includes.wgsl`, gated `inc.light_access`) which wrap the **froxel_walk.wgsl SSOT** —
