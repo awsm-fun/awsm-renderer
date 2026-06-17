@@ -46,14 +46,10 @@ pub struct PrepPassConfig {
     /// order, writes layer `j`. Overflow (>K shadowed lights over one pixel) is
     /// clamped + logged. Default 4.
     pub max_shadow_casters_per_pixel: u32,
-
-    /// World-position tunable. `false` (default) **materializes** world position
-    /// in the prep pass (fp32, via the existing perspective-correct vertex
-    /// interpolation — NOT depth unprojection). `true` falls back to
-    /// reconstructing it in the slim shader (keeps `positions.wgsl` in the
-    /// material module but saves the world-position buffer's bandwidth — the
-    /// main 4K cost). The default is chosen from the Stage-6 measurement sweep.
-    pub reconstruct_world_pos: bool,
+    // NOTE (decision #2): world position is NEVER materialized — the slim shader
+    // always reconstructs it from depth (`get_standard_coordinates`). The former
+    // `reconstruct_world_pos` tunable was therefore obsolete and removed (Stage 6
+    // cleanup).
 }
 
 impl Default for PrepPassConfig {
@@ -61,7 +57,6 @@ impl Default for PrepPassConfig {
         Self {
             enabled: false,
             max_shadow_casters_per_pixel: 4,
-            reconstruct_world_pos: false,
         }
     }
 }

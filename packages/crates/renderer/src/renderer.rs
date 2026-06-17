@@ -1040,14 +1040,6 @@ impl AwsmRendererBuilder {
         self
     }
 
-    /// World-position tunable for the prep pass. `false` (default) materializes
-    /// world position fp32; `true` reconstructs it in the slim shader (saves the
-    /// world-pos buffer's bandwidth — the main 4K cost). See the spec.
-    pub fn with_prep_reconstruct_world_pos(mut self, reconstruct: bool) -> Self {
-        self.prep_config.reconstruct_world_pos = reconstruct;
-        self
-    }
-
     /// Subscribes to renderer-init phase transitions. The callback
     /// fires once per [`RendererLoadingPhase`] entry — see the enum
     /// docs for what each phase covers. Frontends use this to render
