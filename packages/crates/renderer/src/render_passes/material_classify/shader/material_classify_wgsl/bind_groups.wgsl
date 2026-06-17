@@ -107,13 +107,14 @@ struct EdgeIndirectArgs {
 // `<name>_edge` named fields (EdgeIndirectArgs is 16 B / stride 16,
 // starting at byte 48 after the 3 fixed fields), so the indirect-dispatch
 // offsets the host computes (`48 + bucket_index*16`) are unchanged.
+// Unified-edge U3b: skybox_edge_args + per_shader_edge_args drove the deleted
+// skybox_edge_resolve / cs_edge dispatches — removed. final_blend_args stays at
+// byte 16 (classify atomicAdds into it); args_buffer is now a fixed 32 B.
 struct EdgeArgsBuffer {
     edge_count: atomic<u32>,
     edge_overflow_count: atomic<u32>,
     _pad_counters: vec2<u32>,
     final_blend_args: EdgeIndirectArgs,
-    skybox_edge_args: EdgeIndirectArgs,
-    per_shader_edge_args: array<EdgeIndirectArgs, {{ bucket_count }}u>,
 };
 
 @group(0) @binding(4) var<storage, read_write> edge_buffers: EdgeArgsBuffer;
@@ -124,22 +125,14 @@ struct EdgeArgsBuffer {
 // are atomic counter mirrors (so the post-classify resolve shaders can
 // read them through their `edge_data` binding alone — args_buffer is
 // not bound there, to stay under the 10-storage-buffer cap).
+// Unified-edge U3b: dead sample-list/count fields removed (5 u32 / 32 B padded
+// now). Field order MUST match the Rust builder + the other 3 mirrors.
 struct EdgeBufferLayout {
     max_edge_budget: u32,
     edge_count_index: u32,
-    per_shader_count_base: u32,
-    skybox_count_index: u32,
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,
-    // Base (u32-stride) of bucket 0's sample list (§4c). Bucket `i`'s list
-    // is at `per_shader_sample_list_base + i * sample_entries_per_bucket`
-    // (contiguous, uniformly sized) — replaces the old per-bucket
-    // `<name>_sample_list_base` field array, so this uniform is now a fixed
-    // 10-u32 (48 B padded) struct regardless of bucket count.
-    per_shader_sample_list_base: u32,
-    skybox_sample_list_base: u32,
-    sample_entries_per_bucket: u32,
 };
 
 @group(0) @binding(5) var<uniform> edge_layout: EdgeBufferLayout;

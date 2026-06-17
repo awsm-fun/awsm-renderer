@@ -225,9 +225,12 @@ pub const ACCUMULATOR_SLOT_BYTES: u32 = 16;
 pub const ARGS_COUNTERS_BYTES: u32 = 16;
 
 /// Total bytes for the `args_buffer`.
-pub fn args_buffer_bytes(bucket_count: u32) -> u32 {
-    // counters + final_blend + skybox + per-shader
-    ARGS_COUNTERS_BYTES + (2u32.saturating_add(bucket_count)).saturating_mul(INDIRECT_ARGS_STRIDE)
+///
+/// Unified-edge U3b: only the `final_blend` indirect-args slot remains (the
+/// skybox_edge + per-shader cs_edge slots drove deleted dispatches). Fixed 32 B.
+pub fn args_buffer_bytes(_bucket_count: u32) -> u32 {
+    // counters (16 B) + final_blend (16 B)
+    ARGS_COUNTERS_BYTES + INDIRECT_ARGS_STRIDE
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -621,59 +624,34 @@ impl MaterialEdgeBuffers {
     }
 }
 
-/// Build the `EdgeBufferLayout` uniform-data payload for the
-/// classify + edge_resolve shaders. Since §4c the shader-side struct is
-/// **fixed-size** (no per-bucket field array): a single
-/// `per_shader_sample_list_base` (bucket 0's list base) plus the existing
-/// `sample_entries_per_bucket` lets any bucket `i`'s list be addressed at
-/// `per_shader_sample_list_base + i * sample_entries_per_bucket`. Padded to
-/// 16-byte alignment for WebGPU uniform-buffer requirements.
+/// Build the `EdgeBufferLayout` uniform-data payload for the classify +
+/// cs_shade + final_blend + prep shaders. Padded to 16-byte alignment for
+/// WebGPU uniform-buffer requirements.
+///
+/// Unified-edge U3b: the dead per-bucket/skybox sample-list + count fields were
+/// removed (their consumer `append_edge_sample` + the cs_edge / skybox_edge_resolve
+/// pipelines are gone). The kept `*_base` VALUES (byte offsets into `edge_data`)
+/// are UNCHANGED — `data_header_bytes` / `edge_to_xy_offset` / `edge_slot_map_offset`
+/// / `accumulator_offset` are untouched, so the kept data_buffer regions did not
+/// move; only the uniform-struct slots compact. The push order here MUST match
+/// the WGSL `EdgeBufferLayout` struct field order in ALL FOUR mirrors
+/// (material_opaque, final_blend, classify, material_prep).
 ///
 /// Layout (all u32, in declaration order):
 ///   max_edge_budget
-///   edge_count_index               (u32-stride into edge_data; 0)
-///   per_shader_count_base          (first per-bucket counter; bucket counts follow as a contiguous array)
-///   skybox_count_index             (skybox entry counter)
+///   edge_count_index   (u32-stride into edge_data; 0)
 ///   edge_to_xy_base
 ///   edge_slot_map_base
 ///   accumulator_base
-///   per_shader_sample_list_base    (base of bucket 0's sample list)
-///   skybox_sample_list_base
-///   sample_entries_per_bucket
-///
-/// All `*_base` values are u32-stride indices from the start of the
-/// `edge_data` storage buffer.
 pub fn build_edge_layout_uniform_bytes(bucket_count: u32, max_edge_budget: u32) -> Vec<u8> {
     let to_stride = |byte_off: u32| -> u32 { byte_off / 4 };
 
-    let mut words: Vec<u32> = Vec::with_capacity(8 + bucket_count as usize);
+    let mut words: Vec<u32> = Vec::with_capacity(8);
     words.push(max_edge_budget);
     words.push(to_stride(data_edge_count_offset())); // edge_count index
-    words.push(to_stride(data_per_shader_count_offset(0))); // per_shader_count_base
-    words.push(to_stride(data_skybox_count_offset(bucket_count))); // skybox_count_index
     words.push(to_stride(edge_to_xy_offset(bucket_count)));
-    words.push(to_stride(edge_slot_map_offset(
-        bucket_count,
-        max_edge_budget,
-    )));
+    words.push(to_stride(edge_slot_map_offset(bucket_count, max_edge_budget)));
     words.push(to_stride(accumulator_offset(bucket_count, max_edge_budget)));
-    let per_bucket = sample_entries_per_bucket(bucket_count, max_edge_budget);
-    // per_shader_sample_list_base — base (u32-stride) of bucket 0's sample
-    // list (§4c). Bucket `i`'s list starts at `base + i * per_bucket` in
-    // u32-stride units (lists are contiguous + uniformly `per_bucket`-sized),
-    // so a single base + the existing `sample_entries_per_bucket` field lets
-    // both classify (append) and edge_resolve (read) index any bucket without
-    // a per-bucket field array. Fixed-size uniform regardless of bucket count.
-    words.push(to_stride(sample_entries_offset(
-        bucket_count,
-        max_edge_budget,
-    )));
-    // skybox_sample_list_base — region after all the per-bucket lists.
-    words.push(to_stride(skybox_sample_list_offset(
-        bucket_count,
-        max_edge_budget,
-    )));
-    words.push(per_bucket);
 
     // Pad to 16-byte alignment (WebGPU uniform-buffer requirement).
     while (words.len() * 4) % 16 != 0 {
@@ -712,35 +690,19 @@ pub fn build_edge_layout_uniform(
 /// module-level docs: 2 atomic counters + 8B pad + 1 final_blend args
 /// slot + 1 skybox_edge args slot + bucket_count per-shader-id args
 /// slots.
-pub fn write_args_header(dst: &mut [u8], bucket_count: u32) {
+pub fn write_args_header(dst: &mut [u8], _bucket_count: u32) {
     let one = 1u32.to_ne_bytes();
     // Counters: both zero (default).
     // (bytes [0, 4) and [4, 8) are already zeroed by vec![0u8; ...].)
     // 8-byte alignment pad: zeros.
 
-    // final_blend args slot at byte offset 16.
+    // final_blend args slot at byte offset 16 (the only indirect slot left
+    // after U3b — skybox_edge + per-shader cs_edge slots were removed).
     let final_blend_base = ARGS_COUNTERS_BYTES as usize;
     dst[final_blend_base..final_blend_base + 4].copy_from_slice(&[0; 4]); // x
     dst[final_blend_base + 4..final_blend_base + 8].copy_from_slice(&one); // y
     dst[final_blend_base + 8..final_blend_base + 12].copy_from_slice(&one); // z
     dst[final_blend_base + 12..final_blend_base + 16].copy_from_slice(&[0; 4]); // pad
-
-    // skybox_edge args slot at byte offset 32.
-    let skybox_base = (ARGS_COUNTERS_BYTES + INDIRECT_ARGS_STRIDE) as usize;
-    dst[skybox_base..skybox_base + 4].copy_from_slice(&[0; 4]); // x
-    dst[skybox_base + 4..skybox_base + 8].copy_from_slice(&one); // y
-    dst[skybox_base + 8..skybox_base + 12].copy_from_slice(&one); // z
-    dst[skybox_base + 12..skybox_base + 16].copy_from_slice(&[0; 4]); // pad
-
-    // Per-shader-id args slots.
-    let per_shader_base = (ARGS_COUNTERS_BYTES + 2 * INDIRECT_ARGS_STRIDE) as usize;
-    for bucket in 0..bucket_count as usize {
-        let base = per_shader_base + bucket * INDIRECT_ARGS_STRIDE as usize;
-        dst[base..base + 4].copy_from_slice(&[0; 4]); // x
-        dst[base + 4..base + 8].copy_from_slice(&one); // y
-        dst[base + 8..base + 12].copy_from_slice(&one); // z
-        dst[base + 12..base + 16].copy_from_slice(&[0; 4]); // pad
-    }
 }
 
 #[cfg(test)]

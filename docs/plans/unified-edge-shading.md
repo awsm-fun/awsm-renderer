@@ -226,12 +226,22 @@ the current HEAD. Every stage below must reproduce these **byte-identically** (e
     (the no-MSAA interior entry) DEAD alongside cs_shade — gating cs_opaque to non-MSAA + dropping the
     unused MSAA cs_opaque pipeline would further collapse the MSAA shader surface (efficiency follow-up,
     flagged for David; out of U3 scope).
-  - **U3b — remove the dead EdgeBufferLayout fields + args slots** (the 5-way struct lockstep deferred from
-    U2b-3): drop per_shader_count_base / skybox_count_index / per_shader_sample_list_base /
-    skybox_sample_list_base / sample_entries_per_bucket from the Rust uniform builder + ALL FOUR WGSL mirrors
-    (material_opaque, final_blend, classify, material_prep) in lockstep (keep edge_to_xy_base/edge_slot_map_base/
-    accumulator_base offsets UNCHANGED), the dead args_buffer skybox/per_shader slots, and the now-unused
-    offset fns. GPU-verify byte-parity (the hard gate). Then U3 [DONE].
+  - **U3b [DONE] — remove the dead EdgeBufferLayout fields + args slots** (the 5-way struct lockstep deferred
+    from U2b-3). Dropped per_shader_count_base / skybox_count_index / per_shader_sample_list_base /
+    skybox_sample_list_base / sample_entries_per_bucket from the Rust `build_edge_layout_uniform_bytes` builder
+    AND all FOUR WGSL `EdgeBufferLayout` mirrors (material_opaque, final_blend [RO], classify, material_prep)
+    in lockstep → **uniform 10 u32 → 5** (max_edge_budget, edge_count_index, edge_to_xy_base, edge_slot_map_base,
+    accumulator_base). The kept `*_base` VALUES are unchanged (`data_header_bytes` + the offset fns left as-is,
+    so the kept data_buffer regions did not move) — only the uniform slots compacted. Also dropped the dead
+    args_buffer skybox_edge_args + per_shader_edge_args slots (classify `EdgeArgsBuffer` WGSL struct +
+    `args_buffer_bytes` + `write_args_header`) → **args_buffer (2+B) slots → 1 (final_blend only); 128 B → 32 B**
+    at bucket=5; final_blend_args stays at byte 16. 260+34 green. **GPU byte-parity VERIFIED (max-diff 0, 0
+    pixels):** MetalRoughSpheres + SheenChair prep-off == baseline; SheenChair prep-on == prep-off baseline
+    (validates the material_prep mirror lockstep too). Liveness confirmed via the alloc log (args_buffer=32 B,
+    was 128 B). NOTE: a few now-dead `pub` offset helpers (data_per_shader_count_offset, data_skybox_count_offset,
+    sample_entries_offset, skybox_sample_list_offset, sample_entries_per_bucket, skybox_edge_args_offset,
+    per_shader_args_offset) + the data_header per-bucket count region remain (harmless, kept so edge_to_xy_base
+    doesn't shift; sweepable later). **This completes U3.**
 
 ## Testing strategy (David: "tested carefully")
 

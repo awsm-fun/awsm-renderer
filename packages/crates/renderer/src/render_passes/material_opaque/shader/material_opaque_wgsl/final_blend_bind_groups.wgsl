@@ -8,19 +8,14 @@
 // edge_count from the header, plus edge_to_xy + accumulator.
 @group(0) @binding(0) var<storage, read> edge_data: array<u32>;
 
+// Unified-edge U3b: dead sample-list/count fields removed. Must stay in
+// lockstep with the Rust builder + the other 3 EdgeBufferLayout mirrors.
 struct EdgeBufferLayoutRO {
     max_edge_budget: u32,
     edge_count_index: u32,
-    per_shader_count_base: u32,
-    skybox_count_index: u32,
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,
-    // Base of bucket 0's sample list; bucket `i` at
-    // `per_shader_sample_list_base + i * sample_entries_per_bucket` (§4c).
-    per_shader_sample_list_base: u32,
-    skybox_sample_list_base: u32,
-    sample_entries_per_bucket: u32,
 };
 
 @group(0) @binding(1) var<uniform> edge_layout: EdgeBufferLayoutRO;

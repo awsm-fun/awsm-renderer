@@ -185,21 +185,18 @@ struct CullParams {
 // uniform's u32-stride offsets.
 @group({{ shadow_group_index }}) @binding(10) var<storage, read_write> edge_data: array<u32>;
 
+// Unified-edge U3b: the dead per-bucket/skybox sample-list + count fields were
+// removed (append_edge_sample / cs_edge / skybox_edge_resolve are gone). Kept
+// fields are u32-stride indices into `edge_data`; their VALUES are unchanged
+// (the kept data_buffer regions did not move) — only the uniform slots compact.
+// Field order MUST match the Rust builder `build_edge_layout_uniform_bytes` +
+// the other 3 WGSL mirrors (classify, final_blend, material_prep).
 struct EdgeBufferLayout {
     max_edge_budget: u32,
-    // u32-stride indices into `edge_data` of the atomic-counter
-    // mirrors classify writes during edge emission.
     edge_count_index: u32,
-    per_shader_count_base: u32,
-    skybox_count_index: u32,
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,
-    // Base of bucket 0's sample list; bucket `i` at
-    // `per_shader_sample_list_base + i * sample_entries_per_bucket` (§4c).
-    per_shader_sample_list_base: u32,
-    skybox_sample_list_base: u32,
-    sample_entries_per_bucket: u32,
 };
 
 @group({{ shadow_group_index }}) @binding(11) var<uniform> edge_layout: EdgeBufferLayout;

@@ -108,17 +108,14 @@ struct CullParams {
 // compact per-edge-sample shadow texture `edge_shadow_out`.
 @group(3) @binding(0) var<storage, read> edge_data: array<u32>;
 
+// Unified-edge U3b: dead sample-list/count fields removed. Must stay in
+// lockstep with the Rust builder + the other 3 EdgeBufferLayout mirrors.
 struct EdgeBufferLayout {
     max_edge_budget: u32,
     edge_count_index: u32,
-    per_shader_count_base: u32,
-    skybox_count_index: u32,
     edge_to_xy_base: u32,
     edge_slot_map_base: u32,
     accumulator_base: u32,
-    per_shader_sample_list_base: u32,
-    skybox_sample_list_base: u32,
-    sample_entries_per_bucket: u32,
 };
 @group(3) @binding(1) var<uniform> edge_layout: EdgeBufferLayout;
 
