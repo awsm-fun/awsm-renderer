@@ -59,15 +59,20 @@ resolve pass (over edge_to_xy): opaque_tex[xy] = average(accumulator[edge_id*4 +
    it appears at *any* sample" — so an edge-only material's tiles are covered by its own `cs_shade`
    dispatch. Cost: 4× a cheap workgroup-shared atomicOr; the dense-material tile count barely changes.
 
-2. **Per-pixel `edge_id_tex` replaces the per-bucket edge-sample lists.** Classify already detects edge
-   pixels (≥2 distinct sample materials) and allocates a compact `edge_pixel_id` (`edge_to_xy`). Add a
-   screen-sized `edge_id_tex` (R32uint, 1 word/pixel: the `edge_pixel_id` or `U32_MAX`). The unified kernel
-   reads it directly at its pixel — no reverse lookup, no per-bucket lists. **DROP:** `append_edge_sample`
-   + the per-bucket sample lists + their per-bucket indirect args + `edge_slot_map` (see #3). Memory win:
-   the sample lists were `bucket_count × sample_entries_per_bucket` (large at 1024 buckets); `edge_id_tex`
-   is one screen-sized R32uint (~33 MB @4K — note: trade a per-bucket-scaling buffer for a fixed
-   screen-sized one; at high bucket counts this is a net win, at low counts a wash. Could pack into an
-   existing channel later if it matters).
+2. **Per-pixel `edge_id_tex` replaces the per-bucket edge-sample lists.** Add a screen-sized `edge_id_tex`
+   (R32uint, 1 word/pixel: the compact `edge_pixel_id` or `U32_MAX`). Classify writes it during edge
+   detection, using the **EXACT same edge criteria the current path uses** (material-distinct across
+   samples AND whatever depth/normal/coverage variance the current `cs_edge`/edge-mask path keys on —
+   reproduce it verbatim, since byte-parity depends on shading per-sample for *exactly* the same pixels).
+   The unified kernel reads `edge_id_tex` **once** at its pixel: `U32_MAX` → interior (shade sample 0 →
+   output); else → edge (use it as the accumulator base). It carries **both** is-edge and the accumulator
+   index — the kernel does NOT re-derive edge-ness (it needs the compact index from classify regardless,
+   so one read is strictly better than recomputing). No reverse lookup, no per-bucket lists. **DROP:**
+   `append_edge_sample` + the per-bucket sample lists + their per-bucket indirect args + `edge_slot_map`
+   (see #3). Memory: the sample lists were `bucket_count × sample_entries_per_bucket` (large at 1024
+   buckets); `edge_id_tex` is one screen-sized R32uint (~33 MB @4K — trade a per-bucket-scaling buffer for
+   a fixed screen-sized one; net win at high bucket counts, wash at low. `edge_pixel_id` needs ~20 bits
+   (512K budget); could pack into spare bits of an existing per-pixel texture later to reclaim the 33 MB).
 
 3. **Accumulator becomes PER-SAMPLE, not per-material.** `accumulator[edge_id*4 + sample] = that sample's
    shaded color`. Each sample has exactly one owning material, which writes it; resolve averages the 4
@@ -91,6 +96,17 @@ resolve pass (over edge_to_xy): opaque_tex[xy] = average(accumulator[edge_id*4 +
    `cs_prep_edge` + compact edge-shadow buffer become "the edge-sample shadow source the unified kernel
    reads." The unification only collapses the *consumer* (two kernels → one); prep is orthogonal. Works
    with prep OFF too (the RECOMPUTE path).
+
+8. **Efficiency (David: "I want an efficient renderer"):** shading is done **exactly once per (sample,
+   owning material)** — same as today; the unification removes dispatch/memory overhead, not shading work.
+   In `cs_shade`: (a) **read the per-sample visibility ONCE** (the 4 sample loads needed for ownership) and
+   reuse them for shading — do not re-fetch per sample; (b) the interior path shades **only sample 0** (no
+   per-sample loop), so the per-sample loop runs only at the sparse edge pixels; (c) skybox's bucket
+   kernel is templated lean (cubemap sample + write-branch — no lighting/prep includes), so folding it in
+   costs nothing per sample while removing 2 pipelines. The residual cost vs today is a sliver of warp
+   divergence at edge-straddling tiles — far below the dropped per-bucket `cs_edge` dispatch + edge-list
+   overhead. (The remaining "N material dispatches sweep shared tiles" redundancy is the uber-shader's to
+   remove — this refactor sets that up; see "Relationship to uber-shader".)
 
 ## Stages (each its own commit; each BYTE-PARITY gated vs the pre-refactor baseline)
 
