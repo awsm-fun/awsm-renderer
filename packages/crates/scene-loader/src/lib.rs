@@ -27,11 +27,14 @@
 //! its bone tracks currently target the scene bone nodes, not the glb joints).
 
 pub mod animation;
+pub mod assets;
 pub mod camera;
 pub mod dynamic;
 pub mod light;
 pub mod material;
 pub mod texture;
+
+pub use assets::SceneAssets;
 
 use std::collections::HashMap;
 
@@ -57,12 +60,6 @@ use awsm_scene::{
 };
 use glam::{Quat, Vec3};
 
-/// The renderer resources `populate_awsm_scene` created, returned so a host can
-/// tear the loaded scene back down — these inserts live OUTSIDE any per-node
-/// tracking the host keeps, so without removing them they'd leak/ghost on the
-/// next load. Only the *visible* resources (meshes + lights) are tracked;
-/// orphaned transforms / materials are invisible and cleared on a full renderer
-/// rebuild.
 /// The renderer handles a single materialized scene node produced, keyed back to
 /// its [`NodeId`] in [`LoadedScene::nodes`]. A player drives named nodes every
 /// frame through these: read/set the `transform`, hide via the `meshes`, attach a
@@ -166,7 +163,7 @@ pub async fn populate_awsm_scene(
     // Build + register each custom material (material.json + wgsl) once; nodes
     // assigned one resolve to its shader id below. Built-in materials have no
     // folder, so they're skipped here and lower via their inline MaterialDef.
-    let custom = dynamic::register_custom_materials(renderer, scene, assets);
+    let custom = dynamic::register_custom_materials(renderer, scene, assets).await;
 
     // ── Phase 1: build materials ──────────────────────────────────────────────
     // The missing-material sentinel (magenta) for unassigned meshes.
@@ -282,7 +279,7 @@ async fn materialize(
     scene: &Scene,
     node: &EditorNode,
     parent: Option<TransformKey>,
-    assets: &HashMap<String, Vec<u8>>,
+    assets: &impl SceneAssets,
     maps: &mut AnimResolveMaps,
     placeholder: MaterialKey,
     on_phase: &mut dyn FnMut(LoadPhase),
@@ -452,15 +449,16 @@ async fn materialize(
 /// double-apply the glTF's basis-conversion node).
 async fn load_glb_under(
     renderer: &mut AwsmRenderer,
-    assets: &HashMap<String, Vec<u8>>,
+    assets: &impl SceneAssets,
     leaf: &str,
     parent: Option<TransformKey>,
     material: MaterialKey,
 ) -> Result<(Vec<MeshKey>, HashMap<usize, TransformKey>)> {
     let key = format!("{ASSETS_DIR}/{leaf}");
     let bytes = assets
-        .get(&key)
-        .ok_or_else(|| anyhow!("bundle is missing mesh glb `{key}`"))?;
+        .fetch(&key)
+        .await
+        .map_err(|_| anyhow!("bundle is missing mesh glb `{key}`"))?;
     // The bundle's glb is geometry-only (materials stripped), so `populate_gltf`
     // would decide every primitive Opaque and build no transparency geometry —
     // but we apply OUR material via `Single`. If that material is transparent the
@@ -476,7 +474,7 @@ async fn load_glb_under(
     };
     let hints = awsm_renderer_gltf::data::GltfDataHints::default()
         .with_geometry_override(geometry_override);
-    let data = GltfLoader::from_glb_bytes(bytes)
+    let data = GltfLoader::from_glb_bytes(&bytes)
         .await?
         .into_data(Some(hints))?;
     let ctx = renderer
@@ -552,7 +550,7 @@ async fn resolve_material(
     renderer: &mut AwsmRenderer,
     instance: Option<&MaterialInstance>,
     placeholder: MaterialKey,
-    assets: &HashMap<String, Vec<u8>>,
+    assets: &impl SceneAssets,
     custom: &HashMap<AssetId, awsm_materials::MaterialShaderId>,
 ) -> MaterialKey {
     let Some(inst) = instance else {
@@ -625,7 +623,7 @@ async fn resolve_material(
 /// rest are linear data (metallic-roughness mips).
 async fn bind_extension_textures(
     renderer: &mut AwsmRenderer,
-    assets: &HashMap<String, Vec<u8>>,
+    assets: &impl SceneAssets,
     def: &awsm_scene::MaterialDef,
     pbr: &mut awsm_renderer::materials::pbr::PbrMaterial,
 ) {

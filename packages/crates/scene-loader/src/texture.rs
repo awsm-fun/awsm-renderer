@@ -8,8 +8,6 @@
 //! loader's embedded-image path (`bitmap::load_u8` → `ImageData::Bitmap` →
 //! `textures.add_image`) and the editor's `sampler_for` / `apply_textures`.
 
-use std::collections::HashMap;
-
 use awsm_renderer::materials::MaterialTexture;
 use awsm_renderer::textures::{SamplerCacheKey, SamplerKey};
 use awsm_renderer::AwsmRenderer;
@@ -20,6 +18,8 @@ use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_core::texture::texture_pool::TextureColorInfo;
 use awsm_scene::{TextureFilter, TextureRef, TextureSampler, TextureWrap, ASSETS_DIR};
+
+use crate::assets::SceneAssets;
 
 /// Authored sampler config → a pooled renderer `SamplerKey` (mirrors the editor
 /// bridge's `sampler_for`). `None` = the glTF default (repeat / linear).
@@ -61,13 +61,13 @@ fn sampler_key_for(
 /// texture isn't in the bundle or fails to decode.
 pub async fn load_texture(
     renderer: &mut AwsmRenderer,
-    assets: &HashMap<String, Vec<u8>>,
+    assets: &impl SceneAssets,
     tref: &TextureRef,
     srgb: bool,
     mipmap_kind: MipmapTextureKind,
 ) -> Option<MaterialTexture> {
     let path = format!("{ASSETS_DIR}/{}.png", tref.asset);
-    let Some(bytes) = assets.get(&path) else {
+    let Ok(bytes) = assets.fetch(&path).await else {
         // A material references this texture but the bundle didn't ship it — the
         // slot renders unbound (e.g. an extension factor with no mask → applied
         // everywhere). Loud because it's silent-wrong otherwise.
@@ -82,7 +82,7 @@ pub async fn load_texture(
             .with_premultiply_alpha(PremultiplyAlpha::None)
             .with_color_space_conversion(ColorSpaceConversion::Default),
     );
-    let image = awsm_renderer_core::image::bitmap::load_u8(bytes, "image/png", options.clone())
+    let image = awsm_renderer_core::image::bitmap::load_u8(&bytes, "image/png", options.clone())
         .await
         .ok()?;
     let image_data = ImageData::Bitmap { image, options };

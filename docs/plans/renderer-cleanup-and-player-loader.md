@@ -247,7 +247,18 @@ touch the model-view render path; scene-loader tests are the gate.)
 HashMap<NodeId,NodeHandles>, prefabs, clips, + teardown handles }`. Stop discarding the
 internal node→key map. Acceptance: `loaded.nodes[&id].transform` is a live key.
 
-### B2 — R5: `SceneAssets` async trait
+### B2 [DONE] — R5: `SceneAssets` async trait
+Added `pub trait SceneAssets { async fn fetch(&self, bundle_relative_path: &str) -> Result<Vec<u8>> }`
+(new `assets.rs` module, re-exported from lib) + blanket `impl SceneAssets for HashMap<String, Vec<u8>>`
+(fetch = clone or "asset not found" err). Threaded `&impl SceneAssets` (static dispatch) through
+materialize / load_glb_under / resolve_material / texture::load_texture / dynamic::build_custom_material,
+and made `dynamic::register_custom_materials` async. Byte-fetch sites now `.fetch(path).await` with the same
+missing-asset skip/None semantics. `populate_awsm_scene` keeps its public `&HashMap<String, Vec<u8>>` sig
+(passes it where `&impl SceneAssets` is expected via the blanket impl) — model-test page unchanged. The
+scene asset *registry* (`scene.assets.get`) is untouched (it's metadata, not bytes). `#[allow(async_fn_in_trait)]`
+on the trait (static-dispatch wasm; no Send). 259+34+25 green, warning-free.
+
+### B2 (orig) — R5: `SceneAssets` async trait
 `trait SceneAssets { async fn fetch(&self, path:&str) -> Result<Vec<u8>> }` + blanket
 impl for `HashMap<String,Vec<u8>>` (model-test path unchanged). Loader pulls lazily;
 `on_phase` still reports progress.
