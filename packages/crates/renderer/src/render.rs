@@ -878,10 +878,8 @@ impl AwsmRenderer {
         }
 
         // Material prep (Plan B) — shared, material-independent per-pixel
-        // resolve. `Some` only when `PrepPassConfig.enabled`, so this is the
-        // gate: with the flag off the pass is `None` and the legacy path is
-        // byte-identical. Dispatched between classify and opaque; its outputs
-        // are inert (unread) until later Plan B stages consume them.
+        // resolve. Always `Some` (prep is unconditional); the opaque deferred
+        // path reads its outputs. Dispatched between classify and opaque.
         if let Some(prep) = self.render_passes.material_prep.as_ref() {
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Material Prep RenderPass").entered())

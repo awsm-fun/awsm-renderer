@@ -31,7 +31,23 @@ since prep-on IS the shipping behavior.)
 
 ---
 
-## P1 — remove the prep on/off flag (opaque = prep-only)
+**VERIFICATION BAR (corrected, per David):** this is a deliberate shader-architecture rewrite, NOT a
+behavior-preserving refactor — so do NOT gate on byte-parity vs the old shaders. The bar is **correct
+visible result**: the models render properly (no black frames, no artifacts/seams, no pipeline-create
+errors), shading looks right. Sub-pixel deltas (a channel off by 1 on a handful of pixels, from FP-op
+reordering when the shader text changes) are EXPECTED and fine — ignore them. Only chunky/structural visual
+differences or breakage are real failures. Use the PIL diff only as a coarse signal (huge diff = look at it;
+a few ±1 pixels = fine), never as a hard max-diff-0 gate.
+
+## P1 [DONE] — remove the prep on/off flag (opaque = prep-only)
+Removed `PrepPassConfig.enabled` + `with_prep_pass` + all the flag threading; prep pass + buffers are now
+unconditional; opaque always `prep_present=true` (the prep variant axis collapsed → one opaque variant per
+(msaa,mips,shader_id)); transparent keeps `prep_present=false` (forward). 257+34+27 green, warning-free.
+Renders correctly (MetalRoughSpheres + SheenChair, MSAA); the only delta vs the old prep-on build is an
+invisible ±1 on 93 sheen pixels (FP-op reordering from the changed shader text under whitespace-minimize) —
+not a regression, ignored per the corrected bar above. size_regression ceilings re-set to the prep-on sizes.
+
+## P1 (orig) — remove the prep on/off flag (opaque = prep-only)
 
 - Delete `PrepPassConfig.enabled` + `AwsmRenderer(Builder)::with_prep_pass` + the `prep_enabled`/`enabled`
   threading (renderer.rs, render.rs RenderContext, anti_alias.rs, textures.rs, render_textures.rs, the

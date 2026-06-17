@@ -264,7 +264,6 @@ impl MaterialEdgePipelines {
         anti_aliasing: &AntiAliasing,
         color_wgsl_format: &str,
         dynamic_registry: Option<&DynamicMaterials>,
-        prep_enabled: bool,
         max_shadow_casters: u32,
     ) -> Result<Option<MaterialEdgePipelineDescriptors>> {
         // No MSAA → no edges → no compile.
@@ -376,7 +375,6 @@ impl MaterialEdgePipelines {
                     texture_pool_samplers_len,
                     msaa_sample_count: anti_aliasing.msaa_sample_count,
                     mipmaps,
-                    prep_enabled,
                     max_shadow_casters,
                     shader_id: entry.shader_id,
                     base: entry.base,
@@ -444,7 +442,6 @@ impl MaterialEdgePipelines {
         anti_aliasing: &AntiAliasing,
         color_wgsl_format: &str,
         dynamic_registry: Option<&DynamicMaterials>,
-        prep_enabled: bool,
         max_shadow_casters: u32,
     ) -> Result<()> {
         let Some(descs) = self.build_descriptors(
@@ -457,7 +454,6 @@ impl MaterialEdgePipelines {
             anti_aliasing,
             color_wgsl_format,
             dynamic_registry,
-            prep_enabled,
             max_shadow_casters,
         )?
         else {
