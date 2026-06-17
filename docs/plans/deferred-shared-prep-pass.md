@@ -148,9 +148,14 @@ add deferred shadows; 5 handles edges (Option B); 6 finalizes.
      `mesh_meta`, a WGSL reserved word); 255 tests pass. NOTE: only UV set 0 / color set 0 for now —
      multi-UV-set materialization is a follow-up; attr-fetch helpers inlined (mirror
      `_texture_uv_per_vertex`/`_vertex_color_per_vertex`), TODO to share for guaranteed parity.
-   - [ ] **1b — pipeline + buffers + dispatch.** Allocate UV/vcolor outputs (conditionally on
-     `enabled`), build the bind group(s)/pipeline, dispatch between classify and opaque. GPU-verify the
-     pass runs + writes (debug readback / view) — flag-on vs off, clean console.
+   - [x] **1b-textures — gated output allocation.** `render_textures.rs`: `prep_uv` (Rg32float) +
+     `prep_vcolor` (Rgba32float) storage textures, gated on a new `prep_enabled` flag threaded
+     RenderTextures::new → views() → RenderTexturesInner::new (mirrors `decal_color`); added to
+     RenderTextureViews + destroy(); call site passes `prep_config.enabled`. Inert (unread), compiles
+     green, 255 tests pass.
+   - [ ] **1b-pipeline — bind group + pipeline + dispatch.** material_prep/{bind_group.rs, render_pass.rs,
+     pipeline.rs} mirroring material_classify; wire into RenderPasses + build() + bind-groups recreate;
+     dispatch between classify and opaque. GPU-verify flag-on renders identically to off + clean console.
 1. **Prep pass — attributes.** New compute pass after classify: interpolate **UVs + vertex colors**
    into the attr buffers (world-pos is NOT materialized — kept as depth-unprojection in the slim
    shader). Dispatched over covered tiles. Validate output vs in-shader values. No material reads yet.

@@ -24,6 +24,10 @@ pub struct RenderTextures {
     /// [`RenderTexturesInner`] so the gated `decal_color` allocation
     /// can be skipped when `features.decals == false`.
     features: RendererFeatures,
+    /// Plan B: when `true`, allocate the prep pass's UV/vcolor output textures
+    /// (gated like `decal_color` to avoid VRAM when the feature is off). Captured
+    /// at construction from `PrepPassConfig.enabled`.
+    prep_enabled: bool,
     frame_count: u32,
     inner: Option<RenderTexturesInner>,
     /// Render-texture generations retired by a recreate but NOT yet
@@ -89,6 +93,7 @@ impl RenderTextures {
         gpu: &AwsmRendererWebGpu,
         formats: RenderTextureFormats,
         features: &RendererFeatures,
+        prep_enabled: bool,
     ) -> Result<Self> {
         // Two distinct blit pipeline variants: the `None` (single-
         // sample) variant is used by *both* the opaque→transparent
@@ -121,6 +126,7 @@ impl RenderTextures {
         Ok(Self {
             formats,
             features: features.clone(),
+            prep_enabled,
             frame_count: 0,
             inner: None,
             pending_destroy: Vec::new(),
@@ -236,6 +242,7 @@ impl RenderTextures {
                 current_size.1,
                 anti_aliasing,
                 &self.features,
+                self.prep_enabled,
                 needs_opaque_mip_chain,
                 needs_hud_depth,
             )?;
@@ -315,6 +322,10 @@ pub struct RenderTextureViews {
     /// ~16 MB at 4K.
     pub decal_color: Option<web_sys::GpuTextureView>,
 
+    /// Plan B prep-pass output views (None when the prep feature is off).
+    pub prep_uv: Option<web_sys::GpuTextureView>,
+    pub prep_vcolor: Option<web_sys::GpuTextureView>,
+
     // Output from composite pass
     pub composite: web_sys::GpuTextureView,
     pub transparent_to_composite_blit_bind_group_no_anti_alias: Option<web_sys::GpuBindGroup>,
@@ -377,6 +388,8 @@ impl RenderTextureViews {
             transparent: inner.transparent_view.clone(),
             decal_color: inner.decal_color_view.clone(),
             // ^ `Option::clone()` — stays `None` when decals are gated off.
+            prep_uv: inner.prep_uv_view.clone(),
+            prep_vcolor: inner.prep_vcolor_view.clone(),
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
             // ^ `Option::clone()` — `None` until T2.6's sticky flag
@@ -440,6 +453,12 @@ pub struct RenderTexturesInner {
     pub decal_color: Option<web_sys::GpuTexture>,
     pub decal_color_view: Option<web_sys::GpuTextureView>,
 
+    /// Plan B prep-pass outputs (None when `prep_enabled == false`).
+    pub prep_uv: Option<web_sys::GpuTexture>,
+    pub prep_uv_view: Option<web_sys::GpuTextureView>,
+    pub prep_vcolor: Option<web_sys::GpuTexture>,
+    pub prep_vcolor_view: Option<web_sys::GpuTextureView>,
+
     pub depth: web_sys::GpuTexture,
     pub depth_view: web_sys::GpuTextureView,
 
@@ -484,6 +503,7 @@ impl RenderTexturesInner {
         height: u32,
         anti_aliasing: AntiAliasing,
         features: &RendererFeatures,
+        prep_enabled: bool,
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
     ) -> Result<Self> {
@@ -782,6 +802,58 @@ impl RenderTexturesInner {
             None => None,
         };
 
+        // Plan B prep-pass outputs (gated on `prep_enabled` to avoid VRAM when
+        // the feature is off): interpolated UV + vertex color, storage-written by
+        // the prep compute pass and texture-read by the slim per-material shader.
+        let prep_uv = if prep_enabled {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        TextureFormat::Rg32float,
+                        Extent3d::new(width, Some(height), Some(1)),
+                        TextureUsage::new()
+                            .with_storage_binding()
+                            .with_texture_binding(),
+                    )
+                    .with_label("PrepUv")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let prep_uv_view = match prep_uv.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("prep_uv: {e:?}"))
+            })?),
+            None => None,
+        };
+        let prep_vcolor = if prep_enabled {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        TextureFormat::Rgba32float,
+                        Extent3d::new(width, Some(height), Some(1)),
+                        TextureUsage::new()
+                            .with_storage_binding()
+                            .with_texture_binding(),
+                    )
+                    .with_label("PrepVColor")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let prep_vcolor_view = match prep_vcolor.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("prep_vcolor: {e:?}"))
+            })?),
+            None => None,
+        };
+
         let transparent_view = transparent.create_view().map_err(|e| {
             AwsmRenderTextureError::CreateTextureView(format!("transparent: {e:?}"))
         })?;
@@ -862,6 +934,10 @@ impl RenderTexturesInner {
 
             decal_color,
             decal_color_view,
+            prep_uv,
+            prep_uv_view,
+            prep_vcolor,
+            prep_vcolor_view,
 
             depth,
             depth_view,
@@ -898,6 +974,12 @@ impl RenderTexturesInner {
         self.opaque.destroy();
         self.transparent.destroy();
         if let Some(tex) = self.decal_color {
+            tex.destroy();
+        }
+        if let Some(tex) = self.prep_uv {
+            tex.destroy();
+        }
+        if let Some(tex) = self.prep_vcolor {
             tex.destroy();
         }
         self.depth.destroy();

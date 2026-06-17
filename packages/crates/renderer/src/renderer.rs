@@ -1387,7 +1387,7 @@ impl AwsmRendererBuilder {
             },
             RenderPasses::describe_shaders(&mut render_pass_init, &features),
             async {
-                RenderTextures::new(&gpu, formats_for_textures, &features)
+                RenderTextures::new(&gpu, formats_for_textures, &features, prep_config.enabled)
                     .await
                     .map_err(crate::error::AwsmError::from)
             },
