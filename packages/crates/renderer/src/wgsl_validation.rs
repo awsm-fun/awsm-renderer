@@ -79,6 +79,7 @@ fn first_party_key_prep(
         dispatch_hash: 0,
         dynamic_shader: None,
         bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
+        unified_edge: false,
     }
 }
 
@@ -119,6 +120,7 @@ fn custom_key(
                 .to_string(),
         }),
         bucket_entries,
+        unified_edge: false,
     }
 }
 
@@ -165,6 +167,96 @@ fn first_party_opaque_shaders_validate() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn unified_shade_opaque_shaders_validate() {
+    // U1 (`docs/plans/unified-edge-shading.md`): with the unified-edge toggle
+    // on, the MSAA opaque module additionally emits the merged `cs_shade` entry
+    // point (interior sample-0 → opaque_tex + edge per-sample → accumulator) +
+    // the `edge_id_tex` group(3) binding it reads. naga-validate it across every
+    // base (incl SKYBOX + Custom) × prep on/off × mips on/off — cs_shade is
+    // MSAA-only (there are no edges otherwise), so only the MSAA config carries
+    // it. Asserts the entry point exists (the dispatch selects it by name →
+    // pipeline-create would fail on GPU if absent) and that the OLD cs_opaque /
+    // cs_edge entry points still coexist (both paths present; toggle selects).
+    let bases = [
+        (MaterialShaderId::PBR, ShadingBase::Pbr, false, "pbr"),
+        (MaterialShaderId::UNLIT, ShadingBase::Unlit, false, "unlit"),
+        (MaterialShaderId::TOON, ShadingBase::Toon, false, "toon"),
+        (MaterialShaderId::FLIPBOOK, ShadingBase::Flipbook, false, "flipbook"),
+        (MaterialShaderId::SKYBOX, ShadingBase::Pbr, true, "skybox"),
+    ];
+    for (id, base, owns_skybox, name) in bases {
+        for prep in [false, true] {
+            for mips in [false, true] {
+                let mut key =
+                    first_party_key_prep(id, base, owns_skybox, Some(4), mips, prep);
+                key.unified_edge = true;
+                let label =
+                    format!("opaque-unified/{name} msaa=4 mips={mips} prep={prep}");
+                let src = render(&key, &label);
+                naga_validate(&src, &label);
+                assert!(
+                    src.contains("fn cs_shade("),
+                    "{label}: unified opaque module missing `fn cs_shade` entry point \
+                     (dispatch requests it → pipeline-create would fail on GPU)"
+                );
+                // Both paths coexist: cs_opaque always; cs_edge on non-skybox.
+                assert!(
+                    src.contains("fn cs_opaque("),
+                    "{label}: unified module dropped `fn cs_opaque` (toggle-OFF path)"
+                );
+                if !owns_skybox {
+                    assert!(
+                        src.contains("fn cs_edge("),
+                        "{label}: unified module dropped `fn cs_edge` (toggle-OFF path)"
+                    );
+                }
+                // The edge-id texture binding cs_shade reads must be declared.
+                assert!(
+                    src.contains("var edge_id_tex: texture_storage_2d<r32uint, read>"),
+                    "{label}: unified module missing the read-only `edge_id_tex` binding"
+                );
+            }
+        }
+    }
+
+    // Custom (dynamic) base under MSAA + unified — exercises the cs_shade
+    // dynamic-wrapper arm (custom_shade_dynamic from both interior + edge).
+    for mips in [false, true] {
+        let mut key = custom_key(awsm_materials::ShaderIncludes::all(), Some(4), mips);
+        key.unified_edge = true;
+        let label = format!("opaque-unified/custom msaa=4 mips={mips}");
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn cs_shade("),
+            "{label}: unified Custom module missing `fn cs_shade`"
+        );
+    }
+}
+
+#[test]
+fn unified_off_opaque_wgsl_unchanged() {
+    // U1 invariant: with the toggle OFF the opaque WGSL is byte-identical to
+    // pre-U1 — no `cs_shade`, no `edge_id_tex`. (Toggle-OFF byte-parity of the
+    // OUTPUT is the parent's GPU check; this guards the WGSL doesn't drift.)
+    for (id, base, owns_skybox, name) in [
+        (MaterialShaderId::PBR, ShadingBase::Pbr, false, "pbr"),
+        (MaterialShaderId::SKYBOX, ShadingBase::Pbr, true, "skybox"),
+    ] {
+        let key = first_party_key(id, base, owns_skybox, Some(4), true);
+        let src = render(&key, &format!("opaque-unified-off/{name}"));
+        assert!(
+            !src.contains("fn cs_shade("),
+            "{name}: toggle-OFF opaque module must NOT emit cs_shade"
+        );
+        assert!(
+            !src.contains("edge_id_tex"),
+            "{name}: toggle-OFF opaque module must NOT declare edge_id_tex"
+        );
     }
 }
 
@@ -545,6 +637,7 @@ fn custom_froxel_lights_accessors_validate() {
                 wgsl_fragment: fragment.to_string(),
             }),
             bucket_entries: bucket_entries.clone(),
+            unified_edge: false,
         };
         let label = format!("opaque/custom-froxel-lit msaa={msaa:?} mips={mips}");
         let src = render(&key, &label);

@@ -203,4 +203,16 @@ struct EdgeBufferLayout {
 };
 
 @group({{ shadow_group_index }}) @binding(11) var<uniform> edge_layout: EdgeBufferLayout;
+
+{% if unified_edge %}
+// Unified-edge (U1): the per-pixel edge-id texture classify writes (the
+// compact `edge_pixel_id` at edge pixels, `U32_MAX` sentinel at non-edge
+// in-bounds pixels). ONLY the `cs_shade` entry point reads it — it branches
+// interior-vs-edge on the sentinel and uses the compact id as the
+// accumulator base. `cs_opaque`/`cs_edge` never reference it, so their
+// pipeline layouts (which omit binding 12) stay valid; WebGPU validates
+// bind-group layouts per entry point. Read-only storage texture (binding 12,
+// appended LAST so it never perturbs the edge_data/edge_layout indices).
+@group({{ shadow_group_index }}) @binding(12) var edge_id_tex: texture_storage_2d<r32uint, read>;
+{% endif %}
 {% endif %}

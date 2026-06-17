@@ -268,6 +268,141 @@ impl MaterialOpaqueRenderPass {
         Ok(())
     }
 
+    /// Unified-edge (U1) dispatch — the toggle-ON replacement for
+    /// `render()` + `render_edge_resolve()`. Dispatches each bucket's merged
+    /// `cs_shade` pipeline over its tile list (interior sample-0 → opaque_tex;
+    /// edge samples → the per-material accumulator slot via edge_slot_map),
+    /// then the UNCHANGED `final_blend` resolve over the edge pixels. Reuses
+    /// the same accumulator + edge_slot_map + final_blend the toggle-OFF path
+    /// uses, so the output is byte-identical to cs_opaque + cs_edge +
+    /// skybox_primary + skybox_edge_resolve + final_blend.
+    ///
+    /// MSAA-only (cs_shade exists only under MSAA — there are no edges
+    /// otherwise). The caller (render.rs) routes no-MSAA + toggle-on through
+    /// the normal `render()` path instead.
+    pub fn render_shade(&self, ctx: &RenderContext, _renderables: &[Renderable]) -> Result<()> {
+        // No MSAA → no cs_shade pipelines; nothing to dispatch here. (The
+        // caller should not invoke this without MSAA, but bail defensively.)
+        if ctx.anti_aliasing.msaa_sample_count.is_none() {
+            return Ok(());
+        }
+
+        // Edge buffers + layout uniform must exist (allocated in lockstep with
+        // MSAA-on at build()). Defense-in-depth bail.
+        let (edge_buffers, edge_layout_uniform) =
+            match (ctx.material_edge_buffers, ctx.material_edge_layout_uniform) {
+                (Some(b), Some(u)) => (b, u),
+                _ => {
+                    warn_pipeline_not_compiled(
+                        "material_opaque::shade",
+                        "edge buffers / layout uniform missing",
+                    );
+                    return Ok(());
+                }
+            };
+
+        // The per-pixel edge-id view classify wrote (gated on unified_edge).
+        let Some(edge_id_view) = ctx.render_texture_views.edge_id.as_ref() else {
+            warn_pipeline_not_compiled("material_opaque::shade", "edge_id texture view missing");
+            return Ok(());
+        };
+
+        let bucket_entries = ctx.dynamic_materials.bucket_entries_cached();
+
+        // Group(3) for cs_shade: the standard shadow bindings + edge_data@10 +
+        // edge_layout@11 + edge_id_tex@12 (the shade-extended layout).
+        let shade_group =
+            self.build_shade_bind_group(ctx, edge_buffers, edge_layout_uniform, edge_id_view)?;
+
+        let (main_bind_group, lights_bind_group, texture_bind_group, _shadows_bind_group) =
+            self.bind_groups.get_bind_groups()?;
+        let classify_buffer = &ctx.material_classify_buffers.buffer;
+
+        // ── Pass 1: cs_shade over every bucket's tile list ───────────────
+        // Writes interior sample-0 → opaque_tex AND edge samples → the
+        // accumulator (disjoint per-bucket slots, no cross-bucket dependency).
+        {
+            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+                &ComputePassDescriptor::new(Some("Material Opaque - Unified Shade")).into(),
+            ));
+            compute_pass.set_bind_group(0u32, main_bind_group, None)?;
+            compute_pass.set_bind_group(1u32, lights_bind_group, None)?;
+            compute_pass.set_bind_group(2u32, texture_bind_group, None)?;
+            compute_pass.set_bind_group(3u32, &shade_group, None)?;
+            for (bucket_index, entry) in bucket_entries.iter().enumerate() {
+                let Some(pipeline_key) = self
+                    .edge_pipelines
+                    .get_shade_pipeline_key(ctx.anti_aliasing, entry.shader_id)
+                else {
+                    continue;
+                };
+                compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
+                compute_pass.dispatch_workgroups_indirect_with_u32(
+                    classify_buffer,
+                    indirect_args_offset(bucket_index as u32),
+                );
+            }
+            compute_pass.end();
+        }
+
+        // ── Pass 2: final_blend resolve (UNCHANGED) ──────────────────────
+        // Reads the accumulator slots cs_shade wrote, writes the weighted
+        // average back to opaque_tex at each edge pixel. Separate pass (like
+        // the toggle-OFF render_edge_resolve) so the opaque_tex write/write
+        // across cs_shade → final_blend lands in distinct sync scopes.
+        if let Some(pipeline_key) = self.edge_pipelines.final_blend_pipeline_key {
+            let (_e, _s, final_blend_group) =
+                self.build_edge_bind_groups(ctx, edge_buffers, edge_layout_uniform)?;
+            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+                &ComputePassDescriptor::new(Some("Material Opaque - Unified Final Blend")).into(),
+            ));
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
+            compute_pass.set_bind_group(0u32, &final_blend_group, None)?;
+            compute_pass.dispatch_workgroups_indirect_with_u32(
+                &edge_buffers.args_buffer,
+                MaterialEdgeBuffers::final_blend_args_offset(),
+            );
+            compute_pass.end();
+        } else {
+            warn_pipeline_not_compiled("material_opaque::shade", "final_blend");
+        }
+
+        Ok(())
+    }
+
+    /// Builds the cs_shade group(3) bind group for this frame: the standard
+    /// shadow bindings + edge_data@10 + edge_layout@11 + edge_id_tex@12. Bound
+    /// at slot 3 of the cs_shade pipeline layout (the shade-extended layout).
+    fn build_shade_bind_group(
+        &self,
+        ctx: &RenderContext,
+        edge_buffers: &MaterialEdgeBuffers,
+        edge_layout_uniform: &web_sys::GpuBuffer,
+        edge_id_view: &web_sys::GpuTextureView,
+    ) -> Result<web_sys::GpuBindGroup> {
+        let layouts = &self.edge_bind_group_layouts;
+        let mut entries = build_shadow_bind_group_entries(ctx.shadows);
+        entries.push(BindGroupEntry::new(
+            10,
+            BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
+        ));
+        entries.push(BindGroupEntry::new(
+            11,
+            BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+        ));
+        entries.push(BindGroupEntry::new(
+            12,
+            BindGroupResource::TextureView(Cow::Borrowed(edge_id_view)),
+        ));
+        let descriptor = BindGroupDescriptor::new(
+            ctx.bind_group_layouts
+                .get(layouts.shade_extended_shadows_layout_key)?,
+            Some("Material Unified Shade - Extended Shadows (Group 3)"),
+            entries,
+        );
+        Ok(ctx.gpu.create_bind_group(&descriptor.into()))
+    }
+
     /// Builds the three edge bind groups for this frame. Called from
     /// `render_edge_resolve`; bind-group construction is cheap so we
     /// rebuild every frame instead of caching with invalidation logic.

@@ -90,6 +90,14 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// same `bucket_entries`) so the read view aligns with the
     /// write view byte-for-byte.
     pub bucket_entries: Vec<BucketEntry>,
+    /// Unified-edge (U1, `docs/plans/unified-edge-shading.md`). When `true`,
+    /// the opaque module additionally emits the merged `cs_shade` entry point
+    /// (interior sample-0 → opaque_tex + edge per-sample → accumulator) and
+    /// the `edge_id_tex` group(3) binding it reads. `cs_opaque`/`cs_edge` are
+    /// UNCHANGED (both paths coexist; the build-time toggle selects which is
+    /// dispatched). `false` (default) ⇒ WGSL byte-identical to pre-U1.
+    /// Threaded build-time from `AwsmRendererBuilder::with_unified_edge`.
+    pub unified_edge: bool,
 }
 
 /// Per-dynamic-material info embedded in the opaque cache key so the

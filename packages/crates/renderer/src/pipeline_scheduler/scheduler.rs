@@ -91,6 +91,18 @@ pub enum CompileInstallTarget {
         /// Mipmap-gradient variant.
         mipmaps: bool,
     },
+    /// Compute: unified-edge (U1) per-bucket `cs_shade` pipeline. One per
+    /// bucket (incl SKYBOX), keyed `(shader_id, mipmaps)`. Same module as
+    /// the bucket's opaque pipeline (`cs_shade` entry), bound to the
+    /// shade-extended group(3) layout. Dispatched over the bucket's tile
+    /// list when the build-time unified-edge toggle is on.
+    EdgeResolveShade {
+        /// Shader-id of the bucket whose merged interior+edge shading this
+        /// pipeline performs.
+        shader_id: awsm_materials::MaterialShaderId,
+        /// Mipmap-gradient variant.
+        mipmaps: bool,
+    },
     /// Compute: global `skybox_edge_resolve` pipeline (shades skybox
     /// MSAA samples at edge pixels). Keyed only on `bucket_entries`;
     /// recompiled on every dynamic-material register so the templated

@@ -490,6 +490,7 @@ impl crate::AwsmRenderer {
                     dispatch_hash,
                     dynamic_shader: dynamic_shader.clone(),
                     bucket_entries: entries.to_vec(),
+                    unified_edge: self.unified_edge,
                 }
                 .into(),
             );
@@ -726,6 +727,7 @@ impl crate::AwsmRenderer {
                 Some(&self.dynamic_materials),
                 self.prep_config.enabled,
                 self.prep_config.clamped_k(),
+                self.unified_edge,
             )? {
             Some(d) => d,
             None => return Ok(()),
@@ -836,6 +838,10 @@ impl crate::AwsmRenderer {
                     shader_id: id.shader_id,
                     mipmaps: id.mipmaps,
                 },
+                EdgePipelineSlot::Shade(id) => CompileInstallTarget::EdgeResolveShade {
+                    shader_id: id.shader_id,
+                    mipmaps: id.mipmaps,
+                },
                 EdgePipelineSlot::Skybox => CompileInstallTarget::EdgeResolveSkybox,
                 EdgePipelineSlot::FinalBlend => CompileInstallTarget::EdgeResolveFinalBlend,
             };
@@ -915,6 +921,7 @@ impl crate::AwsmRenderer {
         // `PassKind::MaterialEdgeResolve`, `generation` is unused here.)
         match &target {
             CompileInstallTarget::EdgeResolvePerShader { .. }
+            | CompileInstallTarget::EdgeResolveShade { .. }
             | CompileInstallTarget::EdgeResolveSkybox
             | CompileInstallTarget::EdgeResolveFinalBlend => {
                 self.render_passes
@@ -1072,6 +1079,7 @@ impl crate::AwsmRenderer {
                 );
             }
             CompileInstallTarget::EdgeResolvePerShader { .. }
+            | CompileInstallTarget::EdgeResolveShade { .. }
             | CompileInstallTarget::EdgeResolveSkybox
             | CompileInstallTarget::EdgeResolveFinalBlend => {
                 unreachable!("edge-resolve targets are installed by the layout-level branch")
@@ -1129,6 +1137,7 @@ fn launch_slot_from_target(t: &CompileInstallTarget) -> LaunchSlot {
             mipmaps: *mipmaps,
         },
         CompileInstallTarget::EdgeResolvePerShader { .. }
+        | CompileInstallTarget::EdgeResolveShade { .. }
         | CompileInstallTarget::EdgeResolveSkybox
         | CompileInstallTarget::EdgeResolveFinalBlend => {
             unreachable!(
@@ -1145,6 +1154,7 @@ fn shader_id_from_target(t: &CompileInstallTarget) -> MaterialShaderId {
         // (the install path doesn't read it for classify).
         CompileInstallTarget::ClassifyDynamic { .. } => MaterialShaderId::PBR,
         CompileInstallTarget::EdgeResolvePerShader { .. }
+        | CompileInstallTarget::EdgeResolveShade { .. }
         | CompileInstallTarget::EdgeResolveSkybox
         | CompileInstallTarget::EdgeResolveFinalBlend => {
             unreachable!("shader_id_from_target: edge variants route through edge_slot_from_target")
@@ -1157,6 +1167,7 @@ fn dispatch_hash_from_target(t: &CompileInstallTarget) -> u64 {
         CompileInstallTarget::ClassifyDynamic { dispatch_hash, .. } => *dispatch_hash,
         CompileInstallTarget::OpaqueDynamic { .. } => 0,
         CompileInstallTarget::EdgeResolvePerShader { .. }
+        | CompileInstallTarget::EdgeResolveShade { .. }
         | CompileInstallTarget::EdgeResolveSkybox
         | CompileInstallTarget::EdgeResolveFinalBlend => {
             unreachable!(
@@ -1254,7 +1265,7 @@ fn install_edge_per_pass(
     // Drop a late per-shader edge resolution for a now-deleted bucket — same
     // rationale as install_per_pass. Skybox / final-blend are global (no
     // per-bucket key) so they're always installed.
-    if let EdgePipelineSlot::PerShader(id) = slot {
+    if let EdgePipelineSlot::PerShader(id) | EdgePipelineSlot::Shade(id) = slot {
         if !is_live_bucket(renderer, id.shader_id) {
             free_displaced_compute_pipeline(renderer, pipeline_key);
             return;
@@ -1265,6 +1276,7 @@ fn install_edge_per_pass(
     // pipeline (part of the pipeline-leak fix — see install_per_pass).
     let displaced = match slot {
         EdgePipelineSlot::PerShader(id) => edge.insert_per_shader_pipeline(*id, pipeline_key),
+        EdgePipelineSlot::Shade(id) => edge.insert_shade_pipeline(*id, pipeline_key),
         EdgePipelineSlot::Skybox => edge
             .skybox_edge_resolve_pipeline_key
             .replace(pipeline_key)
@@ -1287,6 +1299,12 @@ fn edge_slot_from_target(t: &CompileInstallTarget) -> EdgePipelineSlot {
     match t {
         CompileInstallTarget::EdgeResolvePerShader { shader_id, mipmaps } => {
             EdgePipelineSlot::PerShader(EdgeResolvePipelineKeyId {
+                shader_id: *shader_id,
+                mipmaps: *mipmaps,
+            })
+        }
+        CompileInstallTarget::EdgeResolveShade { shader_id, mipmaps } => {
+            EdgePipelineSlot::Shade(EdgeResolvePipelineKeyId {
                 shader_id: *shader_id,
                 mipmaps: *mipmaps,
             })

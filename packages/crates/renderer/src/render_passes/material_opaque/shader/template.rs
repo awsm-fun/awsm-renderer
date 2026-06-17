@@ -43,6 +43,10 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// Trailing alignment-pad u32 indices for `ClassifyBuckets`,
     /// mirrors the classify-pass template's `pad_words_iter`.
     pub pad_words_iter: Vec<u32>,
+    /// Unified-edge (U1): when true, emit the `edge_id_tex` group(3) binding
+    /// (binding 12) the `cs_shade` entry point reads. Inert when false →
+    /// bind-group WGSL byte-identical to pre-U1.
+    pub unified_edge: bool,
     /// Whether `apply_sscs` should compile its real body (true on the
     /// opaque pass — it has `depth_tex` bound) or short-circuit to
     /// `return 1.0` (true on the transparent pass — sampling its own
@@ -198,6 +202,13 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// `(idx % W, idx / W)`; MUST match material_prep's `EDGE_SHADOW_TEX_WIDTH`.
     /// Only used inside the `{% if multisampled_geometry %}` EDGE-mode read.
     pub edge_shadow_tex_width: u32,
+    /// Unified-edge (U1, `docs/plans/unified-edge-shading.md`): when true, the
+    /// compute template emits the merged `cs_shade` entry point (interior
+    /// sample-0 → opaque_tex + edge per-sample → accumulator). Gated together
+    /// with `multisampled_geometry` for the edge arm + the `edge_id_tex` read.
+    /// `cs_opaque`/`cs_edge` are unchanged; inert when false (byte-identical
+    /// pre-U1 WGSL). The build-time toggle selects which path is dispatched.
+    pub unified_edge: bool,
 }
 
 impl ShaderTemplateMaterialOpaqueCompute {
@@ -267,6 +278,15 @@ pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
     pub needs_shadow_sampling: bool,
     /// Inert on the skybox writer; referenced by `apply_lighting.wgsl`.
     pub max_shadow_casters: u32,
+    /// Unified-edge (U1): when true (with `multisampled_geometry`), the skybox
+    /// writer module also emits the merged skybox `cs_shade` arm (interior sky
+    /// → opaque_tex + sky-edge samples → the SKYBOX accumulator slot). Inert
+    /// when false → byte-identical pre-U1 skybox writer WGSL.
+    pub unified_edge: bool,
+    /// §5 edge slot-map width (8/16) — gates the skybox `cs_shade` arm's
+    /// slot_map scan + the widened skybox sentinel (0xFE → 0xFFFE). Inert when
+    /// `unified_edge` is false. Derived from the live bucket count.
+    pub edge_slot_bits: u32,
 }
 
 impl ShaderTemplateMaterialOpaqueSkyboxPrimary {
@@ -321,6 +341,8 @@ impl From<ShaderTemplateMaterialOpaqueCompute> for ShaderTemplateMaterialOpaqueS
             // through inertly so apply_lighting's gate resolves.
             needs_shadow_sampling: false,
             max_shadow_casters: c.max_shadow_casters,
+            unified_edge: c.unified_edge,
+            edge_slot_bits: c.edge_slot_bits,
         }
     }
 }
@@ -413,6 +435,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
                 prep_present,
+                unified_edge: value.unified_edge,
             },
             compute: ShaderTemplateMaterialOpaqueCompute {
                 texture_pool_arrays_len,
@@ -487,6 +510,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 max_shadow_casters,
                 edge_shadow_tex_width:
                     crate::render_passes::material_prep::buffers::EDGE_SHADOW_TEX_WIDTH,
+                unified_edge: value.unified_edge,
             },
         };
 
@@ -642,6 +666,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaqueEmpty> for ShaderTemplateMaterialOpaqu
             bucket_entries,
             pad_words_iter,
             prep_present: false,
+            unified_edge: false,
         })
     }
 }
@@ -692,6 +717,9 @@ pub struct ShaderTemplateMaterialOpaqueEmpty {
     /// Always `false` for the empty kernel (no geometry → no prep reads),
     /// but `bind_groups.wgsl` references `prep_present`, so the field exists.
     pub prep_present: bool,
+    /// Always `false` for the empty kernel (it never emits cs_shade), but
+    /// `bind_groups.wgsl` references `unified_edge`, so the field must exist.
+    pub unified_edge: bool,
 }
 
 impl ShaderTemplateMaterialOpaqueEmpty {
@@ -809,6 +837,7 @@ mod empty_registry_tests {
             dispatch_hash: 0,
             dynamic_shader: None,
             bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
+            unified_edge: false,
         };
         let template = ShaderTemplateMaterialOpaque::try_from(&key).expect("template");
         template.into_source().expect("render")
@@ -1144,6 +1173,7 @@ mod size_regression {
                     "return OpaqueShadingOutput(input.world_normal * 0.5 + 0.5, 1.0);".to_string(),
             }),
             bucket_entries,
+            unified_edge: false,
         };
         ShaderTemplateMaterialOpaque::try_from(&key)
             .expect("template builds")

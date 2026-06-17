@@ -700,6 +700,7 @@ impl AwsmRenderer {
                     Some(&self.dynamic_materials),
                     self.prep_config.enabled,
                     self.prep_config.clamped_k(),
+                    self.unified_edge,
                 )
                 .await?;
         }

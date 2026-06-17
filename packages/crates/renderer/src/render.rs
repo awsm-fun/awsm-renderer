@@ -591,6 +591,7 @@ impl AwsmRenderer {
             live_light_count: self.lights.len() as u32,
             material_edge_buffers: self.material_edge_buffers.as_ref(),
             material_edge_layout_uniform: self.material_edge_layout_uniform.as_ref(),
+            unified_edge: self.unified_edge,
             bind_group_layouts: &self.bind_group_layouts,
             camera: &self.camera,
             environment: &self.environment,
@@ -906,18 +907,34 @@ impl AwsmRenderer {
                 None
             };
 
-            self.render_passes
-                .material_opaque
-                .render(&ctx, renderables.opaque)?;
+            // Unified-edge (U1, `docs/plans/unified-edge-shading.md`): with the
+            // build-time toggle ON *and* MSAA active, dispatch the merged
+            // `cs_shade` path (one kernel: interior sample-0 → opaque_tex +
+            // edge per-sample → accumulator) + the unchanged final_blend, in
+            // place of cs_opaque + cs_edge + skybox_primary + skybox_edge_resolve
+            // + final_blend. Reuses the SAME accumulator + edge_slot_map +
+            // final_blend resolve, so the output is byte-identical to the
+            // toggle-OFF path (the parent GPU-verifies). cs_shade exists only
+            // under MSAA, so no-MSAA + toggle-on falls through to the normal
+            // render() path (which has no edges to resolve anyway → identical).
+            if ctx.unified_edge && ctx.anti_aliasing.msaa_sample_count.is_some() {
+                self.render_passes
+                    .material_opaque
+                    .render_shade(&ctx, renderables.opaque)?;
+            } else {
+                self.render_passes
+                    .material_opaque
+                    .render(&ctx, renderables.opaque)?;
 
-            // Per-shader-id MSAA edge-resolve + final blend (Priority
-            // 3 in https://github.com/dakom/awsm-renderer/pull/99). No-op when MSAA
-            // is off or the edge_resolve pipelines haven't been
-            // submitted-and-resolved yet (warn-and-skip per
-            // pipeline_scheduler::warn_pipeline_not_compiled).
-            self.render_passes
-                .material_opaque
-                .render_edge_resolve(&ctx)?;
+                // Per-shader-id MSAA edge-resolve + final blend (Priority
+                // 3 in https://github.com/dakom/awsm-renderer/pull/99). No-op when MSAA
+                // is off or the edge_resolve pipelines haven't been
+                // submitted-and-resolved yet (warn-and-skip per
+                // pipeline_scheduler::warn_pipeline_not_compiled).
+                self.render_passes
+                    .material_opaque
+                    .render_edge_resolve(&ctx)?;
+            }
         }
 
         // Kick the edge-overflow readback copy. `copy_buffer_to_buffer`
@@ -1858,6 +1875,11 @@ pub struct RenderContext<'a> {
         Option<&'a crate::render_passes::material_opaque::edge_buffers::MaterialEdgeBuffers>,
     /// `EdgeBufferLayout` uniform companion. Same `Some` discipline.
     pub material_edge_layout_uniform: Option<&'a web_sys::GpuBuffer>,
+    /// Unified-edge (U1) build-time toggle. When `true` (and MSAA on), the
+    /// opaque pass dispatches the merged `cs_shade` path + final_blend instead
+    /// of cs_opaque + cs_edge + skybox_primary + skybox_edge_resolve +
+    /// final_blend. See [`crate::AwsmRenderer::unified_edge`].
+    pub unified_edge: bool,
     /// Bind-group-layout cache. Used by passes that build their own
     /// runtime bind groups inside `render()` (e.g. material-opaque's
     /// edge-resolve helpers).

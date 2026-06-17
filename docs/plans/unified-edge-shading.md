@@ -121,16 +121,41 @@ the current HEAD. Every stage below must reproduce these **byte-identically** (e
   + cs_opaque/cs_edge are untouched. Inert (edge_id_tex unread). 259+34 green; default render GPU-verified
   BYTE-IDENTICAL to the HEAD baseline (MetalRoughSpheres). Note: false-path classify WGSL differs from HEAD
   only in whitespace (askama `minimize` artifact) — behaviorally inert, naga-validated both toggle states.
-- **U1 — unified kernel, behind a toggle.** Add `cs_shade` as a new entry point that does the full
-  interior+edge logic (per-sample accumulator). Wire a parallel dispatch path + resolve that uses it,
-  selectable by the toggle, WITHOUT removing `cs_opaque`/`cs_edge`. With the toggle ON, GPU-verify
-  byte-parity vs the baselines (MSAA on, prep on AND off, all models, multi-material edges). This is the
-  hard parity gate — iterate here.
+- **U1 [DONE] — unified kernel, behind a toggle.** `cs_shade` added (one entry, MSAA-only) merging
+  cs_opaque interior + cs_edge edge (reusing shade_sample + the per-material accumulator/edge_slot_map +
+  final_blend verbatim) driven by edge_id_tex + the any-sample tile dispatch; skybox folded as a lean
+  cs_shade arm (cubemap interior + sky-edge accumulate); a per-bucket cs_shade pipeline + a toggle-gated
+  render_shade dispatch path, coexisting with the old cs_opaque/cs_edge/skybox_primary/skybox_edge_resolve.
+  261+34 green. **GPU byte-parity VERIFIED (max-channel-diff 0):** toggle-off == U0 anchor (old path
+  intact); toggle-on cs_shade == toggle-off on MetalRoughSpheres/SheenChair/MultiUv (prep off) incl
+  multi-material + sky edges; and on SheenChair (prep on — prep arrays + edge-shadow buffer). MSAA-off uses
+  the old path by construction. ORIGINAL SKETCH BELOW (superseded by this DONE line):
+- **U1 (orig) — unified kernel, behind a toggle.** Add `cs_shade` as one new entry point merging cs_opaque
+  (interior, sample 0 → opaque_tex) + cs_edge (edge, per-sample) into one body, driven by `edge_id_tex` +
+  the any-sample tile dispatch (NOT the edge-sample lists). **CORRECTIONS for byte-parity (vs the original
+  sketch):**
+  - **Skybox is folded in U1, not U2.** A normal model silhouette is a *sky* edge, so sky-edge byte-parity
+    is impossible unless the skybox bucket also goes through `cs_shade`. So U1 builds the COMPLETE unified
+    path incl a skybox `cs_shade` arm (interior sky → opaque_tex; sky edge samples → accumulator). The old
+    `skybox_primary`/`skybox_edge_resolve` stay for the toggle-OFF path; U2 deletes them.
+  - **REUSE the existing per-material accumulator + `edge_slot_map` + `final_blend` resolve EXACTLY** (do
+    NOT switch to a per-sample accumulator in U1). `cs_shade`'s edge path writes a material's owned samples
+    into that material's accumulator slot (via `edge_slot_map`) identically to today's `cs_edge`, and the
+    unchanged `final_blend` resolves it. This keeps the resolve byte-identical (the hard part) and
+    minimizes new code. The per-sample-accumulator + `edge_slot_map` removal (spec design #3) is an
+    OPTIONAL later cleanup — it is NOT required for the unification's wins (dropping the `cs_edge`
+    dispatch + the per-bucket edge-sample *lists*); defer it (or skip).
+  - Wire a parallel dispatch path (cs_shade + reuse final_blend) selectable by the toggle, WITHOUT removing
+    cs_opaque/cs_edge/skybox_primary/skybox_edge_resolve. Toggle-ON GPU-verify BYTE-IDENTICAL vs toggle-OFF
+    across the full matrix (MSAA on/off, prep on/off, all models, multi-material edges, sky edges). Hard
+    gate — iterate.
 - **U2 — flip + delete.** Make `cs_shade` the only path: classify emits any-sample `tile_mask` +
-  `edge_id_tex` only; drop `append_edge_sample` + per-bucket edge-sample lists + their indirect args +
-  `edge_slot_map`; delete `cs_opaque`/`cs_edge`/`skybox_primary`/`skybox_edge_resolve` entry points + their
-  pipelines; resolve reads per-sample accumulator. Re-verify byte-parity. Measure: pipelines-per-material
-  halved, classify memory/atomic traffic dropped, MSAA shader surface collapsed.
+  `edge_id_tex` only; drop `append_edge_sample` + per-bucket edge-sample lists + their per-bucket indirect
+  args; delete `cs_opaque`/`cs_edge`/`skybox_primary`/`skybox_edge_resolve` entry points + their pipelines.
+  Keep `final_blend` + `edge_slot_map` + the accumulator (still used by `cs_shade`/resolve). Re-verify
+  byte-parity. Measure: pipelines-per-material halved, classify memory/atomic traffic dropped, MSAA shader
+  surface collapsed. (The per-sample-accumulator + `edge_slot_map` removal can be a separate optional
+  follow-up after this lands.)
 - **U3 — cleanup.** Remove the toggle + any dead edge_buffers fields (sample lists, slot_map). Update
   size_regression + naga tests. Final byte-parity sweep.
 

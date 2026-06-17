@@ -816,4 +816,425 @@ fn cs_edge(
     // alpha buffer if alpha-resolve quality demands it.
     edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
 }
+
+{% if unified_edge %}
+// ════════════════════════════════════════════════════════════════════
+// UNIFIED MODULE — `cs_shade` entry point (U1, unified-edge-shading.md).
+//
+// ONE kernel merging `cs_opaque` (interior, sample 0 → opaque_tex) +
+// `cs_edge` (edge, per-sample → accumulator slot) into a single body,
+// driven by `edge_id_tex` + the U0 ANY-sample tile dispatch (NOT the
+// per-bucket edge-sample lists). Dispatched over THIS bucket's tile list
+// (8×8 tile = workgroup, 1 thread/pixel) exactly like `cs_opaque`.
+//
+// Per pixel: read `edge_id_tex` ONCE.
+//   * `edge_id == U32_MAX` (interior): do EXACTLY what `cs_opaque` does —
+//     shade sample 0 (with the same per-pixel shader_id guard) and write
+//     opaque_tex; else skip. The body below is `cs_opaque`'s body verbatim.
+//   * else (edge): do EXACTLY what `cs_edge` does for this bucket's owned
+//     samples — call the SAME `shade_sample(coords, s, ...)` and accumulate
+//     into this material's accumulator slot via the SAME `edge_slot_map`
+//     slot-find + the SAME accumulate write. The ONLY difference from
+//     `cs_edge` is where (edge_id, which-samples) comes from: `edge_id_tex`
+//     + reading the 4 per-sample materials at this pixel, instead of the
+//     compact edge-sample-list entry.
+//
+// Reuses the existing per-material accumulator + edge_slot_map + final_blend
+// resolve UNCHANGED (this is what makes the toggle-ON output byte-identical
+// to the toggle-OFF cs_opaque+cs_edge path). The OLD cs_opaque/cs_edge entry
+// points stay in this module for the toggle-OFF path.
+// ════════════════════════════════════════════════════════════════════
+@compute @workgroup_size(8, 8)
+fn cs_shade(
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>
+) {
+    // Tile lookup — identical to cs_opaque (this bucket's ANY-sample tile
+    // list; `workgroup_id.x` is the bucket entry index, `local_invocation_id`
+    // the 8×8 thread → pixel offset).
+    let bucket_offset = classify_buckets.offsets[{{ bucket_index }}u];
+    let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
+    let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
+    let screen_dims = textureDimensions(opaque_tex);
+    let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));
+    let screen_dims_f32 = vec2<f32>(f32(screen_dims.x), f32(screen_dims.y));
+
+    // Bounds check (same as cs_opaque).
+    if (coords.x >= screen_dims_i32.x || coords.y >= screen_dims_i32.y) {
+        return;
+    }
+
+    // Read the per-pixel edge-id ONCE. U32_MAX → interior; else → edge
+    // (the compact edge_pixel_id = the accumulator base).
+    let edge_id = textureLoad(edge_id_tex, coords).x;
+
+    if (edge_id == U32_MAX) {
+        // ── INTERIOR ARM (cs_opaque body, verbatim) ──────────────────
+        {% if prep_present %}g_prep_ctx = PrepReadContext(PREP_MODE_PRIMARY, coords, vec2<i32>(0, 0));{% endif %}
+        let pixel_center = vec2<f32>(f32(coords.x) + 0.5, f32(coords.y) + 0.5);
+
+        let visibility_data_info = textureLoad(visibility_data_tex, coords, 0);
+
+        let triangle_index = join32(visibility_data_info.x, visibility_data_info.y);
+        let material_meta_offset = join32(visibility_data_info.z, visibility_data_info.w);
+
+        let camera = camera_from_raw(camera_raw);
+        let frame_globals = frame_globals_from_raw(frame_globals_raw);
+
+        // early return if we only hit skybox / no geometry (for all samples).
+        // This is the pure material kernel — it never writes the skybox.
+        var any_sample_hit = false;
+        for (var s = 0u; s < {{ msaa_sample_count }}u; s++) {
+            var vis_check: vec4<u32>;
+            switch(s) {
+                case 0u: { vis_check = textureLoad(visibility_data_tex, coords, 0); }
+                case 1u: { vis_check = textureLoad(visibility_data_tex, coords, 1); }
+                case 2u: { vis_check = textureLoad(visibility_data_tex, coords, 2); }
+                case 3u, default: { vis_check = textureLoad(visibility_data_tex, coords, 3); }
+            }
+            if (join32(vis_check.x, vis_check.y) != U32_MAX) {
+                any_sample_hit = true;
+                break;
+            }
+        }
+        if (!any_sample_hit) {
+            return;
+        }
+
+        // Sample-0 skybox at a silhouette edge — skybox owns the base color.
+        if (triangle_index == U32_MAX) {
+            return;
+        }
+
+        let material_mesh_meta = material_mesh_metas[material_meta_offset / META_SIZE_IN_BYTES];
+        if (material_mesh_meta.is_hud == 1u) {
+            return;
+        }
+
+        let barycentric_raw = textureLoad(barycentric_tex, coords, 0);
+        let bary_xy = vec2<f32>(f32(barycentric_raw.x), f32(barycentric_raw.y)) / 65535.0;
+        let barycentric = vec3<f32>(bary_xy.x, bary_xy.y, 1.0 - bary_xy.x - bary_xy.y);
+        let main_instance_id = join32(barycentric_raw.z, barycentric_raw.w);
+
+        let material_offset = material_mesh_meta.material_offset;
+        let shader_id = material_load_shader_id(material_offset);
+
+        // Per-pixel `shader_id` guard (same as cs_opaque).
+        if (shader_id != {{ shader_id.as_u32() }}u) { return; }
+
+        let vertex_attribute_stride = material_mesh_meta.vertex_attribute_stride / 4;
+        let attribute_indices_offset = material_mesh_meta.vertex_attribute_indices_offset / 4;
+        let attribute_data_offset = material_mesh_meta.vertex_attribute_data_offset / 4;
+        let visibility_geometry_data_offset = material_mesh_meta.visibility_geometry_data_offset / 4;
+        let uv_sets_index = material_mesh_meta.uv_sets_index;
+        let color_sets_index = material_mesh_meta.color_sets_index;
+        let uv_set_count = material_mesh_meta.uv_set_count;
+        let color_set_count = material_mesh_meta.color_set_count;
+
+        let base_triangle_index = attribute_indices_offset + (triangle_index * 3u);
+        let triangle_indices = vec3<u32>(
+            bitcast<u32>(visibility_data[base_triangle_index]),
+            bitcast<u32>(visibility_data[base_triangle_index + 1]),
+            bitcast<u32>(visibility_data[base_triangle_index + 2])
+        );
+
+        let standard_coordinates = get_standard_coordinates(coords, screen_dims);
+
+        let packed_nt = textureLoad(normal_tangent_tex, coords, 0);
+        let tbn = unpack_normal_tangent(packed_nt);
+        let world_normal = tbn.N;
+
+        {% if inc.light_access %}
+        let lights_info = get_lights_info();
+        {% endif %}
+
+        var color: vec3<f32>;
+        var base_alpha: f32;
+
+        {% if base == ShadingBase::Unlit %}
+            let unlit_material = unlit_get_material(material_offset);
+            {% match mipmap %}
+                {% when MipmapMode::Gradient %}
+                    let bary_derivs = textureLoad(barycentric_derivatives_tex, coords, 0);
+                    let unlit_color = compute_unlit_material_color(
+                        triangle_indices,
+                        attribute_data_offset,
+                        unlit_material,
+                        barycentric,
+                        vertex_attribute_stride,
+                        uv_sets_index,
+                        bary_derivs,
+                        world_normal,
+                        camera.view,
+                    );
+                {% when MipmapMode::None %}
+                    let unlit_color = compute_unlit_material_color(
+                        triangle_indices,
+                        attribute_data_offset,
+                        unlit_material,
+                        barycentric,
+                        vertex_attribute_stride,
+                        uv_sets_index,
+                    );
+            {% endmatch %}
+            color = compute_unlit_output(unlit_color);
+            base_alpha = unlit_color.base.a;
+        {% else if base == ShadingBase::Toon %}
+            let toon_material = toon_get_material(material_offset);
+            color = compute_toon_lit_color(
+                toon_material,
+                world_normal,
+                standard_coordinates.surface_to_camera,
+                standard_coordinates.world_position,
+                lights_info,
+            );
+            base_alpha = toon_material.base_color_factor.a;
+        {% else if base == ShadingBase::Pbr %}
+            let pbr_material = pbr_get_material(material_offset);
+
+            {% match mipmap %}
+                {% when MipmapMode::Gradient %}
+                    let bary_derivs = textureLoad(barycentric_derivatives_tex, coords, 0);
+                    let material_color = compute_material_color(
+                        camera,
+                        triangle_indices,
+                        attribute_data_offset,
+                        triangle_index,
+                        pbr_material,
+                        barycentric,
+                        vertex_attribute_stride,
+                        uv_sets_index,
+                        color_sets_index,
+                        tbn,
+                        bary_derivs,
+                    );
+                {% when MipmapMode::None %}
+                    let material_color = compute_material_color(
+                        camera,
+                        triangle_indices,
+                        attribute_data_offset,
+                        triangle_index,
+                        pbr_material,
+                        barycentric,
+                        vertex_attribute_stride,
+                        uv_sets_index,
+                        color_sets_index,
+                        tbn,
+                    );
+            {% endmatch %}
+
+            if(pbr_material.debug_bitmask != 0u) {
+                color = pbr_debug_material_color(pbr_material, material_color);
+                base_alpha = 1.0;
+                textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
+                return;
+            }
+
+            {% if use_froxel_lights %}
+                color = apply_lighting_per_froxel(
+                    material_color,
+                    standard_coordinates.surface_to_camera,
+                    standard_coordinates.world_position,
+                    lights_info,
+                    (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
+                    vec2<f32>(f32(coords.x), f32(coords.y)),
+                );
+            {% else %}
+                color = apply_lighting(
+                    material_color,
+                    standard_coordinates.surface_to_camera,
+                    standard_coordinates.world_position,
+                    lights_info,
+                    (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
+                );
+            {% endif %}
+            base_alpha = material_color.base.a;
+        {% else if base == ShadingBase::Flipbook %}
+            let flipbook_material = flipbook_get_material(material_offset);
+            var flipbook_sampled: vec4<f32> = vec4<f32>(1.0);
+            if flipbook_material.atlas_tex_info.exists {
+                let flipbook_uv_attr = texture_uv(
+                    attribute_data_offset,
+                    triangle_indices,
+                    barycentric,
+                    flipbook_material.atlas_tex_info,
+                    vertex_attribute_stride,
+                    uv_sets_index,
+                );
+                let flipbook_cell_uv = flipbook_compute_cell_uv(
+                    flipbook_material,
+                    flipbook_uv_attr,
+                    frame_globals.time,
+                );
+                {% match mipmap %}
+                    {% when MipmapMode::Gradient %}
+                        let flipbook_uv_derivs = UvDerivs(vec2<f32>(0.0), vec2<f32>(0.0));
+                        flipbook_sampled = texture_pool_sample_grad(
+                            flipbook_material.atlas_tex_info,
+                            flipbook_cell_uv,
+                            flipbook_uv_derivs,
+                        );
+                    {% when MipmapMode::None %}
+                        flipbook_sampled = texture_pool_sample_no_mips(
+                            flipbook_material.atlas_tex_info,
+                            flipbook_cell_uv,
+                        );
+                {% endmatch %}
+            }
+            let flipbook_result = flipbook_finalize_color(
+                flipbook_material,
+                flipbook_sampled,
+                frame_globals.time,
+            );
+            color = flipbook_result.rgb;
+            base_alpha = flipbook_result.a;
+        {% else if base == ShadingBase::Custom %}
+            let dyn_material = material_data_load(material_offset);
+            let dyn_input = OpaqueShadingInput(
+                coords,
+                screen_dims,
+                triangle_index,
+                barycentric,
+                main_instance_id,
+                world_normal,
+                standard_coordinates.world_position,
+                standard_coordinates.surface_to_camera,
+                triangle_indices,
+                attribute_data_offset,
+                vertex_attribute_stride,
+                color_sets_index,
+                uv_sets_index,
+                color_set_count,
+                uv_set_count,
+                material_offset,
+                dyn_material,
+            );
+            let dyn_out = custom_shade_dynamic(dyn_input);
+            color = dyn_out.color;
+            base_alpha = dyn_out.alpha;
+        {% endif %}
+
+        {% if debug.normals %}
+            textureStore(opaque_tex, coords, vec4<f32>(debug_normals(world_normal), 1.0));
+            return;
+        {% endif %}
+
+        if (main_instance_id != INSTANCE_ATTR_NONE) {
+            let attr = instance_attrs[main_instance_id];
+            let tint = unpack4x8unorm(attr.color_packed);
+            color = color * tint.rgb;
+            base_alpha = base_alpha * tint.a * attr.alpha;
+        }
+
+        {% if debug.views %}
+        if (cull_params.debug_wireframe == 1u) {
+            let wire_edge = min(min(barycentric.x, barycentric.y), barycentric.z);
+            let wire = 1.0 - smoothstep(0.0, 0.02, wire_edge);
+            color = mix(vec3<f32>(0.55, 0.57, 0.60), vec3<f32>(0.05, 0.05, 0.07), wire);
+        }
+        {% endif %}
+
+        textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
+        return;
+    }
+
+    // ── EDGE ARM (cs_edge per-sample shade + accumulate, verbatim) ────
+    // `edge_id` (= the compact edge_pixel_id) is this pixel's accumulator
+    // base. We reconstruct the per-sample ownership mask cs_edge read from
+    // the compact list by reading the 4 sample materials at this pixel and
+    // testing each against THIS bucket's shader_id (the same gate
+    // `shade_sample` applies); the slot-find against `edge_slot_map` then
+    // gates the single accumulator write to exactly this material's slot
+    // (identical to cs_edge — a sample owned by a different bucket sharing
+    // our shader_id finds no matching slot here and is skipped).
+    let edge_pixel_id = edge_id;
+
+    // Find our slot in the slot_map (IDENTICAL to cs_edge).
+    {% if edge_slot_bits == 16 %}
+    let slot_w0 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u];
+    let slot_w1 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u + 1u];
+    {% else %}
+    let slot_map = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id];
+    {% endif %}
+    var slot_index: u32 = 4u;
+    for (var i = 0u; i < 4u; i++) {
+        {% if edge_slot_bits == 16 %}
+        let word = select(slot_w0, slot_w1, i >= 2u);
+        let field = (word >> ((i % 2u) * 16u)) & 0xFFFFu;
+        {% else %}
+        let field = (slot_map >> (i * 8u)) & 0xFFu;
+        {% endif %}
+        if (field == {{ bucket_index }}u) {
+            slot_index = i;
+            break;
+        }
+    }
+    if (slot_index >= 4u) {
+        return;
+    }
+
+    let edge_camera = camera_from_raw(camera_raw);
+    let edge_screen_dims_u = textureDimensions(visibility_data_tex);
+    let edge_screen_dims = vec2<u32>(edge_screen_dims_u.x, edge_screen_dims_u.y);
+    let edge_screen_dims_f32 = vec2<f32>(f32(edge_screen_dims.x), f32(edge_screen_dims.y));
+    {% if inc.light_access %}
+    let lights_info = get_lights_info();
+    {% endif %}{% if prep_present %}
+    // EDGE mode (same as cs_edge): read the compact per-edge-sample shadow
+    // buffer; `edge_shadow_xy` is set PER SAMPLE in the loop below.
+    g_prep_ctx = PrepReadContext(PREP_MODE_EDGE, coords, vec2<i32>(0, 0));
+{% endif %}
+    var color_sum = vec3<f32>(0.0);
+    var alpha_sum: f32 = 0.0;
+    var sample_count: u32 = 0u;
+
+    for (var s = 0u; s < 4u; s++) {
+        // Per-sample ownership: the same shader_id gate `shade_sample`
+        // applies. Reading the sample material here reconstructs cs_edge's
+        // compact-list sample_mask (which-samples-this-bucket-owns).
+        var owns_sample = false;
+        {
+            var vis_s: vec4<u32>;
+            switch(s) {
+                case 0u: { vis_s = textureLoad(visibility_data_tex, coords, 0); }
+                case 1u: { vis_s = textureLoad(visibility_data_tex, coords, 1); }
+                case 2u: { vis_s = textureLoad(visibility_data_tex, coords, 2); }
+                case 3u, default: { vis_s = textureLoad(visibility_data_tex, coords, 3); }
+            }
+            let tri_s = join32(vis_s.x, vis_s.y);
+            if (tri_s != U32_MAX) {
+                let mat_off_s = join32(vis_s.z, vis_s.w);
+                let mesh_meta_s = material_mesh_metas[mat_off_s / META_SIZE_IN_BYTES];
+                if (mesh_meta_s.is_hud != 1u) {
+                    let sid_s = material_load_shader_id(mesh_meta_s.material_offset);
+                    if (sid_s == {{ shader_id.as_u32() }}u) {
+                        owns_sample = true;
+                    }
+                }
+            }
+        }
+        if (owns_sample) {
+            {% if prep_present %}
+            g_prep_ctx.edge_shadow_xy = prep_edge_shadow_xy(edge_pixel_id, s);
+            {% endif %}
+            let shaded = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
+            color_sum += shaded.rgb;
+            alpha_sum += shaded.a;
+            sample_count += 1u;
+        }
+    }
+
+    if (sample_count == 0u) {
+        return;
+    }
+
+    // Accumulate into accumulator[edge_pixel_id × 4 + slot_index] (IDENTICAL
+    // to cs_edge — same format the unchanged final_blend resolves).
+    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 4u;
+    edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
+    edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
+    edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
+    edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
+}
+{% endif %}
 {% endif %}

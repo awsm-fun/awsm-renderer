@@ -1863,6 +1863,7 @@ impl AwsmRendererBuilder {
                     None,
                     prep_config.enabled,
                     prep_config.clamped_k(),
+                    unified_edge,
                 )
                 .await?;
         }

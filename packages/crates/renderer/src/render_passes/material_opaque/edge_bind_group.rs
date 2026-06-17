@@ -63,6 +63,14 @@ pub struct MaterialEdgeBindGroupLayouts {
     /// bind group.
     pub edge_resolve_extended_shadows_layout_key: BindGroupLayoutKey,
 
+    /// Unified-edge (U1): group(3) layout for the merged `cs_shade` entry
+    /// point — the extended-shadows layout (shadows + edge_data@10 +
+    /// edge_layout@11) with `edge_id_tex`@12 appended. Distinct from
+    /// `edge_resolve_extended_shadows_layout_key` (which `cs_edge` uses and
+    /// must stay untouched for the toggle-OFF path) so adding edge_id_tex
+    /// never perturbs the cs_edge / toggle-OFF binding ABI.
+    pub shade_extended_shadows_layout_key: BindGroupLayoutKey,
+
     /// Layout for the global skybox_edge_resolve pipeline (single
     /// bind group at group(0)).
     pub skybox_edge_group0_layout_key: BindGroupLayoutKey,
@@ -77,12 +85,14 @@ impl MaterialEdgeBindGroupLayouts {
     /// `BindGroupLayouts`; cheap on subsequent calls with the same
     /// renderer config.
     pub fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let edge_resolve_extended_shadows_layout_key = build_extended_shadows_layout(ctx)?;
+        let edge_resolve_extended_shadows_layout_key = build_extended_shadows_layout(ctx, false)?;
+        let shade_extended_shadows_layout_key = build_extended_shadows_layout(ctx, true)?;
         let skybox_edge_group0_layout_key = build_skybox_edge_layout(ctx)?;
         let final_blend_group0_layout_key = build_final_blend_layout(ctx)?;
 
         Ok(Self {
             edge_resolve_extended_shadows_layout_key,
+            shade_extended_shadows_layout_key,
             skybox_edge_group0_layout_key,
             final_blend_group0_layout_key,
         })
@@ -114,6 +124,7 @@ impl MaterialEdgeBindGroupLayouts {
 /// - 11: `edge_layout` — uniform (offsets into `edge_data`).
 fn build_extended_shadows_layout(
     ctx: &mut RenderPassInitContext<'_>,
+    with_edge_id_tex: bool,
 ) -> Result<BindGroupLayoutKey> {
     let mut entries = shadow_bind_group_layout_entries(true);
 
@@ -135,6 +146,24 @@ fn build_extended_shadows_layout(
         visibility_fragment: false,
         visibility_compute: true,
     });
+    if with_edge_id_tex {
+        // 12: edge_id_tex — read-only R32Uint storage texture (U1 `cs_shade`).
+        // Only the unified `cs_shade` entry point references it; the cs_edge
+        // layout (with_edge_id_tex=false) omits it so the toggle-OFF ABI is
+        // unchanged.
+        entries.push(BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::StorageTexture(
+                StorageTextureBindingLayout::new(
+                    awsm_renderer_core::texture::TextureFormat::R32uint,
+                )
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_access(StorageTextureAccess::ReadOnly),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        });
+    }
 
     Ok(ctx
         .bind_group_layouts
