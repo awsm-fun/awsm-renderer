@@ -317,17 +317,20 @@ fn create_main_bind_group_layout_key(
                 .with_view_dimension(TextureViewDimension::N2dArray)
                 .with_access(StorageTextureAccess::WriteOnly),
         )),
-        // 6 depth_tex — depth texture, single-sample (prep reads sample 0).
+        // 6 depth_tex — depth texture; MSAA variant is multisampled (matches the
+        // geometry pass's depth target). Prep reads sample 0 either way.
         compute(BindGroupLayoutResource::Texture(
             TextureBindingLayout::new()
                 .with_view_dimension(TextureViewDimension::N2d)
-                .with_sample_type(TextureSampleType::Depth),
+                .with_sample_type(TextureSampleType::Depth)
+                .with_multisampled(multisampled_geometry),
         )),
-        // 7 normal_tangent_tex — float texture, single-sample.
+        // 7 normal_tangent_tex — float texture; MSAA variant is multisampled.
         compute(BindGroupLayoutResource::Texture(
             TextureBindingLayout::new()
                 .with_view_dimension(TextureViewDimension::N2d)
-                .with_sample_type(TextureSampleType::UnfilterableFloat),
+                .with_sample_type(TextureSampleType::UnfilterableFloat)
+                .with_multisampled(multisampled_geometry),
         )),
         // 8 camera_raw — uniform.
         compute(BindGroupLayoutResource::Buffer(

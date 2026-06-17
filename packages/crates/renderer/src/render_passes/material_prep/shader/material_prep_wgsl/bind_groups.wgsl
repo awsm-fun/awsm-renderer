@@ -71,8 +71,8 @@ struct CullParams {
 // group(0) shadow-feature additions: depth + normal/tangent + camera + the
 // packed shadow-visibility output array (Rgba8unorm, ceil(K/4) layers).
 {% if multisampled_geometry %}
-    @group(0) @binding(6) var depth_tex: texture_depth_2d;
-    @group(0) @binding(7) var normal_tangent_tex: texture_2d<f32>;
+    @group(0) @binding(6) var depth_tex: texture_depth_multisampled_2d;
+    @group(0) @binding(7) var normal_tangent_tex: texture_multisampled_2d<f32>;
 {% else %}
     @group(0) @binding(6) var depth_tex: texture_depth_2d;
     @group(0) @binding(7) var normal_tangent_tex: texture_2d<f32>;
