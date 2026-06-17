@@ -2,8 +2,7 @@
 //!
 //! `shader_completeness` only checks `<base>_get_material(` calls; it does NOT
 //! catch the general "templated code calls a function the gated includes no
-//! longer define" hazard that the include-gating work (Phase 4 of
-//! docs/plans/material-optimizations.md) introduces. Those breaks otherwise
+//! longer define" hazard that the include-gating work introduces. Those breaks otherwise
 //! surface only at pipeline-compile time in a real browser — and the
 //! Custom-only benchmark never exercises the first-party PBR/Toon/Unlit/Flipbook
 //! kernels at all.

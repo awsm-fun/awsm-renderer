@@ -14,7 +14,7 @@
 //! crate owns the identities + the dependency closure; the renderer owns the
 //! file layout.
 //!
-//! # Module taxonomy (audit — Phase 1 of docs/plans/material-optimizations.md)
+//! # Module taxonomy (audit)
 //!
 //! Every WGSL module emitted into the opaque material kernel
 //! (`material_opaque_wgsl/opaque_kernel_includes.wgsl`), classified so the
@@ -130,8 +130,7 @@ impl ShaderIncludes {
         Self(0)
     }
     /// Every **Tier A (generic)** module — the conservative set a custom
-    /// (dynamic) material may safely opt into. As of Phase 3
-    /// (docs/plans/material-optimizations.md) this deliberately EXCLUDES the
+    /// (dynamic) material may safely opt into. This deliberately EXCLUDES the
     /// Tier B PBR-internal modules (`APPLY_LIGHTING` / `BRDF` /
     /// `MATERIAL_COLOR_CALC`): those are welded to the `PbrMaterial` /
     /// `PbrMaterialColor` types and are emitted only for the built-in PBR base,

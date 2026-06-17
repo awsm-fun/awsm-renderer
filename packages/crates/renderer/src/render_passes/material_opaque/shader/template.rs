@@ -967,7 +967,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Per-material shader SIZE regression guard (docs/plans/material-optimizations.md).
+// Per-material shader SIZE regression guard.
 //
 // Renders the opaque kernel for a representative Custom (dynamic) material and
 // asserts upper bounds on the emitted WGSL. Upper bounds are the right shape:
