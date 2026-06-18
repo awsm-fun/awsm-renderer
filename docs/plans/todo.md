@@ -57,11 +57,27 @@ user-space concern (a dynamic shader + uniforms); built-ins are never force-join
 
 ## ⏳ Remaining work / known issues
 
-- **TTFR — prewarm pipelines after scene load (#31).** Root-caused but not implemented
-  (deferred mid-session to do the uber-shader evaluation first). The prewarm-skip fires on
-  the early loading-render frames, and the edge pipeline's inputs evolve through
-  build → loading-render → model-load, so it can't be prewarmed reliably up front. Fix
-  direction: finalize the edge bind-group layout up-front so the prewarm has stable inputs.
+- **TTFR — prewarm pipelines after scene load (#31). INVESTIGATED 2026-06-18 — awaiting David.**
+  Traced the full path (`prewarm_pipelines` → `ensure_scene_pipelines` → `launch_edge_resolve_compile`;
+  `wait_for_pipelines_ready` Phase 1 ensures + Phase 2 drains `inflight_compile`; the app calls
+  `compile_material_variants` post-populate). **Two findings:**
+  1. The **interactive frame appears already handled**: the app's post-load `compile_material_variants()
+     → wait_for_pipelines_ready()` re-runs `ensure_scene_pipelines` at FINAL inputs and *awaits* the
+     edge/`final_blend` inflight compiles, so the first interactive frame should be warm. A speculative
+     `mark_variants_dirty` force in `compile_material_variants` was tried and **reverted as redundant**
+     (wait_for_pipelines_ready already covers it) — it couldn't be shown to change anything.
+  2. The **real residual cost is wasted load-time recompiles**: the console shows
+     `MaterialEdgePipelines::ensure_compiled: compiling 5 buckets + skybox + final_blend` **~3× during a
+     single DamagedHelmet load** (msgids 193948 / 194019 / 194139), because the edge recompiles each
+     time the texture-pool-array count / bucket set evolves (0→final) across loading-render frames; a
+     render frame in between catches `final_blend` mid-compile → the single first-occurrence
+     `not compiled, skipping` warning. The final compile is what the interactive frame uses.
+  **The fix-direction (defer the edge compile until inputs stabilize, OR finalize the edge layout + pool/
+  bucket counts up-front so it compiles once) is a deeper, careful change** — it must not regress the warm
+  per-frame path or the MSAA-compile invariant. **Question for David:** is the user-visible first frame
+  (warm) good enough, or is the wasted ~3× edge recompile during load worth eliminating? If yes, it's a
+  focused next task (gate the edge compile to skip while pool_arrays/bucket counts are still growing, and
+  compile once at the load-complete signal).
 
 - **[x] Many distinct PBR materials → whole scene black: a real `remove_all` bug, FIXED (2026-06-18).**
   Reproduced minimally (`?stress=200&variants=32`, a `?variants=M` diagnostic bench in
