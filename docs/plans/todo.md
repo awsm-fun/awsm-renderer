@@ -260,6 +260,21 @@ decision.
    textures X/Y" / "Compiling pipelines (N)" lines driven off `LoadingStats`, replacing the coarse
    `shader_prewarm` bool / `compile_pending` count / single boot message. One mapping
    (`LoadingStats → label`) shared by both viewers if practical.
+> **Step-6-UI DONE.** Added the SHARED `LoadingStats::phase_label()` (+ `pipelines_remaining()`) in
+> the renderer — the one mapping both viewers render. **model-tests:** `LoadingStatus` dropped the
+> coarse `shader_prewarm` bool for `commit: Option<LoadingStats>`; `commit()` feeds the full snapshot
+> per callback; the overlay renders `phase_label()`. **editor:** the boot loader (`main.rs on_progress`
+> → web-shared `set_boot_loader_message`) shows `phase_label()`; a new `activity::commit_phase_handler()`
+> mirrors the live transaction's phase into the load-phase pill, wired into the live import / mesh /
+> sprite / particle / material / dynamic `commit_load` callers (were `|_| {}`). Verified on :9080: a
+> poller captured the overlay rendering the full live phase sequence ("Initializing renderer…" →
+> "Browser is compiling shaders…" → "Building render pipelines…" → "Loading IBL/Skybox/GLTF…" →
+> "Finalizing scene…"). **Nuance (recorded):** on a WARM pipeline cache the three *commit* phases
+> (geometry → textures → pipelines) complete inside a single `requestAnimationFrame`, so dominator
+> coalesces them and never paints an individual frame for them — exactly as the prior coarse "Compiling
+> scene shaders…" only showed on cold loads. They DO paint when the work is real (cold-PSO first load,
+> where the compile spans many frames — the same metric the preserved `compile_pending` line shows).
+> The lines are sourced from the shared `phase_label()`, so all three surfaces read identically.
 4. ✅ **`add_mesh` + `register_geometry` wired to deferral.** Landed on `AwsmRenderer` (+ `AddMeshOpts`,
    `Meshes::bind_mesh`); mints the MeshKey sync, records the binding, uploads nothing. (`add_raw_mesh`
    = register + add_mesh happens in the step-6 call-site migration.) Original text:
