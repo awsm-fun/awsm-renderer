@@ -108,18 +108,18 @@ pub struct Mesh {
     pub receive_decals: bool,
     /// Whether this mesh was built with VISIBILITY geometry (the exploded
     /// per-pixel stream the geometry/opaque + shadow passes draw from).
-    /// `add_raw_mesh` sets it `true`; `add_raw_mesh_transparent` sets it
-    /// `false`. IMMUTABLE per mesh (fixed by the builder). This is the
-    /// ground truth for pass routing in `collect_renderables` — it must NOT
-    /// be derived from the material's transparency classification, which can
-    /// drift after the mesh is built and would mis-route the mesh into a pass
-    /// that has no buffer for it (a frame-killing `…GeometryBufferNotFound`).
-    pub has_visibility_geometry: bool,
+    ///
+    /// DERIVED by [`crate::meshes::Meshes::insert`] from whether visibility
+    /// geometry data was provided — NOT a caller-set value (any value on the
+    /// `Mesh` handed to `insert` is overwritten). `pub(crate)` + insert-derived
+    /// so it can never disagree with the actual buffers: it is the ground truth
+    /// for pass routing in `collect_renderables`, and a mesh routed to a pass it
+    /// has no buffer for is a frame-killing `…GeometryBufferNotFound`.
+    pub(crate) has_visibility_geometry: bool,
     /// Whether this mesh was built with TRANSPARENCY geometry (the
-    /// forward-rendered stream the transparency pass draws from).
-    /// `add_raw_mesh_transparent` sets it `true`; `add_raw_mesh` sets it
-    /// `false`. IMMUTABLE per mesh; see [`Self::has_visibility_geometry`].
-    pub has_transparency_geometry: bool,
+    /// forward-rendered stream the transparency pass draws from). Same
+    /// insert-derived, `pub(crate)` contract as [`Self::has_visibility_geometry`].
+    pub(crate) has_transparency_geometry: bool,
 }
 
 impl Mesh {
@@ -148,10 +148,11 @@ impl Mesh {
             cheap_material_key: None,
             cheap_material_pixel_threshold: None,
             receive_decals: true,
-            // Default to the common opaque shape (visibility geometry only).
-            // The transparency builder (`add_raw_mesh_transparent`) overrides
-            // both after construction.
-            has_visibility_geometry: true,
+            // Placeholders only — `Meshes::insert` derives both from the
+            // geometry data actually provided, overwriting whatever is set here.
+            // A constructor can't know the mesh's real geometry shape, so it
+            // doesn't get to assert one; `insert` is the single source of truth.
+            has_visibility_geometry: false,
             has_transparency_geometry: false,
         }
     }

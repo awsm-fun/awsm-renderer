@@ -506,7 +506,7 @@ impl AwsmRenderer {
             .get(material_key)
             .map(Material::double_sided)
             .unwrap_or(false);
-        let mut mesh = Mesh::new(
+        let mesh = Mesh::new(
             transform_key,
             material_key,
             double_sided,
@@ -515,10 +515,10 @@ impl AwsmRenderer {
             false,
         );
         // Transparency-pass mesh: transparency geometry only, NO visibility
-        // geometry (see the buffer_info build above). This is the immutable
-        // ground truth `collect_renderables` routes on.
-        mesh.has_visibility_geometry = false;
-        mesh.has_transparency_geometry = true;
+        // geometry — `None` visibility data below. `Meshes::insert` derives the
+        // routing flags (`has_visibility_geometry = false`,
+        // `has_transparency_geometry = true`) from exactly these args, so the
+        // mesh's pass-routing capability can't disagree with its buffers.
         let mesh_key = self.meshes.insert_public(
             mesh,
             &self.materials,

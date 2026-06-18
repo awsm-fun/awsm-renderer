@@ -903,7 +903,7 @@ impl Meshes {
     #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &mut self,
-        mesh: Mesh,
+        mut mesh: Mesh,
         materials: &Materials,
         transforms: &Transforms,
         buffer_info_key: MeshBufferInfoKey,
@@ -916,6 +916,21 @@ impl Meshes {
         material_morph_key: Option<MaterialMorphKey>,
         skin_key: Option<SkinKey>,
     ) -> Result<MeshKey> {
+        // A mesh's pass-routing capability (`has_visibility_geometry` /
+        // `has_transparency_geometry`) is DERIVED here, at the single insert
+        // choke point, from which geometry buffers the caller actually provided —
+        // it is NOT a value the caller gets to set independently. This makes the
+        // desync that caused the frame-killing `VisibilityGeometryBufferNotFound`
+        // (a transparency-only mesh whose flag still said "has visibility
+        // geometry", so `route_renderable` sent it to the opaque pass) impossible
+        // by construction: the flags can never disagree with the buffers because
+        // the buffers ARE their source of truth. Mirrors the load-transaction
+        // philosophy — make the bad state unrepresentable, don't police it.
+        // (`insert_resource` below already enforces that `visibility_geometry_data
+        // .is_some()` ⇒ the buffer_info carries the matching vertex layout.)
+        mesh.has_visibility_geometry = visibility_geometry_data.is_some();
+        mesh.has_transparency_geometry = transparency_geometry_data.is_some();
+
         let resource_key = self.insert_resource(
             buffer_info_key,
             visibility_geometry_data,
