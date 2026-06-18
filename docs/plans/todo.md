@@ -72,12 +72,23 @@ user-space concern (a dynamic shader + uniforms); built-ins are never force-join
      time the texture-pool-array count / bucket set evolves (0→final) across loading-render frames; a
      render frame in between catches `final_blend` mid-compile → the single first-occurrence
      `not compiled, skipping` warning. The final compile is what the interactive frame uses.
-  **The fix-direction (defer the edge compile until inputs stabilize, OR finalize the edge layout + pool/
-  bucket counts up-front so it compiles once) is a deeper, careful change** — it must not regress the warm
-  per-frame path or the MSAA-compile invariant. **Question for David:** is the user-visible first frame
-  (warm) good enough, or is the wasted ~3× edge recompile during load worth eliminating? If yes, it's a
-  focused next task (gate the edge compile to skip while pool_arrays/bucket counts are still growing, and
-  compile once at the load-complete signal).
+  **DECISION (David, 2026-06-18): DO the deeper fix, in a FRESH session** (this session's context is
+  exhausted; edge-compile surgery deserves clean focus). **Plan for the fresh session:**
+  - Gate `launch_edge_resolve_compile` (and the per-bucket opaque compile it pairs with) to SKIP while the
+    texture-pool-array count / live bucket set are still GROWING during load — i.e. don't compile the edge
+    against transient loading-time inputs. Compile ONCE when the inputs are stable (the load-complete
+    signal the app already has: `compile_material_variants` runs post-populate; OR detect "counts stopped
+    growing"). The 3× recompile (`ensure_compiled: compiling … final_blend` at msgids 193948/194019/194139
+    in a single load) collapses to 1.
+  - MUST NOT regress: the warm per-frame path (dirty-gated, zero work when nothing changed), the
+    MSAA-compile invariant (module carries only its AA config's entry points), or default-equals-today
+    (a no-MSAA scene compiles no edge pipelines at all). Don't break the genuine mid-session recompile
+    cases (AA toggle, dynamic material register) — only suppress the redundant DURING-LOAD recompiles.
+  - Verify: console shows a SINGLE `ensure_compiled … final_blend` per load (no repeats) + no
+    `not compiled, skipping` on the interactive frame; screenshot renders (MSAA edges intact); a load
+    trace shows reduced compile time. Study `pipeline_scheduler/launch.rs` (`ensure_scene_pipelines`,
+    `launch_edge_resolve_compile`, the `last_ensured_bucket_layout` gate) + how the texture-pool array
+    count is read during loading vs final.
 
 - **[x] Many distinct PBR materials → whole scene black: a real `remove_all` bug, FIXED (2026-06-18).**
   Reproduced minimally (`?stress=200&variants=32`, a `?variants=M` diagnostic bench in
