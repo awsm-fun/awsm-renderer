@@ -414,7 +414,45 @@ profile per-frame renderable collection, classify, and transform-upload scaling.
 per-frame allocations in the renderable walk, redundant GPU uploads, anything O(n) that could be
 incremental / dirty-tracked. Verify via chrome-devtools `performance_*` traces + `memory_stats`.
 
-## [ ] C.2 — #31 TTFR prewarm-after-load
+## [ ] C.2 — #31 TTFR prewarm-after-load — **ROOT-CAUSED; David: RENDERER FIX (2026-06-18). NEXT: implement.**
+
+**The hitch (reproduced, every cold load):** the first shown frame warn-skips the MSAA edge-resolve
+`final_blend` pipeline (`render-frame preamble: pipeline not compiled at material_opaque::shade
+(id=final_blend) — skipping`, `scheduler.rs:825` ← dispatch `material_opaque/render_pass.rs:179`,
+`final_blend_pipeline_key == None`) → one un-anti-aliased reveal frame; installed (cache-hit) by frame 2.
+
+**Root cause (debug breadcrumbs + a temporary `arrays_len`/`buckets` log, now removed):** the edge pipeline
+is launched by `launch_edge_resolve_compile` (in `ensure_scene_pipelines`, inside `prewarm_pipelines`,
+inside `wait_for_pipelines_ready`). Its compute cache key = `(shader_key, layout_key)` where `layout_key`
+encodes the **texture-pool bind-group layout** (`texture_pool_arrays_len`) and the cache shader keys encode
+**`bucket_entries`**. The diagnostic showed the **edge prewarm runs at `pool_arrays=0, buckets=5`** while
+the **final state is `pool_arrays=2, buckets=7`** — i.e. the texture pool + variant bucket set are NOT yet
+finalized when the prewarm (and the first render) launch the edge compile. The stale-layout edge promise
+resolves but is correctly **dropped** (`apply_compile_resolution: edge resolution no longer desired —
+dropped (slot FinalBlend)`, `launch.rs:935`) because the first render re-derives the desired edge-key set
+against the FINAL layout; a later launch then finds the now-cached final pipeline and installs it (frame 2+).
+
+**Why a pre-render prewarm can't fix it (tested):** I added a `wait_for_pipelines_ready` after `setup_all`
+(reverted) — it found the edge compiles in-flight and changed nothing, because the determining state
+(`pool_arrays`, `buckets`) only reaches its final shape after the textures/buckets finalize, which lags the
+prewarm. So the edge layout the first render uses can't be known/compiled before the textures are in the
+pool arrays. (Confirmed: the texture finalize flow `textures.rs` relayouts the **masked** geometry/shadow
+pipelines on pool-grow but NOT the **edge** pipelines; the texture-pool bind-group *layout* is otherwise
+rebuilt only by the render-time `bind_groups.recreate` drain of `BindGroupCreate::TexturePool`, `render.rs:564`.)
+
+**David's decision (2026-06-18): renderer fix — finalize the layout up-front** (benefits the player/
+scene-loader path too, not just model-tests). **Fix direction for the next iteration:** ensure the texture
+pool + bucket set are finalized into their FINAL bind-group LAYOUT *before* the edge prewarm compiles — i.e.
+make the pool-grow texture-finalize flow (`textures.rs`, alongside the masked relayout) ALSO relayout/relaunch
+the edge pipelines (`launch_edge_resolve_compile`) so the edge `layout_key` tracks `texture_pool_arrays_len`
+exactly like the masked pipelines do; OR drive the texture-pool bind-group **layout** rebuild during
+`prewarm_pipelines` (the layout rebuild needs only the texture pool, not the viewport-dependent
+`render_texture_views`, so it can run pre-first-render). Then `prewarm` compiles the edge pipeline against the
+final layout and it installs (no drop). Verify: chrome-devtools cold load → no `final_blend` warn, clean
+first visible frame; re-check the player/scene-loader path. Keep `cargo test` GREEN.
+
+### C.2 spec (original, for reference)
+
 
 Time-to-first-render after a model load has a sub-frame-transient hitch. The old doc flagged this as
 needing a human wall-clock; per the 2026-06-18 decision, **self-verify via chrome-devtools** instead.
