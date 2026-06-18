@@ -63,14 +63,22 @@ user-space concern (a dynamic shader + uniforms); built-ins are never force-join
   build → loading-render → model-load, so it can't be prewarmed reliably up front. Fix
   direction: finalize the edge bind-group layout up-front so the prewarm has stable inputs.
 
-- **Many distinct PBR materials at scale rendered black (unconfirmed — worth a look).**
-  While building a throwaway measurement bench, a scene with ~32 distinct first-party PBR
-  feature-variants (→ 32 variant pipelines) plus thousands of meshes rendered fully black
-  in model-tests. Root cause unconfirmed and the bench is reverted, but a single material /
-  a few variants render fine, so something breaks specifically at *many distinct PBR
-  variants*. Candidates: mesh material-reassignment not fully re-classifying, transient
-  variant-pipeline compile, or a real classify/bucket issue at many-variant scale. Many
-  distinct PBR materials is a normal workload, so this is worth confirming or ruling out.
+- **[x] Many distinct PBR materials → whole scene black: a real `remove_all` bug, FIXED (2026-06-18).**
+  Reproduced minimally (`?stress=200&variants=32`, a `?variants=M` diagnostic bench in
+  `model-tests/scene.rs`) and screenshot-verified. The symptom was `BucketCapExceeded
+  { would_be: 33, max: 32 }` → `compile_material_variants` fails → whole scene black. **The bucket
+  cap is configurable** (`AwsmRendererBuilder::with_bucket_config`, default 32, range 1..=65534;
+  per-frame GPU widths follow the LIVE bucket count, so a high cap is free). **Root cause:**
+  `AwsmRenderer::remove_all()` recreates the renderer from a fresh builder but did NOT carry over
+  `with_bucket_config` — so the configured cap silently reverted to the default 32 on the first
+  `remove_all` (which the model-tests app calls on model load). **Fix:** `remove_all` now
+  preserves the live cap via `with_bucket_config(max_bucket_entries: self.dynamic_materials
+  .max_bucket_entries())` (`renderer.rs`). Model-tests also sets a generous cap (1024) at build
+  (`canvas.rs`). Verified: cap = 1024 at finalize, no error, 32 distinct PBR variant pipelines
+  render. The `?variants=M` bench is kept as a dev diagnostic (parallels `?stress`).
+  **Note for follow-up:** `remove_all`'s "recreate the renderer" copies a hand-listed subset of
+  builder settings — it's fragile (this bug was one missed field). Worth auditing whether other
+  build-time configs are also dropped on `remove_all`.
 
 - **Minor model-tests quirks (cosmetic).** `IridescenceDishWithOlives` renders black
   (camera framing / IBL — black in baseline too, not a renderer regression); a few model

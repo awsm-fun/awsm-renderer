@@ -428,7 +428,16 @@ impl AwsmRenderer {
             .with_anti_aliasing(self.anti_aliasing.clone())
             .with_post_processing(self.post_processing.clone())
             .with_shadows_config(self.shadows.config().clone())
-            .with_scene_spatial_config(self.scene_spatial.config());
+            .with_scene_spatial_config(self.scene_spatial.config())
+            // Preserve the configured registration cap — `remove_all` rebuilds the
+            // renderer from a fresh builder, and without this the recreated registry
+            // silently reverts to the default cap (`DEFAULT_MAX_BUCKET_ENTRIES`),
+            // dropping a higher cap the embedder set via `with_bucket_config`. A
+            // scene with many distinct material buckets would then hit
+            // `BucketCapExceeded` only after the first `remove_all`.
+            .with_bucket_config(crate::dynamic_materials::BucketConfig {
+                max_bucket_entries: self.dynamic_materials.max_bucket_entries() as u32,
+            });
         if let Some(budget) = self
             .material_edge_buffers
             .as_ref()
