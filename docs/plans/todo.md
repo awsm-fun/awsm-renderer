@@ -414,7 +414,14 @@ profile per-frame renderable collection, classify, and transform-upload scaling.
 per-frame allocations in the renderable walk, redundant GPU uploads, anything O(n) that could be
 incremental / dirty-tracked. Verify via chrome-devtools `performance_*` traces + `memory_stats`.
 
-## [ ] C.2 — #31 TTFR prewarm-after-load — **ROOT-CAUSED; David: RENDERER FIX (2026-06-18). NEXT: implement.**
+## [ ] C.2 — #31 TTFR prewarm-after-load — **ROOT-CAUSED + DEFERRED (David, 2026-06-18). Pick up after §D.**
+
+> **DEFERRED by David (2026-06-18):** the fix is larger than the initially-approved "finalize layout
+> up-front" (see the refined finding below — the edge pipeline's inputs evolve through build → loading-render
+> → model-load, so the prewarmed edge is repeatedly dropped; a correct fix means gating edge dispatch until
+> inputs settle / not rendering edge frames until the bucket+pool set is final). It's a benign 1-frame
+> un-anti-aliased transient **behind the loading overlay**. David chose to defer C.2 and move to §D
+> (uber-shader) now; pick C.2 up as a focused renderer task after §D lands. Full diagnosis is preserved below.
 
 **The hitch (reproduced, every cold load):** the first shown frame warn-skips the MSAA edge-resolve
 `final_blend` pipeline (`render-frame preamble: pipeline not compiled at material_opaque::shade
@@ -450,6 +457,21 @@ exactly like the masked pipelines do; OR drive the texture-pool bind-group **lay
 `render_texture_views`, so it can run pre-first-render). Then `prewarm` compiles the edge pipeline against the
 final layout and it installs (no drop). Verify: chrome-devtools cold load → no `final_blend` warn, clean
 first visible frame; re-check the player/scene-loader path. Keep `cargo test` GREEN.
+
+**Refined finding (2026-06-18, 2nd pass — DamagedHelmet, temp logs now removed):** the `final_blend`
+skip fires on the **early render frames during loading, at the build/empty state** (`buckets=5
+pool_arrays=0`) — NOT after the model loads. Sequence: build prewarm launches edge at `buckets=5,
+pool_arrays=0` → render frames run at `buckets=5, pool_arrays=0` and `FINAL-BLEND-SKIP` → only later does
+the state reach `buckets=6, pool_arrays=1` (model textures + its PBR feature-variant bucket). So the
+renderer renders frames **before the model finalizes**, and the edge pipeline's inputs (`bucket_entries` +
+`texture_pool_arrays_len`) **evolve through build → loading-render → model-load**; each change drops the
+in-flight edge resolution (`apply_compile_resolution: … no longer desired — dropped`). It is therefore NOT
+a single "finalize the layout once" fix: the edge can't be reliably prewarmed while its inputs are still
+evolving and frames are being rendered against the intermediate states. A correct fix is larger than the
+approved direction (e.g. gate edge dispatch until inputs settle, or don't render edge-resolve frames until
+the scene's bucket/pool set is final, or make the prewarm's edge survive an idempotent re-derive). **Pending
+David's prioritization** (deep fix for a 1-frame un-AA'd transient behind the loading overlay, vs defer and
+do §D). See the AskUserQuestion answer recorded with the next commit.
 
 ### C.2 spec (original, for reference)
 
