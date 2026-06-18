@@ -5,11 +5,11 @@ use awsm_renderer::{
     meshes::{
         buffer_info::{
             MeshBufferCustomVertexAttributeInfo, MeshBufferInfo, MeshBufferVertexAttributeInfo,
-            MeshBufferVertexInfo,
         },
-        mesh::Mesh,
+        geometry::GeometrySource,
         MeshKey,
     },
+    raw_mesh::AddMeshOpts,
     transforms::{Transform, TransformKey},
     AwsmRenderer,
 };
@@ -332,164 +332,97 @@ impl GltfMeshExt for AwsmRenderer {
             }
         };
 
-        let buffer_info_key = self
-            .meshes
-            .buffer_infos
-            .insert(native_primitive_buffer_info);
-
-        let mesh = Mesh::new(
-            transform_key,
-            material_key,
-            double_sided,
-            ctx.transform_is_instanced
-                .lock()
-                .unwrap()
-                .contains(&transform_key),
-            ctx.data.hints.hud,
-            ctx.data.hints.hidden,
-        );
-
         let aabb = try_position_aabb(&gltf_primitive);
 
-        let mesh_key = {
-            let visibility_geometry_data = match primitive_buffer_info
-                .visibility_geometry_vertex
-                .clone()
-            {
-                Some(info) => {
-                    let geometry_data_start = info.offset;
-                    let vertex_info = MeshBufferVertexInfo::from(info);
-                    let geometry_size =
-                            vertex_info.checked_visibility_geometry_size().ok_or_else(|| {
-                                AwsmGltfError::GeometryDataSizeOverflow(format!(
-                                    "visibility geometry: {} vertices * {} bytes/vertex overflows usize",
-                                    vertex_info.count,
-                                    MeshBufferVertexInfo::VISIBILITY_GEOMETRY_BYTE_SIZE
-                                ))
-                            })?;
-                    let geometry_data_end = geometry_data_start
-                        .checked_add(geometry_size)
-                        .ok_or_else(|| {
-                            AwsmGltfError::GeometryDataSizeOverflow(format!(
-                                "visibility geometry: offset {} + size {} overflows usize",
-                                geometry_data_start, geometry_size
-                            ))
-                        })?;
-                    Some(
-                        ctx.data
-                            .buffers
-                            .visibility_geometry_vertex_bytes
-                            .get(geometry_data_start..geometry_data_end)
-                            .ok_or_else(|| {
-                                AwsmGltfError::GeometryDataRangeOutOfBounds(format!(
-                                    "visibility geometry byte range [{}..{}) exceeds buffer length {}",
-                                    geometry_data_start,
-                                    geometry_data_end,
-                                    ctx.data.buffers.visibility_geometry_vertex_bytes.len()
-                                ))
-                            })?,
-                    )
-                }
-                None => None,
-            };
+        // Pass-INDEPENDENT custom-attribute bytes (UVs/colors), AoS, one record per
+        // original vertex — the same slice the legacy `meshes.insert` consumed. Owned
+        // by the retained `GeometrySource` until commit packs + frees it (§1 ②).
+        let custom_attribute_data_start = primitive_buffer_info.triangles.vertex_attributes_offset;
+        let custom_attribute_data_end =
+            custom_attribute_data_start + primitive_buffer_info.triangles.vertex_attributes_size;
+        let custom_attribute_bytes = ctx.data.buffers.custom_attribute_vertex_bytes
+            [custom_attribute_data_start..custom_attribute_data_end]
+            .to_vec();
 
-            let transparency_geometry_data = match primitive_buffer_info
-                .transparency_geometry_vertex
-                .clone()
-            {
-                Some(info) => {
-                    let geometry_data_start = info.offset;
-                    let vertex_info = MeshBufferVertexInfo::from(info);
-                    let geometry_size = vertex_info
-                            .checked_transparency_geometry_size()
-                            .ok_or_else(|| {
-                                AwsmGltfError::GeometryDataSizeOverflow(format!(
-                                    "transparency geometry: {} vertices * {} bytes/vertex overflows usize",
-                                    vertex_info.count,
-                                    MeshBufferVertexInfo::TRANSPARENCY_GEOMETRY_BYTE_SIZE
-                                ))
-                            })?;
-                    let geometry_data_end = geometry_data_start
-                        .checked_add(geometry_size)
-                        .ok_or_else(|| {
-                            AwsmGltfError::GeometryDataSizeOverflow(format!(
-                                "transparency geometry: offset {} + size {} overflows usize",
-                                geometry_data_start, geometry_size
-                            ))
-                        })?;
-                    Some(
-                        ctx.data
-                            .buffers
-                            .transparency_geometry_vertex_bytes
-                            .get(geometry_data_start..geometry_data_end)
-                            .ok_or_else(|| {
-                                AwsmGltfError::GeometryDataRangeOutOfBounds(format!(
-                                    "transparency geometry byte range [{}..{}) exceeds buffer length {}",
-                                    geometry_data_start,
-                                    geometry_data_end,
-                                    ctx.data.buffers.transparency_geometry_vertex_bytes.len()
-                                ))
-                            })?,
-                    )
-                }
-                None => None,
-            };
+        // Pass-INDEPENDENT per-triangle attribute-index bytes (3 × u32 per triangle),
+        // sliced from the shared index buffer via the custom-attribute index offsets.
+        let custom_attribute_index_start = primitive_buffer_info
+            .triangles
+            .vertex_attribute_indices
+            .offset;
+        let custom_attribute_index_size = primitive_buffer_info
+            .triangles
+            .vertex_attribute_indices
+            .checked_total_size()
+            .ok_or_else(|| {
+                AwsmGltfError::AttributeData(
+                    "Custom attribute index byte size overflowed usize".to_string(),
+                )
+            })?;
+        let custom_attribute_index_end = custom_attribute_index_start
+            .checked_add(custom_attribute_index_size)
+            .ok_or_else(|| {
+                AwsmGltfError::AttributeData(
+                    "Custom attribute index byte range overflowed usize".to_string(),
+                )
+            })?;
+        if custom_attribute_index_end > ctx.data.buffers.index_bytes.len() {
+            return Err(AwsmGltfError::AttributeData(format!(
+                "Custom attribute index byte range [{}..{}) exceeds index buffer length {}",
+                custom_attribute_index_start,
+                custom_attribute_index_end,
+                ctx.data.buffers.index_bytes.len()
+            )));
+        }
+        let attribute_index_bytes = ctx.data.buffers.index_bytes
+            [custom_attribute_index_start..custom_attribute_index_end]
+            .to_vec();
 
-            let custom_attribute_data_start =
-                primitive_buffer_info.triangles.vertex_attributes_offset;
-            let custom_attribute_data_end = custom_attribute_data_start
-                + primitive_buffer_info.triangles.vertex_attributes_size;
-            let custom_attribute_data = &ctx.data.buffers.custom_attribute_vertex_bytes
-                [custom_attribute_data_start..custom_attribute_data_end];
-
-            let custom_attribute_index_start = primitive_buffer_info
+        // Build the retained source (load-transaction "declare"): the per-pass GPU
+        // representations + tangents are derived at the next `commit_load` from this,
+        // per the union of bound materials (§1) — no kind decision here. Morph/skin
+        // layout travels with the source (deltas are kind-independent); the keys were
+        // inserted above.
+        let source = GeometrySource {
+            positions: primitive_buffer_info.source_positions.clone(),
+            normals: primitive_buffer_info.source_normals.clone(),
+            uvs0: primitive_buffer_info.source_uvs0.clone(),
+            tangents: primitive_buffer_info.source_tangents.clone(),
+            indices: primitive_buffer_info.source_indices.clone(),
+            front_face: primitive_buffer_info.source_front_face,
+            vertex_attributes: native_primitive_buffer_info
                 .triangles
-                .vertex_attribute_indices
-                .offset;
-            let custom_attribute_index_size = primitive_buffer_info
-                .triangles
-                .vertex_attribute_indices
-                .checked_total_size()
-                .ok_or_else(|| {
-                    AwsmGltfError::AttributeData(
-                        "Custom attribute index byte size overflowed usize".to_string(),
-                    )
-                })?;
-            let custom_attribute_index_end = custom_attribute_index_start
-                .checked_add(custom_attribute_index_size)
-                .ok_or_else(|| {
-                    AwsmGltfError::AttributeData(
-                        "Custom attribute index byte range overflowed usize".to_string(),
-                    )
-                })?;
-            if custom_attribute_index_end > ctx.data.buffers.index_bytes.len() {
-                return Err(AwsmGltfError::AttributeData(format!(
-                    "Custom attribute index byte range [{}..{}) exceeds index buffer length {}",
-                    custom_attribute_index_start,
-                    custom_attribute_index_end,
-                    ctx.data.buffers.index_bytes.len()
-                )));
-            }
-            let attribute_index = &ctx.data.buffers.index_bytes
-                [custom_attribute_index_start..custom_attribute_index_end];
-
-            let key = self.meshes.insert(
-                mesh,
-                &self.materials,
-                &self.transforms,
-                buffer_info_key,
-                visibility_geometry_data,
-                transparency_geometry_data,
-                custom_attribute_data,
-                attribute_index,
-                aabb,
-                geometry_morph_key,
-                material_morph_key,
-                skin_key,
-            )?;
-            self.sync_spatial_for_mesh(key);
-            key
+                .vertex_attributes
+                .clone(),
+            custom_attribute_bytes,
+            attribute_index_bytes,
+            aabb,
+            geometry_morph_key,
+            geometry_morph_info: native_primitive_buffer_info.geometry_morph.clone(),
+            material_morph_key,
+            material_morph_info: native_primitive_buffer_info.material_morph.clone(),
+            skin_key,
+            skin_info: native_primitive_buffer_info.skin.clone(),
         };
+
+        let geometry_key = self.register_geometry(source);
+        let mesh_key = self.add_mesh(
+            geometry_key,
+            material_key,
+            transform_key,
+            AddMeshOpts {
+                instanced: ctx
+                    .transform_is_instanced
+                    .lock()
+                    .unwrap()
+                    .contains(&transform_key),
+                hud: ctx.data.hints.hud,
+                hidden: ctx.data.hints.hidden,
+                // Preserve the glTF-only single-sided thin-shell heuristic the bound
+                // material alone can't express (`should_force_single_sided_for_opaque_thin_shell`).
+                double_sided: Some(double_sided),
+            },
+        )?;
 
         // Record the originating glTF material index so downstream
         // consumers (notably the editor) can override the baked

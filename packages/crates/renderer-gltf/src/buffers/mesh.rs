@@ -366,6 +366,7 @@ pub(super) fn convert_to_mesh_buffer(
         source_uvs0,
         source_tangents,
         source_indices,
+        source_front_face: front_face,
     })
 }
 

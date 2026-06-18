@@ -233,13 +233,17 @@ pub(crate) fn material_wants_tangents(mat: &Material) -> bool {
 // (MikkTSpace tangent generation moved to the shared `awsm-tangents` crate.)
 
 /// Per-mesh options for [`AwsmRenderer::add_mesh`] beyond the geometry / material /
-/// transform — the instance flags `Mesh::new` takes. `double_sided` is NOT here: it's
-/// derived from the bound material (as the glTF path does).
+/// transform — the instance flags `Mesh::new` takes.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AddMeshOpts {
     pub instanced: bool,
     pub hud: bool,
     pub hidden: bool,
+    /// Double-sided override. `None` ⇒ derive from the bound material (the default,
+    /// what the raw path uses). `Some(v)` ⇒ force this value — the glTF path uses
+    /// this to apply its `should_force_single_sided_for_opaque_thin_shell` heuristic
+    /// (which the bound material alone can't express).
+    pub double_sided: Option<bool>,
 }
 
 impl AwsmRenderer {
@@ -267,11 +271,12 @@ impl AwsmRenderer {
         transform_key: TransformKey,
         opts: AddMeshOpts,
     ) -> crate::error::Result<MeshKey> {
-        let double_sided = self
-            .materials
-            .get(material_key)
-            .map(Material::double_sided)
-            .unwrap_or(false);
+        let double_sided = opts.double_sided.unwrap_or_else(|| {
+            self.materials
+                .get(material_key)
+                .map(Material::double_sided)
+                .unwrap_or(false)
+        });
         let mesh = Mesh::new(
             transform_key,
             material_key,

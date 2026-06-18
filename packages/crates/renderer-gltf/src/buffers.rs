@@ -185,6 +185,9 @@ pub struct MeshBufferInfoWithOffset {
     /// renderer generates at commit iff a bound material samples a normal map.
     pub source_tangents: Option<Vec<[f32; 4]>>,
     pub source_indices: Vec<u32>,
+    /// Winding for the packed visibility stream — carried so `populate_gltf_primitive`
+    /// can build the renderer's `GeometrySource` (which packs at commit).
+    pub source_front_face: FrontFace,
 }
 
 impl From<MeshBufferInfoWithOffset> for MeshBufferInfo {
