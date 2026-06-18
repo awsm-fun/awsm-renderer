@@ -23,6 +23,8 @@ use crate::render_passes::material_opaque::shader::cache_key::{
     DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
 };
 use crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaque;
+use crate::render_passes::material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal;
+use crate::render_passes::material_decal::shader::template::ShaderTemplateMaterialDecal;
 use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
 use crate::render_passes::material_transparent::shader::template::ShaderTemplateMaterialTransparent;
 use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;
@@ -649,6 +651,34 @@ fn custom_transparent_shaders_validate() {
                 .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
                 .into_source()
                 .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+        }
+    }
+}
+
+/// A.4: the decal compute pass unpacks a flat `texture_index` with a templated
+/// stride (`% {{ texture_pool_layers_per_array }}u`); validate the shader compiles
+/// for a non-64 stride (256 = a real device `max_texture_array_layers`) so the
+/// substitution can never regress to invalid WGSL.
+#[test]
+fn decal_shader_validates_with_templated_layer_stride() {
+    for msaa in [None, Some(4)] {
+        for stride in [256u32, 2048u32] {
+            let key = ShaderCacheKeyMaterialDecal {
+                msaa_sample_count: msaa,
+                texture_pool_arrays_len: 1,
+                texture_pool_samplers_len: 1,
+                texture_pool_layers_per_array: stride,
+            };
+            let label = format!("decal msaa={msaa:?} stride={stride}");
+            let src = ShaderTemplateMaterialDecal::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            assert!(
+                src.contains(&format!("% {stride}u")) && src.contains(&format!("/ {stride}u")),
+                "{label}: expected the templated stride in the unpacking math"
+            );
             naga_validate(&src, &label);
         }
     }

@@ -1402,8 +1402,9 @@ async fn build_sprite_mesh(
 /// `NodeHandles.decal`.
 ///
 /// Texture wiring: the renderer's decal `texture_index` is a *flat* texture-pool
-/// index (`array_index * 64 + layer_index`, per the decal shader's hard-coded
-/// 64-layers-per-array convention). When `cfg.texture` resolves to a pooled
+/// index (`array_index * stride + layer_index`, where `stride` is the device
+/// `max_texture_array_layers` — the decal shader unpacks with the same value, A.4;
+/// see [`resolve_decal_texture_index`]). When `cfg.texture` resolves to a pooled
 /// texture we derive that index from `renderer.textures.get_entry`; otherwise we
 /// fall back to index `0` (the editor's own decal bridge always passes `0` — it
 /// does not wire decal textures at all — so an untextured decal here matches the
@@ -1432,8 +1433,10 @@ async fn materialize_decal(
 }
 
 /// Resolve a decal's texture to the flat texture-pool index the decal shader
-/// samples (`array_index * 64 + layer_index`). `None` (no texture, failed load,
-/// or not pooled) → index `0`, matching the editor bridge. Shared by the live
+/// samples (`array_index * stride + layer_index`, `stride` =
+/// [`decal_texture_index_stride`](awsm_renderer::decals::decal_texture_index_stride),
+/// A.4). `None` (no texture, failed load, or not pooled) → index `0`, matching the
+/// editor bridge. Shared by the live
 /// [`materialize_decal`] arm and prefab capture ([`capture_prefab`], which must
 /// resolve at load time because [`PrefabTemplate::instantiate`] has no assets).
 async fn resolve_decal_texture_index(
@@ -1441,15 +1444,18 @@ async fn resolve_decal_texture_index(
     assets: &impl SceneAssets,
     cfg: &DecalConfig,
 ) -> u32 {
+    // A.4: pack with the SAME stride the decal shader unpacks with — the device
+    // `max_texture_array_layers`, via the renderer's single-source-of-truth helper
+    // (no longer a hard-coded `64`, which mis-sampled once a pool array exceeded 64
+    // layers). Read before the `&mut` texture load (Copy → borrow ends).
+    let stride = awsm_renderer::decals::decal_texture_index_stride(&renderer.gpu);
     match &cfg.texture {
         Some(t) => {
             match texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await {
                 Some(mt) => renderer
                     .textures
                     .get_entry(mt.key)
-                    .map(|e| {
-                        (e.array_index as u32) * DECAL_POOL_LAYERS_PER_ARRAY + e.layer_index as u32
-                    })
+                    .map(|e| (e.array_index as u32) * stride + e.layer_index as u32)
                     .unwrap_or(0),
                 None => 0,
             }
@@ -1457,12 +1463,6 @@ async fn resolve_decal_texture_index(
         None => 0,
     }
 }
-
-/// Layers-per-texture-array assumed by the decal shader's flat-index unpacking
-/// (`texture_index % 64`, `texture_index / 64` in `material_decal_wgsl`). The
-/// scene loader packs the decal `texture_index` with the same constant so a
-/// resolved decal texture lands on the layer the shader samples.
-const DECAL_POOL_LAYERS_PER_ARRAY: u32 = 64;
 
 /// Materialize a [`NodeKind::InstancesAlongCurve`]: place copies of a source
 /// node's mesh along a Catmull-Rom curve via GPU instancing.

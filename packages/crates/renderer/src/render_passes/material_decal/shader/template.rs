@@ -27,6 +27,9 @@ pub struct ShaderTemplateMaterialDecalCompute {
     pub multisampled_geometry: bool,
     pub texture_pool_arrays_len: u32,
     pub texture_pool_samplers_len: u32,
+    /// Stride for unpacking a decal's flat `texture_index` (A.4) — see
+    /// [`crate::decals::decal_texture_index_stride`].
+    pub texture_pool_layers_per_array: u32,
 }
 
 impl TryFrom<&ShaderCacheKeyMaterialDecal> for ShaderTemplateMaterialDecal {
@@ -44,6 +47,7 @@ impl TryFrom<&ShaderCacheKeyMaterialDecal> for ShaderTemplateMaterialDecal {
                 multisampled_geometry,
                 texture_pool_arrays_len: value.texture_pool_arrays_len,
                 texture_pool_samplers_len: value.texture_pool_samplers_len,
+                texture_pool_layers_per_array: value.texture_pool_layers_per_array,
             },
         })
     }
