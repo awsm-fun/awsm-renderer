@@ -25,6 +25,34 @@
 //! ceil(max_edge_budget * MAX_EDGE_SHADOW_SAMPLES / WIDTH)` and `layers =
 //! ceil(K/4)`. At the 512K desktop budget, K≤4: 4096 × 512 × 1 × 4 B ≈ 8 MB —
 //! the spec's target. Only allocated under prep + MSAA.
+//!
+//! ── PREP-VS-RECOMPUTE RULE (why shadows get an edge buffer but UV/vcolor don't) ──
+//!
+//! Prep exists to materialize material-INDEPENDENT per-pixel work once so the slim
+//! per-material kernel READS it instead of recomputing. That only pays when the
+//! materialized work is expensive enough to beat the cost of writing it here and
+//! reading it back there — AND/OR when caching it lets bulky code drop out of every
+//! specialized material module. Cheap work is re-derived in the wrapper instead.
+//!
+//!   * Shadow visibility → PREP (this buffer). Shadow sampling is the expensive
+//!     `sample_shadow_*` block; caching it per edge-sample lets that ~50 KB of code
+//!     drop from the MSAA opaque module entirely (interior reads the full-screen
+//!     prep buffer, edges read THIS one → neither recomputes → the code is gone;
+//!     that's the bulk of the -53 KB MSAA win). Easily worth the write+read.
+//!
+//!   * Edge-sample UV0 / vertex-color → RECOMPUTE (deliberately NOT an edge buffer).
+//!     The edge arm in `cs_shade` already holds the per-sample triangle + barycentric
+//!     in-register (it needs them to shade at all), so the UV/vcolor lerp there is a
+//!     few buffer reads — cheaper than computing the same thing in `cs_prep_edge`,
+//!     writing it, and reading it back, plus the ~16-48 MB the buffer would cost.
+//!     There is also no bulky code to evict (the recompute helper is ~10 lines).
+//!     Same call as world-position, which prep also deliberately never materializes
+//!     (re-projected from depth on demand). See `helpers/texture_uvs.wgsl` +
+//!     `helpers/vertex_color_attrib.wgsl`, and `docs/SHADER_GUIDELINES.md`.
+//!
+//! Either way this is invisible to material authors: they call an accessor
+//! (`texture_uv` / `material_uv` / `input.world_position`); the accessor picks
+//! prep-read vs recompute under the hood.
 
 use awsm_renderer_core::{
     error::AwsmCoreError,

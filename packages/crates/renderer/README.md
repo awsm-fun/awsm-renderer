@@ -42,6 +42,27 @@ This is automatic — feature-sets are derived from the material and
 resolved to pipelines during the render preamble. You don't configure it
 and there is no on/off switch; specialization is unconditional.
 
+### Prep pass (slim shading)
+
+Specialization keeps each material to the code *it* uses; the **prep pass**
+(`render_passes/material_prep/`) keeps that code slim by hoisting the
+**material-independent** per-pixel work out of it. One compute pass runs
+before shading and materializes interpolated UV0 / vertex-color and per-light
+shadow visibility into buffers; the per-material kernel reads them instead of
+recomputing — and the heavy shadow-sampling code drops out of every module.
+It's unconditional (no flag, no prep-vs-non-prep variant); the opaque path
+always preps. (Transparent is forward — no visibility buffer to read prep from
+— so it recomputes inline; a different model, not a flag.)
+
+What gets prepped is a deliberate cost trade-off — **prep the expensive
+common work, re-derive the trivially-cheap work.** Shadows are prepped (the
+sampling block is expensive and caching it evicts ~50 KB from the MSAA
+module); world-position and MSAA edge-sample UV/vertex-color are recomputed
+(cheaper than a buffer's write + read + VRAM). None of this is visible to
+material authors — you call `input.world_position` / `material_uv(input, set)`
+and the accessor picks the source. Full rationale in
+[`docs/SHADER_GUIDELINES.md`](../../docs/SHADER_GUIDELINES.md#prep-pass-read-vs-recompute-keeping-shaders-skinny).
+
 ### Bucket cap
 
 The number of co-resident **buckets** (distinct first-party feature-sets +

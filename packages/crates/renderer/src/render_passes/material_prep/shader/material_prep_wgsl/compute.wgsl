@@ -211,6 +211,12 @@ fn cs_prep(@builtin(global_invocation_id) gid: vec3<u32>) {
 // via the fixed `EDGE_SHADOW_TEX_WIDTH`; layer `s_group` = slot/4 within
 // `shadow_visibility_layers`. cs_edge reads it (apply_lighting EDGE mode).
 //
+// This fills ONLY shadow visibility — NOT UV/vertex-color. That's deliberate: the
+// edge shading arm recomputes UV/vcolor in-register (it already has the per-sample
+// triangle + barycentric), which is cheaper than writing them here + reading them
+// back + the VRAM, and there's no bulky code to evict the way shadows have. See the
+// PREP-VS-RECOMPUTE RULE in buffers.rs.
+//
 // Edge-data / edge-layout bindings (group 3) + the compact output (group 3) are
 // declared in bind_groups.wgsl gated on `multisampled_geometry`.
 const MAX_EDGE_SHADOW_SAMPLES: u32 = 4u;

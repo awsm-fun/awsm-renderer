@@ -64,7 +64,19 @@ not a regression, ignored per the corrected bar above. size_regression ceilings 
 - Verify: 320 tests green; model-tests render; prep-only opaque == baseline anchors (MSAA, MetalRoughSpheres
   + SheenChair). Commit P1 [DONE].
 
-## P2 — 5b-attrs: edge samples read prep too (delete the last opaque recompute)
+## P2 [RESOLVED — WON'T DO, by design] — 5b-attrs: edge samples read prep
+After analysis (+ David), the per-edge-sample UV/vcolor buffer is a **pessimization**, not
+a win: the edge shading arm already holds the per-sample triangle + barycentric in-register,
+so recomputing UV/vcolor there is a few reads — cheaper than computing the same in
+`cs_prep_edge`, writing it, reading it back, plus ~16–48 MB VRAM, to evict ~10 lines of code.
+Shadows earn their edge buffer (expensive sampling + evicts ~50 KB); UV/vcolor don't. This is
+the same call as world-position (also recomputed, never prepped). Edge UV/vcolor recompute is
+KEPT and documented as a deliberate boundary. The rule ("prep the expensive common work,
+re-derive the trivially-cheap work") is now written into `material_prep/buffers.rs`,
+`helpers/texture_uvs.wgsl`, `helpers/vertex_color_attrib.wgsl`, `material_prep/.../compute.wgsl`,
+`README.md`, `packages/crates/renderer/README.md`, and `docs/SHADER_GUIDELINES.md`.
+
+## P2 (orig) — 5b-attrs: edge samples read prep too (delete the last opaque recompute)
 
 - Add a packed per-edge-sample UV0/vcolor0 buffer mirroring `EdgeShadowBuffer` (`material_prep/buffers.rs`):
   an `Rgba8unorm`/fp16-packed `texture_2d_array` (a texture, not an 11th storage buffer — dodge the macOS

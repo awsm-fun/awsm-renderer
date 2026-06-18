@@ -186,40 +186,17 @@ drift.
 
 ---
 
-## 5. Shared prep pass (Plan B) — remaining items
+## 5. Shared prep pass (Plan B) — DONE / resolved
 
-The shared "prep" pass (every material-independent per-pixel computation runs once
-into a buffer; per-material kernels read it) is **implemented + GPU-verified
-byte-identical**, flag-gated behind `PrepPassConfig` / `AwsmRendererBuilder::with_prep_pass`
-(crate `awsm-renderer`, `render_passes/material_prep/`). Per-shader size wins landed:
-PBR no-MSAA −50 KB, MSAA −46 KB. Two items were intentionally left:
+Both remaining prep items are now settled (see `docs/plans/prep-only.md` for the work):
 
-### 5.1 Flip the prep pass default-on (a decision, not code)
-
-`with_prep_pass` currently defaults **OFF**. The intended direction is **default-on**
-(keeping the A/B flag), but it was held for two reasons: (a) prep is the foundation
-the uber-shader builds on, and the edge machinery it touches may be reshaped by the
-uber-shader's single-pass model — so settle that direction first; (b) flipping the
-default should be backed by a **runtime** measurement (prep should be win-or-tiny-diff
-at runtime, not just a size win), and that sweep needs the
-`experiments/compare-threejs-materials` benchmark infra (sibling repo, not in this
-worktree). When both are settled: flip the builder default, and **re-tighten the
-`size_regression` ceilings** (`material_opaque/shader/template.rs`) — today they're
-sized for the non-prep variants; the prep deltas are only asserted by the naga tests.
-
-### 5.2 5b-attrs — compact per-edge-sample UV/vcolor buffer (perf/VRAM tradeoff, deferred)
-
-Under MSAA, the `5b-shadow` half shipped: a compact per-edge-sample SHADOW buffer
-(`material_prep/buffers.rs` `EdgeShadowBuffer`, an `Rgba8unorm texture_2d_array` to
-dodge the 10-storage-buffer cap; filled by `cs_prep_edge`) that the unified `cs_shade`
-edge path reads via `PrepReadContext` EDGE mode — dropping inline shadow sampling from
-the MSAA module (−46 KB). The **UV/vcolor sibling was deferred**: edge samples still
-**recompute** UV0/vcolor0 (the RECOMPUTE path) rather than reading a prep buffer. A
-`5b-attrs` buffer (same compact per-edge-sample shape as `EdgeShadowBuffer`, filled by
-`cs_prep_edge`, read by `cs_shade`'s EDGE arm) would let edge samples read instead of
-recompute. **Deliberately deferred — small win, large cost:** the UV-recompute helpers
-are cheap (vs the ~50 KB shadow block that made 5b-shadow worth it), while the buffer
-is big (~48 MB at `max_edge_budget` 512K for set 0 alone, more for multi-UV). Only do
-it if profiling shows edge-sample attribute recompute is a real hotspot. NOTE: the
-original spec wrote this against the now-deleted `cs_edge`; retarget to `cs_shade`'s
-EDGE branch (the unified-edge kernel that replaced it).
+- **Default-on** — resolved by *removing the flag entirely*. There is no longer a
+  `PrepPassConfig.enabled` / `with_prep_pass` toggle or a prep-vs-non-prep variant; the
+  opaque path is unconditionally prep, and the `size_regression` ceilings were re-set to
+  the prep-on sizes.
+- **5b-attrs (per-edge-sample UV/vcolor buffer)** — resolved as **won't-do, by design**.
+  Edge samples recompute UV/vcolor in-register (the edge arm already holds the per-sample
+  triangle + barycentric), which is cheaper than a per-edge-sample buffer's write + read +
+  ~16–48 MB of VRAM, with no bulky code to evict (unlike shadows). This is the documented
+  prep-vs-recompute rule — see `material_prep/buffers.rs`, `docs/SHADER_GUIDELINES.md`,
+  and the renderer READMEs.
