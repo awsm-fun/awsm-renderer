@@ -202,12 +202,8 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 // black out the whole frame. Skip such meshes (they can't cast a
                 // visibility-buffer shadow); the routing in `collect_renderables`
                 // applies the same ground-truth-geometry rule for the main passes.
-                if ctx
-                    .meshes
-                    .buffer_info(mesh_key)
-                    .map(|info| info.visibility_geometry_vertex.is_none())
-                    .unwrap_or(true)
-                {
+                // (Reads the immutable per-mesh flag — no buffer_info lookup.)
+                if !mesh.has_visibility_geometry {
                     continue;
                 }
 

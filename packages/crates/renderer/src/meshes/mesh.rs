@@ -106,6 +106,20 @@ pub struct Mesh {
     /// volume test for non-receiving meshes — useful for sky-domes,
     /// HUD-like geometry, or surfaces the artist wants kept clean.
     pub receive_decals: bool,
+    /// Whether this mesh was built with VISIBILITY geometry (the exploded
+    /// per-pixel stream the geometry/opaque + shadow passes draw from).
+    /// `add_raw_mesh` sets it `true`; `add_raw_mesh_transparent` sets it
+    /// `false`. IMMUTABLE per mesh (fixed by the builder). This is the
+    /// ground truth for pass routing in `collect_renderables` — it must NOT
+    /// be derived from the material's transparency classification, which can
+    /// drift after the mesh is built and would mis-route the mesh into a pass
+    /// that has no buffer for it (a frame-killing `…GeometryBufferNotFound`).
+    pub has_visibility_geometry: bool,
+    /// Whether this mesh was built with TRANSPARENCY geometry (the
+    /// forward-rendered stream the transparency pass draws from).
+    /// `add_raw_mesh_transparent` sets it `true`; `add_raw_mesh` sets it
+    /// `false`. IMMUTABLE per mesh; see [`Self::has_visibility_geometry`].
+    pub has_transparency_geometry: bool,
 }
 
 impl Mesh {
@@ -134,6 +148,11 @@ impl Mesh {
             cheap_material_key: None,
             cheap_material_pixel_threshold: None,
             receive_decals: true,
+            // Default to the common opaque shape (visibility geometry only).
+            // The transparency builder (`add_raw_mesh_transparent`) overrides
+            // both after construction.
+            has_visibility_geometry: true,
+            has_transparency_geometry: false,
         }
     }
 

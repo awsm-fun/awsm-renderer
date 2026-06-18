@@ -247,19 +247,17 @@ impl AwsmRenderer {
             // list regardless of how its material currently classifies. A mesh with
             // neither buffer yet (mid-upload) is skipped this frame rather than
             // crashing a pass.
-            let buffer_info = self.meshes.buffer_info(mesh_key).ok();
-            let has_visibility_geometry = buffer_info
-                .map(|info| info.visibility_geometry_vertex.is_some())
-                .unwrap_or(false);
-            let has_transparency_geometry = buffer_info
-                .map(|info| info.transparency_geometry_vertex.is_some())
-                .unwrap_or(false);
+            // Ground-truth routing: a mesh's geometry capability is an immutable
+            // build-time property cached on `Mesh` (zero-cost field reads, no
+            // per-mesh buffer_info lookup in this hot path). The material's
+            // transparency classification only disambiguates a mesh that somehow
+            // carries BOTH buffers (not produced by today's builders).
             let wants_transparency = self.materials.is_transparency_pass(routing_material);
 
             match route_renderable(
                 mesh.hud,
-                has_visibility_geometry,
-                has_transparency_geometry,
+                mesh.has_visibility_geometry,
+                mesh.has_transparency_geometry,
                 wants_transparency,
             ) {
                 RenderableRoute::Hud => pool.hud.push(renderable),
