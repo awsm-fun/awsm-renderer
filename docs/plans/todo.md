@@ -383,9 +383,15 @@ decision.
 >   a follow-up; deferred rather than guessed. The full create-material→assign→set-Blend editor UI flow
 >   wasn't click-driven end-to-end (deep multi-step authoring flow); correctness rests on the
 >   route_renderable test + the verified procedural register/add_mesh path + the apply_kind re-materialize.
-8. **Delete the dead model.** Remove `add_raw_mesh_transparent`, `mesh_buffer_geometry_kind`,
-   `GltfMeshBufferGeometryKind`, the per-insert `MeshResource`, the eager `insert_resource` staging,
-   and any now-unused `insert`/`insert_public` kind args. Verify each removal (compiler + §7).
+8. ✅ **Delete the dead model.** `add_raw_mesh_transparent` (step 6), `mesh_buffer_geometry_kind` +
+   `GltfMeshBufferGeometryKind` (5b-iv), and the decode vis/transp buffers (5b-iv) were already gone.
+   Step 8 removed the last legacy path: `Meshes::insert` + `Meshes::insert_public` (no callers after the
+   glTF/raw migration to `register_geometry` → `add_mesh` → `resolve_one`). `insert_resource` (the shared
+   upload primitive, called by `resolve_one`) and `insert_instance` (called by `duplicate_with_transform`)
+   stay live — `MeshResource` is now per-geometry shared, not per-insert. Stale doc comments referencing
+   the deleted fns refreshed across raw_mesh / mesh_pack / scene_spatial / shadows. **§5 acceptance grep
+   confirmed:** no LIVE reference to any deleted fn remains (only historical module-doc context in
+   `geometry.rs`). Gate green + lint clean.
 
 ## 7. Verification (standards gate: no perf regression; default-equals-today; one-way; impossible-bad-state)
 
