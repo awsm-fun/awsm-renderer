@@ -86,9 +86,26 @@ user-space concern (a dynamic shader + uniforms); built-ins are never force-join
     cases (AA toggle, dynamic material register) — only suppress the redundant DURING-LOAD recompiles.
   - Verify: console shows a SINGLE `ensure_compiled … final_blend` per load (no repeats) + no
     `not compiled, skipping` on the interactive frame; screenshot renders (MSAA edges intact); a load
-    trace shows reduced compile time. Study `pipeline_scheduler/launch.rs` (`ensure_scene_pipelines`,
-    `launch_edge_resolve_compile`, the `last_ensured_bucket_layout` gate) + how the texture-pool array
-    count is read during loading vs final.
+    trace shows reduced compile time.
+
+  **PRECISE TRIGGER — pinpointed 2026-06-18 (2nd loop pass; do not re-investigate):** the recompile is NOT
+  in `launch.rs` — it's the **eager edge `ensure_compiled` inside `finalize_gpu_textures`**
+  (`renderer/src/textures.rs:662-697`). That handler, on each texture-pool relayout, DEFERS the opaque/
+  classify recompile (sets `self.last_ensured_bucket_layout = None` + `mark_variants_dirty` → batched to the
+  next frame's `ensure_scene_pipelines`) but **eagerly `.await`s a full `edge_pipelines.ensure_compiled(...)`
+  right there** (the eager-vs-deferred asymmetry = the waste). `finalize_gpu_textures` runs **multiple times
+  per load** (`renderer-gltf/populate.rs:310`, `scene-loader/lib.rs:665` & `:696`, plus IBL/skybox texture
+  batches), each with a different `texture_pool_arrays_len` → a genuinely different edge cache key → a real
+  recompile each time. **The fix: make the edge recompile DEFERRED like the opaque one** — drop (or gate) the
+  eager `ensure_compiled` block at textures.rs:668-697 and let the next frame's render-driven
+  `launch_edge_resolve_compile` (already triggered by the `last_ensured_bucket_layout=None` + dirty reset
+  this handler sets) rebuild the edge ONCE, batched. **CAUTION (regression risk):** the comment at
+  textures.rs:662-667 says the eager path is DELIBERATE ("authoritative awaited … same path the MSAA-change +
+  cold-boot/load paths use"). So before removing it, confirm the render-driven `launch_edge_resolve_compile`
+  reliably rebuilds the edge after a pool relayout (it should — D.2(c) threaded the pool/mask through it), and
+  re-verify the MSAA-change path (`set_anti_aliasing`) + cold-boot still get their edge pipelines. The
+  `ensure_compiled` log also prints BEFORE its internal `ensure_keys` dedup, so confirm via instrumentation
+  whether each of the 3 calls is a REAL recompile (different `texture_pool_arrays_len`) vs a cache-hit log.
 
 - **[x] Many distinct PBR materials → whole scene black: a real `remove_all` bug, FIXED (2026-06-18).**
   Reproduced minimally (`?stress=200&variants=32`, a `?variants=M` diagnostic bench in
