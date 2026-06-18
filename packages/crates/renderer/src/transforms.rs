@@ -43,6 +43,29 @@ impl AwsmRenderer {
         let dirty_transforms = self.transforms.take_dirty_meshes();
         let dirty_instances = self.instances.take_dirty_transforms();
 
+        // §B static-shadow cache: did any *shadow-caster* mesh move this frame?
+        // Filter the dirty transforms to meshes that actually cast shadows
+        // (`cast_shadows && !hud && !hidden`) so the editor's per-frame HUD churn
+        // (gizmos / light icons / skeleton overlays — all non-caster) does NOT
+        // disable the cache. The dirty set is small, the reverse lookup is O(1), so
+        // this is cheap; OR-accumulated on `Shadows` across the multiple
+        // `update_transforms` calls per frame, read + reset by `take_shadow_static`.
+        let caster_moved = dirty_transforms
+            .keys()
+            .chain(dirty_instances.iter())
+            .any(|tk| {
+                self.meshes.keys_by_transform_key(*tk).is_some_and(|keys| {
+                    keys.iter().any(|mk| {
+                        self.meshes
+                            .get(*mk)
+                            .is_ok_and(|m| m.cast_shadows && !m.hud && !m.hidden)
+                    })
+                })
+            });
+        if caster_moved {
+            self.shadows.note_shadow_caster_moved();
+        }
+
         // Propagate animated node transforms to any lights bound to them
         // (e.g. glTF point lights on animated firefly nodes) before the
         // light-bucket rebuild below reads their world AABBs. Consumes a

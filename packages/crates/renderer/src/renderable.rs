@@ -28,6 +28,13 @@ pub struct RenderablePool {
     opaque: Vec<Renderable>,
     transparent: Vec<Renderable>,
     hud: Vec<Renderable>,
+    /// Reused scratch for the per-frame visible mesh-key set. Was a fresh
+    /// `Vec::with_capacity(mesh_count)` every frame — allocator/GC churn that grows
+    /// with mesh count (16 B/mesh; ~240 KB/frame at 15K meshes) and shows up as
+    /// jank spikes (GC pauses) on the frame-time p95, not the average. Keys only:
+    /// the `Mesh` is re-fetched (O(1) `SlotMap` index) in the build loop, so no
+    /// borrow is stored across frames.
+    visible: Vec<MeshKey>,
 }
 
 impl RenderablePool {
@@ -38,6 +45,7 @@ impl RenderablePool {
         self.opaque.clear();
         self.transparent.clear();
         self.hud.clear();
+        self.visible.clear();
     }
 }
 
@@ -100,46 +108,49 @@ impl AwsmRenderer {
             .as_ref()
             .map(|matrices| Frustum::from_view_projection(matrices.view_projection()));
 
-        // Pre-size the visible scratch to the upper-bound mesh count.
-        // BVH culling usually returns far fewer, but this avoids any
-        // realloc-during-push on the conservative tail-walk path.
-        let mesh_upper_bound = self.meshes.len();
-        let mut visible: Vec<(MeshKey, &crate::meshes::mesh::Mesh)> =
-            Vec::with_capacity(mesh_upper_bound);
-
-        // Build the visible mesh-key set from the BVH instead of walking
-        // every mesh. The previous linear scan tested every mesh's cached
-        // `world_aabb` against the frustum on every frame; the BVH path
-        // descends hierarchically and surfaces only the surviving leaves.
-        // Meshes without a world AABB (procedural / mid-load) aren't in
-        // the index — fall back to a tail-walk of those so they still
-        // draw conservatively.
+        // Build the visible mesh-key set into the pool's reused `visible`
+        // scratch (cleared above) from the BVH instead of walking every mesh.
+        // The previous linear scan tested every mesh's cached `world_aabb`
+        // against the frustum on every frame; the BVH path descends
+        // hierarchically and surfaces only the surviving leaves. Meshes
+        // without a world AABB (procedural / mid-load) aren't in the index —
+        // fall back to a tail-walk of those so they still draw conservatively.
+        // Stored as keys only (no `&Mesh`) so the scratch can be pooled.
         match &frustum {
             Some(f) => {
-                visible.extend(
+                pool.visible.extend(
                     self.scene_spatial
                         .query_frustum(f, NodeFilter::camera_default())
-                        .filter_map(|node| {
-                            self.meshes
-                                .get(node.mesh_key)
-                                .ok()
-                                .map(|m| (node.mesh_key, m))
-                        }),
+                        .filter(|node| self.meshes.get(node.mesh_key).is_ok())
+                        .map(|node| node.mesh_key),
                 );
                 // Conservative fallback: any mesh without a world AABB
                 // can't be tested by the BVH; keep it in the visible set.
-                visible.extend(
+                pool.visible.extend(
                     self.meshes
                         .iter()
-                        .filter(|(_, m)| !m.hidden && m.world_aabb.is_none()),
+                        .filter(|(_, m)| !m.hidden && m.world_aabb.is_none())
+                        .map(|(k, _)| k),
                 );
             }
             None => {
-                visible.extend(self.meshes.iter().filter(|(_, m)| !m.hidden));
+                pool.visible.extend(
+                    self.meshes
+                        .iter()
+                        .filter(|(_, m)| !m.hidden)
+                        .map(|(k, _)| k),
+                );
             }
         }
 
-        for (mesh_key, mesh) in visible {
+        // Phase 2: build a `Renderable` per visible key (re-fetch the mesh —
+        // O(1) `SlotMap` index). Index iteration keeps `pool.visible` (read)
+        // disjoint from `pool.opaque`/etc (written) under the borrow checker.
+        for idx in 0..pool.visible.len() {
+            let mesh_key = pool.visible[idx];
+            let Ok(mesh) = self.meshes.get(mesh_key) else {
+                continue;
+            };
             // Route by the authored `material_key`: `MaterialMeshMeta`
             // is still packed from `mesh.material_key` (see
             // `meshes::meta`), so routing by `effective_material_key`

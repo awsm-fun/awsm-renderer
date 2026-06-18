@@ -34,10 +34,13 @@
 //! (GPU-instanced copies of a source mesh placed along a `Curve` by arc length).
 //! `Curve` / `Group` / `Collider` carry no runtime renderable.
 //!
-//! **`ParticleEmitter` is a documented gap**: the loader has no renderer particle
-//! pass to drive, so emitter nodes are cleanly skipped (one-time warn). Particles
-//! are owned by the game, which simulates them and updates its own per-frame
-//! mesh/line buffers; the loader only carries the authored node's transform.
+//! **`ParticleEmitter`** materializes into a ready-to-drive instanced billboard
+//! (**Design A: loader sets up, game ticks**): the loader builds the emissive quad and
+//! GPU instancing at `max_alive` capacity and returns an
+//! [`EmitterHandle`](particles::EmitterHandle) in [`NodeHandles::emitter`]; it does
+//! NOT simulate. The game ticks an [`awsm_particles::Simulator`] each frame and
+//! pushes the live particles via [`drive_emitter`](particles::drive_emitter) — the
+//! same "loads, doesn't drive" boundary as animation. See [`particles`].
 //!
 //! # Example
 //!
@@ -87,9 +90,11 @@ pub mod camera;
 pub mod dynamic;
 pub mod light;
 pub mod material;
+pub mod particles;
 pub mod texture;
 
 pub use assets::SceneAssets;
+pub use particles::{drive_emitter, EmitterHandle};
 
 use std::collections::HashMap;
 
@@ -111,8 +116,8 @@ use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOpts};
 use awsm_scene::{
     mesh_glb_filename, AssetId, AssetSource, CameraConfig, CurveDef, DecalConfig, EditorNode,
-    InstancesAlongCurveDef, LineDef, MaterialInstance, MaterialShading, NodeId, NodeKind,
-    RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
+    InstancesAlongCurveDef, LightConfig, LineDef, MaterialInstance, MaterialShading, NodeId,
+    NodeKind, RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
 };
 use glam::{Mat4, Quat, Vec3, Vec4};
 
@@ -142,6 +147,12 @@ pub struct NodeHandles {
     /// `Some` for `Decal` nodes (only when the renderer's `decals` feature is on;
     /// otherwise the decal is cleanly skipped at load).
     pub decal: Option<DecalKey>,
+    /// `Some` for `ParticleEmitter` nodes — the ready-to-drive
+    /// [`EmitterHandle`](particles::EmitterHandle). The loader built the instanced
+    /// billboard but does NOT simulate; the game ticks it every frame via
+    /// [`drive_emitter`](particles::drive_emitter) (Design A: loader sets up, game
+    /// ticks).
+    pub emitter: Option<EmitterHandle>,
 }
 
 /// The renderer resources `populate_awsm_scene` / [`load_scene_for_player`]
@@ -203,15 +214,17 @@ pub struct LoadedScene {
 /// Opaque by contract: the fields are private; inspect the shape via
 /// [`root_id`](Self::root_id) / [`node_ids`](Self::node_ids).
 ///
-/// **Coverage (B4):** mesh-bearing prefab nodes are replayed per instance —
-/// `Mesh` (primitive + bare-geometry glb), `SkinnedMesh` (rig glb), and `Sprite`.
-/// Their transforms are always replayed (so an instance reproduces the full
-/// authored hierarchy), but `Light` / `Camera` / `Line` / `Decal` /
-/// `InstancesAlongCurve` *inside* a prefab are **not** yet re-created per
-/// instance (only their transform node is). Wiring those per-instance is the B4
-/// follow-on (they need per-instance light/camera/line/decal keys, not a cheap
-/// GPU-buffer share). A **nested** prefab child is captured as its own template
-/// in [`LoadedScene::prefabs`] — it is never inlined into its parent template.
+/// **Coverage:** mesh-bearing prefab nodes are replayed per instance — `Mesh`
+/// (primitive + bare-geometry glb), `SkinnedMesh` (rig glb), and `Sprite` — sharing
+/// the template's GPU buffers via `duplicate_mesh_with_transform`. `Light` /
+/// `Camera` / `Line` / `Decal` nodes *inside* a prefab are **also** re-created per
+/// instance now (A.3): each gets a fresh per-instance key (lines/decals re-baked
+/// into the instance's world transform; the decal texture index is resolved at
+/// capture). Still **not** replayed: `InstancesAlongCurve` (its own
+/// instancing-on-a-source-mesh shape) and `ParticleEmitter` (the emitter handle
+/// isn't threaded through `PrefabInstance` yet) — both contribute only their
+/// transform (documented follow-ons). A **nested** prefab child is captured as its
+/// own template in [`LoadedScene::prefabs`] — never inlined into its parent.
 #[derive(Debug)]
 pub struct PrefabTemplate {
     /// The prefab-root [`NodeId`] (the node authored with `prefab == true`).
@@ -240,6 +253,108 @@ struct PrefabNode {
     /// instance `duplicate_mesh_with_transform`s each under the node's fresh
     /// transform. Empty for non-mesh nodes.
     template_meshes: Vec<MeshKey>,
+    /// The non-mesh renderable this node replays per instance (A.3). Captured at
+    /// load time (decal texture resolved then, since `instantiate` has no assets)
+    /// so [`PrefabTemplate::instantiate`] can re-create a fresh light / camera /
+    /// line / decal per instance. [`PrefabReplay::None`] for mesh / group nodes.
+    replay: PrefabReplay,
+}
+
+/// The non-mesh renderable a [`PrefabNode`] re-creates on each instance (A.3).
+///
+/// Mesh-bearing nodes share GPU buffers cheaply (`duplicate_mesh_with_transform`),
+/// but a light / camera / line / decal is a distinct renderer resource per
+/// instance — so the template captures enough to *replay* it. Decal textures are
+/// resolved to a flat pool index at capture time because
+/// [`PrefabTemplate::instantiate`] runs without the asset bytes.
+#[derive(Debug, Clone)]
+enum PrefabReplay {
+    /// Mesh / group / curve / particle node — nothing extra to replay (the
+    /// transform, and any template meshes, are handled separately).
+    None,
+    /// A `Light` — re-inserted and bound to the instance transform.
+    Light(LightConfig),
+    /// A `Camera` — re-registered in the renderer camera store.
+    Camera(CameraConfig),
+    /// A `Line` — its authored (local) points re-baked into the instance's world
+    /// transform, then a fresh strip added.
+    Line(LineDef),
+    /// A `Decal` — re-inserted at the instance's world transform with the texture
+    /// pool index + alpha resolved at capture time.
+    Decal { texture_index: u32, alpha: f32 },
+}
+
+/// Replay a prefab node's non-mesh renderable into a fresh per-instance resource
+/// (A.3), recording the produced key onto `handles`. `tk` is the instance node's
+/// transform; `world` its composed world matrix (lines/decals are world-space).
+///
+/// Best-effort: a failed line/decal insert is warned and skipped (the instance's
+/// other nodes still materialize). Async pipeline warm-ups the live arms perform
+/// are intentionally omitted — `instantiate` is sync and the renderer's normal
+/// per-frame drive compiles line/shadow pipelines (or a prior load already did).
+fn replay_prefab_node(
+    renderer: &mut AwsmRenderer,
+    replay: &PrefabReplay,
+    tk: TransformKey,
+    world: Mat4,
+    handles: &mut NodeHandles,
+) {
+    match replay {
+        PrefabReplay::None => {}
+        PrefabReplay::Light(cfg) => {
+            // Seed pos/dir from the composed world transform; binding to `tk` lets
+            // the light re-derive them each frame (the seed only matters pre-bind).
+            let pos = world.w_axis.truncate();
+            let dir = world.transform_vector3(Vec3::NEG_Z).normalize_or_zero();
+            let lt = light::light_from_config(cfg, pos, dir);
+            let shadow = light::light_shadow_params_from_config(cfg.shadow());
+            if let Ok(k) = renderer.insert_light(lt, Some(shadow)) {
+                renderer.lights.bind_transform(k, tk);
+                handles.light = Some(k);
+            }
+        }
+        PrefabReplay::Camera(cfg) => {
+            let ck = renderer
+                .cameras
+                .insert(camera::camera_params_from_config(cfg));
+            handles.camera = Some(ck);
+            handles.camera_config = Some(cfg.clone());
+        }
+        PrefabReplay::Line(def) => {
+            if def.points.len() < 2 {
+                return;
+            }
+            // Bake the authored (local) points into the instance's world transform,
+            // exactly as the live `materialize_line` bakes `node_world`.
+            let positions: Vec<Vec3> = def
+                .points
+                .iter()
+                .map(|p| world.transform_point3(Vec3::from_array(p.pos)))
+                .collect();
+            let colors: Vec<Vec4> = def
+                .points
+                .iter()
+                .map(|p| Vec4::from_array(p.color))
+                .collect();
+            match renderer.add_line_strip(&positions, &colors, def.width_px, def.depth_test_always)
+            {
+                Ok(Some(k)) => handles.line = Some(k),
+                Ok(None) => {}
+                Err(err) => tracing::warn!("prefab instantiate: add_line_strip failed: {err}"),
+            }
+        }
+        PrefabReplay::Decal {
+            texture_index,
+            alpha,
+        } => {
+            use awsm_renderer::decals::AwsmDecalError;
+            match renderer.insert_decal(world, *texture_index, *alpha) {
+                Ok(k) => handles.decal = Some(k),
+                Err(AwsmDecalError::FeatureNotEnabled) => {}
+                Err(err) => tracing::warn!("prefab instantiate: insert_decal failed: {err:?}"),
+            }
+        }
+    }
 }
 
 impl PrefabTemplate {
@@ -268,8 +383,10 @@ impl PrefabTemplate {
     /// inherits the hidden template's flag).
     ///
     /// Two calls produce two `PrefabInstance`s with independent transforms + mesh
-    /// keys over the same shared GPU buffers. Non-mesh prefab nodes contribute only
-    /// their transform (see [`PrefabTemplate`] coverage / follow-on notes).
+    /// keys over the same shared GPU buffers. `Light` / `Camera` / `Line` / `Decal`
+    /// prefab nodes are replayed into fresh per-instance resources (A.3); other
+    /// non-mesh nodes contribute only their transform (see [`PrefabTemplate`]
+    /// coverage / follow-on notes).
     pub fn instantiate(
         &self,
         renderer: &mut AwsmRenderer,
@@ -277,6 +394,12 @@ impl PrefabTemplate {
     ) -> Result<PrefabInstance> {
         // template NodeId → freshly-inserted instance TransformKey.
         let mut tk_for: HashMap<NodeId, TransformKey> = HashMap::with_capacity(self.nodes.len());
+        // template NodeId → composed world matrix within THIS instance. `transforms
+        // .insert` only seeds a node's world with its local until a later `update()`
+        // folds in ancestors — but line/decal replay needs the resolved world NOW
+        // (a line bakes world-space points; a decal takes a world `Mat4`), so we
+        // accumulate it by hand exactly like the live `materialize` recursion.
+        let mut world_for: HashMap<NodeId, Mat4> = HashMap::with_capacity(self.nodes.len());
         let mut nodes: HashMap<NodeId, NodeHandles> = HashMap::with_capacity(self.nodes.len());
         let mut root_tk: Option<TransformKey> = None;
 
@@ -287,8 +410,15 @@ impl PrefabTemplate {
                 None => (trs_to_transform(&world_trs), None),
                 Some(parent_id) => (trs_to_transform(&pn.local), tk_for.get(&parent_id).copied()),
             };
+            let world = match pn.parent {
+                None => local.to_matrix(),
+                Some(parent_id) => {
+                    world_for.get(&parent_id).copied().unwrap_or(Mat4::IDENTITY) * local.to_matrix()
+                }
+            };
             let tk = renderer.transforms.insert(local, parent_tk);
             tk_for.insert(pn.id, tk);
+            world_for.insert(pn.id, world);
             if pn.parent.is_none() {
                 root_tk = Some(tk);
             }
@@ -302,16 +432,19 @@ impl PrefabTemplate {
                 mesh_keys.push(new_key);
             }
 
-            nodes.insert(
-                pn.id,
-                NodeHandles {
-                    transform: tk,
-                    meshes: mesh_keys,
-                    // B4 follow-on: light/camera/line/decal inside a prefab are not
-                    // yet replayed per instance (only the transform is).
-                    ..Default::default()
-                },
-            );
+            let mut handles = NodeHandles {
+                transform: tk,
+                meshes: mesh_keys,
+                ..Default::default()
+            };
+            // A.3: replay this node's non-mesh renderable into a fresh per-instance
+            // resource. Pipeline compiles that the live arms `await`
+            // (`ensure_line_pipelines_compiled` / `ensure_shadow_pipelines_compiled`)
+            // are skipped — `instantiate` is sync; the renderer's normal per-frame
+            // pipeline drive compiles them (or a prior load with a line/caster did).
+            replay_prefab_node(renderer, &pn.replay, tk, world, &mut handles);
+
+            nodes.insert(pn.id, handles);
         }
 
         let root = root_tk.ok_or_else(|| anyhow!("prefab template has no root node"))?;
@@ -390,16 +523,27 @@ impl PrefabInstance {
     /// resources [`instantiate`](PrefabTemplate::instantiate) minted, which the
     /// owning [`LoadedScene::teardown`] does not track). **Consumes** the instance.
     ///
-    /// Removes every duplicated [`MeshKey`] across the instance's nodes, then every
-    /// per-node [`TransformKey`] (meshes first, transforms last). The shared
-    /// template GPU buffers stay alive — they belong to the still-loaded template
-    /// (freed by [`LoadedScene::teardown`]); only this instance's duplicates +
-    /// transform slots are released. Non-mesh instance nodes free only their
-    /// transform.
+    /// Removes every duplicated [`MeshKey`] across the instance's nodes, then the
+    /// replayed [`LightKey`] / [`LineKey`] / [`DecalKey`] (A.3), then every per-node
+    /// [`TransformKey`] (meshes/lights/lines/decals first, transforms last). The
+    /// shared template GPU buffers stay alive — they belong to the still-loaded
+    /// template (freed by [`LoadedScene::teardown`]); only this instance's
+    /// duplicates + replayed resources + transform slots are released. (Replayed
+    /// `Camera`s are not freed — the renderer camera store has no remove, matching
+    /// the static loader, which also never frees cameras.)
     pub fn teardown(self, renderer: &mut AwsmRenderer) {
         for handles in self.nodes.values() {
             for &mesh in &handles.meshes {
                 renderer.remove_mesh(mesh);
+            }
+            if let Some(light) = handles.light {
+                renderer.remove_light(light);
+            }
+            if let Some(line) = handles.line {
+                renderer.remove_line(line);
+            }
+            if let Some(decal) = handles.decal {
+                renderer.remove_decal(decal);
             }
         }
         for handles in self.nodes.values() {
@@ -570,6 +714,7 @@ pub async fn load_scene_for_player(
                 camera_config: maps.camera_configs.get(&node_id).cloned(),
                 line: maps.lines.get(&node_id).copied(),
                 decal: maps.decals.get(&node_id).copied(),
+                emitter: maps.emitters.get(&node_id).cloned(),
             },
         );
     }
@@ -814,12 +959,29 @@ async fn materialize(
         // by `InstancesAlongCurve` (and sweeps at bake time), which look the curve
         // up directly from `scene` by `NodeId` — no per-node renderer resource.
         NodeKind::Curve(_) => {}
-        // B3: clean-skip — the loader has no renderer particle pass to drive.
-        // The game owns particle simulation (it updates its own per-frame
-        // mesh/line buffers), so materializing an emitter here would render
-        // nothing. Warned once (see `warn_particle_skip`) + documented on
-        // `populate_awsm_scene`.
-        NodeKind::ParticleEmitter(_) => warn_particle_skip(),
+        // A.1 (Design A): the loader builds the emitter's instanced billboard
+        // (ready to drive) and hands back an `EmitterHandle`; it does NOT simulate.
+        // The game ticks an `awsm_particles::Simulator` each frame and pushes the
+        // result via `drive_emitter` — the same "loads, doesn't drive" contract as
+        // animation. Skip a hidden emitter (no per-mesh hide toggle would help once
+        // the game drives it; cleanest is to not build it).
+        NodeKind::ParticleEmitter(def) => {
+            if effective_visible {
+                match particles::build_emitter(renderer, def, tk, node_world) {
+                    Ok(handle) => {
+                        // Track the billboard mesh + its instance transform for
+                        // teardown, then record the handle for the NodeHandles
+                        // assembly (and the morph/anim maps don't touch emitters).
+                        loaded.meshes.push(handle.mesh);
+                        loaded.transforms.push(handle.instance_transform);
+                        maps.emitters.insert(node.id, handle);
+                    }
+                    Err(err) => {
+                        tracing::warn!("scene-loader: ParticleEmitter build failed: {err}");
+                    }
+                }
+            }
+        }
         // `Group` (pure transform parent) and `Collider` (editor-only wireframe;
         // no runtime renderable) need nothing further here. `Mesh` /
         // `SkinnedMesh` / `Light` / `Camera` are handled by the arms above.
@@ -875,10 +1037,12 @@ async fn materialize(
 /// OWN [`PrefabTemplate`] into `loaded.prefabs` and is NOT inlined here — the
 /// recursion stops at it (its descendants belong to the nested template).
 ///
-/// **B4 follow-on:** `Light` / `Camera` / `Line` / `Decal` /
-/// `InstancesAlongCurve` nodes inside a prefab contribute only their transform
-/// node to the template (no per-instance light/camera/line/decal/instancing key
-/// is replayed yet — see [`PrefabTemplate`]).
+/// **Non-mesh replay (A.3):** `Light` / `Camera` / `Line` / `Decal` nodes capture
+/// a [`PrefabReplay`] alongside their transform (the decal texture resolved to a
+/// pool index here, while assets are available), so [`PrefabTemplate::instantiate`]
+/// re-creates each as a fresh per-instance resource. `InstancesAlongCurve` /
+/// `ParticleEmitter` inside a prefab still contribute only their transform (see
+/// [`PrefabTemplate`]).
 #[allow(clippy::too_many_arguments)]
 async fn capture_prefab(
     renderer: &mut AwsmRenderer,
@@ -926,11 +1090,25 @@ async fn capture_prefab(
         // kinds yield an empty vec (their transform is still recorded).
         let template_meshes =
             build_node_meshes(renderer, scene, n, scratch, mat, assets, true).await?;
+        // A.3: capture the non-mesh renderable to replay per instance. The decal
+        // texture is resolved NOW (assets are available here; `instantiate` is
+        // asset-free). Light/Camera/Line carry their authored config verbatim.
+        let replay = match &n.kind {
+            NodeKind::Light(cfg) => PrefabReplay::Light(cfg.clone()),
+            NodeKind::Camera(cfg) => PrefabReplay::Camera(cfg.clone()),
+            NodeKind::Line(def) => PrefabReplay::Line(def.clone()),
+            NodeKind::Decal(cfg) => PrefabReplay::Decal {
+                texture_index: resolve_decal_texture_index(renderer, assets, cfg).await,
+                alpha: cfg.alpha,
+            },
+            _ => PrefabReplay::None,
+        };
         nodes.push(PrefabNode {
             id: n.id,
             local: n.transform,
             parent: step.parent,
             template_meshes,
+            replay,
         });
     }
 
@@ -1054,8 +1232,8 @@ async fn build_node_meshes(
             keys.push(key);
         }
         // Non-mesh kinds: no geometry to share. Their transform is still recorded
-        // by the caller; per-instance light/camera/line/decal wiring is a B4
-        // follow-on (see `PrefabTemplate`).
+        // by the caller; `Light`/`Camera`/`Line`/`Decal` replay per instance is
+        // captured separately as a `PrefabReplay` (A.3, see `capture_prefab`).
         _ => {}
     }
     if hidden {
@@ -1231,8 +1409,9 @@ async fn build_sprite_mesh(
 /// `NodeHandles.decal`.
 ///
 /// Texture wiring: the renderer's decal `texture_index` is a *flat* texture-pool
-/// index (`array_index * 64 + layer_index`, per the decal shader's hard-coded
-/// 64-layers-per-array convention). When `cfg.texture` resolves to a pooled
+/// index (`array_index * stride + layer_index`, where `stride` is the device
+/// `max_texture_array_layers` — the decal shader unpacks with the same value, A.4;
+/// see [`resolve_decal_texture_index`]). When `cfg.texture` resolves to a pooled
 /// texture we derive that index from `renderer.textures.get_entry`; otherwise we
 /// fall back to index `0` (the editor's own decal bridge always passes `0` — it
 /// does not wire decal textures at all — so an untextured decal here matches the
@@ -1247,27 +1426,8 @@ async fn materialize_decal(
     maps: &mut AnimResolveMaps,
 ) -> Result<()> {
     use awsm_renderer::decals::AwsmDecalError;
-    use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 
-    // Resolve the decal texture to a flat pool index, mirroring the decal
-    // shader's `array_index * 64 + layer_index` packing. `None` (no texture, or
-    // it failed to load / isn't pooled) → index 0, as the editor bridge does.
-    let texture_index = match &cfg.texture {
-        Some(t) => {
-            match texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await
-            {
-                Some(mt) => renderer
-                    .textures
-                    .get_entry(mt.key)
-                    .map(|e| {
-                        (e.array_index as u32) * DECAL_POOL_LAYERS_PER_ARRAY + e.layer_index as u32
-                    })
-                    .unwrap_or(0),
-                None => 0,
-            }
-        }
-        None => 0,
-    };
+    let texture_index = resolve_decal_texture_index(renderer, assets, cfg).await;
 
     match renderer.insert_decal(node_world, texture_index, cfg.alpha) {
         Ok(key) => {
@@ -1279,11 +1439,38 @@ async fn materialize_decal(
     Ok(())
 }
 
-/// Layers-per-texture-array assumed by the decal shader's flat-index unpacking
-/// (`texture_index % 64`, `texture_index / 64` in `material_decal_wgsl`). The
-/// scene loader packs the decal `texture_index` with the same constant so a
-/// resolved decal texture lands on the layer the shader samples.
-const DECAL_POOL_LAYERS_PER_ARRAY: u32 = 64;
+/// Resolve a decal's texture to the flat texture-pool index the decal shader
+/// samples (`array_index * stride + layer_index`, `stride` =
+/// [`decal_texture_index_stride`](awsm_renderer::decals::decal_texture_index_stride),
+/// A.4). `None` (no texture, failed load, or not pooled) → index `0`, matching the
+/// editor bridge. Shared by the live
+/// [`materialize_decal`] arm and prefab capture ([`capture_prefab`], which must
+/// resolve at load time because [`PrefabTemplate::instantiate`] has no assets).
+async fn resolve_decal_texture_index(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    cfg: &DecalConfig,
+) -> u32 {
+    // A.4: pack with the SAME stride the decal shader unpacks with — the device
+    // `max_texture_array_layers`, via the renderer's single-source-of-truth helper
+    // (no longer a hard-coded `64`, which mis-sampled once a pool array exceeded 64
+    // layers). Read before the `&mut` texture load (Copy → borrow ends).
+    let stride = awsm_renderer::decals::decal_texture_index_stride(&renderer.gpu);
+    match &cfg.texture {
+        Some(t) => {
+            match texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await
+            {
+                Some(mt) => renderer
+                    .textures
+                    .get_entry(mt.key)
+                    .map(|e| (e.array_index as u32) * stride + e.layer_index as u32)
+                    .unwrap_or(0),
+                None => 0,
+            }
+        }
+        None => 0,
+    }
+}
 
 /// Materialize a [`NodeKind::InstancesAlongCurve`]: place copies of a source
 /// node's mesh along a Catmull-Rom curve via GPU instancing.
@@ -1298,10 +1485,18 @@ const DECAL_POOL_LAYERS_PER_ARRAY: u32 = 64;
 /// the resulting `Vec<Transform>` to
 /// [`AwsmRenderer::enable_mesh_instancing_opaque`](awsm_renderer::AwsmRenderer).
 ///
+/// Per-instance **colours** (`per_instance_colors`) are applied via
+/// [`AwsmRenderer::set_mesh_instance_attrs`] (A.2) — expanded to the placed count,
+/// repeating the last authored value when the list is shorter (the def's
+/// documented semantics).
+///
 /// Limitations (documented best-effort): the source node's *local* transform is
 /// not re-composed into each instance (the curve frame fully defines placement);
-/// `per_instance_colors` and the per-instance `shadow` config are not yet applied
-/// (the opaque instancing path takes transforms only) — both are follow-ons.
+/// the per-instance `shadow` config is not applied — shadow cast/receive is a
+/// **mesh-level** flag (shared by every instance, since instancing reuses the
+/// source mesh), so honoring the curve's `shadow` would overwrite the *source
+/// node's own* authored shadow flags; left as a documented follow-on (needs a true
+/// per-instance shadow flag in the renderer).
 fn materialize_instances_along_curve(
     renderer: &mut AwsmRenderer,
     scene: &Scene,
@@ -1330,10 +1525,39 @@ fn materialize_instances_along_curve(
     if transforms.is_empty() {
         return Ok(());
     }
+    // The transform key instancing is keyed under — also the per-instance attribute
+    // key. Grab it before the mutable instancing call (Copy, so the borrow ends).
+    let transform_key = renderer.meshes.get(source_mesh)?.transform_key;
     if let Err(err) = renderer.enable_mesh_instancing_opaque(source_mesh, &transforms) {
         tracing::warn!("scene-loader: enable_mesh_instancing_opaque failed: {err}");
+        return Ok(());
+    }
+    // A.2: apply per-instance colour overrides via the same per-instance attribute
+    // path the particle emitter uses. `set_mesh_instance_attrs` requires exactly one
+    // attr per placed transform, so expand `per_instance_colors` to the placed count,
+    // repeating the last value when the authored list is shorter (the def's
+    // documented semantics). Empty list → leave the default white tint untouched.
+    if !def.per_instance_colors.is_empty() {
+        let attrs: Vec<awsm_renderer::instances::InstanceAttr> =
+            expand_instance_colors(&def.per_instance_colors, transforms.len())
+                .into_iter()
+                .map(|c| awsm_renderer::instances::InstanceAttr::from_rgba_alpha_size(c, 1.0, 1.0))
+                .collect();
+        if let Err(err) = renderer.set_mesh_instance_attrs(transform_key, &attrs) {
+            tracing::warn!("scene-loader: curve per-instance colours failed: {err}");
+        }
     }
     Ok(())
+}
+
+/// Expand authored `per_instance_colors` to exactly `count` entries, repeating the
+/// last value when the list is shorter (the [`InstancesAlongCurveDef`] documented
+/// semantics) and truncating when longer. Caller guarantees `colors` is non-empty.
+fn expand_instance_colors(colors: &[[f32; 4]], count: usize) -> Vec<[f32; 4]> {
+    let last = *colors.last().expect("non-empty per_instance_colors");
+    (0..count)
+        .map(|i| colors.get(i).copied().unwrap_or(last))
+        .collect()
 }
 
 /// Find a [`NodeKind::Curve`]'s [`CurveDef`] by `NodeId` anywhere in the tree.
@@ -1400,18 +1624,6 @@ fn curve_instance_transforms(curve: &CurveDef, def: &InstancesAlongCurveDef) -> 
         dist += spacing;
     }
     out
-}
-
-/// One-time warn that `ParticleEmitter` nodes aren't rendered by the loader.
-fn warn_particle_skip() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    if !WARNED.swap(true, Ordering::Relaxed) {
-        tracing::warn!(
-            "ParticleEmitter not rendered by the loader: no renderer particle pass; the game \
-             drives particles via its own per-frame mesh/line updates"
-        );
-    }
 }
 
 /// One-time warn that a `Decal` node was skipped because the renderer's `decals`
@@ -1746,8 +1958,23 @@ mod prefab_tests {
     //! (the renderer runs on wasm). That path is covered by the browser round-trip
     //! harness instead; unit-testing it here would block on an un-unit-testable GPU
     //! dependency, so we test the part we can pin down without a device.
-    use super::prefab_subtree_layout;
+    use super::{expand_instance_colors, prefab_subtree_layout};
     use awsm_scene::{EditorNode, NodeId, NodeKind};
+
+    #[test]
+    fn instance_colors_repeat_last_when_short_and_truncate_when_long() {
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let green = [0.0, 1.0, 0.0, 1.0];
+        // Shorter than count → last value (green) repeats to fill.
+        let out = expand_instance_colors(&[red, green], 4);
+        assert_eq!(out, vec![red, green, green, green]);
+        // Longer than count → truncated to count.
+        let out = expand_instance_colors(&[red, green, red], 2);
+        assert_eq!(out, vec![red, green]);
+        // Exact length → identity.
+        let out = expand_instance_colors(&[red, green], 2);
+        assert_eq!(out, vec![red, green]);
+    }
 
     fn node(id: NodeId, prefab: bool, children: Vec<EditorNode>) -> EditorNode {
         EditorNode {

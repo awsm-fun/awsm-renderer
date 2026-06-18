@@ -363,6 +363,11 @@ pub struct AwsmRenderer {
     /// Per-camera authorable parameter store (projection, clip planes,
     /// depth-of-field). Driven by `AnimationTarget::Camera` channels.
     pub cameras: crate::cameras::Cameras,
+    /// Reused per-frame scratch for the cull path's mesh-count-scaling
+    /// allocations (opaque-snapshot list + packed occlusion-instance bytes).
+    /// `take`/restored across each `render()` to avoid per-frame allocator/GC
+    /// churn at high mesh counts. See [`crate::render::RenderFrameScratch`].
+    pub(crate) render_frame_scratch: crate::render::RenderFrameScratch,
 }
 
 /// Compatibility requirements for this renderer.
@@ -1910,6 +1915,7 @@ impl AwsmRendererBuilder {
             #[cfg(feature = "animation")]
             animations,
             cameras: crate::cameras::Cameras::new(),
+            render_frame_scratch: crate::render::RenderFrameScratch::default(),
         };
 
         // Apply the configured registration ceiling (§2). Validated +

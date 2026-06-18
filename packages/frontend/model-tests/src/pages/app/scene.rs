@@ -40,6 +40,20 @@ use crate::prelude::*;
 
 use super::context::AppContext;
 
+/// §C.1 perf bench: parse `?stress=N` from the URL (the count of duplicate meshes
+/// to spawn in a grid). `None` when the param is absent / unparseable / zero, so
+/// the bench is fully inert in normal use.
+fn stress_grid_count() -> Option<u32> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let query = search.trim_start_matches('?');
+    for pair in query.split('&') {
+        if let Some(val) = pair.strip_prefix("stress=") {
+            return val.parse::<u32>().ok().filter(|n| *n > 0);
+        }
+    }
+    None
+}
+
 pub struct AppScene {
     pub ctx: AppContext,
     pub renderer: Arc<futures::lock::Mutex<AwsmRenderer>>,
@@ -653,6 +667,45 @@ impl AppScene {
                 .unwrap()
                 .node_index_to_transform
                 .clone();
+
+            // §C.1 perf bench (dev-only, inert without the param): `?stress=N`
+            // duplicates the loaded model's meshes into an N-cell grid to profile
+            // per-frame CPU at thousands of renderables. Each duplicate shares the
+            // source GPU geometry/material (cheap upload) but is a DISTINCT
+            // renderable — so it stresses the per-frame renderable walk / classify
+            // setup / transform tree / per-mesh meta exactly like a thousands-of-mesh
+            // scene. Capture a `performance_*` trace + render timing with this on.
+            if let Some(n) = stress_grid_count() {
+                let source_keys: Vec<_> = populate_ctx
+                    .key_lookups
+                    .lock()
+                    .unwrap()
+                    .all_mesh_keys
+                    .values()
+                    .flatten()
+                    .copied()
+                    .collect();
+                if let Some(&src) = source_keys.first() {
+                    let cols = (n as f32).sqrt().ceil() as i64;
+                    let mut made = 0usize;
+                    for i in 0..n as i64 {
+                        let x = (i % cols) as f32 * 2.0;
+                        let z = (i / cols) as f32 * 2.0;
+                        let tk = renderer.transforms.insert(
+                            awsm_renderer::transforms::Transform {
+                                translation: glam::Vec3::new(x, 0.0, z),
+                                rotation: glam::Quat::IDENTITY,
+                                scale: glam::Vec3::ONE,
+                            },
+                            None,
+                        );
+                        if renderer.duplicate_mesh_with_transform(src, tk).is_ok() {
+                            made += 1;
+                        }
+                    }
+                    tracing::warn!("§C.1 stress bench: duplicated {made} meshes (grid {cols}x)");
+                }
+            }
 
             Ok(())
         }

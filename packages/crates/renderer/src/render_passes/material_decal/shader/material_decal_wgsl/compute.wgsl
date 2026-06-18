@@ -118,8 +118,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // PBR base color and decal projection without re-importing.
 fn sample_decal_texture(texture_index: u32, uv: vec2<f32>) -> vec4<f32> {
 {% if texture_pool_arrays_len > 0 %}
-    let layer = texture_index % 64u;
-    let array_index = texture_index / 64u;
+    // Stride = device `max_texture_array_layers` (A.4) — the scene-loader packs
+    // `texture_index` with the SAME value (`decal_texture_index_stride`), so a
+    // decal texture on any valid pool layer round-trips. (Was a hard-coded `64u`
+    // that mis-sampled once a pool array exceeded 64 layers.)
+    let layer = texture_index % {{ texture_pool_layers_per_array }}u;
+    let array_index = texture_index / {{ texture_pool_layers_per_array }}u;
     // Bilinear sample on mip 0 — decals are small; mipmap selection
     // would need ddx/ddy which compute shaders don't have without
     // workgroup gradient hacks. v1 doesn't bother.

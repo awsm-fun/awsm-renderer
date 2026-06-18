@@ -24,6 +24,27 @@ use crate::scene_spatial::SceneSpatial;
 use crate::transforms::Transforms;
 use crate::{AwsmRenderer, AwsmRendererLogging};
 
+/// Per-opaque-renderable snapshot the occlusion + indirect-draw path consumes
+/// after `renderables.opaque` is handed to the material pass. Module-scope (was a
+/// `render()`-local struct) so it can live in the reused [`RenderFrameScratch`].
+pub(crate) struct OcclusionSnapshot {
+    pub aabb: crate::bounds::Aabb,
+    pub mesh_meta_offset: u32,
+    pub index_count: u32,
+}
+
+/// Reused per-frame scratch for the cull path's two mesh-count-scaling
+/// allocations — the opaque-snapshot list and the packed occlusion-instance byte
+/// buffer. Both were freshly `Vec`-allocated every frame (~176 KB/frame at 2K
+/// meshes, more at higher counts); the churn shows up as GC-pause jank on the
+/// frame-time p95, not the average. Held on [`AwsmRenderer`] and `take`/restored
+/// across each `render()` so the allocations persist frame-to-frame.
+#[derive(Default)]
+pub(crate) struct RenderFrameScratch {
+    pub opaque_snapshots: Vec<OcclusionSnapshot>,
+    pub occlusion_instance_bytes: Vec<u8>,
+}
+
 /// Optional callbacks around render passes.
 #[derive(Default)]
 pub struct RenderHooks {
@@ -371,6 +392,34 @@ impl AwsmRenderer {
         // Extras pool — flush any dirty bytes from BufferSlot
         // updates this frame. No-op when nothing's changed.
         self.extras_pool.write_gpu(&self.gpu)?;
+        // §B static-shadow cache: a frame is "static" (periodic shadow re-renders
+        // may be suppressed) when the camera didn't move AND no time-driven shadow
+        // material is present — combined inside `take_shadow_static` with the
+        // caster-moved accumulator + the caster-set signature (mesh count +
+        // shadow-flag revision). A FlipBook's time-driven alpha cutout OR any custom
+        // material (which could read `time`) keeps shadows re-rendering. Camera
+        // movement is also covered for cascades by the view-projection drift check
+        // inside `write_gpu`; gating on it here additionally keeps cube faces from
+        // caching across a camera move and pins near-cascade caching to a still
+        // camera. Forced re-renders (rect/layer/drift/config) always fire.
+        let time_driven_shadow =
+            !self.dynamic_materials.is_empty() || self.materials.has_flipbook();
+        // Deformable geometry (skinned / morph-target meshes) deforms IN the shadow
+        // caster pass — its vertex shader runs `apply_position_skin` /
+        // `apply_position_morphs` — so an animated deformable caster's shadow changes
+        // every frame with NO root-transform move (joint / morph-weight changes don't
+        // dirty the mesh transform). We can't cheaply prove a frame's deformation is
+        // quiet, so ANY deformable geometry present ⇒ not static. Conservative by
+        // design (the §B target — static prop / terrain casters — has none); backstops
+        // both mixer-driven animation and direct posing.
+        // Only *geometry* (position) morphs deform the shadow silhouette; material
+        // morphs don't move vertices, so they're irrelevant here.
+        let deformable_present =
+            !self.meshes.skins.is_empty() || !self.meshes.morphs.geometry.is_empty();
+        let external_static = !self.camera.moved() && !time_driven_shadow && !deformable_present;
+        let shadow_static = self
+            .shadows
+            .take_shadow_static(self.meshes.len(), external_static);
         // Shadows must fit cascades + populate the descriptor buffer
         // *before* the lights buffer is packed — `Lights::write_gpu`
         // queries `shadow_index_for` per-light and bakes the result
@@ -383,6 +432,7 @@ impl AwsmRenderer {
             &self.camera,
             &self.lights,
             &self.scene_spatial,
+            shadow_static,
         )?;
         {
             let shadows = &self.shadows;
@@ -564,6 +614,15 @@ impl AwsmRenderer {
         // clear-and-extend the pool's Vecs in place, while ctx holds
         // immutable references into `self`.
         self.collect_renderables()?;
+
+        // Take the reused per-frame cull-path scratch out of `self` BEFORE the
+        // `renderables`/`ctx` borrows below pin `&self` — it's restored at the end
+        // of the frame (after those borrows release), so its two Vecs keep their
+        // capacity frame-to-frame instead of churning the allocator (GC-jank).
+        let mut frame_scratch = std::mem::take(&mut self.render_frame_scratch);
+        frame_scratch.opaque_snapshots.clear();
+        frame_scratch.occlusion_instance_bytes.clear();
+
         let renderables = self.renderables();
 
         let ctx = RenderContext {
@@ -622,34 +681,28 @@ impl AwsmRenderer {
         //                            `draw_indexed_with_instance_count`
         //                            path and don't get a `drawIndirect`
         //                            args entry
-        struct OcclusionSnapshot {
-            aabb: crate::bounds::Aabb,
-            mesh_meta_offset: u32,
-            index_count: u32,
-        }
         // Instanced meshes stay on the legacy
         // `draw_indexed_with_instance_count` path (their `instance_index`
         // ranges would collide across meshes in the shared storage-array
         // meta lookup), so they don't need cull-pass instances or
-        // IndirectDrawArgs slots — skip them here.
-        let opaque_snapshots: Vec<OcclusionSnapshot> = renderables
-            .opaque
-            .iter()
-            .filter_map(|r| {
-                if r.instanced {
-                    return None;
-                }
-                let aabb = r.world_aabb.clone()?;
-                let meta_offset = ctx.meshes.meta.geometry_buffer_offset(r.key).ok()? as u32;
-                let buffer_info = ctx.meshes.buffer_info(r.key).ok()?;
-                let index_count = buffer_info.triangles.vertex_attribute_indices.count as u32;
-                Some(OcclusionSnapshot {
-                    aabb,
-                    mesh_meta_offset: meta_offset,
-                    index_count,
-                })
+        // IndirectDrawArgs slots — skip them here. Refilled into the reused
+        // scratch (cleared above) instead of a fresh per-frame `Vec`.
+        let opaque_snapshots = &mut frame_scratch.opaque_snapshots;
+        opaque_snapshots.extend(renderables.opaque.iter().filter_map(|r| {
+            if r.instanced {
+                return None;
+            }
+            let aabb = r.world_aabb.clone()?;
+            let meta_offset = ctx.meshes.meta.geometry_buffer_offset(r.key).ok()? as u32;
+            let buffer_info = ctx.meshes.buffer_info(r.key).ok()?;
+            let index_count = buffer_info.triangles.vertex_attribute_indices.count as u32;
+            Some(OcclusionSnapshot {
+                aabb,
+                mesh_meta_offset: meta_offset,
+                index_count,
             })
-            .collect();
+        }));
+        let opaque_snapshots = &frame_scratch.opaque_snapshots;
 
         // Compute this frame's optimization decision now that we have
         // the renderable counts + opaque snapshot. The pure function
@@ -1119,8 +1172,10 @@ impl AwsmRenderer {
                 let occlusion_instance_count = {
                     let stride =
                         crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
-                    let mut bytes: Vec<u8> = Vec::with_capacity(opaque_snapshots.len() * stride);
-                    for snap in &opaque_snapshots {
+                    // Reused scratch (cleared at frame start) instead of a fresh
+                    // per-frame `Vec` — the packed buffer is ~48 B/mesh.
+                    let bytes = &mut frame_scratch.occlusion_instance_bytes;
+                    for snap in opaque_snapshots {
                         bytes.extend_from_slice(&snap.aabb.min.x.to_le_bytes());
                         bytes.extend_from_slice(&snap.aabb.min.y.to_le_bytes());
                         bytes.extend_from_slice(&snap.aabb.min.z.to_le_bytes());
@@ -1543,6 +1598,11 @@ impl AwsmRenderer {
         // borrow on `&self` through the rest of the render flow.
         self.frame_optimizations = frame_opts;
         self.frames_in_current_mode = next_frames_in_current_mode;
+        // Restore the cull-path scratch (its Vecs keep their capacity for next
+        // frame). The `renderables`/`ctx` borrows have released by here, so `self`
+        // is mutable again. On the rare fatal early-returns above (unsupported
+        // MSAA) the scratch is dropped instead — harmless, it just re-allocates.
+        self.render_frame_scratch = frame_scratch;
 
         Ok(())
     }

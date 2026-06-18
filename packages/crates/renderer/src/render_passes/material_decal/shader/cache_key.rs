@@ -13,6 +13,11 @@ pub struct ShaderCacheKeyMaterialDecal {
     pub msaa_sample_count: Option<u32>,
     pub texture_pool_arrays_len: u32,
     pub texture_pool_samplers_len: u32,
+    /// Divisor that packs/unpacks a decal's flat `texture_index` into the pool's
+    /// `(array_index, layer_index)` — the device `max_texture_array_layers` (A.4).
+    /// Device-constant in practice, so it adds no real variant; carried here so the
+    /// compute template substitutes the exact stride the loader packs with.
+    pub texture_pool_layers_per_array: u32,
 }
 
 impl From<ShaderCacheKeyMaterialDecal> for ShaderCacheKey {

@@ -158,8 +158,16 @@ every command/query, and each tool self-describes over the MCP schema.
 
 **Scene / nodes**
 - `insert_primitive { shape, parent? }` (plane/box/sphere/cylinder/cone/torus),
-  `insert_empty`, `insert_camera`, `insert_light { kind, parent? }` — **return the
-  new node id.**
+  `insert_empty`, `insert_camera`, `insert_light { kind, parent? }`,
+  `insert_particle { parent? }` (CPU particle emitter), `insert_decal { parent? }`
+  (projection decal; transform = oriented unit-cube volume, projects down local -Z)
+  — **return the new node id.** Other node kinds (Line, Sprite, Curve, Sweep,
+  Instances) are created via `dispatch_command { command: { cmd: "insert", spec:
+  "line" | "sprite" | "curve" | "sweep" | "instances", … } }`.
+- `set_mesh_shadow { node, cast, receive }` — toggle a Mesh / SkinnedMesh /
+  InstancesAlongCurve node's shadow casting / receiving (read-modify-write of its
+  `shadow` config via `SetKind`). `set_instance_colors { node, colors }` — set an
+  InstancesAlongCurve node's per-instance linear-RGBA tints (empty clears them).
 - `node_set_transform { node, translation, rotation, scale }` (rotation is a local
   quaternion `[x,y,z,w]`), plus convenience: `set_translation`, `translate_by`,
   `set_scale`, `set_rotation_euler { euler, order? }`.

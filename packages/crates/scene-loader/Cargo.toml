@@ -21,6 +21,10 @@ awsm-materials = { workspace = true }
 awsm-meshgen = { workspace = true }
 # Catmull-Rom curve sampling for `InstancesAlongCurve` (point/tangent/arc-length).
 awsm-curves = { workspace = true }
+# CPU particle simulator (spawn/integrate/age/cull) reused by the ParticleEmitter
+# handle so a consumer's per-frame tick is near-trivial (Design A: loader sets up,
+# game ticks). Pure-CPU, no GPU — the loader never ticks it.
+awsm-particles = { workspace = true }
 # The runtime Scene schema we load.
 awsm-scene = { workspace = true }
 glam = { workspace = true }
