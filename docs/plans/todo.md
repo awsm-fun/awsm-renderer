@@ -282,8 +282,45 @@ editor). Crate `awsm-renderer`, module `shadows/`.
 **The ONE missing input:** a "casters static this frame" signal. Today near cascades (`update_period == 1`)
 + cube faces re-render every frame regardless.
 
-**[ ] B.1 — implement the static signal (per-view; do NOT skip the whole pass — forced re-renders must
-still fire).** In the reconcile loop's `due` computation in `Shadows::write_gpu`, split forced vs periodic
+**[x] B.1 — implement the static signal** — commit `7abac541`
+
+**Landed exactly as specified** (split forced vs periodic in the `Shadows::write_gpu` reconcile;
+`due = forced || (periodic && !shadow_static)`; threaded `shadow_static` from `AwsmRenderer::render`).
+The gate state lives on `Shadows` (encapsulated, no `AwsmRenderer` constructor churn):
+`take_shadow_static(mesh_count, external_static)` folds the caster-moved accumulator (set in
+`update_transforms`, dirty transforms filtered to `cast_shadows && !hud && !hidden` via
+`keys_by_transform_key` — HUD churn ignored) + the caster-set signature (mesh count + a revision
+bumped in `set_mesh_shadow_flags` on a cast-flag toggle). `external_static` = camera still + no
+time-driven material (`Materials::has_flipbook()` — added — or any custom material). All three "hard
+parts" handled.
+
+**Refinement beyond the spec's literal list (a SAFETY ADDITION, not a regression/deviation — so not
+gated to David):** the spec's `shadow_static` didn't mention **deformable geometry**. I verified the
+shadow caster vertex shaders (`shadow_wgsl/vertex.wgsl`, `shadow_masked_wgsl/vertex.wgsl`) run
+`apply_position_skin` + `apply_position_morphs` — so an animated **skinned or geometry-morph** caster's
+shadow deforms every frame with NO root-transform move (joint / morph-weight changes don't dirty the
+mesh transform, and aren't in `take_dirty_meshes`/`touched`). Without a guard the cache would FREEZE an
+animated character's shadow. Added `deformable_present = !skins.is_empty() || !morphs.geometry.is_empty()`
+to the not-static condition — conservative (any deformable mesh present, even idle, disables the cache),
+which is fine: the §B target is static prop/terrain casters (no skins/morphs). Material morphs are
+excluded (don't move vertices).
+
+**Verification (honest):** `cargo test -p awsm-renderer -p awsm-materials -p awsm-scene-loader --lib`
+GREEN (34 / 261 / 30). chrome-devtools on model-tests :9080: static (DamagedHelmet) AND animated-skinned
+(Fox) models render correctly with the gate running every frame, clean console (only the pre-existing
+benign `final_blend` pipeline-warmup warn). The shadow-CACHE behavioral matrix (static frame skips
+re-render → `render_cpu_ms` drop; move caster → updates; FlipBook keeps animating; HUD ignored;
+add/remove re-renders) **could not be exercised** — model-tests inserts its directional lights with
+`None` shadow params (no shadow casting), so the shadow path runs zero views. Correctness rests on the
+conservative design (any uncertainty → re-render; every non-static frame ≡ today's `forced || periodic`)
++ the green tests + the live render-loop integration check. No perf regression (non-static frames behave
+identically to today; the added per-frame work — `has_flipbook` O(materials), two `is_empty()` O(1),
+caster-moved O(dirty≈0 on static) — is negligible), no standards deviation (default-when-not-static ==
+today).
+
+### B.1 spec (original, for reference)
+
+In the reconcile loop's `due` computation in `Shadows::write_gpu`, split forced vs periodic
 and suppress only the periodic when static:
 ```rust
 let forced   = t.last_rendered_frame == u64::MAX;            // rect/layer/drift/config
