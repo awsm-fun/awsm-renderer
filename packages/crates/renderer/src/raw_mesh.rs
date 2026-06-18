@@ -2,14 +2,14 @@
 //!
 //! This is the canonical entry point for uploading procedural / generated geometry
 //! into the renderer. The `gltf` ingestion path is one consumer of the same
-//! underlying mesh buffers — `add_raw_mesh` packs an in-memory `RawMeshData`
-//! into the same byte layouts the gltf populate path produces, and inserts via
-//! the same `Meshes::insert` entry point.
+//! underlying model — both lower to a `GeometrySource` and flow through
+//! `register_geometry` → `add_mesh` → commit (`add_raw_mesh` is the one-shot
+//! convenience that registers + adds + eagerly resolves its single geometry).
 //!
-//! Today's API supports static (non-skinned, non-morphed) opaque meshes. The
-//! visibility-buffer compute pipeline handles them uniformly with gltf-loaded
-//! meshes. Transparent-pass routing is supported when the caller passes a
-//! transparent material.
+//! Today's API supports static (non-skinned, non-morphed) meshes. The geometry
+//! KIND (visibility vs transparency) is resolved at commit from the bound
+//! material via the one `geometry_kind` fn, so `add_raw_mesh` handles opaque AND
+//! transparent materials uniformly — there is no separate transparent entry point.
 //!
 //! ## Byte layout
 //!
