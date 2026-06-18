@@ -55,23 +55,23 @@ fn first_party_key(
     msaa: Option<u32>,
     mipmaps: bool,
 ) -> ShaderCacheKeyMaterialOpaque {
-    first_party_key_prep(shader_id, base, owns_skybox, msaa, mipmaps, false)
+    first_party_key_prep(shader_id, base, owns_skybox, msaa, mipmaps)
 }
 
+// Prep is unconditional now, so this is identical to `first_party_key`; kept as
+// a named alias for the prep-read test sites that document intent.
 fn first_party_key_prep(
     shader_id: MaterialShaderId,
     base: ShadingBase,
     owns_skybox: bool,
     msaa: Option<u32>,
     mipmaps: bool,
-    prep_enabled: bool,
 ) -> ShaderCacheKeyMaterialOpaque {
     ShaderCacheKeyMaterialOpaque {
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
         mipmaps,
-        prep_enabled,
         max_shadow_casters: 4,
         shader_id,
         base,
@@ -101,7 +101,6 @@ fn custom_key(
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
         mipmaps,
-        prep_enabled: false,
         max_shadow_casters: 4,
         shader_id: dyn_id,
         base: ShadingBase::Custom,
@@ -179,9 +178,10 @@ fn unified_shade_opaque_shaders_validate() {
     // U1 (`docs/plans/unified-edge-shading.md`): under MSAA the opaque module
     // emits the merged `cs_shade` entry point (interior sample-0 → opaque_tex +
     // edge per-sample → accumulator) + the `edge_id_tex` group(3) binding it
-    // reads. naga-validate it across every base (incl SKYBOX + Custom) × prep
-    // on/off × mips on/off — cs_shade is MSAA-only (there are no edges
-    // otherwise), so only the MSAA config carries it. Asserts the entry point
+    // reads. naga-validate it across every base (incl SKYBOX + Custom) × mips
+    // on/off — cs_shade is MSAA-only (there are no edges otherwise), so only the
+    // MSAA config carries it. Prep is unconditional (the opaque path is
+    // prep-only), so there is no prep on/off axis. Asserts the entry point
     // exists (the dispatch selects it by name → pipeline-create would fail on
     // GPU if absent) and that the cs_opaque entry point still coexists (the
     // no-MSAA interior path).
@@ -198,29 +198,27 @@ fn unified_shade_opaque_shaders_validate() {
         (MaterialShaderId::SKYBOX, ShadingBase::Pbr, true, "skybox"),
     ];
     for (id, base, owns_skybox, name) in bases {
-        for prep in [false, true] {
-            for mips in [false, true] {
-                let key = first_party_key_prep(id, base, owns_skybox, Some(4), mips, prep);
-                let label = format!("opaque-unified/{name} msaa=4 mips={mips} prep={prep}");
-                let src = render(&key, &label);
-                naga_validate(&src, &label);
-                assert!(
-                    src.contains("fn cs_shade("),
-                    "{label}: unified opaque module missing `fn cs_shade` entry point \
-                     (dispatch requests it → pipeline-create would fail on GPU)"
-                );
-                // Invariant (A2): under MSAA the module is cs_shade ONLY — no
-                // `cs_opaque` (the no-MSAA interior entry is never compiled here).
-                assert!(
-                    !src.contains("fn cs_opaque("),
-                    "{label}: MSAA module must NOT carry `fn cs_opaque` (cross-AA code)"
-                );
-                // The edge-id texture binding cs_shade reads must be declared.
-                assert!(
-                    src.contains("var edge_id_tex: texture_storage_2d<r32uint, read>"),
-                    "{label}: unified module missing the read-only `edge_id_tex` binding"
-                );
-            }
+        for mips in [false, true] {
+            let key = first_party_key_prep(id, base, owns_skybox, Some(4), mips);
+            let label = format!("opaque-unified/{name} msaa=4 mips={mips}");
+            let src = render(&key, &label);
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("fn cs_shade("),
+                "{label}: unified opaque module missing `fn cs_shade` entry point \
+                 (dispatch requests it → pipeline-create would fail on GPU)"
+            );
+            // Invariant (A2): under MSAA the module is cs_shade ONLY — no
+            // `cs_opaque` (the no-MSAA interior entry is never compiled here).
+            assert!(
+                !src.contains("fn cs_opaque("),
+                "{label}: MSAA module must NOT carry `fn cs_opaque` (cross-AA code)"
+            );
+            // The edge-id texture binding cs_shade reads must be declared.
+            assert!(
+                src.contains("var edge_id_tex: texture_storage_2d<r32uint, read>"),
+                "{label}: unified module missing the read-only `edge_id_tex` binding"
+            );
         }
     }
 
@@ -255,7 +253,6 @@ fn opaque_prep_read_variant_validates() {
         false,
         None,  // no MSAA → prep_read = true
         false, // no mips → no get_uv_derivatives caller of _texture_uv_per_vertex
-        true,  // prep_enabled
     );
     let src = render(&key, "opaque/pbr prep_read");
     naga_validate(&src, "opaque/pbr prep_read");
@@ -285,13 +282,12 @@ fn opaque_prep_read_variant_validates() {
 
 #[test]
 fn opaque_shadow_from_buffer_variant_validates() {
-    // Plan B (stage 4): the PBR opaque kernel with prep enabled + MSAA off
+    // Plan B (stage 4): the PBR opaque kernel (prep is unconditional) + MSAA off
     // reads the prep pass's per-pixel shadow-visibility buffer instead of
     // sampling shadow maps inline. Assert it (a) validates, (b) reads
     // `prep_shadow_visibility` via textureLoad, and (c) DROPS the inline
-    // `sample_shadow_directional` definition (the ~50 KB win). Also build the
-    // prep-OFF and MSAA-on variants and assert they KEEP the inline sampler
-    // (byte-identical behavior to today). Mirrors
+    // `sample_shadow_directional` definition (the ~50 KB win). The prep-OFF
+    // controls are gone — the opaque path is prep-only now. Mirrors
     // `opaque_prep_read_variant_validates`.
     let prep_key = first_party_key_prep(
         MaterialShaderId::PBR,
@@ -299,7 +295,6 @@ fn opaque_shadow_from_buffer_variant_validates() {
         false,
         None, // no MSAA → prep_read = true → shadow_from_buffer = true (PBR lights)
         true,
-        true, // prep_enabled
     );
     let src = render(&prep_key, "opaque/pbr shadow_from_buffer");
     naga_validate(&src, "opaque/pbr shadow_from_buffer");
@@ -323,19 +318,7 @@ fn opaque_shadow_from_buffer_variant_validates() {
         "shadow_from_buffer opaque module should DROP `fn sample_shadow_directional` (the inline sampler)"
     );
 
-    // Control 1: prep OFF (no MSAA) keeps inline sampling, no buffer read.
-    let off_key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, None, true);
-    let off_src = render(&off_key, "opaque/pbr prep-off");
-    assert!(
-        off_src.contains("fn sample_shadow_directional"),
-        "prep-off PBR opaque must KEEP inline `fn sample_shadow_directional`"
-    );
-    assert!(
-        !off_src.contains("textureLoad(prep_shadow_visibility"),
-        "prep-off PBR opaque must NOT read the prep shadow buffer"
-    );
-
-    // Control 2 (stage 5b-shadow): prep ON + MSAA on ⇒ cs_opaque (PRIMARY) reads
+    // Control 2 (stage 5b-shadow): MSAA on ⇒ cs_opaque (PRIMARY) reads
     // the full-screen prep buffer AND cs_edge (EDGE) reads the compact
     // per-edge-sample buffer — so NOTHING inline-samples shadows, and the inline
     // `sample_shadow_directional` DROPS from the MSAA module (the MSAA analog of
@@ -346,7 +329,6 @@ fn opaque_shadow_from_buffer_variant_validates() {
         ShadingBase::Pbr,
         false,
         Some(4), // MSAA on → prep_present = true, needs_shadow_sampling = false (5b)
-        true,
         true,
     );
     let msaa_src = render(&msaa_key, "opaque/pbr prep-on msaa4");
@@ -390,51 +372,24 @@ fn opaque_shadow_from_buffer_variant_validates() {
         "MSAA+prep PBR opaque must KEEP the recompute helpers (cs_edge recomputes attrs; 5b-attrs deferred)"
     );
 
-    // Control 3 (stage 5b-shadow): prep ON + MSAA OFF still keeps the inline
-    // sampler DROPPED (stage 4) and reads only the full-screen buffer (no edges →
-    // no compact edge buffer / no EDGE read).
+    // Control 3 (stage 5b-shadow): MSAA OFF still keeps the inline sampler
+    // DROPPED (stage 4) and reads only the full-screen buffer (no edges → no
+    // compact edge buffer / no EDGE read).
     let no_msaa_src = render(&prep_key, "opaque/pbr prep-on no-msaa");
     assert!(
         !no_msaa_src.contains("textureLoad(prep_edge_shadow"),
-        "no-MSAA+prep PBR opaque must NOT read the compact edge buffer (no edges)"
+        "no-MSAA PBR opaque must NOT read the compact edge buffer (no edges)"
     );
 
-    // Measurement: report the prep-read (no-MSAA) PBR size vs prep-off, and the
-    // MSAA module size prep-on vs prep-off (the 5b-shadow drop).
-    let msaa_off_key = first_party_key(
-        MaterialShaderId::PBR,
-        ShadingBase::Pbr,
-        false,
-        Some(4),
-        true,
-    );
-    let msaa_off_src = render(&msaa_off_key, "opaque/pbr prep-off msaa4");
+    // Measurement: report the prep (no-MSAA shadow-from-buffer) PBR size and the
+    // MSAA module size. The prep-OFF baselines are gone (opaque is prep-only).
     eprintln!(
-        "[stage4] PBR opaque no-MSAA — prep-read(shadow_from_buffer): {} B, prep-off(inline): {} B (delta {})",
+        "[stage4] PBR opaque no-MSAA — prep-read(shadow_from_buffer): {} B",
         src.len(),
-        off_src.len(),
-        off_src.len() as i64 - src.len() as i64,
     );
     eprintln!(
-        "[stage5b] PBR opaque MSAA4 — prep-on(edge-shadow buffer): {} B, prep-off(inline): {} B (delta {})",
+        "[stage5b] PBR opaque MSAA4 — prep-on(edge-shadow buffer): {} B",
         msaa_src.len(),
-        msaa_off_src.len(),
-        msaa_off_src.len() as i64 - msaa_src.len() as i64,
-    );
-    // The shadow-from-buffer variant must be SMALLER (the inline sampler drop).
-    assert!(
-        src.len() < off_src.len(),
-        "shadow_from_buffer PBR ({} B) should be smaller than prep-off inline PBR ({} B)",
-        src.len(),
-        off_src.len()
-    );
-    // (5b-shadow) The MSAA prep-on module must be SMALLER than prep-off (inline
-    // sample_shadow_* dropped).
-    assert!(
-        msaa_src.len() < msaa_off_src.len(),
-        "5b: MSAA+prep PBR ({} B) should be smaller than MSAA prep-off inline PBR ({} B)",
-        msaa_src.len(),
-        msaa_off_src.len()
     );
 }
 
@@ -592,7 +547,6 @@ fn custom_froxel_lights_accessors_validate() {
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
             mipmaps: mips,
-            prep_enabled: false,
             max_shadow_casters: 4,
             shader_id: dyn_id,
             base: ShadingBase::Custom,

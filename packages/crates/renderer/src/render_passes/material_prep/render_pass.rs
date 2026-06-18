@@ -8,8 +8,8 @@
 //! are exactly two pipeline variants — multisampled-geometry on/off — both built
 //! up-front so an MSAA change needs only a bind-group rebuild, not a recompile.
 //!
-//! Only constructed (and dispatched) when `PrepPassConfig.enabled`. When the
-//! flag is off the pass is `None`, so the legacy path is byte-identical.
+//! The prep pass is unconditional — always constructed and dispatched. The
+//! opaque deferred path reads its outputs.
 
 use std::borrow::Cow;
 
@@ -52,8 +52,8 @@ pub struct MaterialPrepRenderPass {
 impl MaterialPrepRenderPass {
     /// Creates the prep render pass resources. Eager compile of both MSAA
     /// variants — matches the static-compute-pass convention
-    /// ([`crate::render_passes::light_culling`]). Only called when
-    /// `PrepPassConfig.enabled`.
+    /// ([`crate::render_passes::light_culling`]). Always called (prep is
+    /// unconditional).
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = MaterialPrepBindGroups::new(ctx).await?;
         let multisampled_pipeline_key = build_pipeline(ctx, &bind_groups, true).await?;

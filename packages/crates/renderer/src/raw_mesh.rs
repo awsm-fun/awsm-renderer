@@ -506,7 +506,7 @@ impl AwsmRenderer {
             .get(material_key)
             .map(Material::double_sided)
             .unwrap_or(false);
-        let mesh = Mesh::new(
+        let mut mesh = Mesh::new(
             transform_key,
             material_key,
             double_sided,
@@ -514,6 +514,11 @@ impl AwsmRenderer {
             false,
             false,
         );
+        // Transparency-pass mesh: transparency geometry only, NO visibility
+        // geometry (see the buffer_info build above). This is the immutable
+        // ground truth `collect_renderables` routes on.
+        mesh.has_visibility_geometry = false;
+        mesh.has_transparency_geometry = true;
         let mesh_key = self.meshes.insert_public(
             mesh,
             &self.materials,

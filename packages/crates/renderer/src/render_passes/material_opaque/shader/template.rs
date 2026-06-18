@@ -52,12 +52,12 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// materials that don't run first-party lighting drop it. The shadow
     /// bind group + structs are always emitted (ABI) regardless.
     pub needs_shadow_sampling: bool,
-    /// Plan B (stage 5a): `prep_enabled` (ANY AA). When true, the gated
+    /// Plan B: always `true` for the opaque pass (prep is unconditional);
+    /// the shared transparent template sets it `false`. When true, the gated
     /// `prep_uv` / `prep_vcolor` / `prep_shadow_visibility` sampled
     /// `texture_2d_array<f32>` declarations are emitted in the MAIN bind
     /// group so the shared `texture_uv()` / `vertex_color()` / shadow
-    /// helpers can `textureLoad` them. Extended from the 2b `prep_read`
-    /// (which was no-MSAA only) so `cs_opaque` reads prep under MSAA too.
+    /// helpers can `textureLoad` them (`cs_opaque` reads prep under any AA).
     pub prep_present: bool,
 }
 
@@ -156,16 +156,16 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// 254 buckets). Only consumed inside the `{% if multisampled_geometry %}`
     /// `cs_edge` block; inert on the singlesampled module.
     pub edge_slot_bits: u32,
-    /// Plan B (stage 5a): `prep_enabled` (ANY AA). When true, the shared
-    /// `PrepReadContext` (`g_prep_ctx`) is emitted, each entry point sets
-    /// its mode (cs_opaque → PRIMARY, cs_edge → RECOMPUTE), and the shared
-    /// `texture_uv()` / `vertex_color()` / shadow helpers branch on
-    /// `g_prep_ctx.mode` to read the prep-materialized array textures (PRIMARY)
-    /// instead of recomputing. Extended from the 2b `prep_read` (no-MSAA only)
-    /// so `cs_opaque` reads prep under MSAA too. The recompute body stays
-    /// available because cs_edge=RECOMPUTE falls through to it.
+    /// Plan B: always `true` for opaque (prep is unconditional); transparent
+    /// sets it `false`. When true, the shared `PrepReadContext` (`g_prep_ctx`)
+    /// is emitted, each entry point sets its mode (cs_opaque → PRIMARY,
+    /// cs_edge → RECOMPUTE), and the shared `texture_uv()` / `vertex_color()` /
+    /// shadow helpers branch on `g_prep_ctx.mode` to read the prep-materialized
+    /// array textures (PRIMARY) instead of recomputing (`cs_opaque` reads prep
+    /// under any AA). The recompute body stays available because
+    /// cs_edge=RECOMPUTE falls through to it.
     pub prep_present: bool,
-    /// Plan B (stage 5a): `prep_enabled && msaa none`. When true, the
+    /// Plan B: `msaa none` (prep is always on for opaque). When true, the
     /// standalone `_texture_uv_per_vertex` / `_vertex_color_per_vertex`
     /// recompute helpers are NOT emitted (the 2b size win) — there is no
     /// `cs_edge` in the no-MSAA module, so nothing recomputes. Under MSAA
@@ -342,19 +342,18 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
         let multisampled_geometry = value.msaa_sample_count.is_some();
         let msaa_sample_count = value.msaa_sample_count.unwrap_or_default();
         let debug = ShaderTemplateMaterialOpaqueDebug::new();
-        // Plan B (stage 5a): the single 2b `prep_read` notion is decomposed
-        // into three distinct conditions so the SAME shared helpers serve
-        // cs_opaque (PRIMARY) + cs_edge (RECOMPUTE) + the non-prep path.
+        // Plan B: the shared prep pass is UNCONDITIONAL — the opaque deferred
+        // path is prep-only, so `prep_present` is always true. The two derived
+        // conditions remain because they still vary the SAME shared helpers
+        // across cs_opaque (PRIMARY) + cs_edge (RECOMPUTE):
         //
-        //  1. `prep_present` = prep enabled, ANY AA. Emits the PrepReadContext
-        //     + the PRIMARY read branches + binds the prep textures to opaque.
-        //     This is the 5a change: cs_opaque reads prep under MSAA too.
-        //  2. `prep_drops_recompute` = prep enabled AND msaa off. Drops the
-        //     standalone recompute helpers (no cs_edge there). Under MSAA the
-        //     helpers STAY (cs_edge=RECOMPUTE uses them).
-        //  3. `needs_shadow_sampling` (below) = lighting AND !prep_drops_recompute.
-        let prep_present = value.prep_enabled;
-        let prep_drops_recompute = value.prep_enabled && value.msaa_sample_count.is_none();
+        //  1. `prep_present` = ALWAYS true. Emits the PrepReadContext + the
+        //     PRIMARY read branches + binds the prep textures to opaque.
+        //  2. `prep_drops_recompute` = msaa off. Drops the standalone recompute
+        //     helpers (no cs_edge there). Under MSAA the helpers STAY
+        //     (cs_edge=RECOMPUTE uses them).
+        let prep_present = true;
+        let prep_drops_recompute = value.msaa_sample_count.is_none();
         let max_prep_uv_sets = crate::render_passes::material_prep::MAX_PREP_UV_SETS;
         let max_prep_color_sets = crate::render_passes::material_prep::MAX_PREP_COLOR_SETS;
         let max_shadow_casters = value.max_shadow_casters;
@@ -397,7 +396,11 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
         // analog of stage 4's no-MSAA win). Non-prep keeps it (byte-identical to
         // today). Computed once so the bind-group template (the block emit) and
         // the compute template (apply_lighting's inline `else` arm gate) agree.
-        let needs_shadow_sampling = inc.apply_lighting && !value.prep_enabled;
+        // Prep is always on for opaque, so the inline shadow-sampling block is
+        // never compiled for the no-MSAA primary; cs_opaque reads the prep
+        // buffer. (Matches the former `inc.apply_lighting && !prep_enabled`,
+        // which was always false once prep was on.)
+        let needs_shadow_sampling = false;
         let _self = Self {
             bind_groups: ShaderTemplateMaterialOpaqueBindGroups {
                 texture_pool_arrays_len,
@@ -694,7 +697,6 @@ mod empty_registry_tests {
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
             mipmaps: true,
-            prep_enabled: false,
             max_shadow_casters: 4,
             shader_id,
             base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
@@ -1023,7 +1025,6 @@ mod size_regression {
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
             mipmaps,
-            prep_enabled: false,
             max_shadow_casters: 4,
             shader_id: dyn_id,
             base: crate::dynamic_materials::ShadingBase::Custom,
@@ -1088,10 +1089,15 @@ mod size_regression {
     // production path), so the measured MSAA4 sizes included it: ~90.7 KB / ~126.7 KB.
     // **A2 (compile invariant):** the MSAA module no longer carries the dead
     // `cs_opaque` entry (non-MSAA dispatches it; MSAA dispatches only `cs_shade`),
-    // so the MSAA4 module shrank to **~82.0 KB empty / ~118.0 KB all** — ceilings
-    // re-tightened (reverses the unified-edge raise).
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 84_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 120_000;
+    // so the MSAA4 module shrank to **~82.0 KB empty / ~118.0 KB all**.
+    // **Prep-only (prep flag removed):** the opaque path is now UNCONDITIONALLY
+    // prep — the measured Custom variants are the prep-ON build, which under MSAA4
+    // carries the PrepReadContext + prep texture reads on top of the still-present
+    // recompute helpers (cs_edge=RECOMPUTE keeps them; 5b-attrs deferred). Measured
+    // **85.7 KB empty / 122.8 KB all** — ceilings raised to fit the prep-on sizes
+    // (these were previously measured against the now-removed prep-OFF variant).
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 88_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 125_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

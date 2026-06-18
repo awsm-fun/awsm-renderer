@@ -229,12 +229,44 @@ impl AwsmRenderer {
                     .get_render_pipeline_key(mesh_key),
             };
 
-            if mesh.hud {
-                pool.hud.push(renderable);
-            } else if self.materials.is_transparency_pass(routing_material) {
-                pool.transparent.push(renderable);
-            } else {
-                pool.opaque.push(renderable);
+            // Route each mesh to the pass it actually has geometry for. The two
+            // mesh builders are asymmetric: an opaque mesh (`add_raw_mesh`) has
+            // VISIBILITY geometry only; a transparency-pass mesh
+            // (`add_raw_mesh_transparent`) has TRANSPARENCY geometry only. Drawing a
+            // mesh in a pass it lacks geometry for raises
+            // `VisibilityGeometryBufferNotFound` (or its transparency twin) and —
+            // because `render()` is atomic — blacks out the WHOLE frame, opaque
+            // geometry and skybox included.
+            //
+            // Crucially, the material's transparency classification
+            // (`is_transparency_pass`) can DRIFT from the mesh's immutable built
+            // geometry: `transparency_pass_keys` is toggled on material
+            // insert/update/reconcile, which can flip *after* the mesh was built. So
+            // route on the geometry the mesh actually has, not on the classification
+            // alone — a mesh with no visibility geometry must never enter the opaque
+            // list regardless of how its material currently classifies. A mesh with
+            // neither buffer yet (mid-upload) is skipped this frame rather than
+            // crashing a pass.
+            // Ground-truth routing: a mesh's geometry capability is an immutable
+            // build-time property cached on `Mesh` (zero-cost field reads, no
+            // per-mesh buffer_info lookup in this hot path). The material's
+            // transparency classification only disambiguates a mesh that somehow
+            // carries BOTH buffers (not produced by today's builders).
+            let wants_transparency = self.materials.is_transparency_pass(routing_material);
+
+            match route_renderable(
+                mesh.hud,
+                mesh.has_visibility_geometry,
+                mesh.has_transparency_geometry,
+                wants_transparency,
+            ) {
+                RenderableRoute::Hud => pool.hud.push(renderable),
+                RenderableRoute::Opaque => pool.opaque.push(renderable),
+                RenderableRoute::Transparent => pool.transparent.push(renderable),
+                RenderableRoute::Skip => tracing::warn!(
+                    "Skipping mesh {mesh_key:?} in collect_renderables: no visibility or \
+                     transparency geometry buffer (mid-upload?) — not drawn this frame"
+                ),
             }
         }
 
@@ -409,3 +441,87 @@ impl Renderable {
 }
 
 type Result<T> = std::result::Result<T, AwsmError>;
+
+/// Which render pass a mesh is routed to in [`AwsmRenderer::collect_renderables`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderableRoute {
+    Hud,
+    Opaque,
+    Transparent,
+    /// No geometry buffer for any pass yet (mid-upload) — skip this frame.
+    Skip,
+}
+
+/// Decide which pass a mesh can render in, based on the geometry it actually has.
+///
+/// This is the fix for a frame-killing bug: the two mesh builders are asymmetric
+/// (`add_raw_mesh` → visibility geometry only; `add_raw_mesh_transparent` →
+/// transparency geometry only), and a mesh drawn in a pass it lacks geometry for
+/// raises `VisibilityGeometryBufferNotFound` (or its transparency twin), which —
+/// since `render()` is atomic — blacks out the WHOLE frame. The material's
+/// transparency classification (`wants_transparency` =
+/// `Materials::is_transparency_pass`) can DRIFT from the mesh's immutable built
+/// geometry (`transparency_pass_keys` is toggled on material insert/update/remove,
+/// possibly after the mesh was built), so the presence of each geometry buffer is
+/// the ground truth. Classification only disambiguates the (today-impossible) case
+/// where a mesh has BOTH buffers. A mesh with neither buffer is skipped rather
+/// than crashing a pass.
+fn route_renderable(
+    hud: bool,
+    has_visibility_geometry: bool,
+    has_transparency_geometry: bool,
+    wants_transparency: bool,
+) -> RenderableRoute {
+    if hud {
+        RenderableRoute::Hud
+    } else if has_visibility_geometry && !(wants_transparency && has_transparency_geometry) {
+        // Has visibility geometry, and isn't a both-buffer mesh that the material
+        // wants drawn transparent → geometry/opaque pass.
+        RenderableRoute::Opaque
+    } else if has_transparency_geometry {
+        // Transparency geometry only (or both-buffer + wants transparency) →
+        // transparency pass (reads transparency geometry; skips meshes whose
+        // transparent pipeline isn't ready).
+        RenderableRoute::Transparent
+    } else {
+        RenderableRoute::Skip
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{route_renderable, RenderableRoute};
+
+    // (hud, has_visibility, has_transparency, wants_transparency) -> route
+    #[test]
+    fn routes_by_geometry_not_classification() {
+        use RenderableRoute::*;
+
+        // Normal opaque mesh.
+        assert_eq!(route_renderable(false, true, false, false), Opaque);
+        // Normal transparent mesh.
+        assert_eq!(route_renderable(false, false, true, true), Transparent);
+        // HUD always wins.
+        assert_eq!(route_renderable(true, true, false, false), Hud);
+        assert_eq!(route_renderable(true, false, true, true), Hud);
+
+        // THE BUG: transparency-only mesh whose material classification drifted to
+        // opaque (wants_transparency=false). Must NOT go to the opaque pass (that
+        // raised VisibilityGeometryBufferNotFound and killed the frame) — it has
+        // transparency geometry, so route there.
+        assert_eq!(route_renderable(false, false, true, false), Transparent);
+
+        // Symmetric drift: opaque-only mesh misclassified as transparent. Routing it
+        // transparent would crash the transparency pass; draw it opaque instead.
+        assert_eq!(route_renderable(false, true, false, true), Opaque);
+
+        // No geometry yet (mid-upload): skip, don't crash a pass.
+        assert_eq!(route_renderable(false, false, false, false), Skip);
+        assert_eq!(route_renderable(false, false, false, true), Skip);
+
+        // Both buffers present (not produced by today's builders, but defined):
+        // classification disambiguates.
+        assert_eq!(route_renderable(false, true, true, true), Transparent);
+        assert_eq!(route_renderable(false, true, true, false), Opaque);
+    }
+}

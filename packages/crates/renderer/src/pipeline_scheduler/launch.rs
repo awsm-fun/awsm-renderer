@@ -487,7 +487,6 @@ impl crate::AwsmRenderer {
                     texture_pool_samplers_len,
                     msaa_sample_count: active_msaa,
                     mipmaps: active_mipmaps,
-                    prep_enabled: self.prep_config.enabled,
                     max_shadow_casters: self.prep_config.clamped_k(),
                     shader_id,
                     base,
@@ -730,7 +729,6 @@ impl crate::AwsmRenderer {
                 &self.anti_aliasing,
                 color_wgsl,
                 Some(&self.dynamic_materials),
-                self.prep_config.enabled,
                 self.prep_config.clamped_k(),
             )? {
             Some(d) => d,

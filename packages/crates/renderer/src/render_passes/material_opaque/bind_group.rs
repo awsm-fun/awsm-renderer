@@ -362,8 +362,8 @@ impl MaterialOpaqueBindGroups {
         // Plan B (stage 5a): prep_uv (binding 24) + prep_vcolor (binding 25) +
         // prep_shadow_visibility (binding 26) for the PRIMARY `cs_opaque` read —
         // now under MSAA too (the prep textures are full-res sample-0). The prep
-        // views are `Some` only when the prep pass is enabled, so gating on `Some`
-        // matches the layout's `prep_enabled` (`prep_present`) gate exactly (any AA).
+        // views are always `Some` (prep is unconditional), so this branch always
+        // binds them — matching the layout's always-present `prep_present` entries.
         if ctx.render_texture_views.prep_uv.is_some() {
             let prep_uv = ctx.render_texture_views.prep_uv.as_ref().ok_or_else(|| {
                 AwsmBindGroupError::NotFound("Material Opaque - prep_uv".to_string())
@@ -534,9 +534,8 @@ async fn create_main_bind_group_layout_key(
     // UV / vcolor / shadow array textures instead of recomputing — now under
     // MSAA too (cs_opaque is the primary sample-0 read; cs_edge still recomputes
     // per-sample). So BOTH the singlesampled AND multisampled layouts gain the
-    // sampled `texture_2d_array` entries when prep is enabled (the prep textures
-    // are full-res sample-0, identical for both layouts).
-    let prep_enabled = ctx.prep_config.enabled;
+    // sampled `texture_2d_array` entries unconditionally (prep is always on; the
+    // prep textures are full-res sample-0, identical for both layouts).
     let mut entries = vec![
         // Visibility data texture
         BindGroupLayoutCacheKeyEntry {
@@ -787,11 +786,11 @@ async fn create_main_bind_group_layout_key(
 
     // Plan B (stage 5a): prep_uv (binding 24) + prep_vcolor (binding 25),
     // sampled `texture_2d_array` (UnfilterableFloat — rg32float / rgba32float
-    // are unfilterable; `textureLoad` needs no sampler). On BOTH layouts when
-    // prep is enabled (matches the template's `prep_present = prep_enabled`,
-    // any AA). The prep textures are full-res sample-0, so the same entries
-    // apply regardless of MSAA.
-    if prep_enabled {
+    // are unfilterable; `textureLoad` needs no sampler). On BOTH layouts
+    // unconditionally (matches the template's `prep_present = true`, any AA).
+    // The prep textures are full-res sample-0, so the same entries apply
+    // regardless of MSAA.
+    {
         // prep_uv
         entries.push(BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Texture(

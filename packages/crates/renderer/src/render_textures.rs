@@ -24,13 +24,9 @@ pub struct RenderTextures {
     /// [`RenderTexturesInner`] so the gated `decal_color` allocation
     /// can be skipped when `features.decals == false`.
     features: RendererFeatures,
-    /// Plan B: when `true`, allocate the prep pass's UV/vcolor output textures
-    /// (gated like `decal_color` to avoid VRAM when the feature is off). Captured
-    /// at construction from `PrepPassConfig.enabled`.
-    prep_enabled: bool,
     /// Plan B Stage 3: number of `Rgba8unorm` layers for the prep shadow-visibility
     /// array (4 shadow slots packed per texel). From
-    /// `PrepPassConfig::shadow_visibility_layers()`. Only used when `prep_enabled`.
+    /// `PrepPassConfig::shadow_visibility_layers()`.
     prep_shadow_layers: u32,
     frame_count: u32,
     inner: Option<RenderTexturesInner>,
@@ -97,7 +93,6 @@ impl RenderTextures {
         gpu: &AwsmRendererWebGpu,
         formats: RenderTextureFormats,
         features: &RendererFeatures,
-        prep_enabled: bool,
         prep_shadow_layers: u32,
     ) -> Result<Self> {
         // Two distinct blit pipeline variants: the `None` (single-
@@ -131,7 +126,6 @@ impl RenderTextures {
         Ok(Self {
             formats,
             features: features.clone(),
-            prep_enabled,
             prep_shadow_layers,
             frame_count: 0,
             inner: None,
@@ -248,7 +242,6 @@ impl RenderTextures {
                 current_size.1,
                 anti_aliasing,
                 &self.features,
-                self.prep_enabled,
                 self.prep_shadow_layers,
                 needs_opaque_mip_chain,
                 needs_hud_depth,
@@ -467,13 +460,14 @@ pub struct RenderTexturesInner {
     pub decal_color: Option<web_sys::GpuTexture>,
     pub decal_color_view: Option<web_sys::GpuTextureView>,
 
-    /// Plan B prep-pass outputs (None when `prep_enabled == false`).
+    /// Plan B prep-pass outputs (always allocated — prep is unconditional).
+    /// Kept `Option` so the bind-group `.as_ref()` read sites stay unchanged.
     pub prep_uv: Option<web_sys::GpuTexture>,
     pub prep_uv_view: Option<web_sys::GpuTextureView>,
     pub prep_vcolor: Option<web_sys::GpuTexture>,
     pub prep_vcolor_view: Option<web_sys::GpuTextureView>,
     /// Plan B Stage 3: per-pixel shadow-visibility (Rgba8unorm array, 4 packed
-    /// slots/texel). `None` when `prep_enabled == false`.
+    /// slots/texel). Always allocated (prep is unconditional).
     pub prep_shadow_visibility: Option<web_sys::GpuTexture>,
     pub prep_shadow_visibility_view: Option<web_sys::GpuTextureView>,
 
@@ -528,7 +522,6 @@ impl RenderTexturesInner {
         height: u32,
         anti_aliasing: AntiAliasing,
         features: &RendererFeatures,
-        prep_enabled: bool,
         prep_shadow_layers: u32,
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
@@ -828,34 +821,30 @@ impl RenderTexturesInner {
             None => None,
         };
 
-        // Plan B prep-pass outputs (gated on `prep_enabled` to avoid VRAM when
-        // the feature is off): interpolated UV + vertex color, storage-written by
+        // Plan B prep-pass outputs (always allocated — the shared prep pass is
+        // unconditional): interpolated UV + vertex color, storage-written by
         // the prep compute pass and texture-read by the slim per-material shader.
         // Stage 2a: array textures — one layer per UV / color set. `cs_prep`
         // writes layers `0..min(set_count, cap)`; the slim shader reads
         // `prep_*[set_index]`.
-        let prep_uv = if prep_enabled {
-            Some(
-                gpu.create_texture(
-                    &TextureDescriptor::new(
-                        TextureFormat::Rg32float,
-                        Extent3d::new(
-                            width,
-                            Some(height),
-                            Some(crate::render_passes::material_prep::MAX_PREP_UV_SETS),
-                        ),
-                        TextureUsage::new()
-                            .with_storage_binding()
-                            .with_texture_binding(),
-                    )
-                    .with_label("PrepUv")
-                    .into(),
+        let prep_uv = Some(
+            gpu.create_texture(
+                &TextureDescriptor::new(
+                    TextureFormat::Rg32float,
+                    Extent3d::new(
+                        width,
+                        Some(height),
+                        Some(crate::render_passes::material_prep::MAX_PREP_UV_SETS),
+                    ),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
                 )
-                .map_err(AwsmRenderTextureError::CreateTexture)?,
+                .with_label("PrepUv")
+                .into(),
             )
-        } else {
-            None
-        };
+            .map_err(AwsmRenderTextureError::CreateTexture)?,
+        );
         let prep_uv_view = match prep_uv.as_ref() {
             Some(tex) => Some(
                 tex.create_view_with_descriptor(
@@ -872,28 +861,24 @@ impl RenderTexturesInner {
             ),
             None => None,
         };
-        let prep_vcolor = if prep_enabled {
-            Some(
-                gpu.create_texture(
-                    &TextureDescriptor::new(
-                        TextureFormat::Rgba32float,
-                        Extent3d::new(
-                            width,
-                            Some(height),
-                            Some(crate::render_passes::material_prep::MAX_PREP_COLOR_SETS),
-                        ),
-                        TextureUsage::new()
-                            .with_storage_binding()
-                            .with_texture_binding(),
-                    )
-                    .with_label("PrepVColor")
-                    .into(),
+        let prep_vcolor = Some(
+            gpu.create_texture(
+                &TextureDescriptor::new(
+                    TextureFormat::Rgba32float,
+                    Extent3d::new(
+                        width,
+                        Some(height),
+                        Some(crate::render_passes::material_prep::MAX_PREP_COLOR_SETS),
+                    ),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
                 )
-                .map_err(AwsmRenderTextureError::CreateTexture)?,
+                .with_label("PrepVColor")
+                .into(),
             )
-        } else {
-            None
-        };
+            .map_err(AwsmRenderTextureError::CreateTexture)?,
+        );
         let prep_vcolor_view = match prep_vcolor.as_ref() {
             Some(tex) => Some(
                 tex.create_view_with_descriptor(
@@ -913,24 +898,20 @@ impl RenderTexturesInner {
         // Stage 3a: per-pixel shadow-visibility buffer — Rgba8unorm array, 4
         // shadow slots packed per texel (channel = slot % 4, layer = slot / 4).
         // Inert until Stage 3b binds it + cs_prep writes it.
-        let prep_shadow_visibility = if prep_enabled {
-            Some(
-                gpu.create_texture(
-                    &TextureDescriptor::new(
-                        TextureFormat::Rgba8unorm,
-                        Extent3d::new(width, Some(height), Some(prep_shadow_layers.max(1))),
-                        TextureUsage::new()
-                            .with_storage_binding()
-                            .with_texture_binding(),
-                    )
-                    .with_label("PrepShadowVisibility")
-                    .into(),
+        let prep_shadow_visibility = Some(
+            gpu.create_texture(
+                &TextureDescriptor::new(
+                    TextureFormat::Rgba8unorm,
+                    Extent3d::new(width, Some(height), Some(prep_shadow_layers.max(1))),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
                 )
-                .map_err(AwsmRenderTextureError::CreateTexture)?,
+                .with_label("PrepShadowVisibility")
+                .into(),
             )
-        } else {
-            None
-        };
+            .map_err(AwsmRenderTextureError::CreateTexture)?,
+        );
         let prep_shadow_visibility_view = match prep_shadow_visibility.as_ref() {
             Some(tex) => Some(
                 tex.create_view_with_descriptor(

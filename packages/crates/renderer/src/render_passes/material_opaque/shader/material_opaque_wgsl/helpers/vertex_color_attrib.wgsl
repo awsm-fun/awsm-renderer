@@ -1,10 +1,13 @@
 fn vertex_color(attribute_data_offset: u32, triangle_indices: vec3<u32>, barycentric: vec3<f32>, color_info: VertexColorInfo, vertex_attribute_stride: u32, color_sets_index: u32) -> vec4<f32> {
 {% if prep_present %}
-    // Stage 5a: shared helper branches on the per-thread PrepReadContext mode.
-    // PRIMARY (cs_opaque) reads the prep-materialized vertex-color array
-    // (parity-exact: same barycentric + fp32 interp + visibility sample 0).
-    // Clamp the set index to the cap. Other modes (RECOMPUTE for cs_edge — and
-    // EDGE in 5b) fall through to the geometry-pool recompute below.
+    // INTERIOR pixels (PRIMARY) read the prep-materialized vertex-color array — free
+    // (prep computed it once per interior pixel; parity-exact: same barycentric +
+    // fp32 interp + visibility sample 0). Clamp the set index to the cap. EDGE
+    // samples DELIBERATELY recompute below (the edge arm already holds this sample's
+    // triangle + barycentric, so the lerp is cheaper than a per-edge-sample buffer's
+    // write+read+VRAM, and there's no bulky code to evict — unlike shadows). Same
+    // call as world-position. See the PREP-VS-RECOMPUTE RULE in
+    // material_prep/buffers.rs + docs/SHADER_GUIDELINES.md.
     if (g_prep_ctx.mode == PREP_MODE_PRIMARY) {
         return textureLoad(prep_vcolor, g_prep_ctx.coords, i32(min(color_info.set_index, {{ max_prep_color_sets }}u - 1u)), 0);
     }

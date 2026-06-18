@@ -194,6 +194,19 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     continue;
                 };
 
+                // Shadow generation draws from the VISIBILITY geometry buffer
+                // (set_vertex_buffer below). A transparency-pass mesh
+                // (add_raw_mesh_transparent) has no visibility geometry, so if a
+                // consumer enables `cast` on one it would hit
+                // VisibilityGeometryBufferNotFound and — render() being atomic —
+                // black out the whole frame. Skip such meshes (they can't cast a
+                // visibility-buffer shadow); the routing in `collect_renderables`
+                // applies the same ground-truth-geometry rule for the main passes.
+                // (Reads the immutable per-mesh flag — no buffer_info lookup.)
+                if !mesh.has_visibility_geometry {
+                    continue;
+                }
+
                 // Masked (alpha-tested) caster → hole-shaped shadow when a
                 // masked variant is compiled for this material. Gate on
                 // `alpha_cutoff` present REGARDLESS of opaque/transparent

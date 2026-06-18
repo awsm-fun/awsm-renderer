@@ -32,15 +32,10 @@ pub const MAX_PREP_COLOR_SETS: u32 = 2;
 /// Build-time configuration for the shared prep + deferred-shadow path.
 ///
 /// Stored on the renderer at construction (mirrors `AntiAliasing` /
-/// `BucketConfig`). Inert until the prep pass is wired in (Stage 1+).
+/// `BucketConfig`). The shared prep pass is now unconditional; this config
+/// only carries the `K` sizing knob.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrepPassConfig {
-    /// A/B flag. `false` (default) keeps the legacy path where each per-material
-    /// kernel reconstructs attributes + samples shadows inline. `true` routes
-    /// through the shared prep pass + slim per-material shading. Kept until the
-    /// new path is proven on by default (Stage 6).
-    pub enabled: bool,
-
     /// `K` — the maximum shadow casters that can overlap a *single pixel* (NOT
     /// total scene casters). Sizes the per-pixel shadow-visibility buffer to `K`
     /// layers; the j-th shadowed light in a pixel's froxel, in froxel-list
@@ -56,7 +51,6 @@ pub struct PrepPassConfig {
 impl Default for PrepPassConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             max_shadow_casters_per_pixel: 4,
         }
     }

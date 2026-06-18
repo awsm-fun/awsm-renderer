@@ -8,8 +8,7 @@ use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::
 /// `msaa_sample_count` selects the visibility-texture binding type
 /// (`texture_multisampled_2d` vs `texture_2d`) — like the classify pass, prep
 /// reads sample 0 either way, but the declared type must match. The prep pass is
-/// only created/dispatched when `PrepPassConfig.enabled`, so there's no `enabled`
-/// field here — disabling the feature simply skips pipeline creation.
+/// unconditional, so there's no `enabled` field here.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeyMaterialPrep {
     pub msaa_sample_count: Option<u32>,

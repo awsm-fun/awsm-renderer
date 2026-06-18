@@ -255,8 +255,8 @@ pub struct AwsmRenderer {
     pub environment: Environment,
     pub anti_aliasing: AntiAliasing,
     /// Plan B shared-prep + deferred-shadow config, captured at build time
-    /// (`docs/plans/deferred-shared-prep-pass.md`). Inert until the prep pass is
-    /// wired in; later stages read `prep_config.enabled` to choose the path.
+    /// (`docs/plans/deferred-shared-prep-pass.md`). The shared prep pass is
+    /// unconditional; this only carries the `K` shadow-caster sizing knob.
     pub prep_config: crate::render_passes::material_prep::PrepPassConfig,
     pub post_processing: PostProcessing,
     /// GPU mesh-picking subsystem. `None` when
@@ -1021,16 +1021,6 @@ impl AwsmRendererBuilder {
         self
     }
 
-    /// Plan B (`docs/plans/deferred-shared-prep-pass.md`) A/B flag. `false`
-    /// (default) keeps the legacy path where every per-material kernel
-    /// reconstructs attributes + samples shadows inline; `true` routes through
-    /// the shared prep pass + slim per-material shading. Inert until the prep
-    /// pass is wired in (later stages).
-    pub fn with_prep_pass(mut self, enabled: bool) -> Self {
-        self.prep_config.enabled = enabled;
-        self
-    }
-
     /// Max shadow casters that can overlap a single pixel (`K`) — sizes the
     /// per-pixel shadow-visibility buffer. Clamped to
     /// `1..=PrepPassConfig::MAX_SHADOW_CASTERS_PER_PIXEL_CEILING`.
@@ -1393,7 +1383,6 @@ impl AwsmRendererBuilder {
                     &gpu,
                     formats_for_textures,
                     &features,
-                    prep_config.enabled,
                     prep_config.shadow_visibility_layers(),
                 )
                 .await
@@ -1831,7 +1820,6 @@ impl AwsmRendererBuilder {
                     &anti_aliasing,
                     color_wgsl,
                     None,
-                    prep_config.enabled,
                     prep_config.clamped_k(),
                 )
                 .await?;

@@ -274,6 +274,38 @@ even one inside an uncalled function — must still be defined*; that is what
 drives the gating granularity (e.g. a helper that names a PBR type must be
 gated together with the PBR include, not left ungated).
 
+### Prep pass: read-vs-recompute (keeping shaders skinny)
+
+The other half of "skinny shaders" is the **prep pass** (`render_passes/material_prep/`).
+Before per-material shading, one compute pass materializes the **material-independent**
+per-pixel work into buffers; the per-material kernel then reads it. This both saves the
+recompute *and* lets the materialized work's code drop out of every specialized module.
+It is unconditional — there is no prep on/off flag and no prep-vs-non-prep variant; the
+opaque path always preps. (Transparent is forward, so it has no visibility buffer to read
+prep from and recomputes inline — a different model, not a flag.)
+
+**What to prep vs. what to recompute — the rule.** Prep materializes work only when the
+read beats the recompute, *or* when caching it evicts bulky code from the material
+modules. Trivially-cheap work is left to be re-derived in the shading wrapper:
+
+| Work                         | Decision   | Why |
+|------------------------------|------------|-----|
+| Per-light shadow visibility  | **Prep**   | Expensive `sample_shadow_*` block; caching it (full-screen for interiors + a compact per-edge-sample buffer, `EdgeShadowBuffer`, for MSAA silhouettes) lets ~50 KB of sampling code drop from the MSAA opaque module — the bulk of its size win. |
+| Interior UV0 / vertex-color  | **Prep**   | Compute ≈ a wash either way, but the gather code then lives once in the prep shader instead of being duplicated into every material variant, and it piggybacks on the shadow prep pass that runs anyway. |
+| **Edge** UV0 / vertex-color  | Recompute  | The edge shading arm already holds the per-sample triangle + barycentric in-register, so the lerp is a few reads — cheaper than computing it in `cs_prep_edge`, writing it, reading it back, plus ~16–48 MB of VRAM, to evict ~10 lines of code. |
+| World position               | Recompute  | Cheap depth re-projection; never worth storing. |
+
+In short: **prep the expensive common work; re-derive the trivially-cheap work.** The
+canonical statement of the rule lives in `material_prep/buffers.rs`.
+
+**It's invisible to material authors.** A material (built-in *or* dynamic) never writes a
+gather. The shading wrapper computes the single always-needed values once and exposes them
+as fields on `OpaqueShadingInput` (`input.world_position`, `input.world_normal`, …), and
+forwards the ingredients for the multi-set attributes behind accessor functions
+(`material_uv(input, set)`, `material_vertex_color(input, set)`). The accessor decides
+prep-read vs recompute internally (interior → prep buffer; edge → in-register recompute),
+so the read-vs-recompute split never leaks into authored shading code.
+
 ---
 
 ## General Best Practices

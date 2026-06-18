@@ -63,12 +63,19 @@
 
 fn texture_uv(attribute_data_offset: u32, triangle_indices: vec3<u32>, barycentric: vec3<f32>, tex_info: TextureInfo, vertex_attribute_stride: u32, uv_sets_index: u32) -> vec2<f32> {
 {% if prep_present %}
-    // Stage 5a: shared helper branches on the per-thread PrepReadContext mode.
-    // PRIMARY (cs_opaque) reads the prep-materialized UV array (parity-exact:
-    // prep used the same barycentric + fp32 interp + visibility sample 0). Clamp
-    // the set index to the cap; sets beyond the cap are vanishingly rare. Any
-    // other mode (RECOMPUTE for cs_edge — and EDGE in 5b) falls through to the
-    // geometry-pool recompute below.
+    // Accessor branches on the per-thread PrepReadContext mode. INTERIOR pixels
+    // (PRIMARY) read the prep-materialized UV array — free, since prep computed it
+    // once for every interior pixel (parity-exact: same barycentric + fp32 interp +
+    // visibility sample 0). Clamp the set index to the cap; sets beyond it are rare.
+    //
+    // EDGE samples fall through to the geometry-pool recompute below — and that is a
+    // DELIBERATE decision, not a missing optimization. The edge arm already holds
+    // this sample's triangle + barycentric in-register, so the lerp here is a few
+    // reads; giving edges a prep buffer would mean recomputing the same thing in
+    // cs_prep_edge, writing it, reading it back, plus ~tens of MB of VRAM, to evict
+    // ~10 lines of code. Same call as world-position (also recomputed, never
+    // prepped). Shadows DO get an edge buffer because that evicts ~50 KB. See the
+    // PREP-VS-RECOMPUTE RULE in material_prep/buffers.rs + docs/SHADER_GUIDELINES.md.
     if (g_prep_ctx.mode == PREP_MODE_PRIMARY) {
         return textureLoad(prep_uv, g_prep_ctx.coords, i32(min(tex_info.uv_set_index, {{ max_prep_uv_sets }}u - 1u)), 0).xy;
     }

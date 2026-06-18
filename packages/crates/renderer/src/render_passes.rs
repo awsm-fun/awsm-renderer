@@ -73,10 +73,10 @@ pub struct RenderPasses {
     pub occlusion_compaction: Option<CompactionRenderPass>,
     pub light_culling: LightCullingRenderPass,
     pub material_classify: MaterialClassifyRenderPass,
-    /// Shared material-prep compute pass (Plan B). `None` unless
-    /// `PrepPassConfig.enabled` — with the flag off the legacy per-material
-    /// path is byte-identical. Dispatched between classify and opaque; its
-    /// outputs are inert (unread) until later Plan B stages consume them.
+    /// Shared material-prep compute pass (Plan B). Always built (prep is
+    /// unconditional); kept as an always-`Some` `Option` so the `if let
+    /// Some(prep)` dispatch sites stay valid. Dispatched between classify and
+    /// opaque; the opaque deferred path reads its outputs.
     pub material_prep: Option<MaterialPrepRenderPass>,
     /// Decal classify + shading + composite pass. `None` when
     /// `features.decals == false`.
@@ -128,7 +128,7 @@ struct RenderPassesBindings {
     compaction_bg: Option<occlusion::compaction::CompactionBindGroups>,
     light_culling: LightCullingRenderPass,
     /// Built eagerly (like `light_culling`) and passed straight through to
-    /// `from_resolved`. `None` unless `PrepPassConfig.enabled`.
+    /// `from_resolved`. Always `Some` (prep is unconditional).
     material_prep: Option<MaterialPrepRenderPass>,
     classify_bg: material_classify::bind_group::MaterialClassifyBindGroups,
     decal_bg: Option<material_decal::bind_group::MaterialDecalBindGroups>,
@@ -338,13 +338,11 @@ impl RenderPasses {
             None
         };
         let light_culling = LightCullingRenderPass::new(ctx).await?;
-        // Shared material-prep compute pass (Plan B). Built eagerly (both MSAA
-        // variants) only when enabled; `None` keeps the legacy path unchanged.
-        let material_prep = if ctx.prep_config.enabled {
-            Some(MaterialPrepRenderPass::new(ctx).await?)
-        } else {
-            None
-        };
+        // Shared material-prep compute pass (Plan B). The shared prep pass is
+        // unconditional now — always built (both MSAA variants). Kept as an
+        // `Option` (always-`Some`) so the `if let Some(prep)` dispatch sites
+        // stay valid.
+        let material_prep = Some(MaterialPrepRenderPass::new(ctx).await?);
         let classify_bg =
             material_classify::bind_group::MaterialClassifyBindGroups::new(ctx).await?;
         let (decal_bg, decal_classify_bg) = if features.decals {
@@ -865,8 +863,8 @@ pub struct RenderPassInitContext<'a> {
     /// Same role as `anti_aliasing`: lazy-pool passes only compile
     /// the live-config variant up-front.
     pub post_processing: &'a crate::post_process::PostProcessing,
-    /// Plan B shared-prep config. Construction gates the prep pass on
-    /// `prep_config.enabled`; `None` (default) keeps the legacy path.
+    /// Plan B shared-prep config (carries the `K` shadow-caster sizing knob).
+    /// The prep pass is unconditional.
     pub prep_config: &'a crate::render_passes::material_prep::PrepPassConfig,
     /// Resolved edge-pixel budget (matches `MaterialEdgeBuffers::max_edge_budget`).
     /// Sizes the prep pass's compact per-edge-sample shadow texture (Stage
