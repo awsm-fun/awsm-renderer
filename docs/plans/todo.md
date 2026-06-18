@@ -317,10 +317,17 @@ decision.
 > `From` impls + aabb) → `register_geometry` + `add_mesh(geometry, material_key, transform_key,
 > AddMeshOpts{ hud: hints.hud, … })`. Delete `mesh_buffer_geometry_kind` + `GltfMeshBufferGeometryKind`
 > (the material decides the kind at commit; the `GltfGeometryOverride` HUD/material cases fold into the
-> material classification + `AddMeshOpts.hud`). **5b-iv:** drop the vis/transp shared buffers from
-> `GltfBuffers` + the decode driver (buffers.rs ~347-440); keep `create_visibility_vertices` /
-> `reference_visibility_vertices` + the byte-identity proptests as `cfg(test)` packer-parity tests.
-> Runtime-verify Fox + DamagedHelmet + the previously-black models on :9080.
+> material classification + `AddMeshOpts.hud`). **5b-iv DONE + RUNTIME-VERIFIED:** `convert_to_mesh_buffer`
+> dropped its `geometry_kind` param + the two vis/transp `&mut Vec` params + the `ensure_tangents` live
+> call + the `create_visibility_vertices`/`create_transparency_vertices` calls; the vis/transp offset
+> fields (+ the now-dead `MeshBufferVertexInfoWithOffset` + From bits) are gone from
+> `MeshBufferInfoWithOffset`, and the vis/transp byte buffers are gone from `GltfBuffers` + `heavy_clone`
+> + the decode driver. `create_visibility_vertices`/`create_transparency_vertices` kept as `cfg(test)`
+> packer-parity references (both byte-identity proptests still green); the `transparency` module is now
+> wholly `cfg(test)`; the decode-side `tangents` module is deleted (tangents generate at commit).
+> `GltfGeometryOverride` + `with_geometry_override` + the `geometry_override` hint are deleted (the bound
+> material is authoritative at commit; the bundle loader's materialless-glb case needs no override).
+> Verified on :9080: Fox + DamagedHelmet + CompareTransmission render clean, no console errors.
 
 6. ✅ (raw) / 🟡 (glTF = §5b) **Migrate every raw call site** (the ~14 in the inventory: editor node_sync `:875`/`:996`,
    particles, thumbnail/preview/light_icons, scene-loader `:843`/`:1216`/`:1402`/particles,
