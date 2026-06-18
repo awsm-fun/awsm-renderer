@@ -217,6 +217,33 @@ decision.
 > `commit_load`'s phase 0 (reports the phase; empty registry today). **Step 3b:** the resolution body
 > (pack/upload per (geometry,kind), share one resource across bound meshes, set flags, free source) +
 > the binding maps + the granular viewer UI land WITH step 4 (`add_mesh`), since they all interlock.
+>
+> **Validated design for the resolve body (executes next; prep `wire_instance` refactor already
+> landed):**
+> - **Deferred-resource is render-safe.** Between `add_mesh` and `resolve_geometry` a mesh has no
+>   resource/flags; `route_renderable` returns `Skip` for a no-buffer mesh (renderable.rs already
+>   designs for "mid-upload" meshes — see its line ~259), and the non-render resource accessors are
+>   only hit on the draw path, which Skip'd meshes never reach. `sync_spatial_for_mesh` only needs
+>   `world_aabb` — set from the source at `add_mesh` — and skin info; call it at *resolve* (after the
+>   resource exists) so skinned meshes flag correctly.
+> - **Maps on `Meshes`:** `mesh_to_geometry: SecondaryMap<MeshKey, GeometryKey>`,
+>   `geometry_to_meshes: SecondaryMap<GeometryKey, Vec<MeshKey>>`.
+> - **`add_mesh(geometry, material, transform, opts)`** (AwsmRenderer): build `Mesh` (world_aabb from
+>   the source's aabb, double_sided from the material), `meshes.list.insert` → MeshKey (sync), record
+>   both maps. NO resource / meta / sync_spatial / upload.
+> - **`Meshes::resolve_geometry(materials, transforms) -> Result<Vec<MeshKey>>`:** snapshot
+>   `geometries.keys()`; per key, `geometries.remove(key)` (frees source — owned, sidesteps the borrow
+>   conflict with the per-key uploads) + `geometry_to_meshes.remove(key)`; union
+>   `geometry_kind(material, mesh.hud)` over the bound meshes; compute tangents once iff any bound
+>   material `material_wants_tangents` (`awsm_tangents::generate_tangents` over source
+>   pos/normals/uv0/indices); `pack_visibility_bytes` and/or `pack_transparency_bytes`; rebuild
+>   `MeshBufferInfo` (vis/transp `Some/None` per the union, triangles from the source) →
+>   `buffer_infos.insert`; call the existing `insert_resource` ONCE → shared `resource_key`; set
+>   `resource.refcount = bound.len()`; `wire_instance` each bound mesh; return the wired keys.
+>   `AwsmRenderer::resolve_geometry` then `sync_spatial_for_mesh` per wired key + reports
+>   `geometry_uploaded`. (`material_wants_tangents` → `pub(crate)`.)
+> - **`add_raw_mesh` = `register_geometry` + `add_mesh`** (delete `add_raw_mesh_transparent`) in the
+>   step-6 call-site migration; keep the legacy `insert` until step 8 so the tree stays green.
 
 3. 🟡 **`resolve_geometry` in `commit_load` + granular loading UI.** Implement the commit phase (§2 step
    0): per `GeometryKey`, union the kinds from bound materials, pack+upload missing reps once via
