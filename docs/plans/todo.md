@@ -174,7 +174,39 @@ A.1. No perf regression (one extra attr upload only when colours are authored), 
 
 ### A.2 spec (original, for reference)
 
-## [ ] A.3 — Prefab non-mesh children
+## [x] A.3 — Prefab non-mesh children — commit `c4f65ecc`
+
+**Landed:** `PrefabNode` gained a `replay: PrefabReplay` field (new enum:
+`None`/`Light(LightConfig)`/`Camera(CameraConfig)`/`Line(LineDef)`/`Decal{texture_index,alpha}`).
+`capture_prefab` populates it per node — resolving the **decal texture index at load time**
+(via a new shared `resolve_decal_texture_index` extracted from `materialize_decal`), because
+`instantiate` runs without assets. `instantiate` now composes a **per-node world matrix** up
+the instance chain by hand (same as the live `materialize` recursion) and calls a new
+`replay_prefab_node` that re-creates a fresh per-instance Light (bound to the instance
+transform), Camera, Line (authored points re-baked into the instance world), or Decal (at the
+instance world). `PrefabInstance::teardown` now frees the replayed light/line/decal keys too.
+The `NodeHandles.{light,camera,camera_config,line,decal}` fields are populated for prefab
+instances.
+
+**Honest scope / notes:** `instantiate` stays **sync**, so the async pipeline warm-ups the
+live arms `await` (`ensure_line_pipelines_compiled` / `ensure_shadow_pipelines_compiled`) are
+skipped — the renderer's normal per-frame pipeline drive compiles them (or a prior load with a
+line/caster already did); replayed lines/shadows may draw a frame or two late on a cold
+instantiate. Replayed **cameras are not freed** on teardown (the renderer camera store has no
+remove — matches the static loader, which also never frees cameras). `InstancesAlongCurve` and
+`ParticleEmitter` inside a prefab remain transform-only follow-ons (the emitter handle isn't
+threaded through `PrefabInstance` yet).
+
+**Verification (honest):** `cargo test -p awsm-renderer -p awsm-materials -p awsm-scene-loader
+--lib` GREEN (34 / 260 / 30). Each replay path calls the **same renderer API as the proven live
+`materialize` arm** for that kind (`insert_light`+`bind_transform`, `cameras.insert`,
+`add_line_strip` with world-baked points, `insert_decal` with a world `Mat4`); the world-matrix
+composition mirrors the live recursion exactly. The GPU path can't be unit-tested natively
+(no device); live chrome-devtools render pends the loader-render harness noted in A.1. No perf
+regression (replay only runs on `instantiate`, sharing the existing transform-walk), no standards
+deviation.
+
+### A.3 spec (original, for reference)
 
 `PrefabTemplate::instantiate` replays MESH nodes cheaply (`duplicate_mesh_with_transform`, shared GPU
 buffers). Light / Camera / Line / Decal nodes inside a prefab currently contribute only their transform —
