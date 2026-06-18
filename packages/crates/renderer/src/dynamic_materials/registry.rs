@@ -1142,20 +1142,19 @@ impl crate::AwsmRenderer {
     /// Idempotent on `(name, layout_hash, wgsl_hash)`: re-registering the
     /// same material returns the same id without recompiling.
     ///
-    /// **Readiness contract:** register submits a scheduler group for
-    /// the new material (for observability) and flags the reconcile
-    /// (`mark_variants_dirty`). The actual compile is render-driven: the
-    /// next render preamble's [`Self::ensure_scene_pipelines`] detects
-    /// the bucket-SET change, re-lays-out the bucket buffers, and
-    /// compiles every pipeline the material needs (opaque, classify,
-    /// per-shader + skybox + final_blend edge resolve) for the ACTIVE AA
-    /// config, charging the new material's compile to its scheduler group
-    /// so a WGSL error surfaces via `dynamic_material_compile_status`. The
-    /// scheduler flips the material `Pending → Ready` when its last
-    /// sub-pipeline resolves; frontends subscribed to
-    /// [`Self::drain_pipeline_status_events`] observe that transition.
-    /// The render loop runs continuously, so no `prewarm_pipelines.await`
-    /// round-trip is needed.
+    /// **Readiness contract:** register is a pure deferred ADD — it submits a
+    /// scheduler group for the new material (for observability) and flags the
+    /// reconcile (`mark_variants_dirty`); it does NOT compile. The embedder's
+    /// next [`AwsmRenderer::commit_load`] (the one compile path) runs
+    /// [`Self::reconcile_material_variants`] → [`Self::ensure_scene_pipelines`],
+    /// which detects the bucket-SET change, re-lays-out the bucket buffers, and
+    /// compiles every pipeline the material needs (opaque, classify, per-shader,
+    /// skybox + final_blend edge resolve) for the ACTIVE AA config, charging
+    /// the new material's compile to its scheduler group so a WGSL error
+    /// surfaces via `dynamic_material_compile_status`. The scheduler flips the
+    /// material `Pending → Ready` when its last sub-pipeline resolves; frontends
+    /// subscribed to [`Self::drain_pipeline_status_events`] observe that
+    /// transition.
     pub fn register_material(
         &mut self,
         registration: MaterialRegistration,
@@ -1233,17 +1232,16 @@ impl crate::AwsmRenderer {
             );
         }
 
-        // The actual compile is render-driven: this insert grew
-        // `bucket_entries`, so flag the reconcile. The next render
-        // preamble's `ensure_scene_pipelines` detects the bucket-SET
-        // change (its `dispatch_hash` + count signature drifted), resizes
-        // the classify / edge buffers + rebuilds the edge-layout uniform +
-        // clears the stale layout-keyed pipeline caches, then compiles
-        // every bucket against the new layout (this new one charged to its
-        // freshly-submitted scheduler group, so its WGSL compile error —
-        // if any — surfaces via `dynamic_material_compile_status`). The
-        // render loop runs continuously, so this timing is fine: the
-        // material lights up Ready/Failed within a frame or two.
+        // Deferred compile: this insert grew `bucket_entries`, so flag the
+        // reconcile. The embedder's next `commit_load` runs
+        // `ensure_scene_pipelines`, which detects the bucket-SET change (its
+        // `dispatch_hash` + count signature drifted), resizes the classify /
+        // edge buffers + rebuilds the edge-layout uniform + clears the stale
+        // layout-keyed pipeline caches, then compiles every bucket against the
+        // new layout (this new one charged to its freshly-submitted scheduler
+        // group, so its WGSL compile error — if any — surfaces via
+        // `dynamic_material_compile_status`). The material lights up
+        // Ready/Failed as the commit's compile drain resolves.
         self.materials.mark_variants_dirty();
         Ok(id)
     }
@@ -1291,10 +1289,10 @@ impl crate::AwsmRenderer {
     /// per-feature-set *variant* bucket, allocating + compiling new variants
     /// and re-laying-out the bucket-dependent GPU state when the set grows.
     ///
-    /// Called from the render preamble; a cheap no-op when the
-    /// `variants_dirty` flag is clear (every frame after the scene's
-    /// material set settles). On the frame a material enters / its
-    /// feature-set changes, it:
+    /// Called ONLY from `commit_load` (the one compile path) — never per render
+    /// frame; a cheap no-op when the `variants_dirty` flag is clear (a commit
+    /// with no material change since the last one). When a material entered / a
+    /// feature-set changed since the last commit, it:
     /// 1. derives `PbrFeatures` for every opaque PBR material,
     /// 2. resolves each to a variant `shader_id` (deduped; allocates a
     ///    new bucket on first sight of a feature-set),
@@ -1313,9 +1311,10 @@ impl crate::AwsmRenderer {
     /// writer, independent of any material.
     pub(crate) fn reconcile_material_variants(&mut self) -> Result<(), crate::error::AwsmError> {
         // ── Warm-path fast-out: ONE consuming bool check. Drives BOTH the
-        //    PBR feature-set variant resolution below AND the render-driven
-        //    `ensure_scene_pipelines`. Nothing iterates / allocates / builds
-        //    a key before this gate — steady state is a single `bool`.
+        //    PBR feature-set variant resolution below AND the
+        //    `ensure_scene_pipelines` compile. Nothing iterates / allocates /
+        //    builds a key before this gate — a no-change commit is a single
+        //    `bool`.
         if !self.materials.take_variants_dirty() {
             return Ok(());
         }
@@ -1504,15 +1503,16 @@ impl crate::AwsmRenderer {
         }
 
         // NOTE: the deleted material's compiled GPU pipelines + shader modules are
-        // reclaimed by `relayout_bucket_buffers` on the next render, NOT here. The
-        // remove() below drops it from the registry, which changes `dispatch_hash`
-        // + the bucket count → the render preamble's `ensure_scene_pipelines`
-        // detects the bucket-SET change, clears the layout-keyed typed caches, and
-        // sweeps the shader + compute-pipeline pools for every entry whose cache
-        // key carries the now-stale set signature (the deleted material's opaque /
-        // edge / classify variants among them). Doing the sweep there — after the
-        // typed caches are cleared — is what keeps it free of dangling pool
-        // references. This is the pipeline-leak fix ("aw snap" crash).
+        // reclaimed by `relayout_bucket_buffers` at the next `commit_load`, NOT
+        // here. The remove() below drops it from the registry, which changes
+        // `dispatch_hash` + the bucket count → the next commit's
+        // `ensure_scene_pipelines` detects the bucket-SET change, clears the
+        // layout-keyed typed caches, and sweeps the shader + compute-pipeline
+        // pools for every entry whose cache key carries the now-stale set
+        // signature (the deleted material's opaque / edge / classify variants
+        // among them). Doing the sweep there — after the typed caches are cleared
+        // — is what keeps it free of dangling pool references. This is the
+        // pipeline-leak fix ("aw snap" crash).
         self.dynamic_materials.remove(shader_id)
     }
 
@@ -1564,18 +1564,17 @@ impl crate::AwsmRenderer {
     ///   [`Self::pipeline_group_status`] /
     ///   [`Self::drain_pipeline_status_events`] for the Ready transition.
     ///
-    /// **Readiness flow**: `register_material` submits the scheduler
-    /// group + flags the reconcile. The render-driven
-    /// [`Self::ensure_scene_pipelines`] (run from the next render preamble)
-    /// pushes the compile promises for every pipeline the material needs
-    /// — opaque, classify, per-shader edge_resolve, skybox edge_resolve,
-    /// final_blend — into the scheduler's `inflight_compile` set, charged
-    /// to this material's group. The scheduler's
-    /// [`Self::poll_pipeline_scheduler`] (called each render-frame preamble)
-    /// drains those futures and marks the material `Ready` when its last
-    /// sub-pipeline resolves. Frontends that need to block until ready use
-    /// [`Self::wait_for_pipelines_ready`]; frontends that just want a
-    /// progress signal subscribe to
+    /// **Readiness flow**: `register_material` submits the scheduler group +
+    /// flags the reconcile. The embedder's next [`AwsmRenderer::commit_load`]
+    /// runs [`Self::ensure_scene_pipelines`], which pushes the compile promises
+    /// for every pipeline the material needs — opaque, classify, per-shader
+    /// edge_resolve, skybox edge_resolve, final_blend — into the scheduler's
+    /// `inflight_compile` set, charged to this material's group.
+    /// `commit_load`'s compile drain marks the material `Ready` when its last
+    /// sub-pipeline resolves (an awaited `commit_load` blocks until then; a
+    /// non-awaited one lands it over frames as [`Self::poll_pipeline_scheduler`]
+    /// — still run each render-frame preamble — drains the resolved futures).
+    /// Frontends that just want a progress signal subscribe to
     /// [`Self::drain_pipeline_status_events`] and render fall-back content
     /// (loading modal / placeholder mesh) until Ready arrives.
     pub fn submit_dynamic_material(

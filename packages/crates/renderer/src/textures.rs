@@ -643,19 +643,19 @@ impl AwsmRenderer {
             .edge_pipelines
             .clear_dynamic_pipelines();
 
-        // Render-driven recompile against the new texture-pool layout. A
-        // pool grow doesn't change the bucket SET (dispatch_hash / count
-        // unchanged), so it wouldn't trip `ensure_scene_pipelines`'
-        // layout-change detector on its own — but it DOES invalidate every
-        // opaque/classify/edge pipeline (their cache keys embed
-        // `texture_pool_arrays_len` / `texture_pool_samplers_len`). Reset
-        // the ensure fingerprint to force the next preamble to treat this
-        // as a layout change: it re-runs the buffer-relayout (idempotent —
-        // the buffers are already the right size, so a no-op) + the
-        // cache-clear + generation-bump (dropping any in-flight old-pool
-        // resolutions), then recompiles every bucket against the new pool.
-        // The `mark_variants_dirty` flag is what actually drives that
-        // ensure on the next frame.
+        // Force a recompile against the new texture-pool layout. A pool grow
+        // doesn't change the bucket SET (dispatch_hash / count unchanged), so it
+        // wouldn't trip `ensure_scene_pipelines`' layout-change detector on its
+        // own — but it DOES invalidate every opaque/classify/edge pipeline
+        // (their cache keys embed `texture_pool_arrays_len` /
+        // `texture_pool_samplers_len`). Reset the ensure fingerprint so the
+        // `ensure_scene_pipelines` later in THIS commit treats the pool change
+        // as a layout change: it re-runs the buffer-relayout (idempotent — the
+        // buffers are already the right size, so a no-op) + the cache-clear +
+        // generation-bump (dropping any in-flight old-pool resolutions), then
+        // recompiles every bucket against the new pool. `finalize_gpu_textures`
+        // runs at the START of `commit_load`, so `mark_variants_dirty` here is
+        // consumed by the commit's own `reconcile_material_variants`.
         self.last_ensured_bucket_layout = None;
         self.materials.mark_variants_dirty();
 
