@@ -385,6 +385,10 @@ pub struct AwsmRenderer {
     /// `LoadingStats` so a loader can show texture-upload progress.
     pub(crate) loading_textures_total: usize,
     pub(crate) loading_textures_uploaded: usize,
+    /// Immutable snapshot of every build-time config knob, captured in `build()`.
+    /// [`AwsmRenderer::remove_all`] rebuilds from it so a scene-data wipe can't
+    /// drift a config. See [`RendererConfigSpec`].
+    pub(crate) config_spec: RendererConfigSpec,
 }
 
 /// Compatibility requirements for this renderer.
@@ -435,46 +439,16 @@ impl AwsmRenderer {
     /// preserved too — `remove_all` is a scene-data wipe, not a
     /// config-reset.
     pub async fn remove_all(&mut self) -> crate::error::Result<()> {
-        // Clears all scene CONTENT by recreating the renderer, but every build-time
-        // CONFIG the embedder set on the builder MUST be carried over here — a fresh
-        // builder otherwise reverts each to its default, so a config silently drifts
-        // on the first `remove_all` (this bit `with_bucket_config`; see that fix
-        // below). Add a `.with_*` line here whenever a new builder config is added.
-        // (Scene content — IBL/skybox colors, meshes, lights — is intentionally NOT
-        // carried: the caller reloads the scene + re-sets the environment.)
-        let mut builder = AwsmRendererBuilder::new(self.gpu.clone())
-            .with_logging(self.logging.clone())
-            .with_clear_color(self._clear_color.clone())
-            .with_render_texture_formats(self.render_textures.formats.clone())
-            .with_features(self.features.clone())
-            .with_optimization_policy(self.optimization_policy.clone())
-            .with_anti_aliasing(self.anti_aliasing.clone())
-            .with_post_processing(self.post_processing.clone())
-            .with_shadows_config(self.shadows.config().clone())
-            .with_scene_spatial_config(self.scene_spatial.config())
-            // Preserve the per-pixel shadow-caster cap (K) — a build-time prep config.
-            .with_max_shadow_casters_per_pixel(self.prep_config.max_shadow_casters_per_pixel)
-            // Preserve the configured registration cap — without this the recreated
-            // registry reverts to the default cap (`DEFAULT_MAX_BUCKET_ENTRIES`),
-            // dropping a higher cap the embedder set via `with_bucket_config`. A
-            // scene with many distinct material buckets would then hit
-            // `BucketCapExceeded` only after the first `remove_all`.
-            .with_bucket_config(crate::dynamic_materials::BucketConfig {
-                max_bucket_entries: self.dynamic_materials.max_bucket_entries() as u32,
-            });
-        if let Some(budget) = self
-            .material_edge_buffers
-            .as_ref()
-            .map(|eb| eb.max_edge_budget)
-        {
-            builder = builder.with_max_edge_budget(budget);
-        }
-        if let Some(tier) = self.recommended_shadow_quality_tier {
-            builder = builder.with_recommended_shadow_quality_tier(tier);
-        }
-        let renderer = builder.build().await?;
-
-        *self = renderer;
+        // Scene-data wipe = rebuild from the build-time config snapshot. ONE line,
+        // no hand-copy, no drift: `config_spec` captured EVERY `with_*` knob at
+        // `build()`, so this can't silently drop a config the way the old
+        // field-by-field copy did (it dropped bucket cap / shadow-K / brdf-lut /
+        // env colors across this boundary). Scene content — meshes, lights, the
+        // live IBL/skybox textures — is intentionally NOT carried; the caller
+        // reloads the scene + re-sets the environment. See `RendererConfigSpec`.
+        *self = AwsmRendererBuilder::from_spec(self.gpu.clone(), self.config_spec.clone())
+            .build()
+            .await?;
         Ok(())
     }
 
@@ -900,6 +874,40 @@ pub enum RendererLoadingPhase {
 /// single-threaded so we don't need `Send + Sync`.
 pub type RendererLoadingPhaseHandler = Box<dyn FnMut(RendererLoadingPhase)>;
 
+/// Immutable snapshot of every build-time config knob the embedder chose — the
+/// declare→commit-for-config analog of the load transaction. Captured at
+/// `build()` and stored on [`AwsmRenderer`]; [`AwsmRenderer::remove_all`]
+/// rebuilds straight from it via [`AwsmRendererBuilder::from_spec`], so a
+/// scene-data wipe can NEVER silently drop a config (the historical hand-copy
+/// in `remove_all` repeatedly did — bucket cap, shadow-K, brdf-lut, env colors).
+///
+/// Mirrors the builder's raw inputs exactly (the `Option`s + the depth override),
+/// not resolved values, so `from_spec(...).build()` re-runs identical resolution.
+/// The only builder fields NOT captured are `gpu` (passed to `from_spec`
+/// separately) and `phase_handler` (a non-clonable callback irrelevant to a
+/// rebuild). Add a field here whenever a new build-time `with_*` knob is added.
+#[derive(Clone)]
+pub struct RendererConfigSpec {
+    logging: AwsmRendererLogging,
+    render_texture_formats: Option<RenderTextureFormats>,
+    brdf_lut_options: BrdfLutOptions,
+    clear_color: Color,
+    skybox_colors: CubemapBitmapColors,
+    ibl_filtered_env_colors: CubemapBitmapColors,
+    ibl_irradiance_colors: CubemapBitmapColors,
+    anti_aliasing: AntiAliasing,
+    post_processing: PostProcessing,
+    shadows_config: Option<shadows::ShadowsConfig>,
+    features: RendererFeatures,
+    max_edge_budget: Option<u32>,
+    bucket_config: Option<crate::dynamic_materials::BucketConfig>,
+    prep_config: crate::render_passes::material_prep::PrepPassConfig,
+    optimization_policy: crate::optimization_policy::RendererOptimizationPolicy,
+    scene_spatial_config: Option<crate::scene_spatial::SceneSpatialConfig>,
+    recommended_shadow_quality_tier: Option<crate::shadows::ShadowQualityTier>,
+    render_texture_formats_depth_override: Option<awsm_renderer_core::texture::TextureFormat>,
+}
+
 /// Builder for `AwsmRenderer`.
 pub struct AwsmRendererBuilder {
     gpu: AwsmRendererGpuBuilderKind,
@@ -1046,6 +1054,60 @@ impl AwsmRendererBuilder {
             scene_spatial_config: None,
             recommended_shadow_quality_tier: None,
             render_texture_formats_depth_override: None,
+        }
+    }
+
+    /// Snapshot every build-time config knob into a [`RendererConfigSpec`].
+    /// Called by `build()` to stash the spec on the renderer for `remove_all`.
+    /// Every field except `gpu` + `phase_handler` is captured.
+    fn to_config_spec(&self) -> RendererConfigSpec {
+        RendererConfigSpec {
+            logging: self.logging.clone(),
+            render_texture_formats: self.render_texture_formats.clone(),
+            brdf_lut_options: self.brdf_lut_options.clone(),
+            clear_color: self.clear_color.clone(),
+            skybox_colors: self.skybox_colors.clone(),
+            ibl_filtered_env_colors: self.ibl_filtered_env_colors.clone(),
+            ibl_irradiance_colors: self.ibl_irradiance_colors.clone(),
+            anti_aliasing: self.anti_aliasing.clone(),
+            post_processing: self.post_processing.clone(),
+            shadows_config: self.shadows_config.clone(),
+            features: self.features.clone(),
+            max_edge_budget: self.max_edge_budget,
+            bucket_config: self.bucket_config,
+            prep_config: self.prep_config,
+            optimization_policy: self.optimization_policy.clone(),
+            scene_spatial_config: self.scene_spatial_config,
+            recommended_shadow_quality_tier: self.recommended_shadow_quality_tier,
+            render_texture_formats_depth_override: self.render_texture_formats_depth_override,
+        }
+    }
+
+    /// Reconstruct a builder from a [`RendererConfigSpec`] + a GPU context — the
+    /// one-line, drift-free basis for [`AwsmRenderer::remove_all`]. `phase_handler`
+    /// is `None` (a rebuild needs no boot-phase callback).
+    pub fn from_spec(gpu: impl Into<AwsmRendererGpuBuilderKind>, spec: RendererConfigSpec) -> Self {
+        Self {
+            gpu: gpu.into(),
+            logging: spec.logging,
+            render_texture_formats: spec.render_texture_formats,
+            brdf_lut_options: spec.brdf_lut_options,
+            clear_color: spec.clear_color,
+            skybox_colors: spec.skybox_colors,
+            ibl_filtered_env_colors: spec.ibl_filtered_env_colors,
+            ibl_irradiance_colors: spec.ibl_irradiance_colors,
+            anti_aliasing: spec.anti_aliasing,
+            post_processing: spec.post_processing,
+            shadows_config: spec.shadows_config,
+            features: spec.features,
+            max_edge_budget: spec.max_edge_budget,
+            bucket_config: spec.bucket_config,
+            prep_config: spec.prep_config,
+            optimization_policy: spec.optimization_policy,
+            phase_handler: None,
+            scene_spatial_config: spec.scene_spatial_config,
+            recommended_shadow_quality_tier: spec.recommended_shadow_quality_tier,
+            render_texture_formats_depth_override: spec.render_texture_formats_depth_override,
         }
     }
 
@@ -1304,6 +1366,10 @@ impl AwsmRendererBuilder {
 
     /// Builds the renderer and initializes GPU resources.
     pub async fn build(self) -> std::result::Result<AwsmRenderer, crate::error::AwsmError> {
+        // Snapshot every build-time config knob BEFORE consuming the builder, so
+        // `remove_all` can rebuild from it drift-free (the config analog of the
+        // load transaction — see `RendererConfigSpec`).
+        let config_spec = self.to_config_spec();
         let Self {
             gpu,
             logging,
@@ -2052,6 +2118,7 @@ impl AwsmRendererBuilder {
             load_phase: crate::loading::LoadPhase::Idle,
             loading_textures_total: 0,
             loading_textures_uploaded: 0,
+            config_spec,
         };
 
         // Apply the configured registration ceiling (§2). Validated +
