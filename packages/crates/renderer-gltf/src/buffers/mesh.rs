@@ -1,89 +1,46 @@
+// `transparency` is now entirely a `#[cfg(test)]` packer-parity reference (its
+// `create_transparency_vertices` is no longer on the live decode path — the
+// renderer packs transparency bytes at commit). `visibility` keeps the live
+// source decoders (`resolve_attribute_buffers` / `decode_vec3s`/`vec4s`) plus its
+// own `#[cfg(test)]` packer-parity test.
+#[cfg(test)]
 mod transparency;
 mod visibility;
 
 use awsm_renderer_core::pipeline::primitive::FrontFace;
-use gltf::material::AlphaMode;
 
 use crate::buffers::attributes::{load_attribute_data_by_kind, pack_vertex_attributes};
 use crate::buffers::index::extract_triangle_indices;
-use crate::buffers::mesh::transparency::create_transparency_vertices;
-use crate::buffers::mesh::visibility::create_visibility_vertices;
 use crate::buffers::morph::convert_morph_targets;
 use crate::buffers::normals::ensure_normals;
 use crate::buffers::skin::convert_skin;
-use crate::buffers::tangents::ensure_tangents;
 use crate::buffers::triangle::pack_triangle_data;
 use crate::buffers::{
     MeshBufferAttributeIndexInfoWithOffset, MeshBufferInfoWithOffset,
-    MeshBufferTriangleInfoWithOffset, MeshBufferVertexInfoWithOffset,
+    MeshBufferTriangleInfoWithOffset,
 };
-use crate::data::GltfDataHints;
 #[cfg(test)]
 use crate::error::AwsmGltfError;
 use awsm_renderer::meshes::buffer_info::MeshBufferVertexAttributeInfo;
 
 use super::Result;
 
-pub(super) enum GltfMeshBufferGeometryKind {
-    Visibility,
-    Transparency,
-    Both,
-}
-
-// this should match is_transparency_pass()
-pub(super) fn mesh_buffer_geometry_kind(
-    primitive: &gltf::Primitive,
-    hints: &GltfDataHints,
-) -> GltfMeshBufferGeometryKind {
-    use crate::data::GltfGeometryOverride as Ov;
-    // A caller-applied material overrides the glb's own alpha (e.g. the bundle
-    // loader over a materialless geometry-only glb). Transparent → transparency
-    // geometry only (no visibility waste); the glb's own material is irrelevant.
-    match hints.geometry_override {
-        Ov::Opaque => return GltfMeshBufferGeometryKind::Visibility,
-        Ov::Transparent => return GltfMeshBufferGeometryKind::Transparency,
-        Ov::Both => return GltfMeshBufferGeometryKind::Both,
-        Ov::FromMaterial => {}
-    }
-    if hints.hud {
-        GltfMeshBufferGeometryKind::Both
-    } else {
-        let gltf_material = primitive.material();
-
-        match gltf_material.alpha_mode() {
-            // MASK is alpha-tested OPAQUE (glTF): visibility geometry, so it lands
-            // in `opaque_tex` for transmission + casts shadows. The per-fragment
-            // cutoff is applied by the masked `geometry` raster variant (matches
-            // `PbrMaterial::is_transparency_pass`, which no longer flags Mask).
-            AlphaMode::Mask => GltfMeshBufferGeometryKind::Visibility,
-            AlphaMode::Blend => GltfMeshBufferGeometryKind::Transparency,
-            AlphaMode::Opaque => match gltf_material.transmission() {
-                Some(transmission) => {
-                    if transmission.transmission_factor() > 0.0
-                        || transmission.transmission_texture().is_some()
-                    {
-                        GltfMeshBufferGeometryKind::Transparency
-                    } else {
-                        GltfMeshBufferGeometryKind::Visibility
-                    }
-                }
-                None => GltfMeshBufferGeometryKind::Visibility,
-            },
-        }
-    }
-}
+// The geometry KIND (visibility vs transparency) is no longer decided in the
+// decode — the renderer derives it at `commit_load` from the union of materials
+// bound to each geometry, via the single `geometry_kind` fn (docs/plans/todo.md §4).
+// The decode now retains the pass-INDEPENDENT typed source (positions/normals/uvs0/
+// authored-tangents/indices) + custom attributes + morph/skin; the per-pass byte
+// streams are packed at commit. `create_visibility_vertices` /
+// `create_transparency_vertices` survive only as `#[cfg(test)]` packer-parity tests.
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn convert_to_mesh_buffer(
     primitive: &gltf::Primitive,
     render_timings: bool,
-    geometry_kind: GltfMeshBufferGeometryKind,
     front_face: FrontFace,
     buffers: &[Vec<u8>],
     custom_attribute_index: &MeshBufferAttributeIndexInfoWithOffset,
     custom_attribute_index_bytes: &[u8],
-    visibility_geometry_vertex_bytes: &mut Vec<u8>,
-    transparency_geometry_vertex_bytes: &mut Vec<u8>,
     custom_attribute_vertex_bytes: &mut Vec<u8>,
     triangle_data_bytes: &mut Vec<u8>,
     geometry_morph_bytes: &mut Vec<u8>,
@@ -160,10 +117,11 @@ pub(super) fn convert_to_mesh_buffer(
         ensure_normals(attribute_data_by_kind, &triangle_indices)?
     };
 
-    // Step 3a (§5b): retain the TYPED source for the renderer's GeometrySource —
-    // extracted HERE, before `ensure_tangents`, so `source_tangents` carries only
-    // AUTHORED tangents (generation is deferred to commit, gated on the bound
-    // material). positions/normals are guaranteed present after ensure_normals.
+    // Step 3a (§5b): retain the TYPED source for the renderer's GeometrySource.
+    // `source_tangents` carries only AUTHORED tangents (a glTF `TANGENT` attribute);
+    // generation is deferred to commit, gated on the bound material (so meshes that
+    // don't sample a normal map pay nothing). positions/normals are guaranteed
+    // present after ensure_normals.
     let (source_positions, source_normals, source_tangents, source_uvs0) = {
         use crate::buffers::mesh::visibility::{
             decode_vec3s, decode_vec4s, resolve_attribute_buffers,
@@ -202,63 +160,9 @@ pub(super) fn convert_to_mesh_buffer(
         .map(|&i| i as u32)
         .collect();
 
-    // Step 3b: Ensure tangents exist (generate with MikkTSpace if missing but normal map present)
-    let attribute_data_by_kind = {
-        let _maybe_stage_span_guard = if render_timings {
-            Some(tracing::span!(tracing::Level::INFO, "ensure_tangents").entered())
-        } else {
-            None
-        };
-        ensure_tangents(attribute_data_by_kind, primitive, &triangle_indices)?
-    };
-
-    // Step 4: Create visibility vertices (positions + triangle_index + barycentric)
-    // These are expanded such that each vertex gets its own visibility vertex (triangle_index will be repeated for all 3)
-    let visability_vertex_offset = {
-        let _maybe_stage_span_guard = if render_timings {
-            Some(tracing::span!(tracing::Level::INFO, "create_visibility_vertices").entered())
-        } else {
-            None
-        };
-        match geometry_kind {
-            GltfMeshBufferGeometryKind::Visibility | GltfMeshBufferGeometryKind::Both => {
-                let offset = visibility_geometry_vertex_bytes.len();
-                create_visibility_vertices(
-                    &attribute_data_by_kind,
-                    &triangle_indices,
-                    front_face,
-                    visibility_geometry_vertex_bytes,
-                )?;
-                Some(offset)
-            }
-
-            GltfMeshBufferGeometryKind::Transparency => None,
-        }
-    };
-
-    let transparency_vertex_offset = {
-        let _maybe_stage_span_guard = if render_timings {
-            Some(tracing::span!(tracing::Level::INFO, "create_transparency_vertices").entered())
-        } else {
-            None
-        };
-        match geometry_kind {
-            GltfMeshBufferGeometryKind::Transparency | GltfMeshBufferGeometryKind::Both => {
-                let offset = transparency_geometry_vertex_bytes.len();
-                create_transparency_vertices(
-                    &attribute_data_by_kind,
-                    custom_attribute_index,
-                    custom_attribute_index_bytes,
-                    triangle_count,
-                    front_face,
-                    transparency_geometry_vertex_bytes,
-                )?;
-                Some(offset)
-            }
-
-            GltfMeshBufferGeometryKind::Visibility => None,
-        }
-    };
+    // (The per-pass visibility/transparency vertex streams + tangent generation are
+    // no longer built here — the renderer packs them at commit from the retained
+    // source above, per the union of bound materials. See module note.)
 
     // Step 5: Pack vertex attributes
     // These are the original attributes per-vertex, but only non-visibility ones
@@ -334,18 +238,6 @@ pub(super) fn convert_to_mesh_buffer(
 
     // Step 7: Build final MeshBufferInfo
     Ok(MeshBufferInfoWithOffset {
-        visibility_geometry_vertex: visability_vertex_offset.map(|offset| {
-            MeshBufferVertexInfoWithOffset {
-                offset,
-                count: triangle_count * 3, // 3 vertices per triangle (i.e. exploded)
-            }
-        }),
-        transparency_geometry_vertex: transparency_vertex_offset.map(|offset| {
-            MeshBufferVertexInfoWithOffset {
-                offset,
-                count: vertex_count, // original vertex count
-            }
-        }),
         triangles: MeshBufferTriangleInfoWithOffset {
             count: triangle_count,
             vertex_attribute_indices: custom_attribute_index.clone(),

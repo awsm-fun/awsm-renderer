@@ -1683,24 +1683,14 @@ pub async fn load_glb_under(
         .fetch(&key)
         .await
         .map_err(|_| anyhow!("bundle is missing mesh glb `{key}`"))?;
-    // The bundle's glb is geometry-only (materials stripped), so `populate_gltf`
-    // would decide every primitive Opaque and build no transparency geometry —
-    // but we apply OUR material via `Single`. If that material is transparent the
-    // transparency pass would then fail (`TransparencyGeometryBufferNotFound`), so
-    // override the geometry kind from our material (per-load — the same glb asset
-    // can be shared by nodes with different materials).
-    use awsm_renderer_gltf::data::GltfGeometryOverride;
+    // The bundle's glb is geometry-only (materials stripped) and we apply OUR
+    // material via `Single`. The geometry KIND (visibility vs transparency) is no
+    // longer baked at decode — the renderer derives it at commit from the bound
+    // material (docs/plans/todo.md §4), so a transparent material correctly gets
+    // transparency geometry with no per-load override. The same glb asset can be
+    // shared by nodes with different materials, each resolving its own kind.
     let transparent = renderer.materials.is_transparency_pass(material);
-    let geometry_override = if transparent {
-        GltfGeometryOverride::Transparent
-    } else {
-        GltfGeometryOverride::FromMaterial
-    };
-    let hints = awsm_renderer_gltf::data::GltfDataHints::default()
-        .with_geometry_override(geometry_override);
-    let data = GltfLoader::from_glb_bytes(&bytes)
-        .await?
-        .into_data(Some(hints))?;
+    let data = GltfLoader::from_glb_bytes(&bytes).await?.into_data(None)?;
     let ctx = renderer
         .populate_gltf_with(
             data,

@@ -9,7 +9,6 @@ pub mod mesh;
 pub mod morph;
 pub mod normals;
 pub mod skin;
-pub mod tangents;
 pub mod triangle;
 
 use awsm_renderer_core::pipeline::primitive::FrontFace;
@@ -19,7 +18,7 @@ use std::collections::HashMap;
 use crate::{
     buffers::{
         index::{generate_fresh_indices_from_primitive, GltfMeshBufferIndexInfo},
-        mesh::{convert_to_mesh_buffer, mesh_buffer_geometry_kind},
+        mesh::convert_to_mesh_buffer,
     },
     data::GltfDataHints,
 };
@@ -27,7 +26,6 @@ use awsm_renderer::meshes::buffer_info::{
     MeshBufferAttributeIndexInfo, MeshBufferGeometryMorphInfo, MeshBufferInfo,
     MeshBufferMaterialMorphAttributes, MeshBufferMaterialMorphInfo, MeshBufferSkinInfo,
     MeshBufferTriangleDataInfo, MeshBufferTriangleInfo, MeshBufferVertexAttributeInfo,
-    MeshBufferVertexInfo,
 };
 
 use crate::error::Result;
@@ -50,11 +48,9 @@ pub struct GltfBuffers {
     // just used in the pipeline for drawing
     pub index_bytes: Vec<u8>,
 
-    // Visibility geometry vertex buffer (positions + triangle_index + barycentric etc.)
-    pub visibility_geometry_vertex_bytes: Vec<u8>,
-
-    // Transparency geometry vertex buffer (positions etc.)
-    pub transparency_geometry_vertex_bytes: Vec<u8>,
+    // (The per-pass visibility/transparency vertex byte streams are no longer
+    // produced by the decode — the renderer packs them at commit from the retained
+    // typed source on each `MeshBufferInfoWithOffset`. See docs/plans/todo.md §5b.)
 
     // Vertex attribute storage buffer (normals, UVs, colors, etc. per triangle)
     // these always follow the same interleaving pattern
@@ -83,8 +79,6 @@ impl GltfBuffers {
         Self {
             raw: self.raw.clone(),
             index_bytes: self.index_bytes.clone(),
-            visibility_geometry_vertex_bytes: self.visibility_geometry_vertex_bytes.clone(),
-            transparency_geometry_vertex_bytes: self.transparency_geometry_vertex_bytes.clone(),
             custom_attribute_vertex_bytes: self.custom_attribute_vertex_bytes.clone(),
             triangle_data_bytes: self.triangle_data_bytes.clone(),
             geometry_morph_bytes: self.geometry_morph_bytes.clone(),
@@ -168,8 +162,6 @@ fn determine_front_face(
 /// Mesh buffer info paired with byte offsets into the packed buffers.
 #[derive(Clone, Debug)]
 pub struct MeshBufferInfoWithOffset {
-    pub visibility_geometry_vertex: Option<MeshBufferVertexInfoWithOffset>,
-    pub transparency_geometry_vertex: Option<MeshBufferVertexInfoWithOffset>,
     pub triangles: MeshBufferTriangleInfoWithOffset,
     pub geometry_morph: Option<MeshBufferGeometryMorphInfoWithOffset>,
     pub material_morph: Option<MeshBufferMaterialMorphInfoWithOffset>,
@@ -193,26 +185,17 @@ pub struct MeshBufferInfoWithOffset {
 impl From<MeshBufferInfoWithOffset> for MeshBufferInfo {
     fn from(info: MeshBufferInfoWithOffset) -> Self {
         MeshBufferInfo {
-            visibility_geometry_vertex: info.visibility_geometry_vertex.map(|x| x.into()),
-            transparency_geometry_vertex: info.transparency_geometry_vertex.map(|x| x.into()),
+            // The decode no longer knows the per-pass reps — the renderer rebuilds a
+            // real `MeshBufferInfo` (with the vis/transp counts it actually packed) at
+            // commit in `resolve_one`. This native view is consumed by `populate` only
+            // for the pass-independent triangle/morph/skin layout, so leave both None.
+            visibility_geometry_vertex: None,
+            transparency_geometry_vertex: None,
             triangles: info.triangles.into(),
             geometry_morph: info.geometry_morph.map(|m| m.into()),
             material_morph: info.material_morph.map(|m| m.into()),
             skin: info.skin.map(|m| m.into()),
         }
-    }
-}
-
-/// Vertex buffer info paired with byte offsets into the packed buffers.
-#[derive(Clone, Debug)]
-pub struct MeshBufferVertexInfoWithOffset {
-    pub count: usize,
-    pub offset: usize,
-}
-
-impl From<MeshBufferVertexInfoWithOffset> for MeshBufferVertexInfo {
-    fn from(info: MeshBufferVertexInfoWithOffset) -> Self {
-        MeshBufferVertexInfo { count: info.count }
     }
 }
 
@@ -358,8 +341,6 @@ impl GltfBuffers {
         // with indices as a separate buffer
 
         let mut index_bytes: Vec<u8> = Vec::new();
-        let mut visibility_geometry_vertex_bytes: Vec<u8> = Vec::new();
-        let mut transparency_geometry_vertex_bytes: Vec<u8> = Vec::new();
         let mut custom_attribute_vertex_bytes: Vec<u8> = Vec::new();
         let mut triangle_data_bytes: Vec<u8> = Vec::new();
         let mut geometry_morph_bytes: Vec<u8> = Vec::new();
@@ -399,9 +380,10 @@ impl GltfBuffers {
                     None => generate_fresh_indices_from_primitive(&primitive, &mut index_bytes)?,
                 };
 
-                let geometry_kind = mesh_buffer_geometry_kind(&primitive, &hints);
-
-                // Step 2: Convert to mesh buffer format
+                // Step 2: Convert to mesh buffer format. NOTE the geometry KIND is no
+                // longer decided here — the renderer derives it at commit from the
+                // bound materials (docs/plans/todo.md §4); the decode retains the
+                // pass-independent typed source on the returned info.
                 let mesh_buffer_info = {
                     let _maybe_convert_stage_span_guard = maybe_enter_span!(
                         hints.render_timings,
@@ -411,13 +393,10 @@ impl GltfBuffers {
                     convert_to_mesh_buffer(
                         &primitive,
                         hints.render_timings,
-                        geometry_kind,
                         front_face,
                         &buffers,
                         &index,
                         &index_bytes,
-                        &mut visibility_geometry_vertex_bytes,
-                        &mut transparency_geometry_vertex_bytes,
                         &mut custom_attribute_vertex_bytes,
                         &mut triangle_data_bytes,
                         &mut geometry_morph_bytes,
@@ -436,8 +415,6 @@ impl GltfBuffers {
             tracing::info!(
                 mesh_count = meshes.len(),
                 index_bytes_len = index_bytes.len(),
-                visibility_geometry_vertex_bytes_len = visibility_geometry_vertex_bytes.len(),
-                transparency_geometry_vertex_bytes_len = transparency_geometry_vertex_bytes.len(),
                 custom_attribute_vertex_bytes_len = custom_attribute_vertex_bytes.len(),
                 triangle_data_bytes_len = triangle_data_bytes.len(),
                 geometry_morph_bytes_len = geometry_morph_bytes.len(),
@@ -449,8 +426,6 @@ impl GltfBuffers {
         Ok(Self {
             raw: buffers,
             index_bytes,
-            visibility_geometry_vertex_bytes,
-            transparency_geometry_vertex_bytes,
             custom_attribute_vertex_bytes,
             triangle_data_bytes,
             meshes,

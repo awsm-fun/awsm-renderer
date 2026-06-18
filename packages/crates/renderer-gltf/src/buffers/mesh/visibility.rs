@@ -1,6 +1,9 @@
 use std::{borrow::Cow, collections::BTreeMap};
 
 use super::Result;
+// FrontFace is only used by the now-`#[cfg(test)]` packer-parity writers below;
+// the live source decoders (`resolve_attribute_buffers` / `decode_*`) don't need it.
+#[cfg(test)]
 use awsm_renderer_core::pipeline::primitive::FrontFace;
 
 use awsm_renderer::meshes::buffer_info::{
@@ -33,6 +36,12 @@ use crate::error::AwsmGltfError;
 /// The explosion preserves GLTF's original normals:
 /// - Smooth edges: GLTF shared vertices with averaged normals → same normal copied to all 3 corners → smooth shading preserved
 /// - Hard edges: GLTF duplicated vertices with different normals → respective normals copied → hard edges preserved
+///
+/// No longer called on the live decode path (the renderer packs visibility bytes
+/// at commit via the same `mesh_pack::pack_visibility_bytes`); retained as the
+/// `#[cfg(test)]` parity check that the decode-side decode + canonical packer
+/// reproduce the historical byte layout.
+#[cfg(test)]
 pub(super) fn create_visibility_vertices(
     attribute_data: &BTreeMap<MeshBufferVertexAttributeInfo, Cow<'_, [u8]>>,
     triangle_indices: &[[usize; 3]],
