@@ -486,8 +486,34 @@ console shows pipelines ready before first present. Capture the before/after tra
 
 ---
 
-# §D — Uber-shader: selectable per-variant grouping (the partition is the design)
+# §D — Uber-shader: EVALUATED → MEASURED → REVERTED (David, 2026-06-18)
 
+> ## 🛑 CLOSED — built, measured runtime-neutral, reverted. Do not resume without new evidence.
+> The full uber-shader was prototyped (D.1 grouping plumbing + D.2 the per-PBR-feature SPLIT/UBER partition:
+> `pbr_uber` cache-key/template plumbing, 38 runtime-gate rewrites, the variant-key collapse, edge threading,
+> in-app `?uber=` activation) and **proven correct** (naga-valid, module-size bounded, pixel-identical render
+> under `?uber=pbr-all`). Then we **measured runtime** (the deciding question — is the branching uber faster
+> than separate specialized passes?) and the answer was **no, it's runtime-neutral**:
+> - **Kernel cost ≈ 0 (measured):** verified GPU-bound at ~30fps (N=4000 dense DamagedHelmet brick, 1073×720),
+>   the maximally-fat uber kernel (all 14 PBR features compiled in + runtime-gated) vs the lean specialized
+>   kernel: **mean 33.89ms vs 33.61ms, p90 66.7 vs 67.0 — identical within noise.** The occupancy/branch cost
+>   does not measurably exist for this content (geometry/overdraw-bound, not shading-occupancy-bound).
+> - **Dispatch benefit ≈ sub-ms (bounded):** collapsing N PBR pipelines → 1 saves ~µs per eliminated pipeline
+>   (≈0.1ms at 32 variants); negligible vs frame time. (A `?variants=M` bench was added to measure it directly
+>   but rendered black at scale — a bench material-reassignment bug, unrelated to the renderer.)
+> - **Architecture context:** the visibility-buffer shades ONCE per screen pixel (no overdraw; cost ∝
+>   resolution, not mesh count) + GPU culling → realistic content is GPU-headroom'd / vsync-bound, so neither
+>   the uber cost nor benefit is even reachable.
+>
+> **Decision (David):** not faster ⇒ **revert D.1+D.2 entirely** (`git reset --hard 531ff01b`, this commit's
+> parent) back to the clean one-specialized-pipeline-per-variant model — runtime-neutral isn't worth permanent
+> complexity on the hot shading path. **D.0 (the audit/spec, kept below) is the record of what was evaluated.**
+> Joining *different* shaders remains a user-space concern (dynamic shader + uniforms); built-ins are never
+> force-joined. **The full prototype is archived at git tag `archive/uber-pbr-eval-2026-06-18` if ever revisited
+> with new evidence** (e.g. a genuinely shading-occupancy-bound or hundreds-of-distinct-PBR-materials workload).
+>
+> --- original D.0 spec / design notes preserved below as the evaluation record ---
+>
 > **The grouping is a *partition of variants into groups*; each group compiles to one branching pipeline.
 > Group-of-1 = today's per-bucket pipeline; group-of-all = one global uber-shader; the useful configs are
 > in between and chosen per game.** This makes that partition a first-class, authored, schema-persisted
