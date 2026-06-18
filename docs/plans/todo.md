@@ -494,7 +494,7 @@ console shows pipelines ready before first present. Capture the before/after tra
 > input. **Default = all-split = today's exact behavior** (zero-risk; a scene specifying nothing compiles
 > and renders identically to today).
 
-## [x] D.0 — RE-AUDIT & UPDATE THIS SPEC (done 2026-06-18; commit `__D0_HASH__`)
+## [x] D.0 — RE-AUDIT & UPDATE THIS SPEC (done 2026-06-18; commit `26456aac`)
 
 **Audit outcome:** edge model verified against code — `cs_shade` IS the one unified MSAA kernel/bucket
 (interior→`opaque_tex`, edge→`accumulator`); `MaterialEdgeBuffers`(`edge_slot_map`+4-slot `accumulator`) +
@@ -777,7 +777,7 @@ Per stage: `cargo test -p awsm-renderer -p awsm-materials --lib` green (naga + s
 completeness) and model-tests render correctly (PBR/IBL dish, alpha, shadows, MSAA on/off) with a clean
 console, **verified via chrome-devtools MCP**.
 
-- **[x] D.0 — re-audit & update this spec** (above) — commit `__D0_HASH__`. Edge model verified; D4 rewritten; D.6 fast-MSAA deferred/measurement-gated.
+- **[x] D.0 — re-audit & update this spec** (above) — commit `26456aac`. Edge model verified; D4 rewritten; D.6 fast-MSAA deferred/measurement-gated.
 - **[ ] D.1 — Grouping spec plumbing (inert).** Add `ShadingGroupSpec` types (groups + members + opt-out +
   cap + per-base `feature_partitions`, kept per-base-general per D2b) to the scene schema +
   `pipeline_scheduler` batch input. `ensure_scene_pipelines` reads it; **default produces the exact same
