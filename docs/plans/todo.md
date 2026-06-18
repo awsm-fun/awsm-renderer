@@ -216,7 +216,42 @@ carry the light/line/decal config, not just `template_meshes`). Straightforward,
 
 **Verify:** a prefab containing a light/line/decal, instantiated ≥2×, shows each child per instance.
 
-## [ ] A.4 — Decal texture-index ≤64-layer assumption
+## [x] A.4 — Decal texture-index ≤64-layer assumption — **PROPER ENCODING FIX (David, 2026-06-18)** — commit `4e7110cd`
+
+**Landed (the proper fix David chose):** the hard-coded `64` is gone. A single
+source-of-truth helper `awsm_renderer::decals::decal_texture_index_stride(gpu)` returns the
+device `max_texture_array_layers` (the real per-array layer ceiling the pool fills to). BOTH
+sides now use it: the decal compute shader threads `texture_pool_layers_per_array` through its
+cache key + template and unpacks with `% {{stride}}u` / `/ {{stride}}u`; the scene-loader's
+`resolve_decal_texture_index` packs `array_index * stride + layer_index` with the same helper
+(the duplicated `DECAL_POOL_LAYERS_PER_ARRAY = 64` const is deleted). They can no longer drift,
+and a decal texture on any valid pool layer (incl. ≥64) round-trips. The editor decal bridge
+already passes `0` (untextured), so it's unaffected.
+
+**Verification:** `cargo test -p awsm-renderer -p awsm-materials -p awsm-scene-loader --lib`
+GREEN (34 / **261** / 30). New naga validation test `decal_shader_validates_with_templated_layer_stride`
+renders the decal shader at stride **256 and 2048** and asserts the templated stride appears in
+the unpacking math — the decal shader had **no** prior naga coverage, so this is a coverage gain.
+No perf regression (the divisor is device-constant → no extra pipeline variants; the cache-key
+field carries it only so the template substitutes the exact value the loader packs with). Live
+chrome-devtools render of a textured decal pends the loader-render harness (A.1 note); the
+encoding correctness is now naga-locked + SSOT-unified.
+
+### A.4 spec (original, for reference)
+
+**Audit finding (surfaced to David):** the texture pool has **no 64-layer cap** — `TexturePoolArray::insert`
+is an unbounded `push`; each `(width,height,format)` array fills to the device `max_texture_array_layers`
+(256–2048). So the decal shader's `array_index * 64 + layer_index` packing (`% 64u` / `/ 64u` in
+`material_decal_wgsl/compute.wgsl`) is a **latent correctness bug**: a decal texture at `layer_index >= 64`
+decodes to the wrong array+layer. The plan's "confirm never exceeds 64" is false; "unify the const" wouldn't
+fix the root cause.
+
+**David's decision (2026-06-18):** **Proper encoding fix now** — inject a shared MAX_LAYERS divisor
+(= device `max_texture_array_layers`) into BOTH the decal shader template and the loader (or carry
+array_index + layer_index as two decal fields). Verify via chrome-devtools. Chosen approach: the shared
+**divisor** (less invasive than splitting the decal field).
+
+### A.4 spec (original, for reference)
 
 `materialize_decal` resolves a decal's texture to a flat pool index as `array_index * 64 + layer_index`
 (the `DECAL_POOL_LAYERS_PER_ARRAY` const in scene-loader), matching the decal shader's `texture_index % 64`
