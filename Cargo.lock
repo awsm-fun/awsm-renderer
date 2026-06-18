@@ -492,6 +492,7 @@ dependencies = [
  "awsm-curves",
  "awsm-materials",
  "awsm-meshgen",
+ "awsm-particles",
  "awsm-renderer",
  "awsm-renderer-core",
  "awsm-renderer-gltf",
