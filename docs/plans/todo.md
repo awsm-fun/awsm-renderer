@@ -494,7 +494,17 @@ console shows pipelines ready before first present. Capture the before/after tra
 > input. **Default = all-split = today's exact behavior** (zero-risk; a scene specifying nothing compiles
 > and renders identically to today).
 
-## [ ] D.0 — RE-AUDIT & UPDATE THIS SPEC FIRST (decided 2026-06-18)
+## [x] D.0 — RE-AUDIT & UPDATE THIS SPEC (done 2026-06-18; commit `__D0_HASH__`)
+
+**Audit outcome:** edge model verified against code — `cs_shade` IS the one unified MSAA kernel/bucket
+(interior→`opaque_tex`, edge→`accumulator`); `MaterialEdgeBuffers`(`edge_slot_map`+4-slot `accumulator`) +
+`final_blend` cross-pipeline combine; skybox = own bucket pipeline (`skybox_primary.wgsl`); `cs_edge` is dead
+comment-naming (`unified-edge-shading` folded it into `cs_shade`). All prep buffers exist as named
+(`material_prep` per-pixel + per-edge-sample shadow, `froxel_walk.wgsl` SSOT, depth→world recompute,
+in-register edge UV/vcolor, no prep flag). **D4 rewritten** to current truth; **D.6 fast-MSAA path deferred /
+measurement-gated** (coherent but NOT subsumed — skybox-separate keeps the accumulator live at one material
+pipeline — and too narrow/speculative to build pre-measurement; build only if D.5 shows the one-pipeline
+accumulator overhead matters). Below is the (now-superseded by D4/D.6) original D.0 mandate, kept for history.
 
 David folded the whole uber-shader plan in **but flagged it needs updating** — specifically the
 **"fast-MSAA" framing is suspected outdated** after `unified-edge-shading` landed (and subsequent edge
@@ -536,7 +546,7 @@ draws). awsm's deferred decoupling (Plan B) is what makes one shading pass possi
 **precompile collapse** (N specialized modules → one per group; the ~230 s / 1024-module compile is the
 unbounded custom-material axis — grouping customs bites hardest there); MSAA edge machinery already shrank
 to one kernel (`unified-edge-shading`), and the cross-pipeline combine shrinks further only at the
-single-pipeline extreme (subject to D.0 re-audit).
+single-pipeline extreme (the deferred/measurement-gated fast path, D.6).
 
 ## Locked decisions
 
@@ -611,34 +621,51 @@ includes. **Per-group opt-out:** a group may be flagged to stay separate pipelin
 branching loses. **Overflow / cap:** a max members-per-group (register pressure / module size); exceeding it
 is **clamped + logged** (never a silent cap) and overflow members fall back to their own pipelines (hybrid).
 
-### D4 — MSAA: accumulator stays by default; single-pipeline fast path **(SUBJECT TO D.0 RE-AUDIT — suspected outdated)**
-> ⚠️ Re-audit per **D.0** before trusting this section. The text below is the pre-audit spec.
+### D4 — MSAA: the accumulator path is THE path; fast-MSAA is a measurement-gated option **(D.0 RE-AUDITED 2026-06-18 — current truth)**
 
-The MSAA edge machinery — `MaterialEdgeBuffers` (`edge_slot_map`, the 4-slot `accumulator`) + the edge
-branch of each pipeline's `cs_shade` + `final_blend` — exists because shading is split across pipelines: at
-an edge pixel the 4 samples can belong to materials in different pipelines, and a pipeline's `cs_shade` can
-only shade its own samples → a cross-pipeline accumulate-then-combine is mandatory. **The instant there is
->1 opaque material pipeline, this machinery is required and does NOT simplify.** Real scenes almost always
-have some pipeline separation → **accumulator path is the default and stays.**
+**Current edge model (verified against code, D.0):** the MSAA opaque kernel is **one unified `cs_shade`
+per bucket** (`material_opaque_wgsl/compute.wgsl::cs_shade`, shared module with the bucket's `cs_opaque`
+non-MSAA kernel; `cs_opaque` is gated to non-MSAA per the MSAA-compile invariant). `cs_shade` does interior
+AND edge work via a write-target branch: interior pixels → `opaque_tex`; edge samples → the `accumulator`.
+The cross-pipeline combine is `MaterialEdgeBuffers` (`edge_slot_map` + the 4-slot `accumulator`, see
+`render_passes/material_opaque/edge_buffers.rs`) + `final_blend.wgsl`. The **skybox is its own bucket
+pipeline** (`skybox_primary.wgsl`, its own `cs_opaque`/`cs_shade`) — it is NOT a groupable material (hazard
+6). The per-shader edge `cs_shade` pipelines are built by `launch_edge_resolve_compile`
+(`pipeline_scheduler/launch.rs`). *(Naming note: stale `cs_edge` comments survive in `compute.wgsl`; the
+landed `unified-edge-shading` replaced `cs_opaque + cs_edge` with the single `cs_shade` — see
+`edge_pipeline.rs` "in place of cs_opaque + cs_edge". The model, not the comment, is authoritative.)*
 
-**Fast-MSAA path (detected, not authored):** when the grouping collapses to exactly one opaque material
-pipeline, light up a fast path that bypasses accumulator / `final_blend` / `edge_slot_map`. Gated on
-pipeline count at submit time (the scheduler knows the count), not an authored mode. **Precondition (do not
-assume away):** "one material pipeline" is necessary but not sufficient — edge pixels at silhouettes mix
-material samples with **skybox** samples (must average together; today the skybox bucket's `cs_shade` arm
-writes sky samples to the accumulator and `final_blend` combines). The fast path works **only if** that
-single pipeline's `cs_shade` edge branch resolves all 4 samples itself — shading its material samples and
-sampling skybox inline for sky samples — writing the blend directly to `opaque_tex`. With one material
-there's no material-vs-material edge → every edge pixel is owned by that one pipeline → `accumulator`,
-`final_blend`, `edge_slot_map` dissolve into the self-contained `cs_shade` edge branch.
-- Per-sample divergence at edges is inherent (an edge pixel's samples may hit different UBER-feature
-  branches → divergence concentrated at edges; small pixel fraction, real cost).
-- The fast `cs_shade` edge branch consumes Plan B's per-edge-sample shadow buffer + recomputes edge
-  UV/vcolor in-register (per the landed prep-vs-recompute rule — **NOT** a per-edge-sample attribute
-  buffer; the old "Option B" buffer was resolved WON'T-DO).
-- Correctness is visual-only (MSAA edges can't be naga-checked): match the accumulator path exactly. Keep
-  the accumulator path behind a flag and verify model-tests MSAA-on **via chrome-devtools** until parity is
-  proven.
+This machinery exists because shading is split across pipelines: at an edge pixel the 4 samples can belong
+to materials in **different** pipelines, and a pipeline's `cs_shade` only shades its own samples → a
+cross-pipeline accumulate-then-combine is mandatory. **The instant there is >1 opaque pipeline that owns
+edge samples, this is required and does NOT simplify.** Real scenes almost always have some pipeline
+separation → **the accumulator path is the default and stays.**
+
+**Fast-MSAA single-pipeline path — D.0 verdict: COHERENT but NOT subsumed, and DEFERRED (measurement-gated).**
+- *Coherent:* when the grouping collapses to exactly one opaque **material** pipeline, a fast path that
+  bypasses `accumulator`/`final_blend`/`edge_slot_map` is logically sound. Its `cs_shade` edge branch would
+  resolve all 4 samples itself, writing the blend straight to `opaque_tex`.
+- *NOT subsumed by the landed model:* the precondition is real — **skybox is always a separate pipeline**,
+  so "one material pipeline" still means ≥2 pipelines at silhouette edges (material samples mix with sky
+  samples, which the skybox bucket's `cs_shade` writes to the accumulator today). So even at one material
+  pipeline the accumulator IS still used; the landed model does not auto-collapse it. The fast path only
+  works if the single material kernel's edge branch **samples the skybox/environment inline** for sky
+  samples (feasible — the material kernel already binds environment/IBL — but it duplicates
+  `skybox_primary`'s projection logic into the uber kernel).
+- *Why DEFERRED, not built (the cost/benefit):* the saving (accumulator VRAM — up to ~37 MB at 512k edges,
+  far less typically — + the `final_blend` dispatch + `edge_slot_map`) accrues ONLY at the **global-uber
+  extreme** (exactly one non-skybox opaque pipeline), which is the rarest grouping config. Against that: a
+  new inline-skybox `cs_shade` edge variant (added register pressure on the already-heavy uber kernel),
+  a submit-time single-pipeline detector, and a dual-path kept behind a flag for visual-only (non-naga)
+  parity. The uber-shader's PRIMARY wins (dispatch collapse, precompile collapse) are **independent** of it.
+  ⇒ Per "measure, don't guess": do NOT build it speculatively. Build the fast path ONLY if **D.5's
+  accumulator-path-for-groups measurements** show the one-material-pipeline accumulator/`final_blend`
+  overhead is a real, worth-eliminating cost on a global-uber scene. See Stage **D.6** (now gated on that).
+- If/when built: the fast `cs_shade` edge branch consumes Plan B's per-edge-sample shadow buffer +
+  recomputes edge UV/vcolor in-register (the landed prep-vs-recompute rule — **NOT** a per-edge-sample
+  attribute buffer; the old "Option B" buffer was resolved WON'T-DO). Correctness is visual-only (MSAA edges
+  can't be naga-checked): match the accumulator path exactly, keep it behind a flag, verify model-tests
+  MSAA-on via chrome-devtools.
 - The forward transparent path keeps its own MSAA handling (`EdgeResolveBlend`) — unaffected.
 
 ### D5 — Defaults summary (zero-risk)
@@ -647,7 +674,7 @@ there's no material-vs-material edge → every edge pixel is owned by that one p
 | material→group mapping | all-split (1 pipeline per bucket = today) | grouping spec in schema |
 | PBR per-feature SPLIT/UBER | all-SPLIT when ungrouped; core-UBER/heavy-SPLIT when PBR is grouped | per-feature override |
 | custom grouping | group-of-1 | author assigns groups (editor/MCP) |
-| MSAA | accumulator path (one `cs_shade` kernel/pipeline; cross-pipeline combine) | fast path auto-detected at 1 pipeline (D.0 re-audit) |
+| MSAA | accumulator path (one `cs_shade` kernel/pipeline; cross-pipeline combine) | fast path DEFERRED — measurement-gated, build only if D.5 shows accumulator overhead matters (D.0 verdict, D.6) |
 
 ## Authoring surface + schema (every material kind is controllable)
 
@@ -680,7 +707,7 @@ bases shows its member `switch` set). (2) PBR feature partition editor (per-feat
 (3) Per-group opt-out toggle + cap field. (4) Live recompile (any change resubmits affected groups
 `Ready → Pending → Ready`; status via `pipeline_group_status` / `drain_pipeline_status_events`; no renderer
 rebuild). (5) Diagnostics: cap overflow ("N exceeded cap → M fell back"), single-pipeline / fast-MSAA
-indicator (D4, subject to D.0), divergence hint for spatially-interleaved divergent grouping.
+indicator (D4; only if the deferred D.6 fast path is built), divergence hint for spatially-interleaved divergent grouping.
 
 **MCP parity:** every editor op has an MCP equivalent (create/edit/delete groups, assign materials, set PBR
 partition incl. apply-default, set opt-out/cap) — agent can author + measure headlessly.
@@ -729,7 +756,7 @@ batch (D1). A player never re-derives grouping; absent a spec → all-split → 
    there isn't one.
 6. **Skybox is not a groupable material.** Bucket 0 / `SKYBOX` (the `OpaqueEmpty` / uncovered-pixel path)
    stays special, never a group member; participates as a lean `cs_shade` arm (uncovered/sky samples write
-   the accumulator at edges), re-entering in the fast-MSAA `cs_shade` edge branch (D4, subject to D.0).
+   the accumulator at edges), and — only under the deferred D.6 fast path — re-entering inline in the single material kernel's `cs_shade` edge branch (D4).
 
 ## Costs / risks to design against
 - **Branch divergence:** a wavefront straddling two `switch` arms (or two UBER branches) runs both
@@ -750,7 +777,7 @@ Per stage: `cargo test -p awsm-renderer -p awsm-materials --lib` green (naga + s
 completeness) and model-tests render correctly (PBR/IBL dish, alpha, shadows, MSAA on/off) with a clean
 console, **verified via chrome-devtools MCP**.
 
-- **[ ] D.0 — re-audit & update this spec** (above) — commit the spec edit first.
+- **[x] D.0 — re-audit & update this spec** (above) — commit `__D0_HASH__`. Edge model verified; D4 rewritten; D.6 fast-MSAA deferred/measurement-gated.
 - **[ ] D.1 — Grouping spec plumbing (inert).** Add `ShadingGroupSpec` types (groups + members + opt-out +
   cap + per-base `feature_partitions`, kept per-base-general per D2b) to the scene schema +
   `pipeline_scheduler` batch input. `ensure_scene_pipelines` reads it; **default produces the exact same
@@ -773,19 +800,23 @@ console, **verified via chrome-devtools MCP**.
 - **[ ] D.4 — Custom-material groups + full authoring surface.** Wrap N custom members into one group
   pipeline (each a `case`, Tier-B protected, include-set = union). Build the complete authoring surface:
   group manager (every kind — bases AND customs), PBR partition editor with "PBR Default" preset, per-group
-  opt-out + cap, live-recompile status, diagnostics (cap-overflow, single-pipeline/fast-MSAA indicator).
+  opt-out + cap, live-recompile status, diagnostics (cap-overflow, single-pipeline indicator; fast-MSAA only if D.6 built).
   **MCP parity** for all of it. Schema persistence + player load (D1). naga over the union; visual parity for
   a 2–3 custom-material group and a mixed base+custom group.
 - **[ ] D.5 — MSAA accumulator path for groups.** Make the edge machinery group-aware: a group's `cs_shade`
   edge branch shades its members' samples; `edge_slot_map` keys by group not bucket; `final_blend` combines
   across groups. The general MSAA path with grouping. Visual MSAA-on parity (chrome-devtools).
-- **[ ] D.6 — Fast-MSAA single-pipeline path (D4) — SUBJECT TO D.0 RE-AUDIT.** Only if D.0 confirms it's
-  still coherent: when the scheduler reports exactly one opaque material pipeline, compile the `cs_shade`
-  edge branch to resolve all 4 samples (material + skybox inline) and write final directly to `opaque_tex`;
-  skip allocating/dispatching `accumulator`/`final_blend`/`edge_slot_map`. Gated, accumulator path kept
-  behind the flag. **Visual-only parity** vs the accumulator path on a PBR-only MSAA scene **via
-  chrome-devtools**; measure machinery savings (VRAM + dispatch count) + edge-divergence cost. (If D.0 marks
-  the fast path dropped/subsumed, record that here and skip.)
+- **[ ] D.6 — Fast-MSAA single-pipeline path (D4) — DEFERRED / MEASUREMENT-GATED (D.0 verdict 2026-06-18).**
+  D.0 re-audited D4 and found the fast path **coherent but NOT subsumed and NOT worth building speculatively**
+  (narrow: global-uber extreme only; skybox stays a separate pipeline so the accumulator is still used at one
+  material pipeline; needs a new inline-skybox `cs_shade` variant + dual-path). **Do NOT build in this pass.**
+  Build ONLY if **D.5's** accumulator-path-for-groups measurements show the one-material-pipeline
+  accumulator/`final_blend` overhead is a real, worth-eliminating cost on a global-uber MSAA scene. If D.5
+  shows that: when the scheduler reports exactly one opaque material pipeline, compile a `cs_shade` edge branch
+  that resolves all 4 samples (material + skybox sampled inline) and writes final directly to `opaque_tex`,
+  skipping `accumulator`/`final_blend`/`edge_slot_map`; gated, accumulator path kept behind the flag; visual-only
+  parity vs the accumulator path on a PBR-only MSAA scene via chrome-devtools; measure VRAM + dispatch savings +
+  edge-divergence cost. **Otherwise mark `[x]` as "evaluated → deferred (D.0); accumulator path is sufficient".**
 - **[ ] D.7 — Finalize.** Decide per-default partition tuning from measurements; document the editor/MCP
   grouping recipe; re-dump `reports/awsm-dumps/`; update `report.md`; tighten ceilings.
 
