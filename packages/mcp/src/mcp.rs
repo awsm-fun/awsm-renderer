@@ -38,8 +38,8 @@ use awsm_scene::animation::{
     TransformProp,
 };
 use awsm_scene::{
-    AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, NodeId, PrimitiveShape,
-    SkyboxConfig, Trs,
+    AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, MeshShadowConfig, NodeId,
+    NodeKind, PrimitiveShape, SkyboxConfig, Trs,
 };
 
 use crate::link::{AgentSession, EditorLink, LinkError};
@@ -266,6 +266,25 @@ pub struct InsertParams {
     /// Optional parent node UUID (root when omitted).
     #[serde(default)]
     pub parent: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetMeshShadowParams {
+    /// Mesh / SkinnedMesh / InstancesAlongCurve node UUID.
+    pub node: String,
+    /// Whether the mesh appears in the shadow-generation pass (casts shadows).
+    pub cast: bool,
+    /// Whether the mesh's shaded pixels darken under shadow (receives shadows).
+    pub receive: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetInstanceColorsParams {
+    /// InstancesAlongCurve node UUID.
+    pub node: String,
+    /// Linear RGBA `[r, g, b, a]` per instance, in placement order. Empty clears
+    /// the per-instance tints (every instance renders with its material color).
+    pub colors: Vec<[f32; 4]>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1304,6 +1323,26 @@ impl EditorMcp {
         self.insert(InsertSpec::Light(kind), p.parent).await
     }
 
+    #[tool(
+        description = "Insert a CPU particle emitter node under an optional parent. Spawns short-lived sprites with configurable spawn rate, lifetime, initial velocity / forces, texture, and blend mode. Its full emitter config is edited via the kind (dispatch_command SetKind) for now."
+    )]
+    async fn insert_particle(
+        &self,
+        Parameters(p): Parameters<InsertParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.insert(InsertSpec::Particle, p.parent).await
+    }
+
+    #[tool(
+        description = "Insert a projection decal node under an optional parent. The node's transform is the oriented unit-cube volume; the renderer projects the decal's texture down the local -Z axis onto opaque geometry inside that volume. Its texture/config is edited via the kind (dispatch_command SetKind) for now."
+    )]
+    async fn insert_decal(
+        &self,
+        Parameters(p): Parameters<InsertParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.insert(InsertSpec::Decal, p.parent).await
+    }
+
     #[tool(description = "Delete a node and its subtree.")]
     async fn delete_node(
         &self,
@@ -1324,6 +1363,62 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::DropSkinning {
             node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set a mesh node's shadow casting / receiving flags. Works on Mesh, SkinnedMesh, and InstancesAlongCurve nodes (the shadow-bearing kinds); errors on any other kind. `cast` = appears in the shadow-generation pass; `receive` = its shaded pixels darken under shadow. Reads the node's current kind, updates only its `shadow` config, and re-sends it (one SetKind = one undo step)."
+    )]
+    async fn set_mesh_shadow(
+        &self,
+        Parameters(p): Parameters<SetMeshShadowParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        let mut kind = self.current_kind(node).await?;
+        let label = kind.label();
+        let shadow = kind.mesh_shadow_mut().ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "node {node} is a {label} — not a shadow-bearing kind (Mesh / SkinnedMesh / \
+                     InstancesAlongCurve)"
+                ),
+                None,
+            )
+        })?;
+        *shadow = MeshShadowConfig {
+            cast: p.cast,
+            receive: p.receive,
+        };
+        self.dispatch(EditorCommand::SetKind {
+            id: node,
+            kind: Box::new(kind),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the per-instance tint colors of an InstancesAlongCurve node — one linear RGBA per placed instance, in placement order. Pass an empty list to clear the tints (every instance renders with its material color). Errors if the node isn't an InstancesAlongCurve. Reads the node's current kind, replaces `per_instance_colors`, and re-sends it (one SetKind = one undo step)."
+    )]
+    async fn set_instance_colors(
+        &self,
+        Parameters(p): Parameters<SetInstanceColorsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        let kind = self.current_kind(node).await?;
+        let NodeKind::InstancesAlongCurve(mut def) = kind else {
+            return Err(McpError::invalid_params(
+                format!(
+                    "node {node} is a {} — not an InstancesAlongCurve",
+                    kind.label()
+                ),
+                None,
+            ));
+        };
+        def.per_instance_colors = p.colors;
+        self.dispatch(EditorCommand::SetKind {
+            id: node,
+            kind: Box::new(NodeKind::InstancesAlongCurve(def)),
         })
         .await
     }
@@ -2989,6 +3084,30 @@ impl EditorMcp {
             Response::Err(e) => Err(McpError::internal_error(e, None)),
             other => Err(unexpected(other)),
         }
+    }
+
+    /// Read a node's current `NodeKind` (for the read-modify-write kind setters)
+    /// via the `NodeKindDetails` query — each entry is the node's `NodeKind`
+    /// serialized with `serde_json::to_value`, so it round-trips straight back.
+    async fn current_kind(&self, node: NodeId) -> Result<NodeKind, McpError> {
+        let resp = self
+            .req(Request::Query(EditorQuery::NodeKindDetails {
+                nodes: vec![node],
+            }))
+            .await?;
+        let Response::Query(qr) = resp else {
+            return Err(unexpected(resp));
+        };
+        let QueryResult::Map(m) = *qr else {
+            return Err(McpError::internal_error("unexpected kind result", None));
+        };
+        let v = m
+            .entries
+            .get(&node.to_string())
+            .ok_or_else(|| McpError::invalid_params(format!("no such node {node}"), None))?;
+        serde_json::from_value(v.clone()).map_err(|e| {
+            McpError::internal_error(format!("node {node} kind did not parse: {e}"), None)
+        })
     }
 
     /// Read a node's current local TRS (for the partial-transform convenience
