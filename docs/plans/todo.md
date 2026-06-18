@@ -1,8 +1,19 @@
 # Design + implementation spec: geometry in the load transaction (register → assign → commit)
 
-**Status: fully specced, ready to implement.** Standalone — an implementer can execute it
-start-to-finish without re-deciding architecture. File:line anchors throughout reflect the code as
-of this branch (`follow-ups`).
+**Status: IMPLEMENTED (steps 1–8 complete + verified).** Geometry is now part of the load
+transaction: `register_geometry` → `add_mesh` → `commit_load` (`resolve_geometry`), with the kind
+derived once at commit from the union of bound materials via the single `geometry_kind` fn, packed
+once each into a shared per-geometry resource, and the source freed. The glTF decode no longer packs
+or classifies geometry; the legacy eager `insert`/`insert_public` path and the
+`add_raw_mesh_transparent` / `mesh_buffer_geometry_kind` / `GltfGeometryOverride` split are deleted.
+Granular per-phase loading UI (geometry → textures → pipelines) is wired into both viewers from the
+shared `LoadingStats::phase_label()`. Verified on :9080: Fox + DamagedHelmet (regression, MSAA edges,
+normal-map tangents) + previously-black CompareTransmission + ClearCoatTest render clean, no
+`VisibilityGeometryBufferNotFound`, no console errors. One tracked follow-up: re-populating SKINNED
+import geometry on a flip to a never-built kind (today it degrades gracefully to `Skip`, not a
+blackout — see step 7). Original spec text preserved below.
+
+File:line anchors throughout reflect the code as of this branch (`follow-ups`).
 
 > **Prerequisite already landed (do NOT redo):** the load transaction (`begin_load` → deferred adds →
 > `commit_load`, the render gate, `LoadingStats`, `RendererConfigSpec`, the consolidated/private
