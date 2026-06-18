@@ -144,7 +144,7 @@ impl RawMeshData {
 /// needs a real tangent basis. Mirrors `renderer-gltf`'s `ensure_tangents`
 /// gating so the raw-mesh path generates tangents in exactly the cases the
 /// gltf path does.
-fn material_wants_tangents(mat: &Material) -> bool {
+pub(crate) fn material_wants_tangents(mat: &Material) -> bool {
     match mat {
         Material::Pbr(m) => {
             m.normal_tex.is_some() || m.clearcoat.as_ref().is_some_and(|c| c.normal_tex.is_some())
@@ -155,7 +155,57 @@ fn material_wants_tangents(mat: &Material) -> bool {
 
 // (MikkTSpace tangent generation moved to the shared `awsm-tangents` crate.)
 
+/// Per-mesh options for [`AwsmRenderer::add_mesh`] beyond the geometry / material /
+/// transform — the instance flags `Mesh::new` takes. `double_sided` is NOT here: it's
+/// derived from the bound material (as the glTF path does).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AddMeshOpts {
+    pub instanced: bool,
+    pub hud: bool,
+    pub hidden: bool,
+}
+
 impl AwsmRenderer {
+    /// Register a [`GeometrySource`](crate::meshes::geometry::GeometrySource) — the
+    /// load transaction's geometry "declare". CPU-only; returns a `GeometryKey` to
+    /// bind meshes to via [`Self::add_mesh`]. The per-pass GPU representations are
+    /// derived at the next `commit_load` from the union of bound materials, then the
+    /// source is freed. Convenience wrapper over `self.meshes.register_geometry`.
+    pub fn register_geometry(
+        &mut self,
+        source: crate::meshes::geometry::GeometrySource,
+    ) -> crate::meshes::geometry::GeometryKey {
+        self.meshes.register_geometry(source)
+    }
+
+    /// Assign a material + transform to a registered geometry → a drawable mesh (the
+    /// load transaction's "append"). Mints the `MeshKey` SYNCHRONOUSLY but uploads
+    /// NOTHING: the mesh draws nothing until the next `commit_load` resolves its
+    /// geometry. Many `add_mesh` calls may share one `GeometryKey` (dedup — each
+    /// needed kind uploads once across all of them).
+    pub fn add_mesh(
+        &mut self,
+        geometry: crate::meshes::geometry::GeometryKey,
+        material_key: MaterialKey,
+        transform_key: TransformKey,
+        opts: AddMeshOpts,
+    ) -> crate::error::Result<MeshKey> {
+        let double_sided = self
+            .materials
+            .get(material_key)
+            .map(Material::double_sided)
+            .unwrap_or(false);
+        let mesh = Mesh::new(
+            transform_key,
+            material_key,
+            double_sided,
+            opts.instanced,
+            opts.hud,
+            opts.hidden,
+        );
+        Ok(self.meshes.bind_mesh(mesh, geometry)?)
+    }
+
     /// Upload a raw `RawMeshData` + material into the renderer and return a
     /// `MeshKey` that participates in the visibility-buffer opaque pass.
     ///

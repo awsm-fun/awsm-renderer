@@ -570,9 +570,16 @@ impl AwsmRenderer {
         self.loading_geometry_uploaded = 0;
         on_progress(self.loading_stats());
 
-        // (resolution body — pack + upload per (geometry, kind), wire the bound
-        // meshes to the shared resource, drop the source — added with the
-        // add_mesh binding model.)
+        // Derive + upload each geometry's needed representations once (per the union
+        // of its bound materials), wire the bound meshes to the shared resource, and
+        // free the source. Then sync each newly-resolved mesh into the spatial index
+        // (deferred to here so skinned meshes flag correctly — the resource exists now).
+        let wired = self
+            .meshes
+            .resolve_geometry(&self.materials, &self.transforms)?;
+        for mesh_key in wired {
+            self.sync_spatial_for_mesh(mesh_key);
+        }
 
         self.loading_geometry_uploaded = total;
         on_progress(self.loading_stats());

@@ -575,6 +575,12 @@ pub struct Meshes {
     /// unit — many meshes share one [`GeometryKey`]. (Populated/consumed by later
     /// steps; for now the registry exists in parallel to the legacy `insert` path.)
     geometries: DenseSlotMap<geometry::GeometryKey, geometry::GeometrySource>,
+    /// Which geometry each pending/committed mesh binds to (§1 ③). Set by
+    /// `add_mesh`; read by `resolve_geometry` to wire the shared resource.
+    mesh_to_geometry: SecondaryMap<MeshKey, geometry::GeometryKey>,
+    /// Reverse: the meshes bound to each registered geometry, so `resolve_geometry`
+    /// can union their materials' kinds + wire them all to the one shared resource.
+    geometry_to_meshes: SecondaryMap<geometry::GeometryKey, Vec<MeshKey>>,
     mesh_to_resource: SecondaryMap<MeshKey, MeshResourceKey>,
     transform_to_meshes: SecondaryMap<TransformKey, Vec<MeshKey>>,
     // Merged geometry pool: one allocation per mesh holds
@@ -679,6 +685,8 @@ impl Meshes {
             list: DenseSlotMap::with_key(),
             resources: DenseSlotMap::with_key(),
             geometries: DenseSlotMap::with_key(),
+            mesh_to_geometry: SecondaryMap::new(),
+            geometry_to_meshes: SecondaryMap::new(),
             mesh_to_resource: SecondaryMap::new(),
             transform_to_meshes: SecondaryMap::new(),
             buffer_infos: MeshBufferInfos::new(),
@@ -890,6 +898,183 @@ impl Meshes {
     /// `UploadingGeometry` progress count).
     pub fn geometry_count(&self) -> usize {
         self.geometries.len()
+    }
+
+    /// Bind an already-built [`Mesh`] to a registered geometry (the deferred
+    /// "append" — `add_mesh`'s storage half). Inserts the mesh (sync MeshKey),
+    /// fills its world AABB from the geometry source, and records the binding maps.
+    /// NO GPU upload, NO resource, NO meta — those happen at the next
+    /// `resolve_geometry` (commit). Returns the MeshKey.
+    pub(crate) fn bind_mesh(
+        &mut self,
+        mut mesh: Mesh,
+        geometry_key: geometry::GeometryKey,
+    ) -> Result<MeshKey> {
+        let source = self
+            .geometries
+            .get(geometry_key)
+            .ok_or(AwsmMeshError::GeometryNotFound(geometry_key))?;
+        if mesh.world_aabb.is_none() {
+            mesh.world_aabb = source.aabb.clone();
+        }
+        let mesh_key = self.list.insert(mesh);
+        self.mesh_to_geometry.insert(mesh_key, geometry_key);
+        self.geometry_to_meshes
+            .entry(geometry_key)
+            .unwrap()
+            .or_default()
+            .push(mesh_key);
+        Ok(mesh_key)
+    }
+
+    /// THE geometry commit (`commit_load` phase 0, §2): for every registered
+    /// geometry, derive + upload the representation(s) the union of its bound
+    /// materials needs — ONCE each — into a single shared resource, wire every
+    /// bound mesh to it, then FREE the source. Returns the wired mesh keys (for the
+    /// caller to sync into the spatial index). Idempotent on an empty registry.
+    ///
+    /// Reuses the existing `insert_resource` (upload) + `wire_instance` (per-mesh)
+    /// plumbing — the only new logic is the union-of-kinds + pack-from-source. A
+    /// geometry registered but never bound is simply dropped (source freed).
+    pub(crate) fn resolve_geometry(
+        &mut self,
+        materials: &Materials,
+        transforms: &Transforms,
+    ) -> Result<Vec<MeshKey>> {
+        use crate::meshes::geometry::{geometry_kind, GeometryKind};
+
+        let geometry_keys: Vec<geometry::GeometryKey> = self.geometries.keys().collect();
+        let mut wired = Vec::new();
+
+        for gkey in geometry_keys {
+            // Take the source OUT (frees it — §1 ②) so the per-geometry uploads
+            // below can borrow `&mut self` without aliasing the registry.
+            let Some(source) = self.geometries.remove(gkey) else {
+                continue;
+            };
+            let bound = self.geometry_to_meshes.remove(gkey).unwrap_or_default();
+            if bound.is_empty() {
+                continue; // registered but never bound — nothing to build.
+            }
+
+            // Union the kinds + tangent-need over the bound meshes' materials.
+            let mut want_visibility = false;
+            let mut want_transparency = false;
+            let mut want_tangents = false;
+            for &mk in &bound {
+                let Some(mesh) = self.list.get(mk) else {
+                    continue;
+                };
+                let is_hud = mesh.hud;
+                let Ok(material) = materials.get(mesh.material_key) else {
+                    continue;
+                };
+                match geometry_kind(material, is_hud) {
+                    GeometryKind::Visibility => want_visibility = true,
+                    GeometryKind::Transparency => want_transparency = true,
+                    GeometryKind::Both => {
+                        want_visibility = true;
+                        want_transparency = true;
+                    }
+                }
+                if crate::raw_mesh::material_wants_tangents(material) {
+                    want_tangents = true;
+                }
+            }
+
+            // Tangents derived ONCE here (commit-time, gated — see §6 step 2).
+            let tangents = if want_tangents {
+                source.uvs0.as_ref().and_then(|uvs| {
+                    awsm_tangents::generate_tangents(
+                        &source.positions,
+                        &source.normals,
+                        uvs,
+                        &source.indices,
+                    )
+                })
+            } else {
+                None
+            };
+
+            // Pack exactly the needed representation(s), once each.
+            let visibility_bytes = want_visibility.then(|| {
+                crate::mesh_pack::pack_visibility_bytes(
+                    &source.positions,
+                    &source.normals,
+                    tangents.as_deref(),
+                    &source.indices,
+                    source.front_face,
+                )
+            });
+            let transparency_bytes = want_transparency.then(|| {
+                crate::mesh_pack::pack_transparency_bytes(
+                    &source.positions,
+                    &source.normals,
+                    tangents.as_deref(),
+                    source.vertex_count(),
+                )
+            });
+
+            // Rebuild the layout descriptor from the source (vis/transp Some/None
+            // matches what we packed; triangles from the source attributes).
+            let triangle_count = source.triangle_count();
+            let buffer_info = buffer_info::MeshBufferInfo {
+                visibility_geometry_vertex: visibility_bytes.as_ref().map(|_| {
+                    MeshBufferVertexInfo {
+                        count: triangle_count * 3,
+                    }
+                }),
+                transparency_geometry_vertex: transparency_bytes.as_ref().map(|_| {
+                    MeshBufferVertexInfo {
+                        count: source.vertex_count(),
+                    }
+                }),
+                triangles: buffer_info::MeshBufferTriangleInfo {
+                    count: triangle_count,
+                    vertex_attribute_indices: buffer_info::MeshBufferAttributeIndexInfo {
+                        count: triangle_count * 3,
+                    },
+                    vertex_attributes: source.vertex_attributes.clone(),
+                    vertex_attributes_size: source.custom_attribute_bytes.len(),
+                    triangle_data: buffer_info::MeshBufferTriangleDataInfo {
+                        size_per_triangle: 12,
+                        total_size: triangle_count * 12,
+                    },
+                },
+                // Morph/skin layout travels with the geometry source; the raw path
+                // has none. The glTF migration (§6 step 5) extends the source with
+                // these when it produces morphed/skinned geometry.
+                geometry_morph: None,
+                material_morph: None,
+                skin: None,
+            };
+            let buffer_info_key = self.buffer_infos.insert(buffer_info);
+
+            // ONE shared upload for this geometry; refcount = number of bound meshes.
+            let resource_key = self.insert_resource(
+                buffer_info_key,
+                visibility_bytes.as_deref(),
+                transparency_bytes.as_deref(),
+                &source.custom_attribute_bytes,
+                &source.attribute_index_bytes,
+                source.aabb.clone(),
+                source.geometry_morph_key,
+                None,
+                source.skin_key,
+            )?;
+            if let Some(resource) = self.resources.get_mut(resource_key) {
+                resource.refcount = bound.len();
+            }
+
+            // Wire every bound mesh to the shared resource (flags + meta).
+            for &mk in &bound {
+                self.wire_instance(mk, resource_key, materials, transforms)?;
+                self.mesh_to_geometry.remove(mk);
+                wired.push(mk);
+            }
+        }
+
+        Ok(wired)
     }
 
     /// Public wrapper around `insert` for the raw-mesh path. Same semantics —

@@ -20,6 +20,9 @@ pub enum AwsmMeshError {
     #[error("[mesh] not found: {0:?}")]
     MeshNotFound(MeshKey),
 
+    #[error("[mesh] geometry not found: {0:?}")]
+    GeometryNotFound(super::geometry::GeometryKey),
+
     #[error("[mesh] resource not found: {0:?}")]
     ResourceNotFound(MeshResourceKey),
 
