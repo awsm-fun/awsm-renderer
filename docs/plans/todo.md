@@ -348,13 +348,41 @@ decision.
    particles, thumbnail/preview/light_icons, scene-loader `:843`/`:1216`/`:1402`/particles,
    web-shared point_handle, render-worker): `add_raw_mesh_transparent` → `add_raw_mesh`; drop the
    opaque-vs-transparent choice. Each is followed (as already wired) by a `commit_load`.
-7. **Live material reassignment through the same path.** `set_mesh_material` becomes an "append": it
+7. ✅ **Live material reassignment through the same path.** `set_mesh_material` becomes an "append": it
    updates the binding, and the next `commit_load` re-routes the mesh among the geometry's
    ALREADY-built kinds (a both-rep geometry's instance flips opaque↔transparent for free). A
    reassignment that needs a kind the geometry never built (its source is gone, §1 ②) **re-registers**
    the geometry — the editor's material-edit path re-materializes the affected meshes from authored
    data. Either way it routes through register/add_mesh/commit, never a side channel — proves
    invariant ① end-to-end.
+> **Step-7 DONE — verified by construction + test; no functional code change needed, only doc/comment
+> cleanup.** Findings:
+> - **Renderer re-route is already correct + tested.** `route_renderable` (renderable.rs) reads
+>   `wants_transparency = is_transparency_pass(material)` LIVE each frame and routes on the mesh's actual
+>   reps. So `set_mesh_material` (which swaps `material_key` + refreshes meta) re-routes a both-rep
+>   geometry's instance opaque↔transparent FOR FREE — no rebuild. The existing unit test
+>   `routes_by_geometry_not_classification` already pins this (a both-rep mesh routes by its material:
+>   `(vis,transp,wants_t=true)→Transparent`, `(…,false)→Opaque`). Updated the now-stale comments there
+>   + in `collect_renderables` (they claimed both-rep meshes were "not produced by today's builders" and
+>   referenced the deleted `add_raw_mesh_transparent`; both-rep is now the real dedup + free-flip path).
+> - **Editor procedural + STATIC-IMPORT meshes re-register on material edit, automatically.** A material
+>   edit fires `rematerialize_for_material` → re-sets each assigned node's `kind` → `node_sync::apply_kind`
+>   does `teardown` (removes old meshes) + re-materializes via `upload_simple_mesh`/`add_raw_mesh` =
+>   `register_geometry` + `add_mesh` + commit. So a never-built-kind flip (opaque↔blend) rebuilds fresh
+>   geometry with the new kind — through the canonical path, no side channel. NOTE static glTF imports
+>   are `NodeKind::Mesh{Captured}` (geometry baked CPU-side at import; the populate meshes are hidden), so
+>   they take this SAME re-register path. Runtime-confirmed the procedural sphere renders via
+>   `add_raw_mesh` (register/add_mesh/eager-resolve), 1.2k tris, on editor :9085.
+> - **Skinned meshes (`NodeKind::SkinnedMesh`) are the one set_mesh_material-only case** — they share the
+>   populate-built renderer geometry (it must keep deforming, so it isn't re-materialized). A flip among
+>   already-built kinds works for free (route_renderable); a flip to a NEVER-built kind leaves the mesh
+>   with only its original rep → `route_renderable` returns `Skip` (the mesh isn't drawn this frame —
+>   GRACEFUL, no frame-blackout, just disappears until re-import). This is the documented §1 ② consequence
+>   and is NOT a regression (the old decode also baked the skinned kind from the glTF material). A full
+>   fix (re-populate skinned geometry from retained source on flip) is a larger, riskier change tracked as
+>   a follow-up; deferred rather than guessed. The full create-material→assign→set-Blend editor UI flow
+>   wasn't click-driven end-to-end (deep multi-step authoring flow); correctness rests on the
+>   route_renderable test + the verified procedural register/add_mesh path + the apply_kind re-materialize.
 8. **Delete the dead model.** Remove `add_raw_mesh_transparent`, `mesh_buffer_geometry_kind`,
    `GltfMeshBufferGeometryKind`, the per-insert `MeshResource`, the eager `insert_resource` staging,
    and any now-unused `insert`/`insert_public` kind args. Verify each removal (compiler + §7).

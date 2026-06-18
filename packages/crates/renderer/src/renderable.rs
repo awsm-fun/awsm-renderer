@@ -240,11 +240,10 @@ impl AwsmRenderer {
                     .get_render_pipeline_key(mesh_key),
             };
 
-            // Route each mesh to the pass it actually has geometry for. The two
-            // mesh builders are asymmetric: an opaque mesh (`add_raw_mesh`) has
-            // VISIBILITY geometry only; a transparency-pass mesh
-            // (`add_raw_mesh_transparent`) has TRANSPARENCY geometry only. Drawing a
-            // mesh in a pass it lacks geometry for raises
+            // Route each mesh to the pass it actually has geometry for. A geometry's
+            // reps are derived at commit from the union of materials bound to it
+            // (visibility and/or transparency); an instance may carry one or both.
+            // Drawing a mesh in a pass it lacks geometry for raises
             // `VisibilityGeometryBufferNotFound` (or its transparency twin) and —
             // because `render()` is atomic — blacks out the WHOLE frame, opaque
             // geometry and skybox included.
@@ -258,11 +257,12 @@ impl AwsmRenderer {
             // list regardless of how its material currently classifies. A mesh with
             // neither buffer yet (mid-upload) is skipped this frame rather than
             // crashing a pass.
-            // Ground-truth routing: a mesh's geometry capability is an immutable
-            // build-time property cached on `Mesh` (zero-cost field reads, no
-            // per-mesh buffer_info lookup in this hot path). The material's
-            // transparency classification only disambiguates a mesh that somehow
-            // carries BOTH buffers (not produced by today's builders).
+            // Ground-truth routing: a mesh's geometry capability is cached on `Mesh`
+            // (set at commit from the shared geometry resource's reps; zero-cost
+            // field reads, no per-mesh buffer_info lookup in this hot path). The
+            // material's transparency classification disambiguates a mesh that
+            // carries BOTH buffers — the dedup case (one geometry under an opaque +
+            // a transparent material) and the free opaque↔blend live-reassignment.
             let wants_transparency = self.materials.is_transparency_pass(routing_material);
 
             match route_renderable(
@@ -465,18 +465,28 @@ enum RenderableRoute {
 
 /// Decide which pass a mesh can render in, based on the geometry it actually has.
 ///
-/// This is the fix for a frame-killing bug: the two mesh builders are asymmetric
-/// (`add_raw_mesh` → visibility geometry only; `add_raw_mesh_transparent` →
-/// transparency geometry only), and a mesh drawn in a pass it lacks geometry for
-/// raises `VisibilityGeometryBufferNotFound` (or its transparency twin), which —
-/// since `render()` is atomic — blacks out the WHOLE frame. The material's
-/// transparency classification (`wants_transparency` =
-/// `Materials::is_transparency_pass`) can DRIFT from the mesh's immutable built
-/// geometry (`transparency_pass_keys` is toggled on material insert/update/remove,
-/// possibly after the mesh was built), so the presence of each geometry buffer is
-/// the ground truth. Classification only disambiguates the (today-impossible) case
-/// where a mesh has BOTH buffers. A mesh with neither buffer is skipped rather
-/// than crashing a pass.
+/// A mesh drawn in a pass it lacks geometry for raises
+/// `VisibilityGeometryBufferNotFound` (or its transparency twin), which — since
+/// `render()` is atomic — blacks out the WHOLE frame. So the presence of each
+/// geometry buffer (set from the shared geometry resource's actual reps) is the
+/// ground truth for routing; the material's transparency classification
+/// (`wants_transparency` = `Materials::is_transparency_pass`) only *disambiguates*.
+///
+/// Two cases make that disambiguation live, not theoretical:
+/// - **Both reps present (the dedup case, docs/plans/todo.md §7).** One geometry
+///   bound to BOTH an opaque and a transparent material builds visibility AND
+///   transparency reps at commit; each instance routes by its own material's
+///   `wants_transparency`. This is also what makes a live opaque↔blend material
+///   re-assignment (`set_mesh_material`) re-render for free when the geometry
+///   already carries both kinds — no rebuild, just a different pass this frame.
+/// - **Classification drift.** `wants_transparency` can flip (material edit /
+///   reconcile) after the mesh's reps were frozen at commit; routing on buffer
+///   presence keeps a single-rep mesh out of a pass it can't draw. A flip to a
+///   kind the geometry NEVER built leaves the needed buffer absent → `Skip` (the
+///   editor re-materializes such meshes from authored data, §1 ②).
+///
+/// A mesh with neither buffer (mid-upload / pending its first commit) is skipped
+/// rather than crashing a pass.
 fn route_renderable(
     hud: bool,
     has_visibility_geometry: bool,
@@ -530,8 +540,11 @@ mod tests {
         assert_eq!(route_renderable(false, false, false, false), Skip);
         assert_eq!(route_renderable(false, false, false, true), Skip);
 
-        // Both buffers present (not produced by today's builders, but defined):
-        // classification disambiguates.
+        // Both buffers present — the dedup case (§7): one geometry bound to both an
+        // opaque and a transparent material builds both reps, and each instance
+        // routes by its own material's classification. This is also the free
+        // opaque↔blend live-reassignment path (set_mesh_material flips the pass
+        // without a rebuild when the geometry already carries both kinds).
         assert_eq!(route_renderable(false, true, true, true), Transparent);
         assert_eq!(route_renderable(false, true, true, false), Opaque);
     }
