@@ -174,6 +174,17 @@ pub struct MeshBufferInfoWithOffset {
     pub geometry_morph: Option<MeshBufferGeometryMorphInfoWithOffset>,
     pub material_morph: Option<MeshBufferMaterialMorphInfoWithOffset>,
     pub skin: Option<MeshBufferSkinInfoWithOffset>,
+    // Retained TYPED source geometry (load-transaction model, docs/plans/todo.md §5b):
+    // enough to derive EITHER pass representation at commit via the renderer's
+    // GeometrySource. `populate_gltf_primitive` reads these to build the source;
+    // the visibility/transparency offset fields above are legacy (removed in 5b-iv).
+    pub source_positions: Vec<[f32; 3]>,
+    pub source_normals: Vec<[f32; 3]>,
+    pub source_uvs0: Option<Vec<[f32; 2]>>,
+    /// Authored tangents (glTF `TANGENT`), if the asset shipped them. `None` ⇒ the
+    /// renderer generates at commit iff a bound material samples a normal map.
+    pub source_tangents: Option<Vec<[f32; 4]>>,
+    pub source_indices: Vec<u32>,
 }
 
 impl From<MeshBufferInfoWithOffset> for MeshBufferInfo {

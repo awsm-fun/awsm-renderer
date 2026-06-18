@@ -160,6 +160,48 @@ pub(super) fn convert_to_mesh_buffer(
         ensure_normals(attribute_data_by_kind, &triangle_indices)?
     };
 
+    // Step 3a (§5b): retain the TYPED source for the renderer's GeometrySource —
+    // extracted HERE, before `ensure_tangents`, so `source_tangents` carries only
+    // AUTHORED tangents (generation is deferred to commit, gated on the bound
+    // material). positions/normals are guaranteed present after ensure_normals.
+    let (source_positions, source_normals, source_tangents, source_uvs0) = {
+        use crate::buffers::mesh::visibility::{
+            decode_vec3s, decode_vec4s, resolve_attribute_buffers,
+        };
+        let (pos_b, norm_b, tan_b) = resolve_attribute_buffers(&attribute_data_by_kind)?;
+        let uvs0 = attribute_data_by_kind.iter().find_map(|(attr, data)| {
+            match attr {
+            MeshBufferVertexAttributeInfo::Custom(
+                awsm_renderer::meshes::buffer_info::MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: 0,
+                    ..
+                },
+            ) => Some(
+                data.chunks_exact(8)
+                    .map(|c| {
+                        [
+                            f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                            f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                        ]
+                    })
+                    .collect::<Vec<[f32; 2]>>(),
+            ),
+            _ => None,
+        }
+        });
+        (
+            decode_vec3s(pos_b),
+            decode_vec3s(norm_b),
+            tan_b.map(decode_vec4s),
+            uvs0,
+        )
+    };
+    let source_indices: Vec<u32> = triangle_indices
+        .iter()
+        .flatten()
+        .map(|&i| i as u32)
+        .collect();
+
     // Step 3b: Ensure tangents exist (generate with MikkTSpace if missing but normal map present)
     let attribute_data_by_kind = {
         let _maybe_stage_span_guard = if render_timings {
@@ -319,6 +361,11 @@ pub(super) fn convert_to_mesh_buffer(
         geometry_morph,
         material_morph,
         skin,
+        source_positions,
+        source_normals,
+        source_uvs0,
+        source_tangents,
+        source_indices,
     })
 }
 
