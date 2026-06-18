@@ -36,11 +36,7 @@ use crate::{
     bounds::Aabb,
     materials::{Material, MaterialKey},
     meshes::{
-        buffer_info::{
-            MeshBufferAttributeIndexInfo, MeshBufferCustomVertexAttributeInfo, MeshBufferInfo,
-            MeshBufferTriangleDataInfo, MeshBufferTriangleInfo, MeshBufferVertexAttributeInfo,
-            MeshBufferVertexInfo,
-        },
+        buffer_info::{MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo},
         mesh::Mesh,
         MeshKey,
     },
@@ -121,22 +117,100 @@ impl RawMeshData {
         Some(Aabb { min, max })
     }
 
-    /// Per-vertex MikkTSpace tangents (`vec4`: xyz direction + handedness `w`),
-    /// one entry per original (non-exploded) vertex, or `None` when the mesh
-    /// lacks the normals/UVs MikkTSpace needs (or generation fails).
-    ///
-    /// This mirrors the gltf populate path's `ensure_tangents` so a captured /
-    /// imported mesh gets the SAME tangent basis a `populate_gltf` load would —
-    /// without it the geometry packs the synthetic `[0,0,0,1]` fallback, which
-    /// degenerates normal mapping (flat, washed-out normal-mapped surfaces —
-    /// e.g. an imported model's normal-mapped metal/glass looks wrong vs the
-    /// model-viewer's `populate_gltf` render). Callers only invoke this when the
-    /// material actually samples a normal map (see `material_wants_tangents`),
-    /// matching populate's gating so non-normal-mapped meshes pay nothing.
-    fn compute_tangents(&self) -> Option<Vec<[f32; 4]>> {
-        let normals = self.normals.as_ref()?;
-        let uvs = self.uvs.as_ref()?;
-        awsm_tangents::generate_tangents(&self.positions, normals, uvs, &self.indices)
+    /// Lower this raw mesh into a [`GeometrySource`](crate::meshes::geometry::GeometrySource)
+    /// for the load transaction (`register_geometry` → `add_mesh`). Does the
+    /// pass-INDEPENDENT work — computes normals, the AABB, the custom-attribute
+    /// layout + bytes (UVs/colors), and the per-triangle attribute-index bytes. The
+    /// per-pass visibility/transparency reps + tangents are derived at commit from
+    /// the retained positions/normals/UV0/indices (tangents gated on the bound
+    /// material), so this carries NO kind decision — that's `geometry_kind` at commit.
+    pub(crate) fn into_geometry_source(
+        mut self,
+        front_face: awsm_renderer_core::pipeline::primitive::FrontFace,
+    ) -> crate::meshes::geometry::GeometrySource {
+        self.ensure_normals();
+        let aabb = self.aabb();
+        let vertex_count = self.vertex_count();
+        let triangle_count = self.triangle_count();
+
+        // Per-triangle attribute indices (3 × u32 per triangle).
+        let mut attribute_index_bytes: Vec<u8> = Vec::with_capacity(triangle_count * 12);
+        for tri in self.indices.chunks_exact(3) {
+            attribute_index_bytes.extend_from_slice(&tri[0].to_le_bytes());
+            attribute_index_bytes.extend_from_slice(&tri[1].to_le_bytes());
+            attribute_index_bytes.extend_from_slice(&tri[2].to_le_bytes());
+        }
+
+        // Custom attributes (UVs + optional 2nd UV set + optional colors), AoS,
+        // one record per original vertex — pass-independent.
+        let mut vertex_attributes: Vec<MeshBufferVertexAttributeInfo> = Vec::new();
+        let mut custom_attribute_bytes: Vec<u8> = Vec::new();
+        let has_uvs = self.uvs.is_some();
+        let has_uvs1 = has_uvs && self.uvs1.is_some();
+        let has_colors = self.colors.is_some();
+        if has_uvs {
+            vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: 0,
+                    data_size: 4,
+                    component_len: 2,
+                },
+            ));
+        }
+        if has_uvs1 {
+            vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: 1,
+                    data_size: 4,
+                    component_len: 2,
+                },
+            ));
+        }
+        if has_colors {
+            vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::Colors {
+                    index: 0,
+                    data_size: 4,
+                    component_len: 4,
+                },
+            ));
+        }
+        for v in 0..vertex_count {
+            if let Some(uvs) = self.uvs.as_ref() {
+                let uv = uvs[v];
+                custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            if has_uvs1 {
+                let uv1 = self.uvs1.as_ref().unwrap()[v];
+                custom_attribute_bytes.extend_from_slice(&uv1[0].to_le_bytes());
+                custom_attribute_bytes.extend_from_slice(&uv1[1].to_le_bytes());
+            }
+            if let Some(colors) = self.colors.as_ref() {
+                let c = colors[v];
+                for comp in c {
+                    custom_attribute_bytes.extend_from_slice(&comp.to_le_bytes());
+                }
+            }
+        }
+
+        crate::meshes::geometry::GeometrySource {
+            normals: self.normals.expect("ensure_normals filled this"),
+            positions: self.positions,
+            uvs0: self.uvs,
+            indices: self.indices,
+            front_face,
+            vertex_attributes,
+            custom_attribute_bytes,
+            attribute_index_bytes,
+            aabb,
+            geometry_morph_key: None,
+            geometry_morph_info: None,
+            material_morph_key: None,
+            material_morph_info: None,
+            skin_key: None,
+            skin_info: None,
+        }
     }
 }
 
@@ -206,442 +280,48 @@ impl AwsmRenderer {
         Ok(self.meshes.bind_mesh(mesh, geometry)?)
     }
 
-    /// Upload a raw `RawMeshData` + material into the renderer and return a
-    /// `MeshKey` that participates in the visibility-buffer opaque pass.
+    /// Upload a raw `RawMeshData` + material — the one-shot raw-mesh convenience.
+    /// Sugar over the geometry transaction: `register_geometry` + `add_mesh` + an
+    /// EAGER resolve of just this geometry, so the mesh uploads + draws immediately
+    /// (sync, no `commit_load` needed — matching today's behavior). The geometry
+    /// kind (visibility vs transparency) is decided from the bound material via the
+    /// one `geometry_kind` path, so this handles opaque AND transparent materials
+    /// uniformly — there is no separate transparent entry point. (The deferred
+    /// `register_geometry` + `add_mesh` + `commit_load` path is for batched/deduped
+    /// content like glTF, where many meshes share one geometry across one commit.)
     ///
-    /// Sync; opaque-only. Use [`AwsmRenderer::add_raw_mesh_transparent`] for
-    /// materials whose alpha mode routes through the transparent pass (the
-    /// transparent path needs an async transparent-pipeline-key registration
-    /// for the per-mesh attributes, so it can't be sync).
-    ///
-    /// The returned mesh is **not** instanced. To draw multiple copies, either
-    /// call `add_raw_mesh` repeatedly or `enable_mesh_instancing` after creation.
+    /// The returned mesh is **not** instanced. To draw multiple copies, either call
+    /// `add_raw_mesh` repeatedly or `enable_mesh_instancing` after creation.
     pub fn add_raw_mesh(
         &mut self,
-        mut data: RawMeshData,
+        data: RawMeshData,
         transform_key: TransformKey,
         material_key: MaterialKey,
     ) -> crate::error::Result<MeshKey> {
-        if data.positions.is_empty() {
-            return Err(crate::error::AwsmError::Mesh(
-                crate::meshes::error::AwsmMeshError::MeshListEmpty,
-            ));
-        }
-        if data.indices.len() % 3 != 0 {
-            return Err(crate::error::AwsmError::Mesh(
-                crate::meshes::error::AwsmMeshError::MeshListEmpty,
-            ));
-        }
-
-        data.ensure_normals();
-        let aabb = data.aabb();
-
-        let vertex_count = data.vertex_count();
-        let triangle_count = data.triangle_count();
-        let exploded_count = triangle_count * 3;
-
-        // ── Visibility geometry (56 bytes / exploded vertex) — packed by the
-        // shared `mesh_pack` packer (the canonical byte layout). Real MikkTSpace
-        // tangents when the material samples a normal map (the gltf populate path
-        // does the same via `ensure_tangents`); otherwise the packer writes the
-        // synthetic [0,0,0,1] fallback — a surface with no normal map never reads
-        // the tangent, so we skip the generation cost.
-        let normals = data.normals.as_ref().expect("ensure_normals filled this");
-        let tangents = self
-            .materials
-            .get(material_key)
-            .is_ok_and(material_wants_tangents)
-            .then(|| data.compute_tangents())
-            .flatten();
-        let visibility_bytes = crate::mesh_pack::pack_visibility_bytes(
-            &data.positions,
-            normals,
-            tangents.as_deref(),
-            &data.indices,
-            awsm_renderer_core::pipeline::primitive::FrontFace::Ccw,
-        );
-
-        // ── Custom attribute index (12 bytes per triangle = 3 * u32) ──────
-        let mut attribute_index_bytes: Vec<u8> = Vec::with_capacity(triangle_count * 12);
-        for tri in data.indices.chunks_exact(3) {
-            attribute_index_bytes.extend_from_slice(&tri[0].to_le_bytes());
-            attribute_index_bytes.extend_from_slice(&tri[1].to_le_bytes());
-            attribute_index_bytes.extend_from_slice(&tri[2].to_le_bytes());
-        }
-
-        // ── Custom attribute data (UVs + optional colors, AoS) ─────────────
-        let mut custom_attributes: Vec<MeshBufferVertexAttributeInfo> = Vec::new();
-        let mut custom_attribute_bytes: Vec<u8> = Vec::new();
-
-        let has_uvs = data.uvs.is_some();
-        let has_colors = data.colors.is_some();
-
-        // A 2nd UV set is only valid alongside set 0 (it's contiguous after it).
-        let has_uvs1 = has_uvs && data.uvs1.is_some();
-        if has_uvs {
-            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::TexCoords {
-                    index: 0,
-                    data_size: 4,     // f32 → 4 bytes per component
-                    component_len: 2, // u, v
-                },
-            ));
-        }
-        // TEXCOORD_1 — declared right after set 0 (before colors) so the UV sets
-        // are contiguous (uv_sets_index → set 0, set 1 at +2 floats).
-        if has_uvs1 {
-            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::TexCoords {
-                    index: 1,
-                    data_size: 4,
-                    component_len: 2,
-                },
-            ));
-        }
-        if has_colors {
-            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::Colors {
-                    index: 0,
-                    data_size: 4,
-                    component_len: 4,
-                },
-            ));
-        }
-
-        // Pack as array-of-structs: per vertex, write each declared attribute in
-        // declaration order. Matches `pack_vertex_attributes` in gltf::buffers.
-        for v in 0..vertex_count {
-            if let Some(uvs) = data.uvs.as_ref() {
-                let uv = uvs[v];
-                custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
-            }
-            if has_uvs1 {
-                let uv1 = data.uvs1.as_ref().unwrap()[v];
-                custom_attribute_bytes.extend_from_slice(&uv1[0].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&uv1[1].to_le_bytes());
-            }
-            if let Some(colors) = data.colors.as_ref() {
-                let c = colors[v];
-                custom_attribute_bytes.extend_from_slice(&c[0].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&c[1].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&c[2].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&c[3].to_le_bytes());
-            }
-        }
-
-        // ── Build MeshBufferInfo describing the layouts ────────────────────
-        let triangle_info = MeshBufferTriangleInfo {
-            count: triangle_count,
-            vertex_attribute_indices: MeshBufferAttributeIndexInfo {
-                count: triangle_count * 3,
-            },
-            vertex_attributes: custom_attributes,
-            vertex_attributes_size: custom_attribute_bytes.len(),
-            triangle_data: MeshBufferTriangleDataInfo {
-                size_per_triangle: 12,
-                total_size: triangle_count * 12,
-            },
-        };
-
-        let buffer_info = MeshBufferInfo {
-            visibility_geometry_vertex: Some(MeshBufferVertexInfo {
-                count: exploded_count,
-            }),
-            // Transparency vertices come from a separate write; for opaque meshes
-            // this stays None. Transparent raw meshes go through a later path.
-            transparency_geometry_vertex: None,
-            triangles: triangle_info,
-            geometry_morph: None,
-            material_morph: None,
-            skin: None,
-        };
-
-        let buffer_info_key = self.meshes.buffer_infos.insert(buffer_info);
-
-        let is_transparent = self.materials.is_transparency_pass(material_key);
-        if is_transparent {
-            return Err(crate::error::AwsmError::Mesh(
-                crate::meshes::error::AwsmMeshError::MeshListEmpty,
-            ));
-        }
-
-        // Inherit the material's double-sided flag — the gltf path does
-        // the same upstream, but procedural meshes never had a packed
-        // material attached at mesh-creation time, so this was silently
-        // hardcoded to single-sided. Without it, toggling "Double-sided"
-        // in the material inspector has no effect on a plane / sweep /
-        // sprite mesh's cull mode.
-        let double_sided = self
-            .materials
-            .get(material_key)
-            .map(Material::double_sided)
-            .unwrap_or(false);
-
-        let mesh = Mesh::new(
-            transform_key,
-            material_key,
-            double_sided,
-            false,
-            false,
-            false,
-        );
-
-        let mesh_key = self.meshes.insert_public(
-            mesh,
-            &self.materials,
-            &self.transforms,
-            buffer_info_key,
-            Some(&visibility_bytes),
-            None,
-            &custom_attribute_bytes,
-            &attribute_index_bytes,
-            aabb,
-            None,
-            None,
-            None,
-        )?;
-
-        self.sync_spatial_for_mesh(mesh_key);
-
-        Ok(mesh_key)
-    }
-
-    /// Async variant of [`AwsmRenderer::add_raw_mesh`] that supports the
-    /// transparent pass. Builds a 40-byte transparency vertex pack
-    /// (position(12) + normal(12) + tangent(16); per-vertex, *not*
-    /// exploded — matches the glTF transparent path) and registers the
-    /// per-mesh transparent pipeline key after insert.
-    ///
-    /// For opaque materials this delegates to the sync `add_raw_mesh` —
-    /// the async wrapper is a no-op cost in that case.
-    pub async fn add_raw_mesh_transparent(
-        &mut self,
-        mut data: RawMeshData,
-        transform_key: TransformKey,
-        material_key: MaterialKey,
-    ) -> crate::error::Result<MeshKey> {
-        if !self.materials.is_transparency_pass(material_key) {
-            return self.add_raw_mesh(data, transform_key, material_key);
-        }
         if data.positions.is_empty() || data.indices.len() % 3 != 0 {
             return Err(crate::error::AwsmError::Mesh(
                 crate::meshes::error::AwsmMeshError::MeshListEmpty,
             ));
         }
-
-        data.ensure_normals();
-        let aabb = data.aabb();
-        let vertex_count = data.vertex_count();
-        let triangle_count = data.triangle_count();
-        let normals = data.normals.as_ref().expect("ensure_normals filled this");
-
-        // Real MikkTSpace tangents when the material samples a normal map — same
-        // gating + basis as the gltf populate path (see opaque `add_raw_mesh`).
-        let tangents = self
-            .materials
-            .get(material_key)
-            .is_ok_and(material_wants_tangents)
-            .then(|| data.compute_tangents())
-            .flatten();
-
-        // ── Transparency geometry ONLY (40 B / vertex, per-original-vertex,
-        // *not* exploded), packed by the shared `mesh_pack` packer.
-        //
-        // A transparency-pass material (we returned early above for opaque)
-        // builds NO visibility geometry: emitting it would also rasterize this
-        // mesh into the opaque/visibility buffer, rendering it as a solid
-        // occluder *in front of* its own transmission/blend — a glass surface
-        // would read opaque-white. The gltf path is identical: a
-        // transmission/blend/mask primitive maps to `GeometryKind::Transparency`
-        // with the visibility offset `None` (see `mesh_buffer_geometry_kind`).
-        let transparency_bytes = crate::mesh_pack::pack_transparency_bytes(
-            &data.positions,
-            normals,
-            tangents.as_deref(),
-            vertex_count,
+        let geometry = self.register_geometry(
+            data.into_geometry_source(awsm_renderer_core::pipeline::primitive::FrontFace::Ccw),
         );
-
-        // Attribute index (per-triangle u32s — same as opaque).
-        let mut attribute_index_bytes: Vec<u8> = Vec::with_capacity(triangle_count * 12);
-        for tri in data.indices.chunks_exact(3) {
-            attribute_index_bytes.extend_from_slice(&tri[0].to_le_bytes());
-            attribute_index_bytes.extend_from_slice(&tri[1].to_le_bytes());
-            attribute_index_bytes.extend_from_slice(&tri[2].to_le_bytes());
-        }
-
-        // Custom attributes (UVs + colors if supplied). Same packing as opaque.
-        let mut custom_attributes: Vec<MeshBufferVertexAttributeInfo> = Vec::new();
-        let mut custom_attribute_bytes: Vec<u8> = Vec::new();
-        let has_uvs = data.uvs.is_some();
-        let has_colors = data.colors.is_some();
-        let has_uvs1 = has_uvs && data.uvs1.is_some();
-        if has_uvs {
-            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::TexCoords {
-                    index: 0,
-                    data_size: 4,
-                    component_len: 2,
-                },
-            ));
-        }
-        if has_uvs1 {
-            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::TexCoords {
-                    index: 1,
-                    data_size: 4,
-                    component_len: 2,
-                },
-            ));
-        }
-        if has_colors {
-            custom_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::Colors {
-                    index: 0,
-                    data_size: 4,
-                    component_len: 4,
-                },
-            ));
-        }
-        for v in 0..vertex_count {
-            if let Some(uvs) = data.uvs.as_ref() {
-                let uv = uvs[v];
-                custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
-            }
-            if has_uvs1 {
-                let uv1 = data.uvs1.as_ref().unwrap()[v];
-                custom_attribute_bytes.extend_from_slice(&uv1[0].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&uv1[1].to_le_bytes());
-            }
-            if let Some(colors) = data.colors.as_ref() {
-                let c = colors[v];
-                custom_attribute_bytes.extend_from_slice(&c[0].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&c[1].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&c[2].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&c[3].to_le_bytes());
-            }
-        }
-
-        let triangle_info = MeshBufferTriangleInfo {
-            count: triangle_count,
-            vertex_attribute_indices: MeshBufferAttributeIndexInfo {
-                count: triangle_count * 3,
-            },
-            vertex_attributes: custom_attributes,
-            vertex_attributes_size: custom_attribute_bytes.len(),
-            triangle_data: MeshBufferTriangleDataInfo {
-                size_per_triangle: 12,
-                total_size: triangle_count * 12,
-            },
-        };
-        let buffer_info = MeshBufferInfo {
-            // Transparency-pass mesh: no visibility geometry (see the comment
-            // on the transparency-bytes build above — it would double-render
-            // the mesh as an opaque occluder).
-            visibility_geometry_vertex: None,
-            transparency_geometry_vertex: Some(MeshBufferVertexInfo {
-                count: vertex_count,
-            }),
-            triangles: triangle_info,
-            geometry_morph: None,
-            material_morph: None,
-            skin: None,
-        };
-        let buffer_info_key = self.meshes.buffer_infos.insert(buffer_info);
-
-        // See note on the opaque path's add_raw_mesh — same propagation.
-        let double_sided = self
-            .materials
-            .get(material_key)
-            .map(Material::double_sided)
-            .unwrap_or(false);
-        let mesh = Mesh::new(
-            transform_key,
+        let mesh_key = self.add_mesh(
+            geometry,
             material_key,
-            double_sided,
-            false,
-            false,
-            false,
-        );
-        // Transparency-pass mesh: transparency geometry only, NO visibility
-        // geometry — `None` visibility data below. `Meshes::insert` derives the
-        // routing flags (`has_visibility_geometry = false`,
-        // `has_transparency_geometry = true`) from exactly these args, so the
-        // mesh's pass-routing capability can't disagree with its buffers.
-        let mesh_key = self.meshes.insert_public(
-            mesh,
-            &self.materials,
-            &self.transforms,
-            buffer_info_key,
-            None,
-            Some(&transparency_bytes),
-            &custom_attribute_bytes,
-            &attribute_index_bytes,
-            aabb,
-            None,
-            None,
-            None,
+            transform_key,
+            AddMeshOpts::default(),
         )?;
-
-        self.sync_spatial_for_mesh(mesh_key);
-
-        // A transparent mesh carries NO visibility geometry (see above), so it
-        // can't participate in the shadow-generation pass — which rasterizes
-        // visibility geometry. Default it to no cast / no receive so the shadow
-        // pass never looks up a visibility buffer that doesn't exist (the
-        // `cast: true` mesh default would otherwise make a shadow-casting light
-        // try, and fail, to draw it). Mirrors the scene loader's transparent
-        // shadow default; a caller may still override via `set_mesh_shadow_flags`.
-        let _ = self.set_mesh_shadow_flags(
-            mesh_key,
-            crate::shadows::MeshShadowFlags::TRANSPARENT_DEFAULT,
-        );
-
-        // Register the per-mesh transparent pipeline key so the transparent
-        // pass has a draw pipeline for this geometry. Mirrors what
-        // `enable_mesh_instancing` does for instanced transparent meshes.
-        let mesh_ref = self.meshes.get(mesh_key)?;
-        // Only meshes that route to the transparent pass get a transparent
-        // pipeline. An opaque material — including an opaque dynamic material
-        // whose author WGSL targets the opaque contract (`input.coords`, …) —
-        // must not be compiled against the transparent fragment.
-        if !self.materials.is_transparency_pass(mesh_ref.material_key) {
-            return Ok(mesh_key);
+        // Eager resolve THIS geometry (only) — packs its rep from the bound
+        // material's kind, uploads once, wires the mesh, frees the source. Sync; the
+        // mesh is drawable this frame, so existing sync callers (gizmos, handles,
+        // particles) need no commit (default-equals-today).
+        let wired = self
+            .meshes
+            .resolve_one(geometry, &self.materials, &self.transforms)?;
+        for mesh_key in wired {
+            self.sync_spatial_for_mesh(mesh_key);
         }
-        let writes_depth = self
-            .materials
-            .transparent_writes_depth(mesh_ref.material_key);
-        let (mat_base, mat_pbr_features) =
-            self.materials.transparent_variant(mesh_ref.material_key);
-        let dynamic_shader_id = matches!(mat_base, crate::dynamic_materials::ShadingBase::Custom)
-            .then(|| self.materials.shader_id(mesh_ref.material_key));
-        let dynamic_shader =
-            dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
-        self.render_passes
-            .material_transparent
-            .pipelines
-            .set_render_pipeline_key(
-                &self.gpu,
-                mesh_ref,
-                mesh_key,
-                buffer_info_key,
-                &mut self.shaders,
-                &mut self.pipelines,
-                &self.render_passes.material_transparent.bind_groups,
-                &self.pipeline_layouts,
-                &self.meshes.buffer_infos,
-                &self.anti_aliasing,
-                &self.textures,
-                &self.render_textures.formats,
-                writes_depth,
-                mat_base,
-                mat_pbr_features,
-                dynamic_shader_id,
-                dynamic_shader,
-            )
-            .await?;
-
         Ok(mesh_key)
     }
 }

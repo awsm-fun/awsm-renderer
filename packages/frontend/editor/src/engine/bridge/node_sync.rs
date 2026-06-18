@@ -870,9 +870,9 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
     let mut r = handle.lock().await;
     let mat_key = material::insert_material(&mut r, &sprite_mat);
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    // Transparent path (a tinted/blended sprite routes through the transparency
-    // pass; opaque delegates to `add_raw_mesh`).
-    match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
+    // The mesh's pass (visibility/transparency) is resolved at commit from the
+    // material — `add_raw_mesh` handles opaque and transparent uniformly now.
+    match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
             if let Err(e) = r.commit_load(|_| {}).await {
                 tracing::warn!("sprite commit_load: {e}");
@@ -988,12 +988,11 @@ async fn upload_simple_mesh(
         MeshMaterial::Flat(def) => material::insert_material(&mut r, def),
     };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    // `add_raw_mesh_transparent` builds transparency geometry when the material
-    // routes through the transparency pass (alpha Blend/Mask OR transmission) and
-    // otherwise delegates to the opaque `add_raw_mesh`. The plain `add_raw_mesh`
-    // ERRORS on a transparency-pass material, so a transmissive/blended captured
-    // mesh (e.g. an imported glass model) wouldn't upload at all.
-    match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
+    // `add_raw_mesh` is material-agnostic now: the geometry kind (visibility vs
+    // transparency) is decided at commit from the bound material, so a
+    // transmissive/blended captured mesh (e.g. an imported glass model) resolves
+    // to transparency geometry without a separate entry point.
+    match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
             if let Err(e) = r.commit_load(|_| {}).await {
                 tracing::warn!("upload_simple_mesh commit_load: {e}");

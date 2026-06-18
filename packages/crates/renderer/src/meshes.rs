@@ -941,22 +941,40 @@ impl Meshes {
         materials: &Materials,
         transforms: &Transforms,
     ) -> Result<Vec<MeshKey>> {
-        use crate::meshes::geometry::{geometry_kind, GeometryKind};
-
         let geometry_keys: Vec<geometry::GeometryKey> = self.geometries.keys().collect();
         let mut wired = Vec::new();
-
         for gkey in geometry_keys {
-            // Take the source OUT (frees it — §1 ②) so the per-geometry uploads
-            // below can borrow `&mut self` without aliasing the registry.
-            let Some(source) = self.geometries.remove(gkey) else {
-                continue;
-            };
-            let bound = self.geometry_to_meshes.remove(gkey).unwrap_or_default();
-            if bound.is_empty() {
-                continue; // registered but never bound — nothing to build.
-            }
+            wired.extend(self.resolve_one(gkey, materials, transforms)?);
+        }
+        Ok(wired)
+    }
 
+    /// Resolve a SINGLE registered geometry: pack the representation(s) the union
+    /// of its bound materials needs (once each), upload into one shared resource,
+    /// wire every bound mesh, and free the source. Returns the wired mesh keys
+    /// (empty if the geometry is unknown or unbound). Shared by the commit-time
+    /// `resolve_geometry` (all pending) and the eager `add_raw_mesh` (its one
+    /// geometry — so a one-off raw mesh draws immediately, sync, without a commit).
+    pub(crate) fn resolve_one(
+        &mut self,
+        gkey: geometry::GeometryKey,
+        materials: &Materials,
+        transforms: &Transforms,
+    ) -> Result<Vec<MeshKey>> {
+        use crate::meshes::geometry::{geometry_kind, GeometryKind};
+
+        // Take the source OUT (frees it — §1 ②) so the uploads below can borrow
+        // `&mut self` without aliasing the registry.
+        let Some(source) = self.geometries.remove(gkey) else {
+            return Ok(Vec::new());
+        };
+        let bound = self.geometry_to_meshes.remove(gkey).unwrap_or_default();
+        if bound.is_empty() {
+            return Ok(Vec::new()); // registered but never bound — nothing to build.
+        }
+        let mut wired = Vec::new();
+
+        {
             // Union the kinds + tangent-need over the bound meshes' materials.
             let mut want_visibility = false;
             let mut want_transparency = false;
