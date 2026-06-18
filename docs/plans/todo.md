@@ -267,7 +267,23 @@ decision.
    MeshKey synchronously, references the GeometryKey, NO upload. Make `add_raw_mesh` = register +
    add_mesh. At this step the geometry is uploaded by `commit_load` (step 3), so a normal model still
    renders after its commit.
-5. **Migrate the glTF decoder + populate.** `convert_to_mesh_buffer` stops baking a kind + stops
+> **Step-5 split (resolved during build):** **5a (done):** `GeometrySource` extended with the
+> morph/skin buffer-layout (`geometry_morph_info` / `material_morph_info` / `skin_info` + the
+> `material_morph_key`); `resolve_geometry` reattaches them to the rebuilt `buffer_info` + passes the
+> keys to `insert_resource` (raw path = all `None`, behavior unchanged). Confirmed morph/skin travel
+> cleanly with the retained source — deltas are kind-independent, no design divergence. **5b (next,
+> glTF crate):** `convert_to_mesh_buffer` (`renderer-gltf/src/buffers/mesh.rs`) STOPS calling
+> `create_visibility_vertices`/`create_transparency_vertices` + drops the `geometry_kind` param;
+> instead it RETAINS the source (positions/normals/uv0 as `Vec<[f32;_]>` from `attribute_data_by_kind`,
+> + `triangle_indices`, front_face) and keeps `pack_vertex_attributes` (custom attrs) + triangle data
+> + `convert_morph_targets`/`convert_skin`. The decode output (drop the vis/transp shared buffers from
+> `GltfData` + `MeshBufferInfoWithOffset`) carries the retained source + custom bytes + layout +
+> morph/skin (keys + the new layout infos). `populate_gltf_primitive` builds a
+> `GeometrySource` from it → `register_geometry` + `add_mesh(geometry, material_key, transform_key,
+> AddMeshOpts{instanced,hud,hidden})` instead of `meshes.insert`. Delete `mesh_buffer_geometry_kind`
+> + `GltfMeshBufferGeometryKind`. Runtime-verify Fox + DamagedHelmet on :9080.
+
+5. 🟡 **Migrate the glTF decoder + populate.** `convert_to_mesh_buffer` stops baking a kind + stops
    packing/discarding — it produces a `GeometrySource` (retain the attrs). `populate_gltf` registers
    the source + the renderer material, then `add_mesh`. Delete `mesh_buffer_geometry_kind`.
 6. **Migrate every raw call site** (the ~14 in the inventory: editor node_sync `:875`/`:996`,

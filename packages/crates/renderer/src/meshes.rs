@@ -1041,12 +1041,12 @@ impl Meshes {
                         total_size: triangle_count * 12,
                     },
                 },
-                // Morph/skin layout travels with the geometry source; the raw path
-                // has none. The glTF migration (§6 step 5) extends the source with
-                // these when it produces morphed/skinned geometry.
-                geometry_morph: None,
-                material_morph: None,
-                skin: None,
+                // Morph/skin layout travels with the geometry source (deltas are
+                // kind-independent). `None` for the raw path; the glTF decoder fills
+                // these when it produces morphed/skinned geometry (§6 step 5).
+                geometry_morph: source.geometry_morph_info.clone(),
+                material_morph: source.material_morph_info.clone(),
+                skin: source.skin_info.clone(),
             };
             let buffer_info_key = self.buffer_infos.insert(buffer_info);
 
@@ -1059,7 +1059,7 @@ impl Meshes {
                 &source.attribute_index_bytes,
                 source.aabb.clone(),
                 source.geometry_morph_key,
-                None,
+                source.material_morph_key,
                 source.skin_key,
             )?;
             if let Some(resource) = self.resources.get_mut(resource_key) {

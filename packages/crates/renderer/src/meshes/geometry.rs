@@ -15,8 +15,11 @@ use slotmap::new_key_type;
 
 use crate::bounds::Aabb;
 use crate::materials::Material;
-use crate::meshes::buffer_info::MeshBufferVertexAttributeInfo;
-use crate::meshes::morphs::GeometryMorphKey;
+use crate::meshes::buffer_info::{
+    MeshBufferGeometryMorphInfo, MeshBufferMaterialMorphInfo, MeshBufferSkinInfo,
+    MeshBufferVertexAttributeInfo,
+};
+use crate::meshes::morphs::{GeometryMorphKey, MaterialMorphKey};
 use crate::meshes::skins::SkinKey;
 
 new_key_type! {
@@ -61,10 +64,19 @@ pub struct GeometrySource {
     pub attribute_index_bytes: Vec<u8>,
     /// World-independent local-space AABB (computed from positions).
     pub aabb: Option<Aabb>,
-    /// Optional geometry morph-target data (already inserted; shared per geometry).
+    /// Optional geometry morph-target data (already inserted; shared per geometry)
+    /// plus its buffer-layout. Morph deltas are kind-independent (they delta the
+    /// base attributes), so they travel with the source and are reattached to the
+    /// rebuilt `buffer_info` at resolve. `None` for the raw path.
     pub geometry_morph_key: Option<GeometryMorphKey>,
-    /// Optional skin (rig) for skinned geometry (already inserted; per geometry).
+    pub geometry_morph_info: Option<MeshBufferGeometryMorphInfo>,
+    /// Optional material morph-target data plus layout.
+    pub material_morph_key: Option<MaterialMorphKey>,
+    pub material_morph_info: Option<MeshBufferMaterialMorphInfo>,
+    /// Optional skin (rig) for skinned geometry (already inserted; per geometry)
+    /// plus its buffer-layout.
     pub skin_key: Option<SkinKey>,
+    pub skin_info: Option<MeshBufferSkinInfo>,
 }
 
 impl GeometrySource {
