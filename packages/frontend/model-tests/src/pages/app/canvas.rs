@@ -84,6 +84,16 @@ impl AppCanvas {
                         );
                         let mut renderer = match AwsmRendererBuilder::new(gpu_builder)
                             .with_profile(profile)
+                            // The default bucket cap (32) is the conservative parity
+                            // default; a model-tests scene can load many distinct
+                            // materials (and the `?variants` stress bench mints many
+                            // distinct PBR feature-variants), so raise it generously.
+                            // This sizes NOTHING per-frame — the classify/edge encoding
+                            // widths follow the LIVE bucket count, not the cap (see
+                            // `BucketConfig`), so headroom is free until actually used.
+                            .with_bucket_config(awsm_renderer::BucketConfig {
+                                max_bucket_entries: 1024,
+                            })
                             .with_logging(AwsmRendererLogging {
                                 // Default tier comes from build profile + `?trace=…` URL
                                 // override. See `crate::logger::default_render_timings`
