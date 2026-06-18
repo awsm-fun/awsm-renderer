@@ -371,6 +371,34 @@ impl AwsmRenderer {
         // Extras pool — flush any dirty bytes from BufferSlot
         // updates this frame. No-op when nothing's changed.
         self.extras_pool.write_gpu(&self.gpu)?;
+        // §B static-shadow cache: a frame is "static" (periodic shadow re-renders
+        // may be suppressed) when the camera didn't move AND no time-driven shadow
+        // material is present — combined inside `take_shadow_static` with the
+        // caster-moved accumulator + the caster-set signature (mesh count +
+        // shadow-flag revision). A FlipBook's time-driven alpha cutout OR any custom
+        // material (which could read `time`) keeps shadows re-rendering. Camera
+        // movement is also covered for cascades by the view-projection drift check
+        // inside `write_gpu`; gating on it here additionally keeps cube faces from
+        // caching across a camera move and pins near-cascade caching to a still
+        // camera. Forced re-renders (rect/layer/drift/config) always fire.
+        let time_driven_shadow = !self.dynamic_materials.is_empty() || self.materials.has_flipbook();
+        // Deformable geometry (skinned / morph-target meshes) deforms IN the shadow
+        // caster pass — its vertex shader runs `apply_position_skin` /
+        // `apply_position_morphs` — so an animated deformable caster's shadow changes
+        // every frame with NO root-transform move (joint / morph-weight changes don't
+        // dirty the mesh transform). We can't cheaply prove a frame's deformation is
+        // quiet, so ANY deformable geometry present ⇒ not static. Conservative by
+        // design (the §B target — static prop / terrain casters — has none); backstops
+        // both mixer-driven animation and direct posing.
+        // Only *geometry* (position) morphs deform the shadow silhouette; material
+        // morphs don't move vertices, so they're irrelevant here.
+        let deformable_present =
+            !self.meshes.skins.is_empty() || !self.meshes.morphs.geometry.is_empty();
+        let external_static =
+            !self.camera.moved() && !time_driven_shadow && !deformable_present;
+        let shadow_static = self
+            .shadows
+            .take_shadow_static(self.meshes.len(), external_static);
         // Shadows must fit cascades + populate the descriptor buffer
         // *before* the lights buffer is packed — `Lights::write_gpu`
         // queries `shadow_index_for` per-light and bakes the result
@@ -383,6 +411,7 @@ impl AwsmRenderer {
             &self.camera,
             &self.lights,
             &self.scene_spatial,
+            shadow_static,
         )?;
         {
             let shadows = &self.shadows;

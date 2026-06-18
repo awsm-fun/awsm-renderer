@@ -449,6 +449,18 @@ impl Materials {
         self.lookup.iter()
     }
 
+    /// Is any [`Material::FlipBook`] currently registered? Used by the §B
+    /// static-shadow cache: a FlipBook's alpha cutout is driven by
+    /// `frame_globals.time`, so its (alpha-tested) shadow changes every frame with
+    /// NO transform movement — a transform-quiet shadow cache must NOT freeze it.
+    /// Coarse by design (any FlipBook present, not just FlipBook *casters*) per the
+    /// §B spec; material counts are small so the scan is negligible.
+    pub fn has_flipbook(&self) -> bool {
+        self.lookup
+            .iter()
+            .any(|(_, m)| matches!(m, Material::FlipBook(_)))
+    }
+
     /// Returns a material by key.
     pub fn get(&self, key: MaterialKey) -> Result<&Material> {
         self.lookup.get(key).ok_or(AwsmMaterialError::NotFound(key))

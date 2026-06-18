@@ -210,8 +210,15 @@ impl AwsmRenderer {
             .get_mut(key)
             .map_err(|_| AwsmShadowError::UnknownMesh)?;
         let receive_changed = mesh.receive_shadows != flags.receive;
+        let cast_changed = mesh.cast_shadows != flags.cast;
         mesh.cast_shadows = flags.cast;
         mesh.receive_shadows = flags.receive;
+        // §B: a cast-flag flip changes the shadow caster set without changing the
+        // mesh count, so bump the caster-set revision — otherwise a cached view
+        // whose view-projection didn't drift would keep a stale shadow.
+        if cast_changed {
+            self.shadows.bump_shadow_caster_revision();
+        }
         // `cast_shadows` is read CPU-side by the shadow render pass at
         // draw time — no GPU state to update. `receive_shadows` is
         // packed into `MaterialMeshMeta.receive_shadows` and read by

@@ -255,6 +255,19 @@ pub struct Shadows {
 
     /// Frame counter used by temporal throttling (phase 11).
     pub frame_count: u64,
+    /// §B static-shadow cache gate — the "casters static this frame" inputs the
+    /// periodic-throttle suppression reads. `caster_moved_this_frame` is
+    /// OR-accumulated across the per-frame `AwsmRenderer::update_transforms` calls
+    /// (set when a *shadow-caster* mesh — `cast_shadows && !hud && !hidden` — moved)
+    /// and read+reset by [`Self::take_shadow_static`]. `caster_set_revision` is
+    /// bumped whenever a mesh's shadow flags toggle (`set_mesh_shadow_flags`);
+    /// paired with the renderer's mesh count it forms the caster-set signature that
+    /// catches add / remove / cast-toggle (any of which can stale a cached view
+    /// whose view-projection didn't drift). Conservative: any uncertainty → not
+    /// static → re-render.
+    caster_moved_this_frame: bool,
+    caster_set_revision: u64,
+    caster_set_last_signature: Option<(usize, u64)>,
     /// Whether descriptors / globals need to be re-uploaded.
     pub dirty: bool,
     /// Set when a write_gpu pass detected atlas overflow. The next
@@ -1029,6 +1042,9 @@ impl Shadows {
             pending_caster_cache_keys,
             pending_evsm_cache_keys,
             frame_count: 0,
+            caster_moved_this_frame: false,
+            caster_set_revision: 0,
+            caster_set_last_signature: None,
             dirty: true,
             pending_atlas_grow: false,
             pending_evsm_grow: false,
@@ -1516,6 +1532,39 @@ impl Shadows {
     /// Per-frame upload point. Refits cascades against the current
     /// camera, packs descriptors into the uniform buffer, and writes
     /// shadow globals when dirty.
+    /// §B: note that a shadow-caster mesh moved this frame (OR-accumulated across
+    /// the multiple per-frame `AwsmRenderer::update_transforms` calls; read + reset
+    /// by [`Self::take_shadow_static`]).
+    pub fn note_shadow_caster_moved(&mut self) {
+        self.caster_moved_this_frame = true;
+    }
+
+    /// §B: bump the caster-set revision — call when a mesh's shadow flags toggle
+    /// (an existing mesh joining/leaving the caster set without a count change).
+    pub fn bump_shadow_caster_revision(&mut self) {
+        self.caster_set_revision = self.caster_set_revision.wrapping_add(1);
+    }
+
+    /// §B: resolve the "casters static this frame" gate and reset the per-frame
+    /// caster-moved accumulator. `mesh_count` is the renderer's total mesh count
+    /// (the add/remove proxy for the caster set); `external_static` folds in the
+    /// caller's camera-still + no-time-driven-material signals. Returns whether the
+    /// periodic throttle may suppress a re-render this frame. Must be called once
+    /// per frame, AFTER every `update_transforms` and BEFORE [`Self::write_gpu`].
+    ///
+    /// Conservative: any of {a caster moved, the caster set changed, camera moved,
+    /// a time-driven shadow material present} ⇒ NOT static ⇒ periodic views still
+    /// re-render. Forced re-renders (rect / layer / view-projection drift / config)
+    /// always fire regardless — this only gates the *periodic* suppression.
+    pub fn take_shadow_static(&mut self, mesh_count: usize, external_static: bool) -> bool {
+        let signature = (mesh_count, self.caster_set_revision);
+        let caster_set_changed = self.caster_set_last_signature != Some(signature);
+        self.caster_set_last_signature = Some(signature);
+        let static_now = external_static && !self.caster_moved_this_frame && !caster_set_changed;
+        self.caster_moved_this_frame = false;
+        static_now
+    }
+
     pub fn write_gpu(
         &mut self,
         _logging: &AwsmRendererLogging,
@@ -1525,6 +1574,10 @@ impl Shadows {
         camera: &crate::camera::CameraBuffer,
         lights: &crate::lights::Lights,
         scene_spatial: &crate::scene_spatial::SceneSpatial,
+        // §B: when true, the periodic throttle may suppress a re-render this frame
+        // (casters + camera static, no time-driven shadow material). Forced
+        // re-renders still fire. Computed by `take_shadow_static`.
+        shadow_static: bool,
     ) -> Result<(), AwsmShadowError> {
         // EVSM atlas auto-grow: a prior frame's cascade placement
         // overflowed (typically a second shadowed directional light —
@@ -2435,8 +2488,19 @@ impl Shadows {
                 if drift > 0.001 {
                     t.last_rendered_frame = u64::MAX;
                 }
-                let due = t.last_rendered_frame == u64::MAX
-                    || frame >= t.last_rendered_frame.saturating_add(view.update_period);
+                // §B: split forced vs periodic. `forced` (rect / layer / drift /
+                // config invalidation → `u64::MAX`) ALWAYS fires — a moved camera or
+                // light drifts the view-projection, so those are covered here for
+                // free. `periodic` is the throttle cadence (near cascades + cube
+                // faces have `update_period == 1` → due every frame today). We
+                // suppress ONLY the periodic component when the frame is provably
+                // static (`shadow_static`): no caster moved, camera still, caster
+                // set unchanged, no time-driven shadow material. The cached
+                // per-attachment depth stays valid because each view clears
+                // independently.
+                let forced = t.last_rendered_frame == u64::MAX;
+                let periodic = frame >= t.last_rendered_frame.saturating_add(view.update_period);
+                let due = forced || (periodic && !shadow_static);
                 // Per-attachment views — cube faces and cascade-array
                 // layers — clear independently, so throttling them is
                 // safe (the previous frame's depth is still intact).
