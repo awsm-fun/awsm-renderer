@@ -146,12 +146,21 @@ pub async fn commit_load(
 pub fn loading_stats(&self) -> LoadingStats;
 ```
 
+> **Implementation note (ordering — resolved during build):** the spec lists `reconcile` before
+> `finalize`, but `reconcile_material_variants` *embeds* the compile-kick (`ensure_scene_pipelines`),
+> and every opaque/classify/edge pipeline's shader bakes in `texture_pool_arrays_len`. Compiling
+> before the pool is final would compile against a stale pool that `finalize` then wipes — forcing the
+> exact recompile this design deletes. So the implemented order is **finalize → reconcile → drain**,
+> which is what actually achieves the §7 "one edge compile per load" goal. No perf regression; this is
+> the single-compile path. (Variant *resolution* is texture-independent, so moving it after finalize
+> is safe.)
+
 `commit_load` body — this is the code MOVED out of the render preamble plus the existing drain:
-1. `reconcile_material_variants()` — resolve PBR/Toon feature-set variants (was `render.rs:293`; now
-   ONLY here). Report `LoadingStats { phase: FinalizingTextures, .. }`.
-2. `finalize_gpu_textures().await?` — ONCE (batches every staged texture). **Delete the eager
+1. `finalize_gpu_textures().await?` — ONCE (batches every staged texture). **Deleted the eager
    `edge_pipelines.ensure_compiled(...)` block at `textures.rs:668-697`** — the edge compiles in
-   step 3 against the now-final pool, once.
+   step 3 against the now-final pool, once. Report `LoadingStats { phase: FinalizingTextures, .. }`.
+2. `reconcile_material_variants()` — resolve PBR/Toon feature-set variants (was `render.rs:293`; now
+   ONLY here) + kick the scene compile via `ensure_scene_pipelines`.
 3. `phase = Compiling`. The concurrent drain that already exists (the renamed/merged internal of
    `wait_for_pipelines_ready_with_progress`, `renderer.rs:2340`): kick `ensure_scene_pipelines`
    (compiles opaque + edge against final inputs), then drain `inflight_compile` via
@@ -240,16 +249,16 @@ builder/spec produces the renderer; transactions load content into it.
 
 ## 6. Implementation sequence (ordered; keep `cargo test … --lib` green + `task lint` clean per step)
 
-1. **Render gate (split `render` into `render_all`/`render_loading`).** Add the single
+1. ✅ **Render gate (split `render` into `render_all`/`render_loading`).** Add the single
    `scene_committed: bool`; make `render()` the thin dispatcher of §3 (`render_all` vs
    `render_loading`); split the existing body into `render_all` and move the
    `reconcile_material_variants`/`ensure_scene_pipelines` preamble (`render.rs:293`) OUT of it (it goes
    into `commit_load` in step 3). At this step compilation is temporarily orphaned — land it together
    with step 3 (or stub `commit_load` to call the old preamble) so the build stays green and a normal
    model still renders.
-2. **`LoadingStats`.** Add the struct + `LoadPhase`; map from `CompileProgress`; add texture
+2. ✅ **`LoadingStats`.** Add the struct + `LoadPhase`; map from `CompileProgress`; add texture
    counting to `finalize_gpu_textures`; add `loading_stats()`.
-3. **`begin_load` / `commit_load`.** Implement per §2: `begin_load` sets `scene_committed = false`;
+3. ✅ **`begin_load` / `commit_load`.** Implement per §2: `begin_load` sets `scene_committed = false`;
    `commit_load` does reconcile → finalize (once) → concurrent compile drain → `scene_committed = true`.
    **Delete the eager edge `ensure_compiled` block at `textures.rs:668-697`** (the edge now compiles
    once in the commit drain). Re-verify the

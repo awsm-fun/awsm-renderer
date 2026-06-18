@@ -53,6 +53,7 @@ pub mod instances;
 pub mod light_buckets;
 pub mod lights;
 pub mod load_phase;
+pub mod loading;
 pub mod materials;
 pub mod mesh_pack;
 pub mod meshes;
@@ -97,6 +98,10 @@ pub use renderer::*;
 pub use dynamic_materials::BucketConfig;
 
 pub use load_phase::LoadPhase;
+
+/// The load-transaction progress surface — reported by
+/// [`AwsmRenderer::commit_load`] and [`AwsmRenderer::loading_stats`].
+pub use loading::{LoadPhase as CommitLoadPhase, LoadingStats};
 
 // `AwsmRendererLogging` lives in `crate::debug`; the crate root re-exports
 // it crate-internally so modules can keep referencing `crate::AwsmRendererLogging`.

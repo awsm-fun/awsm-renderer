@@ -368,6 +368,23 @@ pub struct AwsmRenderer {
     /// `take`/restored across each `render()` to avoid per-frame allocator/GC
     /// churn at high mesh counts. See [`crate::render::RenderFrameScratch`].
     pub(crate) render_frame_scratch: crate::render::RenderFrameScratch,
+    /// The load-transaction render gate. `false` at build and after
+    /// [`AwsmRenderer::begin_load`] (show the loading screen); set `true` by
+    /// [`AwsmRenderer::commit_load`] once the scene's pipelines are compiled.
+    /// `render()` dispatches to `render_all` when true, `render_loading` (clear
+    /// only) when false. This is the WHOLE render-gate state — there is no
+    /// reactive per-frame compile to reason about (the old render-preamble
+    /// `reconcile_material_variants` → `ensure_scene_pipelines` compile now lives
+    /// only in `commit_load`).
+    pub(crate) scene_committed: bool,
+    /// Live phase of the in-flight (or last) [`AwsmRenderer::commit_load`], read
+    /// back by [`AwsmRenderer::loading_stats`] for imperative pollers.
+    pub(crate) load_phase: crate::loading::LoadPhase,
+    /// Texture-pool counts the current/last commit is uploading. Set by
+    /// `commit_load` around its single `finalize_gpu_textures`; surfaced through
+    /// `LoadingStats` so a loader can show texture-upload progress.
+    pub(crate) loading_textures_total: usize,
+    pub(crate) loading_textures_uploaded: usize,
 }
 
 /// Compatibility requirements for this renderer.
@@ -459,6 +476,103 @@ impl AwsmRenderer {
 
         *self = renderer;
         Ok(())
+    }
+
+    // =====================================================================
+    // The load transaction (`docs/plans/todo.md`): begin_load → adds →
+    // commit_load. The ONE public way to get content compiled + on screen.
+    // =====================================================================
+
+    /// Request the loading screen until the next commit: sets
+    /// `scene_committed = false` so `render()` clears to the clear-color (a
+    /// loading overlay draws on top) instead of drawing a half-compiled scene.
+    ///
+    /// Call this before a **cold / full load**. **SKIP it for a live add** —
+    /// leaving `scene_committed` true keeps the existing scene on screen while
+    /// the new content compiles in the background; the new meshes simply aren't
+    /// drawn until the matching `commit_load` resolves.
+    pub fn begin_load(&mut self) {
+        self.scene_committed = false;
+        self.load_phase = crate::loading::LoadPhase::Idle;
+    }
+
+    /// THE single compile point of the load transaction. Finalizes the texture
+    /// pool ONCE, resolves material variants, kicks every needed pipeline
+    /// compile, drains them CONCURRENTLY (`FuturesUnordered`), reports progress
+    /// through `on_progress`, and sets `scene_committed = true`. Identical code
+    /// for cold-load, full-reload, and live add — the only differences are the
+    /// app's choices to call `begin_load` and to `await` (or not) this future.
+    ///
+    /// Cheap no-op when nothing changed since the last commit (the content-keyed
+    /// caches make finalize + every compile a hit).
+    pub async fn commit_load(
+        &mut self,
+        mut on_progress: impl FnMut(crate::loading::LoadingStats),
+    ) -> crate::error::Result<crate::loading::LoadingStats> {
+        use crate::loading::{LoadPhase, LoadingStats};
+
+        // ── Phase 1: finalize the texture pool ONCE (the single batched GPU
+        //    upload of every staged image). Ordered FIRST — every
+        //    opaque/classify/edge pipeline's shader bakes in
+        //    `texture_pool_arrays_len`, so compiling before the pool is final
+        //    would compile against a stale pool that finalize then wipes,
+        //    forcing the recompile this design exists to delete. finalize-first
+        //    ⇒ the compile in phase 2 runs exactly ONCE against the final pool.
+        //    (The spec lists reconcile before finalize, but reconcile *embeds*
+        //    the compile-kick, so finalize must precede it to hit the §7
+        //    "one edge compile per load" goal.)
+        self.load_phase = LoadPhase::FinalizingTextures;
+        self.loading_textures_total = self.textures.resource_counts().0;
+        self.loading_textures_uploaded = 0;
+        on_progress(self.loading_stats());
+
+        self.finalize_gpu_textures().await?;
+
+        self.loading_textures_total = self.textures.resource_counts().0;
+        self.loading_textures_uploaded = self.loading_textures_total;
+        on_progress(self.loading_stats());
+
+        // ── Phase 2: resolve PBR/Toon feature-set variants against the now-final
+        //    textures and kick the scene's pipeline compiles. This is the moved
+        //    render-preamble compile: `reconcile_material_variants` internally
+        //    drives `ensure_scene_pipelines` (opaque + classify + edge) — run
+        //    ONLY here now, never per render frame.
+        self.reconcile_material_variants()?;
+
+        // ── Phase 3: drain every kicked compile to completion CONCURRENTLY,
+        //    mapping each resolution into `LoadingStats`. This reuses the
+        //    existing concurrent drain (which also warms the transparent + line
+        //    pipelines) — it is not reimplemented here.
+        self.load_phase = LoadPhase::Compiling;
+        let textures_total = self.loading_textures_total;
+        self.wait_for_pipelines_ready_with_progress(|cp| {
+            on_progress(LoadingStats::from_parts(
+                LoadPhase::Compiling,
+                textures_total,
+                textures_total,
+                cp,
+            ));
+        })
+        .await?;
+
+        // ── Phase 4: committed — `render()` switches to `render_all`.
+        self.scene_committed = true;
+        self.load_phase = LoadPhase::Ready;
+        let final_stats = self.loading_stats();
+        on_progress(final_stats);
+        Ok(final_stats)
+    }
+
+    /// Imperative snapshot of the same `LoadingStats` that `commit_load`'s
+    /// `on_progress` reports — for pollers driving a loading UI off a render-loop
+    /// tick rather than the callback.
+    pub fn loading_stats(&self) -> crate::loading::LoadingStats {
+        crate::loading::LoadingStats::from_parts(
+            self.load_phase,
+            self.loading_textures_total,
+            self.loading_textures_uploaded,
+            self.compile_progress(),
+        )
     }
 
     /// Returns the active feature gates picked at construction time.
@@ -1932,6 +2046,12 @@ impl AwsmRendererBuilder {
             animations,
             cameras: crate::cameras::Cameras::new(),
             render_frame_scratch: crate::render::RenderFrameScratch::default(),
+            // The render gate starts closed: a freshly built renderer shows the
+            // loading screen until its first `commit_load` lands.
+            scene_committed: false,
+            load_phase: crate::loading::LoadPhase::Idle,
+            loading_textures_total: 0,
+            loading_textures_uploaded: 0,
         };
 
         // Apply the configured registration ceiling (§2). Validated +

@@ -659,42 +659,18 @@ impl AwsmRenderer {
         self.last_ensured_bucket_layout = None;
         self.materials.mark_variants_dirty();
 
-        // Rebuild the full edge-resolve set against the new texture-pool
-        // layout (its cache keys embed `texture_pool_arrays_len` /
-        // `texture_pool_samplers_len`). This handler is async, so it uses
-        // the authoritative awaited `ensure_compiled` — the same path the
-        // MSAA-change + cold-boot/load paths use — for ALL cases (with or
-        // without registered materials), not just the no-materials one.
-        if self.anti_aliasing.msaa_sample_count.is_some()
-            && crate::edge_resolve_supported(&self.gpu)
-        {
-            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
-                self.render_textures.formats.color,
-            )?;
-            let bucket_entries = self.dynamic_materials.bucket_entries_cached().to_vec();
-            let crate::pipelines::Pipelines {
-                render: _render_pipelines,
-                compute: compute_pipelines,
-            } = &mut self.pipelines;
-            self.render_passes
-                .material_opaque
-                .edge_pipelines
-                .ensure_compiled(
-                    &self.gpu,
-                    &mut self.shaders,
-                    compute_pipelines,
-                    &mut self.pipeline_layouts,
-                    &mut self.bind_group_layouts,
-                    &self.render_passes.material_opaque.bind_groups,
-                    &self.render_passes.material_opaque.edge_bind_group_layouts,
-                    &bucket_entries,
-                    &self.anti_aliasing,
-                    color_wgsl,
-                    Some(&self.dynamic_materials),
-                    self.prep_config.clamped_k(),
-                )
-                .await?;
-        }
+        // (Removed: the eager `edge_pipelines.ensure_compiled(...)` block that
+        // used to recompile the full edge-resolve set HERE, against the new
+        // texture-pool layout. Because `finalize_gpu_textures` runs several
+        // times across a load (gltf populate, scene-loader, IBL/skybox batches),
+        // that eager edge compile fired ~3× per load at a different
+        // `texture_pool_arrays_len` each time — the TTFR recompile this design
+        // deletes. The edge set now compiles exactly ONCE per load: the
+        // `reset` above (`last_ensured_bucket_layout = None` +
+        // `mark_variants_dirty`) forces `commit_load`'s single
+        // `reconcile_material_variants` → `ensure_scene_pipelines` →
+        // `launch_edge_resolve_compile` to rebuild it against the final pool.
+        // See `docs/plans/todo.md` §0/§1.5.)
 
         Ok(())
     }
