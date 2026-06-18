@@ -122,7 +122,7 @@ pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), Str
     // pipeline shaders (they bake in `texture_pool_arrays_len`), so route
     // through the one compile path — `commit_load` finalizes the pool AND
     // recompiles against it (the render preamble no longer does).
-    r.commit_load(|_| {})
+    r.commit_load(crate::engine::activity::commit_phase_handler())
         .await
         .map_err(|e| format!("commit_load: {e}"))?;
     register_texture_key(id, key);

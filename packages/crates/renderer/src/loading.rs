@@ -55,6 +55,34 @@ pub struct LoadingStats {
 }
 
 impl LoadingStats {
+    /// Pipelines still in flight this commit (materials pending + their summed
+    /// sub-pipeline compiles) — the single "how much compile is left" number.
+    pub fn pipelines_remaining(&self) -> usize {
+        self.pipelines_pending + self.in_flight_subcompiles as usize
+    }
+
+    /// Human-facing progress line for the active commit phase — the SHARED mapping
+    /// both viewers' loading overlays render, so geometry/texture/pipeline progress
+    /// reads identically everywhere (docs/plans/todo.md §6). `None` for `Idle` /
+    /// `Ready` (no banner needed).
+    pub fn phase_label(&self) -> Option<String> {
+        match self.phase {
+            LoadPhase::Idle | LoadPhase::Ready => None,
+            LoadPhase::UploadingGeometry => Some(format!(
+                "Uploading geometry {}/{}",
+                self.geometry_uploaded, self.geometry_total
+            )),
+            LoadPhase::FinalizingTextures => Some(format!(
+                "Uploading textures {}/{}",
+                self.textures_uploaded, self.textures_total
+            )),
+            LoadPhase::Compiling => Some(format!(
+                "Compiling pipelines ({} remaining)",
+                self.pipelines_remaining()
+            )),
+        }
+    }
+
     /// Build a snapshot from a [`CompileProgress`] plus the commit's texture counts
     /// and phase. The compile drain calls this per resolution to map the scheduler's
     /// `CompileProgress` into the unified `LoadingStats` shape.

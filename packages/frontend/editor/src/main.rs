@@ -80,16 +80,15 @@ pub fn main() {
                             {
                                 let handle = engine::context::renderer_handle();
                                 let mut r = handle.lock().await;
-                                // Surface the live compile count on the boot
-                                // loader so first-start pipeline creation is
-                                // visible (mirrors the in-app pill that covers
-                                // post-mount import/material compiles).
+                                // Surface the live per-phase progress on the boot
+                                // loader so first-start geometry upload / texture
+                                // finalize / pipeline creation are each visible
+                                // (mirrors the in-app pill + the model-tests overlay;
+                                // the shared `LoadingStats::phase_label()` keeps the
+                                // wording identical across all three).
                                 let on_progress = |stats: awsm_renderer::LoadingStats| {
-                                    let n = stats.in_flight_subcompiles;
-                                    if n > 0 {
-                                        awsm_web_shared::util::window::set_boot_loader_message(&format!(
-                                            "Compiling render pipelines… ({n} remaining)"
-                                        ));
+                                    if let Some(label) = stats.phase_label() {
+                                        awsm_web_shared::util::window::set_boot_loader_message(&label);
                                     }
                                 };
                                 // Boot commit: opens the render gate (the editor

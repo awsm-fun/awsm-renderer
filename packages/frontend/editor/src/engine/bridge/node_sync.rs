@@ -724,7 +724,10 @@ async fn materialize_skinned_mesh(
         // Live add: commit the staged content through the one compile path
         // (finalize textures + compile new pipelines). No begin_load — the
         // existing scene keeps showing while the new content compiles.
-        if let Err(e) = r.commit_load(|_| {}).await {
+        if let Err(e) = r
+            .commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+        {
             tracing::warn!("commit_load (skinned mesh): {e}");
         }
     }
@@ -874,7 +877,10 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
     // material — `add_raw_mesh` handles opaque and transparent uniformly now.
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
-            if let Err(e) = r.commit_load(|_| {}).await {
+            if let Err(e) = r
+                .commit_load(crate::engine::activity::commit_phase_handler())
+                .await
+            {
                 tracing::warn!("sprite commit_load: {e}");
             }
             let _ = r.set_mesh_billboard_mode(mk, mode);
@@ -994,7 +1000,10 @@ async fn upload_simple_mesh(
     // to transparency geometry without a separate entry point.
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
-            if let Err(e) = r.commit_load(|_| {}).await {
+            if let Err(e) = r
+                .commit_load(crate::engine::activity::commit_phase_handler())
+                .await
+            {
                 tracing::warn!("upload_simple_mesh commit_load: {e}");
             }
             drop(r);
@@ -1148,7 +1157,12 @@ async fn materialize_particle(
     // The emitter inserts a PBR material (a feature-set variant) whose pipeline
     // must compile — route through the one compile path (live add, no
     // begin_load). render() no longer compiles reactively.
-    if let Err(e) = renderer_handle().lock().await.commit_load(|_| {}).await {
+    if let Err(e) = renderer_handle()
+        .lock()
+        .await
+        .commit_load(crate::engine::activity::commit_phase_handler())
+        .await
+    {
         tracing::warn!("particle commit_load: {e}");
     }
 }

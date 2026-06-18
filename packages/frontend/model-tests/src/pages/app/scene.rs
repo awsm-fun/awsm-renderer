@@ -874,14 +874,18 @@ impl AppScene {
     /// first shown frame fully specialized + anti-aliased (no black / aliased
     /// transient). Drives the loading overlay from `LoadingStats`.
     pub async fn commit(self: &Arc<Self>) {
-        self.ctx.loading_status.lock_mut().shader_prewarm = Ok(true);
+        // Hold the gate up from the start of the commit (Idle snapshot → no banner
+        // line yet, but `is_loading()` is true) until the first granular callback.
+        self.ctx.loading_status.lock_mut().commit = Some(awsm_renderer::LoadingStats::default());
         {
             let ctx = self.ctx.clone();
             let mut renderer = self.renderer.lock().await;
             let result = renderer
                 .commit_load(|stats| {
-                    let pending = stats.pipelines_pending + stats.in_flight_subcompiles as usize;
-                    ctx.loading_status.lock_mut().compile_pending = pending;
+                    // Feed the FULL snapshot so the overlay renders the active phase
+                    // (geometry X/Y → textures X/Y → pipelines N) via the shared
+                    // `LoadingStats::phase_label()`.
+                    ctx.loading_status.lock_mut().commit = Some(stats);
                 })
                 .await;
             if let Err(err) = result {
@@ -890,7 +894,7 @@ impl AppScene {
         }
         {
             let mut status = self.ctx.loading_status.lock_mut();
-            status.shader_prewarm = Ok(false);
+            status.commit = None;
             status.compile_pending = 0;
         }
     }
