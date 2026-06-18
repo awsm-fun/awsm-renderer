@@ -369,7 +369,43 @@ if the signal misses a change.
 
 # §C — Runtime perf
 
-## [ ] C.1 — Perf at thousands of meshes
+## [x] C.1 — Perf at thousands of meshes — commit `b84a95ca`
+
+**Bench (the repeatable harness the spec asked for):** model-tests `?stress=N` (in `scene.rs`,
+`stress_grid_count`) duplicates the loaded model's meshes into an N-cell grid — distinct renderables
+sharing the source GPU buffers — so the per-frame path is exercised at thousands of meshes. Inert
+without the param.
+
+**Profiling (chrome-devtools, this desktop machine):**
+| scene | rAF p50 | rAF p95 | CPU render | verdict |
+|---|---|---|---|---|
+| Box ×2000 | 8.3ms | 9.1ms | — | smooth, vsync headroom |
+| Box ×15000 | 16.6ms | 17.4ms | **13.5ms** | CPU-bound at the 60fps edge; tail tight (p99 14.1) |
+| DamagedHelmet ×2000 | 16.6ms | 33.4ms | **3.3ms** | **GPU-bound** |
+
+**Key finding (answered David's "why do 2000 helmets drop frames"):** the helmet drops are **GPU in
+the geometry/visibility pass** (~15K-tri helmet × 2000 ≈ 30M triangles), NOT shading and NOT CPU. The
+per-pass CPU breakdown proves it: total `Render` CPU 3.3ms, `Material Opaque` (shading) **0.06ms** —
+shading is fully decoupled/per-pixel as the deferred arch intends. So the renderer's CPU path is already
+efficient at thousands of meshes; the limiter for high-poly scenes is GPU geometry (a content/LOD axis,
+not a renderer-CPU hotspot).
+
+**Optimization — per-frame allocation pooling (David: "avoid allocations — GC/fragmentation", keep all
+three):** pooled the 3 mesh-count-scaling per-frame `Vec` allocs — the `visible` set in
+`collect_renderables` (onto `RenderablePool`), and `opaque_snapshots` + the packed occlusion-instance
+`bytes` in `render()` (into a reused `RenderFrameScratch`, `take`/restored across the frame). Removes
+~208KB/frame at 2K meshes (~1.5MB/frame at 15K). **Honest A/B:** at Box ×15000 the CPU `Render` tail was
+identical pooled vs unpooled (p50 13.5→13.6, p99 14.1→14.1, max 14.2→14.8 — noise) — these are
+wasm-linear-memory allocs (dlmalloc freelist), not JS-GC, so no measurable pause here. Kept per David's
+standard (sound hygiene; defensive for mobile / long sessions / fragmentation).
+
+**Verification:** `cargo test` GREEN (34/261/30); static (DamagedHelmet ×2000) + animated-skinned (Fox)
+stress scenes render correctly, clean console. No regression (A/B neutral), no standards deviation
+(implements the no-per-frame-alloc standard). A future win would be incremental/dirty-tracked renderable
+collection (the 13.5ms O(meshes) CPU walk at 15K), but it's a large refactor not warranted by current
+evidence (15K meshes already holds 60fps).
+
+### C.1 spec (original, for reference)
 
 Open-ended profile-and-optimize. Build a repeatable bench (instance a primitive N-thousand times via MCP),
 profile per-frame CPU (`render_cpu_ms` via `memory_stats`), find + fix hotspots so a large scene stays
