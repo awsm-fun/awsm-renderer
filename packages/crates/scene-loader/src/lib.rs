@@ -737,6 +737,10 @@ pub async fn load_scene_for_player(
         .commit_load(|stats| {
             use awsm_renderer::loading::LoadPhase as P;
             match stats.phase {
+                P::UploadingGeometry => on_phase(LoadPhase::UploadingMeshes {
+                    done: stats.geometry_uploaded,
+                    total: stats.geometry_total,
+                }),
                 P::FinalizingTextures => on_phase(LoadPhase::UploadingTextures),
                 P::Compiling => on_phase(LoadPhase::CompilingPipelines(CompileProgress {
                     materials_pending: stats.pipelines_pending,

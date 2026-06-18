@@ -886,6 +886,12 @@ impl Meshes {
         self.geometries.get(key)
     }
 
+    /// Number of registered geometries still holding source (drives the
+    /// `UploadingGeometry` progress count).
+    pub fn geometry_count(&self) -> usize {
+        self.geometries.len()
+    }
+
     /// Public wrapper around `insert` for the raw-mesh path. Same semantics —
     /// see `raw_mesh::AwsmRenderer::add_raw_mesh` for the canonical caller.
     #[allow(clippy::too_many_arguments)]

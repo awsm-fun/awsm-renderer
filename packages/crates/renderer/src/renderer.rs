@@ -385,6 +385,11 @@ pub struct AwsmRenderer {
     /// `LoadingStats` so a loader can show texture-upload progress.
     pub(crate) loading_textures_total: usize,
     pub(crate) loading_textures_uploaded: usize,
+    /// Geometry-resolution counts for the current/last commit (the
+    /// `UploadingGeometry` phase) — surfaced through `LoadingStats` for granular
+    /// loading UI.
+    pub(crate) loading_geometry_total: usize,
+    pub(crate) loading_geometry_uploaded: usize,
     /// Immutable snapshot of every build-time config knob, captured in `build()`.
     /// [`AwsmRenderer::remove_all`] rebuilds from it so a scene-data wipe can't
     /// drift a config. See [`RendererConfigSpec`].
@@ -485,6 +490,15 @@ impl AwsmRenderer {
     ) -> crate::error::Result<crate::loading::LoadingStats> {
         use crate::loading::{LoadPhase, LoadingStats};
 
+        // ── Phase 0: resolve geometry — derive + upload each registered geometry's
+        //    needed pass representations (visibility/transparency) from the union of
+        //    its bound materials, ONCE each, then free the source (§1 ②). Runs first
+        //    so meshes have their buffers before the texture/compile phases. (The
+        //    resolution body + the bindings it consumes land with the add_mesh
+        //    deferral; today the registry is empty so this just reports the phase.)
+        self.load_phase = LoadPhase::UploadingGeometry;
+        self.resolve_geometry(&mut on_progress)?;
+
         // ── Phase 1: finalize the texture pool ONCE (the single batched GPU
         //    upload of every staged image). Ordered FIRST — every
         //    opaque/classify/edge pipeline's shader bakes in
@@ -519,9 +533,12 @@ impl AwsmRenderer {
         //    pipelines) — it is not reimplemented here.
         self.load_phase = LoadPhase::Compiling;
         let textures_total = self.loading_textures_total;
+        let geometry_total = self.loading_geometry_total;
         self.drain_commit_compiles(|cp| {
             on_progress(LoadingStats::from_parts(
                 LoadPhase::Compiling,
+                geometry_total,
+                geometry_total,
                 textures_total,
                 textures_total,
                 cp,
@@ -537,12 +554,39 @@ impl AwsmRenderer {
         Ok(final_stats)
     }
 
+    /// Phase 0 of [`Self::commit_load`]: derive + upload each registered geometry's
+    /// needed pass representations (visibility / transparency) from the union of its
+    /// bound materials — once each — then free the source (§1 ②).
+    ///
+    /// The resolution body + the mesh→geometry bindings it consumes land with the
+    /// `add_mesh` deferral; today the geometry registry is empty (producers still use
+    /// the legacy eager `insert`), so this reports the phase over a 0-count registry.
+    fn resolve_geometry(
+        &mut self,
+        on_progress: &mut impl FnMut(crate::loading::LoadingStats),
+    ) -> crate::error::Result<()> {
+        let total = self.meshes.geometry_count();
+        self.loading_geometry_total = total;
+        self.loading_geometry_uploaded = 0;
+        on_progress(self.loading_stats());
+
+        // (resolution body — pack + upload per (geometry, kind), wire the bound
+        // meshes to the shared resource, drop the source — added with the
+        // add_mesh binding model.)
+
+        self.loading_geometry_uploaded = total;
+        on_progress(self.loading_stats());
+        Ok(())
+    }
+
     /// Imperative snapshot of the same `LoadingStats` that `commit_load`'s
     /// `on_progress` reports — for pollers driving a loading UI off a render-loop
     /// tick rather than the callback.
     pub fn loading_stats(&self) -> crate::loading::LoadingStats {
         crate::loading::LoadingStats::from_parts(
             self.load_phase,
+            self.loading_geometry_total,
+            self.loading_geometry_uploaded,
             self.loading_textures_total,
             self.loading_textures_uploaded,
             self.compile_progress(),
@@ -2118,6 +2162,8 @@ impl AwsmRendererBuilder {
             load_phase: crate::loading::LoadPhase::Idle,
             loading_textures_total: 0,
             loading_textures_uploaded: 0,
+            loading_geometry_total: 0,
+            loading_geometry_uploaded: 0,
             config_spec,
         };
 

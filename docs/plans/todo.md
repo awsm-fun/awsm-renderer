@@ -210,7 +210,15 @@ decision.
    `register_geometry` stores the source CPU-side (compute normals/tangents on register, as the
    builders do today). No GPU upload. Existing `insert` keeps working (parallel path) so the build
    stays green.
-3. **`resolve_geometry` in `commit_load` + granular loading UI.** Implement the commit phase (§2 step
+> **Step-3 split (resolved during build — the resolve body is coupled to the bindings):**
+> `resolve_geometry`'s body needs the `geometry → meshes` bindings that `add_mesh` (step 4) creates,
+> so it can't be meaningfully written before them. **Step 3a (done):** `LoadPhase::UploadingGeometry`
+> + `LoadingStats.geometry_total/geometry_uploaded` + the `resolve_geometry` phase hook wired as
+> `commit_load`'s phase 0 (reports the phase; empty registry today). **Step 3b:** the resolution body
+> (pack/upload per (geometry,kind), share one resource across bound meshes, set flags, free source) +
+> the binding maps + the granular viewer UI land WITH step 4 (`add_mesh`), since they all interlock.
+
+3. 🟡 **`resolve_geometry` in `commit_load` + granular loading UI.** Implement the commit phase (§2 step
    0): per `GeometryKey`, union the kinds from bound materials, pack+upload missing reps once via
    `mesh_pack::pack_*`, set instance flags from the resource, then free the source. The pool-write
    plumbing already exists in `insert_resource` — move it here, keyed per (geometry, kind), idempotent.

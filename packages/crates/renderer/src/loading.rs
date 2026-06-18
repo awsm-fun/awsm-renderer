@@ -19,6 +19,9 @@ pub enum LoadPhase {
     /// No commit has run yet (or the renderer is between commits).
     #[default]
     Idle,
+    /// Deriving + uploading each registered geometry's needed pass representations
+    /// (visibility / transparency) from its retained source — the first commit phase.
+    UploadingGeometry,
     /// Finalizing the texture pool — the one batched GPU upload of every staged image.
     FinalizingTextures,
     /// Driving the scene's pipeline compiles to completion.
@@ -33,6 +36,10 @@ pub enum LoadPhase {
 pub struct LoadingStats {
     /// Current commit phase.
     pub phase: LoadPhase,
+    /// Total geometries whose representations this commit will (re)build.
+    pub geometry_total: usize,
+    /// Geometries resolved (representations uploaded) so far.
+    pub geometry_uploaded: usize,
     /// Total textures the pool will upload this commit.
     pub textures_total: usize,
     /// Textures uploaded so far.
@@ -53,12 +60,16 @@ impl LoadingStats {
     /// `CompileProgress` into the unified `LoadingStats` shape.
     pub(crate) fn from_parts(
         phase: LoadPhase,
+        geometry_total: usize,
+        geometry_uploaded: usize,
         textures_total: usize,
         textures_uploaded: usize,
         cp: CompileProgress,
     ) -> Self {
         Self {
             phase,
+            geometry_total,
+            geometry_uploaded,
             textures_total,
             textures_uploaded,
             pipelines_pending: cp.materials_pending,
