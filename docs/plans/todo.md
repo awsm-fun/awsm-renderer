@@ -245,7 +245,10 @@ decision.
 > - **`add_raw_mesh` = `register_geometry` + `add_mesh`** (delete `add_raw_mesh_transparent`) in the
 >   step-6 call-site migration; keep the legacy `insert` until step 8 so the tree stays green.
 
-3. 🟡 **`resolve_geometry` in `commit_load` + granular loading UI.** Implement the commit phase (§2 step
+3. ✅ **`resolve_geometry` in `commit_load`** (granular UI deferred to step 6, where it's runtime-
+   verifiable once geometry flows). Body landed: union kinds → pack reps once → one shared resource →
+   `wire_instance` each bound mesh → free source; `LoadingStats` geometry counters; commit phase 0.
+   Implement the commit phase (§2 step
    0): per `GeometryKey`, union the kinds from bound materials, pack+upload missing reps once via
    `mesh_pack::pack_*`, set instance flags from the resource, then free the source. The pool-write
    plumbing already exists in `insert_resource` — move it here, keyed per (geometry, kind), idempotent.
@@ -257,7 +260,10 @@ decision.
    textures X/Y" / "Compiling pipelines (N)" lines driven off `LoadingStats`, replacing the coarse
    `shader_prewarm` bool / `compile_pending` count / single boot message. One mapping
    (`LoadingStats → label`) shared by both viewers if practical.
-4. **`add_mesh` + `register_geometry` wired to deferral.** `add_mesh` records the binding + mints the
+4. ✅ **`add_mesh` + `register_geometry` wired to deferral.** Landed on `AwsmRenderer` (+ `AddMeshOpts`,
+   `Meshes::bind_mesh`); mints the MeshKey sync, records the binding, uploads nothing. (`add_raw_mesh`
+   = register + add_mesh happens in the step-6 call-site migration.) Original text:
+   `add_mesh` records the binding + mints the
    MeshKey synchronously, references the GeometryKey, NO upload. Make `add_raw_mesh` = register +
    add_mesh. At this step the geometry is uploaded by `commit_load` (step 3), so a normal model still
    renders after its commit.
