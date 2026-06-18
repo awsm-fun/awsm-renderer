@@ -88,6 +88,11 @@ pub struct AnimResolveMaps {
     /// (a Uniform track drives that one — mirrors the editor's
     /// `material_key_for_shader`, which also picks the first match).
     pub custom_materials: HashMap<AssetId, MaterialKey>,
+    /// `ParticleEmitter` nodes → their ready-to-drive [`EmitterHandle`]. Captured
+    /// here (mirroring `lines` / `decals`) so the `NodeHandles` assembly can wire
+    /// the player-grade `NodeHandles.emitter`. No animation target resolves against
+    /// emitters; the map exists purely for the handle hand-back (Design A).
+    pub emitters: HashMap<NodeId, crate::particles::EmitterHandle>,
 }
 
 /// Lower + insert the scene's clips and mixer into the renderer, returning the

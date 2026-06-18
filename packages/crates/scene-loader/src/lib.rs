@@ -34,10 +34,13 @@
 //! (GPU-instanced copies of a source mesh placed along a `Curve` by arc length).
 //! `Curve` / `Group` / `Collider` carry no runtime renderable.
 //!
-//! **`ParticleEmitter` is a documented gap**: the loader has no renderer particle
-//! pass to drive, so emitter nodes are cleanly skipped (one-time warn). Particles
-//! are owned by the game, which simulates them and updates its own per-frame
-//! mesh/line buffers; the loader only carries the authored node's transform.
+//! **`ParticleEmitter`** materializes into a ready-to-drive instanced billboard
+//! (**Design A: loader sets up, game ticks**): the loader builds the emissive quad
+//! + GPU instancing at `max_alive` capacity and returns an
+//! [`EmitterHandle`](particles::EmitterHandle) in [`NodeHandles::emitter`]; it does
+//! NOT simulate. The game ticks an [`awsm_particles::Simulator`] each frame and
+//! pushes the live particles via [`drive_emitter`](particles::drive_emitter) — the
+//! same "loads, doesn't drive" boundary as animation. See [`particles`].
 //!
 //! # Example
 //!
@@ -87,9 +90,11 @@ pub mod camera;
 pub mod dynamic;
 pub mod light;
 pub mod material;
+pub mod particles;
 pub mod texture;
 
 pub use assets::SceneAssets;
+pub use particles::{drive_emitter, EmitterHandle};
 
 use std::collections::HashMap;
 
@@ -142,6 +147,12 @@ pub struct NodeHandles {
     /// `Some` for `Decal` nodes (only when the renderer's `decals` feature is on;
     /// otherwise the decal is cleanly skipped at load).
     pub decal: Option<DecalKey>,
+    /// `Some` for `ParticleEmitter` nodes — the ready-to-drive
+    /// [`EmitterHandle`](particles::EmitterHandle). The loader built the instanced
+    /// billboard but does NOT simulate; the game ticks it every frame via
+    /// [`drive_emitter`](particles::drive_emitter) (Design A: loader sets up, game
+    /// ticks).
+    pub emitter: Option<EmitterHandle>,
 }
 
 /// The renderer resources `populate_awsm_scene` / [`load_scene_for_player`]
@@ -570,6 +581,7 @@ pub async fn load_scene_for_player(
                 camera_config: maps.camera_configs.get(&node_id).cloned(),
                 line: maps.lines.get(&node_id).copied(),
                 decal: maps.decals.get(&node_id).copied(),
+                emitter: maps.emitters.get(&node_id).cloned(),
             },
         );
     }
@@ -814,12 +826,29 @@ async fn materialize(
         // by `InstancesAlongCurve` (and sweeps at bake time), which look the curve
         // up directly from `scene` by `NodeId` — no per-node renderer resource.
         NodeKind::Curve(_) => {}
-        // B3: clean-skip — the loader has no renderer particle pass to drive.
-        // The game owns particle simulation (it updates its own per-frame
-        // mesh/line buffers), so materializing an emitter here would render
-        // nothing. Warned once (see `warn_particle_skip`) + documented on
-        // `populate_awsm_scene`.
-        NodeKind::ParticleEmitter(_) => warn_particle_skip(),
+        // A.1 (Design A): the loader builds the emitter's instanced billboard
+        // (ready to drive) and hands back an `EmitterHandle`; it does NOT simulate.
+        // The game ticks an `awsm_particles::Simulator` each frame and pushes the
+        // result via `drive_emitter` — the same "loads, doesn't drive" contract as
+        // animation. Skip a hidden emitter (no per-mesh hide toggle would help once
+        // the game drives it; cleanest is to not build it).
+        NodeKind::ParticleEmitter(def) => {
+            if effective_visible {
+                match particles::build_emitter(renderer, def, tk, node_world) {
+                    Ok(handle) => {
+                        // Track the billboard mesh + its instance transform for
+                        // teardown, then record the handle for the NodeHandles
+                        // assembly (and the morph/anim maps don't touch emitters).
+                        loaded.meshes.push(handle.mesh);
+                        loaded.transforms.push(handle.instance_transform);
+                        maps.emitters.insert(node.id, handle);
+                    }
+                    Err(err) => {
+                        tracing::warn!("scene-loader: ParticleEmitter build failed: {err}");
+                    }
+                }
+            }
+        }
         // `Group` (pure transform parent) and `Collider` (editor-only wireframe;
         // no runtime renderable) need nothing further here. `Mesh` /
         // `SkinnedMesh` / `Light` / `Camera` are handled by the arms above.
@@ -1400,18 +1429,6 @@ fn curve_instance_transforms(curve: &CurveDef, def: &InstancesAlongCurveDef) -> 
         dist += spacing;
     }
     out
-}
-
-/// One-time warn that `ParticleEmitter` nodes aren't rendered by the loader.
-fn warn_particle_skip() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    if !WARNED.swap(true, Ordering::Relaxed) {
-        tracing::warn!(
-            "ParticleEmitter not rendered by the loader: no renderer particle pass; the game \
-             drives particles via its own per-frame mesh/line updates"
-        );
-    }
 }
 
 /// One-time warn that a `Decal` node was skipped because the renderer's `decals`
