@@ -296,7 +296,16 @@ decision.
 > raw pass-independent packing.
 >
 > **Step-5b plan (glTF decode → GeometrySource), incremental:** **5b-i done** (GeometrySource carries
-> authored `tangents`; resolve uses them else generates). **5b-ii/iii (next):** in
+> authored `tangents`; resolve uses them else generates). **5b-ii DONE** + **5b-iii DONE +
+> RUNTIME-VERIFIED:** `populate_gltf_primitive` builds a `GeometrySource` from the retained typed source
+> (`source_positions/normals/uvs0/tangents[authored]/indices` + new `source_front_face`), the
+> pass-independent custom-attribute + attribute-index slices, the native `vertex_attributes`, AABB, and
+> the morph/skin keys + layout infos, then calls `register_geometry` + `add_mesh(…, AddMeshOpts{…})`
+> instead of `meshes.insert`. `AddMeshOpts` gained `double_sided: Option<bool>` (Some = the glTF
+> thin-shell single-sided override; None = derive from material). `AwsmGltfError` gained
+> `From<AwsmError>`. Verified on :9080: Fox + DamagedHelmet (normal-map tangents at commit) +
+> previously-black CompareTransmission (transmission/transparency path) all render clean, NO
+> VisibilityGeometryBufferNotFound, NO "not compiled, skipping", no console errors. **5b-iv (next):** in
 > `renderer-gltf/src/buffers/mesh.rs` `convert_to_mesh_buffer`, after `ensure_normals`, extract the
 > TYPED retained source — `resolve_attribute_buffers` + `decode_vec3s` for positions/normals, the
 > TexCoord-0 attr → uv0, the optional `TANGENT` → authored tangents, `triangle_indices` flattened →
