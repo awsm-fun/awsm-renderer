@@ -861,24 +861,38 @@ impl AppScene {
         self.ctx.loading_status.lock_mut().populate_finalize = Ok(false);
     }
 
-    /// Force the variant reconcile + per-bucket pipeline compiles
-    /// (opaque / classify / MSAA edge-resolve) to fully resolve BEFORE the
-    /// first frame is shown, so the scene never reveals with half-compiled
-    /// pipelines — a black frame, or (the MSAA edge-resolve bug) a frame
-    /// with the anti-aliasing edge pass skipped. Routes through
-    /// `compile_material_variants().await`, which reconciles the feature-set
-    /// variants and then awaits `wait_for_pipelines_ready` — the awaited
-    /// path that drives the reliable layout-level edge-pipeline rebuild.
-    /// Gated in the loading overlay via `shader_prewarm`.
-    pub async fn compile_materials(self: &Arc<Self>) {
+    /// Open the load gate before a cold / full model load. The render gate then
+    /// clears to the clear-color (loading overlay on top) until [`Self::commit`]
+    /// lands — so the scene never reveals a half-compiled frame.
+    pub async fn begin_load(self: &Arc<Self>) {
+        self.renderer.lock().await.begin_load();
+    }
+
+    /// THE commit point of the load: finalize the texture pool ONCE + compile
+    /// every pipeline the scene needs (opaque / classify / MSAA edge-resolve),
+    /// then flip the render gate open. Gating the reveal here is what keeps the
+    /// first shown frame fully specialized + anti-aliased (no black / aliased
+    /// transient). Drives the loading overlay from `LoadingStats`.
+    pub async fn commit(self: &Arc<Self>) {
         self.ctx.loading_status.lock_mut().shader_prewarm = Ok(true);
         {
+            let ctx = self.ctx.clone();
             let mut renderer = self.renderer.lock().await;
-            if let Err(err) = renderer.compile_material_variants().await {
-                tracing::error!("compile_material_variants failed: {:?}", err);
+            let result = renderer
+                .commit_load(|stats| {
+                    let pending = stats.pipelines_pending + stats.in_flight_subcompiles as usize;
+                    ctx.loading_status.lock_mut().compile_pending = pending;
+                })
+                .await;
+            if let Err(err) = result {
+                tracing::error!("commit_load failed: {:?}", err);
             }
         }
-        self.ctx.loading_status.lock_mut().shader_prewarm = Ok(false);
+        {
+            let mut status = self.ctx.loading_status.lock_mut();
+            status.shader_prewarm = Ok(false);
+            status.compile_pending = 0;
+        }
     }
 
     pub async fn reset_punctual_lights(self: &Arc<Self>) -> Result<()> {
@@ -1025,6 +1039,11 @@ impl AppScene {
         let anti_aliasing = self.ctx.anti_alias.get_cloned();
 
         renderer.set_anti_aliasing(anti_aliasing).await?;
+        // An AA flip is a config change that needs recompilation: the MSAA
+        // edge-resolve set is rebuilt by `commit_load` (the one compile path),
+        // not by a render-preamble side channel. Live (no `begin_load`) so the
+        // scene stays on screen across the flip.
+        renderer.commit_load(|_| {}).await?;
 
         Ok(())
     }

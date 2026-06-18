@@ -82,7 +82,7 @@ impl AppCanvas {
                         let profile = awsm_web_shared::perf::resolve_renderer_profile(
                             awsm_renderer::profile::RendererProfile::Desktop,
                         );
-                        let mut renderer = match AwsmRendererBuilder::new(gpu_builder)
+                        let renderer = match AwsmRendererBuilder::new(gpu_builder)
                             .with_profile(profile)
                             // The default bucket cap (32) is the conservative parity
                             // default; a model-tests scene can load many distinct
@@ -138,28 +138,13 @@ impl AppCanvas {
                             status.renderer_phase = None;
                         }
 
-                        // Force-compile the routinely-used pipelines
-                        // before the first draw. Surfaces a distinct
-                        // "Compiling shaders…" line in the loading UI
-                        // — most of the cold-compile cost actually
-                        // lives inside `AwsmRendererBuilder::build()`
-                        // above, but the prewarm hook is the
-                        // documented place that will absorb extra
-                        // work when the dynamic-materials sprint
-                        // lands. The
-                        // explicit status flag also surfaces *that
-                        // the renderer is doing shader work at all*
-                        // — which used to hide inside the
-                        // "Initializing renderer" phase and made
-                        // first-load latency feel inexplicable.
-                        state.ctx.loading_status.lock_mut().shader_prewarm = Ok(true);
-                        if let Err(err) = renderer.wait_for_pipelines_ready().await {
-                            tracing::warn!("wait_for_pipelines_ready: {err}");
-                            state.ctx.loading_status.lock_mut().shader_prewarm =
-                                Err(err.to_string());
-                            return;
-                        }
-                        state.ctx.loading_status.lock_mut().shader_prewarm = Ok(false);
+                        // No boot prewarm: an empty renderer's gate is closed
+                        // (`scene_committed == false`), so `render()` clears to
+                        // the clear-color until the first model's `commit` lands.
+                        // The eager pipeline compiles `prewarm_pipelines` used to
+                        // surface already happen inside `build()` above; the
+                        // material / edge compiles now happen per-load in
+                        // `commit_load`, which the per-model load flow drives.
                         let scene = AppScene::new(state.ctx.clone(), renderer).await.unwrap();
 
                         state.ctx.scene.set(Some(scene));
@@ -231,16 +216,19 @@ impl AppCanvas {
                             }
                         };
 
+                        // Open the load gate, declare all content via the
+                        // existing deferred adds (upload + populate stage
+                        // textures/meshes/materials), then ONE `commit` finalizes
+                        // + compiles everything against the final scene and flips
+                        // the gate open. The render gate keeps the loading screen
+                        // up over the cold frames.
+                        scene.begin_load().await;
 
                         scene.upload_data(gltf_id, loader).await;
 
                         scene.populate().await;
 
-                        // Gate the reveal on the variant + MSAA edge-resolve
-                        // pipeline compiles so the first shown frame is fully
-                        // specialized and anti-aliased (no black / aliased
-                        // transient while pipelines warm up).
-                        scene.compile_materials().await;
+                        scene.commit().await;
 
                         if let Err(err) = scene.setup_all().await {
                             tracing::error!("{:?}", err);

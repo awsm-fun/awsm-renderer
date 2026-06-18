@@ -264,7 +264,7 @@ builder/spec produces the renderer; transactions load content into it.
    once in the commit drain). Re-verify the
    MSAA-change path (`set_anti_aliasing`) + cold-boot still compile their edge pipelines (they go
    through `ensure_scene_pipelines`/their own ensure — confirm, don't assume).
-4. **Migrate model-tests.** Wrap the load (`canvas.rs` + `scene.rs`): `begin_load()` before the
+4. ✅ **Migrate model-tests.** Wrap the load (`canvas.rs` + `scene.rs`): `begin_load()` before the
    upload phase; keep the existing `populate_gltf`/`set_ibl`/`set_skybox` adds; replace
    `compile_materials()`'s `compile_material_variants()` (`scene.rs:877`) AND the boot prewarm
    (`canvas.rs:156`) with the single `commit_load(on_progress)`; drive the loading overlay
