@@ -4,6 +4,9 @@ dist
 glTF-Sample-Assets
 awsm-renderer-assets
 
+####### Local experiments / scratch (parity baselines, screenshots, etc.)
+/experiments/
+
 ####### Secrets
 .env
 
