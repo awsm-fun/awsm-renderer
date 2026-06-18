@@ -286,7 +286,34 @@ decision.
 5. 🟡 **Migrate the glTF decoder + populate.** `convert_to_mesh_buffer` stops baking a kind + stops
    packing/discarding — it produces a `GeometrySource` (retain the attrs). `populate_gltf` registers
    the source + the renderer material, then `add_mesh`. Delete `mesh_buffer_geometry_kind`.
-6. **Migrate every raw call site** (the ~14 in the inventory: editor node_sync `:875`/`:996`,
+> **Step-6 RAW done + runtime-verified ✅** (the glTF migration §5b is the remaining producer). The
+> sync-caller problem (gizmos can't `await commit_load`) resolved cleanly + preserving
+> default-equals-today: **`add_raw_mesh` = `register_geometry` + `add_mesh` + an EAGER `resolve_one`**
+> (extracted from `resolve_geometry` — both share it). One-off raw meshes upload + draw immediately,
+> sync, no caller changes. `add_raw_mesh_transparent` deleted; material-agnostic now. Verified: the
+> editor (:9085) "Add a Sphere" primitive renders via the new path (1 mesh / 1.2k tris, no
+> VisibilityGeometryBufferNotFound); model-tests Fox regression-clean. `into_geometry_source` does the
+> raw pass-independent packing.
+>
+> **Step-5b plan (glTF decode → GeometrySource), incremental:** **5b-i done** (GeometrySource carries
+> authored `tangents`; resolve uses them else generates). **5b-ii/iii (next):** in
+> `renderer-gltf/src/buffers/mesh.rs` `convert_to_mesh_buffer`, after `ensure_normals`, extract the
+> TYPED retained source — `resolve_attribute_buffers` + `decode_vec3s` for positions/normals, the
+> TexCoord-0 attr → uv0, the optional `TANGENT` → authored tangents, `triangle_indices` flattened →
+> indices — and STOP calling `create_visibility_vertices`/`create_transparency_vertices` + drop
+> `ensure_tangents` (generated at commit). Carry the retained source on `MeshBufferInfoWithOffset`
+> (replacing the vis/transp offset fields); keep the custom-attr/triangle/morph/skin packing.
+> `populate_gltf_primitive` builds a `GeometrySource` (retained source + the custom-attr slice from
+> `custom_attribute_vertex_bytes` + `attribute_index_bytes` + morph/skin keys+layouts via the existing
+> `From` impls + aabb) → `register_geometry` + `add_mesh(geometry, material_key, transform_key,
+> AddMeshOpts{ hud: hints.hud, … })`. Delete `mesh_buffer_geometry_kind` + `GltfMeshBufferGeometryKind`
+> (the material decides the kind at commit; the `GltfGeometryOverride` HUD/material cases fold into the
+> material classification + `AddMeshOpts.hud`). **5b-iv:** drop the vis/transp shared buffers from
+> `GltfBuffers` + the decode driver (buffers.rs ~347-440); keep `create_visibility_vertices` /
+> `reference_visibility_vertices` + the byte-identity proptests as `cfg(test)` packer-parity tests.
+> Runtime-verify Fox + DamagedHelmet + the previously-black models on :9080.
+
+6. ✅ (raw) / 🟡 (glTF = §5b) **Migrate every raw call site** (the ~14 in the inventory: editor node_sync `:875`/`:996`,
    particles, thumbnail/preview/light_icons, scene-loader `:843`/`:1216`/`:1402`/particles,
    web-shared point_handle, render-worker): `add_raw_mesh_transparent` → `add_raw_mesh`; drop the
    opaque-vs-transparent choice. Each is followed (as already wired) by a `commit_load`.
