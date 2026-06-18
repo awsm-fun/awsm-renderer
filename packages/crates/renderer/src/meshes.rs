@@ -933,7 +933,7 @@ impl Meshes {
     #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &mut self,
-        mut mesh: Mesh,
+        mesh: Mesh,
         materials: &Materials,
         transforms: &Transforms,
         buffer_info_key: MeshBufferInfoKey,
@@ -946,21 +946,12 @@ impl Meshes {
         material_morph_key: Option<MaterialMorphKey>,
         skin_key: Option<SkinKey>,
     ) -> Result<MeshKey> {
-        // A mesh's pass-routing capability (`has_visibility_geometry` /
-        // `has_transparency_geometry`) is DERIVED here, at the single insert
-        // choke point, from which geometry buffers the caller actually provided —
-        // it is NOT a value the caller gets to set independently. This makes the
-        // desync that caused the frame-killing `VisibilityGeometryBufferNotFound`
-        // (a transparency-only mesh whose flag still said "has visibility
-        // geometry", so `route_renderable` sent it to the opaque pass) impossible
-        // by construction: the flags can never disagree with the buffers because
-        // the buffers ARE their source of truth. Mirrors the load-transaction
-        // philosophy — make the bad state unrepresentable, don't police it.
-        // (`insert_resource` below already enforces that `visibility_geometry_data
-        // .is_some()` ⇒ the buffer_info carries the matching vertex layout.)
-        mesh.has_visibility_geometry = visibility_geometry_data.is_some();
-        mesh.has_transparency_geometry = transparency_geometry_data.is_some();
-
+        // (A mesh's pass-routing flags `has_visibility_geometry` /
+        // `has_transparency_geometry` are DERIVED in `wire_instance` below from
+        // the resource's actual representation offsets — the single choke point
+        // shared by this legacy path AND the geometry-transaction `resolve_geometry`
+        // path. They can never disagree with the buffers because the resource's
+        // offsets ARE their source of truth.)
         let resource_key = self.insert_resource(
             buffer_info_key,
             visibility_geometry_data,
@@ -1178,17 +1169,36 @@ impl Meshes {
 
     fn insert_instance(
         &mut self,
-        mut mesh: Mesh,
+        mesh: Mesh,
         resource_key: MeshResourceKey,
         materials: &Materials,
         transforms: &Transforms,
     ) -> Result<MeshKey> {
-        let transform_key = mesh.transform_key;
+        let mesh_key = self.list.insert(mesh);
+        self.wire_instance(mesh_key, resource_key, materials, transforms)?;
+        Ok(mesh_key)
+    }
 
+    /// Wires an ALREADY-inserted mesh (in `self.list`) to its shared GPU
+    /// `resource_key`: derives the pass-routing flags from the resource's
+    /// representation offsets, fills the world AABB, registers the HUD/transform
+    /// bookkeeping, and writes the per-mesh meta. The single choke point shared by
+    /// the legacy `insert` path (via `insert_instance`) AND the geometry-transaction
+    /// `resolve_geometry`, which binds N meshes to one resource. Bumps no refcount —
+    /// the caller owns that (each `insert` resource starts at 1; `resolve_geometry`
+    /// sets it to the bound-mesh count).
+    fn wire_instance(
+        &mut self,
+        mesh_key: MeshKey,
+        resource_key: MeshResourceKey,
+        materials: &Materials,
+        transforms: &Transforms,
+    ) -> Result<()> {
         let (
             resource_aabb,
             buffer_info_key,
             visibility_geometry_data_offset,
+            transparency_geometry_data_offset,
             custom_attribute_index_offset,
             custom_attribute_data_offset,
             geometry_morph_key,
@@ -1199,11 +1209,11 @@ impl Meshes {
                 .resources
                 .get(resource_key)
                 .ok_or(AwsmMeshError::ResourceNotFound(resource_key))?;
-
             (
                 resource.aabb.clone(),
                 resource.buffer_info_key,
                 resource.visibility_geometry_data_offset,
+                resource.transparency_geometry_data_offset,
                 resource.custom_attribute_index_offset,
                 resource.custom_attribute_data_offset,
                 resource.geometry_morph_key,
@@ -1212,29 +1222,41 @@ impl Meshes {
             )
         };
 
-        if mesh.world_aabb.is_none() {
-            mesh.world_aabb = resource_aabb;
-        }
+        let transform_key = {
+            let mesh = self
+                .list
+                .get_mut(mesh_key)
+                .ok_or(AwsmMeshError::MeshNotFound(mesh_key))?;
+            // Flags DERIVED from the resource's actual representation offsets — the
+            // routing flags can never disagree with the uploaded buffers.
+            mesh.has_visibility_geometry = visibility_geometry_data_offset.is_some();
+            mesh.has_transparency_geometry = transparency_geometry_data_offset.is_some();
+            if mesh.world_aabb.is_none() {
+                mesh.world_aabb = resource_aabb;
+            }
+            // T2.6: catch the insert-with-`hud: true` path too — either route into
+            // the HUD render group trips the sticky flag so the HUD depth attachment
+            // lands by the next render frame.
+            if mesh.hud {
+                self.has_seen_hud = true;
+                self.hud_revision = self.hud_revision.wrapping_add(1);
+            }
+            mesh.transform_key
+        };
 
-        // T2.6: catch the insert-with-`hud: true` path too, not just
-        // post-insert `set_mesh_hud(true)` flips. Either route into
-        // the HUD render group should trip the sticky flag so the HUD
-        // depth attachment lands by the next render frame.
-        if mesh.hud {
-            self.has_seen_hud = true;
-            self.hud_revision = self.hud_revision.wrapping_add(1);
-        }
-        let mesh_key = self.list.insert(mesh.clone());
         self.mesh_to_resource.insert(mesh_key, resource_key);
-
         self.transform_to_meshes
             .entry(transform_key)
             .unwrap()
             .or_default()
             .push(mesh_key);
 
+        let mesh = self
+            .list
+            .get(mesh_key)
+            .ok_or(AwsmMeshError::MeshNotFound(mesh_key))?
+            .clone();
         let buffer_info = self.buffer_infos.get(buffer_info_key)?;
-
         self.meta.insert(
             mesh_key,
             &mesh,
@@ -1251,7 +1273,7 @@ impl Meshes {
             &self.skins,
         )?;
 
-        Ok(mesh_key)
+        Ok(())
     }
 
     /// Duplicates a mesh instance and assigns a new transform key.
