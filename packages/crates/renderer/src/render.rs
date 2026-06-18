@@ -24,6 +24,27 @@ use crate::scene_spatial::SceneSpatial;
 use crate::transforms::Transforms;
 use crate::{AwsmRenderer, AwsmRendererLogging};
 
+/// Per-opaque-renderable snapshot the occlusion + indirect-draw path consumes
+/// after `renderables.opaque` is handed to the material pass. Module-scope (was a
+/// `render()`-local struct) so it can live in the reused [`RenderFrameScratch`].
+pub(crate) struct OcclusionSnapshot {
+    pub aabb: crate::bounds::Aabb,
+    pub mesh_meta_offset: u32,
+    pub index_count: u32,
+}
+
+/// Reused per-frame scratch for the cull path's two mesh-count-scaling
+/// allocations — the opaque-snapshot list and the packed occlusion-instance byte
+/// buffer. Both were freshly `Vec`-allocated every frame (~176 KB/frame at 2K
+/// meshes, more at higher counts); the churn shows up as GC-pause jank on the
+/// frame-time p95, not the average. Held on [`AwsmRenderer`] and `take`/restored
+/// across each `render()` so the allocations persist frame-to-frame.
+#[derive(Default)]
+pub(crate) struct RenderFrameScratch {
+    pub opaque_snapshots: Vec<OcclusionSnapshot>,
+    pub occlusion_instance_bytes: Vec<u8>,
+}
+
 /// Optional callbacks around render passes.
 #[derive(Default)]
 pub struct RenderHooks {
@@ -593,6 +614,15 @@ impl AwsmRenderer {
         // clear-and-extend the pool's Vecs in place, while ctx holds
         // immutable references into `self`.
         self.collect_renderables()?;
+
+        // Take the reused per-frame cull-path scratch out of `self` BEFORE the
+        // `renderables`/`ctx` borrows below pin `&self` — it's restored at the end
+        // of the frame (after those borrows release), so its two Vecs keep their
+        // capacity frame-to-frame instead of churning the allocator (GC-jank).
+        let mut frame_scratch = std::mem::take(&mut self.render_frame_scratch);
+        frame_scratch.opaque_snapshots.clear();
+        frame_scratch.occlusion_instance_bytes.clear();
+
         let renderables = self.renderables();
 
         let ctx = RenderContext {
@@ -651,34 +681,28 @@ impl AwsmRenderer {
         //                            `draw_indexed_with_instance_count`
         //                            path and don't get a `drawIndirect`
         //                            args entry
-        struct OcclusionSnapshot {
-            aabb: crate::bounds::Aabb,
-            mesh_meta_offset: u32,
-            index_count: u32,
-        }
         // Instanced meshes stay on the legacy
         // `draw_indexed_with_instance_count` path (their `instance_index`
         // ranges would collide across meshes in the shared storage-array
         // meta lookup), so they don't need cull-pass instances or
-        // IndirectDrawArgs slots — skip them here.
-        let opaque_snapshots: Vec<OcclusionSnapshot> = renderables
-            .opaque
-            .iter()
-            .filter_map(|r| {
-                if r.instanced {
-                    return None;
-                }
-                let aabb = r.world_aabb.clone()?;
-                let meta_offset = ctx.meshes.meta.geometry_buffer_offset(r.key).ok()? as u32;
-                let buffer_info = ctx.meshes.buffer_info(r.key).ok()?;
-                let index_count = buffer_info.triangles.vertex_attribute_indices.count as u32;
-                Some(OcclusionSnapshot {
-                    aabb,
-                    mesh_meta_offset: meta_offset,
-                    index_count,
-                })
+        // IndirectDrawArgs slots — skip them here. Refilled into the reused
+        // scratch (cleared above) instead of a fresh per-frame `Vec`.
+        let opaque_snapshots = &mut frame_scratch.opaque_snapshots;
+        opaque_snapshots.extend(renderables.opaque.iter().filter_map(|r| {
+            if r.instanced {
+                return None;
+            }
+            let aabb = r.world_aabb.clone()?;
+            let meta_offset = ctx.meshes.meta.geometry_buffer_offset(r.key).ok()? as u32;
+            let buffer_info = ctx.meshes.buffer_info(r.key).ok()?;
+            let index_count = buffer_info.triangles.vertex_attribute_indices.count as u32;
+            Some(OcclusionSnapshot {
+                aabb,
+                mesh_meta_offset: meta_offset,
+                index_count,
             })
-            .collect();
+        }));
+        let opaque_snapshots = &frame_scratch.opaque_snapshots;
 
         // Compute this frame's optimization decision now that we have
         // the renderable counts + opaque snapshot. The pure function
@@ -1148,8 +1172,10 @@ impl AwsmRenderer {
                 let occlusion_instance_count = {
                     let stride =
                         crate::render_passes::occlusion::buffers::OCCLUSION_INSTANCE_STRIDE;
-                    let mut bytes: Vec<u8> = Vec::with_capacity(opaque_snapshots.len() * stride);
-                    for snap in &opaque_snapshots {
+                    // Reused scratch (cleared at frame start) instead of a fresh
+                    // per-frame `Vec` — the packed buffer is ~48 B/mesh.
+                    let bytes = &mut frame_scratch.occlusion_instance_bytes;
+                    for snap in opaque_snapshots {
                         bytes.extend_from_slice(&snap.aabb.min.x.to_le_bytes());
                         bytes.extend_from_slice(&snap.aabb.min.y.to_le_bytes());
                         bytes.extend_from_slice(&snap.aabb.min.z.to_le_bytes());
@@ -1572,6 +1598,11 @@ impl AwsmRenderer {
         // borrow on `&self` through the rest of the render flow.
         self.frame_optimizations = frame_opts;
         self.frames_in_current_mode = next_frames_in_current_mode;
+        // Restore the cull-path scratch (its Vecs keep their capacity for next
+        // frame). The `renderables`/`ctx` borrows have released by here, so `self`
+        // is mutable again. On the rare fatal early-returns above (unsupported
+        // MSAA) the scratch is dropped instead — harmless, it just re-allocates.
+        self.render_frame_scratch = frame_scratch;
 
         Ok(())
     }
