@@ -45,47 +45,45 @@ just driven reactively + repeatedly during load.** This design drives it ONCE, e
 
 ## 1. The model (resolved)
 
-Two renderer flags drive everything:
+**`render()` never compiles anything. `commit_load()` is the ONE place compilation happens.** This is
+the core: there is no reactive per-frame compile to reason about — the current render-preamble
+`reconcile_material_variants` → `ensure_scene_pipelines` compile (`render.rs:293`) is **moved into
+`commit_load` and deleted from the render path**. The render loop only draws what's already compiled
+and drains resolved compiles; it never kicks one.
 
-- **`loading: bool`** — true between `begin_load()` and `commit_load()`. While true, the render
-  preamble SKIPS the reactive `reconcile_material_variants` / `ensure_scene_pipelines` compile, so
-  adds never compile against a moving target. **Applies to BOTH cold-load and live-add — same flag,
-  same machinery.**
-- **`committed_once: bool`** — false at build, set true by the first `commit_load()`. Drives the
-  one-time cold-start render gate (below).
+One flag drives the render gate:
 
-Derived render gate: **`first_load_pending = !committed_once && loading`** (an app that opted into a
-load but hasn't committed its first one yet). When true, `render()` clears the framebuffer and skips
-the scene pass. After the first commit, it's permanently false → live loads keep showing the existing
-scene while their delta compiles in the background.
+- **`scene_committed: bool`** — `false` at build, set `true` by `commit_load()`. `render()` calls
+  `render_all()` when true and `render_loading()` (clear only) when false. `begin_load()` sets it back
+  to `false` (a fresh full load wants the loading screen until its commit lands).
 
-**Backward compatible:** an app that never calls `begin_load`/`commit_load` has `loading=false` +
-`committed_once=false` → `first_load_pending=false` → renders exactly as today.
+That's the whole state. No `loading` flag, no reactive-suppression, no "skip the compile when …".
 
-### Lifecycle (identical for cold-load and live — INVARIANT)
+### Lifecycle (one path; cold and live differ only in app choices)
 
 ```
-renderer.begin_load();                       // loading = true
-//   add content via the EXISTING deferred APIs — no new wrappers needed:
+renderer.begin_load();                       // scene_committed = false (show loading screen)
+//   add content via the EXISTING deferred APIs (they already do no compile):
 renderer.populate_gltf(data).await?;         // textures staged, meshes staged, materials registered
 renderer.add_image(...) / register_material(...) / set_skybox(...) / set_ibl(...);
-let stats = renderer.commit_load(|s| { /* progress */ }).await?;   // THE single compile point
-//   loading = false; committed_once = true; gate open; everything GPU-resident
+let stats = renderer.commit_load(|s| { /* progress */ }).await?;   // THE compile point
+//   reconcile + finalize textures + compile everything concurrently + scene_committed = true
 ```
 
-- **Cold load:** the app `.await`s `commit_load` before revealing the scene (gate is closed
-  meanwhile → clear color behind the loading overlay).
-- **Live add:** the app does the *exact same* `begin_load → add → commit_load`, but the existing
-  scene keeps rendering (gate already open since `committed_once`), and the app may choose not to
-  block on the `commit_load` future (fire-and-let-it-land). The delta's meshes simply aren't drawn
-  until its commit is ready (content-keyed compile → only the new pipelines compile; the rest are
-  cache hits).
+- **Cold / full load:** `begin_load()` (→ `render_loading`), add, `await commit_load` before the scene
+  shows.
+- **Live add:** the app **skips `begin_load`** (so the existing scene keeps showing — `scene_committed`
+  stays `true`), adds, and calls the **same** `commit_load`; it may choose not to `await` it. The new
+  content's meshes simply aren't drawn until its commit is ready (content-keyed compile → only the new
+  pipelines compile, the rest are cache hits). Same `commit_load` either way.
+- **Config changes that need recompilation** (e.g. `set_anti_aliasing`) are just another change
+  followed by `commit_load` — they route through the one compile path, not a side channel.
 
-> **HARD INVARIANT:** `begin_load` / `commit_load` are the same code for cold and live. The ONLY
-> differences are app-level: (a) whether the app awaits the commit before revealing, and (b) the
-> one-time `first_load_pending` gate (driven by `committed_once`, not by the load path). **If
-> implementation forces any other divergence between cold and live, STOP and raise it for
-> discussion** — divergent paths for the same action is the exact trap this deletes.
+> **HARD INVARIANT:** `commit_load` is the same code for cold, full-reload, and live. The only
+> differences are **app-level choices**: whether to call `begin_load` (show a loading screen) and
+> whether to `await` the commit. **If implementation forces any other divergence — especially a
+> reactive compile sneaking back into the render path — STOP and raise it for discussion.** That
+> reactive path is precisely what this deletes.
 
 ---
 
@@ -131,13 +129,14 @@ On `AwsmRenderer` (no separate buffered transaction object — adds go through t
 APIs across any number of `Mutex` lock scopes, which a borrowing transaction object couldn't span):
 
 ```rust
-/// Enter load mode: suppress the per-frame reactive compile so subsequent adds don't compile
-/// against a moving target. Idempotent. Does NOT hide an already-shown scene (live-safe).
+/// Request the loading screen until the next commit: sets scene_committed = false. Call before a
+/// cold / full load; SKIP it for a live add (so the existing scene keeps showing).
 pub fn begin_load(&mut self);
 
-/// THE single compile point. Finalizes the texture pool ONCE, kicks every needed pipeline compile,
-/// drains them CONCURRENTLY (FuturesUnordered), uploads textures, reports progress, and on success
-/// opens the render gate. Idempotent if nothing was added since the last commit (cheap no-op).
+/// THE single compile point. Reconciles material variants, finalizes the texture pool ONCE, kicks
+/// every needed pipeline compile, drains them CONCURRENTLY (FuturesUnordered), uploads textures,
+/// reports progress, and sets scene_committed = true. Cheap no-op if nothing changed since the last
+/// commit (content-keyed cache).
 pub async fn commit_load(
     &mut self,
     on_progress: impl FnMut(LoadingStats),
@@ -147,44 +146,48 @@ pub async fn commit_load(
 pub fn loading_stats(&self) -> LoadingStats;
 ```
 
-`commit_load` body (reuse what exists — see §1 "Key fact"):
-1. `self.loading` is true (set by `begin_load`). Report `LoadingStats { phase: FinalizingTextures, .. }`.
-2. `self.finalize_gpu_textures().await?` — ONCE (batches every staged texture). **Remove the eager
-   `edge_pipelines.ensure_compiled(...)` block at `textures.rs:668-697`** — the edge will be compiled
-   in step 3 against the now-final pool, once.
-3. `phase = Compiling`. Run the concurrent drain that already exists:
-   `self.wait_for_pipelines_ready_with_progress(|cp| on_progress(LoadingStats::from(cp, ...)))`
-   (`renderer.rs:2340`) — its Phase-1 kicks `ensure_scene_pipelines` (compiles opaque + edge against
-   final inputs), Phase-2 drains `inflight_compile` via `FuturesUnordered::next().await`. **This is
-   the concurrent commit — do not reimplement it.**
-4. `self.loading = false; self.committed_once = true;` → gate opens. Return final `LoadingStats`.
+`commit_load` body — this is the code MOVED out of the render preamble plus the existing drain:
+1. `reconcile_material_variants()` — resolve PBR/Toon feature-set variants (was `render.rs:293`; now
+   ONLY here). Report `LoadingStats { phase: FinalizingTextures, .. }`.
+2. `finalize_gpu_textures().await?` — ONCE (batches every staged texture). **Delete the eager
+   `edge_pipelines.ensure_compiled(...)` block at `textures.rs:668-697`** — the edge compiles in
+   step 3 against the now-final pool, once.
+3. `phase = Compiling`. The concurrent drain that already exists (the renamed/merged internal of
+   `wait_for_pipelines_ready_with_progress`, `renderer.rs:2340`): kick `ensure_scene_pipelines`
+   (compiles opaque + edge against final inputs), then drain `inflight_compile` via
+   `FuturesUnordered::next().await`, mapping each `CompileProgress` → `LoadingStats` for `on_progress`.
+   **This is the concurrent commit — do not reimplement it.**
+4. `self.scene_committed = true;` → `render()` switches to `render_all`. Return final `LoadingStats`.
 
-> Optional ergonomic wrapper (do AFTER the core works, only if it reads better): a
-> `LoadTransaction<'a>` returned by `begin_load()` that derefs to `&mut AwsmRenderer` for adds and
-> whose `commit(self, on_progress)` calls `commit_load`. The borrow-across-lock-scopes constraint
-> means the bracket-on-the-renderer form above is the required baseline; the wrapper is sugar.
+> Optional ergonomic wrapper (only if it reads better, after the core works): a `LoadTransaction<'a>`
+> from `begin_load()` that derefs to `&mut AwsmRenderer` for adds and whose `commit(self, on_progress)`
+> calls `commit_load`. The borrow-across-lock-scopes constraint means the bracket-on-the-renderer form
+> is the required baseline; the wrapper is sugar.
 
 ---
 
-## 3. Render gate (resolved)
+## 3. Render gate (resolved) — two private render paths
 
-In `AwsmRenderer::render()` (`render.rs:75`), AFTER `poll_pipeline_scheduler()` (`render.rs:84`,
-keep draining resolved compiles) and BEFORE the scene-pass chain:
+`render()` (`render.rs:75`) becomes a thin dispatcher with NO compile preamble:
 
 ```rust
-let first_load_pending = !self.committed_once && self.loading;
-if first_load_pending {
-    // Cold start: nothing committed yet. Clear to clear_color (loading overlay draws on top), skip
-    // the scene passes + the reconcile/ensure_scene_pipelines preamble.
-    self.clear_framebuffer_only()?;   // (factor the existing clear out of the pass chain)
-    return Ok(());
+pub fn render(&mut self, hooks: Option<&RenderHooks>) -> Result<()> {
+    self.poll_pipeline_scheduler();          // drain resolved compiles (lets a non-awaited live
+                                             // commit_load land over frames). NEVER kicks a compile.
+    if self.scene_committed {
+        self.render_all(hooks)               // today's render() body — MINUS the reconcile/
+                                             // ensure_scene_pipelines preamble (moved to commit_load)
+    } else {
+        self.render_loading()                // clear to clear_color; loading overlay draws on top
+    }
 }
 ```
 
-And in the preamble's reactive compile (`render.rs:293` `reconcile_material_variants` →
-`ensure_scene_pipelines`): **gate it on `!self.loading`** so a live add accumulating across frames
-doesn't compile incrementally. (The existing `variants_dirty` flag is preserved across the
-suppression; `commit_load` consumes it via the wait path.)
+- `render_all()` = the existing scene-pass chain, with the `reconcile_material_variants` /
+  `ensure_scene_pipelines` preamble (`render.rs:293`) **removed** (it lives in `commit_load` now).
+- `render_loading()` = clear the framebuffer to `clear_color` and return.
+
+No flag-gated branches inside the passes; the split is the two methods.
 
 - model-tests loading overlay (`canvas.rs:174-216`, CSS over the canvas) is unchanged — it now sits
   over a clear-color frame instead of a half-rendered scene.
@@ -237,15 +240,19 @@ builder/spec produces the renderer; transactions load content into it.
 
 ## 6. Implementation sequence (ordered; keep `cargo test … --lib` green + `task lint` clean per step)
 
-1. **Flags + render gate.** Add `loading`/`committed_once` to `AwsmRenderer`; the render gate in
-   `render()` (`render.rs` after :84) + the `!loading` guard on the preamble reconcile (`render.rs:293`);
-   factor out `clear_framebuffer_only`. Default behavior unchanged (both flags false). Verify a normal
+1. **Render gate (split `render` into `render_all`/`render_loading`).** Add the single
+   `scene_committed: bool`; make `render()` the thin dispatcher of §3 (`render_all` vs
+   `render_loading`); split the existing body into `render_all` and move the
+   `reconcile_material_variants`/`ensure_scene_pipelines` preamble (`render.rs:293`) OUT of it (it goes
+   into `commit_load` in step 3). At this step compilation is temporarily orphaned — land it together
+   with step 3 (or stub `commit_load` to call the old preamble) so the build stays green and a normal
    model still renders.
 2. **`LoadingStats`.** Add the struct + `LoadPhase`; map from `CompileProgress`; add texture
    counting to `finalize_gpu_textures`; add `loading_stats()`.
-3. **`begin_load` / `commit_load`.** Implement per §2 (reusing `finalize_gpu_textures` +
-   `wait_for_pipelines_ready_with_progress`). **Remove the eager edge `ensure_compiled` block at
-   `textures.rs:668-697`** (the edge now compiles once in the commit drain). Re-verify the
+3. **`begin_load` / `commit_load`.** Implement per §2: `begin_load` sets `scene_committed = false`;
+   `commit_load` does reconcile → finalize (once) → concurrent compile drain → `scene_committed = true`.
+   **Delete the eager edge `ensure_compiled` block at `textures.rs:668-697`** (the edge now compiles
+   once in the commit drain). Re-verify the
    MSAA-change path (`set_anti_aliasing`) + cold-boot still compile their edge pipelines (they go
    through `ensure_scene_pipelines`/their own ensure — confirm, don't assume).
 4. **Migrate model-tests.** Wrap the load (`canvas.rs` + `scene.rs`): `begin_load()` before the
