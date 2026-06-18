@@ -1327,10 +1327,18 @@ const DECAL_POOL_LAYERS_PER_ARRAY: u32 = 64;
 /// the resulting `Vec<Transform>` to
 /// [`AwsmRenderer::enable_mesh_instancing_opaque`](awsm_renderer::AwsmRenderer).
 ///
+/// Per-instance **colours** (`per_instance_colors`) are applied via
+/// [`AwsmRenderer::set_mesh_instance_attrs`] (A.2) — expanded to the placed count,
+/// repeating the last authored value when the list is shorter (the def's
+/// documented semantics).
+///
 /// Limitations (documented best-effort): the source node's *local* transform is
 /// not re-composed into each instance (the curve frame fully defines placement);
-/// `per_instance_colors` and the per-instance `shadow` config are not yet applied
-/// (the opaque instancing path takes transforms only) — both are follow-ons.
+/// the per-instance `shadow` config is not applied — shadow cast/receive is a
+/// **mesh-level** flag (shared by every instance, since instancing reuses the
+/// source mesh), so honoring the curve's `shadow` would overwrite the *source
+/// node's own* authored shadow flags; left as a documented follow-on (needs a true
+/// per-instance shadow flag in the renderer).
 fn materialize_instances_along_curve(
     renderer: &mut AwsmRenderer,
     scene: &Scene,
@@ -1359,10 +1367,39 @@ fn materialize_instances_along_curve(
     if transforms.is_empty() {
         return Ok(());
     }
+    // The transform key instancing is keyed under — also the per-instance attribute
+    // key. Grab it before the mutable instancing call (Copy, so the borrow ends).
+    let transform_key = renderer.meshes.get(source_mesh)?.transform_key;
     if let Err(err) = renderer.enable_mesh_instancing_opaque(source_mesh, &transforms) {
         tracing::warn!("scene-loader: enable_mesh_instancing_opaque failed: {err}");
+        return Ok(());
+    }
+    // A.2: apply per-instance colour overrides via the same per-instance attribute
+    // path the particle emitter uses. `set_mesh_instance_attrs` requires exactly one
+    // attr per placed transform, so expand `per_instance_colors` to the placed count,
+    // repeating the last value when the authored list is shorter (the def's
+    // documented semantics). Empty list → leave the default white tint untouched.
+    if !def.per_instance_colors.is_empty() {
+        let attrs: Vec<awsm_renderer::instances::InstanceAttr> =
+            expand_instance_colors(&def.per_instance_colors, transforms.len())
+                .into_iter()
+                .map(|c| awsm_renderer::instances::InstanceAttr::from_rgba_alpha_size(c, 1.0, 1.0))
+                .collect();
+        if let Err(err) = renderer.set_mesh_instance_attrs(transform_key, &attrs) {
+            tracing::warn!("scene-loader: curve per-instance colours failed: {err}");
+        }
     }
     Ok(())
+}
+
+/// Expand authored `per_instance_colors` to exactly `count` entries, repeating the
+/// last value when the list is shorter (the [`InstancesAlongCurveDef`] documented
+/// semantics) and truncating when longer. Caller guarantees `colors` is non-empty.
+fn expand_instance_colors(colors: &[[f32; 4]], count: usize) -> Vec<[f32; 4]> {
+    let last = *colors.last().expect("non-empty per_instance_colors");
+    (0..count)
+        .map(|i| colors.get(i).copied().unwrap_or(last))
+        .collect()
 }
 
 /// Find a [`NodeKind::Curve`]'s [`CurveDef`] by `NodeId` anywhere in the tree.
@@ -1763,8 +1800,23 @@ mod prefab_tests {
     //! (the renderer runs on wasm). That path is covered by the browser round-trip
     //! harness instead; unit-testing it here would block on an un-unit-testable GPU
     //! dependency, so we test the part we can pin down without a device.
-    use super::prefab_subtree_layout;
+    use super::{expand_instance_colors, prefab_subtree_layout};
     use awsm_scene::{EditorNode, NodeId, NodeKind};
+
+    #[test]
+    fn instance_colors_repeat_last_when_short_and_truncate_when_long() {
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let green = [0.0, 1.0, 0.0, 1.0];
+        // Shorter than count → last value (green) repeats to fill.
+        let out = expand_instance_colors(&[red, green], 4);
+        assert_eq!(out, vec![red, green, green, green]);
+        // Longer than count → truncated to count.
+        let out = expand_instance_colors(&[red, green, red], 2);
+        assert_eq!(out, vec![red, green]);
+        // Exact length → identity.
+        let out = expand_instance_colors(&[red, green], 2);
+        assert_eq!(out, vec![red, green]);
+    }
 
     fn node(id: NodeId, prefab: bool, children: Vec<EditorNode>) -> EditorNode {
         EditorNode {
