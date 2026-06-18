@@ -721,8 +721,11 @@ async fn materialize_skinned_mesh(
             material_keys.push(mat_key);
             to_register.push(*mk);
         }
-        if let Err(e) = r.finalize_gpu_textures().await {
-            tracing::warn!("finalize_gpu_textures (skinned mesh): {e}");
+        // Live add: commit the staged content through the one compile path
+        // (finalize textures + compile new pipelines). No begin_load — the
+        // existing scene keeps showing while the new content compiles.
+        if let Err(e) = r.commit_load(|_| {}).await {
+            tracing::warn!("commit_load (skinned mesh): {e}");
         }
     }
 
@@ -871,8 +874,8 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
     // pass; opaque delegates to `add_raw_mesh`).
     match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
         Ok(mk) => {
-            if let Err(e) = r.finalize_gpu_textures().await {
-                tracing::warn!("sprite finalize_gpu_textures: {e}");
+            if let Err(e) = r.commit_load(|_| {}).await {
+                tracing::warn!("sprite commit_load: {e}");
             }
             let _ = r.set_mesh_billboard_mode(mk, mode);
             drop(r);
@@ -992,8 +995,8 @@ async fn upload_simple_mesh(
     // mesh (e.g. an imported glass model) wouldn't upload at all.
     match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
         Ok(mk) => {
-            if let Err(e) = r.finalize_gpu_textures().await {
-                tracing::warn!("upload_simple_mesh finalize: {e}");
+            if let Err(e) = r.commit_load(|_| {}).await {
+                tracing::warn!("upload_simple_mesh commit_load: {e}");
             }
             drop(r);
             entry.model_meshes.lock().unwrap().push(mk);
@@ -1143,6 +1146,12 @@ async fn materialize_particle(
         super::particles::materialize(r, node_id, parent_tk, world_pos, &def);
     })
     .await;
+    // The emitter inserts a PBR material (a feature-set variant) whose pipeline
+    // must compile — route through the one compile path (live add, no
+    // begin_load). render() no longer compiles reactively.
+    if let Err(e) = renderer_handle().lock().await.commit_load(|_| {}).await {
+        tracing::warn!("particle commit_load: {e}");
+    }
 }
 
 async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {

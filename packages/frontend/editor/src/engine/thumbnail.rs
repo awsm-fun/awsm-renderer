@@ -161,8 +161,10 @@ async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<Arc<Gen>, String> {
         let mk = r
             .add_raw_mesh(preview::preview_sphere(), tk, key)
             .map_err(|e| format!("{e}"))?;
-        if let Err(e) = r.finalize_gpu_textures().await {
-            tracing::warn!("thumbnail finalize: {e}");
+        // Commit the staged preview content (this also flips the thumbnail
+        // renderer's gate open so `render()` draws the scene, not a clear).
+        if let Err(e) = r.commit_load(|_| {}).await {
+            tracing::warn!("thumbnail commit_load: {e}");
         }
         mk
     };
@@ -245,8 +247,8 @@ async fn set_material(gen: &Arc<Gen>, mat: &CustomMaterial) -> Result<(), String
     let mut r = gen.renderer.lock().await;
     let key = preview::insert_material_into(&mut r, bmat::material_to_renderer(&def));
     let _ = r.set_mesh_material(gen.mesh, key);
-    if let Err(e) = r.finalize_gpu_textures().await {
-        tracing::warn!("thumbnail finalize: {e}");
+    if let Err(e) = r.commit_load(|_| {}).await {
+        tracing::warn!("thumbnail commit_load: {e}");
     }
     Ok(())
 }

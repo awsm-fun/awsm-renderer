@@ -84,16 +84,21 @@ pub fn main() {
                                 // loader so first-start pipeline creation is
                                 // visible (mirrors the in-app pill that covers
                                 // post-mount import/material compiles).
-                                let on_progress = |p: awsm_renderer::pipeline_scheduler::CompileProgress| {
-                                    let n = p.in_flight_subcompiles;
+                                let on_progress = |stats: awsm_renderer::LoadingStats| {
+                                    let n = stats.in_flight_subcompiles;
                                     if n > 0 {
                                         awsm_web_shared::util::window::set_boot_loader_message(&format!(
                                             "Compiling render pipelines… ({n} remaining)"
                                         ));
                                     }
                                 };
-                                if let Err(err) = r.wait_for_pipelines_ready_with_progress(on_progress).await {
-                                    tracing::warn!("wait_for_pipelines_ready: {err}");
+                                // Boot commit: opens the render gate (the editor
+                                // never calls begin_load for its steady state, so
+                                // this first commit_load is what flips
+                                // scene_committed true) and compiles the initial
+                                // scene's pipelines. The one compile path.
+                                if let Err(err) = r.commit_load(on_progress).await {
+                                    tracing::warn!("boot commit_load: {err}");
                                 }
                             }
                             // Mirror the scene onto the renderer (materializes

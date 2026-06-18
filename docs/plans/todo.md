@@ -270,7 +270,7 @@ builder/spec produces the renderer; transactions load content into it.
    (`canvas.rs:156`) with the single `commit_load(on_progress)`; drive the loading overlay
    (`context.rs` `LoadingStatus`) from `LoadingStats`. The rAF loop (`scene.rs:1164`) is unchanged —
    the render gate handles the cold frames.
-5. **Migrate editor.** thumbnail (`thumbnail.rs:164,248`), preview (`preview.rs:112,155`), node_sync
+5. ✅ **Migrate editor.** thumbnail (`thumbnail.rs:164,248`), preview (`preview.rs:112,155`), node_sync
    (`node_sync.rs:724,874,995`): wrap their per-node `finalize_gpu_textures` loads in
    `begin_load → adds → commit_load`; boot prewarm (`editor/main.rs:95`) → `commit_load`. These
    exercise the LIVE path → proves invariant ③.

@@ -53,6 +53,12 @@ pub fn start() {
                         if let Err(e) = r.set_anti_aliasing(aa).await {
                             tracing::warn!("set_anti_aliasing: {e}");
                         }
+                        // An AA flip needs the MSAA edge-resolve set rebuilt;
+                        // that routes through the one compile path now, not the
+                        // deleted render preamble. Live (no begin_load).
+                        if let Err(e) = r.commit_load(|_| {}).await {
+                            tracing::warn!("commit_load after set_anti_aliasing: {e}");
+                        }
                     }
                 }
             })

@@ -109,8 +109,10 @@ async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<(), String> {
         let mk = r
             .add_raw_mesh(raw, tk, mat_key)
             .map_err(|e| format!("{e}"))?;
-        if let Err(e) = r.finalize_gpu_textures().await {
-            tracing::warn!("preview finalize: {e}");
+        // Commit the staged preview content (also flips this preview
+        // renderer's gate open).
+        if let Err(e) = r.commit_load(|_| {}).await {
+            tracing::warn!("preview commit_load: {e}");
         }
         mk
     };
@@ -152,8 +154,8 @@ async fn sync_material(ctx: &Arc<PreviewCtx>, mat: &CustomMaterial) -> Result<()
     if let Some(mk) = *ctx.mesh.lock().unwrap() {
         let _ = r.set_mesh_material(mk, mat_key);
     }
-    if let Err(e) = r.finalize_gpu_textures().await {
-        tracing::warn!("preview finalize: {e}");
+    if let Err(e) = r.commit_load(|_| {}).await {
+        tracing::warn!("preview commit_load: {e}");
     }
     Ok(())
 }
