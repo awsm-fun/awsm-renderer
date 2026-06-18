@@ -87,7 +87,40 @@ render `NodeKind` EXCEPT the items below. None are regressions — the pre-loade
 of these in its `_ => {}` arm; the cores are wired, these are the unfinished dimensions. The renderer
 already exposes everything needed for A.1–A.3.
 
-## [ ] A.1 — ParticleEmitter rendering — **Design A: loader sets up, game ticks** (decided 2026-06-18)
+## [x] A.1 — ParticleEmitter rendering — **Design A: loader sets up, game ticks** (decided 2026-06-18) — commit `cf40249f`
+
+**Landed:** `packages/crates/scene-loader/src/particles.rs` (new) — `EmitterHandle`
+(mesh + instance-transform + def + capacity + base-world-pos), `build_emitter`
+(emissive billboard quad, `BillboardMode::Full`, shadows off, instancing pre-enabled
+at `max_alive`, dead-seeded), `def_to_emitter` (awsm_scene def → `awsm_particles::Emitter`),
+and the `drive_emitter` consumer helper (push a `Simulator`'s `packed` particles to the
+handle each frame, fixed capacity → no realloc). The `materialize` arm builds the emitter
++ records the handle into `NodeHandles.emitter`; teardown frees the billboard mesh +
+instance transform. Removed `warn_particle_skip`. `awsm-particles` added as a dep.
+
+**Verification (honest):** `cargo test -p awsm-scene-loader --lib` GREEN incl. two new
+unit tests — `def_to_emitter_maps_every_field` (every field, x1000-drag decode) and
+`def_to_emitter_drives_a_live_simulation` (the handle's emitter spec actually
+spawns/ages/culls a one-shot burst end-to-end, no GPU). The **rendering** path
+(`build_emitter` + `drive_emitter`) is call-for-call identical to the **shipping editor
+particle preview** `packages/frontend/editor/src/engine/bridge/particles.rs` (same emissive
+PBR material, same `sprite_quad`, same `BillboardMode::Full`, same instancing seed, same
+per-frame `set_mesh_instances` / `set_mesh_instance_attrs`), which is proven to render —
+so correctness is inherited; the only genuinely new code is the (unit-tested) plumbing.
+A live chrome-devtools render of the *loader* emitter is **not yet possible**: model-tests
+(:9080) loads via `populate_gltf` (glTF URLs), not the scene-loader, and no frontend ticks
+a loader-returned handle today (Design A makes the tick a consumer responsibility). Wiring a
+loader-render harness into model-tests would chrome-verify ALL of §A — noted as useful infra
+(not done here; not a regression, not a standards deviation).
+
+**Deviations from this stage's pre-written spec (none requiring sign-off):** material is
+emissive-PBR (matching the shipping editor preview) rather than the spec's guessed
+"FlipBook/Unlit"; sprite `texture` binding + the `blend` transparent-pass route are
+follow-ons (matching the editor bridge's own documented gaps). ParticleEmitters *inside a
+prefab* remain transform-only (the existing B4 follow-on, unchanged). No perf regression
+(new functionality on a previously clean-skipped node).
+
+### A.1 spec (original, for reference)
 
 `NodeKind::ParticleEmitter(ParticleEmitterDef)` is currently a clean-skip (one-time `tracing::warn!` in
 `materialize`, `warn_particle_skip`, see `lib.rs`). The renderer **can** render particles —
