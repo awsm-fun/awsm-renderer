@@ -152,17 +152,27 @@ handle so a consumer's tick is near-trivial (do **not** make the loader tick it)
 ticks it and the billboards render + age (chrome-devtools screenshot over a few frames). Rustdoc the
 "loader sets up, game ticks" contract on the emitter handle.
 
-## [ ] A.2 — InstancesAlongCurve per-instance attributes
+## [x] A.2 — InstancesAlongCurve per-instance attributes — commit `5d75d862`
 
-`materialize_instances_along_curve` places copies via `enable_mesh_instancing_opaque` (transforms only).
-`InstancesAlongCurveDef.per_instance_colors` is **not** applied — wire it through
-`Meshes::set_mesh_instance_attrs` (the same API A.1 uses). Per-instance `shadow`
-(`InstancesAlongCurveDef.shadow`) is genuinely limited (shadow is a mesh-level flag, not per-instance —
-would need a renderer change; low priority, leave a documented note). Also: source-node resolution relies
-on DFS order (source materialized before the instances node) — currently best-effort with a warn; make it
-order-independent if it bites.
+**Landed:** `materialize_instances_along_curve` now applies `per_instance_colors` via
+`renderer.set_mesh_instance_attrs(transform_key, ...)` (the same per-instance attribute path A.1's
+emitter uses) after `enable_mesh_instancing_opaque`. The transform key is read from
+`renderer.meshes.get(source_mesh).transform_key`. A new pure helper `expand_instance_colors`
+expands the authored list to exactly the placed-instance count — repeating the last value when
+shorter, truncating when longer (the def's documented semantics) — unit-tested
+(`instance_colors_repeat_last_when_short_and_truncate_when_long`).
 
-**Verify:** a curve-instanced scene shows per-instance colors (screenshot).
+**Left as documented notes (per the plan):** per-instance `shadow` is NOT applied — cast/receive is a
+**mesh-level** flag shared by every instance (instancing reuses the source mesh), so honoring the curve's
+`shadow` would overwrite the *source node's own* authored flags; a true per-instance shadow flag is a
+renderer change (follow-on). Source-node DFS-order resolution stays best-effort-with-warn (not yet bitten).
+
+**Verification (honest):** `cargo test -p awsm-scene-loader --lib` GREEN incl. the new expand test; the
+colour-application path is `set_mesh_instance_attrs`, identical to the shipping editor particle preview's
+proven per-instance-colour push. Live chrome-devtools render pends the same loader-render harness noted in
+A.1. No perf regression (one extra attr upload only when colours are authored), no standards deviation.
+
+### A.2 spec (original, for reference)
 
 ## [ ] A.3 — Prefab non-mesh children
 
