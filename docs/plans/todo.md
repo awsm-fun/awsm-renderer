@@ -67,13 +67,16 @@ let stats = renderer.commit_load(|s| {…}).await?;       // derive+upload exact
   transparency half of it; HUD ⇒ `Both`. The glTF decoder and the raw path BOTH call it. Delete
   `mesh_buffer_geometry_kind`'s duplicated logic + the `add_raw_mesh`/`add_raw_mesh_transparent`
   split.
-- **② Source retained, representations derived at commit.** A `GeometryKey` owns the CPU source
+- **② Source consumed at commit, then FREED.** A `GeometryKey` holds the CPU source
   (positions/normals/tangents/uvs/colors/indices + morph/skin source) needed to pack EITHER
-  representation via the existing `mesh_pack::pack_visibility_bytes` / `pack_transparency_bytes`.
-  `commit_load` packs+uploads each needed kind once. A geometry referenced only by opaque materials
-  uploads only visibility; add a transparent binding + re-commit and the transparency rep is derived
-  then (no source re-supply — this is what makes live material reassignment work through the same
-  path).
+  representation via the existing `mesh_pack::pack_visibility_bytes` / `pack_transparency_bytes` —
+  but ONLY between `register_geometry` and its first `commit_load`. `commit_load` packs+uploads each
+  kind the geometry's current bindings need (union, once each) and then **drops the source** — no
+  reason to keep per-mesh attribute bytes in RAM once they're GPU-resident. **Consequence
+  (deliberate):** a geometry's set of kinds is frozen at its first commit; needing a kind it never
+  built (a live edit that flips opaque↔blend, or a later binding of a different kind) means
+  **re-registering** the geometry. The editor always has the authored source, so its material-edit
+  path re-materializes affected meshes — it never needs the renderer to retain source.
 - **③ Dedup by geometry.** One `GeometryKey` → at most one shared GPU resource holding
   `visibility_offset: Option` + `transparency_offset: Option`. Every `MeshKey` bound to that geometry
   shares it (refcount). Routing flags on each instance mirror which representations the resource
@@ -125,6 +128,7 @@ commit_load:
            upload once into the shared resource; record the offset                  // invariant ③
        set every bound mesh instance's has_visibility/has_transparency from the
        resource's available reps (route_renderable handles the rest)
+       drop the GeometrySource bytes for that geometry — consumed, now GPU-resident (§1 ②)
   1. finalize_gpu_textures()  (unchanged)
   2. reconcile_material_variants()  (unchanged)
   3. drain_commit_compiles()  (unchanged)
@@ -136,13 +140,14 @@ returns `Skip` ⇒ it's silently not drawn until its commit. No new gate state n
 
 ## 3. Data model (resolved)
 
-- **`GeometrySource`** (new, CPU): the retained source — positions, normals (or compute-on-register),
-  tangents (or compute), the custom-attribute set (uvs/colors), indices, optional morph + skin
-  source. Enough to pack EITHER representation. This is the data both `RawMeshData` and the glTF
-  decoder already produce just before they pack-and-discard today.
-- **`GeometryKey`** → registry entry holding the `GeometrySource` + the (lazily-built) shared GPU
-  resource: `visibility_offset: Option<usize>`, `transparency_offset: Option<usize>`, the buffer_info
-  layout, AABB, morph/skin keys, and a refcount of bound meshes.
+- **`GeometrySource`** (new, CPU): the source — positions, normals (or compute-on-register), tangents
+  (or compute), the custom-attribute set (uvs/colors), indices, optional morph + skin source. Enough
+  to pack EITHER representation. This is the data both `RawMeshData` and the glTF decoder already
+  produce just before they pack-and-discard today. **Held only register→first-commit, then dropped**
+  (§1 ②).
+- **`GeometryKey`** → registry entry holding the shared GPU resource (`visibility_offset:
+  Option<usize>`, `transparency_offset: Option<usize>`, the buffer_info layout, AABB, morph/skin keys,
+  a refcount of bound meshes) **plus the `GeometrySource` only until its first commit consumes it**.
 - **`MeshResource`** (`meshes.rs:552`) folds into / is replaced by the per-`GeometryKey` resource:
   it is no longer per-`insert`; it is per geometry and shared. `mesh_to_resource` becomes
   `mesh_to_geometry`. `duplicate_with_transform`'s refcount sharing generalizes to "every `add_mesh`
@@ -197,11 +202,18 @@ decision.
    `register_geometry` stores the source CPU-side (compute normals/tangents on register, as the
    builders do today). No GPU upload. Existing `insert` keeps working (parallel path) so the build
    stays green.
-3. **`resolve_geometry` in `commit_load`.** Implement the commit phase (§2 step 0): per `GeometryKey`,
-   union the kinds from bound materials, pack+upload missing reps once via `mesh_pack::pack_*`, set
-   instance flags from the resource. Add `LoadPhase::UploadingGeometry` + the `LoadingStats`
-   geometry counters. The pool-write plumbing already exists in `insert_resource` — move it here, keyed
-   per (geometry, kind), idempotent.
+3. **`resolve_geometry` in `commit_load` + granular loading UI.** Implement the commit phase (§2 step
+   0): per `GeometryKey`, union the kinds from bound materials, pack+upload missing reps once via
+   `mesh_pack::pack_*`, set instance flags from the resource, then free the source. The pool-write
+   plumbing already exists in `insert_resource` — move it here, keyed per (geometry, kind), idempotent.
+   Add `LoadPhase::UploadingGeometry` + the `LoadingStats` `geometry_total` / `geometry_uploaded`
+   counters (mirroring the texture counters). **Then wire BOTH viewers' loading UI to render every
+   phase + counter granularly** — model-tests overlay (`context.rs` `LoadingStatus` /
+   `canvas.rs::commit`) and the editor activity/boot indicator (`engine/activity.rs`, `main.rs` boot
+   `on_progress`, `web-shared` boot loader): show distinct, live "Uploading geometry X/Y" / "Uploading
+   textures X/Y" / "Compiling pipelines (N)" lines driven off `LoadingStats`, replacing the coarse
+   `shader_prewarm` bool / `compile_pending` count / single boot message. One mapping
+   (`LoadingStats → label`) shared by both viewers if practical.
 4. **`add_mesh` + `register_geometry` wired to deferral.** `add_mesh` records the binding + mints the
    MeshKey synchronously, references the GeometryKey, NO upload. Make `add_raw_mesh` = register +
    add_mesh. At this step the geometry is uploaded by `commit_load` (step 3), so a normal model still
@@ -213,10 +225,13 @@ decision.
    particles, thumbnail/preview/light_icons, scene-loader `:843`/`:1216`/`:1402`/particles,
    web-shared point_handle, render-worker): `add_raw_mesh_transparent` → `add_raw_mesh`; drop the
    opaque-vs-transparent choice. Each is followed (as already wired) by a `commit_load`.
-7. **Live material reassignment through the same path.** `set_mesh_material` becomes an "append":
-   it updates the binding + flags the geometry for re-resolution, and the caller's next `commit_load`
-   derives the new kind's representation if needed (e.g. opaque→blend grows the transparency rep).
-   Editor material edits route through this — proves invariant ① end-to-end.
+7. **Live material reassignment through the same path.** `set_mesh_material` becomes an "append": it
+   updates the binding, and the next `commit_load` re-routes the mesh among the geometry's
+   ALREADY-built kinds (a both-rep geometry's instance flips opaque↔transparent for free). A
+   reassignment that needs a kind the geometry never built (its source is gone, §1 ②) **re-registers**
+   the geometry — the editor's material-edit path re-materializes the affected meshes from authored
+   data. Either way it routes through register/add_mesh/commit, never a side channel — proves
+   invariant ① end-to-end.
 8. **Delete the dead model.** Remove `add_raw_mesh_transparent`, `mesh_buffer_geometry_kind`,
    `GltfMeshBufferGeometryKind`, the per-insert `MeshResource`, the eager `insert_resource` staging,
    and any now-unused `insert`/`insert_public` kind args. Verify each removal (compiler + §7).
@@ -235,7 +250,13 @@ decision.
 - **Dedup proof:** load a scene reusing one geometry under multiple materials/transforms; confirm the
   geometry source uploads each needed kind once (trace / a count assertion), not once per instance.
 - **Editor live path (:9085):** reassign a mesh's material opaque↔blend; it re-renders correctly
-  after the commit (transparency rep derived on demand) — no rebuild-from-source by the caller.
+  after the commit. A flip among already-built kinds is free; a flip to a never-built kind
+  re-materializes (the editor re-registers from authored data — the renderer holds no source, §1 ②).
+- **Granular loading UI:** on both viewers, the loading overlay shows distinct live geometry /
+  texture / pipeline progress from `LoadingStats` (not a single spinner) — screenshot-verify the
+  phases are visible during a cold load.
+- **Source is freed:** after a commit, the registry holds no `GeometrySource` bytes (the GPU
+  resource + offsets remain) — confirm via a memory/asserts check that source isn't retained.
 - **`task lint` clean + the test gate green throughout.** Commit per step with explicit paths
   (NEVER `git add -A`, NO backticks in `-m`), end messages with the Co-Authored-By trailer; do NOT
   push or open a PR.
