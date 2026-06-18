@@ -200,7 +200,11 @@ pub(crate) fn build_emitter(
     pbr.base_color_factor = [1.0, 1.0, 1.0, 1.0];
     pbr.metallic_factor = 0.0;
     pbr.roughness_factor = 1.0;
-    pbr.emissive_factor = [base_color[0] * 1.6, base_color[1] * 1.6, base_color[2] * 1.6];
+    pbr.emissive_factor = [
+        base_color[0] * 1.6,
+        base_color[1] * 1.6,
+        base_color[2] * 1.6,
+    ];
     let material_key = renderer.materials.insert(
         Material::Pbr(Box::new(pbr)),
         &renderer.textures,
@@ -282,7 +286,11 @@ pub fn drive_emitter(
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ZERO,
             });
-            attrs.push(InstanceAttr::from_rgba_alpha_size([1.0, 1.0, 1.0, 0.0], 0.0, 1.0));
+            attrs.push(InstanceAttr::from_rgba_alpha_size(
+                [1.0, 1.0, 1.0, 0.0],
+                0.0,
+                1.0,
+            ));
         }
     }
     renderer.set_mesh_instances(handle.mesh, &transforms)?;

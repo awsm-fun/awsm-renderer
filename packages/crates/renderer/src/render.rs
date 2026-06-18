@@ -402,7 +402,8 @@ impl AwsmRenderer {
         // inside `write_gpu`; gating on it here additionally keeps cube faces from
         // caching across a camera move and pins near-cascade caching to a still
         // camera. Forced re-renders (rect/layer/drift/config) always fire.
-        let time_driven_shadow = !self.dynamic_materials.is_empty() || self.materials.has_flipbook();
+        let time_driven_shadow =
+            !self.dynamic_materials.is_empty() || self.materials.has_flipbook();
         // Deformable geometry (skinned / morph-target meshes) deforms IN the shadow
         // caster pass — its vertex shader runs `apply_position_skin` /
         // `apply_position_morphs` — so an animated deformable caster's shadow changes
@@ -415,8 +416,7 @@ impl AwsmRenderer {
         // morphs don't move vertices, so they're irrelevant here.
         let deformable_present =
             !self.meshes.skins.is_empty() || !self.meshes.morphs.geometry.is_empty();
-        let external_static =
-            !self.camera.moved() && !time_driven_shadow && !deformable_present;
+        let external_static = !self.camera.moved() && !time_driven_shadow && !deformable_present;
         let shadow_static = self
             .shadows
             .take_shadow_static(self.meshes.len(), external_static);

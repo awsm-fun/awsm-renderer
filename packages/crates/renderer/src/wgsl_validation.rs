@@ -19,12 +19,12 @@
 use awsm_materials::MaterialShaderId;
 
 use crate::dynamic_materials::{BucketEntry, ShadingBase};
+use crate::render_passes::material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal;
+use crate::render_passes::material_decal::shader::template::ShaderTemplateMaterialDecal;
 use crate::render_passes::material_opaque::shader::cache_key::{
     DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
 };
 use crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaque;
-use crate::render_passes::material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal;
-use crate::render_passes::material_decal::shader::template::ShaderTemplateMaterialDecal;
 use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
 use crate::render_passes::material_transparent::shader::template::ShaderTemplateMaterialTransparent;
 use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;

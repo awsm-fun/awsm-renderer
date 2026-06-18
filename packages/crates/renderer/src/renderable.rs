@@ -134,8 +134,12 @@ impl AwsmRenderer {
                 );
             }
             None => {
-                pool.visible
-                    .extend(self.meshes.iter().filter(|(_, m)| !m.hidden).map(|(k, _)| k));
+                pool.visible.extend(
+                    self.meshes
+                        .iter()
+                        .filter(|(_, m)| !m.hidden)
+                        .map(|(k, _)| k),
+                );
             }
         }
 

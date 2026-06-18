@@ -35,8 +35,8 @@
 //! `Curve` / `Group` / `Collider` carry no runtime renderable.
 //!
 //! **`ParticleEmitter`** materializes into a ready-to-drive instanced billboard
-//! (**Design A: loader sets up, game ticks**): the loader builds the emissive quad
-//! + GPU instancing at `max_alive` capacity and returns an
+//! (**Design A: loader sets up, game ticks**): the loader builds the emissive quad and
+//! GPU instancing at `max_alive` capacity and returns an
 //! [`EmitterHandle`](particles::EmitterHandle) in [`NodeHandles::emitter`]; it does
 //! NOT simulate. The game ticks an [`awsm_particles::Simulator`] each frame and
 //! pushes the live particles via [`drive_emitter`](particles::drive_emitter) — the
@@ -314,7 +314,9 @@ fn replay_prefab_node(
             }
         }
         PrefabReplay::Camera(cfg) => {
-            let ck = renderer.cameras.insert(camera::camera_params_from_config(cfg));
+            let ck = renderer
+                .cameras
+                .insert(camera::camera_params_from_config(cfg));
             handles.camera = Some(ck);
             handles.camera_config = Some(cfg.clone());
         }
@@ -329,8 +331,13 @@ fn replay_prefab_node(
                 .iter()
                 .map(|p| world.transform_point3(Vec3::from_array(p.pos)))
                 .collect();
-            let colors: Vec<Vec4> = def.points.iter().map(|p| Vec4::from_array(p.color)).collect();
-            match renderer.add_line_strip(&positions, &colors, def.width_px, def.depth_test_always) {
+            let colors: Vec<Vec4> = def
+                .points
+                .iter()
+                .map(|p| Vec4::from_array(p.color))
+                .collect();
+            match renderer.add_line_strip(&positions, &colors, def.width_px, def.depth_test_always)
+            {
                 Ok(Some(k)) => handles.line = Some(k),
                 Ok(None) => {}
                 Err(err) => tracing::warn!("prefab instantiate: add_line_strip failed: {err}"),
@@ -1451,7 +1458,8 @@ async fn resolve_decal_texture_index(
     let stride = awsm_renderer::decals::decal_texture_index_stride(&renderer.gpu);
     match &cfg.texture {
         Some(t) => {
-            match texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await {
+            match texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await
+            {
                 Some(mt) => renderer
                     .textures
                     .get_entry(mt.key)
