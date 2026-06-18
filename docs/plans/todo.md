@@ -196,8 +196,9 @@ decision.
 
 ## 6. Implementation sequence (ordered; keep `cargo test -p awsm-renderer -p awsm-materials -p awsm-scene-loader --lib` green + `task lint` clean per step)
 
-1. **`geometry_kind` + `GeometryKind`.** Add the single function (§4) in the renderer; unit-test it
-   against every alpha-mode/transmission/HUD case. No behavior change yet (nothing calls it).
+1. ✅ **`geometry_kind` + `GeometryKind`.** Added the single function (§4) in
+   `meshes/geometry.rs` + unit tests (opaque/mask→Visibility, blend→Transparency, hud→Both, bridges
+   `is_transparency_pass`). No behavior change yet (nothing calls it).
 2. **`GeometrySource` + `GeometryKey` registry + retain source.** Add the registry on `Meshes`;
    `register_geometry` stores the source CPU-side (compute normals/tangents on register, as the
    builders do today). No GPU upload. Existing `insert` keeps working (parallel path) so the build

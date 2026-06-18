@@ -2,6 +2,7 @@
 
 pub mod buffer_info;
 pub mod error;
+pub mod geometry;
 pub mod mesh;
 pub mod meta;
 pub mod morphs;
