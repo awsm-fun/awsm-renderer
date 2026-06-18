@@ -282,11 +282,34 @@ builder/spec produces the renderer; transactions load content into it.
    them — if it does, that call site was missed in steps 4-5, fix it. Collapse the two
    `wait_for_pipelines_ready*` into one internal drain. Rename anything whose public-looking name
    still implies "call me ad-hoc." End state = the §1.5 acceptance grep passes.
-8. **Delete dead reactive machinery** once 1-7 land: confirm `last_ensured_bucket_layout` / the
+8. ✅ **Delete dead reactive machinery** once 1-7 land: confirm `last_ensured_bucket_layout` / the
    per-frame edge-compile path is now only used by genuine live AA/material changes (not load), and
    simplify whatever is now unreachable. Don't delete blindly — verify each removal.
 
 ---
+
+## ✅ Implementation complete (2026-06-18)
+
+All 8 steps landed on `follow-ups`, each committed separately with the per-step gate
+(`cargo test -p awsm-renderer -p awsm-materials -p awsm-scene-loader --lib` green +
+`task lint` clean). Runtime self-verified on model-tests :9080 via chrome-devtools:
+
+- **Single edge compile per load** — console shows exactly ONE `launch_edge_resolve_compile`
+  per model load (the commit's edge compile); the `ensure_compiled` lines are the build-time
+  eager prewarm, ONE per renderer build (boot + each `remove_all`), NOT a per-load 3× recompile.
+- **No `not compiled, skipping`** on the first interactive frame (zero console warnings).
+- **MSAA edges intact** — screenshot-verified Fox + DamagedHelmet at `samples: 4`, environment +
+  shadows correct, fully specialized first frame.
+- **`remove_all` preserves config** — model switch (clear → `remove_all` → rebuild → `commit`)
+  re-renders with MSAA / shadows / IBL / bucket-cap intact, rebuilt from `RendererConfigSpec`.
+- **§1.5 one-way grep passes** — outside the renderer crate the only load/compile surface is
+  `begin_load` / `commit_load` / `loading_stats`.
+
+> **Ordering deviation recorded:** `commit_load` runs finalize → reconcile → drain (the spec
+> listed reconcile first), because reconcile embeds the compile-kick and pipeline shaders bake
+> in `texture_pool_arrays_len` — finalize-first is what achieves the single-compile §7 goal. No
+> perf regression (it AVOIDS a double-compile). The build-time eager edge prewarm
+> (`renderer.rs` build()) is unchanged from baseline (default-equals-today).
 
 ## 7. Verification (per the standards gate: no perf regression; default-equals-today; MSAA-compile invariant)
 
