@@ -569,6 +569,12 @@ pub struct MeshResource {
 pub struct Meshes {
     list: DenseSlotMap<MeshKey, Mesh>,
     resources: DenseSlotMap<MeshResourceKey, MeshResource>,
+    /// Registered geometry sources (§1 ②). CPU-only retained source, held from
+    /// `register_geometry` until its first `commit_load` packs+uploads the kinds
+    /// its bound materials need, then dropped. The transaction's geometry-dedup
+    /// unit — many meshes share one [`GeometryKey`]. (Populated/consumed by later
+    /// steps; for now the registry exists in parallel to the legacy `insert` path.)
+    geometries: DenseSlotMap<geometry::GeometryKey, geometry::GeometrySource>,
     mesh_to_resource: SecondaryMap<MeshKey, MeshResourceKey>,
     transform_to_meshes: SecondaryMap<TransformKey, Vec<MeshKey>>,
     // Merged geometry pool: one allocation per mesh holds
@@ -672,6 +678,7 @@ impl Meshes {
         Ok(Self {
             list: DenseSlotMap::with_key(),
             resources: DenseSlotMap::with_key(),
+            geometries: DenseSlotMap::with_key(),
             mesh_to_resource: SecondaryMap::new(),
             transform_to_meshes: SecondaryMap::new(),
             buffer_infos: MeshBufferInfos::new(),
@@ -861,6 +868,22 @@ impl Meshes {
             b.bytes_uploaded_via_writebuffer + c.bytes_uploaded_via_writebuffer;
         s.resize_count += b.resize_count + c.resize_count;
         s
+    }
+
+    /// Register a [`geometry::GeometrySource`] (§1 ②) — CPU-only, NO GPU upload.
+    /// Returns a [`geometry::GeometryKey`] that meshes bind to via `add_mesh`; the
+    /// per-pass representations are packed+uploaded at the next `commit_load` from
+    /// the union of bound materials, then the source is dropped. Many meshes may
+    /// share one key (geometry dedup).
+    pub fn register_geometry(&mut self, source: geometry::GeometrySource) -> geometry::GeometryKey {
+        self.geometries.insert(source)
+    }
+
+    /// The retained source for a registered geometry, while it's still present
+    /// (i.e. before its first commit consumes + frees it). `None` after that, or
+    /// for an unknown key.
+    pub fn geometry_source(&self, key: geometry::GeometryKey) -> Option<&geometry::GeometrySource> {
+        self.geometries.get(key)
     }
 
     /// Public wrapper around `insert` for the raw-mesh path. Same semantics —

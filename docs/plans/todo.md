@@ -199,7 +199,14 @@ decision.
 1. ✅ **`geometry_kind` + `GeometryKind`.** Added the single function (§4) in
    `meshes/geometry.rs` + unit tests (opaque/mask→Visibility, blend→Transparency, hud→Both, bridges
    `is_transparency_pass`). No behavior change yet (nothing calls it).
-2. **`GeometrySource` + `GeometryKey` registry + retain source.** Add the registry on `Meshes`;
+> **Refinement (recorded, upholds default-equals-today):** the spec said "compute normals/tangents
+> on register". Tangents are gated on the bound material (`material_wants_tangents` — only when a
+> normal map is sampled), which isn't known at `register_geometry`; computing them unconditionally
+> there would regress meshes that don't need them. So **normals are computed at register** (material-
+> independent) and **tangents at commit** in `resolve_geometry` (when the bound materials are known),
+> from the retained positions/normals/UV0/indices. This preserves today's behavior exactly.
+
+2. ✅ **`GeometrySource` + `GeometryKey` registry + retain source.** Add the registry on `Meshes`;
    `register_geometry` stores the source CPU-side (compute normals/tangents on register, as the
    builders do today). No GPU upload. Existing `insert` keeps working (parallel path) so the build
    stays green.

@@ -10,7 +10,73 @@
 //!
 //! See `docs/plans/todo.md` §4.
 
+use awsm_renderer_core::pipeline::primitive::FrontFace;
+use slotmap::new_key_type;
+
+use crate::bounds::Aabb;
 use crate::materials::Material;
+use crate::meshes::buffer_info::MeshBufferVertexAttributeInfo;
+use crate::meshes::morphs::GeometryMorphKey;
+use crate::meshes::skins::SkinKey;
+
+new_key_type! {
+    /// Handle to a registered [`GeometrySource`]. Multiple meshes (different
+    /// materials / transforms) bind to one `GeometryKey` and share its GPU
+    /// representations — the dedup unit (§1 ③).
+    pub struct GeometryKey;
+}
+
+/// The retained CPU source for one piece of geometry — enough to pack EITHER
+/// pass representation (visibility / transparency) at commit, without re-supply.
+///
+/// Held only from `register_geometry` until its first `commit_load` consumes it
+/// (then dropped — §1 ②). The custom-attribute side (UVs/colors + their layout +
+/// the per-triangle index bytes) is pass-INDEPENDENT and pre-built once; the
+/// per-pass vertex streams are derived at commit from `positions` / `normals` /
+/// `uvs0` / `indices` via [`crate::mesh_pack::pack_visibility_bytes`] /
+/// [`crate::mesh_pack::pack_transparency_bytes`]. Both the raw-mesh path and the
+/// glTF decoder produce this same struct (source-agnostic, §5).
+pub struct GeometrySource {
+    /// Per-vertex positions (original, non-exploded).
+    pub positions: Vec<[f32; 3]>,
+    /// Per-vertex normals — area-weighted face normals computed at register if
+    /// the caller didn't supply them. Material-independent, so safe to compute
+    /// up front (unlike tangents, which are derived at commit — see §6 step 2).
+    pub normals: Vec<[f32; 3]>,
+    /// UV set 0, retained so commit can run MikkTSpace tangent generation when a
+    /// bound material samples a normal map. `None` ⇒ no tangents (the packer's
+    /// synthetic `[0,0,0,1]` fallback, same as today).
+    pub uvs0: Option<Vec<[f32; 2]>>,
+    /// Triangle indices into the per-vertex streams.
+    pub indices: Vec<u32>,
+    /// Winding for the packed visibility stream.
+    pub front_face: FrontFace,
+    /// Pass-independent custom-attribute layout (UVs / colors / …), in
+    /// declaration order. Becomes the mesh's `buffer_info.triangles.vertex_attributes`.
+    pub vertex_attributes: Vec<MeshBufferVertexAttributeInfo>,
+    /// Pass-independent custom-attribute bytes (AoS, one record per original
+    /// vertex), pre-packed once and shared by both representations.
+    pub custom_attribute_bytes: Vec<u8>,
+    /// Pass-independent per-triangle attribute-index bytes (3×`u32` per triangle).
+    pub attribute_index_bytes: Vec<u8>,
+    /// World-independent local-space AABB (computed from positions).
+    pub aabb: Option<Aabb>,
+    /// Optional geometry morph-target data (already inserted; shared per geometry).
+    pub geometry_morph_key: Option<GeometryMorphKey>,
+    /// Optional skin (rig) for skinned geometry (already inserted; per geometry).
+    pub skin_key: Option<SkinKey>,
+}
+
+impl GeometrySource {
+    /// Number of original (non-exploded) vertices.
+    pub fn vertex_count(&self) -> usize {
+        self.positions.len()
+    }
+    /// Number of triangles.
+    pub fn triangle_count(&self) -> usize {
+        self.indices.len() / 3
+    }
+}
 
 /// Which pass-geometry representation(s) a mesh needs, derived from its material.
 ///
