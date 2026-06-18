@@ -50,6 +50,10 @@ pub struct GeometrySource {
     /// bound material samples a normal map. `None` ⇒ no tangents (the packer's
     /// synthetic `[0,0,0,1]` fallback, same as today).
     pub uvs0: Option<Vec<[f32; 2]>>,
+    /// AUTHORED tangents (e.g. a glTF `TANGENT` attribute). When present, commit
+    /// uses these verbatim; when `None` and a bound material samples a normal map,
+    /// commit generates them via MikkTSpace from positions/normals/uv0/indices.
+    pub tangents: Option<Vec<[f32; 4]>>,
     /// Triangle indices into the per-vertex streams.
     pub indices: Vec<u32>,
     /// Winding for the packed visibility stream.

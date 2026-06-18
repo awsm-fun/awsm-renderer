@@ -198,6 +198,9 @@ impl RawMeshData {
             normals: self.normals.expect("ensure_normals filled this"),
             positions: self.positions,
             uvs0: self.uvs,
+            // Raw meshes don't author tangents — generated at commit if a normal-map
+            // material is bound.
+            tangents: None,
             indices: self.indices,
             front_face,
             vertex_attributes,

@@ -1000,19 +1000,23 @@ impl Meshes {
                 }
             }
 
-            // Tangents derived ONCE here (commit-time, gated — see §6 step 2).
-            let tangents = if want_tangents {
-                source.uvs0.as_ref().and_then(|uvs| {
-                    awsm_tangents::generate_tangents(
-                        &source.positions,
-                        &source.normals,
-                        uvs,
-                        &source.indices,
-                    )
-                })
-            } else {
-                None
-            };
+            // Tangents (commit-time): prefer AUTHORED tangents (e.g. glTF TANGENT);
+            // else generate via MikkTSpace iff a bound material samples a normal map
+            // (gated — see §6 step 2). `None` ⇒ the packer's synthetic fallback.
+            let tangents = source.tangents.clone().or_else(|| {
+                if want_tangents {
+                    source.uvs0.as_ref().and_then(|uvs| {
+                        awsm_tangents::generate_tangents(
+                            &source.positions,
+                            &source.normals,
+                            uvs,
+                            &source.indices,
+                        )
+                    })
+                } else {
+                    None
+                }
+            });
 
             // Pack exactly the needed representation(s), once each.
             let visibility_bytes = want_visibility.then(|| {
