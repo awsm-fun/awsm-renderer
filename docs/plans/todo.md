@@ -275,7 +275,7 @@ builder/spec produces the renderer; transactions load content into it.
    `begin_load → adds → commit_load`; boot prewarm (`editor/main.rs:95`) → `commit_load`. These
    exercise the LIVE path → proves invariant ③.
 6. ✅ **`RendererConfigSpec` + `remove_all`** (§5).
-7. **Consolidate the surface (§1.5) — the forcing function.** Now that every app/editor call site is
+7. ✅ **Consolidate the surface (§1.5) — the forcing function.** Now that every app/editor call site is
    migrated, make `prewarm_pipelines`, `wait_for_pipelines_ready`,
    `wait_for_pipelines_ready_with_progress`, `compile_material_variants`, and `finalize_gpu_textures`
    `pub(crate)`/private. The compiler is the check: nothing outside the renderer crate may still call

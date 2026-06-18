@@ -98,7 +98,7 @@ impl AwsmRenderer {
         Ok(png)
     }
 
-    pub async fn finalize_gpu_textures(&mut self) -> std::result::Result<(), AwsmError> {
+    pub(crate) async fn finalize_gpu_textures(&mut self) -> std::result::Result<(), AwsmError> {
         // Take the sampler-pool dirty bit *before* the pool write —
         // both bits feed the same rebuild gate below. Without this OR,
         // `ensure_sampler_in_pool` (cache-hit texture bound to a

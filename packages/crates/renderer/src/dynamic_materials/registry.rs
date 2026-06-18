@@ -1368,21 +1368,9 @@ impl crate::AwsmRenderer {
         Ok(())
     }
 
-    /// Scene-load warmup-await (`compile_materials(set).await`). Resolves
-    /// every opaque PBR material's feature-set variant, launches the
-    /// per-variant pipeline
-    /// compiles, and resolves only when they're ALL GPU-resident. A
-    /// frontend calls this once after inserting a scene's materials so the
-    /// **first rendered frame is already fully specialized** — no
-    /// compile-in-progress transient (the per-frame reconcile would
-    /// otherwise trigger the relaunch on the first render, briefly leaving
-    /// `final_blend` / opaque pipelines uncompiled). Built on the same
-    /// [`Self::reconcile_material_variants`] + [`Self::wait_for_pipelines_ready`].
-    pub async fn compile_material_variants(&mut self) -> Result<(), crate::error::AwsmError> {
-        self.reconcile_material_variants()?;
-        self.wait_for_pipelines_ready().await?;
-        Ok(())
-    }
+    // (Removed: the public `compile_material_variants` (= reconcile + wait).
+    // Its job IS `commit_load` for materials — every former caller now goes
+    // through the one compile path. See `docs/plans/todo.md` §1.5.)
 
     /// Internal helper: build a `MaterialDef` for a freshly-registered
     /// dynamic material and submit it to the scheduler. Idempotent —

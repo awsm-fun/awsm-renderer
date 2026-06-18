@@ -519,7 +519,7 @@ impl AwsmRenderer {
         //    pipelines) — it is not reimplemented here.
         self.load_phase = LoadPhase::Compiling;
         let textures_total = self.loading_textures_total;
-        self.wait_for_pipelines_ready_with_progress(|cp| {
+        self.drain_commit_compiles(|cp| {
             on_progress(LoadingStats::from_parts(
                 LoadPhase::Compiling,
                 textures_total,
@@ -648,7 +648,7 @@ impl AwsmRenderer {
     /// has promises to drain. It covers every live bucket (first-party
     /// canonical, PBR/Toon feature-set variants, and custom dynamic
     /// materials) at the active AA config; idempotent on cache hits.
-    pub async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
+    pub(crate) async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
         let _maybe_span = if self.logging.render_timings.sub_frame() {
             Some(tracing::span!(tracing::Level::INFO, "Prewarm Pipelines").entered())
         } else {
@@ -2493,38 +2493,20 @@ impl AwsmRenderer {
         self.debug_wireframe = u32::from(on);
     }
 
-    /// Drive any pending compiles to completion and return when every
-    /// scheduler-tracked group is either `Ready` or `Failed`.
+    /// The commit's CONCURRENT compile drain — `commit_load`'s phase 3. Kicks
+    /// the render-driven scene compile (`ensure_scene_pipelines`, inside
+    /// `prewarm_pipelines`) + the transparent-mesh + line prewarm, then drains
+    /// every resulting `inflight_compile` promise CONCURRENTLY via
+    /// `Stream::next` (each `.await` yields to the JS event loop so Dawn's
+    /// compile promises fire), installing each as it resolves and invoking
+    /// `on_progress` with a fresh [`CompileProgress`] snapshot per resolution.
     ///
-    /// Block A.2: this is the **canonical post-submit await surface**.
-    /// Frontends that have just called `register_material` /
-    /// `submit_dynamic_material` / (future) gltf-loader-driven
-    /// `submit_pipeline_group_batch` await this to know the GPU side
-    /// is caught up — at which point any mesh referencing the newly
-    /// submitted material will start dispatching on the next render
-    /// frame.
+    /// `pub(crate)`: the ONLY caller is `commit_load` (the one compile path).
+    /// It is not a free-floating "wait for pipelines" an embedder calls mid-
+    /// render — there is no such surface anymore.
     ///
-    /// Internally:
-    /// 1. Runs `prewarm_pipelines` (the existing batched compile
-    ///    flow), which the A.1 bridge wires to `mark_ready` for each
-    ///    scheduler-tracked material whose pipelines resolve.
-    /// 2. Drains `poll_pipeline_scheduler` until no further
-    ///    transitions apply (covers any scheduler-pushed futures from
-    ///    the eventual Stage-D push-futures migration).
-    ///
-    /// Returns the total number of transitions applied. Diagnostic
-    /// only — callers don't usually inspect.
-    pub async fn wait_for_pipelines_ready(&mut self) -> crate::error::Result<usize> {
-        self.wait_for_pipelines_ready_with_progress(|_| {}).await
-    }
-
-    /// Same as [`wait_for_pipelines_ready`] but invokes `on_progress` with a
-    /// fresh [`CompileProgress`](crate::pipeline_scheduler::CompileProgress)
-    /// snapshot after each sub-pipeline resolves — so a boot loader / splash
-    /// can show a live "Compiling N render pipelines…" countdown during the
-    /// cold-start warmup, mirroring the in-app activity pill that covers
-    /// post-mount (import / material-edit) compiles.
-    pub async fn wait_for_pipelines_ready_with_progress(
+    /// Returns the total number of transitions applied (diagnostic only).
+    pub(crate) async fn drain_commit_compiles(
         &mut self,
         mut on_progress: impl FnMut(crate::pipeline_scheduler::CompileProgress),
     ) -> crate::error::Result<usize> {
@@ -2535,9 +2517,9 @@ impl AwsmRenderer {
         self.prewarm_pipelines().await?;
 
         // Block B.3: if any line primitive has been registered since
-        // build (or since the last `wait_for_pipelines_ready`), drive
-        // the lazy line-pipeline compile here so the next frame can
-        // dispatch the fat-line pass instead of warn-skipping.
+        // build (or since the last commit), drive the lazy line-pipeline
+        // compile here so the next frame can dispatch the fat-line pass
+        // instead of warn-skipping.
         self.ensure_line_pipelines_compiled().await?;
 
         // Report the initial in-flight count before the drain so the splash
