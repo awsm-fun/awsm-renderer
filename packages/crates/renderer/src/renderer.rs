@@ -418,7 +418,13 @@ impl AwsmRenderer {
     /// preserved too — `remove_all` is a scene-data wipe, not a
     /// config-reset.
     pub async fn remove_all(&mut self) -> crate::error::Result<()> {
-        // meh, just recreate the renderer, it's fine
+        // Clears all scene CONTENT by recreating the renderer, but every build-time
+        // CONFIG the embedder set on the builder MUST be carried over here — a fresh
+        // builder otherwise reverts each to its default, so a config silently drifts
+        // on the first `remove_all` (this bit `with_bucket_config`; see that fix
+        // below). Add a `.with_*` line here whenever a new builder config is added.
+        // (Scene content — IBL/skybox colors, meshes, lights — is intentionally NOT
+        // carried: the caller reloads the scene + re-sets the environment.)
         let mut builder = AwsmRendererBuilder::new(self.gpu.clone())
             .with_logging(self.logging.clone())
             .with_clear_color(self._clear_color.clone())
@@ -429,9 +435,10 @@ impl AwsmRenderer {
             .with_post_processing(self.post_processing.clone())
             .with_shadows_config(self.shadows.config().clone())
             .with_scene_spatial_config(self.scene_spatial.config())
-            // Preserve the configured registration cap — `remove_all` rebuilds the
-            // renderer from a fresh builder, and without this the recreated registry
-            // silently reverts to the default cap (`DEFAULT_MAX_BUCKET_ENTRIES`),
+            // Preserve the per-pixel shadow-caster cap (K) — a build-time prep config.
+            .with_max_shadow_casters_per_pixel(self.prep_config.max_shadow_casters_per_pixel)
+            // Preserve the configured registration cap — without this the recreated
+            // registry reverts to the default cap (`DEFAULT_MAX_BUCKET_ENTRIES`),
             // dropping a higher cap the embedder set via `with_bucket_config`. A
             // scene with many distinct material buckets would then hit
             // `BucketCapExceeded` only after the first `remove_all`.

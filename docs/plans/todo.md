@@ -76,9 +76,20 @@ user-space concern (a dynamic shader + uniforms); built-ins are never force-join
   .max_bucket_entries())` (`renderer.rs`). Model-tests also sets a generous cap (1024) at build
   (`canvas.rs`). Verified: cap = 1024 at finalize, no error, 32 distinct PBR variant pipelines
   render. The `?variants=M` bench is kept as a dev diagnostic (parallels `?stress`).
-  **Note for follow-up:** `remove_all`'s "recreate the renderer" copies a hand-listed subset of
-  builder settings — it's fragile (this bug was one missed field). Worth auditing whether other
-  build-time configs are also dropped on `remove_all`.
+  **`remove_all` carry-over audit (done):** compared all 18 `AwsmRendererBuilder::with_*` methods
+  vs what `remove_all` copies. Found two more dropped CONFIGS: `with_max_shadow_casters_per_pixel`
+  (the prep `K`) — **now carried over** via `self.prep_config.max_shadow_casters_per_pixel`; and
+  `with_brdf_lut_options` — still dropped (niche: only a CUSTOM BRDF-LUT reverts to default on
+  `remove_all`; the renderer stores the generated LUT, not the options, so carrying it needs a new
+  stored field — left for the refactor below). The rest of the not-copied set is intentional: IBL/
+  skybox colors are scene content (re-set by the caller on reload); `with_phase_handler` is a
+  transient loading-UI hook; `with_profile` is a bundle whose effects are carried via the individual
+  resolved settings. Also rewrote the cavalier `// meh, just recreate the renderer` comment into a
+  carry-over contract so future builder configs don't silently drift.
+  **RECOMMENDED REFACTOR (David to decide):** the hand-listed copy is structurally fragile — every
+  new builder config must remember to add a line here. A robust fix: capture the build-time config
+  inputs in one struct stored on the renderer and replay it in `remove_all` (also closes the
+  `brdf_lut_options` gap). Not done unprompted (it's a builder/renderer structural change).
 
 - **Minor model-tests quirks (cosmetic).** `IridescenceDishWithOlives` renders black
   (camera framing / IBL — black in baseline too, not a renderer regression); a few model
