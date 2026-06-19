@@ -595,7 +595,12 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       `MeshData` gains `uvs1: Option<Vec<[f32;2]>>` (read `reader.read_tex_coords(1)`), `write_glb` emits
       TEXCOORD_1, and any textureInfo with `texCoord:1` keeps it. (Also affects any multi-UV sample, e.g.
       MetalRoughSpheresNoTextures variants / lightmaps.) The GAP 3 extension round-trips themselves are correct
-      + verified. Surfaced to David.
+      + verified. **⭐ DAVID'S CALL (2026-06-19): "Fix multi-UV (TEXCOORD_1)" NEXT.** Plan: `MeshData` gains
+      `uvs1: Option<Vec<[f32;2]>>`; `build_clean_node` (+ `extract_node_mesh`) read `reader.read_tex_coords(1)`;
+      `write_glb` emits a `TEXCOORD_1` accessor/bufferview + the primitive attribute when present (mirror the
+      existing TEXCOORD_0 path); MeshData construction sites (editor bake, tests) set `uvs1: None`. The
+      textureInfo `texCoord` is already preserved, so occlusion `texCoord:1` then samples the real set. VERIFY
+      SheenChair `?ourformat=1` == direct (fabric no longer over-darkens).
     - 🟡 **GAP 3 (earlier, 11 done):** ✅ SCALARS
       `ior`/`emissive_strength` (24507079) + ✅ TYPED-TEXTURE `specular`/`transmission`/`volume` (66c79b7e) +
       ✅ RAW-JSON `clearcoat`/`sheen`/`anisotropy`/`iridescence`/`dispersion`/`diffuse_transmission` (commit
