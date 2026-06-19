@@ -10,13 +10,16 @@
 > to the working per-node state + record, and still do the testing/cleanup/docs on that (functionally-correct)
 > state. This is the autonomous-runway plan until he's back.
 
-> **TESTING LOG (autonomous runway, David away).** ✅ Join-barrier verified: SheenChair import (multi-material
-> + sheen + multi-UV) renders clean; Fox import materialises its full bone hierarchy via the bulk recursion
-> (30 nodes, no double/missing) + renders — NO GPUValidationError. REMAINING TASK-B checks to run: Fox
-> animation PLAYBACK (skinned deform), shadows (light + floor), alpha cutoff, texture swap, custom WGSL
-> material, material/variant flip, a save→reload (apply_project Replace — note: only reachable via the
-> File-System-Access "Open project directory" dialog, which chrome-devtools can't drive; the Fox children
-> `Replace` already exercised the same bulk arm with content, so this is covered structurally). Record bugs
+> **TESTING LOG (autonomous runway, David away).** All checks so far PASS with NO GPUValidationError (only the
+> benign "Unable to preventDefault inside passive event listener" warning). ✅ SheenChair import (multi-material
+> + sheen + multi-UV) renders. ✅ Fox import — full bone hierarchy via the bulk recursion (30 nodes, no double/
+> missing) renders. ✅ Fox ANIMATION PLAYBACK — Animation mode, 3 clips (Survey/Walk/Run, 21 tracks → 21 live
+> players), Play → skinned deform animates (playhead advances), no errors. ✅ MIXED SCENE — built-in Box +
+> imported Fox render together (27 nodes, 2 meshes). REMAINING task-B checks: shadows (light+floor+box),
+> alpha cutoff, texture swap (Material tab), custom WGSL material, material/variant flip, live edit
+> (move/scale + undo/redo). NOTE: save→reload (apply_project Replace) is only reachable via the
+> File-System-Access "Open project directory" dialog (chrome-devtools can't drive it); the Fox children
+> `Replace` exercised the SAME bulk arm with content, so the reload path is covered structurally. Record bugs
 > here as found.
 
 **Remaining work.** The "geometry into the load transaction" foundation has landed (see *Already landed*
