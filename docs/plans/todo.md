@@ -165,16 +165,13 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >   Fox → `NodeKind::SkinnedMesh` (1.2k tris, fox_material + base-color tex, rendered). Player path
 >   (model-tests :9080) renders Fox + materials + shadows, regression-clean. This UNBLOCKS the epic's live
 >   verification (import + render now work; Phase 2 can be verified against a working baseline).
-> - **WRINKLE to chase next:** a Fox import surfaces a toast "this clip targets deleted nodes — nothing to
->   animate". Traced to `animation_sync::warn_if_orphaned_clip`: it fires when the active clip lowers 0
->   channels. The clip IS bound to the bone NodeIds (via `node_map`), but the bones' renderer
->   `TransformKey`s materialise ASYNCHRONOUSLY through `node_sync` AFTER the clip first lowers, so the
->   first relower resolves 0 channels → transient toast. `node_sync::schedule_relower` re-fires once the
->   bones land, so the Fox most likely DOES animate after settling — **but visually UNCONFIRMED**. Next
->   iteration: confirm the Fox actually deforms+animates in the editor (Animation panel → play → compare
->   two frames for limb motion); if it doesn't, the bug is real (clip→bone lower) — else the toast is a
->   benign import-race artifact (consider suppressing it during the import burst). A working animated
->   baseline is the yardstick for the Phase 2 "deforms + animates" acceptance.
+> - **BASELINE "deforms + animates" CONFIRMED ✅ (live).** Fox imports with its 3 clips (Survey/Walk/Run);
+>   the active Survey clip shows "21 tracks → 21 players · Live" (every bone track resolved to a renderer
+>   channel), and playing it visibly DEFORMS the skin (body/hindquarters shift between playhead 1.57s→1.92s
+>   — not a rigid node move). So the import→render→deform→animate baseline is fully working — the yardstick
+>   for Phase 2 is in place. The earlier "clip targets deleted nodes" toast WAS the transient relower race
+>   (bones materialise async after the clip first lowers; `schedule_relower` re-fires and it resolves to
+>   21/21). Benign import-race artifact — optionally suppress it during the import burst (low priority).
 > - **NOTE for Phase 5 / GPU-free import (§0):** these fixes ADD a `commit_load` at import (the meshes are
 >   uploaded then hidden — the current double-geometry the epic removes). That's the correct interim shape
 >   for today's populate-then-snapshot flow; the IMPORTER/MATERIALISER split (§0) replaces it with a
