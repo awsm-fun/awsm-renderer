@@ -541,13 +541,27 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       routes load → `reexport_clean_scene` → `write_glb` → re-parse → `populate_gltf`. Fox + DamagedHelmet
       render the correct GEOMETRY via our-format (verified on :9080). The injection point + toggle are in
       `scene.rs` (`our_format_enabled` / `import_to_our_format` / `upload_phase`).
-    - 🔴 **GAP 1 — TEXTURES lost in `reexport_clean→populate`.** DamagedHelmet renders WHITE via the flag,
-      fully textured via the direct path. Even BASIC base-color textures don't round-trip. The EDITOR never
-      exercised this (static models don't build a rig glb; skinned ones RE-UPLOAD textures via `texture_cache`
-      + `register_texture_key`, sidestepping the clean-glb's own binding). So this is a latent material
-      round-trip bug — investigate `write.rs` (does the written clean glb embed the texture + sampler + the
-      material's `baseColorTexture` ref correctly?) vs `populate`'s read. Likely a missing sampler / image-ref
-      link in the writer. This blocks "materials intact" for ALL textured samples, not just KHR_*.
+    - 🔴 **GAP 1 — TEXTURES lost = EXTERNAL-IMAGE glTF can't round-trip through `reexport_clean` (ROOT CAUSE
+      PINNED this loop via in-model-tests diagnostics).** NOT a writer bug — `write_glb` + the loader are fine
+      (the existing `referenced_texture_is_embedded` test proves embedded textures round-trip). The real cause:
+      **model-tests loads the `glTF/` variant** (`collections.rs::filepath` → `<Name>/glTF/<Name>.gltf`) whose
+      images are EXTERNAL `.jpg`/`.png` FILES. Diagnostics on DamagedHelmet via `?ourformat=1`: ORIGINAL doc has
+      `materials=1 textures=5 images=5`, but `buffers.raw[0]` is only **558 KB (geometry-only)** — the external
+      images were fetched + DECODED into `data.images` and their ENCODED bytes DISCARDED by the loader
+      (`import_image_data` in renderer-gltf/loader.rs). `reexport_clean`'s `ImagePool::intern` only embeds
+      images it can resolve from `(doc, buffers)` — buffer `View`s or `data:` URIs — so EXTERNAL-file images
+      yield `intern → None` → `clean scene images=0` → material has no texture → WHITE. (The editor worked only
+      because I imported the EMBEDDED `glTF-Binary/<Name>.glb` variant; this path was never exercised for
+      external-image glTF.) **FIX (next iteration) — make the importer handle external images:** the LOADER
+      (`renderer-gltf import_image_data`) already FETCHES the external encoded bytes — RETAIN them (e.g.
+      `GltfData.encoded_images: Vec<Option<(Vec<u8>, mime)>>` by glTF image index), then add a
+      `reexport_clean_scene_with_images(doc, buffers, &encoded_images)` (or an image-resolver param) so
+      `ImagePool::intern` falls back to the retained encoded bytes when buffer/data-URI resolution fails;
+      model-tests passes `data.encoded_images`. Pin with a glb-export test (external-URI image → reexport with
+      resolver → image embedded). ALT (simpler, model-tests-only): load the `glTF-Binary/<Name>.glb` variant for
+      the routing (embedded; what the editor/player use in reality) — but the loader fix is the general §0 one
+      (import handles ANY glTF). VERIFY: DamagedHelmet `?ourformat=1` → textured. This blocks ALL textured
+      external-image samples (not just KHR_*).
     - 🔴 **GAP 2 — ANIMATIONS dropped** by `reexport_clean` (Fox renders at bind pose, no walk). Needs
       `extract_animations(original doc)` → remap channel node-indices via `scene_node_flat_indices` (clean glb
       DFS-renumbers) → load the remapped clips after `populate_gltf` on the clean glb. The editor/player remap
