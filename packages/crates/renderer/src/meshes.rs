@@ -961,10 +961,13 @@ impl Meshes {
         materials: &Materials,
         transforms: &Transforms,
     ) -> Result<Vec<MeshKey>> {
-        use crate::meshes::geometry::{geometry_kind, GeometryKind};
+        use crate::meshes::geometry::{geometry_kind, GeometryReps};
 
         // Take the source OUT (frees it — §1 ②) so the uploads below can borrow
-        // `&mut self` without aliasing the registry.
+        // `&mut self` without aliasing the registry. `remove` is unconditional, and
+        // the returned `source` is dropped at the end of this scope — so after a
+        // resolve the registry holds NO `GeometrySource` for `gkey` (source-freed
+        // invariant, §7). The only retained CPU state is the GPU offsets + layout.
         let Some(source) = self.geometries.remove(gkey) else {
             return Ok(Vec::new());
         };
@@ -975,30 +978,23 @@ impl Meshes {
         let mut wired = Vec::new();
 
         {
-            // Union the kinds + tangent-need over the bound meshes' materials.
-            let mut want_visibility = false;
-            let mut want_transparency = false;
-            let mut want_tangents = false;
-            for &mk in &bound {
-                let Some(mesh) = self.list.get(mk) else {
-                    continue;
-                };
-                let is_hud = mesh.hud;
-                let Ok(material) = materials.get(mesh.material_key) else {
-                    continue;
-                };
-                match geometry_kind(material, is_hud) {
-                    GeometryKind::Visibility => want_visibility = true,
-                    GeometryKind::Transparency => want_transparency = true,
-                    GeometryKind::Both => {
-                        want_visibility = true;
-                        want_transparency = true;
-                    }
-                }
-                if crate::raw_mesh::material_wants_tangents(material) {
-                    want_tangents = true;
-                }
-            }
+            // UNION the kinds over the bound meshes' materials → the distinct reps to
+            // build, ONCE each (dedup, §7 — see `GeometryReps::count`). Same fold the
+            // `reps_union_dedups_to_distinct_kinds_not_instance_count` test pins.
+            let reps = GeometryReps::from_kinds(bound.iter().filter_map(|&mk| {
+                let mesh = self.list.get(mk)?;
+                let material = materials.get(mesh.material_key).ok()?;
+                Some(geometry_kind(material, mesh.hud))
+            }));
+            let want_visibility = reps.visibility;
+            let want_transparency = reps.transparency;
+            // Tangents are generated once iff ANY bound material samples a normal map.
+            let want_tangents = bound.iter().any(|&mk| {
+                self.list
+                    .get(mk)
+                    .and_then(|mesh| materials.get(mesh.material_key).ok())
+                    .is_some_and(crate::raw_mesh::material_wants_tangents)
+            });
 
             // Tangents (commit-time): prefer AUTHORED tangents (e.g. glTF TANGENT);
             // else generate via MikkTSpace iff a bound material samples a normal map
