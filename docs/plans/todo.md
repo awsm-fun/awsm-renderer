@@ -823,7 +823,16 @@ transaction way IN GENERAL (not just where this epic touched):
 ### 5b — PRELIMINARY REVIEW FINDINGS (catalogued mid-epic; the load-shape work below remains)
 
 `commit_load` call sites (editor) + re-run passes, with verdicts:
-- **🔴 Editor LOAD is per-node, NOT one transaction (the main remaining transaction-shape gap).**
+- **✅ RESOLVED (commits `1c8b2633` + `ba5e25b5`) — Editor LOAD is now ONE transaction (the join-barrier).**
+  The bulk path (`node_sync` `handle_diff`'s `Replace` diff = project reload / import subtree) declares the
+  WHOLE forest declare-only (the recursive `add_node(bulk_load=true)` join) then commits ONCE via
+  `commit_bulk_load` — matching the player loader `populate_awsm_scene`. Live add/edit keep per-node
+  declare+commit. No debounce → no texture-pool-grow window (the decal-bind-group `GPUValidationError` that
+  blocked the earlier debounce can't occur). VERIFIED LIVE on :9085 (no GPUValidationError): SheenChair import
+  renders; Fox import materialises its full bone hierarchy via the bulk recursion (30 nodes, correct counts,
+  no double/missing) + renders. **→ the Transaction-API goal is now FULLY met for BOTH the player AND the
+  editor.** (Original gap, for the record:)
+- **🟢 Editor LOAD was per-node, NOT one transaction (the main remaining transaction-shape gap — now FIXED).**
   `node_sync` materialises each geometry node independently — each `apply_kind` does its OWN `commit_load`:
   skinned (`node_sync.rs:848,951`), sprite (`1105`), `upload_simple_mesh` (`1228`, captured meshes), particle
   (`1388`). So a project RELOAD with N geometry nodes does N separate commits (no cross-node dedup/concurrency).
@@ -937,7 +946,11 @@ The debounce-only approach (David's chosen path) cannot close cleanly without on
 David.** The per-node-commit model (N transactions IN dependency order — correct, just not ONE) + the existing
 pin-skips hold the line; the player path is ALREADY one transaction (`populate_awsm_scene`).
 
-**⭐ DAVID'S CALL (2026-06-19): "Join-barrier restructure" — the cleanest real fix (NEXT).** Make the bulk
+**✅ DONE (commits `1c8b2633` declare_only threading + `ba5e25b5` the bulk_load join). VERIFIED LIVE — no
+GPUValidationError; SheenChair + Fox(hierarchy) import + render clean. The §5b consolidation is COMPLETE and
+the epic's transaction-shape goal is met.**
+
+**⭐ DAVID'S CALL (2026-06-19): "Join-barrier restructure" — the cleanest real fix (DONE).** Make the bulk
 load (the `Replace` diff = project reload / import) a TRUE single transaction: declare ALL nodes' geometry,
 AWAIT them, commit ONCE — no debounce, so NO pool-grow window (the decal-bind-group error can't occur). KEY
 STRUCTURAL FACT (node_sync `add_node`): the per-node materialise is a PERPETUAL reactive observer — `add_node`
