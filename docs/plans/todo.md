@@ -579,11 +579,21 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       via `?ourformat=1` now ANIMATES (pose changes across frames) AND is textured, no console errors.
       Follow-up: MORPH-weight channels skipped (counted+logged) — need the node's mesh morph key (Fox + common
       animated samples are T/R/S).
-    - 🟢 **GAP 3 — KHR_* extension round-trips: DONE (12/12), 1 sample wrinkle (SheenChair) outstanding.**
-      All twelve extension round-trips implemented in glb-export + 8 samples VERIFIED `?ourformat=1` == direct:
-      emissive_strength, ior, specular, transmission (typed), clearcoat, anisotropy, iridescence (raw),
-      texture_transform (incl normal/occlusion via raw-JSON read, commit `f88626e6`). Commits: 24507079 /
-      66c79b7e / 2dfc2bfa / 350b9729 / f88626e6.
+    - ✅ **GAP 3 — KHR_* extension round-trips: DONE (12/12) + the SheenChair multi-UV wrinkle RESOLVED.**
+      All twelve extension round-trips implemented in glb-export + verified `?ourformat=1` == direct
+      (emissive_strength, ior, specular, transmission, clearcoat, anisotropy, iridescence, texture_transform incl
+      normal/occlusion). Commits: 24507079 / 66c79b7e / 2dfc2bfa / 350b9729 / f88626e6.
+      ✅ **MULTI-UV GENERALIZED (commit `4f866e7c`):** `MeshData.uvs` is now `Vec<Vec<[f32;2]>>` (N TEXCOORD
+      sets, not just 1/2 — David's call). `build_clean_node` reads all `read_tex_coords(n)`; `write_glb` emits a
+      `TEXCOORD_n` accessor per set; `scene_loader::mesh_data_to_raw` takes the leading 2 for the GPU's uv0/uv1
+      (logs if it drops more — never silently). Rippled across meshgen / glb-export / gltf-convert / scene-loader
+      / editor / web-shared / render-worker. `multi_uv_sets_roundtrip` test + VERIFIED LIVE: SheenChair
+      `?ourformat=1` now renders IDENTICAL to direct (bright orange velvet; occlusion texCoord 1 samples right);
+      DamagedHelmet (texCoord 0) unaffected. **→ Phase 5 ACCEPTANCE MET** (every sample renders via our-format,
+      materials + all KHR_* extensions + animation + multi-UV intact). Follow-up (not blocking): the renderer's
+      GPU vertex layout / RawMeshData still carry 2 UV sets — generalizing the GPU path to N is a separate
+      effort; the editor's `uvs1` channel could fold into `uvs[1]` for full uniformity.
+      ───────── (history) ─────────
       🟠 **WRINKLE — SheenChair `?ourformat=1` fabric over-darkens — ROOT CAUSE FOUND (a CORE-reexport
       multi-UV limitation, NOT a GAP 3 extension bug).** SheenChair's fabric `occlusionTexture` uses
       **texCoord 1** (`media/.../SheenChair.gltf` mats 0+4: occl texCoord=1 with KHR_texture_transform), and the
