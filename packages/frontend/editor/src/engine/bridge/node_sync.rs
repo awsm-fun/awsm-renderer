@@ -48,6 +48,15 @@ async fn handle_diff(
                 remove_node(id).await;
             }
             order_reset(parent_id);
+            // ⭐ TRANSACTION PRINCIPLE (§0): a bulk scene load (project reload) is one
+            // transaction — establish the ENTIRE transform hierarchy of the new forest
+            // BEFORE materialising any geometry, so a SkinnedMesh node's joint bones
+            // (often in a SIBLING subtree) exist when its geometry is declared. Without
+            // this, a skinned node could materialise before its bones → its skin can't
+            // resolve the bone TransformKeys → renders empty. `add_node` below reuses
+            // these pre-established transforms (idempotent). This is the ORDERING fix —
+            // NOT a post-hoc re-materialise.
+            establish_forest_transforms(parent_tk, values.clone()).await;
             for (i, node) in values.into_iter().enumerate() {
                 add_node(parent_id, parent_tk, i, node).await;
             }
@@ -141,6 +150,53 @@ fn order_reset(parent_id: Option<NodeId>) {
     b.child_order.lock().unwrap().insert(parent_id, Vec::new());
 }
 
+/// Establish a node's renderer transform + bridge entry — the transforms-first half
+/// of the load transaction (⭐ TRANSACTION PRINCIPLE, §0). NO geometry, NO observers.
+/// Idempotent: returns the existing transform key if the node was already established
+/// (so `add_node` reuses it). Lets [`establish_forest_transforms`] declare the whole
+/// transform hierarchy before any geometry, so a skinned mesh's joint bones exist when
+/// its geometry is declared (no re-materialise).
+async fn establish_transform_only(
+    node: &Arc<Node>,
+    parent_tk: Option<TransformKey>,
+) -> TransformKey {
+    let node_id = node.id;
+    if let Some(tk) = bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&node_id)
+        .map(|e| e.transform_key)
+    {
+        return tk;
+    }
+    let trs = node.transform.get();
+    let tk =
+        with_renderer_mut(move |r| r.transforms.insert(trs_to_transform(&trs), parent_tk)).await;
+    let entry = RendererNode::new(node.clone(), tk);
+    bridge().nodes.lock().unwrap().insert(node_id, entry);
+    tk
+}
+
+/// Recursively establish the transform hierarchy of a node forest BEFORE any geometry
+/// materialises (⭐ TRANSACTION PRINCIPLE, §0): transforms declared in dependency order
+/// (parent before child, ALL of them before geometry). Used on a bulk scene load (the
+/// `Replace` diff at the scene root — project reload), so a `SkinnedMesh` node's joint
+/// bones (which may be in a SIBLING subtree) exist when its geometry is declared. This
+/// is the ordering fix for skinned save→reload — NOT a post-hoc re-materialise pass.
+fn establish_forest_transforms(
+    parent_tk: Option<TransformKey>,
+    nodes: Vec<Arc<Node>>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+    Box::pin(async move {
+        for node in nodes {
+            let tk = establish_transform_only(&node, parent_tk).await;
+            let children: Vec<Arc<Node>> = node.children.lock_ref().iter().cloned().collect();
+            establish_forest_transforms(Some(tk), children).await;
+        }
+    })
+}
+
 async fn add_node(
     parent_id: Option<NodeId>,
     parent_tk: Option<TransformKey>,
@@ -148,16 +204,27 @@ async fn add_node(
     node: Arc<Node>,
 ) {
     let node_id = node.id;
-    let trs = node.transform.get();
-    let tk =
-        with_renderer_mut(move |r| r.transforms.insert(trs_to_transform(&trs), parent_tk)).await;
-
-    let entry = RendererNode::new(node.clone(), tk);
-    bridge()
-        .nodes
-        .lock()
-        .unwrap()
-        .insert(node_id, entry.clone());
+    // Reuse a transform established by a transforms-first pre-pass
+    // ([`establish_forest_transforms`]) if present — so a node's transform exists
+    // before its (or a sibling's) geometry materialises (⭐ §0). Otherwise establish
+    // it now (the incremental single-node add path — unchanged).
+    let entry = {
+        let existing = bridge().nodes.lock().unwrap().get(&node_id).cloned();
+        match existing {
+            Some(e) => e,
+            None => {
+                let trs = node.transform.get();
+                let tk = with_renderer_mut(move |r| {
+                    r.transforms.insert(trs_to_transform(&trs), parent_tk)
+                })
+                .await;
+                let e = RendererNode::new(node.clone(), tk);
+                bridge().nodes.lock().unwrap().insert(node_id, e.clone());
+                e
+            }
+        }
+    };
+    let tk = entry.transform_key;
     order_insert(parent_id, index, node_id);
 
     // A freshly materialized node may be the missing dependency of a PENDING
