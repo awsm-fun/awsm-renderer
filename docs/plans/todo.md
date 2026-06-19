@@ -315,6 +315,22 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >   already re-uploads its geometry on every edit; skinned doing the same is acceptable.
 > - **morph-via-rig (step vi)** — morph-only nodes still use the legacy template path; decode morph from the
 >   rig glb into `RawMorph` so they go node-owned too, then DELETE the legacy `materialize_skinned_from_template`.
+>   **DE-RISKED (investigated this loop):** (a) the renderer side is ALREADY done — `RawMeshData.morph:
+>   Option<RawMorph>` exists + `add_raw_mesh` inserts it (`raw_mesh.rs` ~376) setting the geometry_morph_key;
+>   (b) ⭐ the dreaded morph-anim REBIND is AUTOMATIC — the relower resolves a `Morph` channel as `node → its
+>   materialized mesh → geometry_morph_key_for_mesh` (`animation_sync.rs:403-421`), re-resolved on every
+>   `schedule_relower` (which `add_node` fires on materialise), so a node-owned mesh that simply HAS a morph
+>   key auto-rebinds — NO manual rebind needed; (c) the rig glb IS built for morph-only imports (`import_typed`
+>   gates on `skins || has_morphs`) and `reexport_clean` carries `MorphTarget`s. REMAINING WORK (mechanical,
+>   one fresh iteration): (1) glb-export — `ExtractedNodeMesh.morph: Option<ExtractedMorph>` + read morph
+>   targets in `extract_node_mesh` (mirror `reexport_clean`'s `read_morph_targets`), with a packing method
+>   (like `ExtractedSkin::packed_index_weights`) → renderer VALUES layout: per vertex interleaved per target,
+>   position(12)+normal(12)+tangent(16, zeroed)=40B/target/vertex (mirror `renderer-gltf buffers/morph.rs`),
+>   plus `targets_len` / `vertex_stride_size=40*targets_len` / default-weights-as-f32-LE; single-primitive
+>   first (note multi-primitive merge as a limitation, like skin); (2) `node_sync::raw_mesh_from_rig` builds
+>   `RawMorph { info: MeshBufferGeometryMorphInfo{targets_len, vertex_stride_size, values_size}, weights,
+>   values }` + sets `data.morph`, and produces a mesh even with NO skin (morph-only); (3) DELETE
+>   `materialize_skinned_from_template` once nothing needs it; (4) verify AnimatedMorphCube import+play+reload.
 > - **rename** `repopulate_skinned_template` → "materialise skinned from our-format glb" (fold in).
 > - **(Original plan retained below for reference.)**
 >
