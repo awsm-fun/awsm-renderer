@@ -274,10 +274,18 @@ impl AwsmRenderer {
                 .players
                 .get(animation_key)
                 .ok_or(AwsmAnimationError::MissingKey(animation_key))?;
-            let transform = self.transforms.get_local(*transform_key)?;
+            // A loose player whose target transform was freed must NOT abort the
+            // WHOLE pose (this loop runs before the clip mixer below, so a single
+            // stale channel would otherwise skip ALL animation + spam an error). A
+            // scene reload frees the old skeleton's transforms before the players
+            // re-bind — skip the dangling player; the relower rebinds it. Present
+            // keys are byte-for-byte unchanged (same `apply` on the same `Transform`).
+            let Ok(transform) = self.transforms.get_local(*transform_key).cloned() else {
+                continue;
+            };
             match player.sample() {
                 AnimationData::Transform(transform_animation) => {
-                    let updated_transform = transform_animation.apply(transform.clone());
+                    let updated_transform = transform_animation.apply(transform);
                     self.transforms
                         .set_local(*transform_key, updated_transform)?;
                 }
@@ -667,16 +675,21 @@ impl AwsmRenderer {
     }
 
     /// Writes a composited `value` to `target` via the real write paths
-    /// (transforms / morphs / materials / lights / cameras). Strict: a
-    /// kind mismatch returns `WrongKind`; a missing transform key propagates
-    /// the transform error.
+    /// (transforms / morphs / materials / lights / cameras). Strict on a kind
+    /// mismatch (`WrongKind`); a missing TARGET (transform freed) is SKIPPED, not
+    /// fatal — a single dangling channel (e.g. a scene reload frees the old
+    /// skeleton before the relower rebinds) must not abort the whole pose.
     fn write_anim_target(&mut self, target: AnimationTarget, value: &AnimationData) -> Result<()> {
         match target {
             AnimationTarget::Transform(transform_key) => {
-                let transform = self.transforms.get_local(transform_key)?;
+                // Skip a channel whose target transform no longer exists (the relower
+                // rebinds it next tick); present keys are byte-for-byte unchanged.
+                let Ok(transform) = self.transforms.get_local(transform_key).cloned() else {
+                    return Ok(());
+                };
                 match value {
                     AnimationData::Transform(transform_animation) => {
-                        let updated = transform_animation.apply(transform.clone());
+                        let updated = transform_animation.apply(transform);
                         self.transforms.set_local(transform_key, updated)?;
                     }
                     _ => {
