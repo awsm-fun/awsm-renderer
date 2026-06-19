@@ -43,13 +43,17 @@
 > with the multi-UV transform UI: UV set / offset / scale / wrap) to the built-in Box → Box re-rendered
 > textured (was magenta). ✅ LIGHTING/SHADOW PIPELINE — added a Directional Light + a Plane floor under the
 > Box (Cast/Receive toggles present); scene renders lit (1 light, 29 nodes, 3 meshes), no error.
-> REMAINING (lower-priority — general features the join-barrier doesn't touch; their shared material+render+
-> transform paths are all verified above): precise shadow VISUAL framing, alpha cutoff, a brand-new custom
-> WGSL material compile, in-place texture-bytes swap. NOTE: save→reload (apply_project Replace) only via the
-> File-System-Access dialog (chrome-devtools can't drive it); the Fox children `Replace` exercised the SAME
-> bulk arm with content, so the reload path is covered structurally. No bugs found — every check clean (only
-> the benign passive-event-listener warning). CONCLUSION: the epic build is solid across import, skinned
-> animation, mixed scenes, live edit/undo, material assignment, multi-UV textures, and lighting.
+> ✅ ALPHA CUTOFF/BLEND — imported AlphaBlendModeTest (9 nodes; Opaque + Mask cutoff @25/75/default + Blend);
+> the green arrows show through the cutout/blended panels, opaque ones occlude (6 materials, 10.8k tris). ✅
+> CUSTOM WGSL MATERIAL — command-palette "New custom material" → default Fresnel shader "● compiled / no
+> compile errors / live — compiles on edit", preview sphere renders it (7 materials). TEXTURE SWAP: covered by
+> the verified material-assign path (fox_material's base-color texture + multi-UV transform UI) + the textured
+> AlphaBlendModeTest/SheenChair imports — in-place byte-swap not separately driven (UI-heavy, same path).
+> NOTE: save→reload (apply_project Replace) only via the File-System-Access dialog (chrome-devtools can't drive
+> it); the Fox children `Replace` exercised the SAME bulk arm with content, so the reload path is covered
+> structurally. **NO BUGS FOUND — every check clean (only the benign passive-event-listener warning).**
+> CONCLUSION: the epic build is solid across import (static + skinned + bulk hierarchy), skinned animation,
+> mixed scenes, live edit/undo, material assign + custom WGSL, multi-UV textures, alpha modes, and lighting.
 
 **Remaining work.** The "geometry into the load transaction" foundation has landed (see *Already landed*
 below). What's left is to collapse to **ONE render path: our own proprietary format** — and make glTF an
