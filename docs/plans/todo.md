@@ -1,9 +1,9 @@
-# Plan: one geometry flow — editor content as a source
+# Plan: one geometry flow — render our own format; glTF is import-only
 
 **Remaining work.** The "geometry into the load transaction" foundation has landed (see *Already landed*
-below). What's left is to make **editor content a first-class source**, so EVERY producer — primitives,
-glTF imports, and editor-authored content (including skins + morphs) — flows through the *one* geometry
-path. This dissolves the last special case (skinned meshes) and gives us one place to optimise + debug.
+below). What's left is to collapse to **ONE render path: our own proprietary format** — and make glTF an
+**importer**, never something the renderer renders directly. This kills the last two-sources-of-truth
+seams (editor skinned content; the glTF-direct render path) so we debug + optimise in one place.
 
 > Scope note: worker-hosting the renderer (main-thread responsiveness / the loading-UI paint nuance) is
 > tracked separately in `docs/plans/multithreading.md` and is explicitly OUT of scope here. We are NOT
@@ -12,17 +12,40 @@ path. This dissolves the last special case (skinned meshes) and gives us one pla
 
 ---
 
-## 0. The north star
+## 0. The north star (David, confirmed)
 
-There must be **one way** geometry reaches the screen:
+**The renderer is NOT a "glTF renderer" — it is a glTF *importer* + a renderer of our own proprietary
+format.** There is ONE thing the renderer renders: **our format**. glTF only ever enters through import,
+which converts it to our format; from then on everything is our format. No code path renders glTF
+directly. This holds for EVERYTHING we support — including **model-tests**, which imports a glTF file into
+our format **in-memory** and renders that (so even the plain-GLB viewer is consistent with the editor).
+Kill the two-sources-of-truth problem everywhere.
 
+**Our format:**
+- **Geometry + attribute data → glb** (a clean, geometry-only glb — incl. skins + morphs; the existing
+  `awsm_glb_export::reexport_clean` output / rig glb). This is the ONE canonical geometry container;
+  decode-it-once is the ONE geometry source.
+- **Materials → a separate sidecar** (extracted at import; the editor's material library).
+- **Animation → our own clip format** (extracted at import via `extract_animations`, supplemented with
+  editor additions like clip mixing).
+
+**The two flows that converge on the one renderer:**
 ```
-begin_load()  →  add sources  →  commit_load()
+glTF bytes ──(IMPORT: reexport→clean glb + extract materials + extract clips)──► OUR FORMAT
+OUR FORMAT ──(render: decode glb → GeometrySource → begin_load → add_mesh → commit_load + bind materials + load clips)──► screen
 ```
+- **editor**: import on user action; our format is persisted (glb + sidecars) and is what MCP edits +
+  what's written to disk; render from it.
+- **model-tests / raw-glb player**: import in-memory; render from the in-memory our-format. (model-tests
+  is still a glTF *viewer* — it just converts to our format first instead of rendering glTF directly.)
 
-A "source" is a `GeometrySource` (geometry + optional skin + optional morph). EVERY producer lowers to
-it. Today primitives/raw and the glTF decode do; **editor content does not** — it has two divergent
-paths (static = captured + re-materialised; skinned = shares populate-built meshes). Close that.
+The geometry transaction is the render half: `begin_load() → add sources (GeometrySource) → commit_load()`,
+where a "source" is a `GeometrySource` (geometry + optional skin + optional morph) decoded from our-format
+glb. EVERY producer lowers to it.
+
+> **Goals this serves:** one way to do things (debug/optimise in one place); fix non-transactional perf;
+> NO perf regressions; reduce resource consumption (one decode, no double-geometry, clean up on teardown);
+> "scene editor → our format → player/editor" coherently for everything.
 
 ## 1. Already landed (do NOT redo — context for the work below)
 
@@ -156,9 +179,12 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 > The rig glb is the editor's ONE canonical geometry source (incl. skin + morph). The editor builds,
 > captures, re-materialises, persists, and MCP-edits skinned geometry from it — one decode path, errors
 > surface in one place, and what's on disk == what renders == what MCP edits.
-> - **The plain-GLB `populate` path STAYS for model-tests / player-of-raw-glb only** (the sanctioned
->   exception — "model-tests works for plain GLB import"). The EDITOR no longer renders skinned content
->   from the original decode.
+> - **glTF is import-only (§0):** the renderer renders OUR format (clean glb), never glTF directly. The
+>   `renderer-gltf` crate splits into an IMPORTER (glTF → clean glb + materials + clips) and an
+>   our-format RENDERER (clean glb → `GeometrySource` → the transaction). Phase 2 does this for the
+>   EDITOR's skinned content first; **model-tests routes through the SAME import→our-format→render too**
+>   (in-memory) in the model-tests phase below — it is NOT a permanent plain-GLB exception, just sequenced
+>   after the editor unification.
 > - **At import the editor reexports the original → rig glb (already done), then builds its skinned
 >   renderables FROM the rig glb** (decode it → skeleton transforms + skin + geometry); materials +
 >   animation clips are still extracted from the original into the editor library/clips (the rig glb is
@@ -230,6 +256,21 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
   re-materialise / cached decoded source for big rigs).
   - *Acceptance:* byte-fidelity round-trip tests green; no second materialise path exists; re-materialise
     of a large rig is acceptably fast (or incremental).
+
+- **Phase 5 — glTF is import-only EVERYWHERE: split `renderer-gltf` into importer + our-format renderer; route model-tests through it (§0).**
+  Today `populate_gltf` renders glTF directly (gltf → renderer meshes). Make the renderer render ONLY our
+  format: (i) an IMPORTER `glTF bytes → our format` = `reexport_clean` (clean glb) + `extract_material_specs`
+  (materials) + `extract_animations` (clips); (ii) an our-format RENDERER `clean glb → GeometrySource →
+  transaction` (this is `populate_gltf` re-pointed at the clean, materialless glb) + bind the extracted
+  materials (the materialless-glb + per-node-material pattern the bundle loader already uses) + load the
+  clips. Route **model-tests** through import→our-format→render **in-memory** (it stays a glTF viewer; it
+  just converts first). No code path renders glTF directly after this.
+  - *Acceptance:* model-tests renders every sample (incl. transmission/clearcoat/sheen/etc.) via the
+    our-format path — materials + animation intact, regression-clean vs today; ONE renderer (our format),
+    glTF only at the import boundary; no perf regression on cold load (`?trace`).
+  - *Note (perf/scope):* reexport-on-every-model-load is CPU work — acceptable for a viewer, but measure;
+    if a sample regresses, record it. The material-extension round-trip (all KHR_* the test models use) is
+    the main surface — verify each renders identically.
 
 ## 4. Decisions (resolved — these are NOT open; implement as written, no stopping to ask)
 
