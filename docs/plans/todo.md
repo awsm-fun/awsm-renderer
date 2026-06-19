@@ -51,6 +51,14 @@ The load-transaction + geometry-resolution core is implemented, verified, and gr
   via `add_raw_mesh` through `node_sync::apply_kind` (teardown + rebuild); the bundle loader loads a
   **materialless geometry-only glb + a separately-applied material** (`GltfMaterialSource::Single`) — the
   "separated glb + materials" pattern, in production.
+- **The skinned source is ALREADY retained + persisted as a glb** (this de-risks the whole epic): at
+  import `awsm_glb_export::reexport_clean_scene` builds a **clean rig glb** (skeleton + skin + morph);
+  `skinned_bake_cache::store_rig_glb`/`get_rig_glb` hold it (thread-local) and persistence writes it to
+  `assets/<id>.rig.glb`; **`gltf::repopulate_skinned_template(source, rig_bytes)` rebuilds the skinned
+  renderer template from those bytes** (already used on project reload). So the editor DOES know where to
+  re-import skinned geometry from — the rig glb. Static geometry persists in parallel as
+  `assets/<id>.mesh.bin` (bitcode `CapturedMesh` / `MeshData`). The geometry-as-glb container the epic
+  wants therefore already exists for the skinned case.
 
 **The one remaining special case (what this plan removes):** skinned meshes
 (`node_sync::materialize_skinned_mesh`) share the populate-built renderer geometry and re-assign material
@@ -76,15 +84,23 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 
 ## 3. Phased path
 
-- **Phase 1 — Capture skinned/morphed geometry as authored content (also fixes the skinned flip).**
-  Extend the capture path (`awsm_glb_export::extract_node_mesh` / `MeshData`) and `RawMeshData` to carry
-  optional skin (per-vertex joints+weights + the skin's joints + inverse-bind matrices) and morph
-  targets; wire them into `GeometrySource` (the renderer fields already exist). The editor then captures
-  skinned/morphed imports the same way it captures static geometry, and `apply_kind` re-materialises them
-  uniformly — **delete the `set_mesh_material`-on-shared-populate-geometry skinned branch in `node_sync`.**
+- **Phase 1 — Route skinned re-materialisation through the retained rig glb (fixes the skinned flip).**
+  The rig glb already exists per source (`get_rig_glb` / `repopulate_skinned_template`, §1), so the editor
+  already knows where to re-import skinned geometry from. Make `node_sync`'s skinned path re-materialise
+  through it: when a `SkinnedMesh` node materialises / re-fires (e.g. a material edit via
+  `rematerialize_for_material`), **rebuild its renderer geometry from the retained rig glb** with the
+  CURRENT material, then `commit_load` — so the kind is resolved at commit like everything else and a flip
+  to a never-built kind rebuilds the right rep instead of `Skip`. Remove the
+  `set_mesh_material`-on-shared-populate-geometry reliance for the never-built-kind case.
+  **Decided design (NOT an open question):** the SKELETON (joint scene nodes) + the animation channels
+  targeting them are PERSISTENT and are NOT recreated — re-materialisation rebuilds only the geometry+skin
+  weights and re-binds to the existing joints (keyed by `skin.source`/`node_index`/`primitive_index`, all
+  stable), exactly as project-reload's `restore_skinned_templates` → `repopulate_skinned_template` already
+  does. No key churn, no stranded animation. Scope the rebuild to the affected `skin.source` to avoid
+  rebuilding unrelated rigs.
   - *Acceptance:* a skinned mesh's opaque↔blend material flip re-renders (no vanish, no
-    `VisibilityGeometryBufferNotFound`); re-skinning a mesh works; existing skinned imports + animation
-    still deform correctly.
+    `VisibilityGeometryBufferNotFound`); existing skinned imports + their animation still deform; Fox /
+    DamagedHelmet regression-clean.
 
 - **Phase 2 — One "editor content → source" producer.**
   Collapse the static-capture and skinned paths into a single editor producer that lowers ANY authored
@@ -109,15 +125,30 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
   - *Acceptance:* byte-fidelity round-trip tests green; no second materialise path exists; re-materialise
     of a large rig is acceptably fast (or incremental).
 
-## 4. Open questions / risks (resolve before or within each phase)
+## 4. Decisions (resolved — these are NOT open; implement as written, no stopping to ask)
 
-- **Round-trip fidelity** — export→import of skins/morphs must be exact (joint order, inverse-bind
-  matrices, morph-delta layout). Needs byte-fidelity tests across `glb-export` + the decode.
-- **Performance** — re-importing a big rig on every edit could stutter; may need incremental
-  re-materialise or a cached decoded source. (Note: the renderer deliberately FREES its source at commit;
-  the *editor* owns the authored copy — which is exactly this format.)
-- **Skin/skeleton identity across re-import** — joints are scene transforms; re-import must rebind to the
-  SAME skeleton nodes (and the animation channels targeting them) without churning keys.
+- **Skin/skeleton identity across re-import — DECIDED.** The skeleton (joint scene nodes) + the animation
+  channels targeting them are PERSISTENT and never recreated by re-materialisation. Rebuild only the
+  geometry+skin weights and re-bind to the existing joints, keyed by
+  `skin.source`/`node_index`/`primitive_index` (stable) — the exact pattern
+  `restore_skinned_templates` → `repopulate_skinned_template` already uses on project reload. No new
+  TransformKeys, no stranded animation. (This was the scariest risk; the existing reload path already
+  solves it, so just reuse it.)
+- **Performance — DECIDED: full re-materialise, optimise only if measured.** Default-equals-today: the
+  static-capture path already fully re-uploads on every edit, so a skinned mesh doing the same is
+  acceptable. Do NOT pre-build incremental re-materialise / caching. If `?stress=N` + `?trace=sub-frame`
+  shows a real stall on a big rig, add a cached decoded source then (the editor already owns the rig glb
+  bytes, so caching is local) — but only when a benchmark proves it's needed.
+- **Round-trip fidelity — DECIDED: pin it with tests, not discussion.** Add byte-fidelity proptests
+  across `glb-export` ↔ the decode for skins/morphs (joint order, inverse-bind matrices, morph-delta
+  layout), mirroring the existing visibility/transparency packer-parity proptests. A failure is an
+  ordinary bug to fix, not a design question.
+- **Save format — DECIDED: reuse the existing per-asset side-file scheme.** Geometry already persists as
+  `assets/<id>.rig.glb` (skinned) and `assets/<id>.mesh.bin` (static); materials + animation clips already
+  persist separately in the project. The epic CONSOLIDATES toward glb-for-all-geometry but does NOT
+  require a new container format or breaking the project format — extend the existing side-file scheme.
+  (If, in Phase 3, unifying static `.mesh.bin` onto glb turns out to need a project-format migration,
+  that's the ONE thing worth a quick heads-up — note it in this doc and keep going on everything else.)
 
 ## 5. Standards gate (unchanged from the foundation work)
 
