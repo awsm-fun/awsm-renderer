@@ -570,10 +570,15 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       the routing (embedded; what the editor/player use in reality) — but the loader fix is the general §0 one
       (import handles ANY glTF). VERIFY: DamagedHelmet `?ourformat=1` → textured. This blocks ALL textured
       external-image samples (not just KHR_*).
-    - 🔴 **GAP 2 — ANIMATIONS dropped** by `reexport_clean` (Fox renders at bind pose, no walk). Needs
-      `extract_animations(original doc)` → remap channel node-indices via `scene_node_flat_indices` (clean glb
-      DFS-renumbers) → load the remapped clips after `populate_gltf` on the clean glb. The editor/player remap
-      pattern exists (`scene-loader::animation::load_animations` + `AnimResolveMaps`).
+    - ✅ **GAP 2 — FIXED + VERIFIED (commit `a28cd58a`).** model-tests `load_remapped_animations`: after
+      `populate_gltf(clean glb)`, `extract_animations(original doc)` → remap each channel's node index
+      original→clean via `scene_node_flat_indices` → resolve the clean `TransformKey` via the populate ctx's
+      `node_index_to_transform` → `insert_transform(AnimationPlayer::new(clip), tk)` (the same loose-player
+      binding the direct populate does, just remapped). Mirrors the player's separate-clip / sidecar model
+      (clips NOT baked into the rig glb — keeps the editor/player rig glb animation-free). VERIFIED LIVE: Fox
+      via `?ourformat=1` now ANIMATES (pose changes across frames) AND is textured, no console errors.
+      Follow-up: MORPH-weight channels skipped (counted+logged) — need the node's mesh morph key (Fox + common
+      animated samples are T/R/S).
     - 🔴 **GAP 3 — KHR_* material extensions dropped** (the large surface). `reexport_clean`'s `extract_material`
       preserves ONLY core PBR + `KHR_materials_unlit`; it drops clearcoat / sheen / transmission / volume /
       iridescence / anisotropy / specular / ior / emissive_strength / dispersion / texture_transform. ~25% of
