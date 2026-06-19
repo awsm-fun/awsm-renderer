@@ -3168,6 +3168,7 @@ impl EditorController {
                 default_mat_id,
                 &import.node_meshes,
                 &import.node_uvs1,
+                &import.node_flat_indices,
                 Some(&import.display_name),
                 &mut node_map,
             ));
@@ -6090,11 +6091,21 @@ fn build_editor_subtree(
     default_mat_id: Option<AssetId>,
     node_meshes: &std::collections::HashMap<(u32, Option<u32>), awsm_glb_export::MeshData>,
     node_uvs1: &std::collections::HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
+    node_flat_indices: &std::collections::HashMap<u32, u32>,
     fallback_name: Option<&str>,
     node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
     use awsm_editor_protocol::{dynamic_material::MaterialInstance, NodeKind, SkinnedMeshRef, Trs};
+
+    // This node's index in the clean rig glb (the DFS-flatten `reexport_clean`
+    // assigns), the index space the MATERIALISER decodes the rig glb at. Falls
+    // back to the original index when there's no rig glb (unskinned imports leave
+    // `node_flat_indices` empty — the value is then unused).
+    let rig_node_index = node_flat_indices
+        .get(&tn.gltf_node_index)
+        .copied()
+        .unwrap_or(tn.gltf_node_index);
 
     let name = tn.label.clone().unwrap_or_else(|| {
         fallback_name
@@ -6182,6 +6193,7 @@ fn build_editor_subtree(
                     skin: SkinnedMeshRef {
                         source: asset_id,
                         node_index: tn.gltf_node_index,
+                        rig_node_index,
                         primitive_index: None,
                         // Filled after the whole subtree is built (node_map
                         // complete) — see `assemble_skin_joints` / patch below.
@@ -6220,6 +6232,7 @@ fn build_editor_subtree(
                         skin: SkinnedMeshRef {
                             source: asset_id,
                             node_index: tn.gltf_node_index,
+                            rig_node_index,
                             primitive_index: Some(i as u32),
                             joints: Vec::new(),
                         },
@@ -6317,6 +6330,7 @@ fn build_editor_subtree(
             default_mat_id,
             node_meshes,
             node_uvs1,
+            node_flat_indices,
             None,
             node_map,
         ));
