@@ -110,17 +110,41 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
   path already exercising skin-through-resolve_one + the live editor test in Phase 2.)
 
 - **Phase 2 — Capture skinned/morphed imports as per-node editable content; one materialise path.**
-  Extract each skinned node's geometry+skin+morph from the rig glb (extend `extract_node_mesh` /
-  `MeshData`, persisted like the existing `.mesh.bin` / re-extractable from `assets/<id>.rig.glb`) into the
-  editor's capture store, so a `SkinnedMesh` node becomes editable captured content like a static `Mesh`.
-  Then `node_sync::apply_kind` materialises it through the SAME teardown + `upload`(skin) + bind-material +
-  `commit_load` path — **delete `materialize_skinned_mesh`'s `set_mesh_material`-on-shared-template
-  branch.** The skeleton (joint nodes) + animation channels stay persistent and are re-bound by stable
-  keys (reuse the `repopulate_skinned_template` / `restore_skinned_templates` rebinding). `populate_gltf`
-  becomes a pure importer feeding this same producer — no editor-special / hidden meshes.
+  *(Investigated; de-risked plan below. This is the large, high-regression-risk step — see "Risk
+  checkpoint".)* The skinned source-of-truth (the rig glb) is already retained + persisted
+  (`assets/<id>.rig.glb`), so **NO project-format migration is needed** — do NOT extend the `CapturedMesh`
+  / `.mesh.bin` bitcode (positional, non-versioned → would break old saves). Instead:
+  - **(a) glb-export `extract_node_mesh` also returns per-node SKIN** (per-vertex joints+weights +
+    inverse-bind matrices + set_count) and morph — additively on `ExtractedNodeMesh` (in-memory; no
+    serialized-format change). Safe, testable in isolation.
+  - **(b) Re-wire `node_sync::materialize_skinned_mesh`** to build a `RawMeshData { skin: Some(RawSkin{..}),
+    morph: .. }` per primitive from the rig-glb decode (cache the decoded per-(source,node,prim)
+    MeshData-with-skin in a thread-local like `skinned_bake_cache`, to avoid re-decoding per edit) + the
+    CURRENT material, and `add_raw_mesh` it PER-NODE (owned by the node → teardown removes it, re-fire
+    rebuilds) — DELETE the `set_mesh_material`-on-shared-template branch. The skinned meshes become
+    node-owned (added to `model_meshes`) instead of template-owned/survive-teardown.
+  - **(c) Map the rig's joint node-indices → the editor's existing skeleton `TransformKey`s** (via the
+    template's `node_index_to_transform`) so the `RawSkin.joints` re-bind to the SAME persistent skeleton;
+    animation channels target those joint nodes (unchanged). Reuse the
+    `repopulate_skinned_template` / `restore_skinned_templates` machinery for the mapping.
+  - **(d) `populate_gltf` becomes a pure importer** feeding the one producer (no editor-special / hidden
+    meshes).
   - *Acceptance:* a skinned mesh's opaque↔blend material flip re-renders (no vanish, no
-    `VisibilityGeometryBufferNotFound`); skinned imports + animation still deform; one code path
-    materialises every editor geometry kind; Fox/DamagedHelmet/skinned/morph/primitive all render via it.
+    `VisibilityGeometryBufferNotFound`); skinned imports + animation still deform; one materialise path;
+    Fox/DamagedHelmet/skinned/morph/primitive all render via it.
+  - **NEW WRINKLE found (record per the guardrail):** re-materialise mints a NEW `geometry_morph_key`, so
+    any MORPH animation channel bound to the old key (`populate_gltf_animation_morph`) must REBIND on
+    rebuild — the skeleton/joint case is fine (persistent `TransformKey`s) but morph-weight animation is
+    keyed to the geometry. Static captured meshes already re-materialise on edit, so check whether the
+    editor already rebinds morph animation there (reuse it) or whether this is a pre-existing gap to
+    handle. Resolve within (b)/(c); if it needs an animation-binding redesign, record options here.
+
+> **⚠ Risk checkpoint (Phase 2).** This rewires the editor's skinned + morph + animation materialise
+> path — core, high-blast-radius systems whose correctness needs LIVE verification with a
+> skinned+morphed+animated model (import, deform, flip, save→reload). That is not safe to execute
+> unattended in one-shot loop iterations. Phase 1 (the safe renderer foundation) is landed; Phases 3–4
+> depend on Phase 2, so there is no independent green step to peel off. The loop is PAUSING here for a
+> human checkpoint (see the session summary) rather than plowing a risky multi-system refactor blind.
 
 - **Phase 3 — The proprietary save format (geometry-glb + materials sidecar + animation clips).**
   Define + implement the editor's persistent format: per-asset geometry glb (via `awsm-glb-export`,
