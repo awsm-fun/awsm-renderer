@@ -10,6 +10,15 @@
 > to the working per-node state + record, and still do the testing/cleanup/docs on that (functionally-correct)
 > state. This is the autonomous-runway plan until he's back.
 
+> **TESTING LOG (autonomous runway, David away).** ✅ Join-barrier verified: SheenChair import (multi-material
+> + sheen + multi-UV) renders clean; Fox import materialises its full bone hierarchy via the bulk recursion
+> (30 nodes, no double/missing) + renders — NO GPUValidationError. REMAINING TASK-B checks to run: Fox
+> animation PLAYBACK (skinned deform), shadows (light + floor), alpha cutoff, texture swap, custom WGSL
+> material, material/variant flip, a save→reload (apply_project Replace — note: only reachable via the
+> File-System-Access "Open project directory" dialog, which chrome-devtools can't drive; the Fox children
+> `Replace` already exercised the same bulk arm with content, so this is covered structurally). Record bugs
+> here as found.
+
 **Remaining work.** The "geometry into the load transaction" foundation has landed (see *Already landed*
 below). What's left is to collapse to **ONE render path: our own proprietary format** — and make glTF an
 **importer**, never something the renderer renders directly. This kills the last two-sources-of-truth
