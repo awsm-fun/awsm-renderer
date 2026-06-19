@@ -591,7 +591,17 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       `?ourformat=1` now renders IDENTICAL to direct (bright orange velvet; occlusion texCoord 1 samples right);
       DamagedHelmet (texCoord 0) unaffected. **→ Phase 5 ACCEPTANCE MET** (every sample renders via our-format,
       materials + all KHR_* extensions + animation + multi-UV intact).
-    - 🟡 **GPU MULTI-UV TO N — STEP 1 DONE (commit `c1780c10`), STEP 2 (editor uvs1 fold) NEXT.**
+    - ✅ **GPU MULTI-UV TO N — DONE (both steps).** STEP 1 `c1780c10` (RawMeshData.uv_sets + per-set packing;
+      meta/WGSL already indexed). STEP 2 `0c88f35d` (editor `uvs1` fold): glb-export `ExtractedNodeMesh` drops
+      its `uvs1` field (set 1 → `mesh.uvs[1]`); the gltf import bridge drops the `node_uvs1` map; state.rs drops
+      the `node_uvs1` threading + `mint_imported_mesh` `uvs1` param (`from_mesh_data` folds `mesh.uvs` →
+      CapturedMesh.uvs+uvs1, so the PERSISTED bitcode format is unchanged); `mesh_cache::from_mesh_data_with_uvs1`
+      removed. `extract_node_mesh_folds_uv_sets` test + VERIFIED LIVE: imported SheenChair (occlusion on
+      TEXCOORD_1) into the editor by URL — 4 nodes/6 materials, renders the textured chair, no errors. The UV-set
+      system is now generalized to N end-to-end (data model + glb-export + GPU). **→ Phase 5 + all David follow-
+      ups COMPLETE.** Only remaining thread: the deferred editor-load consolidation (§5b) — SURFACE to David.
+      ───────── (history) ─────────
+    - 🟡 **GPU MULTI-UV TO N — STEP 1 (history).**
       ✅ STEP 1 (renderer): `RawMeshData` `uvs`+`uvs1` → `uv_sets: Vec<Vec<[f32;2]>>`; raw_mesh.rs packs a
       `TexCoords{index:i}` attribute + bytes per set in a loop. The material-mesh-meta ALREADY derives
       `uv_set_count`/`uv_sets_index` from the attribute layout (`max(index+1)`) + the WGSL reads set `i` by
