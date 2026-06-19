@@ -533,6 +533,35 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
   - *Note (perf/scope):* reexport-on-every-model-load is CPU work — acceptable for a viewer, but measure;
     if a sample regresses, record it. The material-extension round-trip (all KHR_* the test models use) is
     the main surface — verify each renders identically.
+  - **PHASE 5 FINDINGS (investigated + first increment landed, commit `21a7d8c5`):**
+    - ✅ **STAGE 1 (import) is already GPU-FREE** — `awsm-glb-export` has NO wgpu deps; `reexport_clean` +
+      `extract_*` are pure data. So the "import does not touch the GPU" acceptance holds by construction; the
+      only GPU upload is `populate_gltf` (STAGE 2). (Audit via Cargo.toml + Explore trace.)
+    - ✅ **Geometry routing PROVEN** — model-tests `?ourformat=1` (opt-in dev toggle, default unchanged)
+      routes load → `reexport_clean_scene` → `write_glb` → re-parse → `populate_gltf`. Fox + DamagedHelmet
+      render the correct GEOMETRY via our-format (verified on :9080). The injection point + toggle are in
+      `scene.rs` (`our_format_enabled` / `import_to_our_format` / `upload_phase`).
+    - 🔴 **GAP 1 — TEXTURES lost in `reexport_clean→populate`.** DamagedHelmet renders WHITE via the flag,
+      fully textured via the direct path. Even BASIC base-color textures don't round-trip. The EDITOR never
+      exercised this (static models don't build a rig glb; skinned ones RE-UPLOAD textures via `texture_cache`
+      + `register_texture_key`, sidestepping the clean-glb's own binding). So this is a latent material
+      round-trip bug — investigate `write.rs` (does the written clean glb embed the texture + sampler + the
+      material's `baseColorTexture` ref correctly?) vs `populate`'s read. Likely a missing sampler / image-ref
+      link in the writer. This blocks "materials intact" for ALL textured samples, not just KHR_*.
+    - 🔴 **GAP 2 — ANIMATIONS dropped** by `reexport_clean` (Fox renders at bind pose, no walk). Needs
+      `extract_animations(original doc)` → remap channel node-indices via `scene_node_flat_indices` (clean glb
+      DFS-renumbers) → load the remapped clips after `populate_gltf` on the clean glb. The editor/player remap
+      pattern exists (`scene-loader::animation::load_animations` + `AnimResolveMaps`).
+    - 🔴 **GAP 3 — KHR_* material extensions dropped** (the large surface). `reexport_clean`'s `extract_material`
+      preserves ONLY core PBR + `KHR_materials_unlit`; it drops clearcoat / sheen / transmission / volume /
+      iridescence / anisotropy / specular / ior / emissive_strength / dispersion / texture_transform. ~25% of
+      model-tests samples (the entire EXTENSIONS collection, ~50 samples) would visually regress. Each needs
+      `GlbScene`/`PbrMaterial` IR fields + extract + write (~50-100 LOC each) — a meaningful per-extension effort.
+    - **BOTTOM LINE:** Phase 5 is LARGER than a routing increment — "every sample renders via our-format,
+      materials+animation intact, regression-clean" is gated on GAP 1 (texture round-trip bug, fix first —
+      it blocks the common case) + GAP 2 (animation remap) + GAP 3 (the KHR_* surface). The routing INFRA is
+      proven + GPU-free import confirmed. Surface to David: this is a multi-iteration effort; sequence GAP 1 →
+      GAP 2 → GAP 3, or scope Phase 5 down (route only non-extension samples, document the KHR_* exception).
 
 ## 4. Decisions (resolved — these are NOT open; implement as written, no stopping to ask)
 
