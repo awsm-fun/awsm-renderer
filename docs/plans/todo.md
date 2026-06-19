@@ -56,6 +56,31 @@ Stage 2's geometry half is the transaction: `begin_load() → add sources (Geome
 where a "source" is a `GeometrySource` (geometry + optional skin + optional morph) decoded from our-format
 glb. EVERY producer lowers to it.
 
+> ## ⭐ TRANSACTION PRINCIPLE (David, confirmed — applies to ALL loading, do NOT violate)
+>
+> Loading/materialising ANYTHING is ONE transaction, in this shape:
+> 1. **`begin_load`** — start the transaction.
+> 2. **add a whole bunch of operations** — glTF, raw meshes, materials, textures, animations, skins, whatever
+>    — establishing transforms BEFORE the geometry that references them.
+> 3. **`commit_load`** — commit ONCE.
+> 4. **the commit does the smart organisation INTERNALLY** — dedup (pack each rep once), run concurrently,
+>    resolve geometry, free sources. The caller does NOT pre-organise; it declares, then commits.
+>
+> **Anti-patterns this forbids (each is a "you did it wrong" smell):**
+> - **post-hoc "re-materialisation" passes** that re-run a materialise after the fact to patch ordering /
+>   timing races. If a thing isn't ready when you add it, the FIX is to order the transaction correctly
+>   (add its dependency first) — NOT to add it broken and re-do it later. (This is the mistake caught on the
+>   skinned-reload bone-ordering bug: the right fix is to establish the bone transforms before the skinned
+>   geometry within the load, not to re-materialise the skinned node once the bones land.)
+> - **per-operation `commit_load`** (a commit per node) instead of one commit for the whole load — it
+>   defeats the commit's cross-operation dedup/concurrency. (The editor's reactive per-node materialisation
+>   currently does this; consolidating editor LOAD onto one transaction is the aligned direction.)
+> - any "smart organisation" (ordering, dedup, batching) done OUTSIDE `commit_load` that the commit should
+>   own.
+>
+> When in doubt: declare everything into the open transaction, in dependency order, then commit once and let
+> the commit do the work.
+
 > **Goals this serves:** one way to do things (debug/optimise in one place); fix non-transactional perf;
 > NO perf regressions; reduce resource consumption (one decode, no double-geometry, clean up on teardown);
 > "scene editor → our format → player/editor" coherently for everything.
@@ -194,34 +219,30 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 > VisibilityGeometryBufferNotFound / no JointAlreadyExistsButDifferent / no console errors.
 >
 > **REMAINING Phase 2 follow-ups (next iterations):**
-> - **🔴 save→reload restores — BLOCKER, reload regresses skinned render (diagnosed this loop, NOT yet fixed).**
+> - **🔴 save→reload restores — BLOCKER: skinned reload renders empty, bone-ORDERING confirmed. The fix is
+>   TRANSACTION-ALIGNED ordering, NOT re-materialisation (see the ⭐ TRANSACTION PRINCIPLE in §0).**
 >   Tested via the headless in-memory round-trip: `window.wasmBindings.editor_dispatch_json('{"cmd":
->   "reload_project_in_memory"}')` (the `ReloadProjectInMemory` self-test — MCP-only, not in the command
->   palette; serialize_inmem captures the rig glb via `rig_glb_files`, clears caches, re-applies). OBSERVED:
->   the scene structure restores (fox = SkinnedMesh at origin, 26 nodes, 1 mesh / 1.2k tris / 1 bucket) BUT
->   the fox geometry is INVISIBLE, and the bottom bar shows "fox · 0 tris" → the node owns no mesh, so on
->   reload it fell through to the FALLBACK `materialize_skinned_from_template` (the new `raw_mesh_from_rig`
->   did NOT fire). Plus a per-frame anim error `animation_sync.rs:685 pin: LocalNotFound(TransformKey)`.
->   - **Root cause (hypothesis, strong):** materialisation ORDER on reload. `apply_project` inserts roots
->     `[fox, root]`; the fox SkinnedMesh node materialises BEFORE its bones (under sibling `root`) have their
->     `bridge.nodes` entries, so `raw_mesh_from_rig`'s joint→TransformKey map returns `None` → fallback. At
->     IMPORT the new path DID fire (the flip worked → node-owned), so bones were ready then — reload's async
->     order differs. The fallback's populate mesh is ALSO invisible on reload (separate: `skin_bridge` isn't
->     re-registered on reload — only `finish_model_import` calls `register_skin_joint`, not the reload path —
->     so the baked skeleton may be undriven/degenerate; OR the un-hide doesn't take).
->   - **persistence PREP made then REVERTED (correct but insufficient alone):** storing the rig glb in
->     `restore_skinned_templates` (BEFORE `apply_project`, where the bytes are already read) so
->     `get_rig_glb` is ready pre-materialise — needed, but the bone-timing blocks the new path BEFORE
->     `get_rig_glb` matters, so it didn't fix reload on its own. Re-apply it as part of the full fix.
->   - **Fix direction (next iteration):** make the new path fire on reload despite bone-timing — RE-MATERIALISE
->     skinned nodes after the bones land (a skinned analogue of `node_sync::schedule_relower`: when a
->     SkinnedMesh node's `raw_mesh_from_rig` returns `None` because a bone isn't in `bridge.nodes` yet, nudge
->     a re-`apply_kind` once the scene settles), + the persistence prep above. Also resolve the animation
->     relower `LocalNotFound` on reload (likely the same race; `schedule_relower` should re-bind once bones
->     materialise — verify it re-fires + clears). Then re-run the round-trip + confirm fox renders + deforms +
->     flip still works. (Whether reload was ALSO fragile for skinned BEFORE the Phase-2 core `27d40e00` is
->     untested — the relower race is pre-existing; the fallback-invisibility may be new from `hide_template_meshes`
->     now hiding skinned too. Either way HEAD currently regresses skinned reload — fix before declaring Phase 2 done.)
+>   "reload_project_in_memory"}')` (the `ReloadProjectInMemory` self-test — MCP-only, not in the palette;
+>   serialize_inmem captures the rig glb via `rig_glb_files`, clears caches, re-applies). OBSERVED: scene
+>   structure restores (fox = SkinnedMesh at origin, 1 mesh/1.2k tris) but the geometry is INVISIBLE,
+>   "fox · 0 tris" → fell through to the FALLBACK template path. Per-frame anim `LocalNotFound(TransformKey)`.
+>   - **CONFIRMED root cause (commit `1d4b1eca` added diagnostics):** bone-ORDERING. The rig glb input is now
+>     ready pre-apply (stored in `restore_skinned_templates` — input availability fixed, the transaction-aligned
+>     "declare dependency first" half), so `get_rig_node_decode` succeeds — but the warn fires:
+>     `raw_mesh_from_rig: bone node ... (rig joint idx 1) not yet in bridge — falling back`. The SkinnedMesh
+>     node materialises BEFORE its bone scene-nodes (under sibling `root`) have their `bridge.nodes` entries,
+>     so the joint→TransformKey map can't resolve. At IMPORT the new path fires (bones ready by then — async
+>     order differs); on reload it doesn't.
+>   - **Fix direction = the transaction model (do it the RIGHT way, NOT a re-materialise hack):** establish
+>     the transform hierarchy (bones / all scene-node `TransformKey`s) BEFORE the geometry that references
+>     them, within ONE load — i.e. the editor's scene LOAD should be one `begin_load → declare transforms,
+>     then geometry/materials/skins → commit_load` transaction (which also fixes the per-node-commit
+>     anti-pattern). Concretely: a transforms-first pass over the loaded tree so every bone's `bridge.nodes`
+>     entry + renderer `TransformKey` exists before any SkinnedMesh node's geometry is added; THEN one
+>     commit. Do NOT add the skinned node broken and re-materialise it once bones land (that's the forbidden
+>     post-hoc re-materialisation). The animation `LocalNotFound` is the same ordering race (clip lowers
+>     against a not-yet-established bone key) — the same transforms-first ordering resolves it.
+>   - HEAD currently regresses skinned reload — fix (the transaction-aligned way) before declaring Phase 2 done.
 > - **teardown skin/geometry cleanup (step v)** — repeated edits re-insert the skin/geometry each
 >   re-materialise; `skins::remove` + caching `skin_key` per (source,node,prim) to REUSE (DECISION) not yet
 >   done → potential leak on repeated flips. Verify with memory_stats / `?stress`, then add cleanup + reuse.
@@ -464,6 +485,26 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
   with the Co-Authored-By trailer; do NOT push or open a PR.
 - Verify visually via chrome-devtools (model-tests :9080, editor :9085) — navigate + screenshot to
   CONFIRM before trusting console.
+- **Honour the ⭐ TRANSACTION PRINCIPLE (§0) at every step:** load = `begin_load → declare many ops (in
+  dependency order: transforms before the geometry that references them) → commit_load`; the commit does
+  the dedup/concurrency. NO post-hoc re-materialisation passes; NO per-operation commits; NO "smart"
+  ordering/batching outside `commit_load`.
+
+## 5b. FINAL REVIEW STEP (David, required — run at the END, before declaring the epic done)
+
+Before calling the epic complete, do a dedicated review pass confirming the codebase actually works the
+transaction way IN GENERAL (not just where this epic touched):
+
+1. **Grep + read for transaction-principle violations** across the editor + loaders: per-operation
+   `commit_load` calls inside a load loop (should be ONE commit per load); any "re-materialise" / "repopulate"
+   / re-run-after-the-fact pass that patches an ordering/timing race (should be fixed by ordering the
+   transaction); any ordering/dedup/batching done by a caller that `commit_load` should own. List each hit
+   with a verdict (legit one-off live-edit vs a load that should be batched into one transaction).
+2. **Confirm the editor's LOAD paths (import + reload) are single transactions** with transforms declared
+   before geometry — the skinned-reload bone-ordering bug is the canonical test (must render + deform +
+   flip + survive save→reload, all via ONE transaction, no re-materialise).
+3. **Record findings** (fixed vs deferred-with-reason) in this doc; only declare the epic done once the
+   load paths are transaction-shaped and the acceptance list passes.
 
 ## 6. Out of scope / tracked elsewhere
 

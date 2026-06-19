@@ -736,7 +736,20 @@ async fn materialize_skinned_mesh(
     material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
 ) {
     let Some(raw) = raw_mesh_from_rig(&skin) else {
-        // No rig-glb skin decode → morph-only / legacy. Keep the prior behaviour.
+        // No rig-glb skin decode → morph-only / legacy → the template fallback.
+        //
+        // ⭐ TRANSACTION PRINCIPLE (David — see docs/plans/todo.md §0): loading is
+        // ONE `begin_load → declare ops (transforms BEFORE the geometry that
+        // references them) → commit_load` transaction; the commit does the smart
+        // dedup/concurrency. `raw_mesh_from_rig` can ALSO return `None` transiently
+        // when a JOINT'S BONE scene-node isn't in `bridge.nodes` yet (logged
+        // "bone node ... not yet in bridge") — that's a transaction-ORDERING bug
+        // (the skinned geometry was declared before the bone transforms it depends
+        // on), surfaced on save→reload. The FIX is to order the load so every bone
+        // `TransformKey` exists before the skinned geometry is added — NOT to
+        // re-materialise the skinned node after the bones land (a forbidden
+        // post-hoc re-materialise pass). Until that ordering fix lands, this
+        // fallback is a stopgap; do NOT "fix" reload by re-running materialise.
         materialize_skinned_from_template(entry, skin, material).await;
         return;
     };
