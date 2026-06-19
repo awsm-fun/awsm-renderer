@@ -562,6 +562,15 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       it blocks the common case) + GAP 2 (animation remap) + GAP 3 (the KHR_* surface). The routing INFRA is
       proven + GPU-free import confirmed. Surface to David: this is a multi-iteration effort; sequence GAP 1 →
       GAP 2 → GAP 3, or scope Phase 5 down (route only non-extension samples, document the KHR_* exception).
+    - **⭐ DAVID'S CALL (2026-06-19): "Continue Phase 5 (texture fix first)."** Sequence: GAP 1 (texture
+      round-trip) → GAP 2 (animation remap) → assess GAP 3 (KHR_*). Keep grinding Phase 5 in the loop. The
+      editor-load consolidation stays deferred (after Phase 5). NEXT = GAP 1: find why `reexport_clean→write_glb
+      →populate_gltf` loses textures (DamagedHelmet white via `?ourformat=1`, textured via direct). Investigate
+      `glb-export/src/write.rs` (does it emit the image + sampler + the material's baseColorTexture ref so a
+      re-parse + `populate_gltf` binds it?) — likely a missing sampler or image/texture link in the writer; OR
+      `populate`'s read of the clean glb. A `glb-export` round-trip TEST (write a textured material → re-parse →
+      assert the material still references an embedded texture with a sampler) would pin it. Verify the fix on
+      :9080 with `?ourformat=1` → DamagedHelmet textured.
 
 ## 4. Decisions (resolved — these are NOT open; implement as written, no stopping to ask)
 
