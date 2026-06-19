@@ -243,9 +243,13 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >     the texture is a declared load input before materials/geometry reference it). Also add `texture_files`
 >     to `serialize_inmem` so the round-trip self-test models textures. Deferred to Phase 3 (it's the materials
 >     sidecar, not the skinned epic core).
->   - **REMAINING reload follow-up B — anim `LocalNotFound(TransformKey(5v1))`** persists per-frame on reload
->     even though 21/21 tracks resolve + the fox animates. One stale channel targeting a freed/absent key —
->     investigate `animation_sync` pin vs the reload relower (likely a single clip channel; low impact).
+>   - ✅ **reload follow-up B — anim `LocalNotFound` FIXED (commit `599ab230`).** Root cause was a
+>     ROBUSTNESS bug: `update_animations` propagated the first missing transform key (the loose-player loop
+>     AND the mixer's `write_anim_target`) → aborted the ENTIRE pose for that frame, so a single stale channel
+>     broke ALL animation, not just spammed. On reload the old skeleton's transforms are freed before the
+>     relower rebinds, so `pin_pose` hit it every frame in the window. Now skips a dangling channel (target
+>     transform freed) — the relower rebinds it; present keys byte-for-byte unchanged. Verified live: reload
+>     → fox renders + DEFORMS, NO console errors.
 >   - (Original "bone ordering confirmed" detail below, kept for history.)
 > - **(history) skinned reload renders empty, bone-ORDERING confirmed — fixed by `5a77ee24` above.**
 >   Tested via the headless in-memory round-trip: `window.wasmBindings.editor_dispatch_json('{"cmd":
