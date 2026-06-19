@@ -260,6 +260,19 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >       `restore_textures()` BEFORE `apply_project` that reads the files → re-decodes/uploads via
 >       `material::import_raster`-style → `register_texture_key(asset_id, key)` (declared load input before
 >       materials resolve). Verify: import Fox/DamagedHelmet → `reload_project_in_memory` → textured again.
+>     - ✅ **SUB-STEPS 2–4 DONE (commit `dbc64474`) — TEXTURE PERSISTENCE LANDED + VERIFIED.** Exactly as
+>       planned: `GltfImport.texture_images` (paired via `ctx.textures`), capture in `finish_model_import`
+>       (`texture_content_hash` sha256 + `texture_cache` + `new_with_hash`, ext on display_name), `texture_files()`
+>       + `restore_textures()` wired into save_to_dir / serialize_inmem / apply_inmem / load_from_dir /
+>       load_project_from_url; `restore_raster_textures` decodes (no lock) then uploads+registers all in ONE
+>       batched commit (transaction-aligned, declared before materials resolve); `texture_cache::clear` on
+>       reset/reload. **VERIFIED LIVE:** import DamagedHelmet (static) + Fox (skinned) → reload → BOTH stay
+>       textured (helmet detail + ORANGE fox; was grey), no console errors. save→reload texture 🔴→✅.
+>       FOLLOW-UP (recorded): restored as sRGB albedo for ALL slots — the per-slot linear-vs-sRGB
+>       `TextureColorInfo` kind isn't persisted on `TextureDef::Raster`, so normal/metallic/occlusion maps
+>       restore in albedo color space (base-color, the visible case, is correct). Fix = store the color kind
+>       per Raster asset + use it in `restore_raster_textures`. Also: `texture_cache` isn't dropped on
+>       DeleteAsset (minor session-local leak; wire a `texture_cache::remove` when DeleteAsset cleans caches).
 >   - ✅ **reload follow-up B — anim `LocalNotFound` FIXED (commit `599ab230`).** Root cause was a
 >     ROBUSTNESS bug: `update_animations` propagated the first missing transform key (the loose-player loop
 >     AND the mixer's `write_anim_target`) → aborted the ENTIRE pose for that frame, so a single stale channel
