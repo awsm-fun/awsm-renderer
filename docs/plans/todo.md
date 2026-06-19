@@ -539,6 +539,40 @@ transaction way IN GENERAL (not just where this epic touched):
 3. **Record findings** (fixed vs deferred-with-reason) in this doc; only declare the epic done once the
    load paths are transaction-shaped and the acceptance list passes.
 
+### 5b — PRELIMINARY REVIEW FINDINGS (catalogued mid-epic; the load-shape work below remains)
+
+`commit_load` call sites (editor) + re-run passes, with verdicts:
+- **🔴 Editor LOAD is per-node, NOT one transaction (the main remaining transaction-shape gap).**
+  `node_sync` materialises each geometry node independently — each `apply_kind` does its OWN `commit_load`:
+  skinned (`node_sync.rs:848,951`), sprite (`1105`), `upload_simple_mesh` (`1228`, captured meshes), particle
+  (`1388`). So a project RELOAD with N geometry nodes does N separate commits (no cross-node dedup/concurrency).
+  The transforms-first pass (`5a77ee24`) fixed the ORDERING (transforms before geometry), but the per-node
+  commit remains. **FIX (deferred, sizeable): consolidate the editor LOAD (apply_project/import) onto ONE
+  `begin_load → declare all nodes' geometry+materials+skins → commit_load` — mirror the player loader
+  `awsm_scene_loader::populate_awsm_scene` (scene-loader/lib.rs:595), which declares everything and commits
+  ONCE at Phase 4.** This is the canonical alignment; it touches the reactive per-node model (the per-node
+  observer would declare into an open transaction, with one commit after the bulk load settles).
+- **gltf.rs `import_typed` commit (`326`) — VERDICT: OK (one commit for the populate template extraction).**
+  But note the editor then ALSO materialises the captured/skinned NODES per-node (above) — so import as a
+  WHOLE is still multi-commit. Same consolidation applies.
+- **`repopulate_skinned_template` (gltf.rs:362, persistence.rs:340) — VERDICT: a re-run-the-populate pass.**
+  It rebuilds the renderer template by re-running `populate_gltf` on the rig glb at reload. The transaction
+  way is to DECLARE the rig geometry into the load once (which the node-owned materialise already does via
+  `raw_mesh_from_rig`). FOLD it into the materialise stage + DELETE (tracked under morph-via-rig + legacy
+  deletion + the rename).
+- **`rematerialize_for_material` (state.rs:5721,5807) + `rematerialize_mesh_nodes` (node_sync:1464) —
+  VERDICT: live-EDIT re-materialise (material variant flip / `SetMeshData`), NOT a load.** Re-running the
+  affected nodes' `apply_kind` on an interactive edit is the editor's reactive model (default-equals-today:
+  static already re-uploads on edit). Each still commits per-node; batching multi-node edits into one commit
+  is a minor optimisation, not a correctness issue. ACCEPTABLE; not a load-ordering race.
+- **material/dynamic commits (material.rs:125, dynamic.rs:147), thumbnail/preview/settings/boot — VERDICT:
+  OK** (one-off interactive/boot single-op commits, not load loops).
+
+**Bottom line:** the load-ORDERING anti-pattern (skinned reload) is FIXED transaction-aligned; the remaining
+transaction-shape item is **consolidating the editor LOAD onto one transaction** (per-node-commit → one
+commit, mirroring `populate_awsm_scene`). Sizeable + touches the reactive materialiser; do it (or
+explicitly defer with David's sign-off) before declaring the epic done. Re-run this review after that lands.
+
 ## 6. Out of scope / tracked elsewhere
 
 - **Worker-hosted renderer** (main-thread responsiveness; the loading-UI paint nuance) — `docs/plans/multithreading.md`.
