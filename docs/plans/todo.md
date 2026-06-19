@@ -177,7 +177,35 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >   for today's populate-then-snapshot flow; the IMPORTER/MATERIALISER split (§0) replaces it with a
 >   GPU-free import that snapshots from the clean glb decode, not from a committed populate.
 
-> **▶ PHASE 2 MATERIALISE-REWRITE — concrete plan (worked out this loop; execute next, incrementally).**
+> **▶ PHASE 2 MATERIALISE-REWRITE — CORE LANDED ✅ (material flip re-renders, verified live).**
+> The skinned drawable is now NODE-OWNED + rebuilt from the clean rig glb (our-format) — an opaque↔blend
+> material flip re-renders instead of vanishing. Commits: `0899350c` (additive `SkinnedMeshRef.rig_node_index`
+> — chose interim (2): node_flat_indices captured at import into the field, persisted; node_index stays
+> original so drop_skinning/export/bake-cache are untouched — ZERO blast radius), `27d40e00` (the rewrite).
+> What landed: `raw_mesh_from_rig` decodes the rig glb (cached via `skinned_bake_cache::get_rig_node_decode`)
+> → `RawMeshData{skin}` with joint TransformKeys mapped from `SkinnedMeshRef.joints`, IBMs+index_weights from
+> the same decode (rig-glb IBMs == original, per the round-trip proptest → exact bind pose); the skin reads
+> the ANIMATED EDITOR BONES directly (no `skin_bridge` hop). `materialize_skinned_mesh` builds it node-owned
+> via `add_raw_mesh` with the CURRENT material → `model_meshes` (teardown+`apply_kind` rebuilds on any edit).
+> `hide_template_meshes` hides ALL populate meshes (skinned too — no double-render). Legacy template-reuse
+> kept as `materialize_skinned_from_template` for morph-only / no-rig-cache nodes.
+> VERIFIED LIVE (Fox): imports via the new path + renders; Survey clip plays + visibly DEFORMS (bones +
+> geometry move across frames); `fox_material` Opaque→Blend KEEPS RENDERING (was the vanish bug), no
+> VisibilityGeometryBufferNotFound / no JointAlreadyExistsButDifferent / no console errors.
+>
+> **REMAINING Phase 2 follow-ups (next iterations):**
+> - **save→reload restores** — UNVERIFIED. The reload path must populate `get_rig_glb(source)` (persistence
+>   loads `assets/<id>.rig.glb`) so `raw_mesh_from_rig` works post-reload; else it falls back to the template
+>   path (`repopulate_skinned_template`, which itself needs the now-rig-indexed `rig_node_index` to be saved
+>   — it is). Test: import Fox → Save to dir → reload → fox still renders + deforms + flip still works.
+> - **teardown skin/geometry cleanup (step v)** — repeated edits re-insert the skin/geometry each
+>   re-materialise; `skins::remove` + caching `skin_key` per (source,node,prim) to REUSE (DECISION) not yet
+>   done → potential leak on repeated flips. Verify with memory_stats / `?stress`, then add cleanup + reuse.
+> - **morph-via-rig (step vi)** — morph-only nodes still use the legacy template path; decode morph from the
+>   rig glb into `RawMorph` so they go node-owned too, then DELETE the legacy `materialize_skinned_from_template`.
+> - **rename** `repopulate_skinned_template` → "materialise skinned from our-format glb" (fold in).
+> - **(Original plan retained below for reference.)**
+>
 > Goal: make a skinned drawable NODE-OWNED + rebuildable so a material opaque↔blend flip re-renders (the
 > known vanish bug). The materialiser builds it from the rig glb via `add_raw_mesh(RawMeshData{ skin:
 > Some(RawSkin) })` instead of reusing the populate template via `set_mesh_material`.
