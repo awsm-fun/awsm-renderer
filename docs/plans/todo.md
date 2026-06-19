@@ -903,6 +903,30 @@ reload closes. Incremental: add `schedule_commit` + convert ONE site (verify) be
 + verifies, RE-RUN the §5b review (line 845) and declare the epic done.
 Do NOT attempt the consolidation before Phase 5; do NOT leave any re-materialise pass in the load path.
 
+**🔴 ATTEMPTED 2026-06-19 — BLOCKED + REVERTED (uncommitted).** Built the `schedule_commit` (gen-based
+trailing debounce, 32ms) + converted all 5 per-node sites (upload_simple_mesh / 2× skinned / sprite /
+particle) to record-then-`schedule_commit` instead of their own `commit_load`. Editor BUILT, lint+gate GREEN,
+and FUNCTIONALLY it worked — a procedural sphere + a full SheenChair import (5 nodes / 6 materials) both
+materialise + render through the deferred commits. **BUT it introduced a GPU validation error (reproduced
+empty→SheenChair on the consolidation build; STEP-2's synchronous build had NONE):**
+`GPUValidationError: In entries[4], binding index 4 not present in the bind group layout … "Material Decal -
+Texture Pool"`. ROOT CAUSE: `commit_load` COUPLES (a) finalize the texture pool + RECOMPILE the passes that
+bake in `texture_pool_arrays_len` (opaque/classify/edge/**decal**) AGAINST the new pool, with (b) resolve
+geometry. Deferring the whole commit opens a window where a material insert GREW the pool but the Material
+Decal pass's bind-group LAYOUT hasn't been recompiled — so a frame rendered in that window builds the decal
+texture-pool bind group against the grown pool (5 entries) while its layout still has 4 → validation error.
+The geometry-resolve half is safely deferrable (render loop skips not-compiled), but the **pool-grow recompile
+half is NOT** — passes referencing the pool need it synchronous. This is exactly the §5b "DEFER-WITH-DESIGN"
+risk. A clean fix needs ONE of: (1) a JOIN BARRIER on the reactive materialise (restructure the spawned
+per-node tasks so the bulk load awaits all then commits ONCE — bigger architectural change, removes the
+async-no-barrier obstacle), or (2) SPLIT `commit_load` so the pool-finalize+recompile stays synchronous per
+material/texture insert while geometry-resolve coalesces (renderer-API change — but §0/guardrails say do NOT
+change commit_load), or (3) make the affected passes (decal etc.) tolerate a mid-grow pool (skip/rebuild-lazy
+their bind group when the layout is stale — render-loop robustness, narrower but still a real-renderer change).
+The debounce-only approach (David's chosen path) cannot close cleanly without one of those. **SURFACED to
+David.** The per-node-commit model (N transactions IN dependency order — correct, just not ONE) + the existing
+pin-skips hold the line; the player path is ALREADY one transaction (`populate_awsm_scene`).
+
 ## 6. Out of scope / tracked elsewhere
 
 - **Worker-hosted renderer** (main-thread responsiveness; the loading-UI paint nuance) — `docs/plans/multithreading.md`.
