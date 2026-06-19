@@ -552,13 +552,27 @@ free** (edit the authored skin → re-import). One path → one place to optimis
   line (it's overwritten before any paint). The texture/compile phases `.await`, so they CAN paint —
   but only when the work spans real frames (cold compile → "Compiling pipelines (N)" shows; warm cache →
   instant → nothing). Confirmed: 20× CPU throttle does NOT help, because the blocker is *yielding*, not
-  speed. **Options:** (A — recommended) leave it; the slow phase (compile) already paints, geometry/
-  textures are fast, data is wired and correct. (B) yield after each `on_progress` so every line paints —
-  costs ~1 event-loop turn per phase (`setTimeout(0)` ≈ 4ms clamped, rAF ≈ 16ms) added to EVERY
-  `commit_load` *including live editor edits*, and is a deliberate change to the "commit_load stays
-  identical / atomic" HARD INVARIANT (the render gate still hides a mid-commit paint behind the overlay,
-  so it's safe, just non-atomic + slower). (C) yield inside `resolve_geometry` only every N geometries,
-  scoped to genuinely-large uploads. Needs sign-off; default to A.
+  speed. It is also NOT a dominator / reactive-layer issue and NOT solvable purely app-side: the DOM is
+  retained-mode, so imperative `set_text_content` updates the tree synchronously but the *screen paint*
+  ("update the rendering") still only runs after the task yields — same constraint as a `Mutable`. And
+  `on_progress` is a sync `FnMut` (can't `.await`), so the app can't inject a yield mid-commit.
+
+  **The real resolution is architectural, not a `commit_load` tweak.** Today both apps run the renderer
+  ON THE MAIN THREAD (model-tests: `Arc<Mutex<AwsmRenderer>>`; editor: `AsyncMutex<AwsmRenderer>` — its
+  `WorkerPool` runs only `GltfParseJob`, not the renderer), so `commit_load` blocks main-thread paint.
+  If the renderer were **worker-hosted** (the `packages/examples/render-worker` direction — OffscreenCanvas
+  via `transferControlToOffscreen`), the synchronous geometry phase would block the WORKER, not main;
+  `on_progress` would cross to main via `postMessage` as discrete tasks, and the idle main thread would
+  paint each phase line FOR FREE — no yield, no `resolve_geometry` change — and live editor edits would
+  stop janking the UI too. That's a substantial change (all renderer interaction becomes message-passing),
+  but it dissolves this nuance as a side effect.
+
+  **Interim options if we ever need the lines to paint BEFORE worker-hosting lands:** (A — default) leave
+  it; the slow phase (compile) already paints, geometry/textures are fast, data is wired + correct.
+  (C) yield inside `resolve_geometry` only every N geometries, scoped to genuinely-large uploads (a
+  deliberate, scoped relaxation of the "commit_load stays atomic" HARD INVARIANT — the render gate still
+  hides any mid-commit paint behind the overlay, so it's safe). Avoid an unconditional per-phase yield —
+  it taxes every live edit for a marginal gain.
 
 ### 9.7 Verification status of steps 1–8 (for reference)
 
