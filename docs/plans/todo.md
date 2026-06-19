@@ -591,7 +591,30 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       `?ourformat=1` now renders IDENTICAL to direct (bright orange velvet; occlusion texCoord 1 samples right);
       DamagedHelmet (texCoord 0) unaffected. **→ Phase 5 ACCEPTANCE MET** (every sample renders via our-format,
       materials + all KHR_* extensions + animation + multi-UV intact).
-    - 🔵 **GPU MULTI-UV TO N — NEXT (⭐ David's call 2026-06-19).** The data model + glb-export now carry N UV
+    - 🟡 **GPU MULTI-UV TO N — STEP 1 DONE (commit `c1780c10`), STEP 2 (editor uvs1 fold) NEXT.**
+      ✅ STEP 1 (renderer): `RawMeshData` `uvs`+`uvs1` → `uv_sets: Vec<Vec<[f32;2]>>`; raw_mesh.rs packs a
+      `TexCoords{index:i}` attribute + bytes per set in a loop. The material-mesh-meta ALREADY derives
+      `uv_set_count`/`uv_sets_index` from the attribute layout (`max(index+1)`) + the WGSL reads set `i` by
+      index, so NO shader/meta change was needed — the GPU path was already indexed, just hardcoded to 2.
+      `scene_loader::mesh_data_to_raw` passes all sets; single-UV meshes pack byte-identically. VERIFIED LIVE:
+      the editor renders a procedural sphere + grid + gizmo (RawMeshData path) with no errors; full gate + lint
+      green. (The editor's 2-UV imports ALREADY work — the existing `uvs1` channel chains into `uv_sets` via the
+      updated conversions, so STEP 1 is functionally complete for N sets.)
+      🔵 **STEP 2 (editor `uvs1` fold — a CLEANUP, not functional; NEXT):** remove the now-redundant separate
+      `uvs1` channel so set 1 rides `MeshData.uvs[1]` uniformly. Option B (keeps the PERSISTED `CapturedMesh`
+      bitcode format intact — do NOT break `.mesh.bin` saves): (a) glb-export `ExtractedNodeMesh` — drop the
+      `uvs1` field; `extract_node_mesh` pushes set 1 into `mesh.uvs[1]` (build the uvs vec with set0 [+ set1]).
+      (b) gltf bridge `engine/bridge/gltf.rs` `extract_node_meshes` — stop building the `node_uvs1` HashMap
+      (the meshes carry set 1 now); return just the meshes. (c) `state.rs` — drop the `node_uvs1` threading
+      (3199/6150/6318/6353/6389) + the `mint_imported_mesh` `uvs1` param (6050-6060/6319/6356); `from_mesh_data`
+      already folds `mesh.uvs[0]`→`CapturedMesh.uvs`, `mesh.uvs[1]`→`CapturedMesh.uvs1` (so the persisted format
+      is unchanged + `get_raw` still chains them into `uv_sets`). (d) `mesh_cache.rs` — remove
+      `from_mesh_data_with_uvs1`. (e) check `node_sync.rs:807` `decode.uvs1` (a SEPARATE live-decode path — only
+      touch if it's the same channel). VERIFY: import a MULTI-UV glTF (e.g. SheenChair) into the EDITOR (:9085)
+      + confirm set 1 (AO) renders right; a single-UV import unaffected. Then AFTER STEP 2 → surface the
+      editor-load consolidation (§5b).
+      ───────── (history of GPU-multi-UV plan) ─────────
+    - 🔵 **GPU MULTI-UV plan (pre-STEP-1):** The data model + glb-export now carry N UV
       sets; generalize the renderer's GPU path too. SCOPE (mostly `renderer/src/raw_mesh.rs`): the vertex layout
       ALREADY indexes UV sets (`MeshBufferCustomVertexAttributeInfo::TexCoords { index, … }`) + the WGSL reads
       set `i` via `_texture_uv_per_vertex(…, set_index, stride, uv_sets_index)` — it's just HARDCODED to push
