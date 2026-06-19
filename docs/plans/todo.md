@@ -144,11 +144,46 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 > core, high-blast-radius systems whose correctness needs LIVE verification with a
 > skinned+morphed+animated model (import, deform, flip, save→reload).
 
-### Phase 2 step-(b) BLOCKER — surfaced for a human decision (loop paused here)
+### Phase 2 (b)+(c)+(d) — DECISION: option 1 (full unification), grouped. SANCTIONED, proceed.
 
-Tracing the live skinned flow before writing (b) revealed the written (b)/(c)/(d) increments are NOT
-cleanly separable, and (b) has real failure modes that can't be de-risked without live skinned-model
-testing. Concrete findings (code-verified):
+> Human chose **option 1** (full unification) + explicitly OK'd grouping b+c+d (and relevant 3/4
+> consolidation) into one coherent change to avoid technical debt. High-level goals to honour: ONE way to
+> do things (debug/optimise in one place); fix the non-transactional perf problems; NO perf regressions;
+> reduce resource consumption; the coherent "scene editor → our format → player/editor" flow — **while
+> model-tests keeps working for plain-GLB import.**
+>
+> **Refined, lower-risk shape (from the investigation below):**
+> - **populate stays as-is** — it already builds drawables via the load transaction (post-5b), so
+>   model-tests' plain-GLB path and the player are UNTOUCHED. Only the EDITOR changes.
+> - **Editor captures each skinned node's source at IMPORT** (geometry + skin{joint node-idx→TransformKey,
+>   ORIGINAL inverse-bind matrices, per-vertex index/weights, set_count} + morph) via the Phase-2a
+>   `extract_node_mesh` skin, into an in-memory per-node captured-skinned store (mirroring static
+>   `mesh_cache`). NO new on-disk format — the rig glb is already the persisted source; the cache is
+>   rebuilt from it on reload via `repopulate_skinned_template` / `restore_skinned_templates`.
+> - **`materialize_skinned_mesh` re-materialises from that capture** through the ONE producer
+>   (`apply_kind` → `add_raw_mesh`/register+add_mesh+commit) with the CURRENT material — so a flip to a
+>   never-built kind rebuilds the right rep. **Delete the `set_mesh_material`-on-shared-template branch.**
+>   Make the skinned drawable node-owned (`model_meshes`) so teardown+rebuild works like static; the
+>   populate-built skinned drawable is hidden/removed for the editor (it's replaced by the materialised
+>   one — avoid double-geometry to honour "reduce resource consumption").
+> - **IBM conflict dissolved:** capture uses the ORIGINAL decode's inverse-bind matrices (not the
+>   reexported rig glb's), so re-inserting the skin over the same joint `TransformKey`s bit-matches
+>   `Skins::insert`'s dedup → no `JointAlreadyExistsButDifferent`. (Alt: thread the existing `skin_key`
+>   through instead of re-inserting — pick whichever is cleaner; either way CLEAN UP the old skin on
+>   teardown so skins don't leak — "reduce resource consumption".)
+> - **Skeleton + animation untouched:** joints are persistent scene `TransformKey`s; skeleton-anim stays
+>   bound. **Morph-anim rebind** (recorded wrinkle): re-materialise mints a new morph key → rebind the
+>   morph animation channel; check/reuse how static captured morphed meshes already handle this.
+> - **Group in the Phase-3/4 consolidation where it falls out naturally:** one materialise path for ALL
+>   editor geometry (static+skinned+morphed), the rig glb as the geometry container of "our format",
+>   byte-fidelity round-trip tests, and a `?stress`/`?trace` perf check (no regression; transactional).
+>
+> **Verification (live, with a rigged asset):** import a skinned model (deforms + animates), flip its
+> material opaque↔blend (re-renders, no vanish / no `VisibilityGeometryBufferNotFound`), save→reload
+> (restores). Fox/DamagedHelmet regression-clean. Find a rigged glb in test-assets / model-tests
+> collections (CesiumMan / RiggedFigure / RiggedSimple, or Fox if skinned).
+
+Tracing the live skinned flow surfaced the failure modes the above shape avoids. Code-verified findings:
 
 - **populate builds + SHOWS the skinned drawable today.** `hide_template_meshes` hides only the
   *non-skinned* populate meshes; the **skinned** ones stay visible and ARE the rendered geometry, reused
@@ -165,23 +200,10 @@ testing. Concrete findings (code-verified):
   build the skeleton/skin/animation but NOT the drawable — a non-trivial split of the import pipeline.
 - **Morph-anim rebind** (already-recorded wrinkle) compounds this for face rigs.
 
-**This is the guardrail's "can't verify green safely + discovered entanglement" case**, and there are no
-Phase-2-independent green steps to peel off (Phases 3–4 build on 2). So the loop is **pausing here** for a
-human call rather than plowing an entangled, runtime-only-verifiable refactor of core skinned/animation
-code. **Options:**
-1. **Do the full unification** (steps b+c+d together as one carefully-verified change): stop populate
-   building the skinned drawable; capture skinned nodes per-node; materialise via `add_raw_mesh(skin)`
-   reusing the existing skin (don't re-insert — thread the populate `skin_key` through, sidestepping the
-   IBM-dedup conflict) or insert once and reuse. Large; needs a rigged asset + live verify of
-   deform/animation/flip/save-reload. **The "right" end-state.**
-2. **Narrow fix for the flip only:** keep populate's skinned mesh, but on a never-built-kind flip, rebuild
-   THAT geometry's kind from the rig glb in place (reuse the existing skin_key, just add the missing rep).
-   Smaller, but it's a special-case path (not the "one flow") — partially defeats the epic's purpose.
-3. **Accept the limitation:** the skinned never-built-kind flip degrades to a graceful `Skip` (mesh hidden
-   until re-import) — not a crash. Document it; do not do Phase 2–4. The flip is an authoring edge case.
-
-Recommendation: this is a scope/risk call for the human. Phase 1 + 2(a) (the safe renderer + glb-export
-foundations) are landed green and are useful regardless of which option is chosen.
+These are the failure modes the **DECISION shape above avoids** (populate stays for model-tests; the
+editor captures at import with ORIGINAL IBMs + reuses/cleans the skin; one materialise path). Proceed
+with that shape — no longer a blocker. (Resolved: option 1, full unification, grouped — see the DECISION
+block above. The earlier 3-option list is settled.)
 
 - **Phase 3 — The proprietary save format (geometry-glb + materials sidecar + animation clips).**
   Define + implement the editor's persistent format: per-asset geometry glb (via `awsm-glb-export`,
