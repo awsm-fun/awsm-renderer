@@ -84,30 +84,42 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 
 ## 3. Phased path
 
-- **Phase 1 — Route skinned re-materialisation through the retained rig glb (fixes the skinned flip).**
-  The rig glb already exists per source (`get_rig_glb` / `repopulate_skinned_template`, §1), so the editor
-  already knows where to re-import skinned geometry from. Make `node_sync`'s skinned path re-materialise
-  through it: when a `SkinnedMesh` node materialises / re-fires (e.g. a material edit via
-  `rematerialize_for_material`), **rebuild its renderer geometry from the retained rig glb** with the
-  CURRENT material, then `commit_load` — so the kind is resolved at commit like everything else and a flip
-  to a never-built kind rebuilds the right rep instead of `Skip`. Remove the
-  `set_mesh_material`-on-shared-populate-geometry reliance for the never-built-kind case.
-  **Decided design (NOT an open question):** the SKELETON (joint scene nodes) + the animation channels
-  targeting them are PERSISTENT and are NOT recreated — re-materialisation rebuilds only the geometry+skin
-  weights and re-binds to the existing joints (keyed by `skin.source`/`node_index`/`primitive_index`, all
-  stable), exactly as project-reload's `restore_skinned_templates` → `repopulate_skinned_template` already
-  does. No key churn, no stranded animation. Scope the rebuild to the affected `skin.source` to avoid
-  rebuilding unrelated rigs.
-  - *Acceptance:* a skinned mesh's opaque↔blend material flip re-renders (no vanish, no
-    `VisibilityGeometryBufferNotFound`); existing skinned imports + their animation still deform; Fox /
-    DamagedHelmet regression-clean.
+> **Plan refinement (recorded during implementation — code reality vs the §4 assumption).** §4 assumed
+> skinned re-import is clean per-node like static. The codebase shows otherwise: skinned geometry is
+> **source/template-scoped** — the populate-built skinned meshes are owned by the per-`skin.source`
+> template, are SHARED across nodes, and deliberately **survive node teardown** (that is exactly why the
+> skinned path uses `set_mesh_material` instead of rebuilding). Material re-fires, by contrast, are
+> **per-node** (`rematerialize_for_material` re-sets each node's `kind`). So "repopulate the shared
+> template on every per-node flip" (the old Phase 1) would THRASH when nodes share a source (each
+> repopulate replaces the template, orphaning the just-built meshes of sibling nodes). **Resolution: merge
+> Phase 1 into Phase 2** — make skinned geometry **per-node captured content (including skin)** that
+> re-materialises through the SAME teardown+rebuild path as static, with the rig glb as the *extraction
+> source* (not a per-flip template rebuild). The skeleton stays persistent (joints are scene nodes;
+> animation channels target them — unchanged). This dissolves the source-scoping wrinkle AND fixes the
+> flip, in one consolidation. Phases renumbered below.
 
-- **Phase 2 — One "editor content → source" producer.**
-  Collapse the static-capture and skinned paths into a single editor producer that lowers ANY authored
-  node (geometry + skin + morph) to a `GeometrySource` and adds it to the transaction. `populate_gltf`
-  becomes purely an *importer* feeding this same producer — no editor-special / hidden meshes.
-  - *Acceptance:* one code path materialises every editor geometry kind; no `NodeKind`-specific geometry
-    upload branches remain; Fox/DamagedHelmet/skinned/morph/primitive all render via it.
+- **Phase 1 — Carry skin + morph through the renderer capture/raw path into `GeometrySource`.**
+  Renderer-side, low-risk, unit-testable foundation that the unification needs regardless. Extend
+  `RawMeshData` (and the capture lowering) to carry optional skin (per-vertex joints+weights + the skin's
+  joint `TransformKey`s + inverse-bind matrices + set_count) and morph targets; have `add_raw_mesh` /
+  the lowering insert them (`meshes.skins.insert` / `meshes.morphs.geometry.insert_raw`) and attach
+  `skin_key`/`skin_info` + `geometry_morph_key`/`info` to the `GeometrySource` (fields already exist).
+  - *Acceptance:* a raw mesh with skin+weights+joints uploads a skinned `GeometrySource` and deforms;
+    `cargo test -p awsm-renderer` green; no behaviour change for non-skinned raw meshes (skin/morph
+    `None`).
+
+- **Phase 2 — Capture skinned/morphed imports as per-node editable content; one materialise path.**
+  Extract each skinned node's geometry+skin+morph from the rig glb (extend `extract_node_mesh` /
+  `MeshData`, persisted like the existing `.mesh.bin` / re-extractable from `assets/<id>.rig.glb`) into the
+  editor's capture store, so a `SkinnedMesh` node becomes editable captured content like a static `Mesh`.
+  Then `node_sync::apply_kind` materialises it through the SAME teardown + `upload`(skin) + bind-material +
+  `commit_load` path — **delete `materialize_skinned_mesh`'s `set_mesh_material`-on-shared-template
+  branch.** The skeleton (joint nodes) + animation channels stay persistent and are re-bound by stable
+  keys (reuse the `repopulate_skinned_template` / `restore_skinned_templates` rebinding). `populate_gltf`
+  becomes a pure importer feeding this same producer — no editor-special / hidden meshes.
+  - *Acceptance:* a skinned mesh's opaque↔blend material flip re-renders (no vanish, no
+    `VisibilityGeometryBufferNotFound`); skinned imports + animation still deform; one code path
+    materialises every editor geometry kind; Fox/DamagedHelmet/skinned/morph/primitive all render via it.
 
 - **Phase 3 — The proprietary save format (geometry-glb + materials sidecar + animation clips).**
   Define + implement the editor's persistent format: per-asset geometry glb (via `awsm-glb-export`,
