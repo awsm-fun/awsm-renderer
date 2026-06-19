@@ -77,8 +77,14 @@ fn our_format_enabled() -> bool {
 /// Returns the original data unchanged on any failure (so the toggle never bricks a
 /// load — it just falls back to the direct path + logs).
 async fn import_to_our_format(data: &GltfData) -> anyhow::Result<GltfData> {
-    let clean = awsm_glb_export::reexport_clean_scene(&data.doc, &data.buffers.raw)
-        .ok_or_else(|| anyhow::anyhow!("reexport_clean produced no scene"))?;
+    // Pass the loader's retained ENCODED image bytes so EXTERNAL-file textures
+    // (the glTF/ sample variant) re-embed into the clean glb (todo.md §3 GAP 1).
+    let clean = awsm_glb_export::reexport_clean_scene_with_images(
+        &data.doc,
+        &data.buffers.raw,
+        &data.encoded_images,
+    )
+    .ok_or_else(|| anyhow::anyhow!("reexport_clean produced no scene"))?;
     let glb = awsm_glb_export::write_glb(&clean);
     let loader = GltfLoader::from_glb_bytes(&glb).await?;
     loader.into_data(None).map_err(|e| anyhow::anyhow!("{e}"))

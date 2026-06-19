@@ -2,13 +2,20 @@
 
 use awsm_renderer_core::image::ImageData;
 
-use crate::{buffers::GltfBuffers, error::Result, loader::GltfLoader};
+use crate::{
+    buffers::GltfBuffers,
+    error::Result,
+    loader::{EncodedImage, GltfLoader},
+};
 
 /// Loaded glTF document data with buffers and images.
 pub struct GltfData {
     pub doc: gltf::Document,
     pub buffers: GltfBuffers,
     pub images: Vec<ImageData>,
+    /// Encoded image bytes (PNG/JPEG) by glTF image index — retained so an importer
+    /// (`reexport_clean`) can re-embed them into our-format. See [`EncodedImage`].
+    pub encoded_images: Vec<EncodedImage>,
     pub hints: GltfDataHints,
 }
 
@@ -19,6 +26,7 @@ impl GltfData {
             doc: self.doc.clone(),
             buffers: self.buffers.heavy_clone(),
             images: self.images.clone(),
+            encoded_images: self.encoded_images.clone(),
             hints: self.hints.clone(),
         }
     }
@@ -67,6 +75,7 @@ impl GltfLoader {
         Ok(GltfData {
             doc: self.doc,
             images: self.images,
+            encoded_images: self.encoded_images,
             buffers,
             hints,
         })

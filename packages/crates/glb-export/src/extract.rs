@@ -76,13 +76,27 @@ pub fn scene_node_flat_indices(doc: &gltf::Document) -> HashMap<usize, usize> {
 /// the source (e.g. the editor's import, which holds the doc before it's consumed
 /// by the renderer) can build the clean rig without re-parsing bytes.
 pub fn reexport_clean_scene(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Option<GlbScene> {
+    reexport_clean_scene_with_images(doc, buffers, &[])
+}
+
+/// Like [`reexport_clean_scene`] but ALSO accepts the importer's retained ENCODED
+/// image bytes (`GltfData.encoded_images`, by glTF image index) so EXTERNAL-file
+/// images — which can't be resolved from `(doc, buffers)` alone — still round-trip
+/// into the clean glb. Pass `&[]` for the embedded-only behaviour. This is how
+/// model-tests (and any importer of external-image glTF) makes textures survive the
+/// our-format conversion (docs/plans/todo.md §3 GAP 1).
+pub fn reexport_clean_scene_with_images(
+    doc: &gltf::Document,
+    buffers: &[Vec<u8>],
+    encoded_images: &[Option<(Vec<u8>, String)>],
+) -> Option<GlbScene> {
     let scene = doc.default_scene().or_else(|| doc.scenes().next())?;
 
     // glTF node index → flat (depth-first) index, matching `write_glb`'s flatten,
     // so skin joint refs (glTF node indices) become our flat indices.
     let flat_of = scene_node_flat_indices(doc);
 
-    let mut pool = ImagePool::default();
+    let mut pool = ImagePool::with_external(encoded_images);
     let nodes: Vec<ExportNode> = scene
         .nodes()
         .map(|r| build_clean_node(&r, buffers, &mut pool))
@@ -137,16 +151,63 @@ pub fn reexport_clean_scene(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Option
 struct ImagePool {
     images: Vec<ExportImage>,
     by_source: HashMap<usize, usize>,
+    /// Fallback ENCODED bytes for source-image indices that can't be resolved from
+    /// `(doc, buffers)` alone — i.e. EXTERNAL-file URIs. The importer (loader) fetched
+    /// them; we re-embed them here so external-image glTF round-trips. Empty for the
+    /// plain `reexport_clean_scene` path (today's behaviour). Consumed on first use.
+    external: HashMap<usize, (Vec<u8>, ImageMime)>,
 }
 
 impl ImagePool {
+    /// Build a pool seeded with retained ENCODED image bytes (PNG/JPEG only), keyed by
+    /// glTF image index — the loader's `GltfData.encoded_images`. `intern` falls back
+    /// to these when buffer/`data:`-URI resolution fails (external-file images).
+    fn with_external(encoded_images: &[Option<(Vec<u8>, String)>]) -> Self {
+        let external = encoded_images
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                let (bytes, mime) = entry.as_ref()?;
+                let mime = match mime.as_str() {
+                    "image/png" => ImageMime::Png,
+                    "image/jpeg" | "image/jpg" => ImageMime::Jpeg,
+                    _ => return None,
+                };
+                Some((i, (bytes.clone(), mime)))
+            })
+            .collect();
+        Self {
+            external,
+            ..Default::default()
+        }
+    }
+
     /// Pool index for a source texture's image, inserting on first use.
-    /// `None` when the bytes can't be resolved or the mime isn't PNG/JPEG.
+    /// `None` when the bytes can't be resolved (embedded OR retained) or the mime
+    /// isn't PNG/JPEG.
     fn intern(&mut self, texture: &gltf::Texture, buffers: &[Vec<u8>]) -> Option<usize> {
         let img = texture.source();
         if let Some(&i) = self.by_source.get(&img.index()) {
             return Some(i);
         }
+        // Try embedded (buffer View / data: URI) first; fall back to the importer's
+        // retained encoded bytes for external-file images.
+        let (bytes, mime) =
+            Self::resolve_embedded(&img, buffers).or_else(|| self.external.remove(&img.index()))?;
+        let i = self.images.len();
+        self.images.push(ExportImage {
+            name: img.name().unwrap_or("").to_string(),
+            bytes,
+            mime,
+        });
+        self.by_source.insert(img.index(), i);
+        Some(i)
+    }
+
+    /// Resolve a glTF image's encoded bytes + mime from `(doc, buffers)` ALONE —
+    /// buffer `View`s or `data:` URIs. `None` for external-file URIs (caller falls
+    /// back to retained bytes) or non-PNG/JPEG mimes.
+    fn resolve_embedded(img: &gltf::Image, buffers: &[Vec<u8>]) -> Option<(Vec<u8>, ImageMime)> {
         let (bytes, mime): (Vec<u8>, &str) = match img.source() {
             gltf::image::Source::View { view, mime_type } => {
                 let buf = buffers.get(view.buffer().index())?;
@@ -175,14 +236,7 @@ impl ImagePool {
             "image/jpeg" | "image/jpg" => ImageMime::Jpeg,
             _ => return None,
         };
-        let i = self.images.len();
-        self.images.push(ExportImage {
-            name: img.name().unwrap_or("").to_string(),
-            bytes,
-            mime,
-        });
-        self.by_source.insert(img.index(), i);
-        Some(i)
+        Some((bytes, mime))
     }
 }
 

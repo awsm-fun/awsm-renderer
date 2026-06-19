@@ -263,7 +263,17 @@ impl GltfParseOutput {
                 .with_color_space_conversion(ColorSpaceConversion::Default),
         );
         let mut images = Vec::with_capacity(self.image_metas.len());
+        let mut encoded_images: Vec<crate::loader::EncodedImage> =
+            Vec::with_capacity(self.image_metas.len());
         for entry in self.image_metas {
+            let mime = entry
+                .mime_type
+                .as_deref()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            // Retain the encoded bytes for our-format re-embed (best-effort).
+            let bytes: &[u8] = entry.bytes.as_ref();
+            encoded_images.push((!bytes.is_empty()).then(|| (bytes.to_vec(), mime.clone())));
             if let Some(bitmap) = entry.bitmap {
                 images.push(ImageData::Bitmap {
                     image: bitmap,
@@ -271,11 +281,7 @@ impl GltfParseOutput {
                 });
                 continue;
             }
-            let mime = entry
-                .mime_type
-                .as_deref()
-                .unwrap_or("application/octet-stream");
-            let bitmap = load_u8(&entry.bytes, mime, options.clone()).await?;
+            let bitmap = load_u8(bytes, &mime, options.clone()).await?;
             images.push(ImageData::Bitmap {
                 image: bitmap,
                 options: options.clone(),
@@ -285,6 +291,7 @@ impl GltfParseOutput {
             doc,
             buffers,
             images,
+            encoded_images,
         })
     }
 }

@@ -66,6 +66,9 @@ pub struct GltfLoader {
     pub doc: Document,
     pub buffers: Vec<Vec<u8>>,
     pub images: Vec<ImageData>,
+    /// Encoded image bytes (PNG/JPEG) by glTF image index — retained so an importer
+    /// can re-embed them into our-format. See [`EncodedImage`].
+    pub encoded_images: Vec<EncodedImage>,
 }
 
 /// Supported glTF file types.
@@ -124,7 +127,7 @@ impl GltfLoader {
 
         //info!("loaded {} buffers", buffer_data.len());
 
-        let images = import_image_data(&doc, base_path, &buffers).await?;
+        let (images, encoded_images) = import_image_data(&doc, base_path, &buffers).await?;
 
         //info!("loaded {} images", image_data.len());
 
@@ -132,6 +135,7 @@ impl GltfLoader {
             doc,
             buffers,
             images,
+            encoded_images,
         })
     }
 
@@ -148,12 +152,13 @@ impl GltfLoader {
         } = parse_gltf_lenient(bytes)?;
 
         let buffers = import_buffer_data(&doc, "", blob).await?;
-        let images = import_image_data(&doc, "", &buffers).await?;
+        let (images, encoded_images) = import_image_data(&doc, "", &buffers).await?;
 
         Ok(Self {
             doc,
             buffers,
             images,
+            encoded_images,
         })
     }
 
@@ -163,6 +168,7 @@ impl GltfLoader {
             doc: self.doc.clone(),
             buffers: self.buffers.clone(),
             images: self.images.clone(),
+            encoded_images: self.encoded_images.clone(),
         }
     }
 }
@@ -244,21 +250,43 @@ fn get_buffer_futures<'a>(
         .collect()
 }
 
+/// The ENCODED bytes (original PNG/JPEG) of a glTF image + its mime, retained
+/// alongside the DECODED [`ImageData`] so an importer can re-embed the image into
+/// our-format (`reexport_clean`) — the renderer only keeps decoded pixels. `None`
+/// for an image whose encoded bytes couldn't be obtained (e.g. an external URI
+/// fetch failed). Indexed by glTF image index.
+pub type EncodedImage = Option<(Vec<u8>, String)>;
+
+#[allow(clippy::type_complexity)]
 async fn import_image_data<'a>(
     document: &'a Document,
     base: &'a str,
     buffer_data: &'a [Vec<u8>],
-) -> anyhow::Result<Vec<ImageData>> {
+) -> anyhow::Result<(Vec<ImageData>, Vec<EncodedImage>)> {
     let futures = get_image_futures(document, base, buffer_data);
-
-    try_join_all(futures).await
+    let results = try_join_all(futures).await?;
+    Ok(results.into_iter().unzip())
 }
 
+/// Infer an image mime from a URI extension (glTF `Source::Uri` may omit it).
+/// `application/octet-stream` for unknown so the re-embed step (PNG/JPEG only) skips it.
+fn guess_image_mime(uri: &str) -> String {
+    let path = uri.split('?').next().unwrap_or(uri).to_ascii_lowercase();
+    if path.ends_with(".png") {
+        "image/png".to_string()
+    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        "image/jpeg".to_string()
+    } else {
+        "application/octet-stream".to_string()
+    }
+}
+
+#[allow(clippy::type_complexity)]
 fn get_image_futures<'a>(
     document: &'a Document,
     base: &str,
     buffer_data: &'a [Vec<u8>],
-) -> Vec<impl Future<Output = anyhow::Result<ImageData>> + 'a> {
+) -> Vec<impl Future<Output = anyhow::Result<(ImageData, EncodedImage)>> + 'a> {
     //these need to be owned by each future simultaneously
     let base = Arc::new(base.to_owned());
 
@@ -274,9 +302,24 @@ fn get_image_futures<'a>(
             );
             async move {
                 match image.source() {
-                    image::Source::Uri { uri, mime_type: _ } => {
+                    image::Source::Uri { uri, mime_type } => {
                         let url = get_url(base.as_ref(), uri)?;
-                        Ok(ImageData::load_url(&url, options).await?)
+                        // DECODE via the unchanged URL path (format handling intact).
+                        let data = ImageData::load_url(&url, options).await?;
+                        // Best-effort: retain the ENCODED bytes for our-format re-embed.
+                        // A failed fetch just means this image can't round-trip through
+                        // reexport_clean — the direct render is unaffected. The browser
+                        // already fetched the URL for decode, so this hits its cache.
+                        let encoded = match gloo_net::http::Request::get(&url).send().await {
+                            Ok(resp) => resp.binary().await.ok().map(|bytes| {
+                                let mime = mime_type
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| guess_image_mime(uri));
+                                (bytes, mime)
+                            }),
+                            Err(_) => None,
+                        };
+                        Ok((data, encoded))
                     }
                     image::Source::View { view, mime_type } => {
                         let parent_buffer_data = &buffer_data[view.buffer().index()];
@@ -289,7 +332,9 @@ fn get_image_futures<'a>(
                             options.clone(),
                         )
                         .await?;
-                        Ok(ImageData::Bitmap { image, options })
+                        // Embedded bytes are already in hand — retain them (free).
+                        let encoded = Some((encoded_image.to_vec(), mime_type.to_string()));
+                        Ok((ImageData::Bitmap { image, options }, encoded))
                     }
                 }
             }
