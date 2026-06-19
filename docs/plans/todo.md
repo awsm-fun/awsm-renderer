@@ -607,6 +607,41 @@ transaction-shape item is **consolidating the editor LOAD onto one transaction**
 commit, mirroring `populate_awsm_scene`). Sizeable + touches the reactive materialiser; do it (or
 explicitly defer with David's sign-off) before declaring the epic done. Re-run this review after that lands.
 
+### 5b — CONSOLIDATION FEASIBILITY (investigated; ⚠️ DEFER-WITH-DESIGN — needs David's call)
+
+Traced the reactive load (`node_sync`): `scene.nodes.signal_vec` → `for_each(handle_diff)` → `Replace` arm
+removes old, runs the transforms-first pre-pass, then `add_node` per node. `add_node` SPAWNS four observers
+via `AsyncLoader` (kind/transform/visibility/children); the **kind observer** fires `apply_kind` on the
+current value → the geometry materialise + `commit_load`. **Key structural fact: the materialise is an async
+SPAWNED task with NO join barrier** — the `Replace` loop returns before any `apply_kind` runs, and the N
+materialises complete at unknown times. So a single post-load commit CANNOT be cleanly timed; the only way
+to collapse N commits → 1 is a **debounce-coalesced commit** (mirror `schedule_relower`: a `schedule_commit`
+that, on each materialise, (re)arms a short timer firing ONE `commit_load` for the coalesced burst), with
+`apply_kind` calling it instead of `commit_load`.
+
+FEASIBILITY (checked): `materialize_skinned_mesh`'s post-commit code only records the already-valid
+`MeshKey` (push to `model_meshes`/`model_transforms`/`material_keys` + `register_mesh`) — it does NOT read
+resolved state after `commit_load`, so deferring the commit is structurally safe there (and the system
+already tolerates deferred resolution: the relower re-lowers when targets appear, the render loop skips
+"not compiled", the spatial invariant counts resolved-only). So it's *implementable*.
+
+WHY DEFER (not "can't" — "shouldn't yet, without sign-off"): it's a BROAD change to the commit TIMING of
+EVERY node-materialise site (`node_sync` 848/951/1105/1228/1388), introducing a debounce WINDOW where
+geometry is declared-but-unresolved (a brief pop-in) + subtle ordering vs the existing 200ms relower
+debounce + a carve-out for the paths that NEED a synchronous commit (`import_typed` 326 commits then snapshots
+the resolved keys — must stay sync; debounced + sync commits interleave, each resolving all-pending, which is
+fine but is extra surface). The BENEFIT is mostly transaction-PURITY: the perf gain is modest because
+shader recompiles already coalesce (they only happen on a texture-pool GROW, not per-commit) — so the win is
+"N geometry-resolve passes → 1", real but not dramatic. Against the guardrails (`default-equals-today`, "do
+NOT stack risk") on a load path that ONLY JUST reached fully-working (import/render/deform/animate/flip/
+reload/**texture** all green this session), a broad commit-timing change is exactly the risk to not stack
+right after stabilising. **RECOMMENDATION: land the remaining concrete acceptance items first (morph-via-rig,
+Phase 5), then do the debounced-commit consolidation as its OWN focused change with a full import/reload/flip/
+perf(`?stress`,`?trace`) verification pass — OR David signs off on accepting the per-node-commit as the
+editor's reactive model (the per-node commit IS ordered correctly now; it's "N transactions in dependency
+order", just not ONE). Either resolves the §5b gate.** Design is recorded; implementation deferred pending
+that call.
+
 ## 6. Out of scope / tracked elsewhere
 
 - **Worker-hosted renderer** (main-thread responsiveness; the loading-UI paint nuance) — `docs/plans/multithreading.md`.
