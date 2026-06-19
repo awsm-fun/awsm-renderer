@@ -9,9 +9,11 @@ or classifies geometry; the legacy eager `insert`/`insert_public` path and the
 Granular per-phase loading UI (geometry → textures → pipelines) is wired into both viewers from the
 shared `LoadingStats::phase_label()`. Verified on :9080: Fox + DamagedHelmet (regression, MSAA edges,
 normal-map tangents) + previously-black CompareTransmission + ClearCoatTest render clean, no
-`VisibilityGeometryBufferNotFound`, no console errors. One tracked follow-up: re-populating SKINNED
-import geometry on a flip to a never-built kind (today it degrades gracefully to `Skip`, not a
-blackout — see step 7). Original spec text preserved below.
+`VisibilityGeometryBufferNotFound`, no console errors. The one remaining special case — SKINNED import
+geometry, which still shares populate-built meshes and can't re-materialise on a never-built-kind flip
+(degrades gracefully to `Skip`, not a blackout — see step 7) — is resolved by the **§9 "one geometry
+flow" epic** (forward plan, below): make editor content, including skins/morphs, an authored glb-backed
+source so EVERYTHING re-materialises through one path. Original spec text preserved below.
 
 File:line anchors throughout reflect the code as of this branch (`follow-ups`).
 
@@ -389,9 +391,10 @@ decision.
 >   already-built kinds works for free (route_renderable); a flip to a NEVER-built kind leaves the mesh
 >   with only its original rep → `route_renderable` returns `Skip` (the mesh isn't drawn this frame —
 >   GRACEFUL, no frame-blackout, just disappears until re-import). This is the documented §1 ② consequence
->   and is NOT a regression (the old decode also baked the skinned kind from the glTF material). A full
->   fix (re-populate skinned geometry from retained source on flip) is a larger, riskier change tracked as
->   a follow-up; deferred rather than guessed. The full create-material→assign→set-Blend editor UI flow
+>   and is NOT a regression (the old decode also baked the skinned kind from the glTF material). The full
+>   fix is **§9 (the "one geometry flow" epic)** — make skinned geometry authored content backed by a glb
+>   so it re-materialises uniformly like everything else (NOT a bespoke re-populate); deferred rather than
+>   guessed. The full create-material→assign→set-Blend editor UI flow
 >   wasn't click-driven end-to-end (deep multi-step authoring flow); correctness rests on the
 >   route_renderable test + the verified procedural register/add_mesh path + the apply_kind re-materialize.
 8. ✅ **Delete the dead model.** `add_raw_mesh_transparent` (step 6), `mesh_buffer_geometry_kind` +
@@ -433,3 +436,121 @@ decision.
 
 - Minor model-tests picker quirks (`Sponza`, some names → "Not Found"; `IridescenceDishWithOlives`
   framing) are cosmetic/pre-existing — out of scope.
+
+---
+
+## 9. Next epic — "one geometry flow": editor content as a source (forward plan)
+
+> Authored from the design conversation after steps 1–8 landed. This is the natural continuation: the
+> load transaction made geometry **upload** single-path; this makes geometry **authoring + persistence**
+> single-path too. **Status: planned (clear path), not started.**
+
+### 9.0 Principle (the north star)
+
+There must be **one way** geometry reaches the screen, so we optimise and debug in one place:
+
+```
+begin_load()  →  add sources  →  commit_load()
+```
+
+A "source" is a `GeometrySource` (geometry + optional skin + optional morph). EVERY producer lowers to
+it: primitives / raw (done), the glTF decode (done), and — the missing producer — **editor content**.
+
+### 9.1 End-state flow
+
+**Editor content becomes a first-class source.** The editor's job is:
+
+1. **Create** content — primitives, imported glbs, MCP/UI edits — over the full surface: geometry,
+   bones, skins, morphs, materials, textures, transforms.
+2. **Persist** it in our proprietary format = **(a) a glb for GEOMETRY** (a pure geometry container,
+   *including skins + morphs*, edited or not) + **(b) materials, separately**.
+
+Loading / re-materialising editor content is then just **(re-)importing that glb through the same source
+path** + binding the separate materials. Re-materialisation after ANY edit (material flip, geometry /
+bone / morph edit, re-skin) = re-import from the authored glb. No second path.
+
+### 9.2 Why this is the real resolution (not a workaround)
+
+It deletes the last special case the load-transaction work left behind — **skinned meshes** (§7). Today
+static geometry is captured + re-materialised, while skinned geometry shares the populate-built meshes
+and uses `set_mesh_material`, so a flip to a never-built kind can't rebuild (it degrades to a graceful
+`Skip` — the mesh vanishes until re-import). Once skinned geometry is *also* authored content backed by
+a glb, it re-materialises uniformly → opaque↔blend flips Just Work, **and re-skinning falls out for
+free** (edit the authored skin → re-import). One path → one place to optimise/debug.
+
+### 9.3 What already supports it (this cycle / pre-existing — build ON these)
+
+- The transaction itself — `begin_load → register_geometry/add_mesh → commit_load` (steps 1–8).
+- `GeometrySource` already unifies geometry + `skin_key`/`skin_info` + morph keys/infos; the deform
+  compute pass runs off `skin_key` regardless of producer.
+- One `geometry_kind`, one packer (`mesh_pack`), one `resolve_one` — kinds derived at commit from the
+  union of bound materials; dedup pinned by `GeometryReps` (§7 test).
+- **`awsm-glb-export` already models skins** (`ExportSkin`: joints + inverse-bind matrices; per-vertex
+  `JOINTS_0`/`WEIGHTS_0`) **and morphs** (`MorphTarget` deltas + default weights) — the geometry-glb
+  container exists.
+- The editor already (a) captures STATIC geometry to an editable `MeshDef` + re-materialises via
+  `add_raw_mesh`, and (b) loads **materialless geometry-only glbs + a separately-applied material**
+  (the bundle loader's `GltfMaterialSource::Single`) — the "separated glb + materials" pattern is
+  already in production.
+
+### 9.4 The gap (what to build)
+
+- The editor's authored representation does NOT yet cover skinned / morphed geometry as *editable,
+  re-exportable* content — skinned imports keep the renderer's populate-built meshes
+  (`node_sync::materialize_skinned_mesh` → `set_mesh_material`).
+- There is no single "editor content → `GeometrySource`" producer; static uses the capture cache,
+  skinned uses populate, and the two re-materialise differently.
+
+### 9.5 Phased path
+
+- **Phase 1 — Capture skinned/morphed geometry as authored content (also fixes §7).**
+  Extend the capture path (`awsm_glb_export::extract_node_mesh` / `MeshData`) and `RawMeshData` to carry
+  optional skin (per-vertex joints+weights + the skin's joints + inverse-bind matrices) and morph
+  targets; wire them into `GeometrySource` (renderer fields already exist). The editor then captures
+  skinned/morphed imports the same way it captures static geometry, and `apply_kind` re-materialises
+  them uniformly — **delete the `set_mesh_material`-on-shared-populate-geometry skinned branch in
+  `node_sync`.** Acceptance: a skinned mesh's opaque↔blend flip re-renders (no vanish); re-skinning works.
+
+- **Phase 2 — One "editor content → source" producer.**
+  Collapse the static-capture and skinned paths into a single editor producer that lowers any authored
+  node (geometry + skin + morph) to a `GeometrySource` and adds it to the transaction. `populate_gltf`
+  becomes purely an *importer* that feeds this same producer — no editor-special meshes.
+
+- **Phase 3 — The proprietary save format (geometry-glb + materials sidecar).**
+  Define + implement the editor's persistent format: per-asset geometry glb (via `awsm-glb-export`,
+  skins/morphs included, NO materials baked) + a materials sidecar. Save = export authored content;
+  Load = import the glb as geometry-only + bind the sidecar materials (generalise the bundle loader's
+  materialless-glb + `Single`-material path). Re-materialise = re-import the asset's own geometry-glb.
+
+- **Phase 4 — Make the round-trip the only path + verify.**
+  Editor edits write through to the authored glb; re-materialise always re-imports. Lossless round-trip
+  tests (geometry / skin / morph byte-fidelity through export → import). Perf pass (incremental
+  re-materialise / cached decoded source for big rigs).
+
+### 9.6 Open questions / risks (resolve before or within each phase)
+
+- **Round-trip fidelity** — export→import of skins/morphs must be exact (joint order, inverse-bind
+  matrices, morph-delta layout). Needs byte-fidelity tests across `glb-export` + the decode.
+- **Performance** — re-importing a big rig on every edit could stutter; may need incremental
+  re-materialise or a cached decoded source. (Note §1 ② deliberately freed the *renderer-side* source;
+  the *editor* owns the authored copy — which is exactly this format.)
+- **Skin/skeleton identity across re-import** — joints are scene transforms; re-import must rebind to
+  the SAME skeleton nodes (and the animation channels targeting them) without churning keys.
+- **Granular-UI paint nuance (small, related)** — `commit_load`'s geometry phase is *synchronous*, so
+  its progress line never gets a paint frame (textures/compile do, on cold loads — confirmed: even 20×
+  CPU throttle doesn't make geometry/texture paint, because the issue is *yielding*, not speed). To make
+  those lines visibly paint, `commit_load` would need a yield after each phase's `on_progress` — a
+  deliberate change to the "commit_load stays identical" HARD INVARIANT, so it needs sign-off.
+
+### 9.7 Verification status of steps 1–8 (for reference)
+
+- ✅ Renders: Fox, DamagedHelmet (regression, MSAA edges, normal-map tangents), previously-black
+  CompareTransmission + ClearCoatTest — all clean on :9080, no console errors.
+- ✅ Dedup invariant: `GeometryReps` test (uploaded once per distinct kind, not per instance); routing:
+  `route_renderable` test (both-rep geometry routes by the live material — the free opaque↔blend flip).
+- ✅ Source freed: structural — `resolve_one` `remove`s the source unconditionally before upload, drops it.
+- 🟡 Editor opaque↔blend flip end-to-end via UI: procedural render confirmed + correctness rests on the
+  two tests + `apply_kind` re-materialise; full create-material→assign→set-Blend click-through not
+  finished (deep authoring flow). Skinned flip is the §9 epic.
+- 🟡 Granular cold-load UI: data + labels wired (shared `phase_label`), overlay renders live phases; the
+  three *commit* phases don't get an individual paint on a warm cache (see 9.6 paint nuance).
