@@ -1,5 +1,28 @@
 # Plan: one geometry flow — render our own format; glTF is import-only
 
+> ## ✅ EPIC COMPLETE (2026-06-19)
+>
+> Both goals from David's report are met:
+>
+> **1. Transaction API.** Loading is ONE transaction — `begin_load` → declare ops IN DEPENDENCY ORDER →
+> `commit_load` (the commit dedups, runs concurrently, finalizes the texture pool + recompiles pipelines
+> ONCE; no post-hoc re-materialise). This now holds for BOTH paths: the **player** (`scene-loader`
+> `populate_awsm_scene`, one phased pass) AND the **editor** (the join-barrier, commits `1c8b2633` +
+> `ba5e25b5`): a bulk scene load — project reload / import subtree, i.e. `node_sync`'s `Replace` diff —
+> declares the whole forest declare-only via the recursive `add_node(bulk_load=true)` + skip-initial
+> observers, then commits once (`commit_bulk_load`). No debounce, so no texture-pool-grow window. Live
+> add/edit keep their per-node declare+commit.
+>
+> **2. Data format.** No "load & show glTF": import does an in-memory refactor of glTF → our format; the
+> renderer renders our format only. The editor EXPORT splits a project into material / animation / texture
+> sidecars + a geometry-only GLB (incl. skins + morphs), and the player loads it directly via the Transaction
+> API above (no double-load). glTF import → clean re-export round-trips geometry + textures + animations + all
+> 12 KHR_* material extensions + N-set multi-UV (`MeshData.uvs: Vec<Vec<[f32;2]>>` / renderer `uv_sets`).
+>
+> **Verified live** (editor :9085, no GPUValidationError): SheenChair + Fox(bone hierarchy) import & render;
+> Fox skinned animation playback; mixed built-in+imported scene; live edit + undo; material assign with
+> multi-UV textures; directional light + floor. See the TESTING LOG below. Cleanup + docs done.
+
 > **⭐ DAVID AWAY 2026-06-19 → back ~2026-06-20 night. POST-EPIC DIRECTIVE (after the join-barrier lands +
 > the epic is DONE):** (1) TEST THOROUGHLY in the editor — custom materials, shadows, alpha cutoffs, changing
 > textures, scenes mixing built-in primitives + imported models, skinned/morph/animated, material/variant
