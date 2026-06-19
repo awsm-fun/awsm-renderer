@@ -461,9 +461,11 @@ it: primitives / raw (done), the glTF decode (done), and — the missing produce
 **Editor content becomes a first-class source.** The editor's job is:
 
 1. **Create** content — primitives, imported glbs, MCP/UI edits — over the full surface: geometry,
-   bones, skins, morphs, materials, textures, transforms.
+   bones, skins, morphs, materials, textures, transforms, **animations**.
 2. **Persist** it in our proprietary format = **(a) a glb for GEOMETRY** (a pure geometry container,
-   *including skins + morphs*, edited or not) + **(b) materials, separately**.
+   *including skins + morphs*, edited or not) + **(b) materials, separately** + **(c) animations in our
+   own clip format** (extracted from glTF samplers, then supplemented with the editor's own additions —
+   e.g. clip mixing — so authored clips aren't bound to the glTF representation).
 
 Loading / re-materialising editor content is then just **(re-)importing that glb through the same source
 path** + binding the separate materials. Re-materialisation after ANY edit (material flip, geometry /
@@ -488,6 +490,9 @@ free** (edit the authored skin → re-import). One path → one place to optimis
 - **`awsm-glb-export` already models skins** (`ExportSkin`: joints + inverse-bind matrices; per-vertex
   `JOINTS_0`/`WEIGHTS_0`) **and morphs** (`MorphTarget` deltas + default weights) — the geometry-glb
   container exists.
+- **Animations are already extracted into the editor's own clip format** (`extract_animations` →
+  `ExtractedAnimation`, then editor clips + mixing) — the animation half of the format already exists,
+  decoupled from the glb.
 - The editor already (a) captures STATIC geometry to an editable `MeshDef` + re-materialises via
   `add_raw_mesh`, and (b) loads **materialless geometry-only glbs + a separately-applied material**
   (the bundle loader's `GltfMaterialSource::Single`) — the "separated glb + materials" pattern is
@@ -516,11 +521,15 @@ free** (edit the authored skin → re-import). One path → one place to optimis
   node (geometry + skin + morph) to a `GeometrySource` and adds it to the transaction. `populate_gltf`
   becomes purely an *importer* that feeds this same producer — no editor-special meshes.
 
-- **Phase 3 — The proprietary save format (geometry-glb + materials sidecar).**
+- **Phase 3 — The proprietary save format (geometry-glb + materials sidecar + animation clips).**
   Define + implement the editor's persistent format: per-asset geometry glb (via `awsm-glb-export`,
-  skins/morphs included, NO materials baked) + a materials sidecar. Save = export authored content;
-  Load = import the glb as geometry-only + bind the sidecar materials (generalise the bundle loader's
-  materialless-glb + `Single`-material path). Re-materialise = re-import the asset's own geometry-glb.
+  skins/morphs included, NO materials baked) + a materials sidecar + animations in the editor's own clip
+  format (already extracted via `awsm_renderer_gltf::extract::extract_animations` and supplemented with
+  editor additions like clip mixing). Save = export authored content; Load = import the glb as
+  geometry-only + bind the sidecar materials (generalise the bundle loader's materialless-glb +
+  `Single`-material path) + load the authored clips. Re-materialise = re-import the asset's own
+  geometry-glb. (Animation/material/geometry are SEPARATE concerns in the format — the glb is *only* a
+  geometry container, so editing a clip or a material never round-trips geometry and vice-versa.)
 
 - **Phase 4 — Make the round-trip the only path + verify.**
   Editor edits write through to the authored glb; re-materialise always re-imports. Lossless round-trip
@@ -536,11 +545,20 @@ free** (edit the authored skin → re-import). One path → one place to optimis
   the *editor* owns the authored copy — which is exactly this format.)
 - **Skin/skeleton identity across re-import** — joints are scene transforms; re-import must rebind to
   the SAME skeleton nodes (and the animation channels targeting them) without churning keys.
-- **Granular-UI paint nuance (small, related)** — `commit_load`'s geometry phase is *synchronous*, so
-  its progress line never gets a paint frame (textures/compile do, on cold loads — confirmed: even 20×
-  CPU throttle doesn't make geometry/texture paint, because the issue is *yielding*, not speed). To make
-  those lines visibly paint, `commit_load` would need a yield after each phase's `on_progress` — a
-  deliberate change to the "commit_load stays identical" HARD INVARIANT, so it needs sign-off.
+- **Granular-UI paint nuance (small, related).** The browser only repaints when JS yields to the event
+  loop and a `requestAnimationFrame` tick runs; dominator flushes DOM on rAF. `commit_load`'s geometry
+  phase (`resolve_geometry`) is *fully synchronous* — it calls `on_progress(UploadingGeometry)` then
+  proceeds to the texture phase without ever yielding, so the browser never gets a frame to paint that
+  line (it's overwritten before any paint). The texture/compile phases `.await`, so they CAN paint —
+  but only when the work spans real frames (cold compile → "Compiling pipelines (N)" shows; warm cache →
+  instant → nothing). Confirmed: 20× CPU throttle does NOT help, because the blocker is *yielding*, not
+  speed. **Options:** (A — recommended) leave it; the slow phase (compile) already paints, geometry/
+  textures are fast, data is wired and correct. (B) yield after each `on_progress` so every line paints —
+  costs ~1 event-loop turn per phase (`setTimeout(0)` ≈ 4ms clamped, rAF ≈ 16ms) added to EVERY
+  `commit_load` *including live editor edits*, and is a deliberate change to the "commit_load stays
+  identical / atomic" HARD INVARIANT (the render gate still hides a mid-commit paint behind the overlay,
+  so it's safe, just non-atomic + slower). (C) yield inside `resolve_geometry` only every N geometries,
+  scoped to genuinely-large uploads. Needs sign-off; default to A.
 
 ### 9.7 Verification status of steps 1–8 (for reference)
 
