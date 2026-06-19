@@ -313,8 +313,16 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >   REUSE skin_key" is a PERF optimisation (avoid the per-edit insert+free churn), NOT a leak fix — deferred
 >   per §4 "optimise only if measured" (`?stress`/`?trace` shows no stall first). default-equals-today: static
 >   already re-uploads its geometry on every edit; skinned doing the same is acceptable.
-> - **morph-via-rig (step vi)** — morph-only nodes still use the legacy template path; decode morph from the
->   rig glb into `RawMorph` so they go node-owned too, then DELETE the legacy `materialize_skinned_from_template`.
+> - ✅ **morph-via-rig (step vi) — LANDED + VERIFIED (commits `6024f987` + `3faac229`).** `extract_node_mesh`
+>   now decodes per-node MORPH (position[+normal] deltas + default weights, `ExtractedMorph::packed_values` →
+>   renderer geometry-morph layout); `raw_mesh_from_rig` makes skin OPTIONAL + builds `RawMorph`, so a
+>   morph-only node materialises NODE-OWNED (`add_raw_mesh` inserts the morph; relower auto-rebinds). Plus a
+>   reload-robustness fix: the pin now skips a stale MORPH key too (the morph analog of the `LocalNotFound`
+>   fix — `MorphNotFound` on reload). VERIFIED: AnimatedMorphCube imports node-owned + morph player binds live
+>   + reload console-clean. REMAINING CLEANUP (not blocking; kept conservatively): `materialize_skinned_from_template`
+>   is still the FALLBACK when `raw_mesh_from_rig` returns `None` (no rig glb cached / a bone not yet in the
+>   bridge / truly-legacy projects) — DELETE only after confirming those edge cases are covered; + RENAME
+>   `repopulate_skinned_template`. Assess separately (don't stack risk on the verified win).
 >   **DE-RISKED (investigated this loop):** (a) the renderer side is ALREADY done — `RawMeshData.morph:
 >   Option<RawMorph>` exists + `add_raw_mesh` inserts it (`raw_mesh.rs` ~376) setting the geometry_morph_key;
 >   (b) ⭐ the dreaded morph-anim REBIND is AUTOMATIC — the relower resolves a `Morph` channel as `node → its
@@ -657,6 +665,16 @@ perf(`?stress`,`?trace`) verification pass — OR David signs off on accepting t
 editor's reactive model (the per-node commit IS ordered correctly now; it's "N transactions in dependency
 order", just not ONE). Either resolves the §5b gate.** Design is recorded; implementation deferred pending
 that call.
+
+**⭐ DAVID'S CALL (2026-06-19): "Finish the rest first."** He reaffirmed the transaction model (start txn →
+declare many ops → commit; the commit dedupes/runs-concurrently internally) and flagged that any "re-
+materialise" smells wrong. Clarified to him: morph/texture/etc ARE declared→committed (no re-materialise
+pass); the stale-key "window" is the per-frame render-loop animation PIN transiently hitting a just-freed
+key during the NON-ATOMIC reactive reload, and the pin-skips are render-loop robustness (not a re-materialise).
+DECISION: keep the planned order (Phase 5 next), then do the editor-load consolidation (one atomic
+`begin→declare-all→commit` reload, mirroring `populate_awsm_scene`) as a DEDICATED, fully-verified follow-up
+— that's what removes the window for good. The per-node-commit model + pin-skips hold the line until then.
+Do NOT attempt the consolidation before Phase 5; do NOT leave any re-materialise pass in the load path.
 
 ## 6. Out of scope / tracked elsewhere
 
