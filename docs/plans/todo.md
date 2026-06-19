@@ -142,12 +142,46 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 
 > **⚠ Risk note (Phase 2).** This rewires the editor's skinned + morph + animation materialise path —
 > core, high-blast-radius systems whose correctness needs LIVE verification with a
-> skinned+morphed+animated model (import, deform, flip, save→reload). Approach in SMALL, individually
-> green + verified increments, in order: (a) glb-export `extract_node_mesh` returns per-node skin
-> (additive, isolated, no behaviour change) → (b) re-wire `materialize_skinned_mesh` per-node → (c) joint
-> rebind → (d) `populate_gltf` pure importer. Live-screenshot a skinned model after each behavioural
-> step; if an increment can't be verified green, record the blocker here and surface it rather than
-> stacking more risk on top.
+> skinned+morphed+animated model (import, deform, flip, save→reload).
+
+### Phase 2 step-(b) BLOCKER — surfaced for a human decision (loop paused here)
+
+Tracing the live skinned flow before writing (b) revealed the written (b)/(c)/(d) increments are NOT
+cleanly separable, and (b) has real failure modes that can't be de-risked without live skinned-model
+testing. Concrete findings (code-verified):
+
+- **populate builds + SHOWS the skinned drawable today.** `hide_template_meshes` hides only the
+  *non-skinned* populate meshes; the **skinned** ones stay visible and ARE the rendered geometry, reused
+  by `materialize_skinned_mesh` via `set_mesh_material`. So a per-node `add_raw_mesh(skin)` can't just be
+  *added* — it would DOUBLE the geometry unless populate also stops building/showing the skinned drawable.
+  ⇒ **(b) is entangled with (d)** (can't do one without the other).
+- **Skin re-insert conflict.** `Skins::insert` has a `JointAlreadyExistsButDifferent` guard. populate
+  already inserts the skin for the node's joint `TransformKey`s; a per-node `add_raw_mesh(skin)` re-inserts
+  a skin over the SAME joint keys → matches only if the rig-glb-reexported inverse-bind matrices are
+  bit-identical to populate's originals. `reexport_clean` may perturb them ⇒ a real
+  `JointAlreadyExistsButDifferent` failure mode that only shows at runtime.
+- **populate-as-pure-importer is itself large.** populate currently sets up the skeleton transform tree
+  + skin store + animation channels AND the drawable skinned mesh. "(d) pure importer" means it must still
+  build the skeleton/skin/animation but NOT the drawable — a non-trivial split of the import pipeline.
+- **Morph-anim rebind** (already-recorded wrinkle) compounds this for face rigs.
+
+**This is the guardrail's "can't verify green safely + discovered entanglement" case**, and there are no
+Phase-2-independent green steps to peel off (Phases 3–4 build on 2). So the loop is **pausing here** for a
+human call rather than plowing an entangled, runtime-only-verifiable refactor of core skinned/animation
+code. **Options:**
+1. **Do the full unification** (steps b+c+d together as one carefully-verified change): stop populate
+   building the skinned drawable; capture skinned nodes per-node; materialise via `add_raw_mesh(skin)`
+   reusing the existing skin (don't re-insert — thread the populate `skin_key` through, sidestepping the
+   IBM-dedup conflict) or insert once and reuse. Large; needs a rigged asset + live verify of
+   deform/animation/flip/save-reload. **The "right" end-state.**
+2. **Narrow fix for the flip only:** keep populate's skinned mesh, but on a never-built-kind flip, rebuild
+   THAT geometry's kind from the rig glb in place (reuse the existing skin_key, just add the missing rep).
+   Smaller, but it's a special-case path (not the "one flow") — partially defeats the epic's purpose.
+3. **Accept the limitation:** the skinned never-built-kind flip degrades to a graceful `Skip` (mesh hidden
+   until re-import) — not a crash. Document it; do not do Phase 2–4. The flip is an authoring edge case.
+
+Recommendation: this is a scope/risk call for the human. Phase 1 + 2(a) (the safe renderer + glb-export
+foundations) are landed green and are useful regardless of which option is chosen.
 
 - **Phase 3 — The proprietary save format (geometry-glb + materials sidecar + animation clips).**
   Define + implement the editor's persistent format: per-asset geometry glb (via `awsm-glb-export`,
