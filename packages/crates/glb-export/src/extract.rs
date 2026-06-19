@@ -627,15 +627,14 @@ fn build_clean_node(
 ///
 /// Positions/normals/uvs are the **raw** accessor values (the node's own local
 /// space); see the module docs on why no transform is applied.
-/// One node's extracted geometry plus its optional **second** UV set
-/// (`TEXCOORD_1`), read in the SAME merge pass as the primary [`MeshData`] so it
-/// stays vertex-aligned. `uvs1` rides a parallel channel (not [`MeshData`], whose
-/// many construction sites would churn) up to the editor's captured mesh, where
-/// it becomes the renderer's UV set 1 (`material_uv(in, 1u)`).
+/// One node's extracted geometry plus its optional skin binding. ALL of the node's
+/// UV sets (`TEXCOORD_0`, `TEXCOORD_1`, …) are read in the SAME merge pass as the
+/// positions so they stay vertex-aligned, and folded into [`MeshData::uvs`] — the
+/// renderer reads set N via `material_uv(in, Nu)`.
 #[derive(Clone)]
 pub struct ExtractedNodeMesh {
     /// Geometry, with ALL UV sets folded into `mesh.uvs` (set 0 = `uvs[0]`, the
-    /// 2nd set = `uvs[1]`, …) — no separate `uvs1` channel.
+    /// 2nd set = `uvs[1]`, …) — N-set, no separate `uvs1` channel.
     pub mesh: MeshData,
     /// Per-node SKIN (rig binding), read in the SAME merge pass as the geometry so
     /// the per-vertex joints/weights stay vertex-aligned with `mesh.positions`.
