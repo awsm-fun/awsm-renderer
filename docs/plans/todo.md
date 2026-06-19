@@ -595,12 +595,18 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       `MeshData` gains `uvs1: Option<Vec<[f32;2]>>` (read `reader.read_tex_coords(1)`), `write_glb` emits
       TEXCOORD_1, and any textureInfo with `texCoord:1` keeps it. (Also affects any multi-UV sample, e.g.
       MetalRoughSpheresNoTextures variants / lightmaps.) The GAP 3 extension round-trips themselves are correct
-      + verified. **⭐ DAVID'S CALL (2026-06-19): "Fix multi-UV (TEXCOORD_1)" NEXT.** Plan: `MeshData` gains
-      `uvs1: Option<Vec<[f32;2]>>`; `build_clean_node` (+ `extract_node_mesh`) read `reader.read_tex_coords(1)`;
-      `write_glb` emits a `TEXCOORD_1` accessor/bufferview + the primitive attribute when present (mirror the
-      existing TEXCOORD_0 path); MeshData construction sites (editor bake, tests) set `uvs1: None`. The
-      textureInfo `texCoord` is already preserved, so occlusion `texCoord:1` then samples the real set. VERIFY
-      SheenChair `?ourformat=1` == direct (fabric no longer over-darkens).
+      + verified. **⭐ DAVID'S CALL (2026-06-19): "Fix multi-UV (TEXCOORD_1)" NEXT — and GENERALIZE the UV-set
+      system to handle N sets, not just 2 (David's explicit follow-up).** Plan: GENERALIZE `MeshData`'s single
+      `uvs: Option<Vec<[f32;2]>>` into N UV SETS — `pub uvs: Vec<Vec<[f32;2]>>` (index = TEXCOORD_n; empty =
+      none), so TEXCOORD_0..N all round-trip (no hardcoded `uvs1`). `build_clean_node` (+ `extract_node_mesh`)
+      read sets in a loop: `for n in 0.. { match reader.read_tex_coords(n) { Some(t) => push t.into_f32(), None
+      => break } }`. `write_glb` emits a TEXCOORD_n accessor/bufferview + primitive attribute for EACH set
+      (generalize the existing single-TEXCOORD_0 emission into a loop over `uvs`). Update ALL MeshData
+      construction/read sites (editor mesh bake, gltf-convert, tests, write_glb's uv read) for the
+      `Option<Vec>` → `Vec<Vec>` change (set-0 source → `vec![set0]`; none → `vec![]`). The textureInfo
+      `texCoord` is already preserved, so occlusion `texCoord:1` then samples the real set. Keep the renderer's
+      uv_index capability in mind (it already takes a uv set index). VERIFY SheenChair `?ourformat=1` == direct
+      (fabric no longer over-darkens) + a texCoord-0 sample didn't regress.
     - 🟡 **GAP 3 (earlier, 11 done):** ✅ SCALARS
       `ior`/`emissive_strength` (24507079) + ✅ TYPED-TEXTURE `specular`/`transmission`/`volume` (66c79b7e) +
       ✅ RAW-JSON `clearcoat`/`sheen`/`anisotropy`/`iridescence`/`dispersion`/`diffuse_transmission` (commit
