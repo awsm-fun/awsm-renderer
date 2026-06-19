@@ -205,6 +205,7 @@ fn to_raw(mesh: MeshData) -> RawMeshData {
         uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,
+        ..Default::default()
     }
 }
 

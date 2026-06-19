@@ -249,6 +249,7 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
             uvs1: None,
             colors: mesh.colors,
             indices: mesh.indices,
+            ..Default::default()
         };
         // High emissive factor so the box self-illuminates against
         // an empty scene with no punctual lights — the example

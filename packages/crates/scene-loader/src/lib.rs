@@ -1777,6 +1777,7 @@ pub fn mesh_data_to_raw(md: awsm_meshgen::MeshData) -> RawMeshData {
         uvs1: None,
         colors: md.colors,
         indices: md.indices,
+        ..Default::default()
     }
 }
 

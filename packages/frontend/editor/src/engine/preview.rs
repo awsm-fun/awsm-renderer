@@ -225,6 +225,7 @@ pub(super) fn preview_sphere() -> RawMeshData {
         uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,
+        ..Default::default()
     }
 }
 

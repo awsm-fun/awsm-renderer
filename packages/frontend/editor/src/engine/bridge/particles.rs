@@ -133,6 +133,7 @@ fn build_runtime(
         uvs1: None,
         colors: m.colors,
         indices: m.indices,
+        ..Default::default()
     };
     let transform_key = renderer
         .transforms

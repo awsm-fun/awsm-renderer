@@ -79,6 +79,7 @@ pub fn get_raw(id: AssetId) -> Option<RawMeshData> {
             uvs1: m.uvs1.clone(),
             colors: m.colors.clone(),
             indices: m.indices.clone(),
+            ..Default::default()
         })
     })
 }

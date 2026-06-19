@@ -853,6 +853,7 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
         uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,
+        ..Default::default()
     };
     let sprite_mat = awsm_editor_protocol::MaterialDef {
         base_color: def.tint,
@@ -1113,6 +1114,7 @@ async fn materialize_instances(
         uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,
+        ..Default::default()
     };
     let mesh_key = upload_simple_mesh(
         entry,

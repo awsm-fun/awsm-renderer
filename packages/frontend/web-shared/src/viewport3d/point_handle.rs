@@ -114,6 +114,7 @@ impl PointHandleSet {
                 uvs1: None,
                 colors: mesh.colors,
                 indices: mesh.indices,
+                ..Default::default()
             };
             let mesh_key = renderer.add_raw_mesh(raw, transform_key, material_key)?;
             renderer.set_mesh_hud(mesh_key, true)?;
