@@ -212,6 +212,24 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >   a `?stress`/`?trace` perf check (no regression; transactional; reduced resource use via no
 >   double-geometry + one decode).
 >
+> **Implementation findings (turn after Phase 2a — affect HOW, not WHETHER):**
+> - **Foundational prerequisite — NODE-INDEX SPACE consistency.** `reexport_clean` flattens/renumbers
+>   nodes, so the rig glb's node indices ≠ the original glTF's. `ExtractedSkin.joint_node_indices` (2a)
+>   are RIG-GLB indices. Today the editor builds the skinned template from the ORIGINAL at import but from
+>   the RIG GLB on reload (`repopulate_skinned_template`). To capture/re-materialise skinned from the rig
+>   glb consistently, the EDITOR'S IMPORT must ALSO build the skinned template + node refs from the rig glb
+>   (unify import onto `repopulate_skinned_template` → import AND reload AND re-materialise share ONE
+>   node-index space). This is the first sub-step; it's behavioural so needs live skinned verify.
+> - **Verification reality.** Acceptance is visual+behavioural (a rig must DEFORM + ANIMATE, then flip/
+>   save-reload). `cargo test` can't catch skinned-render regressions (WebGPU-only, no GPU tests). Live
+>   verify needs a rigged glb imported INTO the editor; the editor import takes a URL and Fox (skinned) is
+>   fetchable at http://localhost:9080/media/glTF-Sample-Assets/Models/Fox/glTF-Binary/Fox.glb, but cross-
+>   origin (:9085←:9080) may hit CORS, and judging skeletal DEFORMATION from a screenshot is unreliable.
+>   ⇒ best CO-DRIVEN with a human glancing at deformation. `skins::remove` + rig-glb/bind-pose caches exist.
+> - **Autonomous-friendlier alt track:** Phase 5 (route model-tests through import→our-format) is
+>   screenshot-verifiable on the model-tests canvas (reliable all session) + foundational (the importer/
+>   renderer split serves the editor too) — but carries its own material-extension round-trip risk.
+>
 > **Verification (live, with a rigged asset):** import a skinned model (deforms + animates), flip its
 > material opaque↔blend (re-renders, no vanish / no `VisibilityGeometryBufferNotFound`), save→reload
 > (restores). Fox/DamagedHelmet regression-clean. Find a rigged glb in test-assets / model-tests
