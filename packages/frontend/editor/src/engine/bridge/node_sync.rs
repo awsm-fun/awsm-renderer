@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use awsm_meshgen::MeshData;
-use awsm_renderer::raw_mesh::RawMeshData;
+use awsm_renderer::raw_mesh::{RawMeshData, RawSkin};
 use awsm_renderer::transforms::{Transform, TransformKey};
 // Shared with the runtime-bundle loader (`populate_awsm_scene`) so a light lowers
 // identically on the editor's live render and the player — the round-trip premise.
@@ -13,7 +13,7 @@ use awsm_scene_loader::camera::camera_params_from_config;
 use awsm_scene_loader::light::{light_from_config, light_shadow_params_from_config};
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::{SignalVecExt, VecDiff};
-use glam::{Quat, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec3, Vec4};
 
 use super::{bridge, material, RendererNode};
 use crate::engine::context::{renderer_handle, with_renderer_mut};
@@ -636,23 +636,145 @@ fn mesh_shadow_flags_from_config(
     }
 }
 
-/// Materialize a `SkinnedMesh` node: the renderer's `populate_gltf` already built
-/// the skinned mesh + skeleton at import (and `hide_template_meshes` left the
-/// skinned copies *visible*), so we don't build geometry — we look this node's
-/// glTF `node_index` up in the cached import template, find its (skinned)
-/// renderer mesh key(s), and (re)assign this node's material + shadow flags onto
-/// them. The mesh keeps deforming via the skeleton joints, which the per-frame
-/// `skin_bridge` drives from the editor's animated mirror bones.
+/// Build a node-owned skinned [`RawMeshData`] for a `SkinnedMesh` node by decoding
+/// the clean rig glb (our-format) at the node's `rig_node_index` — the MATERIALISER's
+/// geometry+skin read. The per-vertex `JOINTS_0` index into the skin's joint list;
+/// each joint's rig-glb node-index is mapped → its editor bone `TransformKey` via the
+/// `SkinnedMeshRef::joints` table (bone `NodeId` ↔ rig-glb flat index) + the bridge,
+/// so the skin deforms DIRECTLY from the animated editor bones (no `skin_bridge` hop).
+/// IBMs come from the same rig-glb decode (bit-identical to the original — proven by
+/// the glb-export round-trip proptest), so the bind pose is exact.
 ///
-/// The skinned mesh keys are owned by the populate pass (the hidden template
-/// hierarchy keeps the joints alive), so they are **not** pushed to
-/// `entry.model_meshes` — `teardown` must not remove them. Only the materials we
-/// insert here are this node's to own + free.
+/// Returns `None` when no rig glb is cached for the source (e.g. a legacy project's
+/// skinned node, or a morph-only node with no skin), the node carries no skin, or a
+/// joint can't be resolved to its bone yet — callers then fall back to the
+/// template-reuse path.
+fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawMeshData> {
+    let decode = super::skinned_bake_cache::get_rig_node_decode(
+        skin.source,
+        skin.rig_node_index,
+        skin.primitive_index,
+    )?;
+    let ext_skin = decode.skin.as_ref()?;
+
+    // rig-glb joint node-index → editor bone TransformKey.
+    let b = bridge();
+    let mut joints = Vec::with_capacity(ext_skin.joint_node_indices.len());
+    for rig_idx in &ext_skin.joint_node_indices {
+        let bone_node = skin
+            .joints
+            .iter()
+            .find(|sj| sj.index == *rig_idx as u32)
+            .map(|sj| sj.node)?;
+        let tk = {
+            let nodes = b.nodes.lock().unwrap();
+            nodes.get(&bone_node).map(|e| e.transform_key)?
+        };
+        joints.push(tk);
+    }
+
+    let inverse_bind_matrices: Vec<Mat4> = ext_skin
+        .inverse_bind_matrices
+        .iter()
+        .map(Mat4::from_cols_array)
+        .collect();
+    let raw_skin = RawSkin {
+        joints,
+        inverse_bind_matrices,
+        set_count: 1,
+        index_weights: ext_skin.packed_index_weights(),
+    };
+
+    let m = decode.mesh;
+    Some(RawMeshData {
+        positions: m.positions,
+        normals: m.normals,
+        uvs: m.uvs,
+        uvs1: decode.uvs1,
+        colors: m.colors,
+        indices: m.indices,
+        skin: Some(raw_skin),
+        ..Default::default()
+    })
+}
+
+/// Materialize (or re-materialize) a `SkinnedMesh` node. **The unified path** decodes
+/// the clean rig glb (our-format) into a NODE-OWNED skinned drawable via
+/// [`raw_mesh_from_rig`] + `add_raw_mesh` with the CURRENT material, so an
+/// opaque↔blend material flip (or any edit) rebuilds through the SAME
+/// teardown+`apply_kind` path as static geometry — no more `set_mesh_material` on a
+/// shared populate template (which couldn't rebuild a never-built kind → the vanish
+/// bug). The drawable is pushed to `model_meshes`, so `teardown` frees it.
+///
+/// Falls back to the legacy template-reuse path ([`materialize_skinned_from_template`])
+/// when there's no rig decode — a morph-only node (no skin) or a legacy project whose
+/// rig glb isn't cached. (Morph-via-rig is a Phase 2 follow-up.)
 async fn materialize_skinned_mesh(
     entry: Arc<RendererNode>,
     skin: awsm_editor_protocol::SkinnedMeshRef,
     material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
 ) {
+    let Some(raw) = raw_mesh_from_rig(&skin) else {
+        // No rig-glb skin decode → morph-only / legacy. Keep the prior behaviour.
+        materialize_skinned_from_template(entry, skin, material).await;
+        return;
+    };
+
+    let visible = entry.node.visible.get();
+    let shadow_cfg = entry
+        .node
+        .kind
+        .get_cloned()
+        .mesh_shadow()
+        .copied()
+        .unwrap_or_default();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
+    // Per the glTF rule "the transform of a skinned mesh node is ignored" — the skin
+    // deforms via the joints — the drawable rides an IDENTITY transform under the
+    // renderer root (independent of this editor node's transform, matching the prior
+    // populate behaviour). `teardown` frees it via `model_transforms`.
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    let root = r.transforms.root_node;
+    let vertex_color_set = raw.colors.as_ref().filter(|c| !c.is_empty()).map(|_| 0u32);
+    let mat_key = resolve_assigned_material(&mut r, material.as_ref(), vertex_color_set);
+    let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(root));
+    match r.add_raw_mesh(raw, sub_tk, mat_key) {
+        Ok(mk) => {
+            let _ = r.set_mesh_hidden(mk, !visible);
+            let _ = r.set_mesh_shadow_flags(mk, shadow_flags);
+            if let Err(e) = r
+                .commit_load(crate::engine::activity::commit_phase_handler())
+                .await
+            {
+                tracing::warn!("commit_load (skinned mesh): {e}");
+            }
+            drop(r);
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(sub_tk);
+            entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
+        }
+        Err(e) => {
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::error!("materialize skinned mesh (rig) failed: {e}");
+        }
+    }
+}
+
+/// Legacy skinned materialise: reuse the populate-built skinned mesh from the import
+/// template and (re)assign this node's material + shadow flags via `set_mesh_material`.
+/// Retained only for nodes [`raw_mesh_from_rig`] can't serve (morph-only, or a legacy
+/// project with no cached rig glb). The populate mesh keys are template-owned (they
+/// survive teardown), so they are NOT pushed to `model_meshes`.
+async fn materialize_skinned_from_template(
+    entry: Arc<RendererNode>,
+    skin: awsm_editor_protocol::SkinnedMeshRef,
+    material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+) {
+    // The populate skinned mesh is hidden by `hide_template_meshes` (now hides all
+    // template meshes); un-hide it here since this path renders that copy directly.
     let Some(template) = bridge().get_template(skin.source) else {
         tracing::warn!(
             "SkinnedMesh {:?}: no import template cached (session-local — survives \

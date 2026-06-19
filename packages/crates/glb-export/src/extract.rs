@@ -383,6 +383,7 @@ fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>], pool: &mut ImagePool
 /// stays vertex-aligned. `uvs1` rides a parallel channel (not [`MeshData`], whose
 /// many construction sites would churn) up to the editor's captured mesh, where
 /// it becomes the renderer's UV set 1 (`material_uv(in, 1u)`).
+#[derive(Clone)]
 pub struct ExtractedNodeMesh {
     pub mesh: MeshData,
     pub uvs1: Option<Vec<[f32; 2]>>,
@@ -403,6 +404,7 @@ pub struct ExtractedNodeMesh {
 ///
 /// Note: reads skin SET 0 only (`JOINTS_0`/`WEIGHTS_0`) — 4 influences/vertex,
 /// the common case. Multi-set rigs (`JOINTS_1`+) are a follow-up.
+#[derive(Clone)]
 pub struct ExtractedSkin {
     /// glTF node indices of the skin's joints (parallel to `inverse_bind_matrices`).
     pub joint_node_indices: Vec<usize>,
@@ -583,6 +585,22 @@ pub fn extract_node_mesh_from_bytes(
     let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
     // The bytes path (editor export) only needs the primary geometry.
     extract_node_mesh(&doc, &buffers, node_index, primitive_index).map(|e| e.mesh)
+}
+
+/// Like [`extract_node_mesh_from_bytes`] but returns the FULL
+/// [`ExtractedNodeMesh`] — geometry + optional 2nd UV set + the per-node
+/// [`ExtractedSkin`]. This is the MATERIALISER's entry point: decode the clean
+/// rig glb (`assets/<source>.glb`) at a node to rebuild its skinned drawable
+/// (geometry + skin) from our-format. Self-contained sources only (embedded /
+/// data-URI buffers — the rig glb is single-BIN).
+pub fn extract_node_mesh_with_skin_from_bytes(
+    bytes: &[u8],
+    node_index: u32,
+    primitive_index: Option<u32>,
+) -> Option<ExtractedNodeMesh> {
+    let (doc, buffers, _images) = gltf::import_slice(bytes).ok()?;
+    let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
+    extract_node_mesh(&doc, &buffers, node_index, primitive_index)
 }
 
 #[cfg(test)]

@@ -39,8 +39,9 @@ mod write;
 pub use awsm_meshgen::MeshData;
 pub use bundle::{assemble_bundle, BundleFile, BundleInputs, PlayerBundle};
 pub use extract::{
-    extract_node_mesh, extract_node_mesh_from_bytes, reexport_clean, reexport_clean_scene,
-    scene_node_flat_indices, ExtractedNodeMesh,
+    extract_node_mesh, extract_node_mesh_from_bytes, extract_node_mesh_with_skin_from_bytes,
+    reexport_clean, reexport_clean_scene, scene_node_flat_indices, ExtractedNodeMesh,
+    ExtractedSkin,
 };
 pub use write::write_glb;
 

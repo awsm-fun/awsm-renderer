@@ -340,10 +340,15 @@ fn snapshot(
 pub fn hide_template_meshes(renderer: &mut AwsmRenderer, template: &AssetTemplate) {
     fn walk(renderer: &mut AwsmRenderer, nodes: &[AssetTemplateNode]) {
         for n in nodes {
-            for (mk, &skinned) in n.mesh_keys.iter().zip(n.mesh_is_skinned.iter()) {
-                if !skinned {
-                    let _ = renderer.set_mesh_hidden(*mk, true);
-                }
+            // Hide EVERY populate mesh — static AND skinned. The editor renders its
+            // own copy of each: static geometry → a captured `Mesh` node; skinned →
+            // a NODE-OWNED drawable the materialiser builds from the clean rig glb
+            // (`node_sync::raw_mesh_from_rig`). The populate skinned copy is no longer
+            // the rendered geometry, so leaving it visible would double-render. The
+            // legacy template-reuse fallback (`materialize_skinned_from_template`,
+            // morph-only / no-rig) un-hides the specific copy it renders.
+            for mk in n.mesh_keys.iter() {
+                let _ = renderer.set_mesh_hidden(*mk, true);
             }
             walk(renderer, &n.children);
         }
