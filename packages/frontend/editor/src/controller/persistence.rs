@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use awsm_editor_protocol::animation::CustomAnimationRef;
 use awsm_editor_protocol::{
-    mesh_asset_filename, AssetId, AssetSource, CapturedMesh, CustomMaterialRef, EditorProject,
-    StoredMaterial, StoredSlot,
+    asset_filename, mesh_asset_filename, AssetId, AssetSource, CapturedMesh, CustomMaterialRef,
+    EditorProject, StoredMaterial, StoredSlot, TextureDef,
 };
 use awsm_web_shared::prelude::Mutable;
 
@@ -226,6 +226,69 @@ pub fn mesh_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
         }
     }
     out
+}
+
+/// Per-imported-texture side files (`assets/<content_hash>.<ext>`) — the ENCODED
+/// PNG/JPEG bytes for every `Texture(Raster)` asset whose bytes are live in the
+/// [`texture_cache`](crate::engine::bridge::texture_cache) store. Closes the
+/// texture half of the session-local-only persistence gap: imported textures now
+/// survive Save → reload (the renderer only keeps decoded pixels). Content-hash
+/// addressed so identical textures across models share one file.
+pub fn texture_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
+    use crate::engine::bridge::texture_cache;
+    let mut out = Vec::new();
+    let assets = ctrl.scene.assets.lock().unwrap();
+    for (id, entry) in assets.entries.iter() {
+        if !matches!(
+            &entry.source,
+            AssetSource::Texture(TextureDef::Raster { .. })
+        ) {
+            continue;
+        }
+        // `asset_filename` is `Some` only when content_hash is set (a captured,
+        // file-backed texture); procedural / un-captured textures return `None`.
+        let Some(name) = asset_filename(*id, entry) else {
+            continue;
+        };
+        if let Some((bytes, _mime)) = texture_cache::get(*id) {
+            out.push((format!("assets/{name}"), bytes));
+        }
+    }
+    out
+}
+
+/// Restore imported-texture bytes on LOAD: read each `Texture(Raster)` asset's
+/// `assets/<hash>.<ext>` side file, re-seed the [`texture_cache`] (so a later
+/// re-save persists it again), then decode + re-upload + re-register the GPU
+/// texture via the material bridge. Called **before** [`apply_project`] so a
+/// material resolves its texture slot the first time it materialises — a DECLARED
+/// LOAD INPUT, not a post-hoc re-materialise. Missing files are skipped (older
+/// projects / un-captured textures).
+async fn restore_textures<F, Fut>(project: &EditorProject, mut read: F)
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    use awsm_glb_export::ImageMime;
+    let mut items: Vec<(AssetId, Vec<u8>, String)> = Vec::new();
+    for (id, entry) in project.assets.entries.iter() {
+        let AssetSource::Texture(TextureDef::Raster { display_name }) = &entry.source else {
+            continue;
+        };
+        let Some(name) = asset_filename(*id, entry) else {
+            continue;
+        };
+        let (mime_str, mime) = match display_name.rsplit_once('.').map(|(_, e)| e) {
+            Some("png") => ("image/png", ImageMime::Png),
+            Some("jpg") | Some("jpeg") => ("image/jpeg", ImageMime::Jpeg),
+            _ => continue,
+        };
+        if let Ok(bytes) = read(format!("assets/{name}")).await {
+            crate::engine::bridge::texture_cache::store(*id, bytes.clone(), mime);
+            items.push((*id, bytes, mime_str.to_string()));
+        }
+    }
+    crate::engine::bridge::material::restore_raster_textures(items).await;
 }
 
 /// Restore captured-mesh bytes into the [`mesh_cache`] store from a loaded
@@ -593,6 +656,11 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
             .await
             .map_err(|e| EditorError::Msg(e.to_string()))?;
     }
+    for (name, bytes) in texture_files(ctrl) {
+        dir.write_bytes(&name, &bytes)
+            .await
+            .map_err(|e| EditorError::Msg(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -616,6 +684,11 @@ pub async fn load_from_dir(
     // Slice 3: rebuild skinned templates from the persisted rig glb BEFORE
     // apply_project, so SkinnedMesh nodes render after a cold reload.
     restore_skinned_templates(&project, |path| async move {
+        dir.read_bytes(&path).await.map_err(|e| e.to_string())
+    })
+    .await;
+    // Re-upload imported textures BEFORE the scene materialises (declared input).
+    restore_textures(&project, |path| async move {
         dir.read_bytes(&path).await.map_err(|e| e.to_string())
     })
     .await;
@@ -653,6 +726,7 @@ pub fn serialize_inmem(
         mesh_files(ctrl).into_iter().collect();
     byte_files.extend(rig_glb_files(ctrl));
     byte_files.extend(bind_pose_files(ctrl));
+    byte_files.extend(texture_files(ctrl));
     Ok((toml, byte_files))
 }
 
@@ -681,6 +755,13 @@ pub async fn apply_inmem(
     restore_skinned_templates(&project, |path| {
         let bytes = byte_files.get(&path).cloned();
         async move { bytes.ok_or_else(|| format!("missing in-memory rig glb: {path}")) }
+    })
+    .await;
+    // Re-upload imported textures BEFORE the scene materialises, so materials bind
+    // their texture slots the first time they resolve (declared load input).
+    restore_textures(&project, |path| {
+        let bytes = byte_files.get(&path).cloned();
+        async move { bytes.ok_or_else(|| format!("missing in-memory texture: {path}")) }
     })
     .await;
     apply_project(ctrl, project);
@@ -758,6 +839,8 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
     }
     // Rebuild skinned templates BEFORE apply_project (so SkinnedMesh nodes render).
     restore_skinned_templates(&project, http_bytes!()).await;
+    // Re-upload imported textures BEFORE apply_project (declared load input).
+    restore_textures(&project, http_bytes!()).await;
     apply_project(ctrl, project);
     // Restore rig glb (bundle export) + bind poses (drop_skinning) AFTER apply.
     restore_rig_glb(ctrl, http_bytes!()).await;

@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use awsm_editor_protocol::MaterialDef;
-use awsm_glb_export::MeshData;
+use awsm_glb_export::{ExportImage, MeshData};
 use awsm_renderer::textures::TextureKey;
 use awsm_renderer_gltf::data::GltfData;
 use awsm_renderer_gltf::extract::{extract_animations, ExtractedAnimation};
@@ -71,6 +71,13 @@ pub struct GltfImport {
     /// `finish_model_import` to record each skin joint's bone `NodeId` → clean-glb
     /// index on `SkinnedMeshRef::joints`. Empty for unskinned imports.
     pub node_flat_indices: HashMap<u32, u32>,
+    /// The ENCODED image bytes (original PNG/JPEG) of every imported texture,
+    /// keyed by the renderer [`TextureKey`] `populate_gltf` uploaded it to. The
+    /// controller stashes these (by minted texture-asset id) so imported textures
+    /// persist across Save → reload (the renderer keeps only decoded pixels).
+    /// Built by pairing `extract_texture_images` (glTF-texture-index → bytes) with
+    /// the populate context's `GltfTextureKey.index → TextureKey` map.
+    pub texture_images: HashMap<TextureKey, ExportImage>,
 }
 
 /// A glTF material extracted into an editable [`MaterialDef`] (factors only;
@@ -267,6 +274,10 @@ async fn import_typed(
     // Read material factors + texture indices from the document before it's moved
     // into `populate_gltf`; the indices are resolved to baked texture keys after.
     let mat_specs = extract_material_specs(&data);
+    // Grab the ENCODED texture bytes (PNG/JPEG) off the document before populate
+    // consumes it — the renderer keeps only decoded pixels, so these are what we
+    // persist (paired with the baked TextureKeys below). Keyed by glTF tex index.
+    let tex_images_by_index = awsm_glb_export::extract_texture_images(&data.doc, &data.buffers.raw);
     // Parse animations off the document before `data` is moved into populate.
     // A parse error must not abort the whole import — log it + import zero clips.
     let animations = match extract_animations(&data.doc, &data.buffers.raw) {
@@ -304,7 +315,7 @@ async fn import_typed(
     } else {
         HashMap::new()
     };
-    let (template, materials) = {
+    let (template, materials, texture_images) = {
         // Hold the renderer lock across the async populate + the synchronous
         // template snapshot, so nothing mutates the freshly-built tree first.
         let handle = renderer_handle();
@@ -336,7 +347,23 @@ async fn import_typed(
         // they don't double up (and so the frozen populate-bound copy is gone).
         asset_template::remove_template_lights(&mut r, &ctx);
         let materials = resolve_materials(&ctx, mat_specs);
-        (template, materials)
+        // Pair each baked TextureKey with its encoded source bytes: the populate
+        // ctx maps GltfTextureKey{ index } → TextureKey, and `tex_images_by_index`
+        // maps that glTF texture index → encoded image. (Same key may map from
+        // several GltfTextureKeys that differ only by color info — fine, identical
+        // bytes; content-hash dedups at persist.)
+        let texture_images: HashMap<TextureKey, ExportImage> = ctx
+            .textures
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(gk, tk)| {
+                tex_images_by_index
+                    .get(&gk.index)
+                    .map(|img| (*tk, img.clone()))
+            })
+            .collect();
+        (template, materials, texture_images)
     };
     Ok(GltfImport {
         display_name: name.map(str::to_owned).unwrap_or_else(|| model_name(url)),
@@ -347,6 +374,7 @@ async fn import_typed(
         node_uvs1,
         skinned_glb,
         node_flat_indices,
+        texture_images,
     })
 }
 

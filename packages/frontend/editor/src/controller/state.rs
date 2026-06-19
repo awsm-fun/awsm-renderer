@@ -907,6 +907,7 @@ impl EditorController {
                 clear_untracked_renderer_resources().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
+                crate::engine::bridge::texture_cache::clear();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
                 // Seed a sane default scene: a key directional light (tilted ~50°
@@ -982,6 +983,7 @@ impl EditorController {
                 clear_untracked_renderer_resources().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
+                crate::engine::bridge::texture_cache::clear();
                 self.missing_assets.set(Vec::new());
                 self.scene.environment.set(scene.environment.clone());
                 self.scene.bump_revision();
@@ -1041,6 +1043,7 @@ impl EditorController {
                 clear_untracked_renderer_resources().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
+                crate::engine::bridge::texture_cache::clear();
                 persistence::apply_inmem(self, toml, mesh_map).await?;
                 Toast::info("Round-trip: project reloaded in-memory (cold caches)");
                 Ok(None)
@@ -3026,7 +3029,12 @@ impl EditorController {
             awsm_renderer::textures::TextureKey,
             AssetId,
         > = std::collections::HashMap::new();
-        let mut texture_entries: Vec<(AssetId, String)> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut texture_entries: Vec<(
+            AssetId,
+            String,
+            Option<(String, awsm_glb_export::ImageMime)>,
+        )> = Vec::new();
         let mut mat_ids: Vec<AssetId> = Vec::with_capacity(import.materials.len());
 
         for ex in &import.materials {
@@ -3041,30 +3049,35 @@ impl EditorController {
                 &mut texture_entries,
                 ex.textures.base_color,
                 &format!("{label} · base color"),
+                &import.texture_images,
             );
             def.metallic_roughness_texture = ensure_import_texture(
                 &mut tex_for_key,
                 &mut texture_entries,
                 ex.textures.metallic_roughness,
                 &format!("{label} · metal/rough"),
+                &import.texture_images,
             );
             def.normal_texture = ensure_import_texture(
                 &mut tex_for_key,
                 &mut texture_entries,
                 ex.textures.normal,
                 &format!("{label} · normal"),
+                &import.texture_images,
             );
             def.occlusion_texture = ensure_import_texture(
                 &mut tex_for_key,
                 &mut texture_entries,
                 ex.textures.occlusion,
                 &format!("{label} · occlusion"),
+                &import.texture_images,
             );
             def.emissive_texture = ensure_import_texture(
                 &mut tex_for_key,
                 &mut texture_entries,
                 ex.textures.emissive,
                 &format!("{label} · emissive"),
+                &import.texture_images,
             );
             // KHR-extension texture slots (clearcoat normal map, specular colour
             // map, sheen colour map, …): create a texture asset for each + write
@@ -3075,6 +3088,7 @@ impl EditorController {
                     &mut texture_entries,
                     Some(*baked),
                     &format!("{label} · {slot}"),
+                    &import.texture_images,
                 );
                 set_ext_texture(&mut def.extensions, slot, tref);
             }
@@ -3098,16 +3112,26 @@ impl EditorController {
         // Track the source file + the texture assets in the table; record the
         // library material + texture ids on the file entry so `materialize_model`
         // can wire each mesh to its extracted material.
-        let img_ids: Vec<AssetId> = texture_entries.iter().map(|(id, _)| *id).collect();
+        let img_ids: Vec<AssetId> = texture_entries.iter().map(|(id, ..)| *id).collect();
         let asset_id = {
             let mut table = self.scene.assets.lock().unwrap();
-            for (id, name) in &texture_entries {
-                table.entries.insert(
-                    *id,
-                    AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
+            for (id, name, hash_mime) in &texture_entries {
+                // Captured bytes ⇒ a file-backed entry (content_hash addresses
+                // `assets/<hash>.<ext>`; the ext rides the display_name so
+                // `asset_filename` derives it). Otherwise a plain (session-only)
+                // entry — e.g. an external-file-URI texture we couldn't capture.
+                let entry = match hash_mime {
+                    Some((hash, mime)) => AssetEntry::new_with_hash(
+                        SceneAssetSource::Texture(TextureDef::Raster {
+                            display_name: format!("{name}.{}", mime.ext()),
+                        }),
+                        hash.clone(),
+                    ),
+                    None => AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
                         display_name: name.clone(),
                     })),
-                );
+                };
+                table.entries.insert(*id, entry);
             }
             let id = AssetId::new();
             let mut entry =
@@ -5951,14 +5975,23 @@ pub(crate) fn set_ext_texture(
 /// `TextureRef` to it. The asset id is pre-registered against the already-baked
 /// renderer `TextureKey`, so when the material resolves this slot it reuses the
 /// GPU texture rather than re-decoding (preserving the model's real textures).
+#[allow(clippy::type_complexity)]
 fn ensure_import_texture(
     tex_for_key: &mut std::collections::HashMap<awsm_renderer::textures::TextureKey, AssetId>,
-    texture_entries: &mut Vec<(AssetId, String)>,
+    texture_entries: &mut Vec<(
+        AssetId,
+        String,
+        Option<(String, awsm_glb_export::ImageMime)>,
+    )>,
     baked: Option<(
         awsm_renderer::textures::TextureKey,
         crate::engine::bridge::gltf::TexBinding,
     )>,
     name: &str,
+    texture_images: &std::collections::HashMap<
+        awsm_renderer::textures::TextureKey,
+        awsm_glb_export::ExportImage,
+    >,
 ) -> Option<awsm_editor_protocol::TextureRef> {
     let (key, binding) = baked?;
     // The texture-asset id is deduped by baked key, but the binding (UV set +
@@ -5975,8 +6008,27 @@ fn ensure_import_texture(
     let id = AssetId::new();
     crate::engine::bridge::material::register_texture_key(id, key);
     tex_for_key.insert(key, id);
-    texture_entries.push((id, name.to_string()));
+    // Capture the encoded source bytes for PERSISTENCE (when populate uploaded
+    // this texture from an embedded / data-URI image). content_hash addresses the
+    // on-disk side file `assets/<hash>.<ext>` (+ dedups identical textures); the
+    // bytes live session-locally in texture_cache until Save reads them.
+    let hash_mime = texture_images.get(&key).map(|img| {
+        let hash = texture_content_hash(&img.bytes);
+        crate::engine::bridge::texture_cache::store(id, img.bytes.clone(), img.mime);
+        (hash, img.mime)
+    });
+    texture_entries.push((id, name.to_string(), hash_mime));
     Some(mk(id))
+}
+
+/// SHA-256 hex of texture bytes — the `content_hash` that addresses the on-disk
+/// `assets/<hash>.<ext>` side file (also dedups identical textures across models).
+fn texture_content_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let digest = h.finalize();
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Mint a captured-mesh `MeshDef` asset from CPU-extracted glTF geometry: store
