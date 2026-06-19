@@ -541,8 +541,16 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       routes load → `reexport_clean_scene` → `write_glb` → re-parse → `populate_gltf`. Fox + DamagedHelmet
       render the correct GEOMETRY via our-format (verified on :9080). The injection point + toggle are in
       `scene.rs` (`our_format_enabled` / `import_to_our_format` / `upload_phase`).
-    - 🔴 **GAP 1 — TEXTURES lost = EXTERNAL-IMAGE glTF can't round-trip through `reexport_clean` (ROOT CAUSE
-      PINNED this loop via in-model-tests diagnostics).** NOT a writer bug — `write_glb` + the loader are fine
+    - ✅ **GAP 1 — FIXED + VERIFIED (commit `f26e556b`).** The loader now RETAINS each image's encoded bytes
+      (`GltfData.encoded_images`, by glTF image index — View keeps its slice free; Uri keeps the unchanged
+      `load_url` decode + a best-effort cached `gloo_net` byte-fetch), and `glb-export` gained
+      `reexport_clean_scene_with_images` whose `ImagePool` falls back to those encoded bytes for EXTERNAL-file
+      images. model-tests passes `data.encoded_images`. **VERIFIED LIVE:** DamagedHelmet (static) + Fox
+      (skinned) via `?ourformat=1` now render FULLY TEXTURED (matching the direct path), no console errors.
+      STAGE 1 stays GPU-free. (Fox still at bind pose = GAP 2.) Follow-up (low pri): a glb-export unit test
+      for the external-URI fallback is awkward to construct (write_glb only embeds) — the live verify covers it.
+    - 🔴 **GAP 1 (history) — TEXTURES lost = EXTERNAL-IMAGE glTF can't round-trip through `reexport_clean` (ROOT CAUSE
+      PINNED via in-model-tests diagnostics).** NOT a writer bug — `write_glb` + the loader are fine
       (the existing `referenced_texture_is_embedded` test proves embedded textures round-trip). The real cause:
       **model-tests loads the `glTF/` variant** (`collections.rs::filepath` → `<Name>/glTF/<Name>.gltf`) whose
       images are EXTERNAL `.jpg`/`.png` FILES. Diagnostics on DamagedHelmet via `?ourformat=1`: ORIGINAL doc has
