@@ -112,7 +112,7 @@ pub async fn bake_player_bundle(
                     let mesh = MeshData {
                         positions: raw.positions,
                         normals: raw.normals,
-                        uvs: raw.uvs,
+                        uvs: raw.uvs.into_iter().collect(),
                         colors: raw.colors,
                         indices: raw.indices,
                     };
@@ -681,7 +681,7 @@ pub(crate) fn node_mesh(_scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
         NodeKind::Mesh { mesh, .. } => mesh_cache::get_raw(mesh.0).map(|r| MeshData {
             positions: r.positions,
             normals: r.normals,
-            uvs: r.uvs,
+            uvs: r.uvs.into_iter().collect(),
             colors: r.colors,
             indices: r.indices,
         }),

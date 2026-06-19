@@ -54,7 +54,7 @@ fn mesh_data_strategy() -> impl Strategy<Value = MeshData> {
             |(positions, normals, uvs, colors, indices)| MeshData {
                 positions,
                 normals,
-                uvs,
+                uvs: uvs.into_iter().collect(),
                 colors,
                 indices,
             },
@@ -97,7 +97,7 @@ fn base_mesh_strategy(vcount: usize) -> impl Strategy<Value = MeshData> {
     (positions, indices).prop_map(|(positions, indices)| MeshData {
         positions,
         normals: None,
-        uvs: None,
+        uvs: vec![],
         colors: None,
         indices,
     })

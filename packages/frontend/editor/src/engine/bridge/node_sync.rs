@@ -804,7 +804,7 @@ fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawM
     Some(RawMeshData {
         positions: m.positions,
         normals: m.normals,
-        uvs: m.uvs,
+        uvs: m.uvs.into_iter().next(),
         uvs1: decode.uvs1,
         colors: m.colors,
         indices: m.indices,
@@ -1099,7 +1099,7 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
     let raw = RawMeshData {
         positions: mesh.positions,
         normals: mesh.normals,
-        uvs: mesh.uvs,
+        uvs: mesh.uvs.into_iter().next(),
         uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,
@@ -1307,7 +1307,7 @@ async fn materialize_instances(
             Some(raw) => MeshData {
                 positions: raw.positions,
                 normals: raw.normals,
-                uvs: raw.uvs,
+                uvs: raw.uvs.into_iter().collect(),
                 colors: raw.colors,
                 indices: raw.indices,
             },
@@ -1360,7 +1360,7 @@ async fn materialize_instances(
     let raw = RawMeshData {
         positions: mesh.positions,
         normals: mesh.normals,
-        uvs: mesh.uvs,
+        uvs: mesh.uvs.into_iter().next(),
         uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,

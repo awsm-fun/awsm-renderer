@@ -221,7 +221,7 @@ pub(super) fn preview_sphere() -> RawMeshData {
     RawMeshData {
         positions: mesh.positions,
         normals: mesh.normals,
-        uvs: mesh.uvs,
+        uvs: mesh.uvs.into_iter().next(),
         uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,

@@ -156,8 +156,12 @@ fn append(into: &mut MeshData, other: &MeshData, rot: Quat, translate: Vec3) {
         }
     }
     {
-        let dst = into.uvs.get_or_insert_with(Vec::new);
-        match &other.uvs {
+        // Procedural icon meshes are single-UV — merge into set 0.
+        if into.uvs.is_empty() {
+            into.uvs.push(Vec::new());
+        }
+        let dst = &mut into.uvs[0];
+        match other.uvs.first() {
             Some(src) => dst.extend_from_slice(src),
             None => dst.extend(std::iter::repeat_n([0.0, 0.0], count)),
         }
@@ -183,7 +187,7 @@ fn ray_mesh_data() -> MeshData {
     let mut ray = MeshData {
         positions: Vec::new(),
         normals: Some(Vec::new()),
-        uvs: Some(Vec::new()),
+        uvs: vec![Vec::new()],
         colors: None,
         indices: Vec::new(),
     };
@@ -201,7 +205,7 @@ fn to_raw(mesh: MeshData) -> RawMeshData {
     RawMeshData {
         positions: mesh.positions,
         normals: mesh.normals,
-        uvs: mesh.uvs,
+        uvs: mesh.uvs.into_iter().next(),
         uvs1: None,
         colors: mesh.colors,
         indices: mesh.indices,

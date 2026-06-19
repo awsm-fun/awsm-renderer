@@ -1766,15 +1766,26 @@ fn trs_to_transform(trs: &Trs) -> Transform {
 
 /// Convert an [`awsm_meshgen::MeshData`] (the procedural/primitive mesh builder's
 /// output) into the renderer's [`RawMeshData`] upload struct — positions, normals,
-/// UV0, colors, and indices pass through; UV1 is always `None` (meshgen primitives
-/// carry a single UV set). Public (R4) so a host can feed a meshgen primitive into
+/// colors, and indices pass through. The renderer's GPU vertex layout carries two UV
+/// sets (uv0 + uv1), so the leading two of MeshData's generalized N-set `uvs` map to
+/// `uvs`/`uvs1`; any further sets are dropped (logged — never silently) until the GPU
+/// path generalizes to N. Public (R4) so a host can feed a meshgen primitive into
 /// `renderer.add_raw_mesh` with the same conversion the loader uses.
 pub fn mesh_data_to_raw(md: awsm_meshgen::MeshData) -> RawMeshData {
+    let mut uv_sets = md.uvs.into_iter();
+    let uvs = uv_sets.next();
+    let uvs1 = uv_sets.next();
+    let dropped = uv_sets.count();
+    if dropped > 0 {
+        tracing::warn!(
+            "mesh_data_to_raw: dropping {dropped} UV set(s) past TEXCOORD_1 (GPU carries 2)"
+        );
+    }
     RawMeshData {
         positions: md.positions,
         normals: md.normals,
-        uvs: md.uvs,
-        uvs1: None,
+        uvs,
+        uvs1,
         colors: md.colors,
         indices: md.indices,
         ..Default::default()

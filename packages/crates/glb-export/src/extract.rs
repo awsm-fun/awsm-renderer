@@ -539,8 +539,14 @@ fn build_clean_node(
             };
             let vcount = positions.len();
             let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
-            let uvs: Option<Vec<[f32; 2]>> =
-                reader.read_tex_coords(0).map(|t| t.into_f32().collect());
+            // All TEXCOORD_n sets (0,1,2,…), so multi-UV meshes (e.g. an AO map on
+            // TEXCOORD_1) round-trip — generalized to N, not just set 0.
+            let mut uvs: Vec<Vec<[f32; 2]>> = Vec::new();
+            let mut uv_set = 0u32;
+            while let Some(t) = reader.read_tex_coords(uv_set) {
+                uvs.push(t.into_f32().collect());
+                uv_set += 1;
+            }
             let colors: Option<Vec<[f32; 4]>> =
                 reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
             let indices: Vec<u32> = match reader.read_indices() {
@@ -937,7 +943,9 @@ pub fn extract_node_mesh(
         mesh: MeshData {
             positions,
             normals: all_have_normals.then_some(normals),
-            uvs: all_have_uvs.then_some(uvs),
+            // Set 0 → MeshData.uvs[0]. The 2nd set rides `uvs1` separately (the
+            // editor's GPU-upload path); folding it into uvs[1] is a follow-up.
+            uvs: if all_have_uvs { vec![uvs] } else { vec![] },
             colors: all_have_colors.then_some(colors),
             indices,
         },
@@ -1121,7 +1129,7 @@ mod tests {
         let tri = MeshData {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
-            uvs: None,
+            uvs: vec![],
             colors: None,
             indices: vec![0, 1, 2],
         };

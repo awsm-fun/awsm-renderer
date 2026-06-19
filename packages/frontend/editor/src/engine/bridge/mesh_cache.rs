@@ -22,11 +22,12 @@ thread_local! {
 /// Freeze a generated mesh into a `CapturedMesh`. Procedural meshes are single-UV
 /// (`MeshData` carries no 2nd set), so `uvs1` is `None`.
 pub fn from_mesh_data(m: MeshData) -> CapturedMesh {
+    let mut uv_sets = m.uvs.into_iter();
     CapturedMesh {
         positions: m.positions,
         normals: m.normals,
-        uvs: m.uvs,
-        uvs1: None,
+        uvs: uv_sets.next(),
+        uvs1: uv_sets.next(),
         colors: m.colors,
         indices: m.indices,
     }
@@ -50,7 +51,8 @@ pub fn to_mesh_data(c: CapturedMesh) -> MeshData {
     MeshData {
         positions: c.positions,
         normals: c.normals,
-        uvs: c.uvs,
+        // Fold the captured set 0 + optional set 1 back into the N-set uvs vec.
+        uvs: c.uvs.into_iter().chain(c.uvs1).collect(),
         colors: c.colors,
         indices: c.indices,
     }

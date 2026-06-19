@@ -74,7 +74,10 @@ pub(crate) fn apply_overrides(md: &mut MeshData, ov: &VertexOverrides) {
         }
     }
     if !ov.uvs.is_empty() {
-        let uvs = md.uvs.get_or_insert_with(|| vec![[0.0, 0.0]; vcount]);
+        if md.uvs.is_empty() {
+            md.uvs.push(vec![[0.0, 0.0]; vcount]);
+        }
+        let uvs = &mut md.uvs[0];
         if uvs.len() < vcount {
             uvs.resize(vcount, [0.0, 0.0]);
         }
@@ -98,7 +101,7 @@ pub(crate) fn evaluate_stack(scene: &Scene, stack: &ModifierStack) -> MeshData {
                 .map(|r| MeshData {
                     positions: r.positions,
                     normals: r.normals,
-                    uvs: r.uvs,
+                    uvs: r.uvs.into_iter().collect(),
                     colors: r.colors,
                     indices: r.indices,
                 })

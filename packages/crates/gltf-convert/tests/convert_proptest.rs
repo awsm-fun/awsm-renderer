@@ -41,7 +41,7 @@ fn mesh_data_strategy() -> impl Strategy<Value = MeshData> {
             |(positions, normals, uvs, colors, indices)| MeshData {
                 positions,
                 normals,
-                uvs,
+                uvs: uvs.into_iter().collect(),
                 colors,
                 indices,
             },

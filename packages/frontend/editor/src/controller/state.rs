@@ -1362,7 +1362,12 @@ impl EditorController {
                 let md = awsm_meshgen::MeshData {
                     positions: cap.positions.clone(),
                     normals: cap.normals.clone(),
-                    uvs: cap.uvs.clone(),
+                    uvs: cap
+                        .uvs
+                        .clone()
+                        .into_iter()
+                        .chain(cap.uvs1.clone())
+                        .collect(),
                     colors: cap.colors.clone(),
                     indices: cap.indices.clone(),
                 };
@@ -4005,7 +4010,7 @@ impl EditorController {
                                     "position": md.positions.get(idx),
                                     "normal": md.normals.as_ref().and_then(|n| n.get(idx)),
                                     "color": md.colors.as_ref().and_then(|c| c.get(idx)),
-                                    "uv": md.uvs.as_ref().and_then(|u| u.get(idx)),
+                                    "uv": md.uvs.first().and_then(|u| u.get(idx)),
                                 })
                             })
                             .collect();

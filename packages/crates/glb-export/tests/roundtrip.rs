@@ -293,6 +293,43 @@ fn animation_channel_roundtrips() {
 }
 
 #[test]
+fn multi_uv_sets_roundtrip() {
+    use awsm_glb_export::MeshData;
+    // A triangle with TWO UV sets (TEXCOORD_0 + TEXCOORD_1) — both must survive
+    // write_glb so multi-UV meshes (e.g. an AO map on set 1) round-trip.
+    let tri = MeshData {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+        uvs: vec![
+            vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            vec![[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+        ],
+        colors: None,
+        indices: vec![0, 1, 2],
+    };
+    let scene = GlbScene {
+        nodes: vec![ExportNode::new("Tri").with_mesh(tri)],
+        ..Default::default()
+    };
+    let glb = write_glb(&scene);
+    let (doc, buffers, _i) = gltf::import_slice(&glb).expect("re-parse");
+    let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
+    let reader = prim.reader(|b| Some(&buffers[b.index()]));
+    let uv0: Vec<[f32; 2]> = reader
+        .read_tex_coords(0)
+        .expect("TEXCOORD_0")
+        .into_f32()
+        .collect();
+    let uv1: Vec<[f32; 2]> = reader
+        .read_tex_coords(1)
+        .expect("TEXCOORD_1")
+        .into_f32()
+        .collect();
+    assert_eq!(uv0[1], [1.0, 0.0]);
+    assert_eq!(uv1[2], [0.5, 0.6]);
+}
+
+#[test]
 fn skinned_morph_mesh_roundtrips() {
     use awsm_glb_export::{ExportSkin, MeshData, MorphTarget};
 
@@ -300,7 +337,7 @@ fn skinned_morph_mesh_roundtrips() {
     let tri = MeshData {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
-        uvs: None,
+        uvs: vec![],
         colors: None,
         indices: vec![0, 1, 2],
     };

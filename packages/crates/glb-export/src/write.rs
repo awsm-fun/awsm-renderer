@@ -236,7 +236,9 @@ impl Builder {
                 attributes.insert(Checked::Valid(mesh::Semantic::Normals), acc);
             }
         }
-        if let Some(uvs) = &m.uvs {
+        // Emit every UV set as TEXCOORD_n (n = set index) — generalized to N sets so
+        // multi-UV meshes (e.g. an AO map on TEXCOORD_1) round-trip.
+        for (set, uvs) in m.uvs.iter().enumerate() {
             if uvs.len() == m.positions.len() {
                 let acc = self.push_accessor(
                     &flatten_f32x2(uvs),
@@ -246,7 +248,7 @@ impl Builder {
                     None,
                     None,
                 );
-                attributes.insert(Checked::Valid(mesh::Semantic::TexCoords(0)), acc);
+                attributes.insert(Checked::Valid(mesh::Semantic::TexCoords(set as u32)), acc);
             }
         }
         if let Some(colors) = &m.colors {
@@ -267,7 +269,8 @@ impl Builder {
         // MikkTSpace so the canonical/exported glb is self-contained and the
         // population path is a dumb upload (it skips generation when tangents are
         // present). Generated whenever normals+uvs exist — see `tangents` mod.
-        if let (Some(normals), Some(uvs)) = (&m.normals, &m.uvs) {
+        // Tangents are generated against UV set 0 (the base map's UVs).
+        if let (Some(normals), Some(uvs)) = (&m.normals, m.uvs.first()) {
             if let Some(tangents) =
                 crate::tangents::generate_tangents(&m.positions, normals, uvs, &m.indices)
             {

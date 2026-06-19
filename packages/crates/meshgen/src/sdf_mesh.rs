@@ -45,7 +45,7 @@ pub fn surface_nets_mesh(node: &SdfNode, resolution: u32) -> MeshData {
     let mut mesh = MeshData {
         positions,
         normals: None,
-        uvs: None,
+        uvs: Vec::new(),
         colors: None,
         indices: buffer.indices,
     };

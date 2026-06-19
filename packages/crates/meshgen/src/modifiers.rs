@@ -84,7 +84,7 @@ fn displace(mesh: &mut MeshData, expr: &str) {
         Some(n) if n.len() == mesh.positions.len() => n.clone(),
         _ => return,
     };
-    let uvs = mesh.uvs.clone();
+    let uvs = mesh.uvs.first().cloned();
     for (i, (p, n)) in mesh.positions.iter_mut().zip(normals.iter()).enumerate() {
         let (uu, vv) = uvs
             .as_ref()
@@ -151,7 +151,7 @@ pub fn lathe(profile: &[[f32; 2]], segments: u32, angle: f32) -> MeshData {
     let mut mesh = MeshData {
         positions,
         normals: None,
-        uvs: Some(uvs),
+        uvs: vec![uvs],
         colors: None,
         indices,
     };
@@ -196,7 +196,7 @@ pub fn superquadric(e1: f32, e2: f32, segments_long: u32, segments_lat: u32) -> 
     let mut mesh = MeshData {
         positions,
         normals: None,
-        uvs: Some(uvs),
+        uvs: vec![uvs],
         colors: None,
         indices,
     };
@@ -372,7 +372,7 @@ fn subdivide(mesh: &mut MeshData) {
     mesh.indices = indices;
     // Midpoint subdivision invalidates the old per-vertex attrs; drop them
     // (normals are recomputed by the caller; uvs/colors would need interpolation).
-    mesh.uvs = None;
+    mesh.uvs = Vec::new();
     mesh.colors = None;
     mesh.normals = None;
 }
@@ -445,7 +445,7 @@ fn mirror(mesh: &mut MeshData, axis: Axis) {
         })
         .collect();
     mesh.positions.append(&mut mirrored);
-    if let Some(uvs) = &mut mesh.uvs {
+    for uvs in &mut mesh.uvs {
         let mut dup = uvs.clone();
         uvs.append(&mut dup);
     }
@@ -479,7 +479,7 @@ fn array(mesh: &mut MeshData, count: u32, offset: [f32; 3]) {
             mesh.positions
                 .push((Vec3::from_array(*p) + shift).to_array());
         }
-        if let (Some(dst), Some(src)) = (&mut mesh.uvs, &base_uvs) {
+        for (dst, src) in mesh.uvs.iter_mut().zip(base_uvs.iter()) {
             dst.extend_from_slice(src);
         }
         if let (Some(dst), Some(src)) = (&mut mesh.colors, &base_colors) {

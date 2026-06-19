@@ -122,7 +122,7 @@ pub fn sweep_along_curve<C: Curve3 + ?Sized>(
     let mut mesh = MeshData {
         positions,
         normals: Some(normals),
-        uvs: Some(uvs),
+        uvs: vec![uvs],
         colors: None,
         indices,
     };

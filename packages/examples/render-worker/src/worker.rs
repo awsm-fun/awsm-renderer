@@ -245,7 +245,7 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
         let raw = RawMeshData {
             positions: mesh.positions,
             normals: mesh.normals,
-            uvs: mesh.uvs,
+            uvs: mesh.uvs.into_iter().next(),
             uvs1: None,
             colors: mesh.colors,
             indices: mesh.indices,

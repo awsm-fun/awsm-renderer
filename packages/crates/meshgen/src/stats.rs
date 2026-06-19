@@ -192,7 +192,7 @@ mod tests {
         let m = MeshData {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             normals: None,
-            uvs: None,
+            uvs: vec![],
             colors: None,
             indices: vec![0, 1, 2],
         };
