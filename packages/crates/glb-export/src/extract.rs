@@ -415,6 +415,28 @@ pub struct ExtractedSkin {
     pub weights: Vec<[f32; 4]>,
 }
 
+impl ExtractedSkin {
+    /// Pack the per-vertex joints + weights into the renderer's skin storage-buffer
+    /// byte layout — exactly what `awsm_renderer::raw_mesh::RawSkin::index_weights`
+    /// (→ `Skins::insert`) consumes. One entry per original vertex (set 0 only), with
+    /// the 4 influences **interleaved** as `(u32 joint index LE, f32 weight LE)` per
+    /// influence. This MIRRORS `renderer-gltf`'s `buffers::skin::convert_skin` so a
+    /// rig-glb-decoded skin re-binds bit-identically to the glTF import's. The joint
+    /// indices here are into the skin's own joint list (`joint_node_indices` order);
+    /// the renderer resolves them against `RawSkin.joints` (the editor `TransformKey`s
+    /// the caller maps from `joint_node_indices`).
+    pub fn packed_index_weights(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.joints.len() * 32);
+        for (j, w) in self.joints.iter().zip(self.weights.iter()) {
+            for i in 0..4 {
+                out.extend_from_slice(&(j[i] as u32).to_le_bytes());
+                out.extend_from_slice(&w[i].to_le_bytes());
+            }
+        }
+        out
+    }
+}
+
 pub fn extract_node_mesh(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
@@ -595,6 +617,35 @@ mod tests {
         assert!(extract_node_mesh_from_bytes(&glb, 0, None).is_none());
         // Out-of-range node ⇒ None.
         assert!(extract_node_mesh_from_bytes(&glb, 99, None).is_none());
+    }
+
+    /// `ExtractedSkin::packed_index_weights` lays bytes out exactly as the renderer's
+    /// skin storage buffer expects (mirrors renderer-gltf `convert_skin`): one entry
+    /// per vertex, the 4 influences interleaved as (u32 joint index LE, f32 weight LE).
+    #[test]
+    fn packed_index_weights_layout() {
+        let skin = ExtractedSkin {
+            joint_node_indices: vec![5, 6, 7, 8],
+            inverse_bind_matrices: vec![],
+            joints: vec![[0u16, 1, 2, 3], [3, 0, 0, 0]],
+            weights: vec![[0.5f32, 0.25, 0.125, 0.125], [1.0, 0.0, 0.0, 0.0]],
+        };
+        let got = skin.packed_index_weights();
+
+        // Hand-build the expected bytes: per vertex, per influence i, u32 idx then f32 weight.
+        let mut want: Vec<u8> = Vec::new();
+        for (j, w) in skin.joints.iter().zip(skin.weights.iter()) {
+            for i in 0..4 {
+                want.extend_from_slice(&(j[i] as u32).to_le_bytes());
+                want.extend_from_slice(&w[i].to_le_bytes());
+            }
+        }
+        assert_eq!(got, want);
+        // 2 vertices × 4 influences × (4-byte u32 + 4-byte f32) = 64 bytes.
+        assert_eq!(got.len(), 2 * 4 * 8);
+        // First influence of vertex 0: joint index 0 (u32) then weight 0.5 (f32).
+        assert_eq!(&got[0..4], &0u32.to_le_bytes());
+        assert_eq!(&got[4..8], &0.5f32.to_le_bytes());
     }
 
     /// Merging multiple primitives concatenates vertices and offsets indices, so
