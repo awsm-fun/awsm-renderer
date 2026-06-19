@@ -313,6 +313,19 @@ async fn import_typed(
             .populate_gltf(data, None)
             .await
             .map_err(|e| format!("populate: {e}"))?;
+        // `populate_gltf` is a pure deferred ADD (load-transaction model): it stages
+        // geometry but resolves NOTHING until `commit_load`. The template snapshot
+        // below reads each node's renderer mesh keys (`keys_by_transform_key` →
+        // `transform_to_meshes`) + per-mesh skin/morph classification (`mesh_is_skinned`
+        // / `geometry_morph_key_for_mesh` → the mesh RESOURCE), ALL of which are
+        // populated only at resolve (commit). Without committing first the snapshot
+        // sees zero mesh keys, so `build_editor_subtree` makes every node an empty
+        // Group (no geometry, no skinned/morph detection). Commit here so the meshes
+        // resolve before we snapshot — and so they're synced into the spatial index
+        // before the lock releases (no bound-but-unresolved render-frame window).
+        r.commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+            .map_err(|e| format!("commit: {e}"))?;
         let template = asset_template::build_from_context(&r, &ctx);
         // The renderer already rendered these meshes directly; hide them so the
         // editor's user-movable Model-node duplicates are the only visible copy.
@@ -363,6 +376,12 @@ pub async fn repopulate_skinned_template(
             .populate_gltf(data, None)
             .await
             .map_err(|e| format!("rig populate: {e}"))?;
+        // Resolve the staged geometry before snapshotting — see the commit note in
+        // `import_typed`. Without it the rig template snapshots zero mesh keys and the
+        // reloaded SkinnedMesh nodes can't resolve their drawable.
+        r.commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+            .map_err(|e| format!("rig commit: {e}"))?;
         let template = asset_template::build_from_context(&r, &ctx);
         asset_template::hide_template_meshes(&mut r, &template);
         template
