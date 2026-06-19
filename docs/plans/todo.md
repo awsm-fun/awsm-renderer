@@ -579,7 +579,26 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       via `?ourformat=1` now ANIMATES (pose changes across frames) AND is textured, no console errors.
       Follow-up: MORPH-weight channels skipped (counted+logged) — need the node's mesh morph key (Fox + common
       animated samples are T/R/S).
-    - 🟡 **GAP 3 — KHR_* extensions: IN PROGRESS (5 of ~10 done).** ✅ SCALARS `ior` + `emissive_strength`
+    - 🟡 **GAP 3 — KHR_* extensions: NEARLY DONE (11 done; only `KHR_texture_transform` left).** ✅ SCALARS
+      `ior`/`emissive_strength` (24507079) + ✅ TYPED-TEXTURE `specular`/`transmission`/`volume` (66c79b7e) +
+      ✅ RAW-JSON `clearcoat`/`sheen`/`anisotropy`/`iridescence`/`dispersion`/`diffuse_transmission` (commit
+      `2dfc2bfa`, VERIFIED: ClearCoatTest incl normal-map/partial-coating textures + AnisotropyBarnLamp
+      `?ourformat=1` == direct). RAW pass: `extract_material` reads each via `mat.extension_value(name)`, clones,
+      and `remap_texture_indices` rewrites every textureInfo `index` → clean pool index (the `&gltf::Document`
+      is threaded into `build_clean_node`/`extract_material` to resolve a JSON index → `gltf::Texture` → intern);
+      result drops into `PbrMaterial.extensions_json` which `build_pbr` already writes verbatim.
+      🔴 LAST PIECE — `KHR_texture_transform` (on the CORE tex refs, NOT a material extension): offset/rotation/
+      scale/texCoord on a textureInfo's own `extensions`. PLAN: add `TexTransform { offset:[f32;2], rotation:f32,
+      scale:[f32;2], tex_coord:Option<u32> }` + `transform: Option<TexTransform>` to `TexRef` (stays Copy);
+      `tex_ref` gains a `transform: Option<gltf::texture::TextureTransform>` param, populated at each of the 6
+      extract call sites via `i.texture_transform()` (Info/NormalTexture/OcclusionTexture all have it w/ the
+      feature on); WRITE it in `write.rs` `tex_info` (base_color/metallic_roughness/emissive) + the
+      `material::NormalTexture` + `material::OcclusionTexture` constructions, setting their `extensions` to an
+      `extensions::texture::Info { others: {"KHR_texture_transform": {offset,rotation,scale,texCoord}} }`. The
+      extension-texture path (`ext_tex_json`) carrying a transform is a minor follow-up (rare). VERIFY
+      TextureTransformTest + TextureTransformMultiTest `?ourformat=1` == direct. THEN GAP 3 DONE → Phase 5
+      acceptance → surface the consolidation decision to David.
+    - 🟡 **GAP 3 (earlier history, 5 of ~10):** ✅ SCALARS `ior` + `emissive_strength`
       (24507079) + ✅ TYPED-TEXTURE `specular` / `transmission` / `volume` (commit `66c79b7e`, VERIFIED:
       SpecularTest `?ourformat=1` == direct incl texture rows; TransmissionRoughness translucent). PATTERN:
       `PbrMaterial.extensions_json: serde_json::Map` (the unified IR); `extract_material` builds each typed
