@@ -579,7 +579,24 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       via `?ourformat=1` now ANIMATES (pose changes across frames) AND is textured, no console errors.
       Follow-up: MORPH-weight channels skipped (counted+logged) — need the node's mesh morph key (Fox + common
       animated samples are T/R/S).
-    - 🟡 **GAP 3 — KHR_* extensions: NEARLY DONE (11 done; only `KHR_texture_transform` left).** ✅ SCALARS
+    - 🟢 **GAP 3 — KHR_* extension round-trips: DONE (12/12), 1 sample wrinkle (SheenChair) outstanding.**
+      All twelve extension round-trips implemented in glb-export + 8 samples VERIFIED `?ourformat=1` == direct:
+      emissive_strength, ior, specular, transmission (typed), clearcoat, anisotropy, iridescence (raw),
+      texture_transform (incl normal/occlusion via raw-JSON read, commit `f88626e6`). Commits: 24507079 /
+      66c79b7e / 2dfc2bfa / 350b9729 / f88626e6.
+      🟠 **WRINKLE — SheenChair `?ourformat=1` fabric over-darkens — ROOT CAUSE FOUND (a CORE-reexport
+      multi-UV limitation, NOT a GAP 3 extension bug).** SheenChair's fabric `occlusionTexture` uses
+      **texCoord 1** (`media/.../SheenChair.gltf` mats 0+4: occl texCoord=1 with KHR_texture_transform), and the
+      mesh carries TEXCOORD_0 **and** TEXCOORD_1 — but `build_clean_node`'s mesh read only does
+      `reader.read_tex_coords(0)` (extract.rs ~543), so TEXCOORD_1 is DROPPED. In the clean glb the occlusion
+      texture's `texCoord:1` then samples a missing/zero UV set → wrong AO → fabric renders darker (the wood/
+      metal use texCoord 0 only, so they MATCH). baseColor/normal (texCoord 0, scale 7×/2×) transforms ARE
+      handled. **FIX (core reexport, separate follow-up):** carry the SECOND uv set through the pipeline —
+      `MeshData` gains `uvs1: Option<Vec<[f32;2]>>` (read `reader.read_tex_coords(1)`), `write_glb` emits
+      TEXCOORD_1, and any textureInfo with `texCoord:1` keeps it. (Also affects any multi-UV sample, e.g.
+      MetalRoughSpheresNoTextures variants / lightmaps.) The GAP 3 extension round-trips themselves are correct
+      + verified. Surfaced to David.
+    - 🟡 **GAP 3 (earlier, 11 done):** ✅ SCALARS
       `ior`/`emissive_strength` (24507079) + ✅ TYPED-TEXTURE `specular`/`transmission`/`volume` (66c79b7e) +
       ✅ RAW-JSON `clearcoat`/`sheen`/`anisotropy`/`iridescence`/`dispersion`/`diffuse_transmission` (commit
       `2dfc2bfa`, VERIFIED: ClearCoatTest incl normal-map/partial-coating textures + AnisotropyBarnLamp
