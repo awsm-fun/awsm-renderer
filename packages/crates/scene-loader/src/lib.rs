@@ -12,7 +12,12 @@
 //!
 //! Runs as one batched, phased pass (build materials → upload textures → upload
 //! meshes → load animation → compile pipelines), reporting each [`LoadPhase`]
-//! through a callback. Handles: the node hierarchy (transforms); **primitive**
+//! through a callback. This IS the load transaction: `begin_load` → declare every
+//! op in dependency order (transforms before the geometry that references them) →
+//! `commit_load`, which dedups, uploads concurrently, finalizes the texture pool,
+//! and compiles pipelines ONCE — no per-op commits, no post-hoc re-materialise. The
+//! editor's live bulk load mirrors this same renderer transaction (see the editor
+//! `node_sync` join-barrier). Handles: the node hierarchy (transforms); **primitive**
 //! meshes with their built-in materials; **glb** meshes (`assets/<id>.glb`) AND
 //! **skinned** meshes (`assets/<skin.source>.glb`), both fed through
 //! `populate_gltf` with [`GltfMaterialSource::Single`] so they take OUR material
