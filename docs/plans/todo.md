@@ -145,6 +145,36 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
   (No GPU unit test for actual deformation — the renderer is WebGPU-only; correctness rests on the glTF
   path already exercising skin-through-resolve_one + the live editor test in Phase 2.)
 
+> **⚠ BASELINE REGRESSIONS FOUND + FIXED while standing up live verification (this loop).** The
+> load-transaction foundation (`a3cbc797`, "already landed") had broken the editor's glTF import — the
+> renderer's WebGPU-free lib tests can't catch it, and the path was never live-verified. Two coupled bugs,
+> same root cause (`populate_gltf` is now a pure deferred ADD that resolves NOTHING until `commit_load`,
+> but the editor never committed before reading renderer state):
+> - **Import PANICKED (every model, static + skinned).** `bind_mesh` stamps `world_aabb` at add-time (so a
+>   bound-unresolved mesh stays OUT of `collect_renderables`' `world_aabb.is_none()` fallback), but the
+>   mesh isn't in `scene_spatial` until resolve. The editor released the renderer lock between populate and
+>   the materialise-time commit, so a render frame ran mid-window and the per-frame debug invariant fired
+>   (`scene_spatial leaf count (0) diverged from meshes with world_aabb (1)`). **Fixed** (`5de3f75e`): the
+>   invariant now counts only RESOLVED meshes (`resource_key().is_ok()`) — debug-only, zero release change.
+> - **Import produced NO geometry (every node became an empty Group, 0 tris).** The `AssetTemplate` snapshot
+>   reads `keys_by_transform_key` (→ `transform_to_meshes`, populated at resolve) + `mesh_is_skinned` /
+>   `geometry_morph_key_for_mesh` (→ the mesh RESOURCE, built at resolve). Pre-commit these are all empty,
+>   so `build_editor_subtree` saw zero mesh keys → Group. **Fixed** (`4b97d2f2`): `import_typed` +
+>   `repopulate_skinned_template` now `commit_load` after populate, before the snapshot.
+> - **Verified live** (chrome-devtools): DamagedHelmet → `NodeKind::Mesh` (1.2k tris, textured, rendered);
+>   Fox → `NodeKind::SkinnedMesh` (1.2k tris, fox_material + base-color tex, rendered). Player path
+>   (model-tests :9080) renders Fox + materials + shadows, regression-clean. This UNBLOCKS the epic's live
+>   verification (import + render now work; Phase 2 can be verified against a working baseline).
+> - **WRINKLE to chase next:** a Fox import surfaces a toast "this clip targets deleted nodes — nothing to
+>   animate" → the imported animation clip isn't binding to the rig's bones (geometry render is clean;
+>   skeletal DEFORMATION/animation not yet confirmed). Investigate the clip→bone binding (likely the
+>   `node_map` / `import_animations` timing or the joint-target resolution) before the Phase 2 skinned
+>   re-materialise work — a working animated baseline is the yardstick for "deforms + animates".
+> - **NOTE for Phase 5 / GPU-free import (§0):** these fixes ADD a `commit_load` at import (the meshes are
+>   uploaded then hidden — the current double-geometry the epic removes). That's the correct interim shape
+>   for today's populate-then-snapshot flow; the IMPORTER/MATERIALISER split (§0) replaces it with a
+>   GPU-free import that snapshots from the clean glb decode, not from a committed populate.
+
 - **Phase 2 — Capture skinned/morphed imports as per-node editable content; one materialise path.**
   *(Investigated; de-risked plan below. This is the large, high-regression-risk step — see "Risk
   checkpoint".)* The skinned source-of-truth (the rig glb) is already retained + persisted
