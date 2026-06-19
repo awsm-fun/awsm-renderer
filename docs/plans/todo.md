@@ -321,6 +321,13 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
   across `glb-export` ↔ the decode for skins/morphs (joint order, inverse-bind matrices, morph-delta
   layout), mirroring the existing visibility/transparency packer-parity proptests. A failure is an
   ordinary bug to fix, not a design question.
+  - ✅ **DONE (commit `71fd898e`)** — `glb-export/tests/roundtrip_proptest.rs` gained
+    `skin_roundtrips_bit_exact` (per-vertex JOINTS_0/WEIGHTS_0 + skin joint flatten-index list +
+    inverse-bind matrices) and `morph_roundtrips_bit_exact` (per-target position/normal deltas +
+    default weights), both through `write_glb → reexport_clean`. Confirms export→import preserves
+    skin + morph LOSSLESSLY — the fidelity the "everything through the clean glb" decision rests on.
+    (The renderer-gltf buffer-decode leg — `into_data`/`primitive_buffer_info` — is GPU-buffer
+    construction, covered by the live materialise verify, not this data-layer net.)
 - **Save format — DECIDED: reuse the existing per-asset side-file scheme.** Geometry already persists as
   `assets/<id>.rig.glb` (skinned) and `assets/<id>.mesh.bin` (static); materials + animation clips already
   persist separately in the project. The epic CONSOLIDATES toward glb-for-all-geometry but does NOT
