@@ -244,20 +244,48 @@ impl ImagePool {
 fn tex_ref(
     texture: &gltf::Texture,
     tex_coord: u32,
-    transform: Option<gltf::texture::TextureTransform>,
+    transform: Option<crate::TexTransform>,
     buffers: &[Vec<u8>],
     pool: &mut ImagePool,
 ) -> Option<TexRef> {
     pool.intern(texture, buffers).map(|image| TexRef {
         image,
         tex_coord,
-        transform: transform.map(|t| crate::TexTransform {
-            offset: t.offset(),
-            rotation: t.rotation(),
-            scale: t.scale(),
-            tex_coord: t.tex_coord(),
-        }),
+        transform,
     })
+}
+
+/// `KHR_texture_transform` from a typed gltf accessor (base-color / metallic-roughness
+/// / emissive textureInfos, which the gltf crate types).
+fn tt_from_gltf(t: &gltf::texture::TextureTransform) -> crate::TexTransform {
+    crate::TexTransform {
+        offset: t.offset(),
+        rotation: t.rotation(),
+        scale: t.scale(),
+        tex_coord: t.tex_coord(),
+    }
+}
+
+/// `KHR_texture_transform` parsed from RAW JSON — for normal/occlusion textureInfos,
+/// which the gltf crate doesn't type (read from `doc.as_json()`, mirroring the
+/// renderer). Missing fields fall back to glTF defaults.
+fn tt_from_json(v: &serde_json::Value) -> crate::TexTransform {
+    let vec2 = |key: &str, default: [f32; 2]| -> [f32; 2] {
+        v.get(key)
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                let f =
+                    |i: usize, d: f32| a.get(i).and_then(|n| n.as_f64()).unwrap_or(d as f64) as f32;
+                [f(0, default[0]), f(1, default[1])]
+            })
+            .unwrap_or(default)
+    };
+    crate::TexTransform {
+        offset: vec2("offset", [0.0, 0.0]),
+        rotation: v.get("rotation").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+        scale: vec2("scale", [1.0, 1.0]),
+        tex_coord: v.get("texCoord").and_then(|x| x.as_u64()).map(|n| n as u32),
+    }
 }
 
 /// Lower a source glTF material into the export IR per the crate's material
@@ -393,6 +421,19 @@ fn extract_material(
     pool: &mut ImagePool,
 ) -> Option<ExportMaterial> {
     mat.index()?; // default material → emit none (same defaults on reimport)
+                  // Raw material JSON — for reading KHR_texture_transform on the normal/occlusion
+                  // textureInfos, which the gltf crate doesn't type (mirrors renderer-gltf).
+    let mat_json = mat.index().and_then(|i| doc.as_json().materials.get(i));
+    let normal_tt = mat_json
+        .and_then(|m| m.normal_texture.as_ref())
+        .and_then(|nt| nt.extensions.as_ref())
+        .and_then(|e| e.others.get("KHR_texture_transform"))
+        .map(tt_from_json);
+    let occlusion_tt = mat_json
+        .and_then(|m| m.occlusion_texture.as_ref())
+        .and_then(|ot| ot.extensions.as_ref())
+        .and_then(|e| e.others.get("KHR_texture_transform"))
+        .map(tt_from_json);
     let name = mat.name().unwrap_or("").to_string();
     let alpha_mode = match mat.alpha_mode() {
         gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
@@ -407,13 +448,8 @@ fn extract_material(
             name,
             base_color: pbr.base_color_factor(),
             base_color_texture: pbr.base_color_texture().and_then(|i| {
-                tex_ref(
-                    &i.texture(),
-                    i.tex_coord(),
-                    i.texture_transform(),
-                    buffers,
-                    pool,
-                )
+                let tt = i.texture_transform().as_ref().map(tt_from_gltf);
+                tex_ref(&i.texture(), i.tex_coord(), tt, buffers, pool)
             }),
             alpha_mode,
             double_sided: mat.double_sided(),
@@ -428,40 +464,24 @@ fn extract_material(
         alpha_mode,
         double_sided: mat.double_sided(),
         base_color_texture: pbr.base_color_texture().and_then(|i| {
-            tex_ref(
-                &i.texture(),
-                i.tex_coord(),
-                i.texture_transform(),
-                buffers,
-                pool,
-            )
+            let tt = i.texture_transform().as_ref().map(tt_from_gltf);
+            tex_ref(&i.texture(), i.tex_coord(), tt, buffers, pool)
         }),
         metallic_roughness_texture: pbr.metallic_roughness_texture().and_then(|i| {
-            tex_ref(
-                &i.texture(),
-                i.tex_coord(),
-                i.texture_transform(),
-                buffers,
-                pool,
-            )
+            let tt = i.texture_transform().as_ref().map(tt_from_gltf);
+            tex_ref(&i.texture(), i.tex_coord(), tt, buffers, pool)
         }),
-        // normal/occlusion textureInfos don't expose texture_transform() in the gltf
-        // crate (only base/metallic/emissive `Info` do) — their KHR_texture_transform
-        // is a recorded follow-up (rare; see todo.md §3).
+        // normal/occlusion textureInfos aren't typed by the gltf crate — their
+        // KHR_texture_transform is read from the raw material JSON above.
         normal_texture: mat
             .normal_texture()
-            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), None, buffers, pool)),
+            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), normal_tt, buffers, pool)),
         occlusion_texture: mat
             .occlusion_texture()
-            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), None, buffers, pool)),
+            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), occlusion_tt, buffers, pool)),
         emissive_texture: mat.emissive_texture().and_then(|i| {
-            tex_ref(
-                &i.texture(),
-                i.tex_coord(),
-                i.texture_transform(),
-                buffers,
-                pool,
-            )
+            let tt = i.texture_transform().as_ref().map(tt_from_gltf);
+            tex_ref(&i.texture(), i.tex_coord(), tt, buffers, pool)
         }),
         // KHR_* scalar material extensions (typed gltf accessors).
         ior: mat.ior(),
