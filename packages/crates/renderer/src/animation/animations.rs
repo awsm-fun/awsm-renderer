@@ -303,22 +303,25 @@ impl AwsmRenderer {
                 .ok_or(AwsmAnimationError::MissingKey(animation_key))?;
 
             match player.sample() {
+                // A loose player whose target MORPH was freed must NOT abort the whole
+                // pose (a scene reload frees the morph before the player re-binds) —
+                // skip the dangling write; the relower rebinds it. Present keys unchanged.
                 AnimationData::Vertex(vertex_animation) => match morph_key {
                     AnimationMorphKey::Geometry(morph_key) => {
-                        self.meshes.morphs.geometry.update_morph_weights_with(
+                        let _ = self.meshes.morphs.geometry.update_morph_weights_with(
                             *morph_key,
                             |target| {
                                 target.copy_from_slice(&vertex_animation.weights);
                             },
-                        )?;
+                        );
                     }
                     AnimationMorphKey::Material(morph_key) => {
-                        self.meshes.morphs.material.update_morph_weights_with(
+                        let _ = self.meshes.morphs.material.update_morph_weights_with(
                             *morph_key,
                             |target| {
                                 target.copy_from_slice(&vertex_animation.weights);
                             },
-                        )?;
+                        );
                     }
                 },
                 _ => {
@@ -700,24 +703,27 @@ impl AwsmRenderer {
                 }
             }
             AnimationTarget::Morph(morph_key) => match value {
+                // Skip a stale morph target (freed on reload before the relower rebinds)
+                // rather than aborting the whole pose — same robustness as the transform
+                // path; present keys are unchanged.
                 AnimationData::Vertex(vertex_animation) => match morph_key {
                     AnimationMorphKey::Geometry(morph_key) => {
-                        self.meshes.morphs.geometry.update_morph_weights_with(
+                        let _ = self.meshes.morphs.geometry.update_morph_weights_with(
                             morph_key,
                             |target| {
                                 let n = target.len().min(vertex_animation.weights.len());
                                 target[..n].copy_from_slice(&vertex_animation.weights[..n]);
                             },
-                        )?;
+                        );
                     }
                     AnimationMorphKey::Material(morph_key) => {
-                        self.meshes.morphs.material.update_morph_weights_with(
+                        let _ = self.meshes.morphs.material.update_morph_weights_with(
                             morph_key,
                             |target| {
                                 let n = target.len().min(vertex_animation.weights.len());
                                 target[..n].copy_from_slice(&vertex_animation.weights[..n]);
                             },
-                        )?;
+                        );
                     }
                 },
                 _ => {
