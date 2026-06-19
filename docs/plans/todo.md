@@ -1,5 +1,15 @@
 # Plan: one geometry flow — render our own format; glTF is import-only
 
+> **⭐ DAVID AWAY 2026-06-19 → back ~2026-06-20 night. POST-EPIC DIRECTIVE (after the join-barrier lands +
+> the epic is DONE):** (1) TEST THOROUGHLY in the editor — custom materials, shadows, alpha cutoffs, changing
+> textures, scenes mixing built-in primitives + imported models, skinned/morph/animated, material/variant
+> flips, save→reload. (2) CLEAN UP all the code + comments (the epic touched many files; remove dead code,
+> tighten comments, kill any leftover scaffolding/`uvs1`-era naming). (3) UPDATE DOCS (this todo's status,
+> any module/architecture docs, the transaction-API + data-format story). Be extra-careful with no human in
+> the loop: NEVER leave a broken/half-done state committed; if the join-barrier can't be done GREEN, revert
+> to the working per-node state + record, and still do the testing/cleanup/docs on that (functionally-correct)
+> state. This is the autonomous-runway plan until he's back.
+
 **Remaining work.** The "geometry into the load transaction" foundation has landed (see *Already landed*
 below). What's left is to collapse to **ONE render path: our own proprietary format** — and make glTF an
 **importer**, never something the renderer renders directly. This kills the last two-sources-of-truth
@@ -950,6 +960,25 @@ GPUValidationError). This removes the async-no-barrier obstacle → one true tra
 matching `populate_awsm_scene`. Incremental: declare-only mode + the Replace rework first, verify NO GPU error
 on reload, THEN the observer-initial-fire handling. After it lands + verifies, RE-RUN the §5b review (line 845)
 + declare the epic DONE.
+
+**REFINED IMPLEMENTATION (traced 2026-06-19):** `begin_load` is lightweight (just `scene_committed=false`,
+`load_phase=Idle`) — it does NOT auto-coalesce intermediate `commit_load`s, so bracketing won't help; the
+declare-all-AWAIT-commit-once join is the way. The reactive tree materialises via SPAWNED observers at EVERY
+level (`add_node` spawns kind/transform/visibility/**children** observers; the children observer fires
+`handle_diff(Replace)` → recurses), so the join must do the INITIAL materialise of the whole tree DIRECTLY
+(awaited recursion), then set up observers that SKIP their initial fire. CONCRETE: (1) Thread a `declare_only:
+bool` PARAM (NOT a thread-local — a flag races across the awaits in the recursion) through `apply_kind` → the 5
+committing fns: `materialize_skinned_mesh` (827, which calls `materialize_skinned_from_template` 899),
+`materialize_sprite` (1094), `upload_simple_mesh` (1229), `materialize_particle` (1392); each gates its
+`commit_load` with `if !declare_only`. (2) `add_node` gains `bulk_load: bool`: it calls
+`apply_kind(declare_only=bulk_load)`, and WHEN `bulk_load` it ALSO recurses its children DIRECTLY
+(`Box::pin(add_node(.., true)).await` per child — the join) AND spawns its kind observer with `.skip(1)` + its
+children observer skipping the FIRST `Replace` (a `Cell<bool>` "seen_initial" guard in the for_each). (3) the
+`Replace` arm: `establish_forest_transforms` (KEEP — all transforms first) → `for node { add_node(.., bulk_load=
+true).await }` (recursive declare-only materialise = JOIN) → ONE `commit_load`. (4) live-add (`InsertAt`/`Push`/
+`UpdateAt`) calls `add_node(.., bulk_load=false)` — UNCHANGED (observers fire initial → materialise + commit).
+RISK: this is a BROAD change to the core reactive load; verify live-edit (SetMeshData / material flip), children
+subtrees, and animations STILL work + NO GPUValidationError on reload — REVERT if any regression (David away).
 
 ## 6. Out of scope / tracked elsewhere
 
