@@ -98,15 +98,16 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 > animation channels target them — unchanged). This dissolves the source-scoping wrinkle AND fixes the
 > flip, in one consolidation. Phases renumbered below.
 
-- **Phase 1 — Carry skin + morph through the renderer capture/raw path into `GeometrySource`.**
-  Renderer-side, low-risk, unit-testable foundation that the unification needs regardless. Extend
-  `RawMeshData` (and the capture lowering) to carry optional skin (per-vertex joints+weights + the skin's
-  joint `TransformKey`s + inverse-bind matrices + set_count) and morph targets; have `add_raw_mesh` /
-  the lowering insert them (`meshes.skins.insert` / `meshes.morphs.geometry.insert_raw`) and attach
-  `skin_key`/`skin_info` + `geometry_morph_key`/`info` to the `GeometrySource` (fields already exist).
-  - *Acceptance:* a raw mesh with skin+weights+joints uploads a skinned `GeometrySource` and deforms;
-    `cargo test -p awsm-renderer` green; no behaviour change for non-skinned raw meshes (skin/morph
-    `None`).
+- ✅ **Phase 1 — Carry skin + morph through the renderer capture/raw path into `GeometrySource`.** DONE
+  (commit `b04d5716`). `RawMeshData` gained optional `skin: Option<RawSkin>` (joints + inverse-bind
+  matrices + set_count + packed index/weight bytes — the exact shapes `Skins::insert` + the glTF decode
+  use) and `morph: Option<RawMorph>` (layout info + weights + values). `add_raw_mesh` inserts them into
+  the shared skin/morph stores and attaches `skin_key`/`skin_info` + `geometry_morph_key`/`info` to the
+  `GeometrySource`, so a skinned/morphed raw mesh flows through the SAME register → add_mesh →
+  resolve_one path the glTF skinned import already uses. `None` ⇒ static, unchanged. All existing
+  `RawMeshData` literals gained `..Default::default()`. Gate + lint + both wasm frontends green.
+  (No GPU unit test for actual deformation — the renderer is WebGPU-only; correctness rests on the glTF
+  path already exercising skin-through-resolve_one + the live editor test in Phase 2.)
 
 - **Phase 2 — Capture skinned/morphed imports as per-node editable content; one materialise path.**
   Extract each skinned node's geometry+skin+morph from the rig glb (extend `extract_node_mesh` /
