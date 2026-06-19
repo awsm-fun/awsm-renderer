@@ -590,9 +590,24 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       / editor / web-shared / render-worker. `multi_uv_sets_roundtrip` test + VERIFIED LIVE: SheenChair
       `?ourformat=1` now renders IDENTICAL to direct (bright orange velvet; occlusion texCoord 1 samples right);
       DamagedHelmet (texCoord 0) unaffected. **→ Phase 5 ACCEPTANCE MET** (every sample renders via our-format,
-      materials + all KHR_* extensions + animation + multi-UV intact). Follow-up (not blocking): the renderer's
-      GPU vertex layout / RawMeshData still carry 2 UV sets — generalizing the GPU path to N is a separate
-      effort; the editor's `uvs1` channel could fold into `uvs[1]` for full uniformity.
+      materials + all KHR_* extensions + animation + multi-UV intact).
+    - 🔵 **GPU MULTI-UV TO N — NEXT (⭐ David's call 2026-06-19).** The data model + glb-export now carry N UV
+      sets; generalize the renderer's GPU path too. SCOPE (mostly `renderer/src/raw_mesh.rs`): the vertex layout
+      ALREADY indexes UV sets (`MeshBufferCustomVertexAttributeInfo::TexCoords { index, … }`) + the WGSL reads
+      set `i` via `_texture_uv_per_vertex(…, set_index, stride, uv_sets_index)` — it's just HARDCODED to push
+      sets 0+1 (`uvs` + `uvs1`). PLAN: (1) `RawMeshData` `uvs: Option<Vec>` + `uvs1: Option<Vec>` → one
+      `uv_sets: Vec<Vec<[f32;2]>>`. (2) raw_mesh.rs build (~186-235): push a `TexCoords{index:i}` attribute per
+      set in a loop + pack each set's bytes per vertex in set order (before colors); `uvs0` (for tangent gen) =
+      `uv_sets.first()`. (3) set `uv_set_count`/`uv_sets_index` meta = N (so custom materials `material_uv(in,
+      iu)` + the built-in `tex_info.uv_set_index` work for any set). (4) the WGSL likely needs NO change (already
+      indexed) — VERIFY the stride math (`set_index*2` into the uv region) holds for N; adjust the meta if the uv
+      region offset/stride is computed from the hardcoded 2. (5) `scene_loader::mesh_data_to_raw` → pass ALL sets
+      (drop the 2-set cap + its warn). (6) FOLD the editor's separate `uvs1` channel into `uv_sets[1]`:
+      `CapturedMesh.uvs`+`uvs1` → a sets vec; `extract_node_mesh`'s `ExtractedNodeMesh.uvs1` → `mesh.uvs[1]`;
+      `mesh_cache::from_mesh_data_with_uvs1`/the gltf bridge `uvs1` plumbing collapse. VERIFY: a multi-UV mesh
+      renders right via add_raw_mesh / the editor; SheenChair direct + ?ourformat still match; texCoord-0
+      unaffected. Incremental: do the renderer RawMeshData+packing first (green, verify), THEN the editor uvs1
+      fold (bigger editor ripple) — commit each. AFTER this → surface the editor-load consolidation (§5b).
       ───────── (history) ─────────
       🟠 **WRINKLE — SheenChair `?ourformat=1` fabric over-darkens — ROOT CAUSE FOUND (a CORE-reexport
       multi-UV limitation, NOT a GAP 3 extension bug).** SheenChair's fabric `occlusionTexture` uses
