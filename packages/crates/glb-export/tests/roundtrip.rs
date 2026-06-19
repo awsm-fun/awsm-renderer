@@ -3,8 +3,8 @@
 //! JSON (extension wiring + referenced-only images).
 
 use awsm_glb_export::{
-    write_glb, ExportLight, ExportMaterial, ExportNode, GlbScene, PbrMaterial, TexRef, Trs,
-    UnlitMaterial, AWSM_MATERIALS_NONE,
+    write_glb, ExportLight, ExportMaterial, ExportNode, GlbScene, PbrMaterial, TexRef,
+    TexTransform, Trs, UnlitMaterial, AWSM_MATERIALS_NONE,
 };
 use awsm_meshgen::box_mesh;
 use glam::Vec3;
@@ -127,6 +127,49 @@ fn lightweighting_drops_unreferenced_textures() {
     assert_eq!(images.len(), 0);
     let v = glb_json(&glb);
     assert!(v.get("images").is_none() || v["images"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn texture_transform_roundtrip() {
+    // KHR_texture_transform on a base-color textureInfo survives write_glb (GAP 3).
+    let mut tr = TexRef::new(0);
+    tr.transform = Some(TexTransform {
+        offset: [0.25, 0.5],
+        rotation: 0.0,
+        scale: [2.0, 4.0],
+        tex_coord: None,
+    });
+    let scene = GlbScene {
+        nodes: vec![ExportNode::new("Cube")
+            .with_mesh(box_mesh(Vec3::ONE))
+            .with_material(ExportMaterial::Pbr(PbrMaterial {
+                base_color_texture: Some(tr),
+                ..Default::default()
+            }))],
+        images: vec![awsm_glb_export::ExportImage {
+            name: "albedo".into(),
+            bytes: include_bytes!("fixtures/1x1.png").to_vec(),
+            mime: awsm_glb_export::ImageMime::Png,
+        }],
+        ..Default::default()
+    };
+    let glb = write_glb(&scene);
+    // Gltf::from_slice parses JSON without decoding images (the 1x1 fixture isn't a
+    // real PNG; we only need the textureInfo extension JSON).
+    let gltf = gltf::Gltf::from_slice(&glb).expect("re-parse");
+    let m = gltf
+        .materials()
+        .find(|m| m.index().is_some())
+        .expect("material");
+    let info = m
+        .pbr_metallic_roughness()
+        .base_color_texture()
+        .expect("base color texture");
+    let xf = info
+        .texture_transform()
+        .expect("texture_transform survives");
+    assert_eq!(xf.offset(), [0.25, 0.5]);
+    assert_eq!(xf.scale(), [2.0, 4.0]);
 }
 
 #[test]

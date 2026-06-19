@@ -796,11 +796,33 @@ fn flatten<'a>(
     here
 }
 
+/// Build a textureInfo `extensions` object carrying `KHR_texture_transform` (raw JSON
+/// in the flattened `others` map — gltf-json doesn't type it for this crate's features).
+fn tex_transform_ext(t: &TexRef) -> Option<extensions::texture::Info> {
+    let xf = t.transform?;
+    let mut obj = serde_json::Map::new();
+    obj.insert("offset".to_string(), json!(xf.offset));
+    obj.insert("rotation".to_string(), json!(xf.rotation));
+    obj.insert("scale".to_string(), json!(xf.scale));
+    if let Some(tc) = xf.tex_coord {
+        obj.insert("texCoord".to_string(), json!(tc));
+    }
+    let mut others = serde_json::Map::new();
+    others.insert(
+        "KHR_texture_transform".to_string(),
+        serde_json::Value::Object(obj),
+    );
+    Some(extensions::texture::Info {
+        others,
+        ..Default::default()
+    })
+}
+
 fn tex_info(t: TexRef, tex: &[Index<Texture>]) -> texture::Info {
     texture::Info {
         index: tex[t.image],
         tex_coord: t.tex_coord,
-        extensions: Default::default(),
+        extensions: tex_transform_ext(&t),
         extras: Default::default(),
     }
 }

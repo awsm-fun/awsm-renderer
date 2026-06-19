@@ -223,6 +223,10 @@ pub struct ExtraPrimitive {
 }
 
 /// How a material is emitted into the glTF. See the crate-level material policy.
+// PbrMaterial is the large variant (it carries the per-material extension JSON). This
+// is a cold export IR — one value per material at export time, never a hot path — so
+// the size skew doesn't matter; boxing would only add an alloc + indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum ExportMaterial {
     /// Real glTF metallic-roughness PBR.
@@ -320,6 +324,16 @@ pub enum AlphaMode {
     Blend,
 }
 
+/// `KHR_texture_transform` — a UV offset/rotation/scale (+ optional texcoord override)
+/// on a single textureInfo. Carried on [`TexRef`] so the clean re-export preserves it.
+#[derive(Clone, Copy, Debug)]
+pub struct TexTransform {
+    pub offset: [f32; 2],
+    pub rotation: f32,
+    pub scale: [f32; 2],
+    pub tex_coord: Option<u32>,
+}
+
 /// A reference from a material slot to an image in [`GlbScene::images`].
 #[derive(Clone, Copy, Debug)]
 pub struct TexRef {
@@ -327,6 +341,8 @@ pub struct TexRef {
     pub image: usize,
     /// Which `TEXCOORD_n` set the material samples (usually 0).
     pub tex_coord: u32,
+    /// `KHR_texture_transform` on this textureInfo, if any.
+    pub transform: Option<TexTransform>,
 }
 
 impl TexRef {
@@ -334,6 +350,7 @@ impl TexRef {
         Self {
             image,
             tex_coord: 0,
+            transform: None,
         }
     }
 }

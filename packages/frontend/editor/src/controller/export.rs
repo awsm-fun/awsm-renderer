@@ -743,6 +743,8 @@ fn tex_ref(t: &Option<TextureRef>, tex_index: &TexIndex) -> Option<TexRef> {
     Some(TexRef {
         image,
         tex_coord: t.uv_index,
+        // The editor doesn't author KHR_texture_transform yet (import-only follow-up).
+        transform: None,
     })
 }
 

@@ -347,6 +347,7 @@ mod tests {
             base_color_texture: Some(ExTexRef {
                 image: 0,
                 tex_coord: 0,
+                transform: None,
             }),
             ..Default::default()
         }));

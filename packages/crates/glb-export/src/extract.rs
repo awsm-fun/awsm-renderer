@@ -244,11 +244,20 @@ impl ImagePool {
 fn tex_ref(
     texture: &gltf::Texture,
     tex_coord: u32,
+    transform: Option<gltf::texture::TextureTransform>,
     buffers: &[Vec<u8>],
     pool: &mut ImagePool,
 ) -> Option<TexRef> {
-    pool.intern(texture, buffers)
-        .map(|image| TexRef { image, tex_coord })
+    pool.intern(texture, buffers).map(|image| TexRef {
+        image,
+        tex_coord,
+        transform: transform.map(|t| crate::TexTransform {
+            offset: t.offset(),
+            rotation: t.rotation(),
+            scale: t.scale(),
+            tex_coord: t.tex_coord(),
+        }),
+    })
 }
 
 /// Lower a source glTF material into the export IR per the crate's material
@@ -265,7 +274,9 @@ fn ext_tex_json(
     pool: &mut ImagePool,
 ) -> Option<serde_json::Value> {
     let info = info?;
-    let tr = tex_ref(&info.texture(), info.tex_coord(), buffers, pool)?;
+    // Typed extension textures carrying their own KHR_texture_transform is a deferred
+    // follow-up (rare; raw extensions pass their transforms through verbatim already).
+    let tr = tex_ref(&info.texture(), info.tex_coord(), None, buffers, pool)?;
     Some(serde_json::json!({ "index": tr.image, "texCoord": tr.tex_coord }))
 }
 
@@ -395,9 +406,15 @@ fn extract_material(
         return Some(ExportMaterial::Unlit(UnlitMaterial {
             name,
             base_color: pbr.base_color_factor(),
-            base_color_texture: pbr
-                .base_color_texture()
-                .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+            base_color_texture: pbr.base_color_texture().and_then(|i| {
+                tex_ref(
+                    &i.texture(),
+                    i.tex_coord(),
+                    i.texture_transform(),
+                    buffers,
+                    pool,
+                )
+            }),
             alpha_mode,
             double_sided: mat.double_sided(),
         }));
@@ -410,21 +427,42 @@ fn extract_material(
         emissive: mat.emissive_factor(),
         alpha_mode,
         double_sided: mat.double_sided(),
-        base_color_texture: pbr
-            .base_color_texture()
-            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
-        metallic_roughness_texture: pbr
-            .metallic_roughness_texture()
-            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+        base_color_texture: pbr.base_color_texture().and_then(|i| {
+            tex_ref(
+                &i.texture(),
+                i.tex_coord(),
+                i.texture_transform(),
+                buffers,
+                pool,
+            )
+        }),
+        metallic_roughness_texture: pbr.metallic_roughness_texture().and_then(|i| {
+            tex_ref(
+                &i.texture(),
+                i.tex_coord(),
+                i.texture_transform(),
+                buffers,
+                pool,
+            )
+        }),
+        // normal/occlusion textureInfos don't expose texture_transform() in the gltf
+        // crate (only base/metallic/emissive `Info` do) — their KHR_texture_transform
+        // is a recorded follow-up (rare; see todo.md §3).
         normal_texture: mat
             .normal_texture()
-            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), None, buffers, pool)),
         occlusion_texture: mat
             .occlusion_texture()
-            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
-        emissive_texture: mat
-            .emissive_texture()
-            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+            .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), None, buffers, pool)),
+        emissive_texture: mat.emissive_texture().and_then(|i| {
+            tex_ref(
+                &i.texture(),
+                i.tex_coord(),
+                i.texture_transform(),
+                buffers,
+                pool,
+            )
+        }),
         // KHR_* scalar material extensions (typed gltf accessors).
         ior: mat.ior(),
         emissive_strength: mat.emissive_strength(),
