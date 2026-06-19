@@ -177,6 +177,41 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >   for today's populate-then-snapshot flow; the IMPORTER/MATERIALISER split (§0) replaces it with a
 >   GPU-free import that snapshots from the clean glb decode, not from a committed populate.
 
+> **▶ PHASE 2 MATERIALISE-REWRITE — concrete plan (worked out this loop; execute next, incrementally).**
+> Goal: make a skinned drawable NODE-OWNED + rebuildable so a material opaque↔blend flip re-renders (the
+> known vanish bug). The materialiser builds it from the rig glb via `add_raw_mesh(RawMeshData{ skin:
+> Some(RawSkin) })` instead of reusing the populate template via `set_mesh_material`.
+> - **Bedrock landed this loop:** `ExtractedSkin::packed_index_weights()` (`e8914c6f`) packs a decoded skin
+>   into `RawSkin.index_weights` (interleaved u32-idx/f32-weight per influence — matches `convert_skin`).
+>   `extract_node_mesh` already returns geometry + `ExtractedSkin` (joint_node_indices, IBMs, joints,
+>   weights). So a `RawSkin` is: `{ joints: <editor TransformKeys>, inverse_bind_matrices: <IBMs as Mat4>,
+>   set_count: 1, index_weights: skin.packed_index_weights() }`.
+> - **THE NODE-INDEX-SPACE PREREQUISITE (confirmed, do FIRST).** `SkinnedMeshRef.joints` is
+>   `Vec<SkinJoint{ node: NodeId (editor bone), index: u32 (RIG-GLB flat idx) }>` — so joint→TransformKey
+>   mapping is available (bone NodeId → `bridge().nodes[node_id].transform_key`). BUT `skin.node_index` is
+>   the ORIGINAL glTF node index (import builds the template/bones from the ORIGINAL), so the rig-glb decode
+>   can't locate the skinned MESH node by it. Two ways: (1, DECISION's choice) unify import onto the rig
+>   glb so `skin.node_index` IS the rig-glb index — bigger restructure of `import_typed`/`finish_model_import`
+>   (materials+anims still from the original; geometry+skeleton from the rig glb); or (2, smaller interim)
+>   persist/cache `node_flat_indices` (original→rig-glb) per source so the materialiser translates
+>   `skin.node_index` → rig-glb index. Prefer (1) per the DECISION, but (2) de-risks the first behavioural
+>   increment. Either way the joint-index space inside the skin (per-vertex JOINTS_0 → `joint_node_indices`
+>   order → `RawSkin.joints` TransformKeys) is self-consistent from the single rig-glb decode.
+> - **Entanglement (already recorded): (b) needs (d).** `hide_template_meshes` leaves the populate SKINNED
+>   mesh VISIBLE today (it IS the rendered geometry). A node-owned `add_raw_mesh(skin)` would DOUBLE the
+>   geometry unless populate also stops showing the skinned drawable → hide/remove the template skinned
+>   meshes when the node owns its own. Do both in one increment.
+> - **Increment sketch (each live-verified — Fox deforms+animates, then flip opaque↔blend, then save/reload):**
+>   (i) resolve the node-index space (prereq above); (ii) a helper `materialise_skinned_from_rig(source,
+>   rig_glb_node_index, prim, joint_map) -> RawMeshData{skin}` (decode + pack, cache the per-node decode in a
+>   thread-local like `skinned_bake_cache`); (iii) rewire `materialize_skinned_mesh` → build node-owned via
+>   `add_raw_mesh` with the CURRENT material, push to `model_meshes`, DELETE the `set_mesh_material`-on-template
+>   branch; (iv) hide/remove the populate skinned template meshes (no double-geometry); (v) teardown cleans
+>   skin/morph/geometry (`skins::remove` exists); (vi) morph-weight anim rebind on rebuild (reuse the static
+>   morph approach). Skeleton + skeleton-animation stay persistent (joint TransformKeys unchanged).
+> - **Rename:** fold `repopulate_skinned_template` INTO this as "materialise skinned from our-format glb"
+>   (drop the "re"/"populate" naming) — used uniformly for first-show / reload / re-materialise.
+
 - **Phase 2 — Capture skinned/morphed imports as per-node editable content; one materialise path.**
   *(Investigated; de-risked plan below. This is the large, high-regression-risk step — see "Risk
   checkpoint".)* The skinned source-of-truth (the rig glb) is already retained + persisted
