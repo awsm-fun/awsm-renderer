@@ -579,7 +579,22 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       via `?ourformat=1` now ANIMATES (pose changes across frames) AND is textured, no console errors.
       Follow-up: MORPH-weight channels skipped (counted+logged) — need the node's mesh morph key (Fox + common
       animated samples are T/R/S).
-    - 🟡 **GAP 3 — KHR_* extensions: IN PROGRESS.** ✅ SCALAR pattern PROVEN (commit `24507079`):
+    - 🟡 **GAP 3 — KHR_* extensions: IN PROGRESS (5 of ~10 done).** ✅ SCALARS `ior` + `emissive_strength`
+      (24507079) + ✅ TYPED-TEXTURE `specular` / `transmission` / `volume` (commit `66c79b7e`, VERIFIED:
+      SpecularTest `?ourformat=1` == direct incl texture rows; TransmissionRoughness translucent). PATTERN:
+      `PbrMaterial.extensions_json: serde_json::Map` (the unified IR); `extract_material` builds each typed
+      extension's JSON from the gltf accessor + interns its textures via `tex_ref` (so the JSON `index` is the
+      clean POOL index); `build_pbr` writes the map into `extensions.others`. REMAINING (NEXT): the RAW-JSON
+      extensions (`clearcoat`/`sheen`/`anisotropy`/`iridescence`/`dispersion`/`diffuse_transmission` — gltf
+      crate does NOT type these; `mat.extension_value("KHR_materials_*")` gives the raw `&Value`). These need
+      the SOURCE doc to resolve their JSON texture `index`es → intern → clean index (the typed ones got the
+      `gltf::Texture` directly, no doc). PLAN: thread `&gltf::Document` into `build_clean_node`/`extract_material`
+      (a few sig changes), add a generic walk that, for each raw ext object, recursively remaps every `index`
+      field (a textureInfo) via `doc.textures().nth(n)` → `pool.intern` → clean index, then put the remapped
+      object into `extensions_json`. ALSO `KHR_texture_transform` on the CORE tex refs (offset/rotation/scale →
+      the textureInfo `extensions`). Verify ClearCoatTest / SheenChair / IridescenceSuzanne / AnisotropyBarnLamp /
+      TextureTransformTest `?ourformat=1` == direct. (history below:)
+    - 🟡 **GAP 3 (history) — SCALAR pattern PROVEN (commit `24507079`):**
       `KHR_materials_ior` + `KHR_materials_emissive_strength` round-trip (PbrMaterial `Option<f32>` IR fields →
       `mat.ior()`/`mat.emissive_strength()` typed read → raw JSON into the material's `extensions.others` map;
       gltf-json types only `unlit` for this crate, renderer reads the rest raw too). Round-trip test +
