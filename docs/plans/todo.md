@@ -579,7 +579,23 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       via `?ourformat=1` now ANIMATES (pose changes across frames) AND is textured, no console errors.
       Follow-up: MORPH-weight channels skipped (counted+logged) — need the node's mesh morph key (Fox + common
       animated samples are T/R/S).
-    - 🔴 **GAP 3 — KHR_* material extensions dropped (NEXT — David's call 2026-06-19: "Build GAP 3").**
+    - 🟡 **GAP 3 — KHR_* extensions: IN PROGRESS.** ✅ SCALAR pattern PROVEN (commit `24507079`):
+      `KHR_materials_ior` + `KHR_materials_emissive_strength` round-trip (PbrMaterial `Option<f32>` IR fields →
+      `mat.ior()`/`mat.emissive_strength()` typed read → raw JSON into the material's `extensions.others` map;
+      gltf-json types only `unlit` for this crate, renderer reads the rest raw too). Round-trip test +
+      VERIFIED LIVE (EmissiveStrength sample `?ourformat=1` == direct path). REMAINING (texture-bearing — the
+      bulk, NEXT): each needs the EXTENSION's texture indices REMAPPED to the clean glb's pool indices. TWO
+      sub-patterns: (A) gltf-crate TYPED extensions (`specular`, `transmission`, `volume` — features on): use
+      the typed accessor (`mat.specular()` etc.) → `tex_ref(&info.texture(), …, pool)` for each ext texture
+      (gives the clean pool image index) → write JSON with `tex[texref.image]` for the index + the factors;
+      (B) RAW-JSON extensions (`clearcoat`/`sheen`/`anisotropy`/`iridescence`/`dispersion`/`diffuse_transmission`
+      — NO gltf typed accessor, renderer reads `mat.extensions().get("KHR_materials_*")` raw): read the raw
+      ext object, REMAP its `*Texture.index` fields to the clean pool index (intern each via `tex_ref` on the
+      source texture index, then patch the JSON), write raw into `others`. Plus `KHR_texture_transform` on the
+      core tex refs (offset/rotation/scale on the textureInfo `extensions`). Mirror the FIELD SET per extension
+      from renderer-gltf/populate/material.rs. Verify each sample (ClearCoatTest/SheenChair/TransmissionRoughness/
+      IridescenceSuzanne/AnisotropyBarnLamp/SpecularTest/…) `?ourformat=1` == direct. Multi-iteration.
+    - 🔴 **GAP 3 (orig plan) — KHR_* material extensions dropped (David's call 2026-06-19: "Build GAP 3").**
       `reexport_clean`'s `extract_material` preserves ONLY core PBR + `KHR_materials_unlit`; it drops clearcoat /
       sheen / transmission / volume / iridescence / anisotropy / specular / ior / emissive_strength / dispersion /
       texture_transform. ~25% of model-tests samples (the EXTENSIONS collection) regress under `?ourformat=1`.
