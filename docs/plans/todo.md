@@ -139,12 +139,14 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
     editor already rebinds morph animation there (reuse it) or whether this is a pre-existing gap to
     handle. Resolve within (b)/(c); if it needs an animation-binding redesign, record options here.
 
-> **⚠ Risk checkpoint (Phase 2).** This rewires the editor's skinned + morph + animation materialise
-> path — core, high-blast-radius systems whose correctness needs LIVE verification with a
-> skinned+morphed+animated model (import, deform, flip, save→reload). That is not safe to execute
-> unattended in one-shot loop iterations. Phase 1 (the safe renderer foundation) is landed; Phases 3–4
-> depend on Phase 2, so there is no independent green step to peel off. The loop is PAUSING here for a
-> human checkpoint (see the session summary) rather than plowing a risky multi-system refactor blind.
+> **⚠ Risk note (Phase 2).** This rewires the editor's skinned + morph + animation materialise path —
+> core, high-blast-radius systems whose correctness needs LIVE verification with a
+> skinned+morphed+animated model (import, deform, flip, save→reload). Approach in SMALL, individually
+> green + verified increments, in order: (a) glb-export `extract_node_mesh` returns per-node skin
+> (additive, isolated, no behaviour change) → (b) re-wire `materialize_skinned_mesh` per-node → (c) joint
+> rebind → (d) `populate_gltf` pure importer. Live-screenshot a skinned model after each behavioural
+> step; if an increment can't be verified green, record the blocker here and surface it rather than
+> stacking more risk on top.
 
 - **Phase 3 — The proprietary save format (geometry-glb + materials sidecar + animation clips).**
   Define + implement the editor's persistent format: per-asset geometry glb (via `awsm-glb-export`,
