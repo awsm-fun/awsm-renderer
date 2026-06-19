@@ -114,9 +114,10 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
   checkpoint".)* The skinned source-of-truth (the rig glb) is already retained + persisted
   (`assets/<id>.rig.glb`), so **NO project-format migration is needed** — do NOT extend the `CapturedMesh`
   / `.mesh.bin` bitcode (positional, non-versioned → would break old saves). Instead:
-  - **(a) glb-export `extract_node_mesh` also returns per-node SKIN** (per-vertex joints+weights +
-    inverse-bind matrices + set_count) and morph — additively on `ExtractedNodeMesh` (in-memory; no
-    serialized-format change). Safe, testable in isolation.
+  - ✅ **(a) DONE (commit `6f1a538c`)** — glb-export `extract_node_mesh` now returns an additive
+    `skin: Option<ExtractedSkin>` (per-vertex joints+weights set 0, vertex-aligned; joint node-indices +
+    inverse-bind matrices from `node.skin()`). In-memory only; isolated + unit-tested. (Morph capture +
+    multi-skin-set are follow-ons within (b) when wiring morphed/multi-set skinned meshes.)
   - **(b) Re-wire `node_sync::materialize_skinned_mesh`** to build a `RawMeshData { skin: Some(RawSkin{..}),
     morph: .. }` per primitive from the rig-glb decode (cache the decoded per-(source,node,prim)
     MeshData-with-skin in a thread-local like `skinned_bake_cache`, to avoid re-decoding per edit) + the
