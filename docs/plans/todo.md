@@ -152,31 +152,39 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 > reduce resource consumption; the coherent "scene editor → our format → player/editor" flow — **while
 > model-tests keeps working for plain-GLB import.**
 >
-> **Refined, lower-risk shape (from the investigation below):**
-> - **populate stays as-is** — it already builds drawables via the load transaction (post-5b), so
->   model-tests' plain-GLB path and the player are UNTOUCHED. Only the EDITOR changes.
-> - **Editor captures each skinned node's source at IMPORT** (geometry + skin{joint node-idx→TransformKey,
->   ORIGINAL inverse-bind matrices, per-vertex index/weights, set_count} + morph) via the Phase-2a
->   `extract_node_mesh` skin, into an in-memory per-node captured-skinned store (mirroring static
->   `mesh_cache`). NO new on-disk format — the rig glb is already the persisted source; the cache is
->   rebuilt from it on reload via `repopulate_skinned_template` / `restore_skinned_templates`.
-> - **`materialize_skinned_mesh` re-materialises from that capture** through the ONE producer
->   (`apply_kind` → `add_raw_mesh`/register+add_mesh+commit) with the CURRENT material — so a flip to a
->   never-built kind rebuilds the right rep. **Delete the `set_mesh_material`-on-shared-template branch.**
->   Make the skinned drawable node-owned (`model_meshes`) so teardown+rebuild works like static; the
->   populate-built skinned drawable is hidden/removed for the editor (it's replaced by the materialised
->   one — avoid double-geometry to honour "reduce resource consumption").
-> - **IBM conflict dissolved:** capture uses the ORIGINAL decode's inverse-bind matrices (not the
->   reexported rig glb's), so re-inserting the skin over the same joint `TransformKey`s bit-matches
->   `Skins::insert`'s dedup → no `JointAlreadyExistsButDifferent`. (Alt: thread the existing `skin_key`
->   through instead of re-inserting — pick whichever is cleaner; either way CLEAN UP the old skin on
->   teardown so skins don't leak — "reduce resource consumption".)
-> - **Skeleton + animation untouched:** joints are persistent scene `TransformKey`s; skeleton-anim stays
->   bound. **Morph-anim rebind** (recorded wrinkle): re-materialise mints a new morph key → rebind the
->   morph animation channel; check/reuse how static captured morphed meshes already handle this.
-> - **Group in the Phase-3/4 consolidation where it falls out naturally:** one materialise path for ALL
->   editor geometry (static+skinned+morphed), the rig glb as the geometry container of "our format",
->   byte-fidelity round-trip tests, and a `?stress`/`?trace` perf check (no regression; transactional).
+> **Refined shape — EVERYTHING through the re-exported rig glb (the human's call; merges Phase 2 + 3):**
+> The rig glb is the editor's ONE canonical geometry source (incl. skin + morph). The editor builds,
+> captures, re-materialises, persists, and MCP-edits skinned geometry from it — one decode path, errors
+> surface in one place, and what's on disk == what renders == what MCP edits.
+> - **The plain-GLB `populate` path STAYS for model-tests / player-of-raw-glb only** (the sanctioned
+>   exception — "model-tests works for plain GLB import"). The EDITOR no longer renders skinned content
+>   from the original decode.
+> - **At import the editor reexports the original → rig glb (already done), then builds its skinned
+>   renderables FROM the rig glb** (decode it → skeleton transforms + skin + geometry); materials +
+>   animation clips are still extracted from the original into the editor library/clips (the rig glb is
+>   geometry-only). The existing `repopulate_skinned_template` already builds a template from the rig glb —
+>   reuse/extend it as the ONE skinned build path (import AND reload AND re-materialise all use it).
+> - **Skin inserted ONCE from the rig glb, `skin_key` cached per (source,node,prim) and REUSED** on every
+>   (re-)materialise (the skin = skeleton + per-vertex weights, both fixed by the rig glb). Geometry reps
+>   rebuild with the CURRENT material's kind, referencing the stable `skin_key`. So re-materialise = decode
+>   rig-glb geometry (cache the decode per node) + `register_geometry`(skin_key reused) + `add_mesh`(current
+>   material) + commit — through the ONE producer (`apply_kind`). **Delete `set_mesh_material`-on-template.**
+> - **IBM conflict dissolved by construction:** a SINGLE IBM source (the rig glb). `reexport_clean` is a
+>   deterministic pure transform, so every decode yields identical IBMs; inserting the skin once (or
+>   re-inserting bit-identically) never trips `Skins::insert`'s `JointAlreadyExistsButDifferent`. (The
+>   earlier "use the original decode's IBMs" idea is REJECTED — it reintroduced a second source.)
+> - **Make the skinned drawable node-owned** (`model_meshes`) so teardown+rebuild works like static; no
+>   double-geometry (don't also keep a populate-built skinned drawable for editor nodes). Clean up the
+>   per-node geometry/morph on teardown; the cached `skin_key` is source-level (like the skeleton) and
+>   lives as long as the source is referenced (reuse the existing reclaim-guard).
+> - **Skeleton + animation:** joints are persistent scene `TransformKey`s from the rig-glb build; skeleton
+>   animation stays bound. Map animation-channel joint targets to the rig-glb-built skeleton (the template's
+>   `node_index_to_transform`). **Morph-anim rebind** wrinkle: re-materialise mints a new morph key → rebind
+>   the morph channel (check/reuse how static captured morphed meshes handle it).
+> - **This IS Phase 3 for geometry:** the rig glb = the geometry container of "our format"; materials +
+>   clips are the separate sidecars (already separate). Group them. Add byte-fidelity round-trip tests +
+>   a `?stress`/`?trace` perf check (no regression; transactional; reduced resource use via no
+>   double-geometry + one decode).
 >
 > **Verification (live, with a rigged asset):** import a skinned model (deforms + animates), flip its
 > material opaque↔blend (re-renders, no vanish / no `VisibilityGeometryBufferNotFound`), save→reload
@@ -200,10 +208,12 @@ Tracing the live skinned flow surfaced the failure modes the above shape avoids.
   build the skeleton/skin/animation but NOT the drawable — a non-trivial split of the import pipeline.
 - **Morph-anim rebind** (already-recorded wrinkle) compounds this for face rigs.
 
-These are the failure modes the **DECISION shape above avoids** (populate stays for model-tests; the
-editor captures at import with ORIGINAL IBMs + reuses/cleans the skin; one materialise path). Proceed
-with that shape — no longer a blocker. (Resolved: option 1, full unification, grouped — see the DECISION
-block above. The earlier 3-option list is settled.)
+These are the failure modes the **DECISION shape above avoids** by routing EVERYTHING (editor) through the
+single re-exported rig glb: plain-GLB `populate` stays only for model-tests; the editor builds + captures +
+re-materialises skinned content from the rig glb (one deterministic IBM source → no dedup conflict); skin
+inserted once + `skin_key` reused; one materialise path; node-owned drawable (no double-geometry). Proceed
+with that shape — no longer a blocker. (Resolved: option 1, full unification, grouped, all-rig-glb — see
+the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea are settled/rejected.)
 
 - **Phase 3 — The proprietary save format (geometry-glb + materials sidecar + animation clips).**
   Define + implement the editor's persistent format: per-asset geometry glb (via `awsm-glb-export`,
