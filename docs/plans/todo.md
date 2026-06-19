@@ -166,10 +166,15 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >   (model-tests :9080) renders Fox + materials + shadows, regression-clean. This UNBLOCKS the epic's live
 >   verification (import + render now work; Phase 2 can be verified against a working baseline).
 > - **WRINKLE to chase next:** a Fox import surfaces a toast "this clip targets deleted nodes — nothing to
->   animate" → the imported animation clip isn't binding to the rig's bones (geometry render is clean;
->   skeletal DEFORMATION/animation not yet confirmed). Investigate the clip→bone binding (likely the
->   `node_map` / `import_animations` timing or the joint-target resolution) before the Phase 2 skinned
->   re-materialise work — a working animated baseline is the yardstick for "deforms + animates".
+>   animate". Traced to `animation_sync::warn_if_orphaned_clip`: it fires when the active clip lowers 0
+>   channels. The clip IS bound to the bone NodeIds (via `node_map`), but the bones' renderer
+>   `TransformKey`s materialise ASYNCHRONOUSLY through `node_sync` AFTER the clip first lowers, so the
+>   first relower resolves 0 channels → transient toast. `node_sync::schedule_relower` re-fires once the
+>   bones land, so the Fox most likely DOES animate after settling — **but visually UNCONFIRMED**. Next
+>   iteration: confirm the Fox actually deforms+animates in the editor (Animation panel → play → compare
+>   two frames for limb motion); if it doesn't, the bug is real (clip→bone lower) — else the toast is a
+>   benign import-race artifact (consider suppressing it during the import burst). A working animated
+>   baseline is the yardstick for the Phase 2 "deforms + animates" acceptance.
 > - **NOTE for Phase 5 / GPU-free import (§0):** these fixes ADD a `commit_load` at import (the meshes are
 >   uploaded then hidden — the current double-geometry the epic removes). That's the correct interim shape
 >   for today's populate-then-snapshot flow; the IMPORTER/MATERIALISER split (§0) replaces it with a
