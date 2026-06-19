@@ -54,6 +54,36 @@ fn stress_grid_count() -> Option<u32> {
     None
 }
 
+/// `?ourformat=1` — route the load through the TWO-STAGE our-format path (§0):
+/// STAGE 1 import the source glTF → our clean glb (GPU-free `reexport_clean`),
+/// STAGE 2 materialise that clean glb via `populate_gltf`. Opt-in dev toggle so the
+/// default stays the direct glTF path (default-equals-today). NOTE: `reexport_clean`
+/// currently drops animations + lights + the KHR_* material extensions (clearcoat /
+/// sheen / transmission / iridescence / anisotropy / …), so under this flag those
+/// samples regress — the routing infra is proven on static core-PBR samples; the
+/// animation-remap + KHR_* round-trip are the remaining Phase-5 work (todo.md §3).
+fn our_format_enabled() -> bool {
+    let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) else {
+        return false;
+    };
+    let query = search.trim_start_matches('?');
+    query
+        .split('&')
+        .any(|pair| matches!(pair.strip_prefix("ourformat="), Some("1") | Some("true")))
+}
+
+/// STAGE 1 (GPU-free): import a source glTF into our clean glb + re-parse it back to
+/// `GltfData` so STAGE 2 (`populate_gltf`) materialises OUR format, not glTF directly.
+/// Returns the original data unchanged on any failure (so the toggle never bricks a
+/// load — it just falls back to the direct path + logs).
+async fn import_to_our_format(data: &GltfData) -> anyhow::Result<GltfData> {
+    let clean = awsm_glb_export::reexport_clean_scene(&data.doc, &data.buffers.raw)
+        .ok_or_else(|| anyhow::anyhow!("reexport_clean produced no scene"))?;
+    let glb = awsm_glb_export::write_glb(&clean);
+    let loader = GltfLoader::from_glb_bytes(&glb).await?;
+    loader.into_data(None).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 /// Diagnostic bench: parse `?variants=M` — with `?stress=N`, assign M distinct
 /// first-party PBR feature-mask variants round-robin across the stress meshes (each
 /// a clone of the source material with a different texture subset turned off, so
@@ -661,6 +691,24 @@ impl AppScene {
                 data.as_ref()
                     .expect("No GLTF data to populate")
                     .heavy_clone()
+            };
+
+            // STAGE 1 (GPU-free, no renderer lock): when `?ourformat=1`, convert the
+            // source glTF to our clean glb + re-parse, so STAGE 2 below materialises
+            // OUR format rather than rendering glTF directly (§0 north star). Falls
+            // back to the direct path (+ logs) if the conversion fails.
+            let data = if our_format_enabled() {
+                match import_to_our_format(&data).await {
+                    Ok(clean) => clean,
+                    Err(e) => {
+                        tracing::warn!(
+                            "ourformat: import_to_our_format failed, using direct glTF: {e}"
+                        );
+                        data
+                    }
+                }
+            } else {
+                data
             };
 
             let mut renderer = scene.renderer.lock().await;
