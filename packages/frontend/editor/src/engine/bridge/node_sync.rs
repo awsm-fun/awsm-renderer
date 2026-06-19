@@ -1,6 +1,21 @@
-//! Scene→GPU sync: observe the reactive scene tree and materialize/teardown
-//! each node's renderer resources. M4-C materializes primitives + lights; other
-//! kinds are passive (no GPU mesh yet).
+//! Scene→GPU sync: observe the reactive scene tree and materialize/teardown each
+//! node's renderer resources (primitives, captured + skinned + morph meshes, sprites,
+//! particles, instances, lights, cameras).
+//!
+//! ## Loading is ONE transaction (⭐ see docs/plans/todo.md §0)
+//!
+//! A bulk scene load — a project reload (`apply_project` → `scene.nodes.replace_cloned`)
+//! or an imported subtree, i.e. a `VecDiff::Replace` — is ONE transaction: declare the
+//! WHOLE forest declare-only (the recursive `add_node(bulk_load=true)` join, with the
+//! kind/children observers skipping their initial fire), THEN `commit_bulk_load` commits
+//! ONCE. The commit dedups, runs concurrently, finalizes the texture pool, and recompiles
+//! pipelines a single time — matching the player loader `populate_awsm_scene`. There is no
+//! debounce, so no declared-but-unresolved window (which previously broke the decal
+//! texture-pool bind group).
+//!
+//! A live add/edit (`InsertAt`/`Push`/`UpdateAt`, a kind/transform/material change) keeps
+//! `bulk_load=false`: it declares AND commits per node, since the existing scene must stay
+//! rendering while the one new node compiles.
 
 use std::sync::Arc;
 
