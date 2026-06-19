@@ -58,14 +58,20 @@ async fn handle_diff(
             // these pre-established transforms (idempotent). This is the ORDERING fix —
             // NOT a post-hoc re-materialise.
             establish_forest_transforms(parent_tk, values.clone()).await;
+            // BULK LOAD: materialize the whole forest declare-only (add_node recurses
+            // children directly + awaits — the JOIN), then commit ONCE. One transaction
+            // for the project reload / import — no per-node commits (⭐ §0 / §5b).
             for (i, node) in values.into_iter().enumerate() {
-                add_node(parent_id, parent_tk, i, node).await;
+                add_node(parent_id, parent_tk, i, node, true).await;
             }
+            commit_bulk_load().await;
         }
-        VecDiff::InsertAt { index, value } => add_node(parent_id, parent_tk, index, value).await,
+        VecDiff::InsertAt { index, value } => {
+            add_node(parent_id, parent_tk, index, value, false).await
+        }
         VecDiff::Push { value } => {
             let index = order_len(parent_id);
-            add_node(parent_id, parent_tk, index, value).await;
+            add_node(parent_id, parent_tk, index, value, false).await;
         }
         VecDiff::UpdateAt { index, value } => {
             if let Some(id) = order_get(parent_id, index) {
@@ -73,7 +79,7 @@ async fn handle_diff(
             }
             // Replace the slot.
             remove_order_at(parent_id, index);
-            add_node(parent_id, parent_tk, index, value).await;
+            add_node(parent_id, parent_tk, index, value, false).await;
         }
         VecDiff::RemoveAt { index } => {
             if let Some(id) = order_get(parent_id, index) {
@@ -198,11 +204,28 @@ fn establish_forest_transforms(
     })
 }
 
+/// The single `commit_load` that closes a bulk load (the `Replace` join): after the
+/// whole forest has been DECLARED (declare-only `add_node`s), commit once — the commit
+/// dedups, runs concurrently, and recompiles the texture pool / pipelines ONCE. No
+/// debounce, so no declared-but-unresolved window (which broke the decal texture-pool
+/// bind group — §5b).
+async fn commit_bulk_load() {
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    if let Err(e) = r
+        .commit_load(crate::engine::activity::commit_phase_handler())
+        .await
+    {
+        tracing::warn!("bulk-load commit_load: {e}");
+    }
+}
+
 async fn add_node(
     parent_id: Option<NodeId>,
     parent_tk: Option<TransformKey>,
     index: usize,
     node: Arc<Node>,
+    bulk_load: bool,
 ) {
     let node_id = node.id;
     // Reuse a transform established by a transforms-first pre-pass
@@ -236,13 +259,34 @@ async fn add_node(
     // relower is a cheap no-op when no clips exist.
     super::animation_sync::schedule_relower();
 
-    // Kind observer — fires on the current value first, so this materializes
-    // the node on insert and re-materializes on any kind change.
+    // BULK LOAD (project reload / import = a `Replace` diff): materialize this node's
+    // geometry NOW, declare-only (the JOIN — awaited, no commit), then recurse its
+    // children directly. The observers below SKIP their initial fire (already done
+    // here). The caller (`handle_diff`'s `Replace` arm) commits ONCE after the whole
+    // forest declares — ONE transaction, no per-node commits, no texture-pool-grow
+    // window (⭐ §0 / §5b). Live add (`InsertAt`/`Push`/`UpdateAt`) passes
+    // `bulk_load=false`: the kind/children observers fire their initial as before.
+    if bulk_load {
+        let kind = node.kind.get_cloned();
+        apply_kind(entry.clone(), kind, true).await;
+        let children: Vec<Arc<Node>> = node.children.lock_ref().iter().cloned().collect();
+        for (ci, child) in children.into_iter().enumerate() {
+            Box::pin(add_node(Some(node_id), Some(tk), ci, child, true)).await;
+        }
+    }
+
+    // Kind observer — re-materializes on any kind change (declare+commit, a live
+    // edit). On a bulk load the initial value was already materialized above, so
+    // skip the first emission.
     {
         let loader = AsyncLoader::new();
         loader.load(clone!(entry => async move {
+            let first = std::cell::Cell::new(bulk_load);
             entry.node.kind.signal_cloned().for_each(clone!(entry => move |kind| {
-                clone!(entry => async move { apply_kind(entry, kind, false).await; })
+                let skip = first.replace(false);
+                clone!(entry => async move {
+                    if !skip { apply_kind(entry, kind, false).await; }
+                })
             })).await;
         }));
         entry.loaders.lock().unwrap().push(loader);
@@ -278,12 +322,18 @@ async fn add_node(
         }));
         entry.loaders.lock().unwrap().push(loader);
     }
-    // Children observer — recurse for nested nodes.
+    // Children observer — recurse for nested nodes. On a bulk load the children were
+    // already materialized by the direct recursion above, so skip the INITIAL
+    // `Replace` (subsequent live child diffs still process normally).
     {
         let loader = AsyncLoader::new();
         loader.load(clone!(node => async move {
+            let first_replace = std::cell::Cell::new(bulk_load);
             node.children.signal_vec_cloned().for_each(move |diff| {
-                clone!(node_id => async move { handle_diff(Some(node_id), Some(tk), diff).await; })
+                let skip = matches!(diff, VecDiff::Replace { .. }) && first_replace.replace(false);
+                clone!(node_id => async move {
+                    if !skip { handle_diff(Some(node_id), Some(tk), diff).await; }
+                })
             }).await;
         }));
         entry.loaders.lock().unwrap().push(loader);
