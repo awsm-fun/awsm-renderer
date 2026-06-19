@@ -423,6 +423,24 @@ impl Builder {
             metallic_roughness_texture: p.metallic_roughness_texture.map(|t| tex_info(t, tex)),
             ..Default::default()
         };
+        // KHR_* material extensions — written as raw JSON into the material's
+        // `extensions.others` map (gltf-json types only `unlit` for this crate's
+        // feature set; the renderer reads these raw too, so a verbatim object is the
+        // uniform round-trip — texture-bearing extensions remap indices via `tex`).
+        let mut ext_others = serde_json::Map::new();
+        if let Some(ior) = p.ior {
+            ext_others.insert("KHR_materials_ior".to_string(), json!({ "ior": ior }));
+        }
+        if let Some(strength) = p.emissive_strength {
+            ext_others.insert(
+                "KHR_materials_emissive_strength".to_string(),
+                json!({ "emissiveStrength": strength }),
+            );
+        }
+        let extensions = (!ext_others.is_empty()).then(|| extensions::material::Material {
+            others: ext_others,
+            ..Default::default()
+        });
         let mat = Material {
             alpha_cutoff: alpha_cutoff(p.alpha_mode),
             alpha_mode: Checked::Valid(gltf_alpha_mode(p.alpha_mode)),
@@ -445,6 +463,7 @@ impl Builder {
             }),
             emissive_texture: p.emissive_texture.map(|t| tex_info(t, tex)),
             emissive_factor: material::EmissiveFactor(p.emissive),
+            extensions,
             ..Default::default()
         };
         self.root.push(mat)

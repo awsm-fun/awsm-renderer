@@ -130,6 +130,30 @@ fn lightweighting_drops_unreferenced_textures() {
 }
 
 #[test]
+fn pbr_scalar_extensions_roundtrip() {
+    // KHR_materials_ior + KHR_materials_emissive_strength survive write_glb as raw JSON
+    // in the material's `extensions.others` map (GAP 3). Re-parse via the gltf reader's
+    // typed accessors (features on) to confirm the values round-trip.
+    let scene = cube_scene_with(ExportMaterial::Pbr(PbrMaterial {
+        ior: Some(1.4),
+        emissive_strength: Some(3.0),
+        ..Default::default()
+    }));
+    let glb = write_glb(&scene);
+    let (doc, _b, _i) = gltf::import_slice(&glb).expect("re-parse");
+    let mat = doc
+        .materials()
+        .find(|m| m.index().is_some())
+        .expect("a non-default material");
+    assert_eq!(mat.ior(), Some(1.4), "ior round-trips");
+    assert_eq!(
+        mat.emissive_strength(),
+        Some(3.0),
+        "emissive_strength round-trips"
+    );
+}
+
+#[test]
 fn referenced_texture_is_embedded() {
     // A 1x1 PNG (smallest valid-ish payload for the writer; the reader only needs
     // the bytes present + a mimeType — it does not decode here).

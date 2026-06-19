@@ -252,6 +252,10 @@ pub struct PbrMaterial {
     pub normal_texture: Option<TexRef>,
     pub occlusion_texture: Option<TexRef>,
     pub emissive_texture: Option<TexRef>,
+    /// `KHR_materials_ior` — index of refraction (`None` = absent / default 1.5).
+    pub ior: Option<f32>,
+    /// `KHR_materials_emissive_strength` — emissive scale (`None` = absent / 1.0).
+    pub emissive_strength: Option<f32>,
 }
 
 impl Default for PbrMaterial {
@@ -269,6 +273,8 @@ impl Default for PbrMaterial {
             normal_texture: None,
             occlusion_texture: None,
             emissive_texture: None,
+            ior: None,
+            emissive_strength: None,
         }
     }
 }

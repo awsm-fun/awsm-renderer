@@ -305,6 +305,9 @@ fn extract_material(
         emissive_texture: mat
             .emissive_texture()
             .and_then(|i| tex_ref(&i.texture(), i.tex_coord(), buffers, pool)),
+        // KHR_* scalar material extensions (typed gltf accessors).
+        ior: mat.ior(),
+        emissive_strength: mat.emissive_strength(),
     }))
 }
 

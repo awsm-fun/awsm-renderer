@@ -765,6 +765,11 @@ fn map_material_def(
             normal_texture: tex_ref(&def.normal_texture, tex_index),
             occlusion_texture: tex_ref(&def.occlusion_texture, tex_index),
             emissive_texture: tex_ref(&def.emissive_texture, tex_index),
+            // The editor doesn't author KHR_* scalar extensions on its materials yet
+            // (they ride glTF import-only; round-tripping them through the editor is a
+            // separate follow-up). Absent → glTF defaults.
+            ior: None,
+            emissive_strength: None,
         }),
         MaterialShading::Unlit => ExportMaterial::Unlit(UnlitMaterial {
             name: def.label.clone(),
