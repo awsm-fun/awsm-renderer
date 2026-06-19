@@ -227,13 +227,22 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >   Fox → in-memory round-trip reload → fox now RENDERS + DEFORMS + ANIMATES (Survey clip, 21/21 players);
 >   the "bone node ... not yet in bridge" warn is GONE (`raw_mesh_from_rig` succeeds → node-owned path).
 >   Scoped to the bulk `Replace` (reload); import uses `Push` diffs and is untouched (still works).
->   - **REMAINING reload follow-up A — UNTEXTURED on reload.** The reloaded fox renders grey, not orange:
->     its material/base-color TEXTURE isn't re-bound/re-uploaded on reload. Almost certainly a GENERAL
->     material-reload issue (a static textured model like DamagedHelmet would lose its texture too — verify),
->     NOT this transforms-only change (import via the SAME node-owned path is textured). Investigate texture
->     ASSET restore + GPU re-upload on the editor reload path (restore_* in persistence.rs) — likely the
->     texture image needs re-uploading from the restored asset, or the material instance's texture binding
->     is lost. Fix it the transaction-aligned way (textures declared in the load).
+>   - **REMAINING reload follow-up A — UNTEXTURED on reload = a GENERAL TEXTURE-PERSISTENCE GAP → this is
+>     PHASE 3 (materials sidecar carries textures, §0). CONFIRMED this loop:** DamagedHelmet (STATIC) reload
+>     ALSO loses its texture (renders a grey blob), so it's general + pre-existing, NOT skinned-specific +
+>     NOT the transforms-only change. ROOT CAUSE: imported raster textures are NEVER PERSISTED — `save_to_dir`
+>     writes project.toml + material/animation/mesh/rig/bind-pose side files but NO texture files;
+>     `TextureDef::Raster { display_name }` carries no bytes (it's content-hash-addressed to an on-disk file
+>     via `asset_filename`, but nothing WRITES that file); `serialize_inmem` omits textures too. On reload the
+>     session-local `material::TEXTURE_KEYS` (asset id → uploaded `TextureKey`) is stale/empty, so the
+>     material binds nothing → untextured. (The rig glb DOES carry textures via `reexport_clean`'s ImagePool,
+>     but the editor binds via its own texture-asset system, not the rig glb's uploaded keys.) FIX (Phase 3,
+>     transaction-aligned): persist the texture image bytes as side files on save (a `texture_files` sibling
+>     of `rig_glb_files`, content-hash named) + capture them at import (retain the bytes), and restore +
+>     re-UPLOAD + re-register `TEXTURE_KEYS` during the load (a `restore_textures` before `apply_project`, so
+>     the texture is a declared load input before materials/geometry reference it). Also add `texture_files`
+>     to `serialize_inmem` so the round-trip self-test models textures. Deferred to Phase 3 (it's the materials
+>     sidecar, not the skinned epic core).
 >   - **REMAINING reload follow-up B — anim `LocalNotFound(TransformKey(5v1))`** persists per-frame on reload
 >     even though 21/21 tracks resolve + the fox animates. One stale channel targeting a freed/absent key —
 >     investigate `animation_sync` pin vs the reload relower (likely a single clip channel; low impact).
