@@ -90,6 +90,71 @@ async fn import_to_our_format(data: &GltfData) -> anyhow::Result<GltfData> {
     loader.into_data(None).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// GAP 2 (todo.md §3): `reexport_clean` drops animations + DFS-renumbers nodes, so a
+/// model routed through `?ourformat=1` renders at bind pose. Re-load the ORIGINAL doc's
+/// animations onto the clean glb's transforms: extract each channel (original node
+/// index), remap original→clean(flat) via `scene_node_flat_indices`, resolve the clean
+/// transform via the populate context, and insert a loose player — exactly the binding
+/// `populate_gltf` does for the direct path, just with remapped targets. Mirrors the
+/// player's "clips loaded separately from the geometry glb" model (clips are a sidecar,
+/// not baked into the clean glb — keeping the editor/player rig glb animation-free).
+fn load_remapped_animations(
+    renderer: &mut AwsmRenderer,
+    original: &GltfData,
+    ctx: &awsm_renderer_gltf::GltfPopulateContext,
+) {
+    use awsm_renderer::animation::AnimationPlayer;
+    use awsm_renderer_gltf::ExtractedProperty;
+
+    let anims = match awsm_renderer_gltf::extract_animations(&original.doc, &original.buffers.raw) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("ourformat: extract_animations failed: {e}");
+            return;
+        }
+    };
+    // original glTF node index → clean glb node index (DFS flatten == write order).
+    let flat_of = awsm_glb_export::scene_node_flat_indices(&original.doc);
+    // clean glb node index → renderer TransformKey (from the clean populate).
+    let node_to_tk = ctx
+        .key_lookups
+        .lock()
+        .unwrap()
+        .node_index_to_transform
+        .clone();
+
+    let (mut inserted, mut skipped_morph, mut unresolved) = (0u32, 0u32, 0u32);
+    for anim in anims {
+        for ch in anim.channels {
+            let Some(tk) = flat_of
+                .get(&ch.node_index)
+                .and_then(|clean| node_to_tk.get(clean))
+                .copied()
+            else {
+                unresolved += 1;
+                continue;
+            };
+            match ch.property {
+                ExtractedProperty::Translation
+                | ExtractedProperty::Rotation
+                | ExtractedProperty::Scale => {
+                    renderer
+                        .animations
+                        .insert_transform(AnimationPlayer::new(ch.clip), tk);
+                    inserted += 1;
+                }
+                // Morph-weight channels need the node's mesh morph key — a follow-up
+                // (Fox + the common animated samples are T/R/S; not silently lost —
+                // counted + logged).
+                ExtractedProperty::MorphWeights => skipped_morph += 1,
+            }
+        }
+    }
+    tracing::info!(
+        "ourformat: loaded {inserted} transform anim channels ({skipped_morph} morph skipped, {unresolved} unresolved)"
+    );
+}
+
 /// Diagnostic bench: parse `?variants=M` — with `?stress=N`, assign M distinct
 /// first-party PBR feature-mask variants round-robin across the stress meshes (each
 /// a clone of the source material with a different texture subset turned off, so
@@ -703,18 +768,20 @@ impl AppScene {
             // source glTF to our clean glb + re-parse, so STAGE 2 below materialises
             // OUR format rather than rendering glTF directly (§0 north star). Falls
             // back to the direct path (+ logs) if the conversion fails.
-            let data = if our_format_enabled() {
+            // Keep the ORIGINAL data when routing through our-format: reexport_clean
+            // drops animations, so we re-load them (remapped) after populate (GAP 2).
+            let (data, original_for_anim) = if our_format_enabled() {
                 match import_to_our_format(&data).await {
-                    Ok(clean) => clean,
+                    Ok(clean) => (clean, Some(data)),
                     Err(e) => {
                         tracing::warn!(
                             "ourformat: import_to_our_format failed, using direct glTF: {e}"
                         );
-                        data
+                        (data, None)
                     }
                 }
             } else {
-                data
+                (data, None)
             };
 
             let mut renderer = scene.renderer.lock().await;
@@ -729,7 +796,7 @@ impl AppScene {
                 }
             }
             let populate_ctx = renderer.populate_gltf(data, None).await?;
-            *scene.gltf_punctual_lights.lock().unwrap() = populate_ctx.punctual_lights;
+            *scene.gltf_punctual_lights.lock().unwrap() = populate_ctx.punctual_lights.clone();
             // Keep the node->transform map so a later light re-insert (the
             // punctual-lights mode toggle) can re-bind animated lights.
             *scene.gltf_node_transforms.lock().unwrap() = populate_ctx
@@ -738,6 +805,11 @@ impl AppScene {
                 .unwrap()
                 .node_index_to_transform
                 .clone();
+
+            // GAP 2: re-load the original animations remapped onto the clean nodes.
+            if let Some(original) = original_for_anim.as_ref() {
+                load_remapped_animations(&mut renderer, original, &populate_ctx);
+            }
 
             // §C.1 perf bench (dev-only, inert without the param): `?stress=N`
             // duplicates the loaded model's meshes into an N-cell grid to profile
