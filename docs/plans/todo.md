@@ -243,6 +243,23 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >     the texture is a declared load input before materials/geometry reference it). Also add `texture_files`
 >     to `serialize_inmem` so the round-trip self-test models textures. Deferred to Phase 3 (it's the materials
 >     sidecar, not the skinned epic core).
+>     - **SUB-STEP 1 DONE (commit `1d9e50a2`): `awsm_glb_export::extract_texture_images(doc, buffers)` +
+>       `_from_bytes` — the encoded texture bytes (original PNG/JPEG) keyed by glTF TEXTURE index, reusing the
+>       ImagePool resolution; `ImageMime::ext()` for `assets/<hash>.<ext>`. Round-trip test = byte-identical.**
+>       The bytes-wrapper parses with `gltf::Gltf::from_slice` (NO image decode — we want originals + the
+>       importer rejects stub images). Editor-flow trace done (Explore): import `import_typed` (gltf.rs) has
+>       `data.doc` + `data.buffers.raw` BEFORE populate (line 313) → call `extract_texture_images` there for a
+>       `BTreeMap<tex_index, ExportImage>`; after populate, `ctx.textures` (GltfTextureKey{index} → TextureKey)
+>       is in scope → build `TextureKey → ExportImage`; thread to `GltfImport`. REMAINING SUB-STEPS (land
+>       together — the field trips dead-code lint until consumed): (2) `GltfImport.texture_images:
+>       HashMap<TextureKey, ExportImage>` + build it in `import_typed`; (3) in `finish_model_import`,
+>       `ensure_import_texture` looks up its asset's `TextureKey` → bytes → `content_hash` (sha256) →
+>       `AssetEntry::new_with_hash(Texture::Raster{display_name})` + stash bytes in a session-local
+>       `texture_cache` (mirror `skinned_bake_cache`/`mesh_cache`); (4) `persistence.rs` `texture_files()`
+>       (sibling of `mesh_files`, keyed `assets/<hash>.<ext>`) in `save_to_dir` + `serialize_inmem`, and
+>       `restore_textures()` BEFORE `apply_project` that reads the files → re-decodes/uploads via
+>       `material::import_raster`-style → `register_texture_key(asset_id, key)` (declared load input before
+>       materials resolve). Verify: import Fox/DamagedHelmet → `reload_project_in_memory` → textured again.
 >   - ✅ **reload follow-up B — anim `LocalNotFound` FIXED (commit `599ab230`).** Root cause was a
 >     ROBUSTNESS bug: `update_animations` propagated the first missing transform key (the loose-player loop
 >     AND the mixer's `write_anim_target`) → aborted the ENTIRE pose for that frame, so a single stale channel
