@@ -99,7 +99,7 @@ pub fn reexport_clean_scene_with_images(
     let mut pool = ImagePool::with_external(encoded_images);
     let nodes: Vec<ExportNode> = scene
         .nodes()
-        .map(|r| build_clean_node(&r, buffers, &mut pool))
+        .map(|r| build_clean_node(&r, doc, buffers, &mut pool))
         .collect();
 
     let skins: Vec<ExportSkin> = doc
@@ -274,8 +274,44 @@ fn ext_tex_json(
 /// texture indices remapped to the clean pool. ior + emissive_strength are carried
 /// as `PbrMaterial` scalar fields instead; the RAW-JSON extensions (clearcoat / sheen
 /// / …) are a follow-up. (GAP 3.)
+/// Recursively remap every textureInfo `index` in a raw extension JSON value from
+/// the SOURCE glTF texture index to the clean glb's POOL index (interning each on the
+/// way). KHR_materials_* objects only use `index` for textures, so remapping every
+/// `index` field is safe; the index Number is a leaf, so the recursion can't
+/// double-remap it.
+fn remap_texture_indices(
+    value: &mut serde_json::Value,
+    doc: &gltf::Document,
+    buffers: &[Vec<u8>],
+    pool: &mut ImagePool,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(src) = map.get("index").and_then(|v| v.as_u64()) {
+                if let Some(clean) = doc
+                    .textures()
+                    .nth(src as usize)
+                    .and_then(|t| pool.intern(&t, buffers))
+                {
+                    map.insert("index".to_string(), serde_json::Value::from(clean));
+                }
+            }
+            for v in map.values_mut() {
+                remap_texture_indices(v, doc, buffers, pool);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                remap_texture_indices(v, doc, buffers, pool);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn build_pbr_extensions(
     mat: &gltf::Material,
+    doc: &gltf::Document,
     buffers: &[Vec<u8>],
     pool: &mut ImagePool,
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -318,11 +354,30 @@ fn build_pbr_extensions(
         }
         out.insert("KHR_materials_volume".into(), json!(o));
     }
+
+    // RAW-JSON extensions the gltf crate doesn't type (renderer reads them raw too) —
+    // pass each object through VERBATIM, remapping its texture indices to the clean pool.
+    const RAW_EXTS: &[&str] = &[
+        "KHR_materials_clearcoat",
+        "KHR_materials_sheen",
+        "KHR_materials_anisotropy",
+        "KHR_materials_iridescence",
+        "KHR_materials_dispersion",
+        "KHR_materials_diffuse_transmission",
+    ];
+    for &name in RAW_EXTS {
+        if let Some(raw) = mat.extension_value(name) {
+            let mut value = raw.clone();
+            remap_texture_indices(&mut value, doc, buffers, pool);
+            out.insert(name.to_string(), value);
+        }
+    }
     out
 }
 
 fn extract_material(
     mat: &gltf::Material,
+    doc: &gltf::Document,
     buffers: &[Vec<u8>],
     pool: &mut ImagePool,
 ) -> Option<ExportMaterial> {
@@ -373,9 +428,9 @@ fn extract_material(
         // KHR_* scalar material extensions (typed gltf accessors).
         ior: mat.ior(),
         emissive_strength: mat.emissive_strength(),
-        // Typed texture-bearing extensions (specular / transmission / volume), JSON
-        // with indices remapped to the clean pool.
-        extensions_json: build_pbr_extensions(mat, buffers, pool),
+        // Texture-bearing extensions (typed + raw), JSON with texture indices remapped
+        // to the clean pool.
+        extensions_json: build_pbr_extensions(mat, doc, buffers, pool),
     }))
 }
 
@@ -385,7 +440,12 @@ fn extract_material(
 /// [`ExportNode::extra_primitives`] (glTF materials are per-primitive — never
 /// merge primitives across materials, and never add nodes, so skin-joint
 /// flatten indices stay valid).
-fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>], pool: &mut ImagePool) -> ExportNode {
+fn build_clean_node(
+    node: &gltf::Node,
+    doc: &gltf::Document,
+    buffers: &[Vec<u8>],
+    pool: &mut ImagePool,
+) -> ExportNode {
     let (translation, rotation, scale) = node.transform().decomposed();
     let mut out = ExportNode {
         name: node.name().unwrap_or("").to_string(),
@@ -459,7 +519,7 @@ fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>], pool: &mut ImagePool
                 colors,
                 indices,
             };
-            let material = extract_material(&primitive.material(), buffers, pool);
+            let material = extract_material(&primitive.material(), doc, buffers, pool);
 
             if first {
                 first = false;
@@ -483,7 +543,7 @@ fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>], pool: &mut ImagePool
 
     out.children = node
         .children()
-        .map(|c| build_clean_node(&c, buffers, pool))
+        .map(|c| build_clean_node(&c, doc, buffers, pool))
         .collect();
     out
 }
