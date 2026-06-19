@@ -242,7 +242,7 @@ async fn add_node(
         let loader = AsyncLoader::new();
         loader.load(clone!(entry => async move {
             entry.node.kind.signal_cloned().for_each(clone!(entry => move |kind| {
-                clone!(entry => async move { apply_kind(entry, kind).await; })
+                clone!(entry => async move { apply_kind(entry, kind, false).await; })
             })).await;
         }));
         entry.loaders.lock().unwrap().push(loader);
@@ -444,7 +444,12 @@ async fn teardown(entry: &Arc<RendererNode>) {
 }
 
 /// Materialize (or re-materialize) a node for its current kind.
-async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
+/// Materialize a node's `kind` onto the renderer. `declare_only`: when true, the
+/// geometry/material is DECLARED into the open load transaction but NOT committed —
+/// the bulk-load (`Replace`) path materializes the whole forest declare-only, then
+/// commits ONCE (the ⭐ TRANSACTION PRINCIPLE; see `add_node` `bulk_load`). When false
+/// (live add / live edit), it declares AND commits, as before.
+async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool) {
     // Camera → Camera: update the params IN PLACE so the `CameraKey` stays
     // stable. Editing a camera param re-emits `node.kind`, but a numeric
     // `SetKind` doesn't bump `anim_revision`, so a lowered
@@ -486,17 +491,27 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
         NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
-        NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def).await,
+        NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def, declare_only).await,
         NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
         NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg).await,
-        NodeKind::InstancesAlongCurve(def) => materialize_instances(entry.clone(), def).await,
-        NodeKind::ParticleEmitter(def) => materialize_particle(entry.clone(), def).await,
+        NodeKind::InstancesAlongCurve(def) => {
+            materialize_instances(entry.clone(), def, declare_only).await
+        }
+        NodeKind::ParticleEmitter(def) => {
+            materialize_particle(entry.clone(), def, declare_only).await
+        }
         // The sole procedural-geometry path: read the baked stack from the mesh
         // cache + upload with the node's assigned material (magenta when None).
         // Primitives + sweeps are now `MeshDef` stacks behind this same arm.
         NodeKind::Mesh { mesh, material, .. } => match super::mesh_cache::get_raw(mesh.0) {
             Some(raw) => {
-                upload_simple_mesh(entry.clone(), raw, MeshMaterial::Assigned(material)).await;
+                upload_simple_mesh(
+                    entry.clone(),
+                    raw,
+                    MeshMaterial::Assigned(material),
+                    declare_only,
+                )
+                .await;
             }
             None => {
                 tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
@@ -507,7 +522,7 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         // joints) and just (re)assign this node's material/shadow to it. NOT the
         // captured-mesh pipeline — skinned geometry isn't editable.
         NodeKind::SkinnedMesh { skin, material, .. } => {
-            materialize_skinned_mesh(entry.clone(), skin, material).await
+            materialize_skinned_mesh(entry.clone(), skin, material, declare_only).await
         }
         NodeKind::Camera(cfg) => materialize_camera(entry.clone(), cfg).await,
         // Group: no procedural geometry, no renderer resource.
@@ -828,6 +843,7 @@ async fn materialize_skinned_mesh(
     entry: Arc<RendererNode>,
     skin: awsm_editor_protocol::SkinnedMeshRef,
     material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+    declare_only: bool,
 ) {
     let Some(raw) = raw_mesh_from_rig(&skin) else {
         // No rig-glb skin decode → morph-only / legacy → the template fallback.
@@ -844,7 +860,7 @@ async fn materialize_skinned_mesh(
         // re-materialise the skinned node after the bones land (a forbidden
         // post-hoc re-materialise pass). Until that ordering fix lands, this
         // fallback is a stopgap; do NOT "fix" reload by re-running materialise.
-        materialize_skinned_from_template(entry, skin, material).await;
+        materialize_skinned_from_template(entry, skin, material, declare_only).await;
         return;
     };
 
@@ -871,11 +887,13 @@ async fn materialize_skinned_mesh(
         Ok(mk) => {
             let _ = r.set_mesh_hidden(mk, !visible);
             let _ = r.set_mesh_shadow_flags(mk, shadow_flags);
-            if let Err(e) = r
-                .commit_load(crate::engine::activity::commit_phase_handler())
-                .await
-            {
-                tracing::warn!("commit_load (skinned mesh): {e}");
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("commit_load (skinned mesh): {e}");
+                }
             }
             drop(r);
             entry.model_meshes.lock().unwrap().push(mk);
@@ -900,6 +918,7 @@ async fn materialize_skinned_from_template(
     entry: Arc<RendererNode>,
     skin: awsm_editor_protocol::SkinnedMeshRef,
     material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+    declare_only: bool,
 ) {
     // The populate skinned mesh is hidden by `hide_template_meshes` (now hides all
     // template meshes); un-hide it here since this path renders that copy directly.
@@ -971,14 +990,15 @@ async fn materialize_skinned_from_template(
             material_keys.push(mat_key);
             to_register.push(*mk);
         }
-        // Live add: commit the staged content through the one compile path
-        // (finalize textures + compile new pipelines). No begin_load — the
-        // existing scene keeps showing while the new content compiles.
-        if let Err(e) = r
-            .commit_load(crate::engine::activity::commit_phase_handler())
-            .await
-        {
-            tracing::warn!("commit_load (skinned mesh): {e}");
+        // Commit the staged content through the one compile path (finalize textures
+        // + compile new pipelines) — UNLESS the bulk-load join commits once at the end.
+        if !declare_only {
+            if let Err(e) = r
+                .commit_load(crate::engine::activity::commit_phase_handler())
+                .await
+            {
+                tracing::warn!("commit_load (skinned mesh): {e}");
+            }
         }
     }
 
@@ -1091,7 +1111,11 @@ async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_editor_protoc
 /// Textured/tinted quad (`NodeKind::Sprite`) → a `sprite_quad` mesh with the
 /// renderer's billboard mode. Single-cell unlit-ish quad (the flipbook-animated
 /// variant is the follow-on); sprites don't cast/receive shadows.
-async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol::SpriteDef) {
+async fn materialize_sprite(
+    entry: Arc<RendererNode>,
+    def: awsm_editor_protocol::SpriteDef,
+    declare_only: bool,
+) {
     use awsm_meshgen::sprite_quad;
     use awsm_renderer::meshes::mesh::BillboardMode;
 
@@ -1127,11 +1151,13 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
     // material — `add_raw_mesh` handles opaque and transparent uniformly now.
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
-            if let Err(e) = r
-                .commit_load(crate::engine::activity::commit_phase_handler())
-                .await
-            {
-                tracing::warn!("sprite commit_load: {e}");
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("sprite commit_load: {e}");
+                }
             }
             let _ = r.set_mesh_billboard_mode(mk, mode);
             drop(r);
@@ -1230,6 +1256,7 @@ async fn upload_simple_mesh(
     entry: Arc<RendererNode>,
     raw: RawMeshData,
     mat: MeshMaterial,
+    declare_only: bool,
 ) -> Option<awsm_renderer::meshes::MeshKey> {
     let parent_tk = entry.transform_key;
     let handle = renderer_handle();
@@ -1250,11 +1277,13 @@ async fn upload_simple_mesh(
     // to transparency geometry without a separate entry point.
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
-            if let Err(e) = r
-                .commit_load(crate::engine::activity::commit_phase_handler())
-                .await
-            {
-                tracing::warn!("upload_simple_mesh commit_load: {e}");
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("upload_simple_mesh commit_load: {e}");
+                }
             }
             drop(r);
             entry.model_meshes.lock().unwrap().push(mk);
@@ -1278,6 +1307,7 @@ async fn upload_simple_mesh(
 async fn materialize_instances(
     entry: Arc<RendererNode>,
     def: awsm_editor_protocol::InstancesAlongCurveDef,
+    declare_only: bool,
 ) {
     use awsm_curves::{CatmullRomCurve, Curve3, FrameSequence};
     use awsm_renderer::instances::InstanceAttr;
@@ -1368,6 +1398,7 @@ async fn materialize_instances(
         entry,
         raw,
         MeshMaterial::Flat(awsm_editor_protocol::MaterialDef::default()),
+        declare_only,
     )
     .await;
     if let Some(mk) = mesh_key {
@@ -1392,6 +1423,7 @@ async fn materialize_instances(
 async fn materialize_particle(
     entry: Arc<RendererNode>,
     def: awsm_editor_protocol::ParticleEmitterDef,
+    declare_only: bool,
 ) {
     let parent_tk = entry.transform_key;
     let node_id = entry.node_id;
@@ -1405,8 +1437,11 @@ async fn materialize_particle(
     })
     .await;
     // The emitter inserts a PBR material (a feature-set variant) whose pipeline
-    // must compile — route through the one compile path (live add, no
-    // begin_load). render() no longer compiles reactively.
+    // must compile — route through the one compile path. Skipped under the bulk-load
+    // join (which commits once at the end). render() no longer compiles reactively.
+    if declare_only {
+        return;
+    }
     if let Err(e) = renderer_handle()
         .lock()
         .await
@@ -1492,7 +1527,8 @@ pub(crate) async fn rematerialize_mesh_nodes() {
     for entry in entries {
         let kind = entry.node.kind.get_cloned();
         if matches!(kind, NodeKind::Mesh { .. }) {
-            apply_kind(entry, kind).await;
+            // Live re-materialise (mesh edit) — declares AND commits, as before.
+            apply_kind(entry, kind, false).await;
         }
     }
 }
