@@ -194,10 +194,34 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 > VisibilityGeometryBufferNotFound / no JointAlreadyExistsButDifferent / no console errors.
 >
 > **REMAINING Phase 2 follow-ups (next iterations):**
-> - **save→reload restores** — UNVERIFIED. The reload path must populate `get_rig_glb(source)` (persistence
->   loads `assets/<id>.rig.glb`) so `raw_mesh_from_rig` works post-reload; else it falls back to the template
->   path (`repopulate_skinned_template`, which itself needs the now-rig-indexed `rig_node_index` to be saved
->   — it is). Test: import Fox → Save to dir → reload → fox still renders + deforms + flip still works.
+> - **🔴 save→reload restores — BLOCKER, reload regresses skinned render (diagnosed this loop, NOT yet fixed).**
+>   Tested via the headless in-memory round-trip: `window.wasmBindings.editor_dispatch_json('{"cmd":
+>   "reload_project_in_memory"}')` (the `ReloadProjectInMemory` self-test — MCP-only, not in the command
+>   palette; serialize_inmem captures the rig glb via `rig_glb_files`, clears caches, re-applies). OBSERVED:
+>   the scene structure restores (fox = SkinnedMesh at origin, 26 nodes, 1 mesh / 1.2k tris / 1 bucket) BUT
+>   the fox geometry is INVISIBLE, and the bottom bar shows "fox · 0 tris" → the node owns no mesh, so on
+>   reload it fell through to the FALLBACK `materialize_skinned_from_template` (the new `raw_mesh_from_rig`
+>   did NOT fire). Plus a per-frame anim error `animation_sync.rs:685 pin: LocalNotFound(TransformKey)`.
+>   - **Root cause (hypothesis, strong):** materialisation ORDER on reload. `apply_project` inserts roots
+>     `[fox, root]`; the fox SkinnedMesh node materialises BEFORE its bones (under sibling `root`) have their
+>     `bridge.nodes` entries, so `raw_mesh_from_rig`'s joint→TransformKey map returns `None` → fallback. At
+>     IMPORT the new path DID fire (the flip worked → node-owned), so bones were ready then — reload's async
+>     order differs. The fallback's populate mesh is ALSO invisible on reload (separate: `skin_bridge` isn't
+>     re-registered on reload — only `finish_model_import` calls `register_skin_joint`, not the reload path —
+>     so the baked skeleton may be undriven/degenerate; OR the un-hide doesn't take).
+>   - **persistence PREP made then REVERTED (correct but insufficient alone):** storing the rig glb in
+>     `restore_skinned_templates` (BEFORE `apply_project`, where the bytes are already read) so
+>     `get_rig_glb` is ready pre-materialise — needed, but the bone-timing blocks the new path BEFORE
+>     `get_rig_glb` matters, so it didn't fix reload on its own. Re-apply it as part of the full fix.
+>   - **Fix direction (next iteration):** make the new path fire on reload despite bone-timing — RE-MATERIALISE
+>     skinned nodes after the bones land (a skinned analogue of `node_sync::schedule_relower`: when a
+>     SkinnedMesh node's `raw_mesh_from_rig` returns `None` because a bone isn't in `bridge.nodes` yet, nudge
+>     a re-`apply_kind` once the scene settles), + the persistence prep above. Also resolve the animation
+>     relower `LocalNotFound` on reload (likely the same race; `schedule_relower` should re-bind once bones
+>     materialise — verify it re-fires + clears). Then re-run the round-trip + confirm fox renders + deforms +
+>     flip still works. (Whether reload was ALSO fragile for skinned BEFORE the Phase-2 core `27d40e00` is
+>     untested — the relower race is pre-existing; the fallback-invisibility may be new from `hide_template_meshes`
+>     now hiding skinned too. Either way HEAD currently regresses skinned reload — fix before declaring Phase 2 done.)
 > - **teardown skin/geometry cleanup (step v)** — repeated edits re-insert the skin/geometry each
 >   re-materialise; `skins::remove` + caching `skin_key` per (source,node,prim) to REUSE (DECISION) not yet
 >   done → potential leak on repeated flips. Verify with memory_stats / `?stress`, then add cleanup + reuse.
