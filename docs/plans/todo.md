@@ -29,17 +29,30 @@ Kill the two-sources-of-truth problem everywhere.
 - **Animation → our own clip format** (extracted at import via `extract_animations`, supplemented with
   editor additions like clip mixing).
 
-**The two flows that converge on the one renderer:**
+**TWO DISTINCT STAGES — and only the second touches the GPU (David, confirmed):**
 ```
-glTF bytes ──(IMPORT: reexport→clean glb + extract materials + extract clips)──► OUR FORMAT
-OUR FORMAT ──(render: decode glb → GeometrySource → begin_load → add_mesh → commit_load + bind materials + load clips)──► screen
+STAGE 1  IMPORT (glTF → our format)   — PURE DATA, GPU-FREE, no renderer. Runs ONCE per asset.
+         glTF bytes ─► clean glb (geometry/attrs incl. skin+morph, via glb-export)
+                     + materials sidecar (extracted)  + clips (extracted)
+STAGE 2  MATERIALISE (our format → GPU) — the ONE render path; the ONLY thing that uploads.
+         our format ─► decode clean glb → GeometrySource → begin_load → add_mesh → commit_load
+                     + bind materials + load clips ─► screen
 ```
-- **editor**: import on user action; our format is persisted (glb + sidecars) and is what MCP edits +
-  what's written to disk; render from it.
-- **model-tests / raw-glb player**: import in-memory; render from the in-memory our-format. (model-tests
-  is still a glTF *viewer* — it just converts to our format first instead of rendering glTF directly.)
+- **Import does NOT push to the GPU.** It produces our-format artifacts (bytes/data) and nothing else —
+  no transforms, no skins, no meshes, no uploads. Import ≠ populate; they are different jobs (today
+  fused in `populate_gltf`, which decodes glTF AND uploads — split them).
+- **Materialise is the single GPU/render operation**, invoked *whenever* a drawable is needed: first
+  show, after a project reload, after an edit. **There is no "re-" anything** — each is the same
+  materialise reading the retained our-format. The existing `repopulate_skinned_template` is a misnomer
+  born of the old session-local design (it "redid" populate on reload); fold it INTO the materialise
+  stage and drop the "re"/"populate" naming — it's just *materialise skinned from our-format glb*, used
+  uniformly for first-show / reload / re-materialise. NOTHING is done twice.
+- **editor**: STAGE 1 on user import; our format is persisted (glb + sidecars) and is what MCP edits +
+  what's written to disk. STAGE 2 whenever a node needs a drawable (read the retained our format).
+- **model-tests / raw-glb player**: STAGE 1 in-memory, then STAGE 2. (model-tests is still a glTF
+  *viewer* — it converts to our format first instead of rendering glTF directly.)
 
-The geometry transaction is the render half: `begin_load() → add sources (GeometrySource) → commit_load()`,
+Stage 2's geometry half is the transaction: `begin_load() → add sources (GeometrySource) → commit_load()`,
 where a "source" is a `GeometrySource` (geometry + optional skin + optional morph) decoded from our-format
 glb. EVERY producer lowers to it.
 
