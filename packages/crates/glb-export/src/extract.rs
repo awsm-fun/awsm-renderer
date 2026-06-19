@@ -256,6 +256,71 @@ fn tex_ref(
 /// core-PBR [`ExportMaterial::Pbr`] (factors + base-color / metallic-roughness /
 /// normal / occlusion / emissive textures). The glTF DEFAULT material (no
 /// index) returns `None` — an absent material round-trips as absent.
+/// A glTF `textureInfo` → `{ "index": <clean pool index>, "texCoord": n }` JSON,
+/// with the texture interned into the pool (so its index is the clean glb's). For
+/// building GAP-3 KHR_* extension JSON. `None` when the texture can't be interned.
+fn ext_tex_json(
+    info: Option<gltf::texture::Info>,
+    buffers: &[Vec<u8>],
+    pool: &mut ImagePool,
+) -> Option<serde_json::Value> {
+    let info = info?;
+    let tr = tex_ref(&info.texture(), info.tex_coord(), buffers, pool)?;
+    Some(serde_json::json!({ "index": tr.image, "texCoord": tr.tex_coord }))
+}
+
+/// Build the TYPED KHR_* material-extension JSON (specular / transmission / volume —
+/// the ones the `gltf` crate types) for the clean glb's `extensions.others`, with
+/// texture indices remapped to the clean pool. ior + emissive_strength are carried
+/// as `PbrMaterial` scalar fields instead; the RAW-JSON extensions (clearcoat / sheen
+/// / …) are a follow-up. (GAP 3.)
+fn build_pbr_extensions(
+    mat: &gltf::Material,
+    buffers: &[Vec<u8>],
+    pool: &mut ImagePool,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::json;
+    let mut out = serde_json::Map::new();
+
+    if let Some(s) = mat.specular() {
+        let mut o = serde_json::Map::new();
+        o.insert("specularFactor".into(), json!(s.specular_factor()));
+        o.insert(
+            "specularColorFactor".into(),
+            json!(s.specular_color_factor()),
+        );
+        if let Some(t) = ext_tex_json(s.specular_texture(), buffers, pool) {
+            o.insert("specularTexture".into(), t);
+        }
+        if let Some(t) = ext_tex_json(s.specular_color_texture(), buffers, pool) {
+            o.insert("specularColorTexture".into(), t);
+        }
+        out.insert("KHR_materials_specular".into(), json!(o));
+    }
+    if let Some(t) = mat.transmission() {
+        let mut o = serde_json::Map::new();
+        o.insert("transmissionFactor".into(), json!(t.transmission_factor()));
+        if let Some(tex) = ext_tex_json(t.transmission_texture(), buffers, pool) {
+            o.insert("transmissionTexture".into(), tex);
+        }
+        out.insert("KHR_materials_transmission".into(), json!(o));
+    }
+    if let Some(v) = mat.volume() {
+        let mut o = serde_json::Map::new();
+        o.insert("thicknessFactor".into(), json!(v.thickness_factor()));
+        o.insert("attenuationColor".into(), json!(v.attenuation_color()));
+        let dist = v.attenuation_distance();
+        if dist.is_finite() {
+            o.insert("attenuationDistance".into(), json!(dist));
+        }
+        if let Some(tex) = ext_tex_json(v.thickness_texture(), buffers, pool) {
+            o.insert("thicknessTexture".into(), tex);
+        }
+        out.insert("KHR_materials_volume".into(), json!(o));
+    }
+    out
+}
+
 fn extract_material(
     mat: &gltf::Material,
     buffers: &[Vec<u8>],
@@ -308,6 +373,9 @@ fn extract_material(
         // KHR_* scalar material extensions (typed gltf accessors).
         ior: mat.ior(),
         emissive_strength: mat.emissive_strength(),
+        // Typed texture-bearing extensions (specular / transmission / volume), JSON
+        // with indices remapped to the clean pool.
+        extensions_json: build_pbr_extensions(mat, buffers, pool),
     }))
 }
 

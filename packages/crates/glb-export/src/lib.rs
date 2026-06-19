@@ -256,6 +256,12 @@ pub struct PbrMaterial {
     pub ior: Option<f32>,
     /// `KHR_materials_emissive_strength` — emissive scale (`None` = absent / 1.0).
     pub emissive_strength: Option<f32>,
+    /// Other KHR_* material extensions, by extension name → already-prepared JSON
+    /// object (texture `index`es ALREADY remapped to the clean glb's pool indices).
+    /// Written verbatim into the material's `extensions.others` map. The extractor
+    /// fills this (typed extensions built from the gltf accessors; raw ones passed
+    /// through + index-remapped) so `write_glb` stays a dumb serializer (GAP 3).
+    pub extensions_json: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for PbrMaterial {
@@ -275,6 +281,7 @@ impl Default for PbrMaterial {
             emissive_texture: None,
             ior: None,
             emissive_strength: None,
+            extensions_json: serde_json::Map::new(),
         }
     }
 }

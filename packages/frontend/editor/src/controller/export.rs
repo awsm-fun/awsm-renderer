@@ -770,6 +770,7 @@ fn map_material_def(
             // separate follow-up). Absent → glTF defaults.
             ior: None,
             emissive_strength: None,
+            extensions_json: Default::default(),
         }),
         MaterialShading::Unlit => ExportMaterial::Unlit(UnlitMaterial {
             name: def.label.clone(),

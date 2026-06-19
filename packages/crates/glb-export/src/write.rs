@@ -437,6 +437,10 @@ impl Builder {
                 json!({ "emissiveStrength": strength }),
             );
         }
+        // Pre-built typed/raw extension objects (texture indices already remapped).
+        for (k, v) in &p.extensions_json {
+            ext_others.insert(k.clone(), v.clone());
+        }
         let extensions = (!ext_others.is_empty()).then(|| extensions::material::Material {
             others: ext_others,
             ..Default::default()
