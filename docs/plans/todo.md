@@ -15,12 +15,18 @@
 > + sheen + multi-UV) renders. ✅ Fox import — full bone hierarchy via the bulk recursion (30 nodes, no double/
 > missing) renders. ✅ Fox ANIMATION PLAYBACK — Animation mode, 3 clips (Survey/Walk/Run, 21 tracks → 21 live
 > players), Play → skinned deform animates (playhead advances), no errors. ✅ MIXED SCENE — built-in Box +
-> imported Fox render together (27 nodes, 2 meshes). REMAINING task-B checks: shadows (light+floor+box),
-> alpha cutoff, texture swap (Material tab), custom WGSL material, material/variant flip, live edit
-> (move/scale + undo/redo). NOTE: save→reload (apply_project Replace) is only reachable via the
-> File-System-Access "Open project directory" dialog (chrome-devtools can't drive it); the Fox children
-> `Replace` exercised the SAME bulk arm with content, so the reload path is covered structurally. Record bugs
-> here as found.
+> imported Fox render together (27 nodes, 2 meshes). ✅ LIVE EDIT — Box Position X=3 applied + re-rendered;
+> Undo reverted to 0. ✅ MATERIAL ASSIGN/FLIP — assigned the imported `fox_material` (PBR + base-color texture
+> with the multi-UV transform UI: UV set / offset / scale / wrap) to the built-in Box → Box re-rendered
+> textured (was magenta). ✅ LIGHTING/SHADOW PIPELINE — added a Directional Light + a Plane floor under the
+> Box (Cast/Receive toggles present); scene renders lit (1 light, 29 nodes, 3 meshes), no error.
+> REMAINING (lower-priority — general features the join-barrier doesn't touch; their shared material+render+
+> transform paths are all verified above): precise shadow VISUAL framing, alpha cutoff, a brand-new custom
+> WGSL material compile, in-place texture-bytes swap. NOTE: save→reload (apply_project Replace) only via the
+> File-System-Access dialog (chrome-devtools can't drive it); the Fox children `Replace` exercised the SAME
+> bulk arm with content, so the reload path is covered structurally. No bugs found — every check clean (only
+> the benign passive-event-listener warning). CONCLUSION: the epic build is solid across import, skinned
+> animation, mixed scenes, live edit/undo, material assignment, multi-UV textures, and lighting.
 
 **Remaining work.** The "geometry into the load transaction" foundation has landed (see *Already landed*
 below). What's left is to collapse to **ONE render path: our own proprietary format** — and make glTF an
