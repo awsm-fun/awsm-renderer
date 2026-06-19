@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use awsm_meshgen::MeshData;
-use awsm_renderer::raw_mesh::{RawMeshData, RawSkin};
+use awsm_renderer::meshes::buffer_info::MeshBufferGeometryMorphInfo;
+use awsm_renderer::raw_mesh::{RawMeshData, RawMorph, RawSkin};
 use awsm_renderer::transforms::{Transform, TransformKey};
 // Shared with the runtime-bundle loader (`populate_awsm_scene`) so a light lowers
 // identically on the editor's live render and the player — the round-trip premise.
@@ -729,49 +730,75 @@ fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawM
         );
         return None;
     };
-    let Some(ext_skin) = decode.skin.as_ref() else {
-        tracing::debug!("raw_mesh_from_rig: rig decode has no skin (morph-only?)");
-        return None;
-    };
-
-    // rig-glb joint node-index → editor bone TransformKey.
+    // SKIN (optional): build it when the decode carries one, mapping each rig-glb
+    // joint node-index → its editor bone `TransformKey`. A bone not yet in the bridge
+    // means the transforms-first pass hasn't landed it → return `None` so the caller
+    // retries (same ordering guard as before). Morph-only nodes have no skin → `None`.
     let b = bridge();
-    let mut joints = Vec::with_capacity(ext_skin.joint_node_indices.len());
-    for rig_idx in &ext_skin.joint_node_indices {
-        let bone_node = skin
-            .joints
-            .iter()
-            .find(|sj| sj.index == *rig_idx as u32)
-            .map(|sj| sj.node)?;
-        let tk = {
-            let nodes = b.nodes.lock().unwrap();
-            match nodes.get(&bone_node).map(|e| e.transform_key) {
-                Some(tk) => tk,
-                None => {
-                    tracing::warn!(
-                        "raw_mesh_from_rig: bone node {:?} (rig joint idx {}) not yet \
-                         in bridge — falling back",
-                        bone_node,
-                        rig_idx
-                    );
-                    return None;
-                }
+    let raw_skin = match decode.skin.as_ref() {
+        Some(ext_skin) => {
+            let mut joints = Vec::with_capacity(ext_skin.joint_node_indices.len());
+            for rig_idx in &ext_skin.joint_node_indices {
+                let bone_node = skin
+                    .joints
+                    .iter()
+                    .find(|sj| sj.index == *rig_idx as u32)
+                    .map(|sj| sj.node)?;
+                let tk = {
+                    let nodes = b.nodes.lock().unwrap();
+                    match nodes.get(&bone_node).map(|e| e.transform_key) {
+                        Some(tk) => tk,
+                        None => {
+                            tracing::warn!(
+                                "raw_mesh_from_rig: bone node {:?} (rig joint idx {}) not yet \
+                                 in bridge — falling back",
+                                bone_node,
+                                rig_idx
+                            );
+                            return None;
+                        }
+                    }
+                };
+                joints.push(tk);
             }
-        };
-        joints.push(tk);
-    }
-
-    let inverse_bind_matrices: Vec<Mat4> = ext_skin
-        .inverse_bind_matrices
-        .iter()
-        .map(Mat4::from_cols_array)
-        .collect();
-    let raw_skin = RawSkin {
-        joints,
-        inverse_bind_matrices,
-        set_count: 1,
-        index_weights: ext_skin.packed_index_weights(),
+            let inverse_bind_matrices: Vec<Mat4> = ext_skin
+                .inverse_bind_matrices
+                .iter()
+                .map(Mat4::from_cols_array)
+                .collect();
+            Some(RawSkin {
+                joints,
+                inverse_bind_matrices,
+                set_count: 1,
+                index_weights: ext_skin.packed_index_weights(),
+            })
+        }
+        None => None,
     };
+
+    // MORPH (optional): pack the decoded morph targets into the renderer's
+    // geometry-morph layout — `add_raw_mesh` inserts it + the relower auto-rebinds
+    // the morph-weight channel (node → mesh → geometry_morph_key).
+    let vertex_count = decode.mesh.positions.len();
+    let raw_morph = decode.morph.as_ref().map(|m| {
+        let values = m.packed_values(vertex_count);
+        RawMorph {
+            info: MeshBufferGeometryMorphInfo {
+                targets_len: m.targets_len(),
+                vertex_stride_size: m.vertex_stride_size(),
+                values_size: values.len(),
+            },
+            weights: m.weights_bytes(),
+            values,
+        }
+    });
+
+    // A node-owned drawable needs at least one of skin/morph (else it's a degenerate
+    // SkinnedMesh — fall back so behaviour is unchanged for that case).
+    if raw_skin.is_none() && raw_morph.is_none() {
+        tracing::debug!("raw_mesh_from_rig: rig decode has neither skin nor morph — falling back");
+        return None;
+    }
 
     let m = decode.mesh;
     Some(RawMeshData {
@@ -781,8 +808,8 @@ fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawM
         uvs1: decode.uvs1,
         colors: m.colors,
         indices: m.indices,
-        skin: Some(raw_skin),
-        ..Default::default()
+        skin: raw_skin,
+        morph: raw_morph,
     })
 }
 

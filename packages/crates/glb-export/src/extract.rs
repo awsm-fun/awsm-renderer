@@ -396,6 +396,78 @@ pub struct ExtractedNodeMesh {
     /// (docs/plans/todo.md §3, Phase 2). In-memory only — NOT serialized (the rig
     /// glb remains the persisted source), so no project-format change.
     pub skin: Option<ExtractedSkin>,
+    /// Per-node MORPH targets (position [+ normal] deltas + default weights), read in
+    /// the same merge pass as the geometry so the deltas stay vertex-aligned with
+    /// `mesh.positions`. `Some` only when the node's mesh has ≥1 morph target with a
+    /// consistent target count across its primitives. The MATERIALISER packs this into
+    /// the renderer's geometry-morph layout (`ExtractedMorph::packed_values`) so a
+    /// rig-glb-decoded morph drawable goes node-owned (docs/plans/todo.md §2 step vi).
+    pub morph: Option<ExtractedMorph>,
+}
+
+/// One node's morph-target set, extracted alongside its geometry. Carries raw
+/// per-target position/normal deltas (tangent deltas are dropped — the renderer
+/// zero-fills that slot) + the default per-target weights; the packing method
+/// produces the exact byte layout the renderer's geometry-morph store consumes.
+#[derive(Clone)]
+pub struct ExtractedMorph {
+    /// Per-target position deltas (one Vec per target, vertex-aligned with positions).
+    pub target_positions: Vec<Vec<[f32; 3]>>,
+    /// Per-target normal deltas (parallel; `None` for a target with no normal deltas).
+    pub target_normals: Vec<Option<Vec<[f32; 3]>>>,
+    /// Default per-target weights (the rest pose; the animation drives them).
+    pub weights: Vec<f32>,
+}
+
+impl ExtractedMorph {
+    /// Number of morph targets.
+    pub fn targets_len(&self) -> usize {
+        self.target_positions.len()
+    }
+
+    /// Bytes per vertex across ALL targets: `40 * targets_len` (each target is
+    /// position 3×f32 + normal 3×f32 + tangent 4×f32 = 40 bytes).
+    pub fn vertex_stride_size(&self) -> usize {
+        40 * self.targets_len()
+    }
+
+    /// Default weights as little-endian `f32` bytes (the renderer's weight buffer).
+    pub fn weights_bytes(&self) -> Vec<u8> {
+        self.weights.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    /// Pack to the renderer's GEOMETRY-MORPH values layout — exactly what
+    /// `awsm_renderer::meshes::morphs`' `insert_raw` consumes, MIRRORING
+    /// `renderer-gltf`'s `buffers::morph::convert_morph_targets`: indexed (one entry
+    /// per ORIGINAL vertex), interleaved per target as
+    /// `[T0 pos(12) T0 norm(12) T0 tang(16) T1 pos … ]`. Tangent deltas aren't carried
+    /// (the clean glb drops them), so the 16-byte tangent slot is zero-filled — the
+    /// same as the glTF decode's "no tangent morph" case. `vertex_count` is the mesh's
+    /// vertex count (deltas are vertex-aligned; missing entries zero-fill).
+    pub fn packed_values(&self, vertex_count: usize) -> Vec<u8> {
+        let targets = self.targets_len();
+        let mut out = Vec::with_capacity(vertex_count * targets * 40);
+        for v in 0..vertex_count {
+            for t in 0..targets {
+                let p = self.target_positions[t].get(v).copied().unwrap_or([0.0; 3]);
+                for c in p {
+                    out.extend_from_slice(&c.to_le_bytes());
+                }
+                match &self.target_normals[t] {
+                    Some(n) => {
+                        let nd = n.get(v).copied().unwrap_or([0.0; 3]);
+                        for c in nd {
+                            out.extend_from_slice(&c.to_le_bytes());
+                        }
+                    }
+                    None => out.extend_from_slice(&[0u8; 12]),
+                }
+                // Tangent delta — not carried; zero-filled vec4 (matches the decode).
+                out.extend_from_slice(&[0u8; 16]);
+            }
+        }
+        out
+    }
 }
 
 /// One node's skin (rig) binding, extracted alongside its geometry. Mirrors the
@@ -465,6 +537,15 @@ pub fn extract_node_mesh(
     let mut all_have_uvs1 = true;
     let mut all_have_colors = true;
     let mut all_have_skin = true;
+    // Morph targets, accumulated per-target across primitives (vertex-aligned with
+    // `positions`). The first contributing primitive fixes the target count; a
+    // sibling with a different count drops morph (glTF requires consistency, so
+    // this only guards malformed input + the multi-primitive-with-mixed-morph edge).
+    let mut morph_target_positions: Vec<Vec<[f32; 3]>> = Vec::new();
+    let mut morph_target_normals: Vec<Option<Vec<[f32; 3]>>> = Vec::new();
+    let mut morph_inited = false;
+    let mut morph_targets_len = 0usize;
+    let mut morph_consistent = true;
 
     for (i, primitive) in mesh.primitives().enumerate() {
         if let Some(want) = primitive_index {
@@ -514,6 +595,43 @@ pub fn extract_node_mesh(
             // Non-indexed primitive: emit a trivial 0..n index run (offset by base).
             None => indices.extend((0..vert_count as u32).map(|x| x + base)),
         }
+
+        // Morph targets (position [+ normal] deltas per target; tangent deltas
+        // dropped — the renderer zero-fills the tangent slot). Absent position
+        // deltas zero-fill so the channel stays vertex-aligned.
+        // (position deltas, optional normal deltas) per morph target.
+        type TargetDeltas = (Vec<[f32; 3]>, Option<Vec<[f32; 3]>>);
+        let prim_targets: Vec<TargetDeltas> = reader
+            .read_morph_targets()
+            .map(|(tp, tn, _tt)| {
+                (
+                    tp.map(|p| p.collect())
+                        .unwrap_or_else(|| vec![[0.0; 3]; vert_count]),
+                    tn.map(|n| n.collect()),
+                )
+            })
+            .collect();
+        if !morph_inited {
+            morph_inited = true;
+            morph_targets_len = prim_targets.len();
+            for (tp, tn) in prim_targets {
+                morph_target_positions.push(tp);
+                morph_target_normals.push(tn);
+            }
+        } else if prim_targets.len() == morph_targets_len {
+            for (t, (tp, tn)) in prim_targets.into_iter().enumerate() {
+                morph_target_positions[t].extend(tp);
+                match (&mut morph_target_normals[t], tn) {
+                    (Some(acc), Some(n)) => acc.extend(n),
+                    (None, None) => {}
+                    // normal-delta presence differs across primitives — drop this
+                    // target's normals (it just zero-fills; positions still morph).
+                    (slot, _) => *slot = None,
+                }
+            }
+        } else {
+            morph_consistent = false;
+        }
     }
 
     if !any_primitive {
@@ -556,6 +674,22 @@ pub fn extract_node_mesh(
         _ => None,
     };
 
+    // Morph: only when consistent across primitives AND there's at least one target.
+    // Default weights come from the mesh (the rig glb writes them from mesh.weights());
+    // mismatched/absent → zeros (rest pose, the animation drives them).
+    let morph = (morph_consistent && morph_targets_len > 0).then(|| {
+        let weights = mesh
+            .weights()
+            .map(|w| w.to_vec())
+            .filter(|w| w.len() == morph_targets_len)
+            .unwrap_or_else(|| vec![0.0; morph_targets_len]);
+        ExtractedMorph {
+            target_positions: morph_target_positions,
+            target_normals: morph_target_normals,
+            weights,
+        }
+    });
+
     Some(ExtractedNodeMesh {
         mesh: MeshData {
             positions,
@@ -566,6 +700,7 @@ pub fn extract_node_mesh(
         },
         uvs1,
         skin,
+        morph,
     })
 }
 
@@ -819,6 +954,26 @@ mod tests {
         // Two joints, parallel inverse-bind matrices.
         assert_eq!(skin.joint_node_indices.len(), 2);
         assert_eq!(skin.inverse_bind_matrices.len(), 2);
+
+        // Step vi: extract_node_mesh ALSO returns the per-node MORPH — one target,
+        // its position deltas vertex-aligned, packed to the renderer's geometry-morph
+        // VALUES layout (40B/target/vertex, position delta first).
+        let morph = ex.morph.expect("extracted morph");
+        assert_eq!(morph.targets_len(), 1);
+        assert_eq!(morph.target_positions[0].len(), ex.mesh.positions.len());
+        assert_eq!(morph.target_positions[0][0], [0.0, 0.2, 0.0]);
+        assert_eq!(morph.weights, vec![0.0]);
+        assert_eq!(morph.vertex_stride_size(), 40);
+        let vc = ex.mesh.positions.len();
+        let packed = morph.packed_values(vc);
+        assert_eq!(packed.len(), vc * morph.vertex_stride_size());
+        // Vertex 0, target 0: position delta [0, 0.2, 0] as little-endian f32, then a
+        // zero-filled normal(12) + tangent(16).
+        assert_eq!(&packed[0..4], &0.0f32.to_le_bytes());
+        assert_eq!(&packed[4..8], &0.2f32.to_le_bytes());
+        assert_eq!(&packed[8..12], &0.0f32.to_le_bytes());
+        assert_eq!(&packed[12..40], &[0u8; 28]);
+        assert_eq!(morph.weights_bytes(), 0.0f32.to_le_bytes().to_vec());
     }
 
     /// `reexport_clean` PRESERVES each node's local transform (it does not bake
