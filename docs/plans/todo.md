@@ -270,9 +270,15 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 >     post-hoc re-materialisation). The animation `LocalNotFound` is the same ordering race (clip lowers
 >     against a not-yet-established bone key) — the same transforms-first ordering resolves it.
 >   - HEAD currently regresses skinned reload — fix (the transaction-aligned way) before declaring Phase 2 done.
-> - **teardown skin/geometry cleanup (step v)** — repeated edits re-insert the skin/geometry each
->   re-materialise; `skins::remove` + caching `skin_key` per (source,node,prim) to REUSE (DECISION) not yet
->   done → potential leak on repeated flips. Verify with memory_stats / `?stress`, then add cleanup + reuse.
+> - ✅ **teardown skin/geometry cleanup (step v) — ALREADY HANDLED (verified by code-read this loop).** No
+>   leak. `AwsmRenderer::remove_mesh` → `Meshes::remove` (meshes.rs:2291) is REFCOUNTED: when the last mesh
+>   on a resource is removed it frees the geometry resource + its buffers + the geometry/material MORPH keys
+>   + the SKIN (`self.skins.remove(skin_key, None)`, line 2341). The node-owned skinned drawable is a fresh
+>   `register_geometry` per materialise (refcount 1), so teardown drops refcount→0 and frees its skin before
+>   the next re-materialise inserts a new one → no accumulation on repeated flips. The DECISION's "cache +
+>   REUSE skin_key" is a PERF optimisation (avoid the per-edit insert+free churn), NOT a leak fix — deferred
+>   per §4 "optimise only if measured" (`?stress`/`?trace` shows no stall first). default-equals-today: static
+>   already re-uploads its geometry on every edit; skinned doing the same is acceptable.
 > - **morph-via-rig (step vi)** — morph-only nodes still use the legacy template path; decode morph from the
 >   rig glb into `RawMorph` so they go node-owned too, then DELETE the legacy `materialize_skinned_from_template`.
 > - **rename** `repopulate_skinned_template` → "materialise skinned from our-format glb" (fold in).
