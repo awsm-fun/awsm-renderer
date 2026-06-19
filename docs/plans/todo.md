@@ -219,8 +219,26 @@ flip, geometry / bone / morph edit, re-skin) = re-import from the authored glb. 
 > VisibilityGeometryBufferNotFound / no JointAlreadyExistsButDifferent / no console errors.
 >
 > **REMAINING Phase 2 follow-ups (next iterations):**
-> - **🔴 save→reload restores — BLOCKER: skinned reload renders empty, bone-ORDERING confirmed. The fix is
->   TRANSACTION-ALIGNED ordering, NOT re-materialisation (see the ⭐ TRANSACTION PRINCIPLE in §0).**
+> - **🟡 save→reload restores — bone-ORDERING FIXED ✅ (transaction-aligned); 2 smaller reload issues remain.**
+>   Commit `5a77ee24`: a transforms-first load pass (`node_sync::establish_forest_transforms` over the new
+>   forest BEFORE geometry, in `handle_diff`'s `Replace` arm; `add_node` made idempotent to reuse the
+>   pre-established transforms). This is the ⭐ TRANSACTION-PRINCIPLE fix — declare all transforms in
+>   dependency order before the geometry that references them — NOT a re-materialise. VERIFIED LIVE: import
+>   Fox → in-memory round-trip reload → fox now RENDERS + DEFORMS + ANIMATES (Survey clip, 21/21 players);
+>   the "bone node ... not yet in bridge" warn is GONE (`raw_mesh_from_rig` succeeds → node-owned path).
+>   Scoped to the bulk `Replace` (reload); import uses `Push` diffs and is untouched (still works).
+>   - **REMAINING reload follow-up A — UNTEXTURED on reload.** The reloaded fox renders grey, not orange:
+>     its material/base-color TEXTURE isn't re-bound/re-uploaded on reload. Almost certainly a GENERAL
+>     material-reload issue (a static textured model like DamagedHelmet would lose its texture too — verify),
+>     NOT this transforms-only change (import via the SAME node-owned path is textured). Investigate texture
+>     ASSET restore + GPU re-upload on the editor reload path (restore_* in persistence.rs) — likely the
+>     texture image needs re-uploading from the restored asset, or the material instance's texture binding
+>     is lost. Fix it the transaction-aligned way (textures declared in the load).
+>   - **REMAINING reload follow-up B — anim `LocalNotFound(TransformKey(5v1))`** persists per-frame on reload
+>     even though 21/21 tracks resolve + the fox animates. One stale channel targeting a freed/absent key —
+>     investigate `animation_sync` pin vs the reload relower (likely a single clip channel; low impact).
+>   - (Original "bone ordering confirmed" detail below, kept for history.)
+> - **(history) skinned reload renders empty, bone-ORDERING confirmed — fixed by `5a77ee24` above.**
 >   Tested via the headless in-memory round-trip: `window.wasmBindings.editor_dispatch_json('{"cmd":
 >   "reload_project_in_memory"}')` (the `ReloadProjectInMemory` self-test — MCP-only, not in the palette;
 >   serialize_inmem captures the rig glb via `rig_glb_files`, clears caches, re-applies). OBSERVED: scene
