@@ -650,12 +650,22 @@ fn mesh_shadow_flags_from_config(
 /// joint can't be resolved to its bone yet — callers then fall back to the
 /// template-reuse path.
 fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawMeshData> {
-    let decode = super::skinned_bake_cache::get_rig_node_decode(
+    let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
         skin.source,
         skin.rig_node_index,
         skin.primitive_index,
-    )?;
-    let ext_skin = decode.skin.as_ref()?;
+    ) else {
+        tracing::debug!(
+            "raw_mesh_from_rig: no rig decode for {:?} rig_node_index={}",
+            skin.source,
+            skin.rig_node_index
+        );
+        return None;
+    };
+    let Some(ext_skin) = decode.skin.as_ref() else {
+        tracing::debug!("raw_mesh_from_rig: rig decode has no skin (morph-only?)");
+        return None;
+    };
 
     // rig-glb joint node-index → editor bone TransformKey.
     let b = bridge();
@@ -668,7 +678,18 @@ fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawM
             .map(|sj| sj.node)?;
         let tk = {
             let nodes = b.nodes.lock().unwrap();
-            nodes.get(&bone_node).map(|e| e.transform_key)?
+            match nodes.get(&bone_node).map(|e| e.transform_key) {
+                Some(tk) => tk,
+                None => {
+                    tracing::warn!(
+                        "raw_mesh_from_rig: bone node {:?} (rig joint idx {}) not yet \
+                         in bridge — falling back",
+                        bone_node,
+                        rig_idx
+                    );
+                    return None;
+                }
+            }
         };
         joints.push(tk);
     }

@@ -325,6 +325,17 @@ where
     for src in skinned_sources_from_project(project) {
         let path = format!("assets/{}", rig_glb_filename(src));
         if let Ok(bytes) = read(path).await {
+            // Store the rig glb into the cache BEFORE `apply_project` (this runs
+            // pre-apply). The MATERIALISER (`node_sync::raw_mesh_from_rig` →
+            // `get_rig_node_decode` → `get_rig_glb`) is the our-format decode the
+            // skinned drawable is rebuilt from; it must be available the moment the
+            // SkinnedMesh nodes materialise. `restore_rig_glb` (post-apply) races
+            // that materialisation, so the load INPUT could be missing → the node
+            // fell back to the (broken-on-reload) template path. Storing it here —
+            // where the bytes are already in hand — makes the input ready before the
+            // operation. (`restore_rig_glb` stays as an idempotent post-apply refill
+            // for the player-bundle export path.)
+            crate::engine::bridge::skinned_bake_cache::store_rig_glb(src, bytes.clone());
             if let Err(e) =
                 crate::engine::bridge::gltf::repopulate_skinned_template(src, bytes).await
             {
