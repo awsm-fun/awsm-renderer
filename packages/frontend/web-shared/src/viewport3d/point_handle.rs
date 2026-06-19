@@ -110,8 +110,7 @@ impl PointHandleSet {
             let raw = RawMeshData {
                 positions: mesh.positions,
                 normals: mesh.normals,
-                uvs: mesh.uvs.into_iter().next(),
-                uvs1: None,
+                uv_sets: mesh.uvs,
                 colors: mesh.colors,
                 indices: mesh.indices,
                 ..Default::default()

@@ -55,14 +55,13 @@ pub struct RawMeshData {
     /// If `None`, the renderer computes per-vertex normals as the area-weighted
     /// average of incident face normals.
     pub normals: Option<Vec<[f32; 3]>>,
-    /// Optional UV-set 0.
-    pub uvs: Option<Vec<[f32; 2]>>,
-    /// Optional UV-set 1 (`TEXCOORD_1`). Packed contiguously right after set 0 so
-    /// `material_mesh_meta.uv_sets_index` points at set 0 and set 1 reads at
-    /// `+2` floats (matching the WGSL `_texture_uv_per_vertex` `set_index*2`
-    /// layout + the glTF populate path). Only meaningful when `uvs` is also set;
-    /// `uv_set_count` becomes 2 so custom materials can read `material_uv(in,1u)`.
-    pub uvs1: Option<Vec<[f32; 2]>>,
+    /// UV sets, indexed by `TEXCOORD_n` (set `n` = `uv_sets[n]`). Empty = no UVs.
+    /// Each set is packed contiguously per vertex in set order, so the derived
+    /// `material_mesh_meta.uv_set_count`/`uv_sets_index` (from the attribute layout)
+    /// let the WGSL `_texture_uv_per_vertex` read any set at `set_index*2` floats and
+    /// custom materials read `material_uv(in, iu)` for any `i < uv_set_count`.
+    /// Generalized to N (was a hardcoded `uvs` + `uvs1` pair).
+    pub uv_sets: Vec<Vec<[f32; 2]>>,
     /// Optional per-vertex RGBA colors.
     pub colors: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
@@ -185,27 +184,20 @@ impl RawMeshData {
         // one record per original vertex — pass-independent.
         let mut vertex_attributes: Vec<MeshBufferVertexAttributeInfo> = Vec::new();
         let mut custom_attribute_bytes: Vec<u8> = Vec::new();
-        let has_uvs = self.uvs.is_some();
-        let has_uvs1 = has_uvs && self.uvs1.is_some();
+        // Every UV set the mesh carries → one TEXCOORD_n attribute (the meta derives
+        // uv_set_count/uv_sets_index from these). A set is only meaningful packed in
+        // order, so a gap (set N present but N-1 absent) never arises — `uv_sets` is
+        // dense by construction.
+        for (index, _) in self.uv_sets.iter().enumerate() {
+            vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: index as u32,
+                    data_size: 4,
+                    component_len: 2,
+                },
+            ));
+        }
         let has_colors = self.colors.is_some();
-        if has_uvs {
-            vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::TexCoords {
-                    index: 0,
-                    data_size: 4,
-                    component_len: 2,
-                },
-            ));
-        }
-        if has_uvs1 {
-            vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::TexCoords {
-                    index: 1,
-                    data_size: 4,
-                    component_len: 2,
-                },
-            ));
-        }
         if has_colors {
             vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
                 MeshBufferCustomVertexAttributeInfo::Colors {
@@ -216,15 +208,11 @@ impl RawMeshData {
             ));
         }
         for v in 0..vertex_count {
-            if let Some(uvs) = self.uvs.as_ref() {
-                let uv = uvs[v];
+            // UV sets in order (set 0, 1, …) — matches the attribute push above.
+            for set in &self.uv_sets {
+                let uv = set[v];
                 custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
                 custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
-            }
-            if has_uvs1 {
-                let uv1 = self.uvs1.as_ref().unwrap()[v];
-                custom_attribute_bytes.extend_from_slice(&uv1[0].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&uv1[1].to_le_bytes());
             }
             if let Some(colors) = self.colors.as_ref() {
                 let c = colors[v];
@@ -237,7 +225,7 @@ impl RawMeshData {
         crate::meshes::geometry::GeometrySource {
             normals: self.normals.expect("ensure_normals filled this"),
             positions: self.positions,
-            uvs0: self.uvs,
+            uvs0: self.uv_sets.into_iter().next(),
             // Raw meshes don't author tangents — generated at commit if a normal-map
             // material is bound.
             tangents: None,

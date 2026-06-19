@@ -101,7 +101,7 @@ pub(crate) fn evaluate_stack(scene: &Scene, stack: &ModifierStack) -> MeshData {
                 .map(|r| MeshData {
                     positions: r.positions,
                     normals: r.normals,
-                    uvs: r.uvs.into_iter().collect(),
+                    uvs: r.uv_sets,
                     colors: r.colors,
                     indices: r.indices,
                 })

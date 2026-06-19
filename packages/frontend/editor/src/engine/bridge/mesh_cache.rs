@@ -77,8 +77,7 @@ pub fn get_raw(id: AssetId) -> Option<RawMeshData> {
         c.borrow().get(&id).map(|m| RawMeshData {
             positions: m.positions.clone(),
             normals: m.normals.clone(),
-            uvs: m.uvs.clone(),
-            uvs1: m.uvs1.clone(),
+            uv_sets: m.uvs.clone().into_iter().chain(m.uvs1.clone()).collect(),
             colors: m.colors.clone(),
             indices: m.indices.clone(),
             ..Default::default()
