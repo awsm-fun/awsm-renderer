@@ -579,11 +579,23 @@ the DECISION block. The earlier 3-option list + the "original-decode IBMs" idea 
       via `?ourformat=1` now ANIMATES (pose changes across frames) AND is textured, no console errors.
       Follow-up: MORPH-weight channels skipped (counted+logged) — need the node's mesh morph key (Fox + common
       animated samples are T/R/S).
-    - 🔴 **GAP 3 — KHR_* material extensions dropped** (the large surface). `reexport_clean`'s `extract_material`
-      preserves ONLY core PBR + `KHR_materials_unlit`; it drops clearcoat / sheen / transmission / volume /
-      iridescence / anisotropy / specular / ior / emissive_strength / dispersion / texture_transform. ~25% of
-      model-tests samples (the entire EXTENSIONS collection, ~50 samples) would visually regress. Each needs
-      `GlbScene`/`PbrMaterial` IR fields + extract + write (~50-100 LOC each) — a meaningful per-extension effort.
+    - 🔴 **GAP 3 — KHR_* material extensions dropped (NEXT — David's call 2026-06-19: "Build GAP 3").**
+      `reexport_clean`'s `extract_material` preserves ONLY core PBR + `KHR_materials_unlit`; it drops clearcoat /
+      sheen / transmission / volume / iridescence / anisotropy / specular / ior / emissive_strength / dispersion /
+      texture_transform. ~25% of model-tests samples (the EXTENSIONS collection) regress under `?ourformat=1`.
+      **The RENDERER already supports them** (`RENDERER_SUPPORTED_EXTENSIONS` in renderer-gltf/loader.rs +
+      populate/material.rs reads them, mostly via raw-JSON) — so the gap is purely the glb-export ROUND-TRIP:
+      `reexport_clean` must EXTRACT each extension from the source `gltf::Material` + carry it in the IR
+      (`PbrMaterial` fields) + WRITE it back (write.rs material extensions). PLAN (incremental, ONE extension
+      at a time — extract+IR+write+verify a sample on :9080 via `?ourformat=1`, then next): start with the
+      SIMPLEST (a single scalar) — `KHR_materials_emissive_strength` (one float) or `KHR_materials_ior` (one
+      float) — to nail the extract/write pattern (gltf crate: typed accessor where feature-gated, else
+      `mat.extensions()` raw-JSON like renderer-gltf does; write via `material::Material.extensions` JSON), THEN
+      the texture-bearing ones (clearcoat / sheen / transmission / specular / iridescence / anisotropy / volume /
+      dispersion / diffuse_transmission) + `KHR_texture_transform` on the tex refs. Mirror renderer-gltf's
+      populate/material.rs extension READING for the field set per extension. Each: add `PbrMaterial` IR fields +
+      `extract_material` read + `build_pbr` write + verify the matching sample renders identically to the direct
+      path. Never-silent-cap: log any extension still dropped. This is multi-iteration; ~10 extensions.
     - **BOTTOM LINE:** Phase 5 is LARGER than a routing increment — "every sample renders via our-format,
       materials+animation intact, regression-clean" is gated on GAP 1 (texture round-trip bug, fix first —
       it blocks the common case) + GAP 2 (animation remap) + GAP 3 (the KHR_* surface). The routing INFRA is
