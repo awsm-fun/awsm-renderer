@@ -804,7 +804,8 @@ fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawM
     Some(RawMeshData {
         positions: m.positions,
         normals: m.normals,
-        uv_sets: m.uvs.into_iter().chain(decode.uvs1).collect(),
+        // All UV sets ride `mesh.uvs` now (incl. TEXCOORD_1).
+        uv_sets: m.uvs,
         colors: m.colors,
         indices: m.indices,
         skin: raw_skin,

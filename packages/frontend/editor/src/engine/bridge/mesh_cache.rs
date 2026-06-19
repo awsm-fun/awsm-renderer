@@ -33,16 +33,6 @@ pub fn from_mesh_data(m: MeshData) -> CapturedMesh {
     }
 }
 
-/// Like [`from_mesh_data`] but with an explicit 2nd UV set (`TEXCOORD_1`) — the
-/// imported-mesh capture path (the 2nd set rides a parallel channel beside
-/// `MeshData`; see `gltf::extract_node_meshes`).
-pub fn from_mesh_data_with_uvs1(m: MeshData, uvs1: Option<Vec<[f32; 2]>>) -> CapturedMesh {
-    CapturedMesh {
-        uvs1,
-        ..from_mesh_data(m)
-    }
-}
-
 /// Inverse of [`from_mesh_data`]: a `CapturedMesh` (the bitcode-serializable
 /// persisted form) back into a `MeshData`. Used by `persistence` to restore
 /// skinned bind-pose bakes (which `skinned_bake_cache` stores as `MeshData`)

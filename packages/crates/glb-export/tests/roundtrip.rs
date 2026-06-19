@@ -330,6 +330,32 @@ fn multi_uv_sets_roundtrip() {
 }
 
 #[test]
+fn extract_node_mesh_folds_uv_sets() {
+    use awsm_glb_export::{extract_node_mesh_from_bytes, MeshData};
+    // A 2-UV mesh, re-extracted via the editor's node path, folds BOTH sets into
+    // mesh.uvs (no separate uvs1 channel) — GPU multi-UV step 2.
+    let tri = MeshData {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+        uvs: vec![
+            vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            vec![[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+        ],
+        colors: None,
+        indices: vec![0, 1, 2],
+    };
+    let scene = GlbScene {
+        nodes: vec![ExportNode::new("Tri").with_mesh(tri)],
+        ..Default::default()
+    };
+    let bytes = write_glb(&scene);
+    let got = extract_node_mesh_from_bytes(&bytes, 0, None).expect("extract node mesh");
+    assert_eq!(got.uvs.len(), 2, "both UV sets folded into mesh.uvs");
+    assert_eq!(got.uvs[0][1], [1.0, 0.0]);
+    assert_eq!(got.uvs[1][2], [0.5, 0.6]);
+}
+
+#[test]
 fn skinned_morph_mesh_roundtrips() {
     use awsm_glb_export::{ExportSkin, MeshData, MorphTarget};
 

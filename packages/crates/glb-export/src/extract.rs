@@ -634,8 +634,9 @@ fn build_clean_node(
 /// it becomes the renderer's UV set 1 (`material_uv(in, 1u)`).
 #[derive(Clone)]
 pub struct ExtractedNodeMesh {
+    /// Geometry, with ALL UV sets folded into `mesh.uvs` (set 0 = `uvs[0]`, the
+    /// 2nd set = `uvs[1]`, …) — no separate `uvs1` channel.
     pub mesh: MeshData,
-    pub uvs1: Option<Vec<[f32; 2]>>,
     /// Per-node SKIN (rig binding), read in the SAME merge pass as the geometry so
     /// the per-vertex joints/weights stay vertex-aligned with `mesh.positions`.
     /// `Some` only when the node binds a skin AND every read primitive supplied
@@ -887,10 +888,16 @@ pub fn extract_node_mesh(
         return None;
     }
 
-    // A 2nd UV set is only meaningful alongside set 0 (it's packed contiguously
-    // after it); drop it if set 0 is absent so the renderer's `has_uvs1 =
-    // has_uvs && …` guard never sees a dangling set.
-    let uvs1 = (all_have_uvs && all_have_uvs1).then_some(uvs1);
+    // Fold the UV sets into one vec (set 0, then set 1 when present). A 2nd set is
+    // only meaningful alongside set 0 (sets pack contiguously by index), so it's
+    // dropped if set 0 is absent — `uv_sets` stays dense.
+    let mut uv_sets: Vec<Vec<[f32; 2]>> = Vec::new();
+    if all_have_uvs {
+        uv_sets.push(uvs);
+        if all_have_uvs1 {
+            uv_sets.push(uvs1);
+        }
+    }
 
     // Skin: only when the node binds one AND every read primitive supplied skin.
     // The skin's joint node-indices + inverse-bind matrices are NODE-level (read
@@ -943,13 +950,10 @@ pub fn extract_node_mesh(
         mesh: MeshData {
             positions,
             normals: all_have_normals.then_some(normals),
-            // Set 0 → MeshData.uvs[0]. The 2nd set rides `uvs1` separately (the
-            // editor's GPU-upload path); folding it into uvs[1] is a follow-up.
-            uvs: if all_have_uvs { vec![uvs] } else { vec![] },
+            uvs: uv_sets,
             colors: all_have_colors.then_some(colors),
             indices,
         },
-        uvs1,
         skin,
         morph,
     })
