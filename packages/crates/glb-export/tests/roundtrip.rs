@@ -161,6 +161,36 @@ fn referenced_texture_is_embedded() {
 }
 
 #[test]
+fn extract_texture_images_roundtrips_encoded_bytes() {
+    // The editor captures imported textures for persistence via
+    // extract_texture_images_from_bytes — assert it returns the ORIGINAL encoded
+    // bytes (not re-encoded), keyed by glTF texture index, for a referenced texture.
+    let png = include_bytes!("fixtures/1x1.png").to_vec();
+    let scene = GlbScene {
+        nodes: vec![ExportNode::new("Cube")
+            .with_mesh(box_mesh(Vec3::ONE))
+            .with_material(ExportMaterial::Pbr(PbrMaterial {
+                base_color_texture: Some(TexRef::new(0)),
+                ..Default::default()
+            }))],
+        images: vec![awsm_glb_export::ExportImage {
+            name: "albedo".into(),
+            bytes: png.clone(),
+            mime: awsm_glb_export::ImageMime::Png,
+        }],
+        ..Default::default()
+    };
+    let glb = write_glb(&scene);
+    let images = awsm_glb_export::extract_texture_images_from_bytes(&glb);
+    // One texture, at index 0, with byte-identical PNG bytes + png ext.
+    assert_eq!(images.len(), 1);
+    let img = images.get(&0).expect("texture 0");
+    assert_eq!(img.bytes, png, "encoded bytes must round-trip exactly");
+    assert_eq!(img.mime, awsm_glb_export::ImageMime::Png);
+    assert_eq!(img.mime.ext(), "png");
+}
+
+#[test]
 fn animation_channel_roundtrips() {
     use awsm_glb_export::{AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation};
     // One node + a rotation track (two quaternion keyframes at t=0,1).

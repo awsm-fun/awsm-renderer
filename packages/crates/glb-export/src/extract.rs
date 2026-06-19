@@ -603,6 +603,46 @@ pub fn extract_node_mesh_with_skin_from_bytes(
     extract_node_mesh(&doc, &buffers, node_index, primitive_index)
 }
 
+/// Extract the ENCODED image bytes (the original PNG/JPEG) of every glTF
+/// TEXTURE, keyed by glTF texture index. Reuses the clean-export [`ImagePool`]
+/// resolution: GLB buffer-view or `data:` URI sources only (external-file URIs
+/// can't be resolved from bytes, and non-PNG/JPEG mimes are skipped — those
+/// texture indices are simply absent from the map).
+///
+/// This is how the EDITOR captures imported textures for PERSISTENCE: the
+/// renderer keeps only DECODED pixels, so the original encoded bytes must be
+/// grabbed off the document before it's consumed by populate. Call it with the
+/// import's `data.doc` + `data.buffers.raw` (same inputs as
+/// [`reexport_clean_scene`]).
+pub fn extract_texture_images(
+    doc: &gltf::Document,
+    buffers: &[Vec<u8>],
+) -> std::collections::BTreeMap<usize, ExportImage> {
+    let mut pool = ImagePool::default();
+    let mut out = std::collections::BTreeMap::new();
+    for texture in doc.textures() {
+        if let Some(pool_idx) = pool.intern(&texture, buffers) {
+            out.insert(texture.index(), pool.images[pool_idx].clone());
+        }
+    }
+    out
+}
+
+/// Bytes wrapper for [`extract_texture_images`] — parses a self-contained,
+/// single-BIN glb (the rig glb shape) WITHOUT decoding images (we want the
+/// original encoded bytes, and the importer's image decode would both waste work
+/// and reject stub/edge images). Buffer 0 is the GLB BIN blob, where embedded
+/// texture bytes live.
+pub fn extract_texture_images_from_bytes(
+    bytes: &[u8],
+) -> std::collections::BTreeMap<usize, ExportImage> {
+    let Ok(gltf) = gltf::Gltf::from_slice(bytes) else {
+        return std::collections::BTreeMap::new();
+    };
+    let buffers: Vec<Vec<u8>> = gltf.blob.into_iter().collect();
+    extract_texture_images(&gltf.document, &buffers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
