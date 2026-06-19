@@ -386,6 +386,33 @@ fn build_clean_node(node: &gltf::Node, buffers: &[Vec<u8>], pool: &mut ImagePool
 pub struct ExtractedNodeMesh {
     pub mesh: MeshData,
     pub uvs1: Option<Vec<[f32; 2]>>,
+    /// Per-node SKIN (rig binding), read in the SAME merge pass as the geometry so
+    /// the per-vertex joints/weights stay vertex-aligned with `mesh.positions`.
+    /// `Some` only when the node binds a skin AND every read primitive supplied
+    /// `JOINTS_0`/`WEIGHTS_0`. The editor maps `joint_node_indices` → its skeleton
+    /// `TransformKey`s (via the import template's `node_index_to_transform`) so a
+    /// captured skinned mesh re-binds to the SAME persistent skeleton
+    /// (docs/plans/todo.md §3, Phase 2). In-memory only — NOT serialized (the rig
+    /// glb remains the persisted source), so no project-format change.
+    pub skin: Option<ExtractedSkin>,
+}
+
+/// One node's skin (rig) binding, extracted alongside its geometry. Mirrors the
+/// shapes the renderer's `RawSkin` + `Skins::insert` consume; `joint_node_indices`
+/// are glTF node indices (mapped to editor `TransformKey`s by the caller).
+///
+/// Note: reads skin SET 0 only (`JOINTS_0`/`WEIGHTS_0`) — 4 influences/vertex,
+/// the common case. Multi-set rigs (`JOINTS_1`+) are a follow-up.
+pub struct ExtractedSkin {
+    /// glTF node indices of the skin's joints (parallel to `inverse_bind_matrices`).
+    pub joint_node_indices: Vec<usize>,
+    /// Per-joint inverse-bind matrix, column-major 16 floats.
+    pub inverse_bind_matrices: Vec<[f32; 16]>,
+    /// Per-vertex joint indices (into `joint_node_indices`), 4 per vertex,
+    /// vertex-aligned with `mesh.positions`.
+    pub joints: Vec<[u16; 4]>,
+    /// Per-vertex blend weights, 4 per vertex, parallel to `joints`.
+    pub weights: Vec<[f32; 4]>,
 }
 
 pub fn extract_node_mesh(
@@ -403,7 +430,9 @@ pub fn extract_node_mesh(
     let mut uvs1: Vec<[f32; 2]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
-    // Track whether *every* read primitive supplied normals/uvs/colors; if any
+    let mut joints: Vec<[u16; 4]> = Vec::new();
+    let mut weights: Vec<[f32; 4]> = Vec::new();
+    // Track whether *every* read primitive supplied normals/uvs/colors/skin; if any
     // didn't, the channel is dropped wholesale (a partial channel would misalign
     // with positions). The writer fills the gaps (recompute normals / omit uvs).
     let mut any_primitive = false;
@@ -411,6 +440,7 @@ pub fn extract_node_mesh(
     let mut all_have_uvs = true;
     let mut all_have_uvs1 = true;
     let mut all_have_colors = true;
+    let mut all_have_skin = true;
 
     for (i, primitive) in mesh.primitives().enumerate() {
         if let Some(want) = primitive_index {
@@ -444,6 +474,16 @@ pub fn extract_node_mesh(
             Some(c) => colors.extend(c.into_rgba_f32()),
             None => all_have_colors = false,
         }
+        // Skin set 0 (JOINTS_0/WEIGHTS_0), vertex-aligned with positions. Both must
+        // be present for a primitive to contribute skin; otherwise the node's skin
+        // is dropped (a partial skin channel would misalign).
+        match (reader.read_joints(0), reader.read_weights(0)) {
+            (Some(j), Some(w)) => {
+                joints.extend(j.into_u16());
+                weights.extend(w.into_f32());
+            }
+            _ => all_have_skin = false,
+        }
 
         match reader.read_indices() {
             Some(idx) => indices.extend(idx.into_u32().map(|x| x + base)),
@@ -461,6 +501,37 @@ pub fn extract_node_mesh(
     // has_uvs && …` guard never sees a dangling set.
     let uvs1 = (all_have_uvs && all_have_uvs1).then_some(uvs1);
 
+    // Skin: only when the node binds one AND every read primitive supplied skin.
+    // The skin's joint node-indices + inverse-bind matrices are NODE-level (read
+    // once from `node.skin()`); the per-vertex joints/weights were merged above.
+    let skin = match (node.skin(), all_have_skin && !joints.is_empty()) {
+        (Some(s), true) => {
+            let joint_node_indices: Vec<usize> = s.joints().map(|j| j.index()).collect();
+            let sreader = s.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
+            let inverse_bind_matrices: Vec<[f32; 16]> = sreader
+                .read_inverse_bind_matrices()
+                .map(|it| {
+                    it.map(|m| {
+                        // glTF IBMs are column-major 4x4; flatten cols (matches ExportSkin).
+                        let mut out = [0.0f32; 16];
+                        for (c, col) in m.iter().enumerate() {
+                            out[c * 4..c * 4 + 4].copy_from_slice(col);
+                        }
+                        out
+                    })
+                    .collect()
+                })
+                .unwrap_or_default();
+            Some(ExtractedSkin {
+                joint_node_indices,
+                inverse_bind_matrices,
+                joints,
+                weights,
+            })
+        }
+        _ => None,
+    };
+
     Some(ExtractedNodeMesh {
         mesh: MeshData {
             positions,
@@ -470,6 +541,7 @@ pub fn extract_node_mesh(
             indices,
         },
         uvs1,
+        skin,
     })
 }
 
@@ -618,6 +690,26 @@ mod tests {
         assert_eq!(prim.morph_targets().count(), 1, "morph preserved");
         // The skinned node still binds the skin.
         assert!(doc.nodes().any(|n| n.skin().is_some()));
+
+        // Phase-2(a): extract_node_mesh ALSO returns the per-node skin, vertex-
+        // aligned with the geometry, with the skin's joint node-indices +
+        // inverse-bind matrices (the shapes the editor maps to TransformKeys).
+        let mesh_node = doc
+            .nodes()
+            .find(|n| n.mesh().is_some() && n.skin().is_some())
+            .expect("skinned mesh node");
+        let raw_buffers: Vec<Vec<u8>> = buffers.iter().map(|b| b.0.clone()).collect();
+        let ex = extract_node_mesh(&doc, &raw_buffers, mesh_node.index() as u32, None)
+            .expect("extract skinned node");
+        let skin = ex.skin.expect("extracted skin");
+        // Per-vertex joints/weights are vertex-aligned with positions (3 verts).
+        assert_eq!(skin.joints.len(), ex.mesh.positions.len());
+        assert_eq!(skin.weights.len(), ex.mesh.positions.len());
+        assert_eq!(skin.joints[0], [0, 1, 0, 0]);
+        assert_eq!(skin.weights[0], [0.5, 0.5, 0.0, 0.0]);
+        // Two joints, parallel inverse-bind matrices.
+        assert_eq!(skin.joint_node_indices.len(), 2);
+        assert_eq!(skin.inverse_bind_matrices.len(), 2);
     }
 
     /// `reexport_clean` PRESERVES each node's local transform (it does not bake
