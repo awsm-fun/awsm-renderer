@@ -887,6 +887,20 @@ key during the NON-ATOMIC reactive reload, and the pin-skips are render-loop rob
 DECISION: keep the planned order (Phase 5 next), then do the editor-load consolidation (one atomic
 `begin→declare-all→commit` reload, mirroring `populate_awsm_scene`) as a DEDICATED, fully-verified follow-up
 — that's what removes the window for good. The per-node-commit model + pin-skips hold the line until then.
+
+**⭐ DAVID'S CALL (2026-06-19, post-Phase-5): "Editor-load consolidation (§5b)" — DO IT NOW.** Everything
+else (Phase 5 + all multi-UV follow-ups) is DONE + verified, so this is the last thread. APPROACH (per the
+feasibility above — the materialise is async-spawned with NO join barrier, so a debounce-coalesced commit is
+the only clean collapse): add a `schedule_commit` (mirror `schedule_relower`'s debounce) — on each node
+materialise, (re)arm a short timer that fires ONE `commit_load` for the coalesced burst; change the per-node
+sites (`node_sync` ~848/951/1105/1228/1388 — skinned/sprite/upload_simple_mesh/particle) to call
+`schedule_commit` instead of their own `commit_load`. CARVE-OUT: `gltf.rs import_typed` (~326) commits then
+SNAPSHOTS the resolved template keys — it must stay a SYNCHRONOUS `commit_load` (a debounced + a sync commit
+interleave fine — each resolves all-pending). VERIFY (full pass, default-equals-today): import a model, RELOAD
+a project, material/variant FLIP, skinned + morph + textured all still render; `?stress`/`?trace` show no
+per-frame alloc regression + the N-geometry-resolve→1 coalesce; the stale-key pin-skip window during reactive
+reload closes. Incremental: add `schedule_commit` + convert ONE site (verify) before the rest. After it lands
++ verifies, RE-RUN the §5b review (line 845) and declare the epic done.
 Do NOT attempt the consolidation before Phase 5; do NOT leave any re-materialise pass in the load path.
 
 ## 6. Out of scope / tracked elsewhere
