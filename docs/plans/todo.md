@@ -927,6 +927,30 @@ The debounce-only approach (David's chosen path) cannot close cleanly without on
 David.** The per-node-commit model (N transactions IN dependency order — correct, just not ONE) + the existing
 pin-skips hold the line; the player path is ALREADY one transaction (`populate_awsm_scene`).
 
+**⭐ DAVID'S CALL (2026-06-19): "Join-barrier restructure" — the cleanest real fix (NEXT).** Make the bulk
+load (the `Replace` diff = project reload / import) a TRUE single transaction: declare ALL nodes' geometry,
+AWAIT them, commit ONCE — no debounce, so NO pool-grow window (the decal-bind-group error can't occur). KEY
+STRUCTURAL FACT (node_sync `add_node`): the per-node materialise is a PERPETUAL reactive observer — `add_node`
+spawns `AsyncLoader::new().load(... entry.node.kind.signal_cloned().for_each(|kind| apply_kind(entry, kind)) ...)`
+which fires `apply_kind` on the CURRENT value (initial materialise) AND every later kind change. It never
+"completes", so you can't join on it — the INITIAL materialise must be SEPARATED from the perpetual observer.
+PLAN: (1) Give the materialise path a "declare-only" mode (no `commit_load`): `apply_kind` (+ upload_simple_mesh
+/ skinned×2 / sprite / particle) take a flag or split so bulk-load → declare + record the valid keys, NO commit;
+live-add/edit → declare + commit (today's behaviour, unchanged). (2) Rework the `Replace` arm: after
+`establish_forest_transforms`, for each node AWAIT a one-shot declare-only materialise (the JOIN BARRIER), then
+ONE `commit_load` for the whole forest. (3) Set up the kind observer for SUBSEQUENT changes only — skip its
+initial fire for bulk-loaded nodes (the bulk pass already materialised) OR make `apply_kind` idempotent (skip if
+the node already has live mesh keys). (4) Live-add paths (`InsertAt`/`Push` single node) keep per-node commit (a
+single op — fine). CARVE-OUT unchanged: `gltf.rs import_typed` stays its own sync commit (snapshots resolved
+template keys). VERIFY (default-equals-today, full pass): import a model + RELOAD a project (the Replace path) →
+all nodes render, NO decal/pool GPU validation error (the regression that blocked the debounce), no missing
+geometry; material/variant FLIP + skinned/morph/textured still render+animate (editor :9085; import URL
+http://localhost:9082/glTF-Sample-Assets/Models/SheenChair/glTF-Binary/SheenChair.glb + check console has NO
+GPUValidationError). This removes the async-no-barrier obstacle → one true transaction for the editor LOAD,
+matching `populate_awsm_scene`. Incremental: declare-only mode + the Replace rework first, verify NO GPU error
+on reload, THEN the observer-initial-fire handling. After it lands + verifies, RE-RUN the §5b review (line 845)
++ declare the epic DONE.
+
 ## 6. Out of scope / tracked elsewhere
 
 - **Worker-hosted renderer** (main-thread responsiveness; the loading-UI paint nuance) — `docs/plans/multithreading.md`.
