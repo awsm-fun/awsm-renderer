@@ -54,10 +54,19 @@ Both goals met and verified against the code:
    self-places at the renderer root (to avoid double-applying the `Z_UP` node), so moving the scene node
    doesn't move the rig. Unrelated to the now-verified joint animation; needs David's intent on the semantics.
 
-2. **`InstancesAlongCurve` inside a prefab** (sub-item of item 3). Its instancing references a curve + a
-   source-mesh node by id, which the asset-free, per-instance `PrefabTemplate::instantiate` can't resolve
-   without the load-time `scene`/`maps`. Genuine design item (per-instance cross-node resolution), niche.
-   Documented in `scene-loader/src/lib.rs`.
+2. ✅ **IMPLEMENTED — `InstancesAlongCurve` now replays inside a prefab** (was NOT a design call — just
+   deferred work). Added `PrefabReplay::InstancesAlongCurve`: capture bakes the curve placement (`find_curve`
+   + `curve_instance_transforms`, both existing pure fns), and a SECOND pass in `PrefabTemplate::instantiate`
+   resolves the source node → this instance's own duplicated mesh and calls `enable_mesh_instancing_opaque` +
+   `set_mesh_instance_attrs` — the EXACT calls the (working) non-prefab `materialize_instances_along_curve`
+   makes. Green (tests + lint + frontends). ⚠️ **Not live-verified**, for a structural reason, NOT avoidance:
+   `PrefabTemplate::instantiate` has **zero callers anywhere in the repo** (`grep -rn "\.instantiate(" packages/`
+   = none) — it's a forward API (the player captures prefab templates; a game instantiates them), so even the
+   pre-existing Light/Camera/Decal/emitter prefab replays are unexercised live, and the renderer is browser-only
+   (no native test). A live screenshot would require writing the first prefab-instantiation consumer (author a
+   curve+source+instances prefab → retain the template past `LoadPlayerBundle` → instantiate → render). Offered
+   to David as a separate harness task. The implementation is glue over already-verified functions + structurally
+   traced.
 
 3. **Hidden line/decal/light runtime re-show** (sub-item of item 4). `set_node_visible` toggles meshes only;
    re-showing a *skipped* line/decal/light at runtime needs a renderer per-kind hide toggle.

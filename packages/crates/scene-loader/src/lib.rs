@@ -224,15 +224,13 @@ pub struct LoadedScene {
 /// **Coverage:** mesh-bearing prefab nodes are replayed per instance — `Mesh`
 /// (primitive + bare-geometry glb), `SkinnedMesh` (rig glb), and `Sprite` — sharing
 /// the template's GPU buffers via `duplicate_mesh_with_transform`. `Light` /
-/// `Camera` / `Line` / `Decal` / `ParticleEmitter` nodes *inside* a prefab are
-/// **also** re-created per instance now (A.3): each gets a fresh per-instance key
-/// (lines/decals re-baked into the instance's world transform; the decal texture
-/// index is resolved at capture; an emitter rebuilds its instanced billboard, ready
-/// for the game to drive via [`PrefabInstance::nodes`]'s [`NodeHandles::emitter`]).
-/// Still **not** replayed: `InstancesAlongCurve` (its instancing references a curve
-/// and a source-mesh node by id, which the asset-free, per-instance `instantiate`
-/// can't resolve without the load-time `scene`/`maps` — a documented follow-on). A
-/// **nested** prefab child is captured as its own template in
+/// `Camera` / `Line` / `Decal` / `ParticleEmitter` / `InstancesAlongCurve` nodes
+/// *inside* a prefab are **also** re-created per instance now (A.3): each gets a
+/// fresh per-instance key (lines/decals re-baked into the instance's world transform;
+/// the decal texture index is resolved at capture; an emitter rebuilds its instanced
+/// billboard; an `InstancesAlongCurve` bakes its curve placement at capture and a
+/// second pass in `instantiate` enables instancing on the instance's own duplicated
+/// source mesh). A **nested** prefab child is captured as its own template in
 /// [`LoadedScene::prefabs`] — never inlined into its parent.
 #[derive(Debug)]
 pub struct PrefabTemplate {
@@ -296,6 +294,16 @@ enum PrefabReplay {
     /// A `Decal` — re-inserted at the instance's world transform with the texture
     /// pool index + alpha resolved at capture time.
     Decal { texture_index: u32, alpha: f32 },
+    /// An `InstancesAlongCurve` — the curve placement is baked at capture (the curve
+    /// node's control points are static in the template, so `instantiate`, which is
+    /// asset-free, needs nothing live). A SECOND pass in `instantiate` then enables
+    /// instancing on this instance's OWN duplicated source mesh, so every prefab copy
+    /// carries its own instanced row.
+    InstancesAlongCurve {
+        transforms: Vec<Transform>,
+        source_node: NodeId,
+        per_instance_colors: Vec<[f32; 4]>,
+    },
 }
 
 /// Replay a prefab node's non-mesh renderable into a fresh per-instance resource
@@ -315,6 +323,9 @@ fn replay_prefab_node(
 ) {
     match replay {
         PrefabReplay::None => {}
+        // Applied in `instantiate`'s post-loop second pass (needs the source node's
+        // duplicated mesh, which only exists once the whole forest is duplicated).
+        PrefabReplay::InstancesAlongCurve { .. } => {}
         PrefabReplay::ParticleEmitter(def) => {
             // Rebuild the instanced billboard for this instance — the same sync
             // builder the main path uses (no simulation). The game drives it via the
@@ -470,6 +481,54 @@ impl PrefabTemplate {
             replay_prefab_node(renderer, &pn.replay, tk, world, &mut handles);
 
             nodes.insert(pn.id, handles);
+        }
+
+        // SECOND PASS — InstancesAlongCurve: now that every node's mesh is duplicated,
+        // enable instancing on each instance's OWN source-mesh copy (a curve + source +
+        // instances trio captured inside the prefab). Best-effort: a missing source is
+        // warned + skipped (just that row doesn't appear); the rest still instantiate.
+        for pn in &self.nodes {
+            let PrefabReplay::InstancesAlongCurve {
+                transforms,
+                source_node,
+                per_instance_colors,
+            } = &pn.replay
+            else {
+                continue;
+            };
+            if transforms.is_empty() {
+                continue;
+            }
+            let Some(&source_mesh) = nodes.get(source_node).and_then(|h| h.meshes.first()) else {
+                tracing::warn!(
+                    "prefab: InstancesAlongCurve source {:?} has no duplicated mesh in this \
+                     instance — instancing skipped",
+                    source_node
+                );
+                continue;
+            };
+            let transform_key = match renderer.meshes.get(source_mesh) {
+                Ok(m) => m.transform_key,
+                Err(_) => continue,
+            };
+            if let Err(err) = renderer.enable_mesh_instancing_opaque(source_mesh, transforms) {
+                tracing::warn!("prefab: enable_mesh_instancing_opaque failed: {err}");
+                continue;
+            }
+            if !per_instance_colors.is_empty() {
+                let attrs: Vec<awsm_renderer::instances::InstanceAttr> =
+                    expand_instance_colors(per_instance_colors, transforms.len())
+                        .into_iter()
+                        .map(|c| {
+                            awsm_renderer::instances::InstanceAttr::from_rgba_alpha_size(
+                                c, 1.0, 1.0,
+                            )
+                        })
+                        .collect();
+                if let Err(err) = renderer.set_mesh_instance_attrs(transform_key, &attrs) {
+                    tracing::warn!("prefab: curve per-instance colours failed: {err}");
+                }
+            }
         }
 
         let root = root_tk.ok_or_else(|| anyhow!("prefab template has no root node"))?;
@@ -1095,12 +1154,11 @@ async fn materialize(
 /// recursion stops at it (its descendants belong to the nested template).
 ///
 /// **Non-mesh replay (A.3):** `Light` / `Camera` / `Line` / `Decal` /
-/// `ParticleEmitter` nodes capture a [`PrefabReplay`] alongside their transform (the
-/// decal texture resolved to a pool index here, while assets are available), so
-/// [`PrefabTemplate::instantiate`] re-creates each as a fresh per-instance resource.
-/// `InstancesAlongCurve` inside a prefab still contributes only its transform (its
-/// cross-node curve/source-mesh references can't resolve in the asset-free,
-/// per-instance `instantiate`; see [`PrefabTemplate`]).
+/// `ParticleEmitter` / `InstancesAlongCurve` nodes capture a [`PrefabReplay`]
+/// alongside their transform (the decal texture resolved to a pool index here, the
+/// curve placement baked here — both while assets / the scene are available), so
+/// [`PrefabTemplate::instantiate`] re-creates each as a fresh per-instance resource
+/// (instancing is wired in `instantiate`'s second pass; see [`PrefabTemplate`]).
 #[allow(clippy::too_many_arguments)]
 async fn capture_prefab(
     renderer: &mut AwsmRenderer,
@@ -1160,6 +1218,16 @@ async fn capture_prefab(
                 alpha: cfg.alpha,
             },
             NodeKind::ParticleEmitter(def) => PrefabReplay::ParticleEmitter(def.clone()),
+            // Bake the curve placement now (control points are static) — `instantiate`
+            // wires instancing onto the instance's own source-mesh copy in a 2nd pass.
+            NodeKind::InstancesAlongCurve(def) => match find_curve(&scene.nodes, def.curve_node) {
+                Some(curve) => PrefabReplay::InstancesAlongCurve {
+                    transforms: curve_instance_transforms(curve, def),
+                    source_node: def.source_node,
+                    per_instance_colors: def.per_instance_colors.clone(),
+                },
+                None => PrefabReplay::None,
+            },
             _ => PrefabReplay::None,
         };
         nodes.push(PrefabNode {
