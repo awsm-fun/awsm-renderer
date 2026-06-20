@@ -27,11 +27,33 @@ recursion), Fox skinned animation playback, mixed built-in+imported scenes, live
 
 ## 🔜 Remaining follow-ons (deferred, NOT part of the epic)
 
-1. **Skinned-mesh skin-correspondence in the PLAYER path** *(most consequential)*. The rig GLB's skin poses at
-   **bind pose**; our animation tracks target the scene bone nodes, not the GLB's own joints. Driving the GLB
-   skin from our scene-node bones (and composing a user's repositioning of the rig) is the open work. Editor
-   skinned playback works (node-owned bones); the player-bundle correspondence is the gap.
-   See `packages/crates/scene-loader/src/lib.rs:30-32` and `:896-900`.
+1. ⏸️ **INVESTIGATED, verification-BLOCKED (no speculative change) — Skinned skin-correspondence in the PLAYER
+   path** *(most consequential)*. Deep code-read (2026-06-20): the joint-driving wiring **already exists
+   end-to-end**, contrary to the "bind pose" framing:
+   - Import: `assemble_skin_joints` (editor `state.rs:6092`) populates `SkinnedMeshRef.joints` = `{node:
+     scene-bone-NodeId, index: flat node index}`; `patch_skin_joints` stamps them on the SkinnedMesh nodes.
+   - Export serializes `joints` into `scene.toml`.
+   - Player: the SkinnedMesh arm (`scene-loader/lib.rs:939-943`) builds `maps.skin_joints[j.node] =
+     node_index_transforms[j.index]` (scene bone → rig-glb joint `TransformKey`).
+   - Anim: `resolve_target` (`scene-loader/animation.rs:176-181`) resolves a bone's Transform track to
+     `skin_joints[node]` FIRST (the glb joint), falling back to the scene transform; `update_animations` drives
+     those joints → the skin should deform.
+
+   So either the "bind pose" comment is **stale**, or the wiring is **present-but-broken**. David wrote the
+   comment recently, so a latent break is likely. PRIME SUSPECT: an index-space mismatch between `j.index`
+   (`node_flat_indices`, original-gltf order) and the **re-exported clean** rig glb's `node_index_transforms`
+   (renumbered at `reexport_clean`). Other suspects: `joints` not surviving export; the resolve not firing.
+
+   BLOCKER: can't verify autonomously. The ONLY in-repo path that runs `populate_awsm_scene` WITH a driven
+   animation clock is the editor's `ReloadProjectInMemory` round-trip (`state.rs:1010`), which is MCP-triggered
+   (not drivable via chrome-devtools); model-tests animates but never uses the player-bundle path, and there's
+   no scene-loader integration test for skinned animation. NEXT (needs a harness): add a scene-loader
+   integration test — load a skinned bundle fixture → `update_animations(dt>0)` → assert a joint
+   `TransformKey`'s world moved off bind pose — which both verifies AND localizes the break; then fix the
+   identified link (likely the index-space mapping). The separate, narrower gap — composing a user's
+   **repositioning** of the self-placing rig glb (rooted at the renderer root to avoid double-applying the
+   Z_UP node) — needs David's intent on the semantics. Did NOT change code (won't break a wired path I can't
+   test). See `scene-loader/src/lib.rs:912-943`, `animation.rs:176-181`, editor `state.rs:6092-6125`.
 
 2. **`materialize_skinned_from_template` fallback cleanup.** Still the fallback when `raw_mesh_from_rig`
    returns `None` (no cached rig glb / a bone not yet in the bridge / truly-legacy projects). DELETE only after
