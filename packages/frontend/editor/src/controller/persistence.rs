@@ -399,8 +399,7 @@ where
             // operation. (`restore_rig_glb` stays as an idempotent post-apply refill
             // for the player-bundle export path.)
             crate::engine::bridge::skinned_bake_cache::store_rig_glb(src, bytes.clone());
-            if let Err(e) =
-                crate::engine::bridge::gltf::rebuild_skinned_template(src, bytes).await
+            if let Err(e) = crate::engine::bridge::gltf::rebuild_skinned_template(src, bytes).await
             {
                 tracing::warn!("reload: rebuild skinned template {src:?}: {e}");
             }
