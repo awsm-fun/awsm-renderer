@@ -43,16 +43,24 @@ Both goals met and verified against the code:
    framing: `assemble_skin_joints` (editor `state.rs:6092`) populates `SkinnedMeshRef.joints {node, index}` →
    export serializes to `scene.toml` → the player SkinnedMesh arm (`scene-loader/lib.rs:939-943`) builds
    `skin_joints[bone] = node_index_transforms[j.index]` → `resolve_target` (`animation.rs:176-181`) resolves a
-   bone's Transform track to the rig-glb joint key FIRST → `update_animations` drives it. So the comment is
-   either **stale** or the wiring is **present-but-broken**. PRIME SUSPECT: an index-space mismatch between
-   `j.index` (`node_flat_indices`, original-gltf order) and the **re-exported clean** rig glb's
-   `node_index_transforms` (renumbered at `reexport_clean`).
-   **Why blocked:** can't verify autonomously — the only in-repo path running `populate_awsm_scene` WITH a
-   driven clock is the editor's `ReloadProjectInMemory` round-trip (`state.rs:1010`), which is MCP-triggered;
-   model-tests animates but never uses the player-bundle path; the path needs a GPU (no native test).
-   **Fastest check for David:** run the editor round-trip reload on an imported skinned model (Fox) — if it
-   animates, the wiring's good and only the stale comment needs deleting; if it poses at bind, the index-space
-   mapping is where to look.
+   bone's Transform track to the rig-glb joint key FIRST → `update_animations` drives it.
+   **The prime suspect (index-space mismatch) is now REFUTED by code (2026-06-20):** `node_flat_indices` is
+   built (editor `gltf.rs:287-296`) via `awsm_glb_export::scene_node_flat_indices` — the SAME DFS flatten the
+   clean rig glb uses — and is explicitly "the index the player's loader will assign that joint" (there's a
+   unit test, `flat_indices_follow_depth_first_not_source_order`). The player keys
+   `node_index_to_transform` by `node.index()` of the clean rig glb it loads (`renderer-gltf/populate.rs:128`).
+   So `j.index` and the player's lookup are the **same clean-glb DFS space** — they match by construction. That
+   makes **"the bind-pose comment is stale" the likely answer** (the `skin_joints` wiring + index mapping look
+   correct + tested); a live run is the only thing left to confirm it, vs. some subtler break (e.g. joints not
+   surviving export, or clip bone-targets not exported).
+   **Why I couldn't do the live run:** seeing the skin deform needs `populate_awsm_scene` on a GPU with a
+   driven clock. In-repo, only the editor's `ReloadProjectInMemory` round-trip (`state.rs:1010`) does that, and
+   it's a programmatic/MCP command — no UI button I could click and no JS hook reachable from `evaluate_script`;
+   model-tests animates but loads via `populate_gltf`, not the player bundle; `cargo test` has no WebGPU device.
+   **Fastest definitive check for David (~30s):** trigger the editor round-trip reload on an imported skinned
+   Fox — if it animates, just delete the stale comment; if it bind-poses, the break is downstream of the
+   (now-verified) index mapping. **Or** ask me to add a model-tests "load via player bundle + drive animation"
+   mode — that would let me verify it autonomously.
    **Then (needs a harness):** a scene-loader integration test (load skinned bundle → `update_animations(dt>0)`
    → assert a joint moved off bind pose) verifies AND localizes the break. A separate narrower sub-gap —
    composing a user's **repositioning** of the self-placing rig glb (rooted at the renderer root to avoid
@@ -66,13 +74,11 @@ Both goals met and verified against the code:
 3. **Hidden line/decal/light runtime re-show** (sub-item of item 4). `set_node_visible` toggles meshes only;
    re-showing a *skipped* line/decal/light at runtime needs a renderer per-kind hide toggle.
 
-4. **~18 dead `docs/plans/todo.md §N` cross-references in code comments** *(created by deleting `todo.md`)*.
-   The code treated `todo.md`'s §-sections as a living architecture spec (renderer, glb-export, renderer-gltf,
-   and a couple of tests). Deleting `todo.md` left those as dead links. They're harmless (comments only; code
-   builds + runs), and the architecture they pointed at is now LANDED + described in the crate `//!` docs — but
-   they're a David decision: **strip the dead `(docs/plans/todo.md §N)` pointers, or restore a slimmer
-   architecture doc** the code can cross-reference. Not mass-edited autonomously (a no-human sweep of core-file
-   comments with inaccurate §-anchors is poor risk/reward). `grep -rn "docs/plans/todo.md" packages/` lists them.
+4. ✅ **DONE — dead `docs/plans/todo.md §N` cross-references stripped** (David's call). Deleting `todo.md` had
+   left 29 dangling `docs/plans/todo.md §N` pointers across renderer / glb-export / renderer-gltf / scene-loader
+   / model-tests / editor comments; removed the pointers, kept the explanatory prose (the architecture they
+   referenced is landed + in the crate `//!` docs). Comment-only; tests + lint + both frontends green.
+   `grep -rn "docs/plans/todo.md" packages/` now returns none.
 
 ## Out of scope (tracked elsewhere)
 
