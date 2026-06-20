@@ -27,9 +27,10 @@
 //! clips + NLA mixer ([`animation::load_animations`]) lowered against the per-node
 //! keys built here. The loader only LOADS the clips; the consumer drives the
 //! clock (a player's `update_animations`, or the editor round-trip's playhead
-//! pin). Remaining follow-on: driving a skinned mesh's rig glb joints from our
-//! Transform tracks (skin correspondence — the rig still poses at bind pose, and
-//! its bone tracks currently target the scene bone nodes, not the glb joints).
+//! pin). Skinned meshes animate: `skin_joints` binds each bone `NodeId` → the rig
+//! glb's joint `TransformKey`, and a bone's Transform track resolves to that joint
+//! key (so the clips drive the joints the skin reads) — verified end-to-end via a
+//! `LoadPlayerBundle` round-trip + driven `update_animations`.
 //!
 //! Beyond meshes/lights/cameras the loader also materializes the remaining
 //! authored [`NodeKind`](awsm_scene::NodeKind)s: **lines** (fat-line strips,
@@ -917,10 +918,14 @@ async fn materialize(
         // as the editor's own import does (`populate_gltf` with parent=None).
         // Rooting it under the scene node's `tk` would double-apply that root
         // rotation, because scene.toml ALSO mirrors the `Z_UP` node — the cause of
-        // the "skinned mesh loads lying on its side" bug. (Composing a user's
-        // *repositioning* of the rig + driving the skin from our scene-node bones
-        // is the remaining skin-correspondence follow-on; the glb poses at bind
-        // pose for now.)
+        // the "skinned mesh loads lying on its side" bug. The skin DOES animate:
+        // `skin_joints` (built below) binds each bone `NodeId` → the rig glb's joint
+        // `TransformKey`, and `resolve_target` drives those joints from our clip
+        // tracks (VERIFIED 2026-06-20 — a LoadPlayerBundle round-trip + a driven
+        // `update_animations` deforms the Fox). The only remaining nuance is
+        // composing a user's *repositioning* of the whole rig (it self-places at the
+        // renderer root, so moving the scene node doesn't move it) — separate from
+        // the now-working joint animation.
         NodeKind::SkinnedMesh { skin, .. } => {
             let (keys, node_index_transforms) =
                 load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)

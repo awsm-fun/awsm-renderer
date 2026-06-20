@@ -38,42 +38,21 @@ Both goals met and verified against the code:
 
 ## 🔜 OPEN — need David or a harness
 
-1. ⏸️ **Skinned skin-correspondence in the PLAYER path** *(most consequential; investigated, NOT changed)*.
-   Deep code-read found the joint-driving wiring **already exists end-to-end**, contrary to the "bind pose"
-   framing: `assemble_skin_joints` (editor `state.rs:6092`) populates `SkinnedMeshRef.joints {node, index}` →
-   export serializes to `scene.toml` → the player SkinnedMesh arm (`scene-loader/lib.rs:939-943`) builds
+1. ✅ **RESOLVED — skinned animation WORKS in the PLAYER path** *(the "bind pose" claim was stale)*. The
+   joint-driving wiring is end-to-end: `assemble_skin_joints` (editor `state.rs:6092`) populates
+   `SkinnedMeshRef.joints {node, index}` → export → the player arm (`scene-loader/lib.rs:939-943`) builds
    `skin_joints[bone] = node_index_transforms[j.index]` → `resolve_target` (`animation.rs:176-181`) resolves a
-   bone's Transform track to the rig-glb joint key FIRST → `update_animations` drives it.
-   **The prime suspect (index-space mismatch) is now REFUTED by code (2026-06-20):** `node_flat_indices` is
-   built (editor `gltf.rs:287-296`) via `awsm_glb_export::scene_node_flat_indices` — the SAME DFS flatten the
-   clean rig glb uses — and is explicitly "the index the player's loader will assign that joint" (there's a
-   unit test, `flat_indices_follow_depth_first_not_source_order`). The player keys
-   `node_index_to_transform` by `node.index()` of the clean rig glb it loads (`renderer-gltf/populate.rs:128`).
-   So `j.index` and the player's lookup are the **same clean-glb DFS space** — they match by construction. That
-   makes **"the bind-pose comment is stale" the likely answer** (the `skin_joints` wiring + index mapping look
-   correct + tested); a live run is the only thing left to confirm it, vs. some subtler break (e.g. joints not
-   surviving export, or clip bone-targets not exported).
-   **LIVE VERIFICATION (2026-06-20, via the `editor_dispatch_json` wasm seam):**
-   - ✅ **Player path RENDERS the skinned Fox correctly.** Dispatched `LoadPlayerBundle` (`{cmd:
-     "load_player_bundle"}`) — bakes the project + reloads via `populate_awsm_scene`. Fox renders, no errors,
-     project name → `round-trip.awsm`. So the player-path skin loads + binds + draws fine.
-   - ✅ **The cold-reload skinned path ANIMATES.** Dispatched `ReloadProjectInMemory` (clears
-     `skin_joints`/templates/bake-cache to model a cold load, restores + re-materializes) → played the clip →
-     the Fox visibly deformed (head lowered into frame across t=0.04→2.05). Same `skin_joints` binding logic.
-   - ⚠️ **The one thing still not directly seen:** the player-BUNDLE skin deforming under a driven clock.
-     `LoadPlayerBundle` is a *static* authored-vs-runtime render comparison by design — it empties the editor
-     scene + clip library, so the bundle's clips live in `r.animations` with no editor-side driver, and the
-     transport / `SampleClipTimeseries` query only reach editor clips. The render loop pins (doesn't advance)
-     the bundle. So nothing in the editor ticks `update_animations` for the bundle.
-   **Verdict: very likely WORKING; the bind-pose comment is almost certainly stale.** Index wiring proven +
-   player render verified + the equivalent cold-reload path animates. To close the last gap autonomously I'd
-   add a small driver — e.g. a `#[wasm_bindgen] editor_tick_animation(dt_ms)` test seam (calls
-   `renderer.update_animations(dt)`), so after `LoadPlayerBundle` I can tick + screenshot the bundle deforming.
-   Pending David's go-ahead on adding that seam (vs. he confirms in ~30s himself).
-   **Then (needs a harness):** a scene-loader integration test (load skinned bundle → `update_animations(dt>0)`
-   → assert a joint moved off bind pose) verifies AND localizes the break. A separate narrower sub-gap —
-   composing a user's **repositioning** of the self-placing rig glb (rooted at the renderer root to avoid
-   double-applying the Z_UP node) — needs David's intent on the semantics.
+   bone's Transform track to the rig-glb joint key → `update_animations` drives it. The index spaces match by
+   construction (`node_flat_indices` = the same DFS flatten the clean rig glb uses; unit test
+   `flat_indices_follow_depth_first_not_source_order`).
+   **VERIFIED LIVE (2026-06-20):** added a `#[wasm_bindgen] editor_tick_animation(dt_ms)` test seam (main.rs;
+   one `renderer.update_animations(dt)` call), then via `evaluate_script`: import Fox → `LoadPlayerBundle`
+   (reload via `populate_awsm_scene`, project → `round-trip.awsm`) → tick the clock → **the Fox skin deforms
+   across t=0 / 1.0s / 1.9s** (three distinct articulated poses), no console errors. So the player-path skinned
+   animation is confirmed working. Stale `// bind pose` comments removed from `scene-loader/src/lib.rs`.
+   **Remaining narrow sub-gap (separate, minor):** composing a user's *repositioning* of the whole rig — it
+   self-places at the renderer root (to avoid double-applying the `Z_UP` node), so moving the scene node
+   doesn't move the rig. Unrelated to the now-verified joint animation; needs David's intent on the semantics.
 
 2. **`InstancesAlongCurve` inside a prefab** (sub-item of item 3). Its instancing references a curve + a
    source-mesh node by id, which the asset-free, per-instance `PrefabTemplate::instantiate` can't resolve
