@@ -123,7 +123,7 @@ use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOp
 use awsm_scene::{
     mesh_glb_filename, AssetId, AssetSource, CameraConfig, CurveDef, DecalConfig, EditorNode,
     InstancesAlongCurveDef, LightConfig, LineDef, MaterialInstance, MaterialShading, NodeId,
-    NodeKind, RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
+    NodeKind, ParticleEmitterDef, RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
 };
 use glam::{Mat4, Quat, Vec3, Vec4};
 
@@ -223,14 +223,16 @@ pub struct LoadedScene {
 /// **Coverage:** mesh-bearing prefab nodes are replayed per instance — `Mesh`
 /// (primitive + bare-geometry glb), `SkinnedMesh` (rig glb), and `Sprite` — sharing
 /// the template's GPU buffers via `duplicate_mesh_with_transform`. `Light` /
-/// `Camera` / `Line` / `Decal` nodes *inside* a prefab are **also** re-created per
-/// instance now (A.3): each gets a fresh per-instance key (lines/decals re-baked
-/// into the instance's world transform; the decal texture index is resolved at
-/// capture). Still **not** replayed: `InstancesAlongCurve` (its own
-/// instancing-on-a-source-mesh shape) and `ParticleEmitter` (the emitter handle
-/// isn't threaded through `PrefabInstance` yet) — both contribute only their
-/// transform (documented follow-ons). A **nested** prefab child is captured as its
-/// own template in [`LoadedScene::prefabs`] — never inlined into its parent.
+/// `Camera` / `Line` / `Decal` / `ParticleEmitter` nodes *inside* a prefab are
+/// **also** re-created per instance now (A.3): each gets a fresh per-instance key
+/// (lines/decals re-baked into the instance's world transform; the decal texture
+/// index is resolved at capture; an emitter rebuilds its instanced billboard, ready
+/// for the game to drive via [`PrefabInstance::nodes`]'s [`NodeHandles::emitter`]).
+/// Still **not** replayed: `InstancesAlongCurve` (its instancing references a curve
+/// and a source-mesh node by id, which the asset-free, per-instance `instantiate`
+/// can't resolve without the load-time `scene`/`maps` — a documented follow-on). A
+/// **nested** prefab child is captured as its own template in
+/// [`LoadedScene::prefabs`] — never inlined into its parent.
 #[derive(Debug)]
 pub struct PrefabTemplate {
     /// The prefab-root [`NodeId`] (the node authored with `prefab == true`).
@@ -275,9 +277,14 @@ struct PrefabNode {
 /// [`PrefabTemplate::instantiate`] runs without the asset bytes.
 #[derive(Debug, Clone)]
 enum PrefabReplay {
-    /// Mesh / group / curve / particle node — nothing extra to replay (the
-    /// transform, and any template meshes, are handled separately).
+    /// Mesh / group / curve node — nothing extra to replay (the transform, and any
+    /// template meshes, are handled separately).
     None,
+    /// A `ParticleEmitter` — its instanced billboard is rebuilt per instance (a
+    /// fresh [`EmitterHandle`] recorded on the instance node, ready for the game to
+    /// drive), so a prefab containing an emitter emits, not just contributes a
+    /// transform.
+    ParticleEmitter(ParticleEmitterDef),
     /// A `Light` — re-inserted and bound to the instance transform.
     Light(LightConfig),
     /// A `Camera` — re-registered in the renderer camera store.
@@ -307,6 +314,17 @@ fn replay_prefab_node(
 ) {
     match replay {
         PrefabReplay::None => {}
+        PrefabReplay::ParticleEmitter(def) => {
+            // Rebuild the instanced billboard for this instance — the same sync
+            // builder the main path uses (no simulation). The game drives it via the
+            // recorded handle; `PrefabInstance::teardown` frees its mesh + transform.
+            match particles::build_emitter(renderer, def, tk, world) {
+                Ok(handle) => handles.emitter = Some(handle),
+                Err(err) => {
+                    tracing::warn!("prefab replay: ParticleEmitter build failed: {err}")
+                }
+            }
+        }
         PrefabReplay::Light(cfg) => {
             // Seed pos/dir from the composed world transform; binding to `tk` lets
             // the light re-derive them each frame (the seed only matters pre-bind).
@@ -530,7 +548,7 @@ impl PrefabInstance {
     /// owning [`LoadedScene::teardown`] does not track). **Consumes** the instance.
     ///
     /// Removes every duplicated [`MeshKey`] across the instance's nodes, then the
-    /// replayed [`LightKey`] / [`LineKey`] / [`DecalKey`] (A.3), then every per-node
+    /// replayed [`LightKey`] / [`LineKey`] / [`DecalKey`] / emitter billboard (A.3), then every per-node
     /// [`TransformKey`] (meshes/lights/lines/decals first, transforms last). The
     /// shared template GPU buffers stay alive — they belong to the still-loaded
     /// template (freed by [`LoadedScene::teardown`]); only this instance's
@@ -550,6 +568,11 @@ impl PrefabInstance {
             }
             if let Some(decal) = handles.decal {
                 renderer.remove_decal(decal);
+            }
+            // A replayed emitter owns its own billboard mesh + sub-transform.
+            if let Some(emitter) = &handles.emitter {
+                renderer.remove_mesh(emitter.mesh);
+                renderer.transforms.remove(emitter.instance_transform);
             }
         }
         for handles in self.nodes.values() {
@@ -1066,12 +1089,13 @@ async fn materialize(
 /// OWN [`PrefabTemplate`] into `loaded.prefabs` and is NOT inlined here — the
 /// recursion stops at it (its descendants belong to the nested template).
 ///
-/// **Non-mesh replay (A.3):** `Light` / `Camera` / `Line` / `Decal` nodes capture
-/// a [`PrefabReplay`] alongside their transform (the decal texture resolved to a
-/// pool index here, while assets are available), so [`PrefabTemplate::instantiate`]
-/// re-creates each as a fresh per-instance resource. `InstancesAlongCurve` /
-/// `ParticleEmitter` inside a prefab still contribute only their transform (see
-/// [`PrefabTemplate`]).
+/// **Non-mesh replay (A.3):** `Light` / `Camera` / `Line` / `Decal` /
+/// `ParticleEmitter` nodes capture a [`PrefabReplay`] alongside their transform (the
+/// decal texture resolved to a pool index here, while assets are available), so
+/// [`PrefabTemplate::instantiate`] re-creates each as a fresh per-instance resource.
+/// `InstancesAlongCurve` inside a prefab still contributes only its transform (its
+/// cross-node curve/source-mesh references can't resolve in the asset-free,
+/// per-instance `instantiate`; see [`PrefabTemplate`]).
 #[allow(clippy::too_many_arguments)]
 async fn capture_prefab(
     renderer: &mut AwsmRenderer,
@@ -1130,6 +1154,7 @@ async fn capture_prefab(
                 texture_index: resolve_decal_texture_index(renderer, assets, cfg).await,
                 alpha: cfg.alpha,
             },
+            NodeKind::ParticleEmitter(def) => PrefabReplay::ParticleEmitter(def.clone()),
             _ => PrefabReplay::None,
         };
         nodes.push(PrefabNode {

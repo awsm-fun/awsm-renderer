@@ -38,10 +38,16 @@ recursion), Fox skinned animation playback, mixed built-in+imported scenes, live
    confirming those edge cases are covered; also RENAME `repopulate_skinned_template`. Don't stack risk on the
    verified morph-via-rig win — assess separately. (`node_sync.rs` / editor controller.)
 
-3. **Prefab follow-ons.** Inside a `PrefabInstance`, `InstancesAlongCurve` and `ParticleEmitter` contribute
-   only their transform (the emitter handle isn't threaded through `PrefabInstance` yet); a **nested** prefab
-   child is captured as its own template, never inlined into its parent.
-   See `packages/crates/scene-loader/src/lib.rs:230-233`.
+3. ✅ **MOSTLY DONE — ParticleEmitter now replays in prefabs; InstancesAlongCurve deferred (with reason).**
+   Added `PrefabReplay::ParticleEmitter`: a prefab containing an emitter now rebuilds its instanced billboard
+   per instance (recorded on `PrefabInstance::nodes`'s `NodeHandles::emitter`, ready for the game to drive),
+   and `PrefabInstance::teardown` frees the emitter's mesh + sub-transform. Additive + isolated (existing
+   prefabs hit the unchanged `None` arm), verified by build/test/lint + symmetry with the main-path emitter
+   build. **Still deferred:** `InstancesAlongCurve` inside a prefab — its instancing references a curve + a
+   source-mesh node *by id*, which the asset-free, per-instance `instantiate` can't resolve without the
+   load-time `scene`/`maps`. That's a genuine design item (per-instance cross-node resolution), niche, and
+   not safely autonomous — leaving it documented in the code + here. The "nested prefab = own template" is
+   BY DESIGN (not a gap).
 
 4. ✅ **DONE — Hidden node's light no longer emits.** The player loader's `Light` arm is now gated on
    `effective_visible`, mirroring the lines/decals skip-when-hidden pattern, so a node authored
