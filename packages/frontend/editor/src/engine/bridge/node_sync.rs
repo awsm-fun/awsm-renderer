@@ -902,8 +902,10 @@ fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawM
 /// bug). The drawable is pushed to `model_meshes`, so `teardown` frees it.
 ///
 /// Falls back to the legacy template-reuse path ([`materialize_skinned_from_template`])
-/// when there's no rig decode — a morph-only node (no skin) or a legacy project whose
-/// rig glb isn't cached. (Morph-via-rig is a Phase 2 follow-up.)
+/// only when `raw_mesh_from_rig` returns `None` — i.e. no rig decode is cached (a
+/// legacy project, or a source whose rig glb wasn't persisted). Both skinned AND
+/// morph-only nodes otherwise go node-owned through `raw_mesh_from_rig` (skin + morph
+/// are each optional there).
 async fn materialize_skinned_mesh(
     entry: Arc<RendererNode>,
     skin: awsm_editor_protocol::SkinnedMeshRef,
@@ -911,20 +913,20 @@ async fn materialize_skinned_mesh(
     declare_only: bool,
 ) {
     let Some(raw) = raw_mesh_from_rig(&skin) else {
-        // No rig-glb skin decode → morph-only / legacy → the template fallback.
+        // No rig decode cached → the legacy template-reuse fallback (a SAFETY NET for
+        // legacy projects / sources whose rig glb wasn't persisted). Kept on purpose:
+        // its edge cases (uncached rig, plus the rare transient below) can't all be
+        // retired with confidence, and node-owned materialise needs the rig decode.
         //
-        // ⭐ TRANSACTION PRINCIPLE (David — see docs/plans/todo.md §0): loading is
-        // ONE `begin_load → declare ops (transforms BEFORE the geometry that
-        // references them) → commit_load` transaction; the commit does the smart
-        // dedup/concurrency. `raw_mesh_from_rig` can ALSO return `None` transiently
-        // when a JOINT'S BONE scene-node isn't in `bridge.nodes` yet (logged
-        // "bone node ... not yet in bridge") — that's a transaction-ORDERING bug
-        // (the skinned geometry was declared before the bone transforms it depends
-        // on), surfaced on save→reload. The FIX is to order the load so every bone
-        // `TransformKey` exists before the skinned geometry is added — NOT to
-        // re-materialise the skinned node after the bones land (a forbidden
-        // post-hoc re-materialise pass). Until that ordering fix lands, this
-        // fallback is a stopgap; do NOT "fix" reload by re-running materialise.
+        // ⭐ TRANSACTION PRINCIPLE (this module's docs): loading is ONE
+        // `begin_load → declare ops (transforms BEFORE the geometry that references
+        // them) → commit_load` transaction. `raw_mesh_from_rig` can ALSO return
+        // `None` transiently when a joint's bone scene-node isn't in `bridge.nodes`
+        // yet — an ORDERING issue (skinned geometry declared before its bone
+        // transforms). That ordering is now handled by the transforms-first bulk
+        // load (the join-barrier `establish_forest_transforms`), so this is rare; the
+        // fix is the ordering, NOT a post-hoc re-materialise. Do NOT "fix" reload by
+        // re-running materialise.
         materialize_skinned_from_template(entry, skin, material, declare_only).await;
         return;
     };
@@ -976,9 +978,10 @@ async fn materialize_skinned_mesh(
 
 /// Legacy skinned materialise: reuse the populate-built skinned mesh from the import
 /// template and (re)assign this node's material + shadow flags via `set_mesh_material`.
-/// Retained only for nodes [`raw_mesh_from_rig`] can't serve (morph-only, or a legacy
-/// project with no cached rig glb). The populate mesh keys are template-owned (they
-/// survive teardown), so they are NOT pushed to `model_meshes`.
+/// SAFETY NET, retained on purpose for the nodes [`raw_mesh_from_rig`] can't serve —
+/// a legacy project / source whose rig glb isn't cached (no rig decode). The populate
+/// mesh keys are template-owned (they survive teardown), so they are NOT pushed to
+/// `model_meshes`.
 async fn materialize_skinned_from_template(
     entry: Arc<RendererNode>,
     skin: awsm_editor_protocol::SkinnedMeshRef,

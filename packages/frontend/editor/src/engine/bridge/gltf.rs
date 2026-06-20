@@ -366,7 +366,7 @@ async fn import_typed(
 /// nodes materialize (i.e. before `apply_project` sets the scene). The
 /// reclaim-guard's scene check (`node_sync::scene_has_skinned_from`) keeps this
 /// template alive through the reload's old-node teardown.
-pub async fn repopulate_skinned_template(
+pub async fn rebuild_skinned_template(
     source: awsm_editor_protocol::AssetId,
     rig_bytes: Vec<u8>,
 ) -> Result<(), String> {

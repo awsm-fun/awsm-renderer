@@ -55,7 +55,16 @@ recursion), Fox skinned animation playback, mixed built-in+imported scenes, live
    Z_UP node) — needs David's intent on the semantics. Did NOT change code (won't break a wired path I can't
    test). See `scene-loader/src/lib.rs:912-943`, `animation.rs:176-181`, editor `state.rs:6092-6125`.
 
-2. **`materialize_skinned_from_template` fallback cleanup.** Still the fallback when `raw_mesh_from_rig`
+2. ✅ **DONE — renamed + documented; fallback KEPT as a deliberate safety net.** Renamed
+   `repopulate_skinned_template` → `rebuild_skinned_template` (accurate: it rebuilds the renderer template from
+   the persisted rig glb on a cold reload — there's no prior template to "re"-populate). Did NOT delete
+   `materialize_skinned_from_template`: it's the safety net for legacy projects / sources whose rig glb isn't
+   cached (`raw_mesh_from_rig` returns `None`) — those edges can't be retired with confidence autonomously, so
+   keeping it is the no-human-safe call. Also corrected its docs: morph-only is node-owned now (morph-via-rig
+   landed), and the bone-ordering transient is handled by the join-barrier's transforms-first pass — so the
+   fallback now stays *only* for the uncached-rig case. Verified live: Fox (skinned) + AnimatedMorphCube
+   (morph) both import + render, no console errors. (Superseded original text:)
+   **`materialize_skinned_from_template` fallback cleanup.** Still the fallback when `raw_mesh_from_rig`
    returns `None` (no cached rig glb / a bone not yet in the bridge / truly-legacy projects). DELETE only after
    confirming those edge cases are covered; also RENAME `repopulate_skinned_template`. Don't stack risk on the
    verified morph-via-rig win — assess separately. (`node_sync.rs` / editor controller.)
