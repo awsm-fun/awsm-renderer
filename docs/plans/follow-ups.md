@@ -55,9 +55,14 @@ recursion), Fox skinned animation playback, mixed built-in+imported scenes, live
    line/decal/light via `set_node_visible` still needs a renderer per-kind hide toggle (unchanged follow-on).
    Verified: gate + lint + both frontends green; correct by symmetry with the existing lines/decals skip.
 
-5. **`skin_key` reuse perf optimization.** Cache + reuse the skin key to avoid per-edit insert+free churn on
-   repeated skinned re-materialise. Deferred under "optimise only if measured" (run `?stress` / `?trace`
-   first); not a leak — teardown is refcounted and frees correctly today.
+5. ✅ **CLOSED — measured, no-op (no isolated skin stall worth optimizing).** Loaded Fox in the editor with
+   `?trace=sub-frame` and observed the commit/compile timing: a re-materialise is dominated by the material
+   pipeline recompile (16 shaders / ~9 pipelines, single-digit ms each) that EVERY material flip incurs —
+   static or skinned. The extra skin insert+free is a sub-ms joint-matrix upload (Fox ~24 joints), not
+   separately surfaced, refcounted (no accumulation/leak), and in the accepted "static already re-uploads its
+   geometry on edit; skinned matching is acceptable" default-equals-today bucket. The cache+reuse-`skin_key`
+   optimization would add a cache + invalidation to shave a cost dwarfed by the unavoidable recompile — not
+   warranted per §4 optimise-only-if-measured. No code change.
 
 ## Out of scope (tracked elsewhere)
 
