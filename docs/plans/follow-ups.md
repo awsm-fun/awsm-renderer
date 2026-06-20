@@ -43,9 +43,11 @@ recursion), Fox skinned animation playback, mixed built-in+imported scenes, live
    child is captured as its own template, never inlined into its parent.
    See `packages/crates/scene-loader/src/lib.rs:230-233`.
 
-4. **Hidden node's light still emits.** A node authored `visible == false` loads its meshes hidden + skips
-   lines/decals, but its light is still inserted; `set_node_visible` toggles meshes only. Minor gap.
-   See `packages/crates/scene-loader/src/lib.rs:620-626`.
+4. ✅ **DONE — Hidden node's light no longer emits.** The player loader's `Light` arm is now gated on
+   `effective_visible`, mirroring the lines/decals skip-when-hidden pattern, so a node authored
+   `visible == false` (incl. via `Group` propagation) skips its light. Runtime re-show of a skipped
+   line/decal/light via `set_node_visible` still needs a renderer per-kind hide toggle (unchanged follow-on).
+   Verified: gate + lint + both frontends green; correct by symmetry with the existing lines/decals skip.
 
 5. **`skin_key` reuse perf optimization.** Cache + reuse the skin key to avoid per-edit insert+free churn on
    repeated skinned re-materialise. Deferred under "optimise only if measured" (run `?stress` / `?trace`

@@ -620,10 +620,11 @@ pub async fn populate_awsm_scene(
 /// rationale (the two share this body), and the crate-level docs for an example.
 ///
 /// Visibility (B5): a node authored `visible == false` (propagated through
-/// `Group`s to its descendants) has its meshes loaded hidden and its lines/decals
-/// skipped; its light, if any, is still inserted (a documented minor gap — a
-/// hidden node's light still emits — toggled later via [`set_node_visible`] only
-/// for meshes).
+/// `Group`s to its descendants) has its meshes loaded hidden and its
+/// lines/decals/**lights** skipped (a hidden node no longer emits its light).
+/// Runtime toggling via [`set_node_visible`] applies to meshes only; re-showing a
+/// skipped line/decal/light at runtime needs the renderer to grow a per-kind hide
+/// toggle (a follow-on).
 pub async fn load_scene_for_player(
     renderer: &mut AwsmRenderer,
     scene: &Scene,
@@ -799,10 +800,9 @@ async fn materialize(
     // Visibility (B5) propagates down the hierarchy: a node is effectively visible
     // only if it AND every ancestor is. A `Group`/`Mesh`/etc. authored
     // `visible == false` thus hides all descendants (the flag rides the recursion).
-    // Meshes of a hidden node are `set_mesh_hidden(true)`; lines/decals are SKIPPED
-    // entirely (cleaner than minting then hiding — the renderer has no per-line/
-    // -decal hide toggle). Lights of a hidden node are still inserted (known minor
-    // gap: a hidden node's light still emits — see `populate_awsm_scene` docs).
+    // Meshes of a hidden node are `set_mesh_hidden(true)`; lines/decals/lights are
+    // SKIPPED entirely (cleaner than minting then hiding — the renderer has no
+    // per-line/-decal/-light hide toggle), so a hidden node does not emit its light.
     let effective_visible = parent_effective_visible && node.visible;
     // Prefab root: capture the whole subtree as a hidden, reusable template and
     // return BEFORE inserting any transform — so neither this node nor its
@@ -926,22 +926,29 @@ async fn materialize(
             });
         }
         NodeKind::Light(cfg) => {
-            // Same derivation as the editor bridge's `apply_light`: position from
-            // the node translation, forward from rotating local -Z. Bind the
-            // light to its transform so a moved/rotated light re-derives pos/dir.
-            let pos = Vec3::from_array(node.transform.translation);
-            let dir = (Quat::from_array(node.transform.rotation) * Vec3::NEG_Z).normalize_or_zero();
-            let lt = light::light_from_config(cfg, pos, dir);
-            let shadow = light::light_shadow_params_from_config(cfg.shadow());
-            let casts = shadow.cast;
-            if let Ok(k) = renderer.insert_light(lt, Some(shadow)) {
-                renderer.lights.bind_transform(k, tk);
-                maps.lights.insert(node.id, k);
-                loaded.lights.push(k);
-            }
-            // Compile shadow pipelines on the first caster (no-op once compiled).
-            if casts {
-                renderer.ensure_shadow_pipelines_compiled().await?;
+            // Skip a hidden node's light entirely — the renderer has no per-light
+            // hide toggle, so not inserting it is the cleanest way to honor
+            // `visible == false` (matching lines/decals; documented on
+            // `populate_awsm_scene`). So a hidden node no longer emits its light.
+            if effective_visible {
+                // Same derivation as the editor bridge's `apply_light`: position from
+                // the node translation, forward from rotating local -Z. Bind the
+                // light to its transform so a moved/rotated light re-derives pos/dir.
+                let pos = Vec3::from_array(node.transform.translation);
+                let dir =
+                    (Quat::from_array(node.transform.rotation) * Vec3::NEG_Z).normalize_or_zero();
+                let lt = light::light_from_config(cfg, pos, dir);
+                let shadow = light::light_shadow_params_from_config(cfg.shadow());
+                let casts = shadow.cast;
+                if let Ok(k) = renderer.insert_light(lt, Some(shadow)) {
+                    renderer.lights.bind_transform(k, tk);
+                    maps.lights.insert(node.id, k);
+                    loaded.lights.push(k);
+                }
+                // Compile shadow pipelines on the first caster (no-op once compiled).
+                if casts {
+                    renderer.ensure_shadow_pipelines_compiled().await?;
+                }
             }
         }
         NodeKind::Camera(cfg) => {
