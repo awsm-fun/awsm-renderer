@@ -2,7 +2,7 @@
 //! node's renderer resources (primitives, captured + skinned + morph meshes, sprites,
 //! particles, instances, lights, cameras).
 //!
-//! ## Loading is ONE transaction (⭐ see docs/plans/todo.md §0)
+//! ## Loading is ONE transaction
 //!
 //! A bulk scene load — a project reload (`apply_project` → `scene.nodes.replace_cloned`)
 //! or an imported subtree, i.e. a `VecDiff::Replace` — is ONE transaction: declare the

@@ -40,7 +40,7 @@ pub struct LoadingStatus {
     /// Live snapshot of the in-flight `commit_load` transaction (geometry upload →
     /// texture finalize → pipeline compile), fed by `commit_load`'s `on_progress`.
     /// `None` between commits. Drives the granular per-phase overlay lines via the
-    /// shared `LoadingStats::phase_label()` (docs/plans/todo.md §6), replacing the
+    /// shared `LoadingStats::phase_label()`, replacing the
     /// old coarse "Compiling scene shaders…" boolean.
     pub commit: Option<LoadingStats>,
     pub ibl: std::result::Result<bool, String>,

@@ -27,7 +27,7 @@ use super::Result;
 
 // The geometry KIND (visibility vs transparency) is no longer decided in the
 // decode — the renderer derives it at `commit_load` from the union of materials
-// bound to each geometry, via the single `geometry_kind` fn (docs/plans/todo.md §4).
+// bound to each geometry, via the single `geometry_kind` fn.
 // The decode now retains the pass-INDEPENDENT typed source (positions/normals/uvs0/
 // authored-tangents/indices) + custom attributes + morph/skin; the per-pass byte
 // streams are packed at commit. `create_visibility_vertices` /

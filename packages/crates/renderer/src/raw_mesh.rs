@@ -67,7 +67,7 @@ pub struct RawMeshData {
     pub indices: Vec<u32>,
     /// Optional skin (rig) binding — makes this a SKINNED raw mesh. The deform
     /// compute pass runs off the inserted `SkinKey` exactly like a glTF-imported
-    /// skin (docs/plans/todo.md §3, Phase 1). `None` ⇒ a static mesh (unchanged).
+    /// skin. `None` ⇒ a static mesh (unchanged).
     pub skin: Option<RawSkin>,
     /// Optional geometry morph targets. `None` ⇒ no morphs (unchanged).
     pub morph: Option<RawMorph>,

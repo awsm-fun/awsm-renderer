@@ -84,7 +84,7 @@ pub fn reexport_clean_scene(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Option
 /// images — which can't be resolved from `(doc, buffers)` alone — still round-trip
 /// into the clean glb. Pass `&[]` for the embedded-only behaviour. This is how
 /// model-tests (and any importer of external-image glTF) makes textures survive the
-/// our-format conversion (docs/plans/todo.md §3 GAP 1).
+/// our-format conversion.
 pub fn reexport_clean_scene_with_images(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
@@ -642,7 +642,7 @@ pub struct ExtractedNodeMesh {
     /// `JOINTS_0`/`WEIGHTS_0`. The editor maps `joint_node_indices` → its skeleton
     /// `TransformKey`s (via the import template's `node_index_to_transform`) so a
     /// captured skinned mesh re-binds to the SAME persistent skeleton
-    /// (docs/plans/todo.md §3, Phase 2). In-memory only — NOT serialized (the rig
+    /// In-memory only — NOT serialized (the rig
     /// glb remains the persisted source), so no project-format change.
     pub skin: Option<ExtractedSkin>,
     /// Per-node MORPH targets (position [+ normal] deltas + default weights), read in
@@ -650,7 +650,7 @@ pub struct ExtractedNodeMesh {
     /// `mesh.positions`. `Some` only when the node's mesh has ≥1 morph target with a
     /// consistent target count across its primitives. The MATERIALISER packs this into
     /// the renderer's geometry-morph layout (`ExtractedMorph::packed_values`) so a
-    /// rig-glb-decoded morph drawable goes node-owned (docs/plans/todo.md §2 step vi).
+    /// rig-glb-decoded morph drawable goes node-owned.
     pub morph: Option<ExtractedMorph>,
 }
 

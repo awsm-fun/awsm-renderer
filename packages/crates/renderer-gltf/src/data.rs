@@ -37,7 +37,7 @@ impl GltfData {
 /// (Historically this also carried a per-load `geometry_override` to force the
 /// draw-geometry KIND when the caller applied its own material. That's gone: the
 /// renderer now derives the kind at commit from the union of materials bound to
-/// each geometry — see docs/plans/todo.md §4. The bound material is authoritative,
+/// each geometry. The bound material is authoritative,
 /// so the bundle loader's `GltfMaterialSource::Single` case just works.)
 #[derive(Default, Clone)]
 pub struct GltfDataHints {

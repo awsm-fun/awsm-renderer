@@ -157,7 +157,7 @@ pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), Str
 /// correct). The per-slot linear-vs-sRGB classification isn't persisted on the
 /// texture asset yet, so normal/metallic-roughness/occlusion maps restore in the
 /// albedo color space — a follow-up (store the `TextureColorInfo` kind per
-/// `TextureDef::Raster`). Tracked in docs/plans/todo.md.
+/// `TextureDef::Raster`).
 pub(crate) async fn restore_raster_textures(items: Vec<(AssetId, Vec<u8>, String)>) {
     if items.is_empty() {
         return;

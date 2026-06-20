@@ -158,7 +158,7 @@ proptest! {
     /// `reexport_clean` reproduces, bit-exactly, the per-vertex `JOINTS_0`/
     /// `WEIGHTS_0`, the skin's joint flatten-index list, and the inverse-bind
     /// matrices. This is the fidelity net the "everything through the clean glb"
-    /// decision rests on (docs/plans/todo.md §4) — the skin the editor decodes
+    /// decision rests on — the skin the editor decodes
     /// back from the rig glb must equal the one it exported.
     #[test]
     fn skin_roundtrips_bit_exact((md, njoints, joints, weights, ibms) in skinned_mesh_strategy()) {
@@ -201,7 +201,7 @@ proptest! {
 
     /// Morph round-trip: a morphed node's per-target position/normal deltas and
     /// its default morph weights reproduce bit-exactly through
-    /// `write_glb` → `reexport_clean` (docs/plans/todo.md §4).
+    /// `write_glb` → `reexport_clean`.
     #[test]
     fn morph_roundtrips_bit_exact((md, targets, weights) in morphed_mesh_strategy()) {
         let mut node = ExportNode::new("morphed").with_mesh(md.clone());

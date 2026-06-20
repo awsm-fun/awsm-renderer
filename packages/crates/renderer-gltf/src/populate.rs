@@ -54,8 +54,8 @@ pub enum GltfMaterialSource {
 
 /// Options for [`populate_gltf`](crate::populate::populate_gltf).
 ///
-/// `populate_gltf` is a pure deferred ADD now (load-transaction model,
-/// `docs/plans/todo.md`): it stages textures, meshes, and materials but NEVER
+/// `populate_gltf` is a pure deferred ADD now (load-transaction model):
+/// it stages textures, meshes, and materials but NEVER
 /// finalizes/compiles. The embedder finalizes + compiles once via
 /// `AwsmRenderer::commit_load` after all content is declared — so there is no
 /// per-populate `finalize_textures` knob (a batch loader staging across many

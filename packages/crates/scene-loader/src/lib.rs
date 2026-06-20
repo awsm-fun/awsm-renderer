@@ -1723,7 +1723,7 @@ pub async fn load_glb_under(
     // The bundle's glb is geometry-only (materials stripped) and we apply OUR
     // material via `Single`. The geometry KIND (visibility vs transparency) is no
     // longer baked at decode — the renderer derives it at commit from the bound
-    // material (docs/plans/todo.md §4), so a transparent material correctly gets
+    // material, so a transparent material correctly gets
     // transparency geometry with no per-load override. The same glb asset can be
     // shared by nodes with different materials, each resolving its own kind.
     let transparent = renderer.materials.is_transparency_pass(material);

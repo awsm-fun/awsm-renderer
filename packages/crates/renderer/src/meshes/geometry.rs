@@ -7,8 +7,6 @@
 //! is what let a mesh's built geometry drift from its routing — the frame-killing
 //! `VisibilityGeometryBufferNotFound` class. [`geometry_kind`] is the one function everything funnels
 //! through; the load transaction calls it at commit, against each geometry's final bound materials.
-//!
-//! See `docs/plans/todo.md` §4.
 
 use awsm_renderer_core::pipeline::primitive::FrontFace;
 use slotmap::new_key_type;

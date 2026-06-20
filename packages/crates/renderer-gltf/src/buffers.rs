@@ -50,7 +50,7 @@ pub struct GltfBuffers {
 
     // (The per-pass visibility/transparency vertex byte streams are no longer
     // produced by the decode — the renderer packs them at commit from the retained
-    // typed source on each `MeshBufferInfoWithOffset`. See docs/plans/todo.md §5b.)
+    // typed source on each `MeshBufferInfoWithOffset`.)
 
     // Vertex attribute storage buffer (normals, UVs, colors, etc. per triangle)
     // these always follow the same interleaving pattern
@@ -166,7 +166,7 @@ pub struct MeshBufferInfoWithOffset {
     pub geometry_morph: Option<MeshBufferGeometryMorphInfoWithOffset>,
     pub material_morph: Option<MeshBufferMaterialMorphInfoWithOffset>,
     pub skin: Option<MeshBufferSkinInfoWithOffset>,
-    // Retained TYPED source geometry (load-transaction model, docs/plans/todo.md §5b):
+    // Retained TYPED source geometry (load-transaction model):
     // enough to derive EITHER pass representation at commit via the renderer's
     // GeometrySource. `populate_gltf_primitive` reads these to build the source;
     // the visibility/transparency offset fields above are legacy (removed in 5b-iv).
@@ -382,7 +382,7 @@ impl GltfBuffers {
 
                 // Step 2: Convert to mesh buffer format. NOTE the geometry KIND is no
                 // longer decided here — the renderer derives it at commit from the
-                // bound materials (docs/plans/todo.md §4); the decode retains the
+                // bound materials; the decode retains the
                 // pass-independent typed source on the returned info.
                 let mesh_buffer_info = {
                     let _maybe_convert_stage_span_guard = maybe_enter_span!(

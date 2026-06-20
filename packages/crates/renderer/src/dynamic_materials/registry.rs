@@ -1369,7 +1369,7 @@ impl crate::AwsmRenderer {
 
     // (Removed: the public `compile_material_variants` (= reconcile + wait).
     // Its job IS `commit_load` for materials — every former caller now goes
-    // through the one compile path. See `docs/plans/todo.md` §1.5.)
+    // through the one compile path.)
 
     /// Internal helper: build a `MaterialDef` for a freshly-registered
     /// dynamic material and submit it to the scheduler. Idempotent —

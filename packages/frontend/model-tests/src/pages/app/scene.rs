@@ -61,7 +61,7 @@ fn stress_grid_count() -> Option<u32> {
 /// currently drops animations + lights + the KHR_* material extensions (clearcoat /
 /// sheen / transmission / iridescence / anisotropy / …), so under this flag those
 /// samples regress — the routing infra is proven on static core-PBR samples; the
-/// animation-remap + KHR_* round-trip are the remaining Phase-5 work (todo.md §3).
+/// animation-remap + KHR_* round-trip are the remaining Phase-5 work.
 fn our_format_enabled() -> bool {
     let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) else {
         return false;
@@ -78,7 +78,7 @@ fn our_format_enabled() -> bool {
 /// load — it just falls back to the direct path + logs).
 async fn import_to_our_format(data: &GltfData) -> anyhow::Result<GltfData> {
     // Pass the loader's retained ENCODED image bytes so EXTERNAL-file textures
-    // (the glTF/ sample variant) re-embed into the clean glb (todo.md §3 GAP 1).
+    // (the glTF/ sample variant) re-embed into the clean glb.
     let clean = awsm_glb_export::reexport_clean_scene_with_images(
         &data.doc,
         &data.buffers.raw,
@@ -90,7 +90,7 @@ async fn import_to_our_format(data: &GltfData) -> anyhow::Result<GltfData> {
     loader.into_data(None).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-/// GAP 2 (todo.md §3): `reexport_clean` drops animations + DFS-renumbers nodes, so a
+/// GAP 2: `reexport_clean` drops animations + DFS-renumbers nodes, so a
 /// model routed through `?ourformat=1` renders at bind pose. Re-load the ORIGINAL doc's
 /// animations onto the clean glb's transforms: extract each channel (original node
 /// index), remap original→clean(flat) via `scene_node_flat_indices`, resolve the clean

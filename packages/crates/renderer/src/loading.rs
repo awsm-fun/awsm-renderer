@@ -63,7 +63,7 @@ impl LoadingStats {
 
     /// Human-facing progress line for the active commit phase — the SHARED mapping
     /// both viewers' loading overlays render, so geometry/texture/pipeline progress
-    /// reads identically everywhere (docs/plans/todo.md §6). `None` for `Idle` /
+    /// reads identically everywhere. `None` for `Idle` /
     /// `Ready` (no banner needed).
     pub fn phase_label(&self) -> Option<String> {
         match self.phase {
