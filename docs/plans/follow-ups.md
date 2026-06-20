@@ -53,14 +53,23 @@ Both goals met and verified against the code:
    makes **"the bind-pose comment is stale" the likely answer** (the `skin_joints` wiring + index mapping look
    correct + tested); a live run is the only thing left to confirm it, vs. some subtler break (e.g. joints not
    surviving export, or clip bone-targets not exported).
-   **Why I couldn't do the live run:** seeing the skin deform needs `populate_awsm_scene` on a GPU with a
-   driven clock. In-repo, only the editor's `ReloadProjectInMemory` round-trip (`state.rs:1010`) does that, and
-   it's a programmatic/MCP command — no UI button I could click and no JS hook reachable from `evaluate_script`;
-   model-tests animates but loads via `populate_gltf`, not the player bundle; `cargo test` has no WebGPU device.
-   **Fastest definitive check for David (~30s):** trigger the editor round-trip reload on an imported skinned
-   Fox — if it animates, just delete the stale comment; if it bind-poses, the break is downstream of the
-   (now-verified) index mapping. **Or** ask me to add a model-tests "load via player bundle + drive animation"
-   mode — that would let me verify it autonomously.
+   **LIVE VERIFICATION (2026-06-20, via the `editor_dispatch_json` wasm seam):**
+   - ✅ **Player path RENDERS the skinned Fox correctly.** Dispatched `LoadPlayerBundle` (`{cmd:
+     "load_player_bundle"}`) — bakes the project + reloads via `populate_awsm_scene`. Fox renders, no errors,
+     project name → `round-trip.awsm`. So the player-path skin loads + binds + draws fine.
+   - ✅ **The cold-reload skinned path ANIMATES.** Dispatched `ReloadProjectInMemory` (clears
+     `skin_joints`/templates/bake-cache to model a cold load, restores + re-materializes) → played the clip →
+     the Fox visibly deformed (head lowered into frame across t=0.04→2.05). Same `skin_joints` binding logic.
+   - ⚠️ **The one thing still not directly seen:** the player-BUNDLE skin deforming under a driven clock.
+     `LoadPlayerBundle` is a *static* authored-vs-runtime render comparison by design — it empties the editor
+     scene + clip library, so the bundle's clips live in `r.animations` with no editor-side driver, and the
+     transport / `SampleClipTimeseries` query only reach editor clips. The render loop pins (doesn't advance)
+     the bundle. So nothing in the editor ticks `update_animations` for the bundle.
+   **Verdict: very likely WORKING; the bind-pose comment is almost certainly stale.** Index wiring proven +
+   player render verified + the equivalent cold-reload path animates. To close the last gap autonomously I'd
+   add a small driver — e.g. a `#[wasm_bindgen] editor_tick_animation(dt_ms)` test seam (calls
+   `renderer.update_animations(dt)`), so after `LoadPlayerBundle` I can tick + screenshot the bundle deforming.
+   Pending David's go-ahead on adding that seam (vs. he confirms in ~30s himself).
    **Then (needs a harness):** a scene-loader integration test (load skinned bundle → `update_animations(dt>0)`
    → assert a joint moved off bind pose) verifies AND localizes the break. A separate narrower sub-gap —
    composing a user's **repositioning** of the self-placing rig glb (rooted at the renderer root to avoid
