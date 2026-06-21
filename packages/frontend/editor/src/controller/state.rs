@@ -1899,10 +1899,23 @@ impl EditorController {
                         return Ok(None);
                     };
                     let prev = slot.val.clone();
-                    slot.val = value;
+                    slot.val = value.clone();
                     mat.uniforms.set(slots);
-                    mark_material_draft(&mat);
                     self.dirty.set_neq(true);
+                    // D3: previously this only updated the authored default + flipped
+                    // the material to draft (mark_material_draft) for a debounced
+                    // re-register — which did NOT update the live render (the report's
+                    // complaint). Instead, push the value straight into the running
+                    // material(s) — the same write a uniform animation track does — so
+                    // the change shows IMMEDIATELY, no re-register / recompile. The
+                    // authored default (set above) persists + seeds the next register.
+                    let (asset, slot_name, val) = (material, name.clone(), value);
+                    crate::engine::context::with_renderer_mut(move |r| {
+                        crate::engine::bridge::dynamic::set_uniform_live(
+                            r, asset, &slot_name, &val,
+                        );
+                    })
+                    .await;
                     Ok(Some(EditorCommand::SetMaterialUniform {
                         material,
                         name,

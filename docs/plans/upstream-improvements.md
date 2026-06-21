@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` → `P2` → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` → `U2`.
 (`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
 turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
@@ -491,7 +491,29 @@ that fails GPU pipeline/module creation, and `ok:true` only when it genuinely co
 
 ---
 
-### D3 — Setting a material uniform must affect the LIVE value, not only the default
+### D3 — Setting a material uniform must affect the LIVE value, not only the default ✅ DONE (2026-06-21)
+
+**Was re-confirmed live, now FIXED.** Re-audit (this iteration): a custom material with a `tint` vec3
+uniform rendered **red**; `SetMaterialUniform(tint, "0,0,1")` left it red even after 2 s (the old handler
+updated the authored default + `mark_material_draft` → debounced re-register, which did NOT update the live
+render — the report's exact complaint).
+
+**Fix.** Added `engine/bridge/dynamic.rs::set_uniform_live(renderer, asset, name, value_str)` — resolves the
+asset's registered `shader_id` → the layout slot index/type → parses the value → writes
+`dm.values[slot]` on **every** live `Material::Custom` for that shader via `update_material` (the SAME
+per-mesh write a uniform animation track does each frame). The `SetMaterialUniform` handler
+(`controller/state.rs`) now updates the authored default (persists / seeds the next register) and does this
+live poke via `with_renderer_mut(...).await` (mirrors the `SetMorphWeight` live-preview pattern), and
+**drops `mark_material_draft`** for this path — that re-register both failed to apply the value AND would
+revert the live poke.
+
+**Verified live (editor :9085):** the same repro — box renders red, `SetMaterialUniform(tint, blue)` now
+turns it **blue immediately** (no re-register; region luma 167→153, screenshot-confirmed), `ok:true`, zero
+GPUValidationError.
+
+---
+
+#### D3 (original spec — for reference)
 
 **Verified state — STILL-VALID at the editor/MCP layer.** `SetMaterialUniform` is documented as setting
 the **default** value of a declared slot (`packages/mcp/editor-protocol/src/command.rs` L558-561), so a
@@ -656,6 +678,13 @@ matches `editor_snapshot_json`'s `selection`.
   (DEFERRED): the dynamic OpaqueShadingInput has no `tangents` field, so it first needs tangents plumbed
   into the visibility-buffer shade kernel (gated on FragmentInputs::TANGENTS) before a build_tbn/
   perturb_normal include — kernel attribute work, separable. Next: D3.
+- 2026-06-21 — **D3 DONE (live material-uniform write) — PASS (live).** Re-audit re-confirmed the report:
+  SetMaterialUniform left the render unchanged (red) even after 2 s. Fix: new
+  `bridge/dynamic::set_uniform_live` writes `dm.values[slot]` on every live Material::Custom for the asset's
+  shader (the same write a uniform animation track does); the handler now does this live poke via
+  with_renderer_mut + keeps the authored default, and drops mark_material_draft (its re-register didn't apply
+  the value and would revert the poke). Verified live: SetMaterialUniform(tint, blue) turns the box blue
+  immediately (luma 167→153, screenshot), zero GPU errors. Next: P2.
 
 ---
 
