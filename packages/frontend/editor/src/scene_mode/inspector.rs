@@ -3072,6 +3072,26 @@ fn texture_slot_rows(
                 })
                 .render(),
         ));
+        // B3-extra — surface flow's UV-continuity requirement at the point of use.
+        // Shown only while a flow is active: scrolling walks the UVs, so the mesh
+        // needs a continuous / tiling UV axis along the scroll direction. Atlas /
+        // baked UVs smear (the scroll crosses into neighbouring cells), and a mesh
+        // with no UV set won't move at all. (A non-fuzzy advisory rather than a
+        // false-positive-prone automatic atlas-detection heuristic.)
+        if flow != [0.0, 0.0] {
+            rows.push(html!("div", {
+                .style("padding", "5px 8px")
+                .style("margin", "3px 0 1px")
+                .style("font-size", "11px")
+                .style("line-height", "1.45")
+                .style("color", "var(--text-3)")
+                .style("border-left", "2px solid var(--accent-bright)")
+                .style("border-radius", "3px")
+                .text("\u{2139} Flow scrolls this slot\u{2019}s UVs over time — it needs a continuous / \
+                       tiling UV axis along the scroll direction. Atlas or baked UVs will smear, and a \
+                       mesh with no UV set won\u{2019}t move at all.")
+            }));
+        }
 
         // Sampler: wrap modes + filtering (imported from the glTF sampler).
         let smp = cur.and_then(|t| t.sampler).unwrap_or_default();
