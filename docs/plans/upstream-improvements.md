@@ -68,7 +68,9 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` → `D1` → `D3` → `P2` → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1` → `D3` → `P2` → `U2`.
+(`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
+turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
 (emissive_strength / alpha cutoff / toon ramp / flipbook fps·offset) are split as `B2-extra`, deferred —
 each needs per-feature plumbing (extension/alpha-mode/material-type), low priority.)
@@ -305,14 +307,40 @@ ticked screenshots show it moving. Spot-check a toon material and a flipbook mat
 
 ---
 
-### B3 — First-class texture `flow` (direction + speed), advanced automatically
+### B3 — First-class texture `flow` (direction + speed), advanced automatically ⏸ DEFERRED (optional; covered by B1-anim)
 
-**Verified state — STILL-VALID (absent).** No `flow`/`scroll` anywhere; flipbook uses the global
-`frame_globals.time` for frame selection, not per-material UV velocity.
+**Why deferred (value call, not difficulty).** The report marks B3 **optional** ("B1 is the load-bearing
+part"), and its user-facing capability — an auto-scrolling texture — is **already delivered and
+live-verified via B1-anim**: a looping UV-offset track (offset `[0,0]→[1,0]`, clip loop) scrolls a
+built-in texture with zero shader work (proven live on `BoxTextured.glb`). B3 only adds the *convenience*
+of "set a velocity, runtime auto-advances, no clip authored." Given the remaining higher-value items —
+**D1** (the report's "biggest win"), D3, P2, U2 — in this long autonomous session, B3 is deferred. The
+design below is turnkey; pick it up when the convenience is prioritized.
 
-**Do.** A thin convenience over **B1**: a per-texture-slot `flow` param (direction `vec2` + speed) that
-the runtime advances each frame by accumulating into the slot's UV offset (reuse B1's transform — flow is
-just an auto-driver of `offset`). Expose from the param API + GUI. Keep it optional; B1 is load-bearing.
+**Design (CPU-flow — chosen over shader-flow).** A shader-flow (`offset += flow * frame_time` in
+`textures.wgsl`) was ruled out: `frame_globals_raw` is bound at *different* bindings per pass and
+`textures.wgsl` is pass-agnostic (shared into shadow/prepass), so it can't portably reach frame time.
+Instead, advance on the CPU:
+1. **scene:** `TextureRef.flow: Option<[f32; 2]>` (UV/sec velocity), serde-default `None`.
+2. **renderer:** a `SecondaryMap<TextureTransformKey, { base_offset: [f32;2], flow: [f32;2], elapsed: f32 }>`
+   on `Textures` + `set_texture_flow(key, base_offset, flow)` + `advance_texture_flows(dt)` that recomputes
+   `offset = base_offset + flow * elapsed` (recompute-from-base, NOT accumulate — no drift) and calls
+   `update_texture_transform`. Hook `advance_texture_flows(dt)` into `update_animations` (already the
+   per-frame tick). Only flowing slots write — no per-frame cost otherwise.
+3. **bridge** (`engine/bridge/material.rs`): when materializing a slot whose `TextureRef.flow` is `Some`,
+   register it after creating the `transform_key`.
+4. **editor UI:** a per-slot Flow X/Y field in `texture_slot_rows` (mirrors offset/scale); **MCP**: extend
+   the texture-bind command or add a set-flow command.
+5. **Verify live** (feasible despite the SetKind path): import a textured glb → `node_kind_details` to read
+   the node's kind blob → set `base_color_texture.flow` → `SetKind` back → `editor_tick_animation` → ticked
+   screenshots show the texture scrolling with no clip.
+
+> **B3-extra (also deferred):** the editor **detect-and-warn** for meshes with no continuous UV axis along
+> the scroll direction (baked/tiled atlas geometry) — a separate UV-parameterization analysis.
+
+**(original "Do" — for reference)** A thin convenience over **B1**: a per-texture-slot `flow` param
+(direction `vec2` + speed) that the runtime advances each frame by accumulating into the slot's UV offset
+(reuse B1's transform — flow is just an auto-driver of `offset`). Expose from the param API + GUI.
 
 > **Surface the content caveat in tooling:** UV-scroll only works when the mesh has a continuous UV axis
 > along the scroll direction. Baked/tiled geometry (e.g. a tank tread of separate cleat-links sharing one
@@ -581,6 +609,13 @@ matches `editor_snapshot_json`'s `selection`.
   = 0; a normal_scale track 3→0 visibly flattens the normal-mapped detail (t=0 vs t=1 screenshots), zero GPU
   errors. Type-specific knobs (emissive_strength/cutoff/toon/flipbook) split as B2-extra (deferred, needs
   per-feature plumbing). Next: B3.
+- 2026-06-21 — **B3 DEFERRED (optional texture-flow convenience) — value call.** The auto-scrolling-texture
+  capability is already delivered + live-verified via B1-anim (a looping UV-offset track scrolls a built-in
+  texture, proven on BoxTextured.glb). B3 only adds the "set a velocity, no clip" convenience. Ruled out a
+  shader-flow (`frame_globals_raw` bound per-pass; `textures.wgsl` is pass-agnostic) in favor of a CPU-flow
+  design (scene `TextureRef.flow` + renderer flow registry + `advance_texture_flows(dt)` in update_animations
+  + bridge + UI) — recorded turnkey. Deferred in favor of the higher-value D1/D3/P2/U2. No code change.
+  Next: D1.
 
 ---
 
