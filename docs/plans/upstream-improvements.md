@@ -68,10 +68,10 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` → `A1` → `A2` → `B1` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
-(`D2-fix` split into `D2a` (codegen black-screen — DONE) and `D2b` (diagnostics lie — NEXT, deeper
-async-compile-error capture). `P2` — "frame node inside subject" — was not exercised in T0; verify it live
-in its own iteration.)
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` → `A2` → `B1` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
+(`D2-fix` split into `D2a` (codegen black-screen — DONE) and `D2b` (diagnostics lie — DEFERRED, needs a
+design decision; does not block anything). `P2` — "frame node inside subject" — was not exercised in T0;
+verify it live in its own iteration. **Next actionable: `A1`.**)
 
 ---
 
@@ -273,38 +273,51 @@ shaded **orange** `OpaqueShadingOutput` color, **zero** `GPUValidationError` in 
 
 ---
 
-### D2b — Make material diagnostics reflect the REAL GPU compile outcome (NEXT)
+### D2b — Make material diagnostics reflect the REAL GPU compile outcome ⏸ DEFERRED (needs design)
 
-**Verified state — CONFIRMED REAL (live, this iteration), and BROADER than the report implied.** Even
-with D2a fixed, a custom material whose **author body** is GPU-invalid (e.g. `return OpaqueShadingOutput(
+**Verified state — CONFIRMED REAL (live), and BROADER than the report implied.** Even with D2a fixed, a
+custom material whose **author body** is GPU-invalid (e.g. `return OpaqueShadingOutput(
 this_symbol_does_not_exist, 1.0)` — passes the trailing-`;` syntax pre-check, fails naga/Tint) still
 reports `material_diagnostics → { registered:true, ok:true, errors:[] }` while the console shows
-`GPUValidationError: unresolved value … CreateShaderModule "Material Opaque"`. So the lie is not specific
-to the codegen bug — it's any deferred GPU module-compile failure.
+`GPUValidationError: unresolved value … CreateShaderModule "Material Opaque"`. So the lie is any deferred
+GPU module-compile failure, not just the codegen class.
 
-**Root cause (traced live).** The editor's `register_material` polls `await_dynamic_compile` →
-`renderer.dynamic_material_compile_status(shader_id)` → `pipeline_group_status` (`renderer.rs` ~L2363,
-`pipeline_scheduler`). The OpaqueDynamic resolution path *does* `mark_failed` on an `Err` result
-(`pipeline_scheduler/launch.rs` ~L1039) — **but the dynamic shade pipeline's async creation resolves `Ok`
-even when the module is invalid** (WebGPU's deferred-error model): the console shows only the *edge-resolve*
-failure (`launch.rs` ~L951, logged-and-dropped, "charged to no material"), never
-`pipeline-creation failed for material(...)`. So the material group never transitions to `Failed`, the
-poll times out → `None` → the optimistic arm sets `ok:true` / `registered:true`.
+**Why it's deferred (attempted fix didn't resolve the symptom — reverted).** I tried the obvious renderer
+fix: in the OpaqueDynamic compile future (`pipeline_scheduler/launch.rs` ~L613, `ensure_bucket_pipelines`),
+call `shader_compile_diagnostic` (→ `renderer-core/shaders.rs` `get_compilation_info_ext`, the real Tint
+`getCompilationInfo`) on the **success** path too and force the failure arm when it reports errors. Built it,
+verified live: the material STILL reported `ok:true` across a 6 s poll, and the per-frame
+`GPUValidationError` persisted — so `mark_failed` never fired for the material. Reverted (it added a
+`getCompilationInfo` to every successful compile for no proven benefit). Three compounding blockers, each
+needing a decision:
+  1. **Two compile paths, only one attributable.** The error reliably surfaces on the *edge-resolve* pipeline
+     (`launch_edge_resolve_compile` ~L844-866, charged to `Pass(MaterialEdgeResolve)`, logged-and-dropped at
+     ~L951) — NOT on the per-material OpaqueDynamic path. Either the opaque pipeline resolves `Ok` (WebGPU
+     deferred-error model) so its `getCompilationInfo` came back empty at await time, or it was a
+     cache-hit/skip so my future never ran. Needs instrumentation to confirm which.
+  2. **Shared kernel module.** The "Material Opaque" module concatenates EVERY enabled dynamic material's
+     `wgsl_fragment` (`material_opaque/shader/template.rs` ~L46), so one bad fragment breaks the shared
+     module and the failure isn't cleanly attributable to a single material id at the GPU layer.
+  3. **Editor-side diagnostics caching.** `material_diagnostics` reads `mat.last_diagnostics`
+     (`controller/state.rs` ~L3743), which is written ONLY inside `register_material`'s ~1.9 s
+     `await_dynamic_compile` poll window (~L5696-5764). A failure that resolves after that window is lost
+     until the next edit — so even a working `mark_failed` can be missed on timing.
 
-**Do.** Validate the dynamic kernel module's compilation info on the **success** path and propagate errors,
-so `mark_failed` fires and `dynamic_material_compile_status` returns `Some(Err(msg))`. The infra exists:
-`renderer-core/src/shaders.rs` `get_compilation_info_ext` / `validate_shader_compilation` (`getCompilationInfo`,
-the real Tint diagnostic). Hook it into the dynamic compute-pipeline compile future (where the "Material
-Opaque" module is created) so a created-but-invalid module is treated as a compile failure attributed to
-the material (or its waiters). Then the existing `register_material` poll → `last_diagnostics` →
-`CompileDiagnostics` path surfaces it unchanged.
+**Recommended design (decision needed before implementing).** Stop fighting WebGPU's async deferred-error
+model; validate **synchronously at register time, in-wasm, per material**: assemble a single-material opaque
+kernel (exactly as `renderer/src/wgsl_validation.rs` `custom_key` does for the native tests) and run
+**naga** (`parse_str` + `Validator`) on it; surface any error into `last_diagnostics` with the message.
+naga is pure Rust and already a dev-dep — the open decision is **accepting naga as a runtime dependency of
+the editor wasm bundle** (binary-size cost) vs. a lighter path (e.g. a persistent device error-scope around
+the dynamic module creation, correlated to the in-flight material; or having the query re-consult the live
+renderer compile status instead of the cached `last_diagnostics`). This is a design call for David, not a
+blind code change — hence deferred rather than forced GREEN.
 
-**Verify (live).** Assign a GPU-invalid-body custom material → `material_diagnostics` reports `ok:false`
-with the real message; fix the body → `ok:true`. Re-confirm the D2a `[f32,vec2]` material still reports
-`ok:true` and renders. Zero unexpected GPU errors for the valid cases.
+**Done when:** (after the design decision) diagnostics report `ok:false` (with the message) for any material
+that fails GPU pipeline/module creation, and `ok:true` only when it genuinely compiles — verified live.
 
-**Done when:** diagnostics report `ok:false` (with the message) for any material that fails GPU
-pipeline/module creation, and `ok:true` only when it genuinely compiles — verified live.
+> Note: D2a (the actual black-screen bug — the high-impact half) is FIXED + committed. D2b is a
+> diagnostics-truthfulness improvement, not a rendering bug; deferring it does not block any other task.
 
 ---
 
@@ -410,6 +423,17 @@ matches `editor_snapshot_json`'s `selection`.
   failure is logged (`launch.rs` ~L951, not attributed to a material), so the group never goes `Failed` and
   the `await_dynamic_compile` poll times out → optimistic `ok:true`. Fix = validate compilation-info on the
   success path (`renderer-core/shaders.rs` `get_compilation_info_ext`) and propagate. Next iteration: D2b.
+- 2026-06-21 — **D2b DEFERRED (needs design) — attempted fix reverted.** Implemented the success-path
+  `getCompilationInfo` check in the OpaqueDynamic compile future (`launch.rs` ~L613) + force-Err; built &
+  tested LIVE: invalid-body material STILL reported `ok:true` across a 6 s poll and the per-frame
+  GPUValidationError persisted → `mark_failed` never fired for the material. Reverted (overhead, no benefit).
+  Root-caused 3 compounding blockers: (1) the failure surfaces only on the non-attributable edge-resolve
+  pipeline, not the per-material opaque one; (2) the "Material Opaque" module is SHARED across all dynamic
+  fragments, so GPU-layer attribution is ambiguous; (3) `material_diagnostics` reads the editor-cached
+  `last_diagnostics`, written only inside `register_material`'s ~1.9 s poll window. Recommended design:
+  synchronous per-material naga validation at register (as `wgsl_validation.rs custom_key` does natively) —
+  pending a decision on naga-as-runtime-wasm-dep vs. a lighter error-scope/live-status approach. Not a
+  rendering bug and blocks nothing. **Proceeding to A1.**
 
 ---
 
