@@ -317,6 +317,11 @@ pub struct ShaderIncludeFlags {
     /// The IBL cubemap/LUT bindings stay always-declared (ABI); only the WGSL
     /// helper body gates on this.
     pub ibl: bool,
+    /// `normal_map` helpers (`apply_normal_map` / `material_tbn`) — Tier A: a
+    /// custom material perturbs its normal from a normal-map sample using the
+    /// engine's reconstructed per-pixel tangent frame. The frame fields on
+    /// `OpaqueShadingInput` are always present; only these helpers gate on this.
+    pub normal_map: bool,
 }
 
 impl ShaderIncludeFlags {
@@ -341,6 +346,7 @@ impl ShaderIncludeFlags {
             textures: i.contains(S::TEXTURES),
             vertex_color: i.contains(S::VERTEX_COLOR),
             ibl: i.contains(S::IBL),
+            normal_map: i.contains(S::NORMAL_MAP),
         }
     }
 
@@ -382,6 +388,8 @@ impl ShaderIncludeFlags {
             vertex_color: false,
             // Skybox-owner shades no geometry → no IBL surface term.
             ibl: false,
+            // Skybox-owner shades no geometry → no normal mapping.
+            normal_map: false,
         }
     }
 }

@@ -262,6 +262,30 @@ fn custom_material_ibl_include_validates() {
 }
 
 #[test]
+fn custom_material_normal_map_include_validates() {
+    // D1-normalmap: a custom material that opts into `normal_map` can call
+    // `apply_normal_map(...)` / `material_tbn(...)` over the always-present
+    // world_tangent/world_bitangent/world_normal fields, and the assembled Custom
+    // kernel must validate. Without the include the symbols are undefined → guards
+    // both the include wiring AND that the OpaqueShadingInput tangent fields exist.
+    use awsm_materials::ShaderIncludes;
+    for (msaa, mips) in CONFIGS {
+        let mut key = custom_key(ShaderIncludes::NORMAL_MAP, msaa, mips);
+        key.dynamic_shader.as_mut().unwrap().wgsl_fragment =
+            "let n = apply_normal_map(input, vec3<f32>(0.6, 0.5, 0.9)); \
+             let _tbn = material_tbn(input); return OpaqueShadingOutput(n * 0.5 + 0.5, 1.0);"
+                .to_string();
+        let label = format!("opaque/custom normal_map msaa={msaa:?} mips={mips}");
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn apply_normal_map("),
+            "{label}: `normal_map` include did not emit apply_normal_map"
+        );
+    }
+}
+
+#[test]
 fn opaque_prep_read_variant_validates() {
     // Plan B (stage 2b): the prep-read opaque variant (prep enabled + MSAA
     // off) must compile, and `texture_uv()` / `vertex_color()` must read the

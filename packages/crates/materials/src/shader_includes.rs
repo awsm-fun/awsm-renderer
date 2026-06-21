@@ -97,6 +97,7 @@ impl ShaderIncludes {
     const BIT_SKYBOX: u32 = 1 << 11;
     const BIT_EXTRAS: u32 = 1 << 12;
     const BIT_IBL: u32 = 1 << 13;
+    const BIT_NORMAL_MAP: u32 = 1 << 14;
 
     /// `math.wgsl` — basic math helpers.
     pub const MATH: Self = Self(Self::BIT_MATH);
@@ -134,6 +135,16 @@ impl ShaderIncludes {
     /// renders ~black. NOT a PBR re-implementation; just the ambient/environment
     /// term. Depends on LIGHT_ACCESS (for the IBL mip-count info).
     pub const IBL: Self = Self(Self::BIT_IBL);
+
+    /// Tier A (generic): normal mapping for custom materials. Exposes the
+    /// per-pixel orthonormal world tangent frame the engine already reconstructs
+    /// (the prep G-buffer) as `material_tbn(input)` + `apply_normal_map(input,
+    /// sampled_rgb)`, so a dynamic material perturbs its normal from a normal-map
+    /// sample WITHOUT re-deriving a TBN. Tiny (two helpers over always-present
+    /// `OpaqueShadingInput` fields, no extra bindings); opt-in like IBL so a lean
+    /// material that doesn't normal-map carries nothing. No hard dep (uses only
+    /// always-on `math`).
+    pub const NORMAL_MAP: Self = Self(Self::BIT_NORMAL_MAP);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -240,6 +251,12 @@ impl ShaderIncludes {
             "Image-based lighting: sample_ibl(albedo, normal, view, roughness, metallic) — environment irradiance + specular + BRDF LUT",
         ),
         (
+            "normal_map",
+            Self::NORMAL_MAP,
+            true,
+            "Normal mapping: apply_normal_map(input, sampled_rgb) + material_tbn(input) — perturb the normal from a normal-map sample using the engine's reconstructed tangent frame",
+        ),
+        (
             "apply_lighting",
             Self::APPLY_LIGHTING,
             false,
@@ -313,6 +330,8 @@ impl ShaderIncludes {
             Self::BIT_TEXTURES => Self::MATH,
             // IBL needs the LightsInfo/IblInfo accessor (mip counts) + math/camera.
             Self::BIT_IBL => Self::LIGHT_ACCESS.union(Self::MATH).union(Self::CAMERA),
+            // normal_map only calls normalize() (math) over always-present fields.
+            Self::BIT_NORMAL_MAP => Self::MATH,
             _ => Self::empty(),
         }
     }
@@ -460,7 +479,7 @@ mod tests {
         // into the kernel, so it must be declared. Any NEW generic module must
         // either go in `all()` (default-on) or be added to `OPT_IN_TIER_A` here —
         // this guard forces that decision rather than silent drift.
-        const OPT_IN_TIER_A: ShaderIncludes = ShaderIncludes::IBL;
+        const OPT_IN_TIER_A: ShaderIncludes = ShaderIncludes::IBL.union(ShaderIncludes::NORMAL_MAP);
         let catalog_union = ShaderIncludes::tier_a_catalog()
             .map(|(k, _)| ShaderIncludes::from_key(k).unwrap())
             .fold(ShaderIncludes::empty(), |a, b| a.union(b));

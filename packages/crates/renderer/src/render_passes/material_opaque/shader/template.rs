@@ -1096,8 +1096,14 @@ mod size_regression {
     // recompute helpers (cs_edge=RECOMPUTE keeps them; 5b-attrs deferred). Measured
     // **85.7 KB empty / 122.8 KB all** — ceilings raised to fit the prep-on sizes
     // (these were previously measured against the now-removed prep-OFF variant).
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 88_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 125_000;
+    // **D1-normalmap (tangent-frame ABI):** `OpaqueShadingInput` now always carries
+    // `world_tangent`/`world_bitangent` (2 vec3 fields + 2 constructor args at each
+    // of the 3 dynamic-shade sites), so EVERY Custom shader grew ~0.6 KB — a
+    // permanent, intended ABI addition (normal mapping without re-deriving a TBN),
+    // not a regression. Ceilings bumped to ~87.6 KB empty / ~125.6 KB all (measured)
+    // plus headroom. (`normal_map` itself is opt-in, so the *helpers* aren't in all.)
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 90_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 127_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

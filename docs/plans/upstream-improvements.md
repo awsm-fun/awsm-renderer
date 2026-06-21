@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ✅ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ✅ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done; B3 + D2b also landed. Remaining: `D1-normalmap`, `B2-extra`, `B3-extra` (in progress — prod ship).**
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ✅ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ✅ → `D1`(ibl ✅; `D1-normalmap` ✅) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done; B3 + D2b + D1-normalmap landed. Remaining: `B2-extra`, `B3-extra` (prod-ship pass).**
 (`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
 turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
@@ -377,7 +377,7 @@ no-continuous-UV warning fires on a baked-UV mesh.
 
 ---
 
-### D1 — Expose `ibl` and `normal_map`/TBN building blocks behind `includes` gates (biggest item) ✅ ibl DONE; `normal_map` → D1-normalmap
+### D1 — Expose `ibl` and `normal_map`/TBN building blocks behind `includes` gates (biggest item) ✅ DONE (both `ibl` + `normal_map`)
 
 **`ibl` include — LANDED + verified live (2026-06-21).** The report's "single biggest win." Added a Tier-A
 `ibl` include: new bit `BIT_IBL` + `ShaderIncludes::IBL` + `KEY_TABLE` row + `all()` membership +
@@ -396,14 +396,22 @@ surface_to_camera, 0.35, 0)`, **no reliance on punctual lights** → the box is 
 (orange with sky-irradiance directional shading, NOT black), `ok:true`, zero GPUValidationError. This is
 exactly the report's repro fixed.
 
-**`normal_map`/TBN → split as `D1-normalmap` (DEFERRED).** The dynamic `OpaqueShadingInput` has **no
-`tangents` field** (`opaque_kernel_includes.wgsl` L165+) — built-in PBR gets its TBN from the geometry pass,
-but the custom wrapper isn't handed tangents. So a `normal_map`/TBN helper first needs **tangents plumbed
-into the dynamic input**: fetch+interpolate the vertex tangent at the barycentric shade point in the
-visibility-buffer compute kernel (analogous to `world_normal`), gated on the material requesting
-`FragmentInputs::TANGENTS`, then add a `normal_map` Tier-A include with `build_tbn(world_normal, tangent)` /
-`perturb_normal(tangent_sample, world_normal, tangent)`. That's kernel attribute work (moderate), separable
-from the ibl win — deferred. (Original combined spec below.)
+**`normal_map`/TBN → `D1-normalmap` ✅ DONE (2026-06-21, prod ship).** The deferral assumed tangents would
+need fetching+interpolating in the hot kernel — but the prep pass ALREADY packs a normal+tangent G-buffer
+(`normal_tangent_tex`) and the shade kernel already unpacks it into a full `TBN { N, T, B }` per pixel
+(`compute.wgsl` — `unpack_normal_tangent`, used at all 3 dynamic-shade sites). So no attribute-fetch was
+needed: `OpaqueShadingInput` now always carries `world_tangent`/`world_bitangent` (populated from the
+already-unpacked `tbn.T`/`tbn.B`; `world_normal` is its N), and a `normal_map` Tier-A **opt-in** include adds
+`material_tbn(input)` + `apply_normal_map(input, sampled_rgb)` (decode `[0,1]` RGB → tangent-space normal →
+world). Two small helpers over always-present fields, no extra bindings; OPT_IN_TIER_A (not in `all()`).
+
+**Verified live (editor :9085):** a custom material declaring `["normal_map"]` — (a) `world_tangent` is
+non-zero/per-pixel; (b) `apply_normal_map(input, vec3(0.5,0.5,1.0))` (flat) reconstructs the geometric
+`world_normal` EXACTLY (proves the TBN is a correct orthonormal basis); (c) a tilted sample
+`(0.9,0.5,0.3)` renders clean distinct per-face perturbed normals (top/front/right faces each a different
+color through their own TBN), `ok:true`, zero GPU errors. naga test `custom_material_normal_map_include_validates`
+guards the wiring. Size: the always-present tangent fields grew every Custom shader ~0.6 KB (ceilings bumped
+— intended ABI, documented in `template.rs`).
 
 ---
 
@@ -807,6 +815,14 @@ matches `editor_snapshot_json`'s `selection`.
   `{ok:false}` with the real naga message; valid/fixed → `{ok:true}`. Replaced the flaky `await_dynamic_compile`
   poll. Full `cargo test --workspace` green (42 binaries). Remaining this pass: `D1-normalmap`, `B2-extra`,
   `B3-extra`.
+- 2026-06-21 — **`D1-normalmap` ✅ DONE** (see D1 above). The deferral's premise was wrong: the prep pass
+  already packs a normal+tangent G-buffer and the shade kernel already unpacks a full TBN per pixel, so NO
+  hot-path attribute-fetch was needed — just surface `world_tangent`/`world_bitangent` on `OpaqueShadingInput`
+  (from the already-unpacked `tbn.T`/`.B` at all 3 dynamic-shade sites) + a `normal_map` opt-in include
+  (`apply_normal_map` / `material_tbn`). Verified live: `apply_normal_map(flat)` == geometric normal exactly
+  (TBN correct), tilted sample → clean per-face perturbed normals, `ok:true`, zero GPU errors. naga test
+  added; size ceilings bumped for the always-present tangent ABI (~0.6 KB/shader, documented). Full
+  `cargo test --workspace` green (42). Remaining: `B2-extra`, `B3-extra`.
 
 ---
 
