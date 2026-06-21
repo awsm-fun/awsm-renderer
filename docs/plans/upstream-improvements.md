@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` → `A2` → `B1` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` → `B1` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
 (`D2-fix` split into `D2a` (codegen black-screen — DONE) and `D2b` (diagnostics lie — DEFERRED, needs a
 design decision; does not block anything). `P2` — "frame node inside subject" — was not exercised in T0;
 verify it live in its own iteration. **Next actionable: `A1`.**)
@@ -104,7 +104,29 @@ Verified live in the browser via the wasm seams. Results (full evidence in STATU
 
 ---
 
-### A1 — Add `vec2` / `vec4` keyframe + uniform-track value kinds
+### A1 — Add `vec2` / `vec4` keyframe + uniform-track value kinds ✅ DONE (2026-06-21)
+
+**Landed + verified live.** Added `Vec2([f32;2])` / `Vec4([f32;4])` to `TrackValue` (`scene/animation.rs`)
+and to the renderer's `AnimationData` with linear + cubic interpolation (`animation/data.rs` +
+`interpolate.rs`); threaded through lowering (`scene_loader.rs` + editor `controller/animation.rs`),
+the uniform conversion (`animations.rs data_to_uniform_value`), and the editor UI (keyframe-value editor +
+`tv_component`/`tv_with_component` in `inspector.rs`; curve `Arity::Vec2/Vec4` + channels + sampling in
+`timeline/curves.rs`; readback coercion + `zeroed_like`). Live verification surfaced **two gaps unit tests
+could not catch**, now fixed: (1) the NLA mixer's `blend_replace`/`blend_additive` (`animation/blend.rs`)
+handled only F32/F64/Vec3/Quat and silently returned the unchanged rest (`_ => acc.clone()`) for Vec2/Vec4;
+(2) `read_rest` (`animations.rs`) seeded a **Vec4** uniform's rest as `AnimationData::Quat` (a slerp on a
+non-rotation value) and ignored Vec2 — so the mixer blend fell through. Both now seed/blend Vec2/Vec4 as
+component-lerped values.
+
+**Verified live (editor :9085):** a single `Vec4` uniform track (`tint` red `[1,0,0,1]` @0 → blue
+`[0,0,1,1]` @1) on a custom material (`input.material.tint.rgb`) scrubs **red → magenta `[0.5,0,0.5]` @0.5
+→ blue** — screenshot-confirmed at all three playhead positions, region-luma changes (131→63→110), zero
+GPUValidationError. Round-trip + interpolation + conversion unit tests added/extended (scene round-trip
+incl. Vec2/Vec4; 44 renderer animation tests green).
+
+---
+
+#### A1 (original spec — for reference)
 
 **Verified state — STILL-VALID.** `TrackValue` is `Vec3 | Quat | Scalar`
 (`packages/crates/scene/src/animation.rs` L58-65). Uniforms already support `Vec2`/`Vec4`
@@ -434,6 +456,13 @@ matches `editor_snapshot_json`'s `selection`.
   synchronous per-material naga validation at register (as `wgsl_validation.rs custom_key` does natively) —
   pending a decision on naga-as-runtime-wasm-dep vs. a lighter error-scope/live-status approach. Not a
   rendering bug and blocks nothing. **Proceeding to A1.**
+- 2026-06-21 — **A1 DONE (vec2/vec4 keyframe + uniform-track value kinds) — PASS (live).** Added Vec2/Vec4
+  to `TrackValue` + `AnimationData` (+ linear/cubic interp), lowering, uniform conversion, and the editor UI
+  (keyframe editor, curve arity/sampling, readback). Live verification caught + fixed two gaps unit tests
+  missed: the mixer `blend_replace`/`blend_additive` and `read_rest` both lacked Vec2/Vec4 (Vec4 rest was
+  wrongly seeded as Quat → slerp on a non-rotation value). Verified live: a Vec4 `tint` track red→blue scrubs
+  through magenta `[0.5,0,0.5]` at the midpoint (3 screenshots + region-luma 131→63→110), zero GPU errors.
+  Tests: scene round-trip extended (Vec2/Vec4), 44 renderer animation tests green. Next: A2.
 
 ---
 

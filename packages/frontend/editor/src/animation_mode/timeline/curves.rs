@@ -623,32 +623,43 @@ fn graph_playhead(geo: Geo) -> Dom {
 
 /// Flatten the clip's tracks into display channels (1 scalar, or 3 X/Y/Z).
 fn collect_channels(clip: &Arc<CustomAnimation>) -> Vec<Channel> {
-    const COMP_NAMES: [&str; 3] = ["x", "y", "z"];
-    const COMP_COLORS: [&str; 3] = ["var(--axis-x)", "var(--axis-y)", "var(--axis-z)"];
+    // 4-long so vec4 (and the w channel) are covered; vec2/vec3 take the prefix.
+    const COMP_NAMES: [&str; 4] = ["x", "y", "z", "w"];
+    const COMP_COLORS: [&str; 4] = [
+        "var(--axis-x)",
+        "var(--axis-y)",
+        "var(--axis-z)",
+        "var(--accent)",
+    ];
 
     let mut out = Vec::new();
     for (ti, track) in clip.tracks.lock_ref().iter().enumerate() {
         let label = super::target_label(&track.target);
         let prop = super::prop_label(&track.target);
-        match channel_arity(track) {
-            Arity::Scalar => out.push(Channel {
-                key: ChannelKey { track: ti, comp: 0 },
-                label,
-                name: prop,
-                color: "var(--accent)".to_string(),
-                rotation: false,
-            }),
-            Arity::Vec3 { rotation } => {
-                for c in 0..3 {
-                    out.push(Channel {
-                        key: ChannelKey { track: ti, comp: c },
-                        label: label.clone(),
-                        name: format!("{prop} {}", COMP_NAMES[c]),
-                        color: COMP_COLORS[c].to_string(),
-                        rotation,
-                    });
-                }
+        // (channel count, is-rotation) per arity; scalar is a single unnamed channel.
+        let (count, rotation) = match channel_arity(track) {
+            Arity::Scalar => {
+                out.push(Channel {
+                    key: ChannelKey { track: ti, comp: 0 },
+                    label,
+                    name: prop,
+                    color: "var(--accent)".to_string(),
+                    rotation: false,
+                });
+                continue;
             }
+            Arity::Vec2 => (2usize, false),
+            Arity::Vec3 { rotation } => (3usize, rotation),
+            Arity::Vec4 => (4usize, false),
+        };
+        for c in 0..count {
+            out.push(Channel {
+                key: ChannelKey { track: ti, comp: c },
+                label: label.clone(),
+                name: format!("{prop} {}", COMP_NAMES[c]),
+                color: COMP_COLORS[c].to_string(),
+                rotation,
+            });
         }
     }
     out
@@ -656,7 +667,9 @@ fn collect_channels(clip: &Arc<CustomAnimation>) -> Vec<Channel> {
 
 enum Arity {
     Scalar,
+    Vec2,
     Vec3 { rotation: bool },
+    Vec4,
 }
 
 /// The display arity of a track (from its first key's value shape, falling back
@@ -665,7 +678,9 @@ fn channel_arity(track: &Arc<Track>) -> Arity {
     if let Some(k) = track.keys.lock_ref().first() {
         return match k.value {
             TrackValue::Scalar(_) => Arity::Scalar,
+            TrackValue::Vec2(_) => Arity::Vec2,
             TrackValue::Vec3(_) => Arity::Vec3 { rotation: false },
+            TrackValue::Vec4(_) => Arity::Vec4,
             TrackValue::Quat(_) => Arity::Vec3 { rotation: true },
         };
     }
@@ -793,7 +808,9 @@ fn display_value(ch: &Channel, key: &Keyframe) -> f64 {
 fn scalar_at(key: &Keyframe, comp: usize) -> f64 {
     match key.value {
         TrackValue::Scalar(s) => s as f64,
+        TrackValue::Vec2(v) => v[comp.min(1)] as f64,
         TrackValue::Vec3(v) => v[comp.min(2)] as f64,
+        TrackValue::Vec4(v) => v[comp.min(3)] as f64,
         TrackValue::Quat(q) => q[comp.min(3)] as f64,
     }
 }
@@ -802,7 +819,9 @@ fn scalar_at(key: &Keyframe, comp: usize) -> f64 {
 fn scalar_at_tan(tan: &TrackValue, comp: usize) -> f64 {
     match tan {
         TrackValue::Scalar(s) => *s as f64,
+        TrackValue::Vec2(v) => v[comp.min(1)] as f64,
         TrackValue::Vec3(v) => v[comp.min(2)] as f64,
+        TrackValue::Vec4(v) => v[comp.min(3)] as f64,
         TrackValue::Quat(q) => q[comp.min(3)] as f64,
     }
 }
@@ -835,9 +854,17 @@ fn hermite(p0: f64, p1: f64, m0: f64, m1: f64, s: f64) -> f64 {
 fn write_value(ch: &Channel, key: &Keyframe, new_v: f64) -> TrackValue {
     match key.value {
         TrackValue::Scalar(_) => TrackValue::Scalar(new_v as f32),
+        TrackValue::Vec2(mut v) => {
+            v[ch.key.comp.min(1)] = new_v as f32;
+            TrackValue::Vec2(v)
+        }
         TrackValue::Vec3(mut v) => {
             v[ch.key.comp.min(2)] = new_v as f32;
             TrackValue::Vec3(v)
+        }
+        TrackValue::Vec4(mut v) => {
+            v[ch.key.comp.min(3)] = new_v as f32;
+            TrackValue::Vec4(v)
         }
         TrackValue::Quat(_) => {
             // current euler, replace the dragged component, back to quat.
@@ -859,9 +886,17 @@ fn write_value(ch: &Channel, key: &Keyframe, new_v: f64) -> TrackValue {
 fn write_tangent(ch: &Channel, key: &Keyframe, slope: f64) -> TrackValue {
     match key.out_tangent {
         TrackValue::Scalar(_) => TrackValue::Scalar(slope as f32),
+        TrackValue::Vec2(mut v) => {
+            v[ch.key.comp.min(1)] = slope as f32;
+            TrackValue::Vec2(v)
+        }
         TrackValue::Vec3(mut v) => {
             v[ch.key.comp.min(2)] = slope as f32;
             TrackValue::Vec3(v)
+        }
+        TrackValue::Vec4(mut v) => {
+            v[ch.key.comp.min(3)] = slope as f32;
+            TrackValue::Vec4(v)
         }
         // rotation: no scalar slope; echo the current tangent unchanged.
         TrackValue::Quat(q) => TrackValue::Quat(q),

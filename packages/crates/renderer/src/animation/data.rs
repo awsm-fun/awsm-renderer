@@ -1,13 +1,14 @@
 //! Animation data types and interpolation helpers.
 
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec2, Vec3, Vec4};
 
 use crate::transforms::Transform;
 
 use super::interpolate::{
     interpolate_cubic_spline_f32, interpolate_cubic_spline_f64, interpolate_cubic_spline_quat,
-    interpolate_cubic_spline_vec3, interpolate_linear_f32, interpolate_linear_f64,
-    interpolate_linear_quat, interpolate_linear_vec3,
+    interpolate_cubic_spline_vec2, interpolate_cubic_spline_vec3, interpolate_cubic_spline_vec4,
+    interpolate_linear_f32, interpolate_linear_f64, interpolate_linear_quat,
+    interpolate_linear_vec2, interpolate_linear_vec3, interpolate_linear_vec4,
 };
 
 /// Animation data variants supported by the player.
@@ -15,7 +16,9 @@ use super::interpolate::{
 pub enum AnimationData {
     Transform(TransformAnimation),
     Vertex(VertexAnimation),
+    Vec2(Vec2),
     Vec3(Vec3),
+    Vec4(Vec4),
     Quat(Quat),
     F32(f32),
     F64(f64),
@@ -30,8 +33,14 @@ impl Animatable for AnimationData {
             (AnimationData::Vertex(first), AnimationData::Vertex(second)) => {
                 AnimationData::Vertex(VertexAnimation::interpolate_linear(first, second, t))
             }
+            (AnimationData::Vec2(first), AnimationData::Vec2(second)) => {
+                AnimationData::Vec2(interpolate_linear_vec2(*first, *second, t))
+            }
             (AnimationData::Vec3(first), AnimationData::Vec3(second)) => {
                 AnimationData::Vec3(interpolate_linear_vec3(*first, *second, t))
+            }
+            (AnimationData::Vec4(first), AnimationData::Vec4(second)) => {
+                AnimationData::Vec4(interpolate_linear_vec4(*first, *second, t))
             }
             (AnimationData::Quat(first), AnimationData::Quat(second)) => {
                 AnimationData::Quat(interpolate_linear_quat(*first, *second, t))
@@ -82,11 +91,37 @@ impl Animatable for AnimationData {
                 interpolation_time,
             )),
             (
+                AnimationData::Vec2(first_value),
+                AnimationData::Vec2(first_tangent),
+                AnimationData::Vec2(second_value),
+                AnimationData::Vec2(second_tangent),
+            ) => AnimationData::Vec2(interpolate_cubic_spline_vec2(
+                *first_value,
+                *first_tangent,
+                *second_value,
+                *second_tangent,
+                delta_time,
+                interpolation_time,
+            )),
+            (
                 AnimationData::Vec3(first_value),
                 AnimationData::Vec3(first_tangent),
                 AnimationData::Vec3(second_value),
                 AnimationData::Vec3(second_tangent),
             ) => AnimationData::Vec3(interpolate_cubic_spline_vec3(
+                *first_value,
+                *first_tangent,
+                *second_value,
+                *second_tangent,
+                delta_time,
+                interpolation_time,
+            )),
+            (
+                AnimationData::Vec4(first_value),
+                AnimationData::Vec4(first_tangent),
+                AnimationData::Vec4(second_value),
+                AnimationData::Vec4(second_tangent),
+            ) => AnimationData::Vec4(interpolate_cubic_spline_vec4(
                 *first_value,
                 *first_tangent,
                 *second_value,

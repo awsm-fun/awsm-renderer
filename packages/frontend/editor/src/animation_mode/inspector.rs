@@ -195,6 +195,58 @@ fn keyframe_rows(
             }
             bb
         }
+        TrackValue::Vec2(v) => {
+            let mut bb = b;
+            for (i, lab) in ["X", "Y"].iter().enumerate() {
+                bb = bb.child(row(
+                    *lab,
+                    NumField::new(v[i] as f64)
+                        .step(step)
+                        .on_change(move |val| {
+                            let mut nv = v;
+                            nv[i] = val as f32;
+                            dispatch(EditorCommand::SetKeyframe {
+                                clip: clip_id,
+                                track: track_idx,
+                                index,
+                                t: None,
+                                value: Some(TrackValue::Vec2(nv)),
+                                interp: None,
+                                in_tangent: None,
+                                out_tangent: None,
+                            });
+                        })
+                        .render(),
+                ));
+            }
+            bb
+        }
+        TrackValue::Vec4(v) => {
+            let mut bb = b;
+            for (i, lab) in ["X", "Y", "Z", "W"].iter().enumerate() {
+                bb = bb.child(row(
+                    *lab,
+                    NumField::new(v[i] as f64)
+                        .step(step)
+                        .on_change(move |val| {
+                            let mut nv = v;
+                            nv[i] = val as f32;
+                            dispatch(EditorCommand::SetKeyframe {
+                                clip: clip_id,
+                                track: track_idx,
+                                index,
+                                t: None,
+                                value: Some(TrackValue::Vec4(nv)),
+                                interp: None,
+                                in_tangent: None,
+                                out_tangent: None,
+                            });
+                        })
+                        .render(),
+                ));
+            }
+            bb
+        }
     };
 
     // Interp (Select: Constant / Linear / Cubic spline).
@@ -465,7 +517,9 @@ fn transform_track_value(
 /// Read channel `i` of a track value as `f64` (for a `NumField` seed).
 fn tv_component(v: &TrackValue, i: usize) -> f64 {
     match v {
+        TrackValue::Vec2(a) => a.get(i).copied().unwrap_or(0.0) as f64,
         TrackValue::Vec3(a) => a.get(i).copied().unwrap_or(0.0) as f64,
+        TrackValue::Vec4(a) => a.get(i).copied().unwrap_or(0.0) as f64,
         TrackValue::Quat(a) => a.get(i).copied().unwrap_or(0.0) as f64,
         TrackValue::Scalar(s) => *s as f64,
     }
@@ -474,12 +528,26 @@ fn tv_component(v: &TrackValue, i: usize) -> f64 {
 /// Return `v` with channel `i` replaced by `val` (shape-preserving).
 fn tv_with_component(v: &TrackValue, i: usize, val: f32) -> TrackValue {
     match v {
+        TrackValue::Vec2(a) => {
+            let mut n = *a;
+            if i < 2 {
+                n[i] = val;
+            }
+            TrackValue::Vec2(n)
+        }
         TrackValue::Vec3(a) => {
             let mut n = *a;
             if i < 3 {
                 n[i] = val;
             }
             TrackValue::Vec3(n)
+        }
+        TrackValue::Vec4(a) => {
+            let mut n = *a;
+            if i < 4 {
+                n[i] = val;
+            }
+            TrackValue::Vec4(n)
         }
         TrackValue::Quat(a) => {
             let mut n = *a;

@@ -62,6 +62,10 @@ pub enum TrackValue {
     Quat([f32; 4]),
     /// A scalar (uniform / light / camera / morph weight).
     Scalar(f32),
+    /// A 2-component value (e.g. a UV offset / scale on a material uniform).
+    Vec2([f32; 2]),
+    /// A 4-component value (e.g. a tint / rect on a material uniform).
+    Vec4([f32; 4]),
 }
 
 /// One keyframe, aligned to a track's shared `times[i]`.
@@ -268,6 +272,8 @@ mod track_value_tests {
             TrackValue::Vec3([1.0, 2.0, 3.0]),
             TrackValue::Quat([0.0, 0.0, 0.0, 1.0]),
             TrackValue::Scalar(0.75),
+            TrackValue::Vec2([0.25, 0.5]),
+            TrackValue::Vec4([0.1, 0.2, 0.3, 0.4]),
         ] {
             let j = serde_json::to_string(&v).expect("json ser");
             let back: TrackValue = serde_json::from_str(&j).expect("json de");

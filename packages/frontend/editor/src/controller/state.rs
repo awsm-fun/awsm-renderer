@@ -5099,12 +5099,26 @@ pub(crate) async fn live_track_value(
         (TrackValue::Scalar(_), serde_json::Value::Number(n)) => {
             Some(TrackValue::Scalar(n.as_f64()? as f32))
         }
+        (TrackValue::Vec2(_), serde_json::Value::Array(a)) if a.len() >= 2 => {
+            let mut out = [0.0f32; 2];
+            for (i, x) in a.iter().take(2).enumerate() {
+                out[i] = x.as_f64()? as f32;
+            }
+            Some(TrackValue::Vec2(out))
+        }
         (TrackValue::Vec3(_), serde_json::Value::Array(a)) if a.len() >= 3 => {
             let mut out = [0.0f32; 3];
             for (i, x) in a.iter().take(3).enumerate() {
                 out[i] = x.as_f64()? as f32;
             }
             Some(TrackValue::Vec3(out))
+        }
+        (TrackValue::Vec4(_), serde_json::Value::Array(a)) if a.len() >= 4 => {
+            let mut out = [0.0f32; 4];
+            for (i, x) in a.iter().take(4).enumerate() {
+                out[i] = x.as_f64()? as f32;
+            }
+            Some(TrackValue::Vec4(out))
         }
         (TrackValue::Quat(_), serde_json::Value::Array(a)) if a.len() >= 4 => {
             let mut out = [0.0f32; 4];

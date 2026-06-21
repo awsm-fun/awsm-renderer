@@ -245,7 +245,9 @@ fn data_to_uniform_value(
     match value {
         AnimationData::F32(v) => Ok(UniformValue::F32(*v)),
         AnimationData::F64(v) => Ok(UniformValue::F32(*v as f32)),
+        AnimationData::Vec2(v) => Ok(UniformValue::Vec2([v.x, v.y])),
         AnimationData::Vec3(v) => Ok(UniformValue::Vec3([v.x, v.y, v.z])),
+        AnimationData::Vec4(v) => Ok(UniformValue::Vec4([v.x, v.y, v.z, v.w])),
         AnimationData::Quat(q) => Ok(UniformValue::Vec4([q.x, q.y, q.z, q.w])),
         other => Err(AwsmAnimationError::WrongKind(format!(
             "cannot convert {other:?} animation data to a UniformValue"
@@ -580,12 +582,18 @@ impl AwsmRenderer {
                 };
                 match dynamic.values.get(slot)? {
                     UniformValue::F32(v) => Some(AnimationData::F32(*v)),
+                    UniformValue::Vec2(v) => Some(AnimationData::Vec2(glam::Vec2::from_array(*v))),
                     UniformValue::Vec3(v) | UniformValue::Color3(v) => {
                         Some(AnimationData::Vec3(glam::Vec3::from_array(*v)))
                     }
-                    UniformValue::Vec4(v) | UniformValue::Color4(v) => Some(AnimationData::Quat(
-                        glam::Quat::from_xyzw(v[0], v[1], v[2], v[3]),
-                    )),
+                    // vec4/color4 seed as Vec4 (component-lerped), matching the
+                    // vec4 keyframe kind. (Previously seeded as Quat — a slerp on a
+                    // non-rotation tint/rect is wrong; vec4 tracks are now
+                    // first-class, so rest must be the same Vec4 kind or the mixer
+                    // blend falls through to the unchanged rest. See A1.)
+                    UniformValue::Vec4(v) | UniformValue::Color4(v) => {
+                        Some(AnimationData::Vec4(glam::Vec4::from_array(*v)))
+                    }
                     // Other uniform kinds are not animatable via the mixer.
                     _ => None,
                 }
