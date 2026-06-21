@@ -205,6 +205,56 @@ impl Instances {
         Ok(())
     }
 
+    /// Overwrite ALL of `key`'s instance transforms straight from a raw
+    /// byte slice in GPU layout (`INSTANCE_TRANSFORM_BYTE_SIZE` per
+    /// instance = one column-major `Mat4`). This is the shared-memory
+    /// sim-state path (`docs/plans/multithreading.md`, M4): a physics
+    /// worker writes per-instance world `Mat4`s into a shared
+    /// [`SharedArena`](crate::buffer::shared_arena::SharedArena); the render
+    /// worker hands that arena's contiguous mirror straight here — no
+    /// `Transform` round-trip, no per-frame allocation.
+    ///
+    /// `bytes.len()` must equal `count * INSTANCE_TRANSFORM_BYTE_SIZE` (the
+    /// instance count is topology — owner-managed). The CPU `Transform`
+    /// mirror is intentionally NOT refreshed (the sim owns these values);
+    /// bounds derived from it are one frame stale, same trade-off as the
+    /// node-transform arena path.
+    pub fn transform_write_all_bytes(&mut self, key: TransformKey, bytes: &[u8]) -> Result<()> {
+        let count = self.transform_count.get(key).copied().unwrap_or(0);
+        let expected = count * INSTANCE_TRANSFORM_BYTE_SIZE;
+        if bytes.len() != expected {
+            return Err(AwsmInstanceError::BufferCapacityOverflow(format!(
+                "instance transform bytes: got {}, expected {expected}",
+                bytes.len()
+            )));
+        }
+        self.transform_buffer.update_with_unchecked(key, |_, dst| {
+            dst[..bytes.len()].copy_from_slice(bytes);
+        });
+        self.transform_gpu_dirty = true;
+        Ok(())
+    }
+
+    /// Overwrite ALL of `key`'s per-instance attributes from a raw byte
+    /// slice in GPU layout (`InstanceAttr::BYTE_SIZE` per instance). The
+    /// attribute counterpart to [`Self::transform_write_all_bytes`] (M4).
+    /// `bytes.len()` must equal `count * InstanceAttr::BYTE_SIZE`.
+    pub fn attribute_write_all_bytes(&mut self, key: TransformKey, bytes: &[u8]) -> Result<()> {
+        let count = self.attribute_count.get(key).copied().unwrap_or(0);
+        let expected = count * InstanceAttr::BYTE_SIZE;
+        if bytes.len() != expected {
+            return Err(AwsmInstanceError::BufferCapacityOverflow(format!(
+                "instance attribute bytes: got {}, expected {expected}",
+                bytes.len()
+            )));
+        }
+        self.attribute_buffer.update_with_unchecked(key, |_, dst| {
+            dst[..bytes.len()].copy_from_slice(bytes);
+        });
+        self.attribute_gpu_dirty = true;
+        Ok(())
+    }
+
     /// Updates a single instance transform.
     pub fn transform_update(&mut self, key: TransformKey, index: usize, transform: &Transform) {
         if let Some(list) = self.cpu_transforms.get_mut(key) {

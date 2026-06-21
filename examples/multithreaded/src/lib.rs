@@ -30,6 +30,7 @@
 
 pub mod arena_test;
 pub mod bootstrap;
+pub mod crowd_demo;
 pub mod motion_demo;
 pub mod render_demo;
 pub mod smoke;
@@ -80,8 +81,9 @@ fn main_thread_boot() -> Result<(), JsValue> {
         "smoke" => smoke::start_main(),
         "arena" => arena_test::start_main(),
         "render" => render_demo::start_main(),
-        // Default: M3 physics-driven motion (objects move via shared memory).
-        _ => motion_demo::start_main(),
+        "motion" => motion_demo::start_main(),
+        // Default: M4 instanced crowd driven by the physics worker.
+        _ => crowd_demo::start_main(),
     }
 }
 
