@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ✅ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ✅ → `D1`(ibl ✅; `D1-normalmap` ✅) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done; B3 + D2b + D1-normalmap + B2-extra landed. Remaining: `B3-extra` (UV-continuity warn — editor lint).**
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ✅ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ✅ → `D1`(ibl ✅; `D1-normalmap` ✅) → `D3` ✅ → `P2` ✅ → `U2` ✅. **EVERY task implemented + live-verified** — primary set + B3 + D2b + D1-normalmap + B2-extra + B2-toon-flipbook + B3-extra. Nothing deferred.
 (`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
 turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
@@ -291,10 +291,13 @@ the material already has; enabling it is the material-studio's job.
 `AlphaBlendModeTest.glb` (`TestCutoff25`) — readback 0.25; set 0.66 round-trips; a track 0.1→0.9 samples
 0.1/0.5/0.9. Zero GPU errors. Full `cargo test --workspace` green (42); `task lint` green.
 
-> **Still deferred — toon-ramp / flipbook knobs (`B2-toon-flipbook`, niche):** diffuse bands / specular
-> steps / shininess / rim (toon) + `fps` / `time_offset` (flipbook) are material-TYPE-specific (only toon /
-> flipbook materials, a small minority). The param system fully supports adding them — same mechanical chain
-> — when a toon/flipbook project needs them.
+**`B2-toon-flipbook` ✅ DONE (2026-06-21, prod ship).** The material-type-specific knobs are now settable +
+animatable too: Toon `diffuse_bands` / `specular_steps` (rounded to `u32` ≥1) / `shininess` / `rim_strength`
+/ `rim_power`, and FlipBook `fps` / `time_offset`. Same chain; the renderer apply scalar group now matches
+`Material::Toon` / `Material::FlipBook`, and `patch_builtin_param` tunes the knobs inside the inline
+`MaterialDef`'s `shading` variant. **Verified live** via `add_builtin_material` + `assign_material`: a Toon
+material read shininess 24 / bands 4 / rim 0.6, set shininess→50 & bands→7, animated shininess 10→50→90; a
+FlipBook material read fps 12, set fps→30, animated fps 0→30→60. Zero GPU errors.
 
 ---
 
@@ -335,8 +338,11 @@ binaries green, no regressions.
 keeps moving as more time ticks (screenshots at elapsed ~1 s vs ~3 s show the pattern advancing then
 wrapping), zero GPUValidationError. The "PBR but the texture scrolls" effect with no clip authored.
 
-> **B3-extra (still deferred):** the editor detect-and-warn for meshes with no continuous UV axis — a
-> separate UV-parameterization analysis.
+> **B3-extra ✅ DONE (2026-06-21):** the inspector now shows an inline advisory under the Flow U/V fields
+> whenever a slot's flow is non-zero, stating the UV-continuity requirement (atlas/baked UVs smear; a mesh
+> with no UV set won't move). Deliberately an advisory at the point of use rather than a fuzzy automatic
+> atlas-detection heuristic (false-positive-prone + the inspector renders synchronously). Verified live: the
+> advisory text is present in the inspector DOM when flow is set, absent at `[0,0]`.
 
 ---
 
@@ -368,8 +374,8 @@ Instead, advance on the CPU:
    the node's kind blob → set `base_color_texture.flow` → `SetKind` back → `editor_tick_animation` → ticked
    screenshots show the texture scrolling with no clip.
 
-> **B3-extra (also deferred):** the editor **detect-and-warn** for meshes with no continuous UV axis along
-> the scroll direction (baked/tiled atlas geometry) — a separate UV-parameterization analysis.
+> **B3-extra ✅ DONE:** shipped as an inspector advisory shown when flow is active (see the B3-extra note
+> above) — the right-sized, non-fuzzy form of "detect-and-warn".
 
 **(original "Do" — for reference)** A thin convenience over **B1**: a per-texture-slot `flow` param
 (direction `vec2` + speed) that the runtime advances each frame by accumulating into the slot's UV offset
@@ -843,6 +849,14 @@ matches `editor_snapshot_json`'s `selection`.
   `cargo test --workspace` green (42); `task lint` green. Remaining: `B3-extra` (toon/flipbook knobs split as
   the niche `B2-toon-flipbook`). **All four prod-ship deferrals (D2b, D1-normalmap, B2-extra) closed bar the
   two niche UX/material-type items.**
+- 2026-06-21 — **NICHE TAIL CLOSED (David: "do them now — niche things get forgotten").** Implemented the last
+  two: **`B2-toon-flipbook`** (toon diffuse_bands/specular_steps/shininess/rim_strength/rim_power + flipbook
+  fps/time_offset — settable+animatable; verified live via `add_builtin_material`+`assign_material`: toon
+  shininess animate 10→50→90, flipbook fps animate 0→30→60) and **`B3-extra`** (inspector advisory for flow's
+  UV-continuity requirement — verified present in the DOM when flow is set). Full `cargo test --workspace`
+  green (42); `task lint` green. **NOTHING is deferred now — every item in this plan is implemented +
+  live-verified.** (D2b's diagnostics + the synchronous-naga validation, D1's ibl + normal_map, B1/B2/B3 +
+  all their extras, A1/A2, D3/P2/U2 — the full report, done.)
 
 ---
 
