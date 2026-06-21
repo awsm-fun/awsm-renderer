@@ -248,6 +248,21 @@ pub struct Transforms {
     /// Reused across descents to pack arena values without a per-frame heap
     /// allocation (shared mode only).
     arena_pack_scratch: Vec<(TransformKey, [u8; Self::BYTE_SIZE])>,
+
+    /// Stats from the most recent arena descent (shared mode) — exposed for
+    /// the stress/hot-path proof (work tracks movers, not total slots).
+    last_descend: TransformDescendStats,
+}
+
+/// Per-frame arena-descent stats (shared mode).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TransformDescendStats {
+    /// Slots that took a fresh value (≈ number of movers) this frame.
+    pub updated: usize,
+    /// Slots that read torn (reused last value) this frame.
+    pub torn: usize,
+    /// Dirty chunks descended this frame.
+    pub chunks: usize,
 }
 
 /// Arena-backed semantic transform store + key↔slot mapping (shared mode).
@@ -335,6 +350,7 @@ impl Transforms {
             uploader: MappedUploader::new("Transforms"),
             arena: None,
             arena_pack_scratch: Vec::new(),
+            last_descend: TransformDescendStats::default(),
         })
     }
 
@@ -388,6 +404,13 @@ impl Transforms {
     /// `true` when the shared sim-state arena is active.
     pub fn is_shared(&self) -> bool {
         self.arena.is_some()
+    }
+
+    /// Stats from the most recent `update_world` arena descent (shared
+    /// mode). `updated` tracks the number of movers, not the total slot
+    /// count — the hot-path scalability property (M3 stress proof).
+    pub fn last_descend_stats(&self) -> TransformDescendStats {
+        self.last_descend
     }
 
     /// Base address of the arena's chunk dirty bitmap (for a foreign
@@ -576,6 +599,11 @@ impl Transforms {
                 return;
             };
             let result = a.arena.descend();
+            self.last_descend = TransformDescendStats {
+                updated: result.updated,
+                torn: result.torn,
+                chunks: result.chunks,
+            };
             let stride = TRANSFORM_ARENA_STRIDE;
             for (off, len) in &result.ranges {
                 let start = off / stride;

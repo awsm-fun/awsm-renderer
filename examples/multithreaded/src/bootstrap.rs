@@ -123,6 +123,7 @@ pub fn mt_worker_start(role: String, payload: JsValue) -> Result<(), JsValue> {
         "a" | "b" => crate::smoke::worker_dispatch(&role),
         "arena-render" | "arena-physics" => crate::arena_test::worker_dispatch(&role, payload),
         "render" | "physics" => crate::render_demo::worker_dispatch(&role, payload),
+        "motion-render" | "motion-physics" => crate::motion_demo::worker_dispatch(&role, payload),
         other => {
             tracing::warn!("unknown worker role {other:?}");
             Ok(())

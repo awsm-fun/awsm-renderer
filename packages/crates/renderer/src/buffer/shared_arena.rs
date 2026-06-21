@@ -227,6 +227,9 @@ pub struct DescendResult {
     pub updated: usize,
     /// Number of slots that read torn (reused last value, will retry).
     pub torn: usize,
+    /// Number of dirty chunks descended this pass. Scan cost tracks this,
+    /// not the total slot count — the core scalability property.
+    pub chunks: usize,
 }
 
 /// A chunked, stable-address arena over a per-slot seqlock + chunk dirty
@@ -430,6 +433,7 @@ impl SharedArena {
         }
 
         let ranges = self.coalesce(&mut updated);
+        let chunks_descended = chunks.len();
 
         // Return scratch for reuse.
         self.scratch_chunks = chunks;
@@ -439,6 +443,7 @@ impl SharedArena {
             ranges,
             updated: self.scratch_updated.len(),
             torn,
+            chunks: chunks_descended,
         }
     }
 
