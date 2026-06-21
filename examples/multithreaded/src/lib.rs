@@ -32,6 +32,8 @@ pub mod arena_test;
 pub mod bootstrap;
 pub mod crowd_demo;
 pub mod motion_demo;
+pub mod protocol;
+pub mod remote_demo;
 pub mod render_demo;
 pub mod smoke;
 
@@ -82,8 +84,9 @@ fn main_thread_boot() -> Result<(), JsValue> {
         "arena" => arena_test::start_main(),
         "render" => render_demo::start_main(),
         "motion" => motion_demo::start_main(),
-        // Default: M4 instanced crowd driven by the physics worker.
-        _ => crowd_demo::start_main(),
+        "crowd" => crowd_demo::start_main(),
+        // Default: M5 remote-renderer protocol (DOM driver + worker renderer).
+        _ => remote_demo::start_main(),
     }
 }
 
