@@ -1,6 +1,6 @@
 use awsm_renderer::{
     anti_alias::AntiAliasing, materials::pbr::PbrMaterialDebug, post_process::PostProcessing,
-    RendererLoadingPhase,
+    LoadingStats, RendererLoadingPhase,
 };
 
 use crate::prelude::*;
@@ -37,14 +37,12 @@ pub struct LoadingStatus {
     /// profile) — "Browser is compiling shaders…" rather than a
     /// frozen "Initializing renderer…".
     pub renderer_phase: Option<RendererLoadingPhase>,
-    /// Set true while `AwsmRenderer::prewarm_pipelines()` runs — the
-    /// trailing edge of the cold-start shader-compile window that
-    /// otherwise hides inside the (already slow) `renderer` phase.
-    /// Surfaced separately so the user can see "Compiling shaders…"
-    /// distinctly from "Initializing renderer…" — particularly on the
-    /// first post-deploy load when the browser's PSO disk cache
-    /// (see PERFORMANCE.md §5g) misses on the new shader hashes.
-    pub shader_prewarm: std::result::Result<bool, String>,
+    /// Live snapshot of the in-flight `commit_load` transaction (geometry upload →
+    /// texture finalize → pipeline compile), fed by `commit_load`'s `on_progress`.
+    /// `None` between commits. Drives the granular per-phase overlay lines via the
+    /// shared `LoadingStats::phase_label()` (docs/plans/todo.md §6), replacing the
+    /// old coarse "Compiling scene shaders…" boolean.
+    pub commit: Option<LoadingStats>,
     pub ibl: std::result::Result<bool, String>,
     pub skybox: std::result::Result<bool, String>,
     pub gltf_net: std::result::Result<bool, String>,
@@ -84,7 +82,7 @@ impl Default for LoadingStatus {
         Self {
             renderer: Ok(false),
             renderer_phase: None,
-            shader_prewarm: Ok(false),
+            commit: None,
             ibl: Ok(false),
             skybox: Ok(false),
             gltf_net: Ok(false),
@@ -99,7 +97,7 @@ impl Default for LoadingStatus {
 impl LoadingStatus {
     pub fn is_loading(&self) -> bool {
         matches!(self.renderer, Ok(true))
-            || matches!(self.shader_prewarm, Ok(true))
+            || self.commit.is_some()
             || matches!(self.ibl, Ok(true))
             || matches!(self.skybox, Ok(true))
             || matches!(self.gltf_net, Ok(true))
@@ -142,8 +140,12 @@ impl LoadingStatus {
             statuses.push("Initializing renderer...".to_string());
         }
 
-        if let Ok(true) = &self.shader_prewarm {
-            statuses.push("Compiling scene shaders...".to_string());
+        // Granular commit-load progress (geometry → textures → pipelines), from the
+        // shared `LoadingStats::phase_label()` so both viewers read identically.
+        if let Some(stats) = &self.commit {
+            if let Some(label) = stats.phase_label() {
+                statuses.push(label);
+            }
         }
 
         if let Ok(true) = &self.ibl {
@@ -180,7 +182,6 @@ impl LoadingStatus {
 
     pub fn any_error(&self) -> bool {
         self.renderer.is_err()
-            || self.shader_prewarm.is_err()
             || self.ibl.is_err()
             || self.skybox.is_err()
             || self.gltf_net.is_err()
@@ -194,9 +195,6 @@ impl LoadingStatus {
 
         if let Err(err) = &self.renderer {
             errors.push(format!("Error initializing Renderer: {}", err));
-        }
-        if let Err(err) = &self.shader_prewarm {
-            errors.push(format!("Error compiling shaders: {}", err));
         }
         if let Err(err) = &self.ibl {
             errors.push(format!("Error loading IBL: {}", err));

@@ -1,10 +1,10 @@
 //! The single GPU-buffer packer for the visibility + transparency geometry
 //! streams (see `docs/buffers.md`).
 //!
-//! Both upload front-ends pack through here so their bytes can't drift: the
-//! raw-mesh path (`add_raw_mesh` / `add_raw_mesh_transparent`, from `MeshData`)
-//! today, and — as the convergence point — the gltf populate path's vertex
-//! builders (a follow-on). The byte
+//! All geometry packs through here so its bytes can't drift: `resolve_one`
+//! (commit) packs the visibility/transparency streams for BOTH the raw-mesh and
+//! glTF sources from their retained `GeometrySource`, and the glTF decode's
+//! `cfg(test)` packer-parity references pin byte-identity against it. The byte
 //! layouts here are the canonical definition.
 
 use awsm_renderer_core::pipeline::primitive::FrontFace;

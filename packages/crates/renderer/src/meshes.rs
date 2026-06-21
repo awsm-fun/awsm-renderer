@@ -2,6 +2,7 @@
 
 pub mod buffer_info;
 pub mod error;
+pub mod geometry;
 pub mod mesh;
 pub mod meta;
 pub mod morphs;
@@ -568,6 +569,18 @@ pub struct MeshResource {
 pub struct Meshes {
     list: DenseSlotMap<MeshKey, Mesh>,
     resources: DenseSlotMap<MeshResourceKey, MeshResource>,
+    /// Registered geometry sources (§1 ②). CPU-only retained source, held from
+    /// `register_geometry` until its first `commit_load` packs+uploads the kinds
+    /// its bound materials need, then dropped. The transaction's geometry-dedup
+    /// unit — many meshes share one [`GeometryKey`]. (Populated/consumed by later
+    /// steps; for now the registry exists in parallel to the legacy `insert` path.)
+    geometries: DenseSlotMap<geometry::GeometryKey, geometry::GeometrySource>,
+    /// Which geometry each pending/committed mesh binds to (§1 ③). Set by
+    /// `add_mesh`; read by `resolve_geometry` to wire the shared resource.
+    mesh_to_geometry: SecondaryMap<MeshKey, geometry::GeometryKey>,
+    /// Reverse: the meshes bound to each registered geometry, so `resolve_geometry`
+    /// can union their materials' kinds + wire them all to the one shared resource.
+    geometry_to_meshes: SecondaryMap<geometry::GeometryKey, Vec<MeshKey>>,
     mesh_to_resource: SecondaryMap<MeshKey, MeshResourceKey>,
     transform_to_meshes: SecondaryMap<TransformKey, Vec<MeshKey>>,
     // Merged geometry pool: one allocation per mesh holds
@@ -671,6 +684,9 @@ impl Meshes {
         Ok(Self {
             list: DenseSlotMap::with_key(),
             resources: DenseSlotMap::with_key(),
+            geometries: DenseSlotMap::with_key(),
+            mesh_to_geometry: SecondaryMap::new(),
+            geometry_to_meshes: SecondaryMap::new(),
             mesh_to_resource: SecondaryMap::new(),
             transform_to_meshes: SecondaryMap::new(),
             buffer_infos: MeshBufferInfos::new(),
@@ -862,74 +878,232 @@ impl Meshes {
         s
     }
 
-    /// Public wrapper around `insert` for the raw-mesh path. Same semantics —
-    /// see `raw_mesh::AwsmRenderer::add_raw_mesh` for the canonical caller.
-    #[allow(clippy::too_many_arguments)]
-    pub fn insert_public(
-        &mut self,
-        mesh: Mesh,
-        materials: &Materials,
-        transforms: &Transforms,
-        buffer_info_key: MeshBufferInfoKey,
-        visibility_geometry_data: Option<&[u8]>,
-        transparency_geometry_data: Option<&[u8]>,
-        attribute_data: &[u8],
-        attribute_index: &[u8],
-        aabb: Option<Aabb>,
-        geometry_morph_key: Option<GeometryMorphKey>,
-        material_morph_key: Option<MaterialMorphKey>,
-        skin_key: Option<SkinKey>,
-    ) -> Result<MeshKey> {
-        self.insert(
-            mesh,
-            materials,
-            transforms,
-            buffer_info_key,
-            visibility_geometry_data,
-            transparency_geometry_data,
-            attribute_data,
-            attribute_index,
-            aabb,
-            geometry_morph_key,
-            material_morph_key,
-            skin_key,
-        )
+    /// Register a [`geometry::GeometrySource`] (§1 ②) — CPU-only, NO GPU upload.
+    /// Returns a [`geometry::GeometryKey`] that meshes bind to via `add_mesh`; the
+    /// per-pass representations are packed+uploaded at the next `commit_load` from
+    /// the union of bound materials, then the source is dropped. Many meshes may
+    /// share one key (geometry dedup).
+    pub fn register_geometry(&mut self, source: geometry::GeometrySource) -> geometry::GeometryKey {
+        self.geometries.insert(source)
     }
 
-    /// Inserts a mesh and its backing resource data, returning a mesh key.
+    /// The retained source for a registered geometry, while it's still present
+    /// (i.e. before its first commit consumes + frees it). `None` after that, or
+    /// for an unknown key.
+    pub fn geometry_source(&self, key: geometry::GeometryKey) -> Option<&geometry::GeometrySource> {
+        self.geometries.get(key)
+    }
+
+    /// Number of registered geometries still holding source (drives the
+    /// `UploadingGeometry` progress count).
+    pub fn geometry_count(&self) -> usize {
+        self.geometries.len()
+    }
+
+    /// Bind an already-built [`Mesh`] to a registered geometry (the deferred
+    /// "append" — `add_mesh`'s storage half). Inserts the mesh (sync MeshKey),
+    /// fills its world AABB from the geometry source, and records the binding maps.
+    /// NO GPU upload, NO resource, NO meta — those happen at the next
+    /// `resolve_geometry` (commit). Returns the MeshKey.
+    pub(crate) fn bind_mesh(
+        &mut self,
+        mut mesh: Mesh,
+        geometry_key: geometry::GeometryKey,
+    ) -> Result<MeshKey> {
+        let source = self
+            .geometries
+            .get(geometry_key)
+            .ok_or(AwsmMeshError::GeometryNotFound(geometry_key))?;
+        if mesh.world_aabb.is_none() {
+            mesh.world_aabb = source.aabb.clone();
+        }
+        let mesh_key = self.list.insert(mesh);
+        self.mesh_to_geometry.insert(mesh_key, geometry_key);
+        self.geometry_to_meshes
+            .entry(geometry_key)
+            .unwrap()
+            .or_default()
+            .push(mesh_key);
+        Ok(mesh_key)
+    }
+
+    /// THE geometry commit (`commit_load` phase 0, §2): for every registered
+    /// geometry, derive + upload the representation(s) the union of its bound
+    /// materials needs — ONCE each — into a single shared resource, wire every
+    /// bound mesh to it, then FREE the source. Returns the wired mesh keys (for the
+    /// caller to sync into the spatial index). Idempotent on an empty registry.
     ///
-    /// Pub so external ingestion crates (e.g. `awsm-renderer-gltf`) can
-    /// upload meshes through the same path glTF historically used.
-    #[allow(clippy::too_many_arguments)]
-    pub fn insert(
+    /// Reuses the existing `insert_resource` (upload) + `wire_instance` (per-mesh)
+    /// plumbing — the only new logic is the union-of-kinds + pack-from-source. A
+    /// geometry registered but never bound is simply dropped (source freed).
+    pub(crate) fn resolve_geometry(
         &mut self,
-        mesh: Mesh,
         materials: &Materials,
         transforms: &Transforms,
-        buffer_info_key: MeshBufferInfoKey,
-        visibility_geometry_data: Option<&[u8]>,
-        transparency_geometry_data: Option<&[u8]>,
-        attribute_data: &[u8],
-        attribute_index: &[u8],
-        aabb: Option<Aabb>,
-        geometry_morph_key: Option<GeometryMorphKey>,
-        material_morph_key: Option<MaterialMorphKey>,
-        skin_key: Option<SkinKey>,
-    ) -> Result<MeshKey> {
-        let resource_key = self.insert_resource(
-            buffer_info_key,
-            visibility_geometry_data,
-            transparency_geometry_data,
-            attribute_data,
-            attribute_index,
-            aabb,
-            geometry_morph_key,
-            material_morph_key,
-            skin_key,
-        )?;
-
-        self.insert_instance(mesh, resource_key, materials, transforms)
+    ) -> Result<Vec<MeshKey>> {
+        let geometry_keys: Vec<geometry::GeometryKey> = self.geometries.keys().collect();
+        let mut wired = Vec::new();
+        for gkey in geometry_keys {
+            wired.extend(self.resolve_one(gkey, materials, transforms)?);
+        }
+        Ok(wired)
     }
+
+    /// Resolve a SINGLE registered geometry: pack the representation(s) the union
+    /// of its bound materials needs (once each), upload into one shared resource,
+    /// wire every bound mesh, and free the source. Returns the wired mesh keys
+    /// (empty if the geometry is unknown or unbound). Shared by the commit-time
+    /// `resolve_geometry` (all pending) and the eager `add_raw_mesh` (its one
+    /// geometry — so a one-off raw mesh draws immediately, sync, without a commit).
+    pub(crate) fn resolve_one(
+        &mut self,
+        gkey: geometry::GeometryKey,
+        materials: &Materials,
+        transforms: &Transforms,
+    ) -> Result<Vec<MeshKey>> {
+        use crate::meshes::geometry::{geometry_kind, GeometryKind};
+
+        // Take the source OUT (frees it — §1 ②) so the uploads below can borrow
+        // `&mut self` without aliasing the registry.
+        let Some(source) = self.geometries.remove(gkey) else {
+            return Ok(Vec::new());
+        };
+        let bound = self.geometry_to_meshes.remove(gkey).unwrap_or_default();
+        if bound.is_empty() {
+            return Ok(Vec::new()); // registered but never bound — nothing to build.
+        }
+        let mut wired = Vec::new();
+
+        {
+            // Union the kinds + tangent-need over the bound meshes' materials.
+            let mut want_visibility = false;
+            let mut want_transparency = false;
+            let mut want_tangents = false;
+            for &mk in &bound {
+                let Some(mesh) = self.list.get(mk) else {
+                    continue;
+                };
+                let is_hud = mesh.hud;
+                let Ok(material) = materials.get(mesh.material_key) else {
+                    continue;
+                };
+                match geometry_kind(material, is_hud) {
+                    GeometryKind::Visibility => want_visibility = true,
+                    GeometryKind::Transparency => want_transparency = true,
+                    GeometryKind::Both => {
+                        want_visibility = true;
+                        want_transparency = true;
+                    }
+                }
+                if crate::raw_mesh::material_wants_tangents(material) {
+                    want_tangents = true;
+                }
+            }
+
+            // Tangents (commit-time): prefer AUTHORED tangents (e.g. glTF TANGENT);
+            // else generate via MikkTSpace iff a bound material samples a normal map
+            // (gated — see §6 step 2). `None` ⇒ the packer's synthetic fallback.
+            let tangents = source.tangents.clone().or_else(|| {
+                if want_tangents {
+                    source.uvs0.as_ref().and_then(|uvs| {
+                        awsm_tangents::generate_tangents(
+                            &source.positions,
+                            &source.normals,
+                            uvs,
+                            &source.indices,
+                        )
+                    })
+                } else {
+                    None
+                }
+            });
+
+            // Pack exactly the needed representation(s), once each.
+            let visibility_bytes = want_visibility.then(|| {
+                crate::mesh_pack::pack_visibility_bytes(
+                    &source.positions,
+                    &source.normals,
+                    tangents.as_deref(),
+                    &source.indices,
+                    source.front_face,
+                )
+            });
+            let transparency_bytes = want_transparency.then(|| {
+                crate::mesh_pack::pack_transparency_bytes(
+                    &source.positions,
+                    &source.normals,
+                    tangents.as_deref(),
+                    source.vertex_count(),
+                )
+            });
+
+            // Rebuild the layout descriptor from the source (vis/transp Some/None
+            // matches what we packed; triangles from the source attributes).
+            let triangle_count = source.triangle_count();
+            let buffer_info = buffer_info::MeshBufferInfo {
+                visibility_geometry_vertex: visibility_bytes.as_ref().map(|_| {
+                    MeshBufferVertexInfo {
+                        count: triangle_count * 3,
+                    }
+                }),
+                transparency_geometry_vertex: transparency_bytes.as_ref().map(|_| {
+                    MeshBufferVertexInfo {
+                        count: source.vertex_count(),
+                    }
+                }),
+                triangles: buffer_info::MeshBufferTriangleInfo {
+                    count: triangle_count,
+                    vertex_attribute_indices: buffer_info::MeshBufferAttributeIndexInfo {
+                        count: triangle_count * 3,
+                    },
+                    vertex_attributes: source.vertex_attributes.clone(),
+                    vertex_attributes_size: source.custom_attribute_bytes.len(),
+                    triangle_data: buffer_info::MeshBufferTriangleDataInfo {
+                        size_per_triangle: 12,
+                        total_size: triangle_count * 12,
+                    },
+                },
+                // Morph/skin layout travels with the geometry source (deltas are
+                // kind-independent). `None` for the raw path; the glTF decoder fills
+                // these when it produces morphed/skinned geometry (§6 step 5).
+                geometry_morph: source.geometry_morph_info.clone(),
+                material_morph: source.material_morph_info.clone(),
+                skin: source.skin_info.clone(),
+            };
+            let buffer_info_key = self.buffer_infos.insert(buffer_info);
+
+            // ONE shared upload for this geometry; refcount = number of bound meshes.
+            let resource_key = self.insert_resource(
+                buffer_info_key,
+                visibility_bytes.as_deref(),
+                transparency_bytes.as_deref(),
+                &source.custom_attribute_bytes,
+                &source.attribute_index_bytes,
+                source.aabb.clone(),
+                source.geometry_morph_key,
+                source.material_morph_key,
+                source.skin_key,
+            )?;
+            if let Some(resource) = self.resources.get_mut(resource_key) {
+                resource.refcount = bound.len();
+            }
+
+            // Wire every bound mesh to the shared resource (flags + meta).
+            for &mk in &bound {
+                self.wire_instance(mk, resource_key, materials, transforms)?;
+                self.mesh_to_geometry.remove(mk);
+                wired.push(mk);
+            }
+        }
+
+        Ok(wired)
+    }
+
+    // (The legacy eager `insert` / `insert_public` entry points are gone — all
+    // geometry now flows through `register_geometry` → `add_mesh` → `resolve_one`
+    // (commit), §1. `insert_resource` below is the shared upload primitive that
+    // `resolve_one` calls per (geometry, kind); `insert_instance` wires a
+    // duplicated instance to an already-built resource.)
 
     fn insert_resource(
         &mut self,
@@ -1133,17 +1307,36 @@ impl Meshes {
 
     fn insert_instance(
         &mut self,
-        mut mesh: Mesh,
+        mesh: Mesh,
         resource_key: MeshResourceKey,
         materials: &Materials,
         transforms: &Transforms,
     ) -> Result<MeshKey> {
-        let transform_key = mesh.transform_key;
+        let mesh_key = self.list.insert(mesh);
+        self.wire_instance(mesh_key, resource_key, materials, transforms)?;
+        Ok(mesh_key)
+    }
 
+    /// Wires an ALREADY-inserted mesh (in `self.list`) to its shared GPU
+    /// `resource_key`: derives the pass-routing flags from the resource's
+    /// representation offsets, fills the world AABB, registers the HUD/transform
+    /// bookkeeping, and writes the per-mesh meta. The single choke point shared by
+    /// the legacy `insert` path (via `insert_instance`) AND the geometry-transaction
+    /// `resolve_geometry`, which binds N meshes to one resource. Bumps no refcount —
+    /// the caller owns that (each `insert` resource starts at 1; `resolve_geometry`
+    /// sets it to the bound-mesh count).
+    fn wire_instance(
+        &mut self,
+        mesh_key: MeshKey,
+        resource_key: MeshResourceKey,
+        materials: &Materials,
+        transforms: &Transforms,
+    ) -> Result<()> {
         let (
             resource_aabb,
             buffer_info_key,
             visibility_geometry_data_offset,
+            transparency_geometry_data_offset,
             custom_attribute_index_offset,
             custom_attribute_data_offset,
             geometry_morph_key,
@@ -1154,11 +1347,11 @@ impl Meshes {
                 .resources
                 .get(resource_key)
                 .ok_or(AwsmMeshError::ResourceNotFound(resource_key))?;
-
             (
                 resource.aabb.clone(),
                 resource.buffer_info_key,
                 resource.visibility_geometry_data_offset,
+                resource.transparency_geometry_data_offset,
                 resource.custom_attribute_index_offset,
                 resource.custom_attribute_data_offset,
                 resource.geometry_morph_key,
@@ -1167,29 +1360,41 @@ impl Meshes {
             )
         };
 
-        if mesh.world_aabb.is_none() {
-            mesh.world_aabb = resource_aabb;
-        }
+        let transform_key = {
+            let mesh = self
+                .list
+                .get_mut(mesh_key)
+                .ok_or(AwsmMeshError::MeshNotFound(mesh_key))?;
+            // Flags DERIVED from the resource's actual representation offsets — the
+            // routing flags can never disagree with the uploaded buffers.
+            mesh.has_visibility_geometry = visibility_geometry_data_offset.is_some();
+            mesh.has_transparency_geometry = transparency_geometry_data_offset.is_some();
+            if mesh.world_aabb.is_none() {
+                mesh.world_aabb = resource_aabb;
+            }
+            // T2.6: catch the insert-with-`hud: true` path too — either route into
+            // the HUD render group trips the sticky flag so the HUD depth attachment
+            // lands by the next render frame.
+            if mesh.hud {
+                self.has_seen_hud = true;
+                self.hud_revision = self.hud_revision.wrapping_add(1);
+            }
+            mesh.transform_key
+        };
 
-        // T2.6: catch the insert-with-`hud: true` path too, not just
-        // post-insert `set_mesh_hud(true)` flips. Either route into
-        // the HUD render group should trip the sticky flag so the HUD
-        // depth attachment lands by the next render frame.
-        if mesh.hud {
-            self.has_seen_hud = true;
-            self.hud_revision = self.hud_revision.wrapping_add(1);
-        }
-        let mesh_key = self.list.insert(mesh.clone());
         self.mesh_to_resource.insert(mesh_key, resource_key);
-
         self.transform_to_meshes
             .entry(transform_key)
             .unwrap()
             .or_default()
             .push(mesh_key);
 
+        let mesh = self
+            .list
+            .get(mesh_key)
+            .ok_or(AwsmMeshError::MeshNotFound(mesh_key))?
+            .clone();
         let buffer_info = self.buffer_infos.get(buffer_info_key)?;
-
         self.meta.insert(
             mesh_key,
             &mesh,
@@ -1206,7 +1411,7 @@ impl Meshes {
             &self.skins,
         )?;
 
-        Ok(mesh_key)
+        Ok(())
     }
 
     /// Duplicates a mesh instance and assigns a new transform key.

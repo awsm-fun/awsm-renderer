@@ -107,6 +107,7 @@ use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
 use awsm_renderer::meshes::MeshKey;
+use awsm_renderer::pipeline_scheduler::CompileProgress;
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::transforms::{Transform, TransformKey};
@@ -660,9 +661,9 @@ pub async fn load_scene_for_player(
     // The custom-WGSL asset → shader-id table (Phase 0) feeds Uniform resolution.
     maps.custom_shaders = custom;
 
-    // ── Phase 2: upload textures (one batch across the whole scene) ───────────
-    on_phase(LoadPhase::UploadingTextures);
-    renderer.finalize_gpu_textures().await?;
+    // ── Phase 2: meshes are staged below; texture finalize + pipeline compile
+    //    both happen in ONE `commit_load` at Phase 4 (the load transaction's
+    //    single compile point), so there is no separate texture-finalize here.
 
     // ── Phase 3: upload meshes (geometry + skins) + lights ────────────────────
     let mut loaded = LoadedScene::default();
@@ -688,12 +689,8 @@ pub async fn load_scene_for_player(
         .await?;
     }
 
-    // ── Phase 3a: commit any textures staged while materializing ──────────────
-    // Phase 2's `finalize_gpu_textures` covers material textures (built in Phase
-    // 1). `Sprite` / `Decal` nodes resolve their textures HERE in Phase 3 (their
-    // material isn't in `collect_renderables`), so re-finalize to upload anything
-    // newly staged. Idempotent — a no-op when no sprite/decal added a texture.
-    renderer.finalize_gpu_textures().await?;
+    // (Textures staged here by `Sprite` / `Decal` nodes are committed by the
+    // single Phase-4 `commit_load` below — no separate finalize needed.)
 
     // ── Assemble per-NodeId handles (R1) ──────────────────────────────────────
     // Every materialized node owns a transform; attach whatever mesh/light/camera
@@ -731,9 +728,29 @@ pub async fn load_scene_for_player(
     // (`update_animations` each frame, or the editor round-trip's playhead pin).
     loaded.clips = animation::load_animations(renderer, scene, &maps);
 
-    // ── Phase 4: compile pipelines to ready (materials + shadows) ─────────────
+    // ── Phase 4: THE commit — finalize the texture pool ONCE + compile every
+    //    pipeline the scene needs, against the now-final content. This is the
+    //    load transaction's single compile point (`commit_load`), replacing the
+    //    old hand-rolled finalize×2 + `wait_for_pipelines_ready`. Maps the
+    //    unified `LoadingStats` back onto the loader's coarse `LoadPhase`.
     renderer
-        .wait_for_pipelines_ready_with_progress(|cp| on_phase(LoadPhase::CompilingPipelines(cp)))
+        .commit_load(|stats| {
+            use awsm_renderer::loading::LoadPhase as P;
+            match stats.phase {
+                P::UploadingGeometry => on_phase(LoadPhase::UploadingMeshes {
+                    done: stats.geometry_uploaded,
+                    total: stats.geometry_total,
+                }),
+                P::FinalizingTextures => on_phase(LoadPhase::UploadingTextures),
+                P::Compiling => on_phase(LoadPhase::CompilingPipelines(CompileProgress {
+                    materials_pending: stats.pipelines_pending,
+                    materials_ready: stats.pipelines_ready,
+                    materials_failed: stats.pipelines_failed,
+                    in_flight_subcompiles: stats.in_flight_subcompiles,
+                })),
+                P::Idle | P::Ready => {}
+            }
+        })
         .await?;
     Ok(loaded)
 }
@@ -1666,24 +1683,14 @@ pub async fn load_glb_under(
         .fetch(&key)
         .await
         .map_err(|_| anyhow!("bundle is missing mesh glb `{key}`"))?;
-    // The bundle's glb is geometry-only (materials stripped), so `populate_gltf`
-    // would decide every primitive Opaque and build no transparency geometry —
-    // but we apply OUR material via `Single`. If that material is transparent the
-    // transparency pass would then fail (`TransparencyGeometryBufferNotFound`), so
-    // override the geometry kind from our material (per-load — the same glb asset
-    // can be shared by nodes with different materials).
-    use awsm_renderer_gltf::data::GltfGeometryOverride;
+    // The bundle's glb is geometry-only (materials stripped) and we apply OUR
+    // material via `Single`. The geometry KIND (visibility vs transparency) is no
+    // longer baked at decode — the renderer derives it at commit from the bound
+    // material (docs/plans/todo.md §4), so a transparent material correctly gets
+    // transparency geometry with no per-load override. The same glb asset can be
+    // shared by nodes with different materials, each resolving its own kind.
     let transparent = renderer.materials.is_transparency_pass(material);
-    let geometry_override = if transparent {
-        GltfGeometryOverride::Transparent
-    } else {
-        GltfGeometryOverride::FromMaterial
-    };
-    let hints = awsm_renderer_gltf::data::GltfDataHints::default()
-        .with_geometry_override(geometry_override);
-    let data = GltfLoader::from_glb_bytes(&bytes)
-        .await?
-        .into_data(Some(hints))?;
+    let data = GltfLoader::from_glb_bytes(&bytes).await?.into_data(None)?;
     let ctx = renderer
         .populate_gltf_with(
             data,
@@ -1691,7 +1698,6 @@ pub async fn load_glb_under(
                 scene: None,
                 parent_transform: parent,
                 material_source: GltfMaterialSource::Single(material),
-                finalize_textures: false,
             },
         )
         .await?;

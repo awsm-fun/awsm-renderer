@@ -13,9 +13,9 @@ impl AwsmRenderer {
     /// update. If the mesh has no world AABB yet (procedural / mid-load),
     /// the spatial entry is removed so the index never carries a stale box.
     ///
-    /// External mesh-ingest crates (e.g. `awsm-renderer-gltf`) must call
-    /// this after `Meshes::insert` / `Meshes::insert_public` so the new
-    /// mesh participates in frustum culling on the next frame.
+    /// Called for each mesh wired by `resolve_geometry` (commit) / `resolve_one`
+    /// (eager `add_raw_mesh`) so the new mesh participates in frustum culling on
+    /// the next frame. (`AwsmRenderer::resolve_geometry` calls this per wired key.)
     pub fn sync_spatial_for_mesh(&mut self, mesh_key: MeshKey) {
         let Ok(mesh) = self.meshes.get(mesh_key) else {
             self.scene_spatial.remove(mesh_key);

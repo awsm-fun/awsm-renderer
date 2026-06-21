@@ -54,6 +54,23 @@ fn stress_grid_count() -> Option<u32> {
     None
 }
 
+/// Diagnostic bench: parse `?variants=M` — with `?stress=N`, assign M distinct
+/// first-party PBR feature-mask variants round-robin across the stress meshes (each
+/// a clone of the source material with a different texture subset turned off, so
+/// each is a distinct `PbrFeatures` mask → distinct variant pipeline). Used to
+/// investigate whether a scene with many distinct PBR variants renders correctly.
+/// `None` when absent / `<= 1`, so it is fully inert in normal use.
+fn variant_count() -> Option<u32> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let query = search.trim_start_matches('?');
+    for pair in query.split('&') {
+        if let Some(val) = pair.strip_prefix("variants=") {
+            return val.parse::<u32>().ok().filter(|n| *n > 1);
+        }
+    }
+    None
+}
+
 pub struct AppScene {
     pub ctx: AppContext,
     pub renderer: Arc<futures::lock::Mutex<AwsmRenderer>>,
@@ -686,6 +703,64 @@ impl AppScene {
                     .copied()
                     .collect();
                 if let Some(&src) = source_keys.first() {
+                    // `?variants=M`: build M distinct first-party PBR feature-mask
+                    // variants by cloning the source PBR material and toggling off a
+                    // distinct subset of its textures (5 texture bits → up to 32
+                    // distinct masks). Each becomes a distinct variant pipeline.
+                    use awsm_renderer::materials::{Material, MaterialKey};
+                    let variant_keys: Vec<MaterialKey> = match variant_count() {
+                        Some(m) => {
+                            let src_pbr = renderer
+                                .meshes
+                                .get(src)
+                                .ok()
+                                .map(|mesh| mesh.material_key)
+                                .and_then(|k| match renderer.materials.get(k) {
+                                    Ok(Material::Pbr(p)) => Some((**p).clone()),
+                                    _ => None,
+                                });
+                            if let Some(base_pbr) = src_pbr {
+                                let awsm_renderer::AwsmRenderer {
+                                    materials,
+                                    textures,
+                                    dynamic_materials,
+                                    extras_pool,
+                                    ..
+                                } = &mut *renderer;
+                                (0..m)
+                                    .map(|v| {
+                                        let mut pbr = base_pbr.clone();
+                                        let mask = v % 32;
+                                        if mask & 0b00001 != 0 {
+                                            pbr.metallic_roughness_tex = None;
+                                        }
+                                        if mask & 0b00010 != 0 {
+                                            pbr.normal_tex = None;
+                                        }
+                                        if mask & 0b00100 != 0 {
+                                            pbr.emissive_tex = None;
+                                        }
+                                        if mask & 0b01000 != 0 {
+                                            pbr.occlusion_tex = None;
+                                        }
+                                        if mask & 0b10000 != 0 {
+                                            pbr.base_color_tex = None;
+                                        }
+                                        materials.insert(
+                                            Material::Pbr(Box::new(pbr)),
+                                            textures,
+                                            dynamic_materials,
+                                            extras_pool,
+                                        )
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        None => Vec::new(),
+                    };
+
                     let cols = (n as f32).sqrt().ceil() as i64;
                     let mut made = 0usize;
                     for i in 0..n as i64 {
@@ -699,11 +774,18 @@ impl AppScene {
                             },
                             None,
                         );
-                        if renderer.duplicate_mesh_with_transform(src, tk).is_ok() {
+                        if let Ok(new_mesh_key) = renderer.duplicate_mesh_with_transform(src, tk) {
                             made += 1;
+                            if !variant_keys.is_empty() {
+                                let mat = variant_keys[(i as usize) % variant_keys.len()];
+                                let _ = renderer.set_mesh_material(new_mesh_key, mat);
+                            }
                         }
                     }
-                    tracing::warn!("§C.1 stress bench: duplicated {made} meshes (grid {cols}x)");
+                    tracing::warn!(
+                        "§C.1 stress bench: duplicated {made} meshes (grid {cols}x), {} variants",
+                        variant_keys.len()
+                    );
                 }
             }
 
@@ -779,24 +861,42 @@ impl AppScene {
         self.ctx.loading_status.lock_mut().populate_finalize = Ok(false);
     }
 
-    /// Force the variant reconcile + per-bucket pipeline compiles
-    /// (opaque / classify / MSAA edge-resolve) to fully resolve BEFORE the
-    /// first frame is shown, so the scene never reveals with half-compiled
-    /// pipelines — a black frame, or (the MSAA edge-resolve bug) a frame
-    /// with the anti-aliasing edge pass skipped. Routes through
-    /// `compile_material_variants().await`, which reconciles the feature-set
-    /// variants and then awaits `wait_for_pipelines_ready` — the awaited
-    /// path that drives the reliable layout-level edge-pipeline rebuild.
-    /// Gated in the loading overlay via `shader_prewarm`.
-    pub async fn compile_materials(self: &Arc<Self>) {
-        self.ctx.loading_status.lock_mut().shader_prewarm = Ok(true);
+    /// Open the load gate before a cold / full model load. The render gate then
+    /// clears to the clear-color (loading overlay on top) until [`Self::commit`]
+    /// lands — so the scene never reveals a half-compiled frame.
+    pub async fn begin_load(self: &Arc<Self>) {
+        self.renderer.lock().await.begin_load();
+    }
+
+    /// THE commit point of the load: finalize the texture pool ONCE + compile
+    /// every pipeline the scene needs (opaque / classify / MSAA edge-resolve),
+    /// then flip the render gate open. Gating the reveal here is what keeps the
+    /// first shown frame fully specialized + anti-aliased (no black / aliased
+    /// transient). Drives the loading overlay from `LoadingStats`.
+    pub async fn commit(self: &Arc<Self>) {
+        // Hold the gate up from the start of the commit (Idle snapshot → no banner
+        // line yet, but `is_loading()` is true) until the first granular callback.
+        self.ctx.loading_status.lock_mut().commit = Some(awsm_renderer::LoadingStats::default());
         {
+            let ctx = self.ctx.clone();
             let mut renderer = self.renderer.lock().await;
-            if let Err(err) = renderer.compile_material_variants().await {
-                tracing::error!("compile_material_variants failed: {:?}", err);
+            let result = renderer
+                .commit_load(|stats| {
+                    // Feed the FULL snapshot so the overlay renders the active phase
+                    // (geometry X/Y → textures X/Y → pipelines N) via the shared
+                    // `LoadingStats::phase_label()`.
+                    ctx.loading_status.lock_mut().commit = Some(stats);
+                })
+                .await;
+            if let Err(err) = result {
+                tracing::error!("commit_load failed: {:?}", err);
             }
         }
-        self.ctx.loading_status.lock_mut().shader_prewarm = Ok(false);
+        {
+            let mut status = self.ctx.loading_status.lock_mut();
+            status.commit = None;
+            status.compile_pending = 0;
+        }
     }
 
     pub async fn reset_punctual_lights(self: &Arc<Self>) -> Result<()> {
@@ -943,6 +1043,11 @@ impl AppScene {
         let anti_aliasing = self.ctx.anti_alias.get_cloned();
 
         renderer.set_anti_aliasing(anti_aliasing).await?;
+        // An AA flip is a config change that needs recompilation: the MSAA
+        // edge-resolve set is rebuilt by `commit_load` (the one compile path),
+        // not by a render-preamble side channel. Live (no `begin_load`) so the
+        // scene stays on screen across the flip.
+        renderer.commit_load(|_| {}).await?;
 
         Ok(())
     }

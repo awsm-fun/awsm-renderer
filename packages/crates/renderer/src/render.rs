@@ -95,6 +95,49 @@ impl AwsmRenderer {
         // scheduler's apply_resolution path — see
         // pipeline_scheduler/mod.rs for the wiring.
 
+        // Render gate (load transaction, `docs/plans/todo.md`). Only draw scene
+        // frames once a `commit_load` has compiled the scene against its final
+        // content; until then clear to the clear-color so a loading overlay sits
+        // over a clean frame, not a half-compiled scene. NEITHER branch
+        // compiles: `commit_load` is the SOLE compile path. `render()` only
+        // drains already-resolved compiles (the `poll_pipeline_scheduler` above
+        // — which lets a non-awaited live `commit_load` land over frames) and
+        // draws what is already compiled.
+        if self.scene_committed {
+            self.render_all(hooks)
+        } else {
+            self.render_loading()
+        }
+    }
+
+    /// Clears the framebuffer to the clear-color and presents — the
+    /// `scene_committed == false` render path. A model-tests/editor loading
+    /// overlay (CSS / HUD) draws on top of this clean frame. Never compiles.
+    fn render_loading(&mut self) -> Result<()> {
+        let command_encoder = self.gpu.create_command_encoder(Some("Loading clear"));
+        let render_pass = command_encoder.begin_render_pass(
+            &RenderPassDescriptor {
+                label: Some("Loading clear"),
+                color_attachments: vec![ColorAttachment::new(
+                    &self.gpu.current_context_texture_view()?,
+                    LoadOp::Clear,
+                    StoreOp::Store,
+                )
+                .with_clear_color(&self._clear_color)],
+                ..Default::default()
+            }
+            .into(),
+        )?;
+        render_pass.end();
+        self.gpu.submit_commands(&command_encoder.finish());
+        Ok(())
+    }
+
+    /// Draws a committed scene — the full per-frame pass chain. Reached from
+    /// `render()` only when `scene_committed`. Contains NO compile preamble: the
+    /// `reconcile_material_variants` → `ensure_scene_pipelines` compile that used
+    /// to run here every frame now lives ONLY in `commit_load`.
+    fn render_all(&mut self, hooks: Option<&RenderHooks>) -> Result<()> {
         // Fat-line pipelines are render pipelines, not compute, so they
         // sit outside the scheduler's `poll_pipeline_scheduler` pump
         // above. Drive their lazy compile here on the same per-frame
@@ -284,14 +327,12 @@ impl AwsmRenderer {
             self.default_cheap_material_pixel_threshold,
         )?;
 
-        // Specialize-only pivot: route PBR/Toon materials (opaque and
-        // transparent) to their per-feature-set variant buckets BEFORE the
-        // material GPU write (so the resolved variant id lands in the
-        // payload's first u32 in this same frame) and before classify
-        // dispatch (which routes on it). Cheap no-op once the material set
-        // settles (gated internally on `variants_dirty`).
-        self.reconcile_material_variants()?;
-
+        // (Variant reconcile + scene-pipeline compile used to run here every
+        // frame — the reactive `reconcile_material_variants()` →
+        // `ensure_scene_pipelines` preamble. It now runs ONLY in `commit_load`,
+        // against the load's final content, so `render_all` never compiles and
+        // the resolved-variant ids it stamps into the material payload are
+        // already settled by the time this draws. See `docs/plans/todo.md` §1.)
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.materials

@@ -212,6 +212,9 @@ pub enum AwsmGltfError {
     #[error("[gltf] punctual light: {0:?}")]
     Light(#[from] AwsmLightError),
 
+    #[error("[gltf] renderer: {0:?}")]
+    Renderer(#[from] AwsmError),
+
     #[error("[gltf] {0}")]
     Other(String),
 }

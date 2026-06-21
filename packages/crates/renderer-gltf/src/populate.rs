@@ -52,9 +52,14 @@ pub enum GltfMaterialSource {
     Single(MaterialKey),
 }
 
-/// Options for [`populate_gltf`](crate::populate::populate_gltf). `Default` is
-/// the foreign-glTF behavior (build materials from the document, finalize
-/// textures at the end), so existing single-asset callers are unchanged.
+/// Options for [`populate_gltf`](crate::populate::populate_gltf).
+///
+/// `populate_gltf` is a pure deferred ADD now (load-transaction model,
+/// `docs/plans/todo.md`): it stages textures, meshes, and materials but NEVER
+/// finalizes/compiles. The embedder finalizes + compiles once via
+/// `AwsmRenderer::commit_load` after all content is declared — so there is no
+/// per-populate `finalize_textures` knob (a batch loader staging across many
+/// glbs and a single-asset load are now identical: stage, then one commit).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PopulateGltfOpts {
     /// glTF scene index to load (`None` = the default/first scene).
@@ -64,20 +69,13 @@ pub struct PopulateGltfOpts {
     pub parent_transform: Option<TransformKey>,
     /// Where each primitive's material comes from.
     pub material_source: GltfMaterialSource,
-    /// Whether to `finalize_gpu_textures` at the end. `false` lets a batch
-    /// loader (the bundle) stage textures across many glbs and finalize once.
-    pub finalize_textures: bool,
 }
 
 impl PopulateGltfOpts {
-    /// Foreign-glTF defaults: build materials from the document + finalize
-    /// textures. (A bare `Default::default()` sets `finalize_textures: false`;
-    /// this is the "behaves like the old `populate_gltf`" constructor.)
+    /// Foreign-glTF defaults: build materials from the document. Equivalent to
+    /// `Default::default()`; kept as a named constructor for call-site clarity.
     pub fn foreign() -> Self {
-        Self {
-            finalize_textures: true,
-            ..Default::default()
-        }
+        Self::default()
     }
 }
 
@@ -238,7 +236,6 @@ pub async fn populate_gltf(
         scene,
         parent_transform,
         material_source,
-        finalize_textures,
     } = opts;
 
     let gltf_data = gltf_data.into();
@@ -302,13 +299,10 @@ pub async fn populate_gltf(
 
     ctx.punctual_lights = crate::populate::lights::populate_gltf_lights(renderer, &ctx)?;
 
-    // A batch loader (the bundle) defers this so it can stage textures across
-    // many glbs and commit them in one upload; a single-asset caller finalizes
-    // here. (For `GltfMaterialSource::Single` no glTF textures are created, so
-    // this is a near no-op regardless.)
-    if finalize_textures {
-        renderer.finalize_gpu_textures().await?;
-    }
+    // No finalize/compile here: `populate_gltf` is a pure deferred ADD. Every
+    // texture/mesh/material is staged; the embedder calls
+    // `AwsmRenderer::commit_load` once after declaring all content to finalize
+    // the pool + compile against the final scene (the one compile path).
 
     Ok(ctx)
 }

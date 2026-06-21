@@ -41,16 +41,18 @@ impl AwsmRenderer {
     ///
     /// **Two-tier model:**
     /// - **Material pipelines** (classify / opaque / per-shader edge
-    ///   resolve) are RENDER-DRIVEN: this method just flags the reconcile
-    ///   (`mark_variants_dirty`) + resets the ensure fingerprint, and the
-    ///   next render preamble's `ensure_scene_pipelines` recompiles
-    ///   exactly what the live scene needs at the new config (compiling
-    ///   only the active `(msaa, mipmaps)` variant — no 4× blowup, no
-    ///   eager relaunch loop). Dispatch sites skip not-ready pipelines
-    ///   until they resolve.
+    ///   resolve): this method only FLAGS the reconcile
+    ///   (`mark_variants_dirty`) + resets the ensure fingerprint — it does
+    ///   NOT recompile them. An AA change is a config change that needs
+    ///   recompilation, so the caller must follow `set_anti_aliasing` with
+    ///   `commit_load` (the one compile path); `commit_load`'s
+    ///   `reconcile_material_variants` → `ensure_scene_pipelines` then
+    ///   recompiles exactly the new config's `(msaa, mipmaps)` variant.
+    ///   (Pre-load-transaction this happened reactively in the render
+    ///   preamble; that preamble is gone — see `docs/plans/todo.md` §1.)
     /// - **Non-material passes** (geometry / HZB / picker / transparent /
-    ///   effects / lines / shadows) have no render-driven re-ensure, so
-    ///   their MSAA-variant recompiles stay here, awaited up front.
+    ///   effects / lines / shadows) have no scene-compile path, so their
+    ///   MSAA-variant recompiles stay here, awaited up front.
     ///
     /// Already-compiled variants from previous MSAA states stay cached,
     /// so toggling back-and-forth pays the compile cost only on the first
@@ -115,15 +117,13 @@ impl AwsmRenderer {
         self.bind_groups
             .mark_create(BindGroupCreate::TextureViewRecreate);
 
-        // Material pipelines (classify / opaque / per-shader edge resolve)
-        // are render-driven. Flag the reconcile + reset the ensure
-        // fingerprint so the next render preamble's `ensure_scene_pipelines`
-        // recompiles the active `(msaa, mipmaps)` variant for every live
-        // bucket against the new config (clearing the stale layout-keyed
-        // caches + bumping generations to drop in-flight old-config
-        // resolutions). The old eager opaque/classify/edge `ensure_keys`
-        // batches + the per-material relaunch loop are gone — the dispatch
-        // sites skip not-ready pipelines until the next ensure lands them.
+        // Material pipelines (classify / opaque / per-shader edge resolve):
+        // flag the reconcile + reset the ensure fingerprint so the caller's
+        // follow-up `commit_load` (the one compile path) recompiles the active
+        // `(msaa, mipmaps)` variant for every live bucket against the new config
+        // (clearing the stale layout-keyed caches + bumping generations to drop
+        // in-flight old-config resolutions). render() no longer drives this —
+        // `set_anti_aliasing` MUST be followed by `commit_load`.
         self.last_ensured_bucket_layout = None;
         self.materials.mark_variants_dirty();
 
@@ -349,13 +349,13 @@ impl AwsmRenderer {
             )
             .await?;
 
-        // NOTE: the MSAA edge-resolve pipeline set is render-driven (it's
-        // layout-level — its cache keys embed the whole bucket list — and
-        // the `mark_variants_dirty` flag set above makes the next
-        // preamble's `ensure_scene_pipelines` → `launch_edge_resolve_compile`
-        // rebuild it for the new config). `multisampled_geometry` (computed
-        // in Phase 4b for the geometry branch's lazy-pool selector) equals
-        // `new_msaa_on`; assert that invariant once for documentation.
+        // NOTE: the MSAA edge-resolve pipeline set is layout-level (its cache
+        // keys embed the whole bucket list); the `mark_variants_dirty` flag set
+        // above makes the caller's follow-up `commit_load` →
+        // `ensure_scene_pipelines` → `launch_edge_resolve_compile` rebuild it
+        // for the new config. `multisampled_geometry` (computed in Phase 4b for
+        // the geometry branch's lazy-pool selector) equals `new_msaa_on`; assert
+        // that invariant once for documentation.
         debug_assert_eq!(new_msaa_on, multisampled_geometry);
 
         // ── Phase 8 (Block B.3): line pipelines lazy ensure. Cold-boot

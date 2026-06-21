@@ -140,8 +140,14 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
         let _ = r.unregister_material(old);
     }
     let shader_id = r.register_material(reg).map_err(|e| format!("{e}"))?;
-    if let Err(e) = r.finalize_gpu_textures().await {
-        tracing::warn!("finalize after register: {e}");
+    // Live material add: `register_material` only stages the bucket; the one
+    // compile path (`commit_load`) finalizes textures + compiles the new
+    // material's pipelines so it shades on the next frame.
+    if let Err(e) = r
+        .commit_load(crate::engine::activity::commit_phase_handler())
+        .await
+    {
+        tracing::warn!("commit_load after register: {e}");
     }
     REGISTRY.with(|reg| reg.borrow_mut().insert(mat_id, shader_id));
     LAST_HASH.with(|h| h.borrow_mut().insert(mat_id, hashes));

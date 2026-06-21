@@ -118,9 +118,13 @@ pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), Str
         .textures
         .add_image_rgba_raw(&rgba, w, h, sampler_key, color)
         .map_err(|e| format!("upload: {e}"))?;
-    r.finalize_gpu_textures()
+    // Live texture add: a pool grow invalidates the opaque/classify/edge
+    // pipeline shaders (they bake in `texture_pool_arrays_len`), so route
+    // through the one compile path — `commit_load` finalizes the pool AND
+    // recompiles against it (the render preamble no longer does).
+    r.commit_load(crate::engine::activity::commit_phase_handler())
         .await
-        .map_err(|e| format!("finalize: {e}"))?;
+        .map_err(|e| format!("commit_load: {e}"))?;
     register_texture_key(id, key);
     Ok(())
 }

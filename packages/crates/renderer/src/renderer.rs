@@ -368,6 +368,32 @@ pub struct AwsmRenderer {
     /// `take`/restored across each `render()` to avoid per-frame allocator/GC
     /// churn at high mesh counts. See [`crate::render::RenderFrameScratch`].
     pub(crate) render_frame_scratch: crate::render::RenderFrameScratch,
+    /// The load-transaction render gate. `false` at build and after
+    /// [`AwsmRenderer::begin_load`] (show the loading screen); set `true` by
+    /// [`AwsmRenderer::commit_load`] once the scene's pipelines are compiled.
+    /// `render()` dispatches to `render_all` when true, `render_loading` (clear
+    /// only) when false. This is the WHOLE render-gate state — there is no
+    /// reactive per-frame compile to reason about (the old render-preamble
+    /// `reconcile_material_variants` → `ensure_scene_pipelines` compile now lives
+    /// only in `commit_load`).
+    pub(crate) scene_committed: bool,
+    /// Live phase of the in-flight (or last) [`AwsmRenderer::commit_load`], read
+    /// back by [`AwsmRenderer::loading_stats`] for imperative pollers.
+    pub(crate) load_phase: crate::loading::LoadPhase,
+    /// Texture-pool counts the current/last commit is uploading. Set by
+    /// `commit_load` around its single `finalize_gpu_textures`; surfaced through
+    /// `LoadingStats` so a loader can show texture-upload progress.
+    pub(crate) loading_textures_total: usize,
+    pub(crate) loading_textures_uploaded: usize,
+    /// Geometry-resolution counts for the current/last commit (the
+    /// `UploadingGeometry` phase) — surfaced through `LoadingStats` for granular
+    /// loading UI.
+    pub(crate) loading_geometry_total: usize,
+    pub(crate) loading_geometry_uploaded: usize,
+    /// Immutable snapshot of every build-time config knob, captured in `build()`.
+    /// [`AwsmRenderer::remove_all`] rebuilds from it so a scene-data wipe can't
+    /// drift a config. See [`RendererConfigSpec`].
+    pub(crate) config_spec: RendererConfigSpec,
 }
 
 /// Compatibility requirements for this renderer.
@@ -418,31 +444,160 @@ impl AwsmRenderer {
     /// preserved too — `remove_all` is a scene-data wipe, not a
     /// config-reset.
     pub async fn remove_all(&mut self) -> crate::error::Result<()> {
-        // meh, just recreate the renderer, it's fine
-        let mut builder = AwsmRendererBuilder::new(self.gpu.clone())
-            .with_logging(self.logging.clone())
-            .with_clear_color(self._clear_color.clone())
-            .with_render_texture_formats(self.render_textures.formats.clone())
-            .with_features(self.features.clone())
-            .with_optimization_policy(self.optimization_policy.clone())
-            .with_anti_aliasing(self.anti_aliasing.clone())
-            .with_post_processing(self.post_processing.clone())
-            .with_shadows_config(self.shadows.config().clone())
-            .with_scene_spatial_config(self.scene_spatial.config());
-        if let Some(budget) = self
-            .material_edge_buffers
-            .as_ref()
-            .map(|eb| eb.max_edge_budget)
-        {
-            builder = builder.with_max_edge_budget(budget);
-        }
-        if let Some(tier) = self.recommended_shadow_quality_tier {
-            builder = builder.with_recommended_shadow_quality_tier(tier);
-        }
-        let renderer = builder.build().await?;
-
-        *self = renderer;
+        // Scene-data wipe = rebuild from the build-time config snapshot. ONE line,
+        // no hand-copy, no drift: `config_spec` captured EVERY `with_*` knob at
+        // `build()`, so this can't silently drop a config the way the old
+        // field-by-field copy did (it dropped bucket cap / shadow-K / brdf-lut /
+        // env colors across this boundary). Scene content — meshes, lights, the
+        // live IBL/skybox textures — is intentionally NOT carried; the caller
+        // reloads the scene + re-sets the environment. See `RendererConfigSpec`.
+        *self = AwsmRendererBuilder::from_spec(self.gpu.clone(), self.config_spec.clone())
+            .build()
+            .await?;
         Ok(())
+    }
+
+    // =====================================================================
+    // The load transaction (`docs/plans/todo.md`): begin_load → adds →
+    // commit_load. The ONE public way to get content compiled + on screen.
+    // =====================================================================
+
+    /// Request the loading screen until the next commit: sets
+    /// `scene_committed = false` so `render()` clears to the clear-color (a
+    /// loading overlay draws on top) instead of drawing a half-compiled scene.
+    ///
+    /// Call this before a **cold / full load**. **SKIP it for a live add** —
+    /// leaving `scene_committed` true keeps the existing scene on screen while
+    /// the new content compiles in the background; the new meshes simply aren't
+    /// drawn until the matching `commit_load` resolves.
+    pub fn begin_load(&mut self) {
+        self.scene_committed = false;
+        self.load_phase = crate::loading::LoadPhase::Idle;
+    }
+
+    /// THE single compile point of the load transaction. Finalizes the texture
+    /// pool ONCE, resolves material variants, kicks every needed pipeline
+    /// compile, drains them CONCURRENTLY (`FuturesUnordered`), reports progress
+    /// through `on_progress`, and sets `scene_committed = true`. Identical code
+    /// for cold-load, full-reload, and live add — the only differences are the
+    /// app's choices to call `begin_load` and to `await` (or not) this future.
+    ///
+    /// Cheap no-op when nothing changed since the last commit (the content-keyed
+    /// caches make finalize + every compile a hit).
+    pub async fn commit_load(
+        &mut self,
+        mut on_progress: impl FnMut(crate::loading::LoadingStats),
+    ) -> crate::error::Result<crate::loading::LoadingStats> {
+        use crate::loading::{LoadPhase, LoadingStats};
+
+        // ── Phase 0: resolve geometry — derive + upload each registered geometry's
+        //    needed pass representations (visibility/transparency) from the union of
+        //    its bound materials, ONCE each, then free the source (§1 ②). Runs first
+        //    so meshes have their buffers before the texture/compile phases. (The
+        //    resolution body + the bindings it consumes land with the add_mesh
+        //    deferral; today the registry is empty so this just reports the phase.)
+        self.load_phase = LoadPhase::UploadingGeometry;
+        self.resolve_geometry(&mut on_progress)?;
+
+        // ── Phase 1: finalize the texture pool ONCE (the single batched GPU
+        //    upload of every staged image). Ordered FIRST — every
+        //    opaque/classify/edge pipeline's shader bakes in
+        //    `texture_pool_arrays_len`, so compiling before the pool is final
+        //    would compile against a stale pool that finalize then wipes,
+        //    forcing the recompile this design exists to delete. finalize-first
+        //    ⇒ the compile in phase 2 runs exactly ONCE against the final pool.
+        //    (The spec lists reconcile before finalize, but reconcile *embeds*
+        //    the compile-kick, so finalize must precede it to hit the §7
+        //    "one edge compile per load" goal.)
+        self.load_phase = LoadPhase::FinalizingTextures;
+        self.loading_textures_total = self.textures.resource_counts().0;
+        self.loading_textures_uploaded = 0;
+        on_progress(self.loading_stats());
+
+        self.finalize_gpu_textures().await?;
+
+        self.loading_textures_total = self.textures.resource_counts().0;
+        self.loading_textures_uploaded = self.loading_textures_total;
+        on_progress(self.loading_stats());
+
+        // ── Phase 2: resolve PBR/Toon feature-set variants against the now-final
+        //    textures and kick the scene's pipeline compiles. This is the moved
+        //    render-preamble compile: `reconcile_material_variants` internally
+        //    drives `ensure_scene_pipelines` (opaque + classify + edge) — run
+        //    ONLY here now, never per render frame.
+        self.reconcile_material_variants()?;
+
+        // ── Phase 3: drain every kicked compile to completion CONCURRENTLY,
+        //    mapping each resolution into `LoadingStats`. This reuses the
+        //    existing concurrent drain (which also warms the transparent + line
+        //    pipelines) — it is not reimplemented here.
+        self.load_phase = LoadPhase::Compiling;
+        let textures_total = self.loading_textures_total;
+        let geometry_total = self.loading_geometry_total;
+        self.drain_commit_compiles(|cp| {
+            on_progress(LoadingStats::from_parts(
+                LoadPhase::Compiling,
+                geometry_total,
+                geometry_total,
+                textures_total,
+                textures_total,
+                cp,
+            ));
+        })
+        .await?;
+
+        // ── Phase 4: committed — `render()` switches to `render_all`.
+        self.scene_committed = true;
+        self.load_phase = LoadPhase::Ready;
+        let final_stats = self.loading_stats();
+        on_progress(final_stats);
+        Ok(final_stats)
+    }
+
+    /// Phase 0 of [`Self::commit_load`]: derive + upload each registered geometry's
+    /// needed pass representations (visibility / transparency) from the union of its
+    /// bound materials — once each — then free the source (§1 ②).
+    ///
+    /// The resolution body + the mesh→geometry bindings it consumes land with the
+    /// `add_mesh` deferral; today the geometry registry is empty (producers still use
+    /// the legacy eager `insert`), so this reports the phase over a 0-count registry.
+    fn resolve_geometry(
+        &mut self,
+        on_progress: &mut impl FnMut(crate::loading::LoadingStats),
+    ) -> crate::error::Result<()> {
+        let total = self.meshes.geometry_count();
+        self.loading_geometry_total = total;
+        self.loading_geometry_uploaded = 0;
+        on_progress(self.loading_stats());
+
+        // Derive + upload each geometry's needed representations once (per the union
+        // of its bound materials), wire the bound meshes to the shared resource, and
+        // free the source. Then sync each newly-resolved mesh into the spatial index
+        // (deferred to here so skinned meshes flag correctly — the resource exists now).
+        let wired = self
+            .meshes
+            .resolve_geometry(&self.materials, &self.transforms)?;
+        for mesh_key in wired {
+            self.sync_spatial_for_mesh(mesh_key);
+        }
+
+        self.loading_geometry_uploaded = total;
+        on_progress(self.loading_stats());
+        Ok(())
+    }
+
+    /// Imperative snapshot of the same `LoadingStats` that `commit_load`'s
+    /// `on_progress` reports — for pollers driving a loading UI off a render-loop
+    /// tick rather than the callback.
+    pub fn loading_stats(&self) -> crate::loading::LoadingStats {
+        crate::loading::LoadingStats::from_parts(
+            self.load_phase,
+            self.loading_geometry_total,
+            self.loading_geometry_uploaded,
+            self.loading_textures_total,
+            self.loading_textures_uploaded,
+            self.compile_progress(),
+        )
     }
 
     /// Returns the active feature gates picked at construction time.
@@ -544,7 +699,7 @@ impl AwsmRenderer {
     /// has promises to drain. It covers every live bucket (first-party
     /// canonical, PBR/Toon feature-set variants, and custom dynamic
     /// materials) at the active AA config; idempotent on cache hits.
-    pub async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
+    pub(crate) async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
         let _maybe_span = if self.logging.render_timings.sub_frame() {
             Some(tracing::span!(tracing::Level::INFO, "Prewarm Pipelines").entered())
         } else {
@@ -770,6 +925,40 @@ pub enum RendererLoadingPhase {
 /// single-threaded so we don't need `Send + Sync`.
 pub type RendererLoadingPhaseHandler = Box<dyn FnMut(RendererLoadingPhase)>;
 
+/// Immutable snapshot of every build-time config knob the embedder chose — the
+/// declare→commit-for-config analog of the load transaction. Captured at
+/// `build()` and stored on [`AwsmRenderer`]; [`AwsmRenderer::remove_all`]
+/// rebuilds straight from it via [`AwsmRendererBuilder::from_spec`], so a
+/// scene-data wipe can NEVER silently drop a config (the historical hand-copy
+/// in `remove_all` repeatedly did — bucket cap, shadow-K, brdf-lut, env colors).
+///
+/// Mirrors the builder's raw inputs exactly (the `Option`s + the depth override),
+/// not resolved values, so `from_spec(...).build()` re-runs identical resolution.
+/// The only builder fields NOT captured are `gpu` (passed to `from_spec`
+/// separately) and `phase_handler` (a non-clonable callback irrelevant to a
+/// rebuild). Add a field here whenever a new build-time `with_*` knob is added.
+#[derive(Clone)]
+pub struct RendererConfigSpec {
+    logging: AwsmRendererLogging,
+    render_texture_formats: Option<RenderTextureFormats>,
+    brdf_lut_options: BrdfLutOptions,
+    clear_color: Color,
+    skybox_colors: CubemapBitmapColors,
+    ibl_filtered_env_colors: CubemapBitmapColors,
+    ibl_irradiance_colors: CubemapBitmapColors,
+    anti_aliasing: AntiAliasing,
+    post_processing: PostProcessing,
+    shadows_config: Option<shadows::ShadowsConfig>,
+    features: RendererFeatures,
+    max_edge_budget: Option<u32>,
+    bucket_config: Option<crate::dynamic_materials::BucketConfig>,
+    prep_config: crate::render_passes::material_prep::PrepPassConfig,
+    optimization_policy: crate::optimization_policy::RendererOptimizationPolicy,
+    scene_spatial_config: Option<crate::scene_spatial::SceneSpatialConfig>,
+    recommended_shadow_quality_tier: Option<crate::shadows::ShadowQualityTier>,
+    render_texture_formats_depth_override: Option<awsm_renderer_core::texture::TextureFormat>,
+}
+
 /// Builder for `AwsmRenderer`.
 pub struct AwsmRendererBuilder {
     gpu: AwsmRendererGpuBuilderKind,
@@ -916,6 +1105,60 @@ impl AwsmRendererBuilder {
             scene_spatial_config: None,
             recommended_shadow_quality_tier: None,
             render_texture_formats_depth_override: None,
+        }
+    }
+
+    /// Snapshot every build-time config knob into a [`RendererConfigSpec`].
+    /// Called by `build()` to stash the spec on the renderer for `remove_all`.
+    /// Every field except `gpu` + `phase_handler` is captured.
+    fn to_config_spec(&self) -> RendererConfigSpec {
+        RendererConfigSpec {
+            logging: self.logging.clone(),
+            render_texture_formats: self.render_texture_formats.clone(),
+            brdf_lut_options: self.brdf_lut_options.clone(),
+            clear_color: self.clear_color.clone(),
+            skybox_colors: self.skybox_colors.clone(),
+            ibl_filtered_env_colors: self.ibl_filtered_env_colors.clone(),
+            ibl_irradiance_colors: self.ibl_irradiance_colors.clone(),
+            anti_aliasing: self.anti_aliasing.clone(),
+            post_processing: self.post_processing.clone(),
+            shadows_config: self.shadows_config.clone(),
+            features: self.features.clone(),
+            max_edge_budget: self.max_edge_budget,
+            bucket_config: self.bucket_config,
+            prep_config: self.prep_config,
+            optimization_policy: self.optimization_policy.clone(),
+            scene_spatial_config: self.scene_spatial_config,
+            recommended_shadow_quality_tier: self.recommended_shadow_quality_tier,
+            render_texture_formats_depth_override: self.render_texture_formats_depth_override,
+        }
+    }
+
+    /// Reconstruct a builder from a [`RendererConfigSpec`] + a GPU context — the
+    /// one-line, drift-free basis for [`AwsmRenderer::remove_all`]. `phase_handler`
+    /// is `None` (a rebuild needs no boot-phase callback).
+    pub fn from_spec(gpu: impl Into<AwsmRendererGpuBuilderKind>, spec: RendererConfigSpec) -> Self {
+        Self {
+            gpu: gpu.into(),
+            logging: spec.logging,
+            render_texture_formats: spec.render_texture_formats,
+            brdf_lut_options: spec.brdf_lut_options,
+            clear_color: spec.clear_color,
+            skybox_colors: spec.skybox_colors,
+            ibl_filtered_env_colors: spec.ibl_filtered_env_colors,
+            ibl_irradiance_colors: spec.ibl_irradiance_colors,
+            anti_aliasing: spec.anti_aliasing,
+            post_processing: spec.post_processing,
+            shadows_config: spec.shadows_config,
+            features: spec.features,
+            max_edge_budget: spec.max_edge_budget,
+            bucket_config: spec.bucket_config,
+            prep_config: spec.prep_config,
+            optimization_policy: spec.optimization_policy,
+            phase_handler: None,
+            scene_spatial_config: spec.scene_spatial_config,
+            recommended_shadow_quality_tier: spec.recommended_shadow_quality_tier,
+            render_texture_formats_depth_override: spec.render_texture_formats_depth_override,
         }
     }
 
@@ -1174,6 +1417,10 @@ impl AwsmRendererBuilder {
 
     /// Builds the renderer and initializes GPU resources.
     pub async fn build(self) -> std::result::Result<AwsmRenderer, crate::error::AwsmError> {
+        // Snapshot every build-time config knob BEFORE consuming the builder, so
+        // `remove_all` can rebuild from it drift-free (the config analog of the
+        // load transaction — see `RendererConfigSpec`).
+        let config_spec = self.to_config_spec();
         let Self {
             gpu,
             logging,
@@ -1916,6 +2163,15 @@ impl AwsmRendererBuilder {
             animations,
             cameras: crate::cameras::Cameras::new(),
             render_frame_scratch: crate::render::RenderFrameScratch::default(),
+            // The render gate starts closed: a freshly built renderer shows the
+            // loading screen until its first `commit_load` lands.
+            scene_committed: false,
+            load_phase: crate::loading::LoadPhase::Idle,
+            loading_textures_total: 0,
+            loading_textures_uploaded: 0,
+            loading_geometry_total: 0,
+            loading_geometry_uploaded: 0,
+            config_spec,
         };
 
         // Apply the configured registration ceiling (§2). Validated +
@@ -2290,38 +2546,20 @@ impl AwsmRenderer {
         self.debug_wireframe = u32::from(on);
     }
 
-    /// Drive any pending compiles to completion and return when every
-    /// scheduler-tracked group is either `Ready` or `Failed`.
+    /// The commit's CONCURRENT compile drain — `commit_load`'s phase 3. Kicks
+    /// the render-driven scene compile (`ensure_scene_pipelines`, inside
+    /// `prewarm_pipelines`) + the transparent-mesh + line prewarm, then drains
+    /// every resulting `inflight_compile` promise CONCURRENTLY via
+    /// `Stream::next` (each `.await` yields to the JS event loop so Dawn's
+    /// compile promises fire), installing each as it resolves and invoking
+    /// `on_progress` with a fresh [`CompileProgress`] snapshot per resolution.
     ///
-    /// Block A.2: this is the **canonical post-submit await surface**.
-    /// Frontends that have just called `register_material` /
-    /// `submit_dynamic_material` / (future) gltf-loader-driven
-    /// `submit_pipeline_group_batch` await this to know the GPU side
-    /// is caught up — at which point any mesh referencing the newly
-    /// submitted material will start dispatching on the next render
-    /// frame.
+    /// `pub(crate)`: the ONLY caller is `commit_load` (the one compile path).
+    /// It is not a free-floating "wait for pipelines" an embedder calls mid-
+    /// render — there is no such surface anymore.
     ///
-    /// Internally:
-    /// 1. Runs `prewarm_pipelines` (the existing batched compile
-    ///    flow), which the A.1 bridge wires to `mark_ready` for each
-    ///    scheduler-tracked material whose pipelines resolve.
-    /// 2. Drains `poll_pipeline_scheduler` until no further
-    ///    transitions apply (covers any scheduler-pushed futures from
-    ///    the eventual Stage-D push-futures migration).
-    ///
-    /// Returns the total number of transitions applied. Diagnostic
-    /// only — callers don't usually inspect.
-    pub async fn wait_for_pipelines_ready(&mut self) -> crate::error::Result<usize> {
-        self.wait_for_pipelines_ready_with_progress(|_| {}).await
-    }
-
-    /// Same as [`wait_for_pipelines_ready`] but invokes `on_progress` with a
-    /// fresh [`CompileProgress`](crate::pipeline_scheduler::CompileProgress)
-    /// snapshot after each sub-pipeline resolves — so a boot loader / splash
-    /// can show a live "Compiling N render pipelines…" countdown during the
-    /// cold-start warmup, mirroring the in-app activity pill that covers
-    /// post-mount (import / material-edit) compiles.
-    pub async fn wait_for_pipelines_ready_with_progress(
+    /// Returns the total number of transitions applied (diagnostic only).
+    pub(crate) async fn drain_commit_compiles(
         &mut self,
         mut on_progress: impl FnMut(crate::pipeline_scheduler::CompileProgress),
     ) -> crate::error::Result<usize> {
@@ -2332,9 +2570,9 @@ impl AwsmRenderer {
         self.prewarm_pipelines().await?;
 
         // Block B.3: if any line primitive has been registered since
-        // build (or since the last `wait_for_pipelines_ready`), drive
-        // the lazy line-pipeline compile here so the next frame can
-        // dispatch the fat-line pass instead of warn-skipping.
+        // build (or since the last commit), drive the lazy line-pipeline
+        // compile here so the next frame can dispatch the fat-line pass
+        // instead of warn-skipping.
         self.ensure_line_pipelines_compiled().await?;
 
         // Report the initial in-flight count before the drain so the splash

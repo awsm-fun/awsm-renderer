@@ -721,8 +721,14 @@ async fn materialize_skinned_mesh(
             material_keys.push(mat_key);
             to_register.push(*mk);
         }
-        if let Err(e) = r.finalize_gpu_textures().await {
-            tracing::warn!("finalize_gpu_textures (skinned mesh): {e}");
+        // Live add: commit the staged content through the one compile path
+        // (finalize textures + compile new pipelines). No begin_load — the
+        // existing scene keeps showing while the new content compiles.
+        if let Err(e) = r
+            .commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+        {
+            tracing::warn!("commit_load (skinned mesh): {e}");
         }
     }
 
@@ -867,12 +873,15 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
     let mut r = handle.lock().await;
     let mat_key = material::insert_material(&mut r, &sprite_mat);
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    // Transparent path (a tinted/blended sprite routes through the transparency
-    // pass; opaque delegates to `add_raw_mesh`).
-    match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
+    // The mesh's pass (visibility/transparency) is resolved at commit from the
+    // material — `add_raw_mesh` handles opaque and transparent uniformly now.
+    match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
-            if let Err(e) = r.finalize_gpu_textures().await {
-                tracing::warn!("sprite finalize_gpu_textures: {e}");
+            if let Err(e) = r
+                .commit_load(crate::engine::activity::commit_phase_handler())
+                .await
+            {
+                tracing::warn!("sprite commit_load: {e}");
             }
             let _ = r.set_mesh_billboard_mode(mk, mode);
             drop(r);
@@ -985,15 +994,17 @@ async fn upload_simple_mesh(
         MeshMaterial::Flat(def) => material::insert_material(&mut r, def),
     };
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
-    // `add_raw_mesh_transparent` builds transparency geometry when the material
-    // routes through the transparency pass (alpha Blend/Mask OR transmission) and
-    // otherwise delegates to the opaque `add_raw_mesh`. The plain `add_raw_mesh`
-    // ERRORS on a transparency-pass material, so a transmissive/blended captured
-    // mesh (e.g. an imported glass model) wouldn't upload at all.
-    match r.add_raw_mesh_transparent(raw, sub_tk, mat_key).await {
+    // `add_raw_mesh` is material-agnostic now: the geometry kind (visibility vs
+    // transparency) is decided at commit from the bound material, so a
+    // transmissive/blended captured mesh (e.g. an imported glass model) resolves
+    // to transparency geometry without a separate entry point.
+    match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
-            if let Err(e) = r.finalize_gpu_textures().await {
-                tracing::warn!("upload_simple_mesh finalize: {e}");
+            if let Err(e) = r
+                .commit_load(crate::engine::activity::commit_phase_handler())
+                .await
+            {
+                tracing::warn!("upload_simple_mesh commit_load: {e}");
             }
             drop(r);
             entry.model_meshes.lock().unwrap().push(mk);
@@ -1143,6 +1154,17 @@ async fn materialize_particle(
         super::particles::materialize(r, node_id, parent_tk, world_pos, &def);
     })
     .await;
+    // The emitter inserts a PBR material (a feature-set variant) whose pipeline
+    // must compile — route through the one compile path (live add, no
+    // begin_load). render() no longer compiles reactively.
+    if let Err(e) = renderer_handle()
+        .lock()
+        .await
+        .commit_load(crate::engine::activity::commit_phase_handler())
+        .await
+    {
+        tracing::warn!("particle commit_load: {e}");
+    }
 }
 
 async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {

@@ -278,6 +278,15 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
             return;
         }
 
+        // Commit the staged content through the one compile path: this
+        // finalizes the texture pool, compiles the scene's pipelines, and opens
+        // the render gate (`scene_committed`) so the rAF loop below draws the
+        // scene instead of a clear-color frame.
+        if let Err(err) = renderer.commit_load(|_| {}).await {
+            tracing::error!("worker: commit_load failed: {err}");
+            return;
+        }
+
         // rAF loop via the worker-safe global helper.
         //
         // `Arc<Mutex<…>>` / `Arc<AtomicU32>` rather than
