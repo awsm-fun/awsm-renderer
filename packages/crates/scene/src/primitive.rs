@@ -110,6 +110,12 @@ pub struct TextureRef {
     /// default (repeat / linear). Imported from the glTF texture's sampler.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampler: Option<TextureSampler>,
+    /// Optional **UV flow** (auto-scroll): a `[u, v]` velocity in UV-units/sec the
+    /// runtime accumulates into this slot's UV offset each frame — the "PBR but the
+    /// texture scrolls" convenience (conveyors / water / lava) with no animation
+    /// track. Composes over `transform.offset` as the base; `None` = no flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<[f32; 2]>,
 }
 
 impl TextureRef {
@@ -120,6 +126,7 @@ impl TextureRef {
             uv_index: 0,
             transform: None,
             sampler: None,
+            flow: None,
         }
     }
 }
@@ -145,6 +152,8 @@ impl<'de> serde::Deserialize<'de> for TextureRef {
                 transform: Option<TextureTransform>,
                 #[serde(default)]
                 sampler: Option<TextureSampler>,
+                #[serde(default)]
+                flow: Option<[f32; 2]>,
             },
         }
         Ok(match Repr::deserialize(d)? {
@@ -154,11 +163,13 @@ impl<'de> serde::Deserialize<'de> for TextureRef {
                 uv_index,
                 transform,
                 sampler,
+                flow,
             } => TextureRef {
                 asset,
                 uv_index,
                 transform,
                 sampler,
+                flow,
             },
         })
     }

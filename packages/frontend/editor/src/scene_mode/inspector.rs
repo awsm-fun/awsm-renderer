@@ -3042,6 +3042,37 @@ fn texture_slot_rows(
             }),
         ));
 
+        // UV flow (auto-scroll): a U/V velocity (units/sec) the runtime adds to the
+        // offset each frame — B3. Both zero clears it (back to a static offset).
+        let flow = cur.and_then(|t| t.flow).unwrap_or([0.0, 0.0]);
+        let set_flow = move |node: &Arc<Node>, idx: usize, v: f32| {
+            edit_slot(node, slot, is_ext, default_ref, move |t| {
+                let mut f = t.flow.unwrap_or([0.0, 0.0]);
+                f[idx] = v;
+                t.flow = if f == [0.0, 0.0] { None } else { Some(f) };
+            });
+        };
+        rows.push(row(
+            "· Flow U/s",
+            NumField::new(flow[0] as f64)
+                .step(0.01)
+                .on_change({
+                    let n = node.clone();
+                    move |v| set_flow(&n, 0, v as f32)
+                })
+                .render(),
+        ));
+        rows.push(row(
+            "· Flow V/s",
+            NumField::new(flow[1] as f64)
+                .step(0.01)
+                .on_change({
+                    let n = node.clone();
+                    move |v| set_flow(&n, 1, v as f32)
+                })
+                .render(),
+        ));
+
         // Sampler: wrap modes + filtering (imported from the glTF sampler).
         let smp = cur.and_then(|t| t.sampler).unwrap_or_default();
         // Set one sampler field, preserving the rest (seeds a sampler if absent).

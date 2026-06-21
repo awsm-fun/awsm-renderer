@@ -5588,6 +5588,7 @@ fn patch_builtin_texture(
         uv_index: 0,
         transform: None,
         sampler: None,
+        flow: None,
     });
     match slot {
         S::BaseColor => inline.base_color_texture = tref,
@@ -6059,6 +6060,7 @@ fn ensure_import_texture(
         uv_index: binding.uv_index,
         transform: binding.transform,
         sampler: binding.sampler,
+        flow: None,
     };
     if let Some(id) = tex_for_key.get(&key) {
         return Some(mk(*id));

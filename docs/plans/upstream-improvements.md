@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done.**
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ✅ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done; B3 also landed.**
 (`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
 turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
@@ -307,7 +307,28 @@ ticked screenshots show it moving. Spot-check a toon material and a flipbook mat
 
 ---
 
-### B3 — First-class texture `flow` (direction + speed), advanced automatically ⏸ DEFERRED (optional; covered by B1-anim)
+### B3 — First-class texture `flow` (direction + speed), advanced automatically ✅ DONE (2026-06-21, autonomous runway)
+
+**Landed + verified live** (implemented the recorded CPU-flow design). `scene::TextureRef.flow:
+Option<[f32;2]>` (UV/sec velocity, serde-default None — zero cost for existing materials); renderer
+`Textures` gained a `texture_flows` registry + `set_texture_flow(key, base_offset, velocity)` +
+`advance_texture_flows(dt)` (offset = base + velocity·elapsed, recompute-from-base, no drift), driven each
+frame by `update_animations` (no-op when nothing flows); the material bridge registers the flow when a slot
+declares it (creating an identity transform for a flow-only binding); and the Scene-mode inspector
+`texture_slot_rows` got per-slot **Flow U/s · V/s** fields (both zero clears it). 311 workspace test
+binaries green, no regressions.
+
+**Verified live (editor :9085):** imported `BoxTextured.glb`, set `flow=[0.4, 0]` on its base-color slot
+(via the inline-material `SetKind` path), `editor_tick_animation` → the texture **auto-scrolls in U**, and
+keeps moving as more time ticks (screenshots at elapsed ~1 s vs ~3 s show the pattern advancing then
+wrapping), zero GPUValidationError. The "PBR but the texture scrolls" effect with no clip authored.
+
+> **B3-extra (still deferred):** the editor detect-and-warn for meshes with no continuous UV axis — a
+> separate UV-parameterization analysis.
+
+---
+
+#### B3 (original deferral note — for reference)
 
 **Why deferred (value call, not difficulty).** The report marks B3 **optional** ("B1 is the load-bearing
 part"), and its user-facing capability — an auto-scrolling texture — is **already delivered and
@@ -745,6 +766,18 @@ matches `editor_snapshot_json`'s `selection`.
   the scroll effect already ships via a looping B1-anim track), B2-extra (emissive_strength / alpha cutoff /
   toon / flipbook param knobs — per-feature plumbing, lower value). Plus a residual morph-index>0 authoring
   cap. 12 commits on `improvements` (2aacfb84…this).
+- 2026-06-21 — **AUTONOMOUS RUNWAY (David out).** Ran `cargo test --workspace` — caught a regression I'd
+  introduced: D1 put `ibl` in `all()` (always-on for custom materials), tripping the Custom-shader size
+  ceiling + the KEY_TABLE SSOT invariant. Fixed (commit `bc1e4298`): made `ibl` opt-in (declarable, not in
+  `all()` — matches the report's "costed only when used"); SSOT test now models default-on ∪ opt-in.
+  Re-verified D1 live (declared `["ibl"]` still environment-lit). Then implemented **B3** (DONE above) —
+  texture auto-flow, live-verified. Full workspace green throughout.
+- 2026-06-21 — **REMAINING DEFERRALS (post-runway):** `D2b` (truthful diagnostics — DECISION made:
+  synchronous per-material **naga** validation at register, feature-gated so the player stays lean; left for
+  the maintainer to bless adding `naga` as a renderer runtime dep — surfaced in the PR), `D1-normalmap`
+  (TBN — deep visibility-buffer kernel tangent-plumbing; too risky to land unattended), `B2-extra`
+  (emissive_strength / alpha-cutoff / toon / flipbook param knobs — per-feature, low value). All documented
+  turnkey.
 
 ---
 

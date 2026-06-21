@@ -358,15 +358,29 @@ fn resolve_texture(
     r.textures.ensure_sampler_in_pool(sampler_key);
     // Honor the binding's UV set + KHR_texture_transform (both non-recompiling).
     let uv_index = Some(tref.uv_index);
-    let transform_key = tref.transform.map(|t| {
-        r.textures
+    // A transform key is needed if the binding has a transform OR a UV flow (the
+    // flow drives the transform's offset each frame — B3). Flow-only bindings get
+    // an identity transform to scroll.
+    let transform_key = if tref.transform.is_some() || tref.flow.is_some() {
+        let (offset, rotation, scale) = match tref.transform {
+            Some(t) => (t.offset, t.rotation, t.scale),
+            None => ([0.0, 0.0], 0.0, [1.0, 1.0]),
+        };
+        let key = r
+            .textures
             .insert_texture_transform(&awsm_renderer::textures::TextureTransform {
-                offset: t.offset,
+                offset,
                 origin: [0.0, 0.0],
-                rotation: t.rotation,
-                scale: t.scale,
-            })
-    });
+                rotation,
+                scale,
+            });
+        if let Some(velocity) = tref.flow {
+            r.textures.set_texture_flow(key, offset, velocity);
+        }
+        Some(key)
+    } else {
+        None
+    };
     let mk = |key: TextureKey| MaterialTexture {
         key,
         sampler_key: Some(sampler_key),
