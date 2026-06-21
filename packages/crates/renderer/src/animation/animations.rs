@@ -667,6 +667,34 @@ impl AwsmRenderer {
                         }
                         _ => None,
                     },
+                    BuiltinMaterialParam::ToonDiffuseBands => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.diffuse_bands as f32)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::ToonSpecularSteps => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.specular_steps as f32)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::ToonShininess => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.shininess)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::ToonRimStrength => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.rim_strength)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::ToonRimPower => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.rim_power)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::FlipbookFps => match m {
+                        Material::FlipBook(f) => Some(AnimationData::F32(f.fps)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::FlipbookTimeOffset => match m {
+                        Material::FlipBook(f) => Some(AnimationData::F32(f.time_offset)),
+                        _ => None,
+                    },
                 }
             }
             AnimationTarget::Light { light, param } => {
@@ -945,31 +973,53 @@ impl AwsmRenderer {
             | BuiltinMaterialParam::NormalScale
             | BuiltinMaterialParam::OcclusionStrength
             | BuiltinMaterialParam::EmissiveStrength
-            | BuiltinMaterialParam::AlphaCutoff => {
+            | BuiltinMaterialParam::AlphaCutoff
+            | BuiltinMaterialParam::ToonDiffuseBands
+            | BuiltinMaterialParam::ToonSpecularSteps
+            | BuiltinMaterialParam::ToonShininess
+            | BuiltinMaterialParam::ToonRimStrength
+            | BuiltinMaterialParam::ToonRimPower
+            | BuiltinMaterialParam::FlipbookFps
+            | BuiltinMaterialParam::FlipbookTimeOffset => {
                 let scalar = data_to_f32(value)?;
-                self.update_material(material, |m| {
-                    if let Material::Pbr(pbr) = m {
-                        match param {
-                            BuiltinMaterialParam::Metallic => pbr.metallic_factor = scalar,
-                            BuiltinMaterialParam::Roughness => pbr.roughness_factor = scalar,
-                            BuiltinMaterialParam::NormalScale => pbr.normal_scale = scalar,
-                            BuiltinMaterialParam::OcclusionStrength => {
-                                pbr.occlusion_strength = scalar
+                // A band/step count is a positive integer — round + floor at 1.
+                let count = |v: f32| (v.round() as i64).max(1) as u32;
+                self.update_material(material, |m| match m {
+                    Material::Pbr(pbr) => match param {
+                        BuiltinMaterialParam::Metallic => pbr.metallic_factor = scalar,
+                        BuiltinMaterialParam::Roughness => pbr.roughness_factor = scalar,
+                        BuiltinMaterialParam::NormalScale => pbr.normal_scale = scalar,
+                        BuiltinMaterialParam::OcclusionStrength => pbr.occlusion_strength = scalar,
+                        // Animate the VALUE only when the feature is already enabled
+                        // (toggling it on/off would change the compiled feature set).
+                        BuiltinMaterialParam::EmissiveStrength => {
+                            if let Some(es) = pbr.emissive_strength.as_mut() {
+                                es.strength = scalar;
                             }
-                            // Animate the VALUE only when the feature is already
-                            // enabled (toggling it on/off would change the compiled
-                            // feature set); no-op otherwise.
-                            BuiltinMaterialParam::EmissiveStrength => {
-                                if let Some(es) = pbr.emissive_strength.as_mut() {
-                                    es.strength = scalar;
-                                }
-                            }
-                            // No-op on Opaque/Blend (the mode isn't animatable).
-                            BuiltinMaterialParam::AlphaCutoff => pbr.set_alpha_cutoff(scalar),
-                            _ => {}
                         }
-                    }
-                    // Unlit / Toon lack these scalars: no-op.
+                        // No-op on Opaque/Blend (the mode isn't animatable).
+                        BuiltinMaterialParam::AlphaCutoff => pbr.set_alpha_cutoff(scalar),
+                        _ => {}
+                    },
+                    Material::Toon(toon) => match param {
+                        BuiltinMaterialParam::ToonDiffuseBands => {
+                            toon.diffuse_bands = count(scalar)
+                        }
+                        BuiltinMaterialParam::ToonSpecularSteps => {
+                            toon.specular_steps = count(scalar)
+                        }
+                        BuiltinMaterialParam::ToonShininess => toon.shininess = scalar,
+                        BuiltinMaterialParam::ToonRimStrength => toon.rim_strength = scalar,
+                        BuiltinMaterialParam::ToonRimPower => toon.rim_power = scalar,
+                        _ => {}
+                    },
+                    Material::FlipBook(fb) => match param {
+                        BuiltinMaterialParam::FlipbookFps => fb.fps = scalar,
+                        BuiltinMaterialParam::FlipbookTimeOffset => fb.time_offset = scalar,
+                        _ => {}
+                    },
+                    // Unlit / Custom lack these scalars: no-op.
+                    _ => {}
                 });
             }
         }

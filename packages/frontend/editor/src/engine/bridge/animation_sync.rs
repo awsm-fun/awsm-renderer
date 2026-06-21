@@ -565,6 +565,13 @@ fn builtin_param(p: BuiltinParamKind) -> BuiltinMaterialParam {
         BuiltinParamKind::OcclusionStrength => BuiltinMaterialParam::OcclusionStrength,
         BuiltinParamKind::EmissiveStrength => BuiltinMaterialParam::EmissiveStrength,
         BuiltinParamKind::AlphaCutoff => BuiltinMaterialParam::AlphaCutoff,
+        BuiltinParamKind::ToonDiffuseBands => BuiltinMaterialParam::ToonDiffuseBands,
+        BuiltinParamKind::ToonSpecularSteps => BuiltinMaterialParam::ToonSpecularSteps,
+        BuiltinParamKind::ToonShininess => BuiltinMaterialParam::ToonShininess,
+        BuiltinParamKind::ToonRimStrength => BuiltinMaterialParam::ToonRimStrength,
+        BuiltinParamKind::ToonRimPower => BuiltinMaterialParam::ToonRimPower,
+        BuiltinParamKind::FlipbookFps => BuiltinMaterialParam::FlipbookFps,
+        BuiltinParamKind::FlipbookTimeOffset => BuiltinMaterialParam::FlipbookTimeOffset,
     }
 }
 

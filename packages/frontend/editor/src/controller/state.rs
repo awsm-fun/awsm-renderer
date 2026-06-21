@@ -5356,6 +5356,34 @@ fn read_readback_target(
                     Material::Pbr(p) => json!(p.alpha_cutoff().unwrap_or(0.5)),
                     _ => serde_json::Value::Null,
                 },
+                P::ToonDiffuseBands => match m {
+                    Material::Toon(t) => json!(t.diffuse_bands as f32),
+                    _ => serde_json::Value::Null,
+                },
+                P::ToonSpecularSteps => match m {
+                    Material::Toon(t) => json!(t.specular_steps as f32),
+                    _ => serde_json::Value::Null,
+                },
+                P::ToonShininess => match m {
+                    Material::Toon(t) => json!(t.shininess),
+                    _ => serde_json::Value::Null,
+                },
+                P::ToonRimStrength => match m {
+                    Material::Toon(t) => json!(t.rim_strength),
+                    _ => serde_json::Value::Null,
+                },
+                P::ToonRimPower => match m {
+                    Material::Toon(t) => json!(t.rim_power),
+                    _ => serde_json::Value::Null,
+                },
+                P::FlipbookFps => match m {
+                    Material::FlipBook(f) => json!(f.fps),
+                    _ => serde_json::Value::Null,
+                },
+                P::FlipbookTimeOffset => match m {
+                    Material::FlipBook(f) => json!(f.time_offset),
+                    _ => serde_json::Value::Null,
+                },
             }
         }
         R::LightParam { node, param } => {
@@ -5606,6 +5634,31 @@ fn patch_builtin_param(
             }
             None => return false,
         },
+        // Toon / FlipBook knobs live inside the `shading` variant — tune them only
+        // when the material is that kind (no-op otherwise).
+        P::ToonDiffuseBands
+        | P::ToonSpecularSteps
+        | P::ToonShininess
+        | P::ToonRimStrength
+        | P::ToonRimPower
+        | P::FlipbookFps
+        | P::FlipbookTimeOffset => {
+            use awsm_editor_protocol::MaterialShading as S;
+            let Some(&v) = value.first() else {
+                return false;
+            };
+            let count = (v.round() as i64).max(1) as u32;
+            match (&mut inline.shading, param) {
+                (S::Toon { diffuse_bands, .. }, P::ToonDiffuseBands) => *diffuse_bands = count,
+                (S::Toon { specular_steps, .. }, P::ToonSpecularSteps) => *specular_steps = count,
+                (S::Toon { shininess, .. }, P::ToonShininess) => *shininess = v,
+                (S::Toon { rim_strength, .. }, P::ToonRimStrength) => *rim_strength = v,
+                (S::Toon { rim_power, .. }, P::ToonRimPower) => *rim_power = v,
+                (S::FlipBook { fps, .. }, P::FlipbookFps) => *fps = v,
+                (S::FlipBook { time_offset, .. }, P::FlipbookTimeOffset) => *time_offset = v,
+                _ => {} // material isn't the matching kind: no-op
+            }
+        }
     }
     true
 }

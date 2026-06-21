@@ -138,6 +138,20 @@ pub enum BuiltinMaterialParam {
     /// Alpha-test cutoff (the `Mask` alpha-mode threshold, PBR only). Applied only
     /// to a `Mask` material; a no-op on Opaque/Blend (the mode isn't animatable).
     AlphaCutoff,
+    /// Toon diffuse-band count (rounded to `u32`, ≥1). Toon only.
+    ToonDiffuseBands,
+    /// Toon specular-step count (rounded to `u32`, ≥1). Toon only.
+    ToonSpecularSteps,
+    /// Toon specular shininess exponent. Toon only.
+    ToonShininess,
+    /// Toon rim-light strength. Toon only.
+    ToonRimStrength,
+    /// Toon rim-light falloff power. Toon only.
+    ToonRimPower,
+    /// FlipBook playback rate (frames/sec; `0` freezes). FlipBook only.
+    FlipbookFps,
+    /// FlipBook time offset (seconds) — phase/scrub the sheet. FlipBook only.
+    FlipbookTimeOffset,
 }
 
 /// Which parameter of a [`crate::cameras::CameraParams`] an animation channel

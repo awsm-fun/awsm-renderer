@@ -581,6 +581,71 @@ fn mesh_material_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
             badge: Some("BUILTIN"),
             hint: "f32 \u{00b7} dissolve (mask materials)".into(),
         },
+        // Toon ramp knobs (toon materials only — a no-op otherwise).
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::ToonDiffuseBands,
+            },
+            label: "Toon Diffuse Bands".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} toon (rounded ≥1)".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::ToonSpecularSteps,
+            },
+            label: "Toon Specular Steps".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} toon (rounded ≥1)".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::ToonShininess,
+            },
+            label: "Toon Shininess".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} toon".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::ToonRimStrength,
+            },
+            label: "Toon Rim Strength".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} toon".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::ToonRimPower,
+            },
+            label: "Toon Rim Power".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} toon".into(),
+        },
+        // FlipBook playback knobs (flipbook materials only — a no-op otherwise).
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::FlipbookFps,
+            },
+            label: "FlipBook FPS".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} sprite playback rate".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::FlipbookTimeOffset,
+            },
+            label: "FlipBook Time Offset".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} sprite phase (s)".into(),
+        },
         // Base-color UV transform — the "scrolling/rotating texture" case. The
         // apply seeds an identity transform on the slot if it has none, so these
         // are offered unconditionally (a no-op if the slot is untextured).

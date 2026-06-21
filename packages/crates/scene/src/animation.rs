@@ -109,6 +109,22 @@ pub enum BuiltinParamKind {
     /// dissolve / cutout. Applies only to a `Mask` material (no-op otherwise; the
     /// alpha MODE is a pipeline choice, not animatable). PBR only.
     AlphaCutoff,
+    /// Toon: number of diffuse bands (scalar, rounded to `u32`, ≥1). Toon only.
+    ToonDiffuseBands,
+    /// Toon: number of specular steps (scalar, rounded to `u32`, ≥1). Toon only.
+    ToonSpecularSteps,
+    /// Toon: specular shininess exponent (scalar). Toon only.
+    ToonShininess,
+    /// Toon: rim-light strength (scalar). Toon only.
+    ToonRimStrength,
+    /// Toon: rim-light falloff power (scalar). Toon only.
+    ToonRimPower,
+    /// FlipBook: playback rate in frames/sec (scalar) — animate to speed up/slow
+    /// down a sprite sheet (`0` freezes). FlipBook only.
+    FlipbookFps,
+    /// FlipBook: time offset in seconds (scalar) — phase/scrub the sheet per
+    /// instance. FlipBook only.
+    FlipbookTimeOffset,
 }
 
 /// Which built-in material texture slot a `TextureTransform` track drives

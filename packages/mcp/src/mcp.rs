@@ -495,6 +495,13 @@ pub enum BuiltinParamArg {
     OcclusionStrength,
     EmissiveStrength,
     AlphaCutoff,
+    ToonDiffuseBands,
+    ToonSpecularSteps,
+    ToonShininess,
+    ToonRimStrength,
+    ToonRimPower,
+    FlipbookFps,
+    FlipbookTimeOffset,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2294,6 +2301,13 @@ impl EditorMcp {
             BuiltinParamArg::OcclusionStrength => BuiltinParamKind::OcclusionStrength,
             BuiltinParamArg::EmissiveStrength => BuiltinParamKind::EmissiveStrength,
             BuiltinParamArg::AlphaCutoff => BuiltinParamKind::AlphaCutoff,
+            BuiltinParamArg::ToonDiffuseBands => BuiltinParamKind::ToonDiffuseBands,
+            BuiltinParamArg::ToonSpecularSteps => BuiltinParamKind::ToonSpecularSteps,
+            BuiltinParamArg::ToonShininess => BuiltinParamKind::ToonShininess,
+            BuiltinParamArg::ToonRimStrength => BuiltinParamKind::ToonRimStrength,
+            BuiltinParamArg::ToonRimPower => BuiltinParamKind::ToonRimPower,
+            BuiltinParamArg::FlipbookFps => BuiltinParamKind::FlipbookFps,
+            BuiltinParamArg::FlipbookTimeOffset => BuiltinParamKind::FlipbookTimeOffset,
         };
         self.dispatch(EditorCommand::SetBuiltinParam {
             node: parse_node(&p.node)?,
