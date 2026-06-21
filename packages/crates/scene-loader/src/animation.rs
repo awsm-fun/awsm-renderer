@@ -28,7 +28,7 @@ use awsm_materials::MaterialShaderId;
 use awsm_renderer::animation::scene_loader::{lower_stored_clip, lower_stored_mixer};
 use awsm_renderer::animation::{
     AnimationClipGroup, AnimationClipKey, AnimationTarget, BuiltinMaterialParam, CameraParam,
-    LightParam, TargetMask,
+    LightParam, TargetMask, TexSlot, TexTransformProp,
 };
 use awsm_renderer::cameras::CameraKey;
 use awsm_renderer::decals::DecalKey;
@@ -224,6 +224,36 @@ fn resolve_target(
             let material = maps.custom_materials.get(material).copied()?;
             Some(AnimationTarget::Uniform { material, slot })
         }
+        TrackTarget::TextureTransform { node, slot, prop } => {
+            maps.node_materials
+                .get(node)
+                .copied()
+                .map(|material| AnimationTarget::TextureUv {
+                    material,
+                    slot: tex_slot(*slot),
+                    prop: tex_prop(*prop),
+                })
+        }
+    }
+}
+
+fn tex_slot(s: awsm_scene::animation::TexSlot) -> TexSlot {
+    use awsm_scene::animation::TexSlot as S;
+    match s {
+        S::BaseColor => TexSlot::BaseColor,
+        S::MetallicRoughness => TexSlot::MetallicRoughness,
+        S::Normal => TexSlot::Normal,
+        S::Occlusion => TexSlot::Occlusion,
+        S::Emissive => TexSlot::Emissive,
+    }
+}
+
+fn tex_prop(p: awsm_scene::animation::TexTransformProp) -> TexTransformProp {
+    use awsm_scene::animation::TexTransformProp as P;
+    match p {
+        P::Offset => TexTransformProp::Offset,
+        P::Scale => TexTransformProp::Scale,
+        P::Rotation => TexTransformProp::Rotation,
     }
 }
 

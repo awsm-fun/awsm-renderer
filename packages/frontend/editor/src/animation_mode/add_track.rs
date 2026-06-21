@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use crate::controller::animation::{
     find_clip, target_key, BuiltinParamKind, CameraParamKind, CustomAnimation, LightParamKind,
-    TrackTarget, TransformProp,
+    TexSlot, TexTransformProp, TrackTarget, TransformProp,
 };
 use crate::controller::custom_material::CustomMaterial;
 use crate::engine::scene::node::Node;
@@ -544,6 +544,39 @@ fn mesh_material_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
             label: "Emissive".into(),
             badge: Some("BUILTIN"),
             hint: "vec3 \u{00b7} builtin".into(),
+        },
+        // Base-color UV transform — the "scrolling/rotating texture" case. The
+        // apply seeds an identity transform on the slot if it has none, so these
+        // are offered unconditionally (a no-op if the slot is untextured).
+        PropRow {
+            target: TrackTarget::TextureTransform {
+                node,
+                slot: TexSlot::BaseColor,
+                prop: TexTransformProp::Offset,
+            },
+            label: "Base Color UV Offset".into(),
+            badge: Some("UV"),
+            hint: "vec2 \u{00b7} texture".into(),
+        },
+        PropRow {
+            target: TrackTarget::TextureTransform {
+                node,
+                slot: TexSlot::BaseColor,
+                prop: TexTransformProp::Scale,
+            },
+            label: "Base Color UV Scale".into(),
+            badge: Some("UV"),
+            hint: "vec2 \u{00b7} texture".into(),
+        },
+        PropRow {
+            target: TrackTarget::TextureTransform {
+                node,
+                slot: TexSlot::BaseColor,
+                prop: TexTransformProp::Rotation,
+            },
+            label: "Base Color UV Rotation".into(),
+            badge: Some("UV"),
+            hint: "f32 \u{00b7} texture".into(),
         },
         // Single morph row — the editor scene model doesn't carry per-mesh
         // morph-target counts, so we can't enumerate indices. Index 0 covers the

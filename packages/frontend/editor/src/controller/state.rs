@@ -3313,7 +3313,8 @@ impl EditorController {
                 | TrackTarget::Morph { node, .. }
                 | TrackTarget::BuiltinParam { node, .. }
                 | TrackTarget::Light { node, .. }
-                | TrackTarget::Camera { node, .. } => {
+                | TrackTarget::Camera { node, .. }
+                | TrackTarget::TextureTransform { node, .. } => {
                     mutate::find_by_id(&self.scene, *node).is_none()
                 }
                 // A material-targeted track isn't node-orphaned — keep the clip.
@@ -3663,6 +3664,9 @@ impl EditorController {
                             TrackTarget::BuiltinParam { param, .. } => format!("builtin:{param:?}"),
                             TrackTarget::Light { param, .. } => format!("light:{param:?}"),
                             TrackTarget::Camera { param, .. } => format!("camera:{param:?}"),
+                            TrackTarget::TextureTransform { slot, prop, .. } => {
+                                format!("texuv:{slot:?}:{prop:?}")
+                            }
                         };
                         query::TrackSnapshot {
                             target: target.to_lowercase(),
@@ -5095,6 +5099,9 @@ pub(crate) async fn live_track_value(
         TrackTarget::BuiltinParam { node, param } => R::BuiltinParam { node, param },
         TrackTarget::Light { node, param } => R::LightParam { node, param },
         TrackTarget::Camera { node, param } => R::CameraParam { node, param },
+        // No readback target for a texture UV transform yet — the keyframe seeds
+        // from `default_value_for` (zero offset / unit scale / 0 rotation) instead.
+        TrackTarget::TextureTransform { .. } => return None,
     };
     let v = crate::engine::context::with_renderer_mut(move |r| read_readback_target(r, &rt)).await;
     // Shape the JSON by the track's expected kind (vec3 / quat / scalar).

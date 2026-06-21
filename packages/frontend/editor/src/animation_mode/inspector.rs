@@ -581,7 +581,9 @@ fn mono(text: impl AsRef<str>, color: &str, size: f64) -> Dom {
 fn target_icon(t: &TrackTarget) -> &'static str {
     match t {
         TrackTarget::Transform { .. } | TrackTarget::Morph { .. } => "cube",
-        TrackTarget::Uniform { .. } | TrackTarget::BuiltinParam { .. } => "material",
+        TrackTarget::Uniform { .. }
+        | TrackTarget::BuiltinParam { .. }
+        | TrackTarget::TextureTransform { .. } => "material",
         TrackTarget::Light { .. } => "light",
         TrackTarget::Camera { .. } => "camera",
     }
@@ -602,6 +604,9 @@ fn prop_label(t: &TrackTarget) -> String {
         TrackTarget::BuiltinParam { param, .. } => format!("{param:?}").to_lowercase(),
         TrackTarget::Light { param, .. } => format!("{param:?}").to_lowercase(),
         TrackTarget::Camera { param, .. } => format!("{param:?}").to_lowercase(),
+        TrackTarget::TextureTransform { slot, prop, .. } => {
+            format!("{slot:?} uv {prop:?}").to_lowercase()
+        }
     }
 }
 

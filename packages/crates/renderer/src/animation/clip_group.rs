@@ -62,6 +62,40 @@ pub enum AnimationTarget {
         /// Which camera parameter to drive.
         param: CameraParam,
     },
+    /// One component (offset / scale / rotation) of a built-in material texture
+    /// slot's UV transform. The apply reads the slot's current `TextureTransform`,
+    /// overwrites the driven component, and re-uploads — so the other components
+    /// (and the other slots) are untouched. An identity transform is created on
+    /// demand if the slot has none yet.
+    TextureUv {
+        /// The material whose texture-slot transform is driven.
+        material: MaterialKey,
+        /// Which texture slot (base color / normal / …).
+        slot: TexSlot,
+        /// Which component of the UV transform.
+        prop: TexTransformProp,
+    },
+}
+
+/// Which built-in material texture slot an [`AnimationTarget::TextureUv`] drives
+/// (mirrors the glTF PBR texture set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TexSlot {
+    BaseColor,
+    MetallicRoughness,
+    Normal,
+    Occlusion,
+    Emissive,
+}
+
+/// Which component of a texture slot's UV transform an
+/// [`AnimationTarget::TextureUv`] drives. `Offset`/`Scale` are `vec2`,
+/// `Rotation` is a scalar (radians).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TexTransformProp {
+    Offset,
+    Scale,
+    Rotation,
 }
 
 /// Which scalar/color parameter of a [`crate::lights::Light`] an animation

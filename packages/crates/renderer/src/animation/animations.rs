@@ -210,6 +210,17 @@ fn data_to_f32(value: &AnimationData) -> Result<f32> {
     }
 }
 
+/// Coerces an [`AnimationData`] to a `[f32; 2]` (from a `Vec2`). Any other
+/// kind is a `WrongKind` error.
+fn data_to_vec2(value: &AnimationData) -> Result<[f32; 2]> {
+    match value {
+        AnimationData::Vec2(v) => Ok([v.x, v.y]),
+        other => Err(AwsmAnimationError::WrongKind(format!(
+            "expected Vec2 animation data, got {other:?}"
+        ))),
+    }
+}
+
 /// Coerces an [`AnimationData`] to a `[f32; 3]` (from a `Vec3`). Any other
 /// kind is a `WrongKind` error.
 fn data_to_vec3(value: &AnimationData) -> Result<[f32; 3]> {
@@ -682,6 +693,30 @@ impl AwsmRenderer {
                     CameraParam::FocusDistance => Some(AnimationData::F32(p.focus_distance)),
                 }
             }
+            AnimationTarget::TextureUv {
+                material,
+                slot,
+                prop,
+            } => {
+                use crate::animation::TexTransformProp;
+                // Rest = the slot transform's current component (identity when the
+                // slot has a texture but no transform yet; None when no texture).
+                let t = match self.texture_slot_transform_key(material, slot)? {
+                    Some(key) => self
+                        .textures
+                        .get_texture_transform(key)
+                        .cloned()
+                        .unwrap_or_else(crate::textures::TextureTransform::identity),
+                    None => crate::textures::TextureTransform::identity(),
+                };
+                Some(match prop {
+                    TexTransformProp::Offset => {
+                        AnimationData::Vec2(glam::Vec2::from_array(t.offset))
+                    }
+                    TexTransformProp::Scale => AnimationData::Vec2(glam::Vec2::from_array(t.scale)),
+                    TexTransformProp::Rotation => AnimationData::F32(t.rotation),
+                })
+            }
         }
     }
 
@@ -759,8 +794,81 @@ impl AwsmRenderer {
             AnimationTarget::Camera { camera, param } => {
                 apply_camera_param(&mut self.cameras, camera, param, value)?;
             }
+            AnimationTarget::TextureUv {
+                material,
+                slot,
+                prop,
+            } => {
+                self.apply_texture_uv(material, slot, prop, value)?;
+            }
         }
         Ok(())
+    }
+
+    /// Applies one UV-transform component (offset / scale / rotation) of a
+    /// built-in material texture slot. Reads the slot's current
+    /// `TextureTransform`, overwrites the driven component, and re-uploads — so
+    /// the other components (and other slots) are preserved. Creates an identity
+    /// transform on demand if the slot has a texture but no transform yet; a slot
+    /// with no texture is a no-op.
+    fn apply_texture_uv(
+        &mut self,
+        material: crate::materials::MaterialKey,
+        slot: crate::animation::TexSlot,
+        prop: crate::animation::TexTransformProp,
+        value: &AnimationData,
+    ) -> Result<()> {
+        // Resolve the slot's transform key, creating an identity one (and
+        // attaching it to the slot) the first time if the slot has a texture.
+        let key = match self.texture_slot_transform_key(material, slot) {
+            Some(Some(k)) => k,
+            Some(None) => {
+                // Slot has a texture but no transform yet — seed identity.
+                let k = self
+                    .textures
+                    .insert_texture_transform(&crate::textures::TextureTransform::identity());
+                self.set_texture_slot_transform_key(material, slot, k);
+                k
+            }
+            // Slot has no texture at all → nothing to transform.
+            None => return Ok(()),
+        };
+        let Some(mut t) = self.textures.get_texture_transform(key).cloned() else {
+            return Ok(());
+        };
+        match prop {
+            crate::animation::TexTransformProp::Offset => t.offset = data_to_vec2(value)?,
+            crate::animation::TexTransformProp::Scale => t.scale = data_to_vec2(value)?,
+            crate::animation::TexTransformProp::Rotation => t.rotation = data_to_f32(value)?,
+        }
+        self.textures.update_texture_transform(key, &t);
+        Ok(())
+    }
+
+    /// Read the slot's `MaterialTexture::transform_key`. Outer `Option`: does the
+    /// slot have a texture at all; inner: does that texture carry a transform.
+    fn texture_slot_transform_key(
+        &self,
+        material: crate::materials::MaterialKey,
+        slot: crate::animation::TexSlot,
+    ) -> Option<Option<crate::textures::TextureTransformKey>> {
+        let m = self.materials.get(material).ok()?;
+        let tex = material_slot_tex(m, slot)?;
+        Some(tex.transform_key)
+    }
+
+    /// Assign a (newly-created) transform key onto the slot's `MaterialTexture`.
+    fn set_texture_slot_transform_key(
+        &mut self,
+        material: crate::materials::MaterialKey,
+        slot: crate::animation::TexSlot,
+        key: crate::textures::TextureTransformKey,
+    ) {
+        self.update_material(material, |m| {
+            if let Some(tex) = material_slot_tex_mut(m, slot) {
+                tex.transform_key = Some(key);
+            }
+        });
     }
 
     /// Applies a [`BuiltinMaterialParam`] sample to a material. Params a
@@ -820,6 +928,50 @@ impl AwsmRenderer {
         }
 
         Ok(())
+    }
+}
+
+/// Borrow a built-in material's texture slot (the glTF PBR set). `None` when the
+/// material kind lacks that slot or the slot is unbound. FlipBook/Custom have no
+/// addressable PBR slots here.
+fn material_slot_tex(
+    m: &crate::materials::Material,
+    slot: crate::animation::TexSlot,
+) -> Option<&awsm_materials::MaterialTexture> {
+    use crate::animation::TexSlot;
+    use crate::materials::Material;
+    match (m, slot) {
+        (Material::Pbr(p), TexSlot::BaseColor) => p.base_color_tex.as_ref(),
+        (Material::Pbr(p), TexSlot::MetallicRoughness) => p.metallic_roughness_tex.as_ref(),
+        (Material::Pbr(p), TexSlot::Normal) => p.normal_tex.as_ref(),
+        (Material::Pbr(p), TexSlot::Occlusion) => p.occlusion_tex.as_ref(),
+        (Material::Pbr(p), TexSlot::Emissive) => p.emissive_tex.as_ref(),
+        (Material::Unlit(u), TexSlot::BaseColor) => u.base_color_tex.as_ref(),
+        (Material::Unlit(u), TexSlot::Emissive) => u.emissive_tex.as_ref(),
+        (Material::Toon(t), TexSlot::BaseColor) => t.base_color_tex.as_ref(),
+        (Material::Toon(t), TexSlot::Emissive) => t.emissive_tex.as_ref(),
+        _ => None,
+    }
+}
+
+/// Mutable counterpart of [`material_slot_tex`].
+fn material_slot_tex_mut(
+    m: &mut crate::materials::Material,
+    slot: crate::animation::TexSlot,
+) -> Option<&mut awsm_materials::MaterialTexture> {
+    use crate::animation::TexSlot;
+    use crate::materials::Material;
+    match (m, slot) {
+        (Material::Pbr(p), TexSlot::BaseColor) => p.base_color_tex.as_mut(),
+        (Material::Pbr(p), TexSlot::MetallicRoughness) => p.metallic_roughness_tex.as_mut(),
+        (Material::Pbr(p), TexSlot::Normal) => p.normal_tex.as_mut(),
+        (Material::Pbr(p), TexSlot::Occlusion) => p.occlusion_tex.as_mut(),
+        (Material::Pbr(p), TexSlot::Emissive) => p.emissive_tex.as_mut(),
+        (Material::Unlit(u), TexSlot::BaseColor) => u.base_color_tex.as_mut(),
+        (Material::Unlit(u), TexSlot::Emissive) => u.emissive_tex.as_mut(),
+        (Material::Toon(t), TexSlot::BaseColor) => t.base_color_tex.as_mut(),
+        (Material::Toon(t), TexSlot::Emissive) => t.emissive_tex.as_mut(),
+        _ => None,
     }
 }
 

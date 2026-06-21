@@ -32,7 +32,7 @@ use crate::engine::scene::{AssetId, NodeId};
 pub use awsm_editor_protocol::animation::{
     BuiltinParamKind, CameraParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc,
     LayerModeDoc, LightParamKind, MixerDoc, SamplerKind, StoredAnimation, StoredTrack, StripDoc,
-    TrackTarget, TrackValue, TransformProp,
+    TexSlot, TexTransformProp, TrackTarget, TrackValue, TransformProp,
 };
 
 /// The matching per-keyframe interp for a sampler kind (seeding fresh keyframes).
@@ -76,6 +76,9 @@ pub fn target_key(t: &TrackTarget) -> String {
         TrackTarget::BuiltinParam { node, param } => format!("builtin/{node}/{param:?}"),
         TrackTarget::Light { node, param } => format!("light/{node}/{param:?}"),
         TrackTarget::Camera { node, param } => format!("camera/{node}/{param:?}"),
+        TrackTarget::TextureTransform { node, slot, prop } => {
+            format!("texuv/{node}/{slot:?}/{prop:?}")
+        }
     }
 }
 
@@ -87,7 +90,8 @@ pub fn target_node(t: &TrackTarget) -> Option<NodeId> {
         | TrackTarget::Morph { node, .. }
         | TrackTarget::BuiltinParam { node, .. }
         | TrackTarget::Light { node, .. }
-        | TrackTarget::Camera { node, .. } => Some(*node),
+        | TrackTarget::Camera { node, .. }
+        | TrackTarget::TextureTransform { node, .. } => Some(*node),
         TrackTarget::Uniform { .. } => None,
     }
 }
@@ -261,6 +265,19 @@ pub fn default_value_for(target: &TrackTarget) -> TrackValue {
             ..
         } => TrackValue::Vec3([1.0, 1.0, 1.0]),
         TrackTarget::Transform { .. } => TrackValue::Vec3([0.0; 3]),
+        // UV transform: offset is a zero vec2, scale a unit vec2, rotation a scalar.
+        TrackTarget::TextureTransform {
+            prop: TexTransformProp::Offset,
+            ..
+        } => TrackValue::Vec2([0.0, 0.0]),
+        TrackTarget::TextureTransform {
+            prop: TexTransformProp::Scale,
+            ..
+        } => TrackValue::Vec2([1.0, 1.0]),
+        TrackTarget::TextureTransform {
+            prop: TexTransformProp::Rotation,
+            ..
+        } => TrackValue::Scalar(0.0),
         _ => TrackValue::Scalar(0.0),
     }
 }

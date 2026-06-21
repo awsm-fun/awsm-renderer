@@ -742,7 +742,11 @@ pub struct Textures {
     sampler_cache: HashMap<SamplerCacheKey, SamplerKey>,
     // We keep a mirror of the sampler address modes so that materials can adjust UVs manually when
     sampler_address_modes: SecondaryMap<SamplerKey, (Option<AddressMode>, Option<AddressMode>)>,
-    texture_transforms: SlotMap<TextureTransformKey, ()>,
+    // Stores the CPU-side `TextureTransform` per key (not just `()`), so an
+    // animation track can read-modify-write a single component (offset / scale /
+    // rotation) while preserving the others. The GPU bytes live in
+    // `texture_transforms_buffer`; this is the authoritative struct mirror.
+    texture_transforms: SlotMap<TextureTransformKey, TextureTransform>,
     texture_transforms_buffer: DynamicUniformBuffer<TextureTransformKey>,
     texture_transforms_gpu_dirty: bool,
     pub(crate) texture_transforms_gpu_buffer: web_sys::GpuBuffer,
@@ -901,7 +905,7 @@ impl Textures {
 
         let texture_transform_identity_offset = {
             let transform = TextureTransform::identity();
-            let key = texture_transforms.insert(());
+            let key = texture_transforms.insert(transform.clone());
 
             texture_transforms_buffer.update(key, &transform.as_gpu_bytes());
 
@@ -1038,23 +1042,35 @@ impl Textures {
         &mut self,
         transform: &TextureTransform,
     ) -> TextureTransformKey {
-        let key = self.texture_transforms.insert(());
-        self.update_texture_transform(key, transform);
+        let key = self.texture_transforms.insert(transform.clone());
+        let bytes = transform.as_gpu_bytes();
+        self.texture_transforms_buffer.update(key, &bytes);
+        self.texture_transforms_gpu_dirty = true;
         key
     }
-    /// Updates an existing texture transform.
+    /// Updates an existing texture transform (CPU mirror + GPU bytes).
     pub fn update_texture_transform(
         &mut self,
         key: TextureTransformKey,
         transform: &TextureTransform,
     ) {
+        if let Some(slot) = self.texture_transforms.get_mut(key) {
+            *slot = transform.clone();
+        }
         let bytes = transform.as_gpu_bytes();
         self.texture_transforms_buffer.update(key, &bytes);
         self.texture_transforms_gpu_dirty = true;
     }
 
+    /// The current CPU-side transform for `key` (the read half of the
+    /// read-modify-write an animation track does on one component).
+    pub fn get_texture_transform(&self, key: TextureTransformKey) -> Option<&TextureTransform> {
+        self.texture_transforms.get(key)
+    }
+
     /// Removes a texture transform.
     pub fn remove_texture_transform(&mut self, key: TextureTransformKey) {
+        self.texture_transforms.remove(key);
         self.texture_transforms_buffer.remove(key);
         self.texture_transforms_gpu_dirty = true;
     }

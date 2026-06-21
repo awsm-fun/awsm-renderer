@@ -97,6 +97,30 @@ pub enum BuiltinParamKind {
     Emissive,
 }
 
+/// Which built-in material texture slot a `TextureTransform` track drives
+/// (mirrors the glTF PBR texture set / `BuiltinTextureSlot`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TexSlot {
+    BaseColor,
+    MetallicRoughness,
+    Normal,
+    Occlusion,
+    Emissive,
+}
+
+/// Which component of a texture slot's UV transform a `TextureTransform` track
+/// drives. `Offset`/`Scale` are `vec2` keyframes; `Rotation` is a scalar (radians).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TexTransformProp {
+    Offset,
+    Scale,
+    Rotation,
+}
+
 /// Which light parameter a `Light` track drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -151,6 +175,14 @@ pub enum TrackTarget {
     Camera {
         node: NodeId,
         param: CameraParamKind,
+    },
+    /// One component (offset/scale/rotation) of a built-in material texture
+    /// slot's UV transform, on the node's assigned material. Offset/Scale are
+    /// vec2 keyframes; Rotation is scalar.
+    TextureTransform {
+        node: NodeId,
+        slot: TexSlot,
+        prop: TexTransformProp,
     },
 }
 

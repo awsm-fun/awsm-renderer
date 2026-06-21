@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
 (`B1` settable+UI was already built — split: `B1-anim` (animate the UV transform) is the remaining half.)
 (`D2-fix` split into `D2a` (codegen black-screen — DONE) and `D2b` (diagnostics lie — DEFERRED, needs a
 design decision; does not block anything). `P2` — "frame node inside subject" — was not exercised in T0;
@@ -203,7 +203,27 @@ below), so B1's settable+UI half is marked done here and the animation half is `
 
 ---
 
-### B1-anim — Animate the per-texture UV transform (offset/scale/rotation) — NEXT
+### B1-anim — Animate the per-texture UV transform (offset/scale/rotation) ✅ DONE (2026-06-21)
+
+**Landed + verified live.** Implemented exactly the mapped design: renderer `Textures` SlotMap now stores
+the `TextureTransform` (+ `get_texture_transform`) for read-modify-write; `AnimationTarget::TextureUv {
+material, slot, prop }` + `TexSlot`/`TexTransformProp` enums (renderer + scene mirrors); the apply
+(`animations.rs apply_texture_uv`) resolves the slot's `transform_key`, **seeds an identity transform on
+demand** if the slot has a texture but none yet, then writes the driven component (offset/scale = vec2 via
+A1, rotation = scalar) and re-uploads; `read_rest` seeds from the slot's current component; lowering in
+both the player path (`scene-loader/animation.rs`) and editor (`animation_sync.rs resolve_target`, node →
+first material key); editor display/label/default sites + an Add-Track row group (Base-Color UV
+Offset/Scale/Rotation); MCP `build_track_value` already does vec2 (A2). 311 unit tests green (renderer +
+scene + scene-loader).
+
+**Verified live (editor :9085):** imported `BoxTextured.glb` (real textured built-in PBR), added a
+`texture_transform / base_color / offset` track (vec2 `[0,0]`@0 → `[1,0]`@1), scrubbed → the texture
+**visibly scrolls in U** (t=0 vs t=0.5 screenshots, pattern shifted half-width), zero GPUValidationError.
+The imported texture had no prior transform, so this also proves the on-demand identity-seed path.
+
+---
+
+#### B1-anim (original design — for reference)
 
 **Verified state — STILL-VALID (no UV-transform animation target exists).** `TrackTarget`
 (`scene/animation.rs`) and renderer `AnimationTarget` (`clip_group.rs`) have Transform/Morph/Uniform/
@@ -521,6 +541,13 @@ matches `editor_snapshot_json`'s `selection`.
   animation-track target → re-scoped as `B1-anim` (next) with all extension points mapped + a renderer
   foundation step (store `TextureTransform` in the SlotMap + a getter; prototyped then reverted to keep this
   commit clean — no functional code change this iteration). Next: B1-anim.
+- 2026-06-21 — **B1-anim DONE (animate the UV transform) — PASS (live).** Full feature across renderer +
+  scene + scene-loader + editor: SlotMap stores `TextureTransform` (+ getter); `AnimationTarget::TextureUv`
+  + `TexSlot`/`TexTransformProp`; apply with on-demand identity-seed + read-modify-write (offset/scale vec2,
+  rotation scalar); `read_rest`; lowering in both player + editor paths; Add-Track rows + all display sites.
+  311 unit tests green. Verified live: imported BoxTextured.glb, animated base_color UV offset `[0,0]→[1,0]`,
+  scrubbed → texture visibly scrolls in U (t=0 vs t=0.5 screenshots), zero GPU errors; on-demand identity
+  seed proven (imported tex had no transform). B1 is now fully complete (settable+UI + animation). Next: B2.
 
 ---
 

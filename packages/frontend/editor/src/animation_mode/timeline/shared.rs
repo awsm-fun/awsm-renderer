@@ -78,7 +78,9 @@ pub fn nice_step_sec(px_per_sec: f64) -> f64 {
 pub fn target_icon(t: &TrackTarget) -> &'static str {
     match t {
         TrackTarget::Transform { .. } | TrackTarget::Morph { .. } => "cube",
-        TrackTarget::Uniform { .. } | TrackTarget::BuiltinParam { .. } => "material",
+        TrackTarget::Uniform { .. }
+        | TrackTarget::BuiltinParam { .. }
+        | TrackTarget::TextureTransform { .. } => "material",
         TrackTarget::Light { .. } => "light",
         TrackTarget::Camera { .. } => "camera",
     }
@@ -93,7 +95,8 @@ pub fn target_label(t: &TrackTarget) -> String {
         | TrackTarget::Morph { node, .. }
         | TrackTarget::BuiltinParam { node, .. }
         | TrackTarget::Light { node, .. }
-        | TrackTarget::Camera { node, .. } => node_label(node),
+        | TrackTarget::Camera { node, .. }
+        | TrackTarget::TextureTransform { node, .. } => node_label(node),
         TrackTarget::Uniform { material, .. } => {
             let ctrl = crate::controller::controller();
             let mats = ctrl.custom_materials.lock_ref();
@@ -131,6 +134,9 @@ pub fn prop_label(t: &TrackTarget) -> String {
         TrackTarget::BuiltinParam { param, .. } => format!("{param:?}").to_lowercase(),
         TrackTarget::Light { param, .. } => format!("{param:?}").to_lowercase(),
         TrackTarget::Camera { param, .. } => format!("{param:?}").to_lowercase(),
+        TrackTarget::TextureTransform { slot, prop, .. } => {
+            format!("{slot:?} uv {prop:?}").to_lowercase()
+        }
     }
 }
 
