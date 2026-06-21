@@ -311,6 +311,12 @@ pub struct ShaderIncludeFlags {
     /// block (PBR declares VERTEX_COLOR so always keeps it); Unlit/Toon/Flipbook
     /// never read vertex colour. (Phase 4)
     pub vertex_color: bool,
+    /// `lighting/ibl.wgsl` — the `sample_ibl(...)` image-based-lighting primitive.
+    /// Tier A: a custom material opts in to be lit by the scene environment
+    /// (irradiance + prefiltered specular + BRDF LUT) without re-deriving PBR.
+    /// The IBL cubemap/LUT bindings stay always-declared (ABI); only the WGSL
+    /// helper body gates on this.
+    pub ibl: bool,
 }
 
 impl ShaderIncludeFlags {
@@ -334,6 +340,7 @@ impl ShaderIncludeFlags {
             light_access: i.contains(S::LIGHT_ACCESS),
             textures: i.contains(S::TEXTURES),
             vertex_color: i.contains(S::VERTEX_COLOR),
+            ibl: i.contains(S::IBL),
         }
     }
 
@@ -373,6 +380,8 @@ impl ShaderIncludeFlags {
             textures: false,
             // Skybox-owner reads no per-vertex colour.
             vertex_color: false,
+            // Skybox-owner shades no geometry → no IBL surface term.
+            ibl: false,
         }
     }
 }

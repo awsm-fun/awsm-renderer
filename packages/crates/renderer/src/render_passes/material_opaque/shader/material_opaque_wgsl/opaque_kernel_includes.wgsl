@@ -88,6 +88,12 @@
 /*************** END brdf.wgsl ******************/
 {% endif %}
 
+{% if inc.ibl %}
+/*************** START ibl.wgsl (Tier-A image-based-lighting primitive for custom materials) ******************/
+{% include "shared_wgsl/lighting/ibl.wgsl" %}
+/*************** END ibl.wgsl ******************/
+{% endif %}
+
 
 /*************** START material.wgsl ******************/
 {% include "shared_wgsl/material.wgsl" %}

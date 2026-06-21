@@ -96,6 +96,7 @@ impl ShaderIncludes {
     const BIT_SHADOWS: u32 = 1 << 10;
     const BIT_SKYBOX: u32 = 1 << 11;
     const BIT_EXTRAS: u32 = 1 << 12;
+    const BIT_IBL: u32 = 1 << 13;
 
     /// `math.wgsl` — basic math helpers.
     pub const MATH: Self = Self(Self::BIT_MATH);
@@ -125,6 +126,14 @@ impl ShaderIncludes {
     pub const SKYBOX: Self = Self(Self::BIT_SKYBOX);
     /// `extras.wgsl` — the extras storage pool accessor.
     pub const EXTRAS: Self = Self(Self::BIT_EXTRAS);
+    /// `lighting/ibl.wgsl` — image-based-lighting primitive `sample_ibl(...)`
+    /// (diffuse irradiance + split-sum specular prefilter + BRDF LUT) over the
+    /// scene's always-bound environment cubemaps + BRDF LUT. Tier A (generic):
+    /// the single biggest "make a custom material first-class in an IBL-lit
+    /// scene" primitive — without it a dynamic material with no punctual lights
+    /// renders ~black. NOT a PBR re-implementation; just the ambient/environment
+    /// term. Depends on LIGHT_ACCESS (for the IBL mip-count info).
+    pub const IBL: Self = Self(Self::BIT_IBL);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -150,7 +159,8 @@ impl ShaderIncludes {
                 | Self::BIT_LIGHT_ACCESS
                 | Self::BIT_SHADOWS
                 | Self::BIT_SKYBOX
-                | Self::BIT_EXTRAS,
+                | Self::BIT_EXTRAS
+                | Self::BIT_IBL,
         )
     }
 
@@ -216,6 +226,12 @@ impl ShaderIncludes {
             Self::EXTRAS,
             true,
             "Extras storage-pool accessors (extras_load_*)",
+        ),
+        (
+            "ibl",
+            Self::IBL,
+            true,
+            "Image-based lighting: sample_ibl(albedo, normal, view, roughness, metallic) — environment irradiance + specular + BRDF LUT",
         ),
         (
             "apply_lighting",
@@ -289,6 +305,8 @@ impl ShaderIncludes {
             Self::BIT_SHADOWS => Self::MATH.union(Self::CAMERA),
             Self::BIT_SKYBOX => Self::CAMERA.union(Self::MATH),
             Self::BIT_TEXTURES => Self::MATH,
+            // IBL needs the LightsInfo/IblInfo accessor (mip counts) + math/camera.
+            Self::BIT_IBL => Self::LIGHT_ACCESS.union(Self::MATH).union(Self::CAMERA),
             _ => Self::empty(),
         }
     }

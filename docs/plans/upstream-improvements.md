@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1` → `D3` → `P2` → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` → `P2` → `U2`.
 (`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
 turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
@@ -356,7 +356,37 @@ no-continuous-UV warning fires on a baked-UV mesh.
 
 ---
 
-### D1 — Expose `ibl` and `normal_map`/TBN building blocks behind `includes` gates (biggest item)
+### D1 — Expose `ibl` and `normal_map`/TBN building blocks behind `includes` gates (biggest item) ✅ ibl DONE; `normal_map` → D1-normalmap
+
+**`ibl` include — LANDED + verified live (2026-06-21).** The report's "single biggest win." Added a Tier-A
+`ibl` include: new bit `BIT_IBL` + `ShaderIncludes::IBL` + `KEY_TABLE` row + `all()` membership +
+`direct_deps` (→ LIGHT_ACCESS/MATH/CAMERA) in `materials/src/shader_includes.rs`; an `ibl: bool` gate in
+`ShaderIncludeFlags` (`dynamic_materials/registry.rs`, Tier-A so `for_custom` keeps it); a self-contained
+`shared_wgsl/lighting/ibl.wgsl` exposing `sample_ibl(albedo, normal, view, roughness, metallic)` (+
+`sample_ibl_diffuse`/`_specular`) over the **always-bound** IBL cubemaps + BRDF LUT + `get_lights_info().ibl`
+mip counts (split-sum; NOT a PBR re-implementation); gated into the opaque kernel
+(`opaque_kernel_includes.wgsl`). Added a `naga_validate` regression test
+(`custom_material_ibl_include_validates`) — the assembled Custom kernel with `ibl` + a `sample_ibl` call
+validates across all AA/mip configs.
+
+**Verified live (editor :9085):** built-in IBL environment (`set_environment` BuiltInDefault), a custom
+material declaring `includes:["ibl"]` whose fragment returns ONLY `sample_ibl(albedo=orange, world_normal,
+surface_to_camera, 0.35, 0)`, **no reliance on punctual lights** → the box is **lit by the environment**
+(orange with sky-irradiance directional shading, NOT black), `ok:true`, zero GPUValidationError. This is
+exactly the report's repro fixed.
+
+**`normal_map`/TBN → split as `D1-normalmap` (DEFERRED).** The dynamic `OpaqueShadingInput` has **no
+`tangents` field** (`opaque_kernel_includes.wgsl` L165+) — built-in PBR gets its TBN from the geometry pass,
+but the custom wrapper isn't handed tangents. So a `normal_map`/TBN helper first needs **tangents plumbed
+into the dynamic input**: fetch+interpolate the vertex tangent at the barycentric shade point in the
+visibility-buffer compute kernel (analogous to `world_normal`), gated on the material requesting
+`FragmentInputs::TANGENTS`, then add a `normal_map` Tier-A include with `build_tbn(world_normal, tangent)` /
+`perturb_normal(tangent_sample, world_normal, tangent)`. That's kernel attribute work (moderate), separable
+from the ibl win — deferred. (Original combined spec below.)
+
+---
+
+#### D1 (original combined spec — for reference)
 
 **Verified state — STILL-VALID.** The `includes` gate exists with a `KEY_TABLE`
 (`packages/crates/materials/src/shader_includes.rs` L165-238); dynamic materials get the Tier-A set
@@ -616,6 +646,16 @@ matches `editor_snapshot_json`'s `selection`.
   design (scene `TextureRef.flow` + renderer flow registry + `advance_texture_flows(dt)` in update_animations
   + bridge + UI) — recorded turnkey. Deferred in favor of the higher-value D1/D3/P2/U2. No code change.
   Next: D1.
+- 2026-06-21 — **D1 `ibl` include DONE (the report's "biggest win") — PASS (live).** New Tier-A `ibl`
+  include (bit + const + KEY_TABLE + all() + direct_deps in shader_includes.rs; `ibl` gate in
+  ShaderIncludeFlags; self-contained `lighting/ibl.wgsl` `sample_ibl(...)` over the always-bound IBL
+  cubemaps/LUT + get_lights_info; gated into the opaque kernel). naga regression test added
+  (custom_material_ibl_include_validates). Verified live: a custom material declaring `["ibl"]`, fragment
+  returns ONLY sample_ibl, IBL-only scene → box is environment-lit (orange w/ sky-irradiance shading, NOT
+  black), ok:true, zero GPU errors — the report's repro fixed. **Split:** `normal_map`/TBN → `D1-normalmap`
+  (DEFERRED): the dynamic OpaqueShadingInput has no `tangents` field, so it first needs tangents plumbed
+  into the visibility-buffer shade kernel (gated on FragmentInputs::TANGENTS) before a build_tbn/
+  perturb_normal include — kernel attribute work, separable. Next: D3.
 
 ---
 
