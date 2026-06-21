@@ -1,528 +1,466 @@
-# Plan: multithreading the renderer
+# Plan: multithreading the renderer (worker-hosted + shared-memory sim state)
 
-**Status: direction, not scheduled.** A motivated architectural direction captured
-from design discussion — not yet on `docs/plans/todo.md`, and a multi-PR effort,
-not a feature flag. Deliberately kept out of the executable todo: the renderer
-library should NOT add asynchronous jank (mid-operation yields) to work around an
-application threading choice. The right fix is architectural — move the renderer
-off the main thread, and let other threads (physics, sim) share state with it.
+**Status: committed direction, decisions locked, structured for autonomous
+execution.** A multi-PR effort delivered as committed checkpoint milestones (M0–M7),
+each with a self-verifiable gate (Rust tests + Chrome DevTools MCP). Designed to run
+**unattended end-to-end** once M0 (the go/no-go gate) is green. The single-threaded
+build is untouched throughout — the editor and model-viewer keep working exactly as
+today.
 
 This is the single source of truth for multithreading. It supersedes the old
-`docs/multithreading-prep.md` (the `Send`/`Sync` audit, now folded into
-[§ Platform prerequisites](#platform-prerequisites)).
+`docs/multithreading-prep.md` (its still-relevant parts are folded in below; the
+editor `Send`/`Sync` sweep it described is now explicitly **out of scope** — see
+[§ Platform / toolchain](#platform--toolchain)).
 
 ---
 
 ## Why
 
-Two motivations, both pointing the same way.
+Two motivations, same direction.
 
-### 1. Main-thread responsiveness (the immediate, concrete win)
+### 1. Main-thread responsiveness (immediate, concrete)
 
-Both shipping apps run the `AwsmRenderer` **on the main thread**:
-
-- model-tests: `renderer: Arc<futures::lock::Mutex<AwsmRenderer>>`
-- editor: `RendererHandle = Arc<xutex::AsyncMutex<AwsmRenderer>>` (its `WorkerPool`
-  runs only `GltfParseJob` — parallel glTF *parsing* — not the renderer)
-
-So any heavy *synchronous* renderer work blocks the main thread's layout/paint and
-input. Two concrete symptoms:
+Both shipping apps run `AwsmRenderer` **on the main thread** (editor:
+`Arc<xutex::AsyncMutex<AwsmRenderer>>`; model-tests:
+`Arc<futures::lock::Mutex<AwsmRenderer>>`). Any heavy *synchronous* renderer work
+blocks layout/paint/input. Two symptoms:
 
 1. **The loading UI can't paint its fast phases.** `commit_load`'s geometry phase
-   (`resolve_geometry`) is synchronous — it sets `on_progress(UploadingGeometry
-   X/Y)` then runs straight into the texture phase without yielding, so the browser
-   never gets a frame to paint that line (the DOM is retained-mode: imperative
-   `set_text_content` updates the tree synchronously but the *screen paint* still
-   only runs when the task yields — so this is NOT a dominator/reactive issue and
-   NOT fixable app-side). Only the phases that `.await` (texture finalize, pipeline
-   compile) can paint, and only when the work spans real frames (cold compile →
-   "Compiling pipelines (N)" shows; warm cache → nothing). 20× CPU throttle does
-   not help — the blocker is *yielding*, not speed.
-2. **Live editor edits jank the UI.** Every material/geometry/texture edit runs
-   `commit_load` on the main thread, stalling input + paint for its duration.
+   is synchronous — it sets progress then runs into the texture phase without
+   yielding, so the browser never gets a frame to paint that line (retained-mode
+   DOM: the tree updates synchronously but *paint* only runs when the task yields —
+   not a dominator issue, not fixable app-side). Only the `.await` phases paint, and
+   only when work spans frames. CPU throttle doesn't help — the blocker is
+   *yielding*, not speed.
+2. **Live editor edits jank the UI.** Every edit runs `commit_load` on the main
+   thread, stalling input + paint for its duration.
 
-The tempting-but-wrong fix is to make `commit_load` yield to the event loop after
-each phase. That adds ~1 event-loop turn per phase (`setTimeout(0)` ≈ 4ms clamped,
-rAF ≈ 16ms) to **every** commit — including every live edit — purely so a cosmetic
-progress line can paint, and it relaxes the deliberately-atomic "commit_load stays
-identical" invariant. The library has no reason to add that latency for an
-application's threading decision.
+The wrong fix is yielding inside `commit_load` (adds latency to every commit for a
+cosmetic paint, and relaxes the deliberately-atomic commit invariant). The right
+fix is architectural: move the renderer off-main, so progress crosses the boundary
+as discrete event-loop tasks that paint for free, and edits stop janking.
 
-### 2. Parallelism / "kinda smooth" (the larger payoff)
+### 2. Parallel simulation (the larger payoff)
 
-Move the renderer off-main and a second thread can run **physics / simulation**
-concurrently, sharing transform + uniform state with the renderer *without* a
-per-frame `postMessage` round-trip (which can itself be >1ms). The renderer keeps
-the GPU; the sim thread does the expensive transform-hierarchy + integration work;
-the DOM/main thread is free. This is where the architecture in
-[§ Layer 2](#layer-2--sab-simulation-state-sharing) comes from.
+With the renderer off-main, a **physics/sim worker** runs concurrently and shares
+transform/instance state with the renderer through **shared linear memory** — no
+per-frame `postMessage` (which can be >1ms). The sim worker does the expensive
+transform-hierarchy + integration work; the renderer keeps the GPU; the DOM/main
+thread is free. This is the "lots of content, smooth" target.
 
 ---
 
-## End-state: a two-thread model
+## End-state: three threads
 
-1. **Renderer + game loop in an OffscreenCanvas worker** → frees the DOM/main
-   thread. See [§ Layer 1](#layer-1--worker-hosted-renderer-offscreencanvas).
-2. **Physics/sim in a second worker, sharing simulation state with the render
-   worker via `SharedArrayBuffer`**, coordinated by `Atomics`. See
-   [§ Layer 2](#layer-2--sab-simulation-state-sharing).
+1. **Main thread** — DOM/UI (dominator), input capture, app/HUD logic. Thin.
+2. **Render worker** — `AwsmRenderer` + render loop, against a transferred
+   `OffscreenCanvas`. Single-threaded internally (WebGPU is thread-affine).
+3. **Physics/sim worker** — simulation; writes sim state into shared linear memory.
 
-The two layers are independent and stack: Layer 1 alone fixes responsiveness;
-Layer 2 adds true parallel simulation on top.
+Render worker and physics worker share one `WebAssembly.Memory`; the renderer's
+sim-owned buffers live in that shared region. Hot-path coordination is native wasm
+atomics (seqlock + dirty bitmap), not `postMessage`. The main thread talks to the
+render worker via a typed command/event protocol over `postMessage`.
 
-### Decided: single-threaded stays first-class; multithreading is opt-in per app
+### The hard constraint (shapes everything) — boundaries that won't move
 
-Multithreading is **opt-in per application, at a single builder call site** —
-`AwsmRendererWebGpuBuilder::new(gpu, html_canvas)` (main-thread) vs
-`new_with_offscreen_canvas(...)` (worker). The same source compiles both; the
-canvas kind and the rAF source are dispatched at runtime via `web_global`.
-Consequences, fixed as a decision:
+- **WebGPU is thread-affine.** `GpuCommandEncoder.beginRenderPass(…)` returns a
+  pass encoder bound to the encoder; both `!Send`. Render passes run on the thread
+  holding the encoder.
+- **Every `web_sys::*` GPU handle is `!Send`.** `GpuBuffer`/`GpuTexture`/
+  `GpuQueue`/`GpuBindGroup` are `JsValue` underneath; `Materials`/`Meshes`/`Lights`/
+  `Shadows` are therefore `!Send` too.
 
-- **The editor and model-viewer (model-tests) stay main-thread, unchanged.** They
-  keep their in-process `renderer_handle().lock().await` surface (~49 sites);
-  neither Layer 1 nor Layer 2 is forced on them. This is the guarantee they keep
-  working exactly as today.
-- **Single-threaded is a permanent, first-class, supported mode — not a legacy
-  fallback.** Because the editor and model-viewer run that way every day, the
-  single-threaded path is *continuously exercised and validated*. A game that
-  gains nothing from parallelism (GPU-bound, or simple sim) can opt to stay
-  single-threaded and rely on that same well-trodden path.
-- **Games opt into worker hosting (Layer 1) and/or SAB sim-state (Layer 2)
-  independently**, only where they benefit — typically physics-driven scenes with
-  lots of dynamic content.
-- **Moving the editor itself to a worker is out of scope for this plan.** It is
-  *achievable* but a project in its own right (the renderer is `!Send`, so every
-  closure that today holds the renderer guard *and* touches main-thread UI state
-  would split into command→worker / await→reply / touch-UI-on-main — see
-  [§ Open questions / risks](#open-questions--risks)). It is not a free consequence
-  of landing the layers, and nothing here depends on it.
+**Implication:** the renderer cannot be parallelized across threads, and the physics
+worker can never touch renderer objects or call `queue.writeBuffer`. Shared memory
+shares *bytes*, not the ability to call methods. So the renderer stays
+single-threaded on the render worker; the physics worker only reads/writes the
+shared *data* arena; the GPU upload stays render-worker-only. CPU-side physics/ECS
+work runs on the other thread; the shared arena is the bridge.
 
-See also `docs/DEPLOYMENT_MODES.md` for the main-thread vs. worker mode shapes.
+---
 
-### What is and isn't possible (the hard constraint)
+## Locked decisions
 
-- **Direct GPU-buffer mutation from another thread — NOT possible.** Every
-  `web_sys::GpuBuffer`/`GpuTexture`/`GpuQueue` is a `JsValue` and `!Send`; the
-  WebGPU device is thread-affine. `queue.writeBuffer` runs only on the
-  device-owning thread. (See [§ Boundaries that won't move](#boundaries-that-wont-move).)
-- **SAB-backed CPU state — feasible, and is the smooth thing we want.** The dynamic
-  buffers already keep an explicit CPU mirror (`raw_data: Vec<u8>` in
-  `DynamicUniformBuffer`/`DynamicStorageBuffer`) that is dirty-range-uploaded each
-  frame. That mirror is what becomes shared memory. The GPU upload stays
-  render-thread-only; the cross-thread data-marshaling cost goes to zero.
-- **postMessage is a red herring on the hot path.** Coordination is via `Atomics`
-  on the SAB (sub-microsecond), not structured-clone messages (the >1ms cost).
-  postMessage survives only for coarse, low-frequency input forwarding (the
-  existing `WorkerInputEvent` enum) and the topology command channel.
+| # | Decision | Choice & rationale |
+|---|---|---|
+| D1 | **Memory model** | **Shared linear memory** (real wasm threads: `+atomics,+bulk-memory` + `build-std`, native atomics). Opt-in threaded build profile; the editor/model-viewer keep the stable single-threaded build untouched. Official pattern (`wasm-bindgen` `raytrace-parallel`, `wasm-bindgen-rayon`). Most performant publish path: native stores + native atomics, zero-copy on the sim side. (Assessed against an explicit-`SharedArrayBuffer` model — that model's only advantage was avoiding the toolchain step; shared linear memory wins on perf and is a documented recipe, and the renderer itself stays single-threaded either way so neither unlocks render parallelism.) |
+| D2 | **SAB carries semantic sim state** | The physics worker writes **world `Mat4`** values; the render worker packs to GPU layout (model + inverse-transpose normal matrix) on its dirty descent. Never exposes the raw GPU byte layout; keeps the sim worker ignorant of normal-matrix/alignment details. |
+| D3 | **Deployment is opt-in per app** | Single-threaded stays first-class and continuously validated (editor/model-viewer run it daily). Games opt into worker-hosting (Layer 1) and/or shared-memory sim state (Layer 2). |
+| D4 | **Layer 1 = full remote-renderer protocol** | A typed command/event protocol so a main-thread driver can fully control the worker renderer (lifecycle, loading, scene mutation, queries). |
+| D5 | **Sim-state v1 schema** | **Node transforms + instance transforms + instance attributes.** Transforms first (fixed-slot arena), then instances/attributes (variable-length, buddy path). |
+| D6 | **`Send`/`Sync` scope** | Only the **shared-arena boundary types** need `Send + Sync`. The renderer stays `!Send` on the render worker; the editor never goes multithreaded, so the old `Rc→Arc`/`RefCell→Mutex`/`SendMutable` editor sweep and the pipeline-scheduler parallelization are **out of scope**. |
+| D7 | **Execution** | Committed checkpoint milestones (M0–M7), each with an autonomous verification gate. Runs unattended end-to-end after M0 passes; stops only at M7 (done) or a genuine block. |
 
 ---
 
 ## What opting into multithreading changes (the integration delta)
 
-Single-threaded apps (editor, model-viewer, simple games) keep **one data path**:
-call a renderer method → it mutates a local `Vec<u8>` mirror → the render loop
-uploads. Nothing below applies to them.
+Single-threaded apps keep **one data path**: call a renderer method → it mutates a
+local `Vec<u8>` mirror → the render loop uploads. Nothing below applies to them.
 
-Opting in changes that path. Concretely, side by side:
-
-| Aspect | Single-threaded (default) | Multithreaded (opt-in: worker + SAB) |
+| Aspect | Single-threaded (default) | Multithreaded (opt-in) |
 |---|---|---|
-| **Where the renderer lives** | Main thread, in-process | Dedicated worker; `AwsmRenderer` is `!Send`, never touches main |
-| **How the app talks to it** | Direct `renderer_handle().lock().await` + method calls | Command/event protocol over `postMessage` — there is no shared object to lock |
-| **Canvas** | `HtmlCanvasElement` via `…Builder::new(...)` | `OffscreenCanvas` transferred to worker via `…Builder::new_with_offscreen_canvas(...)` |
-| **Sim-owned buffers** (transforms + defined sim uniforms) | Local `Vec<u8>` mirror | `SharedArrayBuffer`-backed chunked arena — foreign-writable |
-| **All other buffers** (materials, pipeline state, GPU handles) | Local `Vec<u8>` / render-thread-private | **Unchanged** — stay local/private even in worker mode |
-| **Loading** (`begin_load` → `register_geometry` → `add_mesh` → `commit_load`) | Direct calls on the main thread | Imperative commands serialized over `postMessage`; the worker runs the real load off-main and streams `LoadingStats`/compile-status/errors back as `postMessage` events |
-| **Edits** (material / env / light) | Direct calls | `postMessage` commands |
-| **Value-returning queries** (pick, world-AABB / bounds, screenshot) | Direct call / already-async readback | Async main↔worker round-trip (request → await reply) |
-| **Per-frame sim writes** (transforms/uniforms from physics) | Direct mutation, same thread | Written straight into the SAB + `Atomics` seqlock — **zero `postMessage`** (the whole point) |
-| **Spawn / despawn** (topology: alloc slot / free / resize) | Direct | Owner-thread transaction via command channel: one round-trip at spawn, then lock-free per-frame writes |
-| **Input** (pointer / wheel / keyboard / resize) | Direct DOM listeners on the canvas | Captured on main, forwarded to the worker as `WorkerInputEvent` `postMessage`s |
-| **Coordination primitive** | `AsyncMutex` (cooperative, single executor) | Cross-thread `Atomics` (seqlock) on the SAB + `postMessage`; the renderer's internal locks become real (`parking_lot::Mutex`) |
-| **Build / serving** | Plain wasm, no special headers | `+atomics,+bulk-memory` wasm + COOP/COEP response headers required |
+| **Where the renderer lives** | Main thread, in-process | Render worker; `AwsmRenderer` is `!Send`, never on main |
+| **How the app talks to it** | Direct `lock().await` + method calls | Command/event protocol over `postMessage` — no shared object to lock |
+| **Canvas** | `HtmlCanvasElement` via `…Builder::new(...)` | `OffscreenCanvas` via `…Builder::new_with_offscreen_canvas(...)` |
+| **Sim-owned buffers** (transforms, instance transforms/attrs) | Local `Vec<u8>` mirror | Chunked arena in **shared linear memory** — foreign-writable |
+| **All other buffers** (materials, pipelines, GPU handles) | Local / render-private | **Unchanged** — stay render-worker-private |
+| **Loading** | Direct calls | `RenderCommand`s; worker runs the load off-main, streams `LoadingStats`/status/errors back as `RenderEvent`s |
+| **Edits** (material/env/light) | Direct calls | `RenderCommand`s |
+| **Queries** (pick, bounds, screenshot) | Direct / already-async | Async request→reply round-trip |
+| **Per-frame sim writes** (transforms/instances) | Direct mutation | Native writes into shared memory + seqlock — **zero `postMessage`** |
+| **Spawn / despawn** (topology) | Direct | Owner-thread transaction via command channel: one round-trip at spawn, then lock-free writes |
+| **Input** (pointer/wheel/keyboard/resize) | Direct DOM listeners | Captured on main, forwarded as `WorkerInputEvent` |
+| **Coordination** | `AsyncMutex` (single executor) | Native wasm atomics (seqlock) in shared memory + `postMessage` for commands |
+| **Build / serving** | Stable wasm, no special headers | Nightly `+atomics,+bulk-memory` + `build-std`; COOP/COEP headers |
 
-Three things to internalize from that table:
+Three things to internalize:
 
-1. **Three data paths, not one.** Opting in splits operations across three paths by
-   frequency and shape, and the art is putting each operation on the right one:
-   - **SAB + `Atomics` (the hot path)** — high-frequency per-frame value writes from
-     the sim/physics thread (transforms, sim uniforms). No serialization; this is
-     what makes it smooth.
-   - **`postMessage` command channel** — imperative, low-frequency, structured-clone
-     operations: loading, edits, spawn/despawn topology. Pays a serialization cost
-     (the >1ms-ish thing), but rare, so it doesn't touch the frame budget.
-   - **`postMessage` event/query channel** — results flowing back: progress, compile
-     status, errors, and async query replies (pick, bounds, screenshot).
-
-2. **SAB is opt-in per buffer, not "everything is shared."** Only the defined
-   sim-owned set (transforms + sim uniforms) becomes `SharedArrayBuffer`-backed and
-   foreign-writable. Materials, pipeline state, and every GPU handle stay exactly as
-   they are. Opting in does not "convert your buffers" — it adds a shared,
-   capability-gated region for the hot sim state and leaves the rest alone.
-
-3. **Loading specifically becomes fire-command-and-observe-events.** Today
-   `commit_load` is a direct call that blocks whoever calls it. In multithreaded
-   mode it is a command to the worker; the worker does the geometry upload / texture
-   finalize / pipeline compile off-main and streams discrete progress + status
-   events back. That indirection is *why* the loading UI paints its phases for free
-   (Layer 1's responsiveness win) — load is no longer call-and-block, it's
-   send-a-command + react-to-events.
+1. **Three data paths, not one.** SAB + atomics for the per-frame hot path
+   (transforms, instances); the `postMessage` *command* channel for imperative/rare
+   ops (loading, edits, spawn/despawn); the `postMessage` *event* channel for results
+   (progress, status, errors, query replies). The discipline is routing each op to
+   the right path.
+2. **Shared memory is opt-in per buffer.** Only the sim-owned set becomes
+   foreign-writable. Materials, pipeline state, GPU handles stay exactly as they
+   are. Opting in doesn't "convert your buffers" — it adds a capability-gated shared
+   region for the hot sim state.
+3. **Loading becomes fire-command + observe-events.** `commit_load` runs off-main;
+   the worker streams per-phase `LoadingStats` events → the DOM paints each phase for
+   free. That's the responsiveness win.
 
 ---
 
-## Readiness: what's specced vs. still open
+## Layer 1 — full remote-renderer protocol (D4)
 
-This doc is **implementation-ready as a direction, not as a turnkey spec.** Before
-writing code, know which parts are pinned and which still need decisions.
+A typed command/event protocol so a main-thread driver controls the worker
+renderer. Much plumbing exists: OffscreenCanvas transfer + `is_worker_scope` +
+single bundle + `WorkerInputEvent` (`packages/examples/render-worker`); `WorkerPool`
++ blob bootstrap + shared `WebAssembly.Module` + `serde_wasm_bindgen` +
+`post_message_with_transfer` (`workers/{pool,blob,entry}.rs`).
 
-**Ready to start now:**
-- **Platform prerequisites** — the `Send`/`Sync` sweep and the `+atomics`
-  shared-memory wasm build are a concrete checklist (see
-  [§ Platform prerequisites](#platform-prerequisites)). Independently useful and
-  unblocks everything else.
-- **Arena + seqlock primitive** — Layer 2 decisions 2 + 4 can be built and
-  Rust-unit-tested in isolation (concurrent writer/reader, torn-read detection,
-  dirty-version correctness) with no worker plumbing.
+**`RenderCommand` (main → worker)** — `serde` / `serde_wasm_bindgen`:
+- Lifecycle: `Init { offscreen, … }`, `Start`, `Stop`, `Resize { w, h }`.
+- Load transaction: `BeginLoad`, `RegisterGeometry { bytes (Transferable) }`,
+  `AddMesh { geometry, material, transform, opts }`, `CommitLoad`.
+- Scene mutation: `SetLocal { key, transform }`, `SetMeshMaterial`, `UpdateCamera`,
+  light/decal/env updates.
+- Queries (request→reply): `Pick { x, y }`, `Bounds { keys }`, `Screenshot`.
 
-**Decided:**
-- SAB carries semantic sim state, not GPU-packed bytes
-  ([Layer 2 § 1](#1-the-sab-carries-semantic-sim-state-not-gpu-packed-bytes--decided)).
-- Single-threaded stays first-class; multithreading is opt-in per app
-  ([§ Decided: deployment model](#decided-single-threaded-stays-first-class-multithreading-is-opt-in-per-app)).
+**`RenderEvent` (worker → main)** — all small/`Copy`/serializable:
+- `Loading(LoadingStats)` (already `Copy`: phase + counts), `PipelineStatus`,
+  `Error(String)`, `PickResult` (already `Copy`), query replies
+  (`Bounds(Aabb…)`, `Screenshot(bytes)`).
 
-**Still open — must be pinned before the dependent layer is coded:**
-- **The Layer 1 command/event protocol surface.** Only categories are listed; the
-  actual typed commands, events, and async queries must be enumerated. That
-  enumeration is the bulk of the worker-hosting work.
-- **Scene-graph ownership** for any worker-hosted app: single-owner-in-worker vs a
-  main-thread mirror for hit-testing / inspector reads.
-- **The Layer 2 sim-state schema:** which buffers beyond transforms join the
-  foreign-writable set, and their exact typed layout.
-
-Crucially, **nothing in the "still open" list blocks the editor or model-viewer** —
-neither moves off the main thread (see the deployment decision above), so those
-open items only gate *games* that opt into worker hosting.
-
----
-
-## Layer 1 — worker-hosted renderer (OffscreenCanvas)
-
-Host the renderer in a **Web Worker** against an **`OffscreenCanvas`**
-(`transferControlToOffscreen`):
-
-- **Main thread** = UI / DOM (dominator), input, app state.
-- **Worker thread** = the `AwsmRenderer` + its render loop.
-
-Then a synchronous `commit_load` (or any heavy upload/compile) blocks the
-**worker**, not main. The main thread stays free to lay out, paint, and handle
-input throughout. Progress/events cross the boundary via `postMessage`, arriving
-on the main thread as **discrete event-loop tasks** — so each `on_progress` update
-(geometry X/Y → textures X/Y → compiling N) paints **for free**, no library yield,
-no `resolve_geometry` change. The granular-loading paint nuance dissolves as a side
-effect, and live edits stop janking.
-
-### What already exists (the seed)
-
-- **`packages/examples/render-worker`** — a working example: the page calls
-  `transferControlToOffscreen()`, spawns a worker, the worker builds the renderer
-  via `AwsmRendererWebGpuBuilder::new_with_offscreen_canvas` and drives its own
-  `requestAnimationFrame` loop. A single wasm bundle serves both scopes (selected
-  by `is_worker_scope`). It also sketches the input-forwarding wire shape
-  (`WorkerInputEvent`).
-- **Editor `WorkerPool`** infra (`WorkerPool` / `WorkerPoolBootstrap`, today
-  running `GltfParseJob`) — a precedent for spawning + messaging workers from the
-  app, and the place the Layer 2 topology command channel can build on.
-
-### What it would take (rough shape)
-
-- Move the `AwsmRenderer` instance into a worker; the main thread holds a thin
-  **proxy / command + event protocol** instead of `renderer.lock().await` + direct
-  calls.
-- Convert every main-thread renderer interaction to message-passing:
-  - **Commands → worker**: begin_load / register_geometry / add_mesh / commit_load
-    / set_mesh_material / transforms / materials / env, etc.
-  - **Events → main**: `LoadingStats` progress, compile status, errors (all small /
-    `Copy` → cheap to serialize).
-  - **Async round-trips** for anything that's a sync query today: picking,
-    scene-capture/screenshot readback, bounds/AABB queries.
-- Transfer the `OffscreenCanvas` to the worker; forward pointer / resize / keyboard
-  input to it (`WorkerInputEvent`).
-- Keep one wasm bundle serving both scopes (as the example does).
+**Transfer rules** (from the API audit):
+- Handles (`MeshKey`/`GeometryKey`/`MaterialKey`/`TransformKey`) are `SlotMap`
+  keys — pass by value, never serialize internals.
+- `LoadingStats`/`Transform`/`CameraMatrices`/`Aabb`/`AddMeshOpts`/`Decal`/
+  `PickResult` are plain data → safe to `postMessage`.
+- Geometry/texture payloads (`Vec<f32>`/`Vec<u8>`) → **Transferable `Uint8Array`**
+  (zero-copy), reconstructed worker-side. Never send `GeometrySource`/`Material`/
+  `Skybox`/`Ibl` directly (they hold `web_sys` GPU objects).
+- A game's own logic may instead run *inside* the render worker and call the
+  renderer in-process; the remote protocol is for main-thread drivers (HUD/UI,
+  or an editor-style host) that need it.
 
 ---
 
-## Layer 2 — SAB simulation-state sharing
+## Layer 2 — shared-memory sim state (architecture)
 
-The architecture for a second thread (physics/sim) to manipulate transforms and
-uniforms with zero per-frame postMessage. This is the part `docs/ROADMAP.md`
-deferred as *"Dynamic/Uniform storages could be SharedArrayBuffer — requires more
-design/thought (don't want to expose raw manipulation)."*
+Five load-bearing decisions, forced by "general-purpose renderer, lots of content."
+A "cheap hack" (full re-upload each frame, flat per-slot dirty scan, ad-hoc
+topology) is rejected — it doesn't scale to millions of mostly-static objects.
 
-Design driver: this is a **general-purpose renderer that must work with lots of
-content**. A "cheap hack" (full buffer re-upload every frame, flat per-slot dirty
-scan, ad-hoc topology) is explicitly rejected — it doesn't scale to millions of
-mostly-static objects. The five decisions below are each forced by that scale
-requirement.
+### A. Semantic values, render-side pack (D2)
+Sim writes world `Mat4`; render packs 64B → 112B (model + derived normal) inline
+during its dirty descent and hands `(offset,len)` ranges to the **existing**
+uploader. Pack work ∝ dirty count — same shape the renderer already has, just
+sourced from another thread. For sim-owned nodes the render worker skips its own
+`update_world` hierarchy walk.
 
-### 1. The SAB carries *semantic* sim state, not GPU-packed bytes — DECIDED
+### B. Stable addressing — growth never moves data
+Today the mirror is one growable `Vec<u8>` (`resize()` reallocs, base pointer
+moves) — fatal for a foreign writer holding an offset. Replace with a **chunked
+arena** in shared memory: fixed-size chunks, slots never move once assigned, growth
+appends a chunk. A slot→(chunk, offset) binding is valid forever. (Slot *indices*
+are already stable across the current free-list resize in `dynamic_uniform.rs`;
+this makes the *addresses* stable too, which shared memory requires.)
 
-The foreign thread writes **world transforms** (and a defined sim-owned uniform
-set) into the shared region as semantic values. The render thread keeps the cheap
-pack step (world matrix → model + inverse-transpose normal matrix — the existing
-`transforms.rs` packing) during its dirty descent.
+### C. Topology is owner-only; foreign threads write values only
+`update_with` in `buffer/dynamic_uniform.rs` couples three mutations: (a) value
+bytes, (b) `mark_dirty_range`, (c) slot/free-list/`resize` allocation. Split them:
+foreign (physics) threads get (a)+(b) on already-allocated slots; the owner (render
+worker) keeps (c) behind a command channel. A body requests a slot binding at spawn
+(one round-trip), then writes lock-free every frame. Matches the existing "loading
+is ONE transaction" law: spawn/despawn is a transaction; motion is not. The hot
+path touches zero topology.
 
-Chosen over having the foreign thread write final packed bytes because it:
-- keeps a clean typed contract and **never exposes the raw GPU byte layout** (the
-  ROADMAP's stated concern) — you expose typed write-capabilities to specific
-  slots, not raw buffers;
-- moves the *expensive* work off the render thread (transform-hierarchy walk +
-  physics integration) while keeping the *trivial* work (pack + upload) where the
-  GPU device lives — for sim-owned nodes the render thread can skip its own
-  `update_inner_recursively` walk entirely;
-- keeps render-thread pack work proportional to dirty count — the same shape as
-  today, just sourced from another thread.
+### D. Seqlock = dirty + publication; tiered dirty scales with *changes*
+- **Per-slot version (native `AtomicU32` seqlock):** writer bumps odd → write →
+  even (release/acquire). Reader: "version ≠ last-seen" = dirty; "odd or unstable
+  across the read" = torn → reuse last frame's value (one-frame staleness,
+  self-heals). One atomic per slot solves tearing **and** dirty.
+- **Coarse chunk dirty bitmap (`AtomicU32` words):** writer sets its chunk's bit
+  (atomic-or). Render descends only dirty chunks → scan cost ∝ touched chunks, not
+  total slots. A million-object scene with 200 movers costs ~200 movers of work.
+  Overflow-free (unlike a fixed dirty-index ring); coalesces into `(offset,len)`.
 
-Accepted trade-off: slightly more render-thread CPU per dirty slot than a
-pre-packed contract. Implications now fixed:
-- The SAB schema is a typed sim-state layout (e.g. world `Mat4` per slot), **not**
-  the `transforms.rs` packed layout; the packed layout stays render-thread-private.
-- The render thread's dirty descent (decision 4) does the pack inline as it walks
-  dirtied slots, then hands `(offset, len)` ranges to the existing uploader.
-- The sim thread never needs to know about normal matrices or GPU alignment.
+### E. Downstream GPU path untouched
+The render worker turns descended dirty slots into the same `(offset,len)` ranges
+`MappedUploader::write_dirty_ranges` / `mapped_staging_ring` already consume. Only
+the *front* of the pipe changes (where bytes live + where dirty originates).
+Evidence this is an evolution of the buffer primitives, not a renderer rewrite.
 
-### 2. Stable addressing — growth must never move existing data
+### v1 sim-state schema (D5) — exact layout
 
-Today the backing is one growable `Vec<u8>`; `resize()` reallocs and the base
-pointer moves — fatal for a foreign writer holding an offset. Replace with a
-**chunked arena**: fixed-size SAB segments, slots never move once assigned, growth
-= append a new chunk, existing chunks never realloc. A slot→(chunk, offset) binding
-is then valid forever. (Slot *indices* are already stable across the current
-free-list resize in `dynamic_uniform.rs`; this makes the *addresses* stable too,
-which SAB requires.)
+Three foreign-writable buffers, all in shared memory. Each region =
+`[value region]` + `[version region: u32/slot]` + `[chunk dirty bitmap]`, with a
+header `{ stride, slot_count, chunk_size, capacity }`.
 
-### 3. Topology is an owner-thread transaction; foreign threads only write values
+| Buffer | Source | Value stride (semantic) | Allocation | Existing write path to mirror |
+|---|---|---|---|---|
+| **Node transforms** | `transforms.rs` (`DynamicUniformBuffer<TransformKey>`) | 64B world `Mat4` (render packs to 112B model+normal) | Fixed-slot arena | `set_local` → `update_world` → pack → `write_gpu` |
+| **Instance transforms** | `instances.rs` (`DynamicStorageBuffer<TransformKey>`) | 64B `Mat4` per instance (no derived data) | Variable extent (buddy); count = topology | `transform_write_all` / `transform_update` (zero-alloc steady-state) |
+| **Instance attributes** | `instances.rs` (`InstanceAttr`, `repr(C)`) | 16B (`color_packed:u32, size:f32, alpha:f32, _pad`) | Variable extent (buddy) | `attribute_write_all` / `attribute_update` |
 
-Allocate / free / resize / buddy-alloc (`DynamicStorageBuffer`) reassign or move
-structure — they stay owner-side, behind a command channel. A physics body
-requests a slot binding at spawn (one command-channel round-trip, *not* per frame),
-then writes that fixed slot lock-free every frame. Fits the existing "loading is
-ONE transaction" law: spawn/despawn is a transaction; steady-state motion is not.
-The hot path touches zero topology.
+Deferred from the foreign-writable set: **lights** (today repacked densely each
+frame — no stable slot; needs a refactor first), **morph weights / skin joints**
+(animation, not physics). Everything else (materials, pipeline state, GPU handles)
+stays render-worker-private — opt-in per buffer.
 
-This is the value-vs-topology split of `dynamic_uniform.rs`'s `update_with`, which
-today couples three mutations: (a) value bytes, (b) `mark_dirty_range`, (c)
-slot/free-list/`resize` allocation. Foreign threads get (a)+(b); the owner keeps
-(c).
-
-### 4. Dirty + publication are one mechanism; dirty collection scales with *changes*, not content
-
-- **Per-slot version = seqlock.** Writer bumps odd → write bytes → bump even, with
-  release/acquire fences. Render reads "version ≠ last-seen" = dirty; "odd or
-  unstable across the read" = torn → reuse last frame's value for that slot
-  (one-frame sub-frame staleness, self-heals). One atomic per slot solves tearing
-  **and** dirty together.
-- **Coarse chunk-level dirty bitmap** above the per-slot versions: a writer sets
-  its chunk's bit (one extra atomic-or) when it dirties a slot. Render descends
-  only into chunks whose coarse bit is set, so scan cost ∝ touched chunks, **not
-  total slot count** — the dirty-pages trick. A million-object scene with 200
-  movers costs ~200-movers of work, not a million-slot scan. Overflow-free (unlike
-  a fixed dirty-index ring) and coalesces into the existing `(offset, len)` ranges.
-
-### 5. The downstream GPU path is untouched
-
-The render thread turns descended dirty slots into the same `(offset, len)` ranges
-that `MappedUploader::write_dirty_ranges` / `mapped_staging_ring` already consume.
-Only the *front* of the pipe changes (where bytes live + where dirty originates);
-the staging-ring upload and bind-group reuse are unchanged. This is the evidence
-it's an evolution of `DynamicUniformBuffer`/`DynamicStorageBuffer`, not a rewrite.
-
-### Generality
-
-Transforms (fixed-slot uniform), instances/storage (buddy-allocated, variable
-extent), lights, materials — all sit on the same arena + version + tiered-dirty
-substrate. Variable-length buffers obey the same rule: rewriting bytes of an
-already-allocated fixed-extent region is a value write (foreign-allowed); changing
-the *extent* is topology (owner-only, command channel). SAB-backing is **opt-in
-per buffer** — only a defined sim-owned set (transforms + sim uniforms) is
-foreign-writable; materials, pipeline state, and all GPU handles stay
-render-thread-private.
+The existing **particle simulator**
+(`packages/frontend/editor/src/engine/bridge/particles.rs`) is the proof-pattern
+for instances: it already does per-frame `transform_write_all` + `attribute_write_all`
+zero-alloc; the physics worker mirrors that, sourced from shared memory.
 
 ---
 
-## Platform prerequisites
+## Platform / toolchain (D1, D6)
 
-The renderer is structurally single-threaded today and silently relies on "one
-thread, ever" in a handful of places. None are deep architectural lock-in, but all
-must change before any worker arrangement is meaningful. (This section is the
-former `docs/multithreading-prep.md` audit; the scheduler work landed in
-[PR #99](https://github.com/dakom/awsm-renderer/pull/99).)
+Shared linear memory needs a distinct **threaded build profile** (the
+single-threaded build is unchanged):
 
-### Today's threading model
+- **Toolchain:** pinned nightly (a `rust-toolchain.toml` scoped to the threaded
+  game/worker packages, or nightly invoked explicitly for them).
+- **Flags:** `RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals"`,
+  build with `-Z build-std=std,panic_abort`. (Today `.cargo/config.toml` sets only
+  `--cfg=web_sys_unstable_apis` + the getrandom backend; the threaded profile adds
+  the above on top.)
+- **wasm-bindgen:** emit shared memory; workers attach to the **same**
+  `WebAssembly.Memory` by calling the glue `init(module, memory)` (the
+  `raytrace-parallel` / `wasm-bindgen-rayon` bootstrap). `wasm-bindgen 0.2.118` is
+  compatible. Extend the existing blob-worker + shared-`Module` pattern in
+  `workers/blob.rs` to also pass `memory`.
+- **Worker roles:** explicit `render_main(offscreen)` and `physics_main()` entry
+  points (named role workers, not a rayon pool). `web_global` already abstracts
+  main-vs-worker `request_animation_frame`/`navigator_gpu`/`performance`.
+- **Headers:** dev + prod must send `Cross-Origin-Opener-Policy: same-origin` and
+  `Cross-Origin-Embedder-Policy: require-corp` (required for `crossOriginIsolated`).
 
-wasm32-unknown-unknown's single-threaded JS event loop. No `Send`/`Sync` needed
-because nothing crosses a thread boundary; `wasm_bindgen_futures::spawn_local`
-queues onto the same microtask queue as the rAF tick. `pipeline_scheduler` relies
-on this via: a non-`Send` `FuturesUnordered<PendingFuture>` (captures `!Send`
-`JsFuture` Dawn promises); `Mutex<Option<HashSet>>` once-per-session guards;
-`&mut self` `SlotMap`/`HashMap` access; `std::mem::take` event drains.
+**`Send`/`Sync` (scoped, D6):** only the shared-arena handle + types crossing the
+render↔physics boundary need `Send + Sync`. The renderer stays `!Send`. **Explicitly
+NOT in scope** (the old prep-doc sweep): the editor `Rc→Arc`/`RefCell→Mutex`/
+`SendMutable` migration (editor stays main-thread single-threaded) and the
+pipeline-scheduler parallelization (the renderer stays single-threaded on the render
+worker; compiles happen there as today). `CoverageReadbackState` /
+`EdgeOverflowReadbackState` are already `Arc<Mutex<…>>` write-through-Arc — the
+reference shape for any shared state that does arise.
 
-### What changes when wasm32-multithread lands
-
-The render loop stays single-threaded (WebGPU's command-encoder lifetime is
-per-thread), but a worker pool could drive compiles concurrently. Boundaries
-`pipeline_scheduler` would negotiate:
-
-1. **`PendingFuture` `Send` requirement.** Dawn pipeline-creation promises return
-   `!Send` `GpuComputePipeline`/`GpuRenderPipeline`. Cleanest path: the
-   compile-orchestrator stays on the main/render thread (where the device lives);
-   the *frontend* worker uses `submit_pipeline_group_batch` via a message-passing
-   bridge, so only work-orchestration parallelizes.
-2. **`SlotMap` + `HashMap` access.** Swap bare collections for
-   `parking_lot::Mutex<…>` (zero overhead uncontended; `RwLock` doesn't help —
-   `SlotMap::insert` needs exclusive). Per-pass `generation` markers already keep
-   the lock-window small.
-3. **`Vec<StatusEvent>` drain.** Replace with an unbounded channel so multiple
-   worker contexts can emit; the drain side stays single-consumer on the render
-   thread, preserving the between-frames coalescing `poll_resolved` relies on.
-4. **`warn_pipeline_not_compiled` guard.** `Mutex<Option<HashSet>>` →
-   `parking_lot::Mutex<HashSet>` / `DashSet`; keep it a single global guard (a
-   multithreaded app does not want N redundant warn lines per failure).
-5. **Frontend `drain_pipeline_status_events` subscriber.** If a worker subscribes,
-   forward serialized events across the boundary. `PipelineGroupId` is
-   `Copy + Hash + Eq` so trivially serializable; the only `!Serializable` payload
-   is `PipelineGroupStatus::Failed { error: AwsmError }` — carry a tagged string,
-   not the `AwsmError`.
-
-### Editor-frontend invariants
-
-- **`Rc` + `RefCell`.** `RendererHandle = Rc<RefCell<…>>` (and scene-editor's
-  `renderer_bridge`) is the load-bearing single-thread assumption. Migrate to
-  `Arc<Mutex<…>>`; audit every long `borrow_mut()` across an `.await` for places
-  that should become `try_lock()` (the rAF loop already skips a frame when the host
-  is busy with `prewarm_pipelines` — the same shape works under a `Mutex`). The
-  `#[allow(clippy::await_holding_refcell_ref)]` comments mark the high-risk sites.
-- **`Mutable<…>` is not `Send`.** All `EditState` is `Arc<Mutable<…>>`, `Send` only
-  via `Arc`; the inner `Mutable` still needs cross-thread synchronization.
-  Either build a `SendMutable` over `futures_signals` (Arc + RwLock), or per-thread
-  `tokio::sync::watch` channels with the renderer thread holding one end. This is a
-  UI-architecture-scale change, not a per-call patch.
-
-### The multi-thread-ready template
-
-`CoverageReadbackState` and `EdgeOverflowReadbackState` already use
-`Arc<Mutex<…>>` with a small lock surface, no nested locks, write-through-Arc —
-forward-compatible out of the box (their `mapAsync` resolution runs in a detached
-`spawn_local`). Use them as the canonical "this is what right looks like" when
-refactoring other state.
-
-### Boundaries that won't move
-
-- **WebGPU command-encoder ownership.** `GpuCommandEncoder.beginRenderPass(…)`
-  returns a pass encoder bound to the encoder; both `!Send`. Render passes run on
-  the thread holding the encoder. Multi-encoder render-frame parallelism is
-  possible but an order of magnitude beyond "use `Arc<Mutex>`".
-- **`web_sys::*` JsValue ownership.** Every handle (`GpuBuffer`, `GpuTexture`,
-  `GpuBindGroup`, …) is `JsValue` underneath and `!Send`. `Materials`, `Meshes`,
-  `Lights`, `Shadows`, etc. are therefore `!Send` and stay on the render thread.
-  CPU-side ECS / spatial / **physics** work runs on other threads; the bridge to
-  the renderer is the boundary — which is exactly what Layer 2's SAB arena is.
-
-### Migration checklist
-
-- [ ] Audit `Rc` → `Arc` in the editor frontends (~50 sites, clippy-driven).
-- [ ] Audit `RefCell` → `Mutex`; migrate `borrow_mut()`-across-`.await` to
-      `try_lock()` (see the `#[allow]` comments for high-risk sites).
-- [ ] Decide a `SendMutable` story (wrap `futures_signals::Mutable`, or a signal
-      lib that ships `Send + Sync`).
-- [ ] Single-thread island for `PipelineScheduler` (message-passing front so it can
-      stay `!Send` while the rest goes multi-thread).
-- [ ] Scheduler internal locks (the changes under "What changes…" above).
-- [ ] Verify `CoverageReadbackState` / `EdgeOverflowReadbackState` need zero changes
-      (use as the reference template).
-- [ ] CI build under `--cfg=web_sys_unstable_apis` + nightly with
-      `+atomics,+bulk-memory` + shared memory + COOP/COEP headers. Confirm the
-      pinned `wasm-bindgen = 0.2.118` supports `SharedArrayBuffer` on the target
-      before any of the above.
-
-### What you do NOT have to migrate
-
-- The visibility buffer + compute kernels — GPU-side, thread-irrelevant.
-- The `Materials`/`Meshes`/`Lights`/etc. GPU-resource structs — stay render-thread.
-- The `FuturesUnordered` patterns themselves — fine single-threaded; only their
-  `!Send` inner future types are the constraint.
+**Empirical unknowns to settle early:**
+- Does current Chrome's `queue.writeBuffer` accept a shared-memory-backed
+  `TypedArray`? If not, the render side copies dirty chunks to a regular
+  `ArrayBuffer` before upload (proportional to movers — cheap). Verify in M2.
+- Confirm the exact nightly + `build-std` invocation that links cleanly for this
+  workspace. Settle in M0.
 
 ---
 
-## Cost / sequencing
+## Implementation plan — checkpointed milestones (D7)
 
-Multi-PR, not a feature flag. Suggested order (each layer independently
-verifiable):
+Execution model: for each milestone the agent (1) does the work, (2) runs
+`cargo test` + the threaded build, (3) serves with COOP/COEP, (4) drives the
+**Chrome DevTools MCP** to verify the gate, (5) commits the milestone on the run
+branch, (6) proceeds **immediately to the next milestone**. The run is **autonomous
+end-to-end** — milestones are committed checkpoints (review them by reading the
+commits afterward), not interactive pauses. Gates are pass/fail; never advance on a
+red gate. **M0 is the one hard go/no-go:** if it can't go green, stop and report
+rather than running the rest on a broken foundation. Otherwise stop only at M7
+(done) or on a genuine block needing human input.
 
-1. **Platform prerequisites** — the `Send`/`Sync` sweep + the `+atomics`
-   shared-memory wasm build + COOP/COEP. Unblocks *everything else* and is
-   independently useful. Start here; nothing else can run without it.
-2. **Arena + seqlock primitive in isolation** — re-base `DynamicUniformBuffer`
-   (then `DynamicStorageBuffer`) onto the chunked stable-address SAB arena with
-   per-slot version/seqlock + tiered chunk-dirty layer. Rust-unit-testable with no
-   worker plumbing (concurrent writer/reader simulation).
-3. **Worker-hosted renderer (Layer 1)** — promote the OffscreenCanvas example to a
-   supported game deployment mode; build the command/event protocol.
-4. **Physics in a second worker (Layer 2 end-state)** — topology command channel +
-   the typed sim-state schema + the opt-in foreign-writable buffer set; physics
-   writes world transforms, render packs + uploads.
+> **Chrome DevTools MCP toolkit:** `navigate_page`, `evaluate_script` (read
+> `crossOriginIsolated`, assertion flags), `list_console_messages`,
+> `take_screenshot` (visual / before-after motion), `list_network_requests` (prove
+> no per-frame postMessage on the hot path), `performance_start_trace` /
+> `performance_stop_trace` (main-thread responsiveness).
+
+### M0 — Threaded build + cross-origin isolation *(gating unknown)*
+**Relocate `packages/examples/` → root `examples/`** (update the `Cargo.toml`
+workspace member at line 20 and any `Taskfile.yml`/taskfile references) and scaffold
+a **standalone multithreaded reference app** there — its own `Trunk.toml`,
+`index.html`, and a dev-serve config that sends COOP/COEP (this is the reference
+consumers copy from). This example is the living artifact every later milestone
+extends. Add the nightly threaded build profile (flags + `build-std`). Minimal
+2-worker smoke in the example: both workers attach to one `WebAssembly.Memory`;
+worker A increments an `AtomicU32` in shared linear memory, worker B observes it.
+- **Gate:** `evaluate_script` → `crossOriginIsolated === true` and
+  `typeof SharedArrayBuffer !== 'undefined'`; console shows B observing A's
+  increments across the thread boundary. **Commit; continue.**
+
+### M1 — Shared arena + seqlock primitive *(Rust, in shared memory)*
+New `packages/crates/renderer/src/buffer/shared_arena.rs`: chunked stable-address
+arena over shared memory behind a backing trait; per-slot `AtomicU32` seqlock;
+coarse chunk dirty bitmap; `write_value` (foreign) vs `allocate`/`free`/`resize`
+(owner); reader descends dirty chunks → `(offset,len)` ranges with torn-read
+detection.
+- **Gate:** `cargo test` for pure logic (seqlock odd/even, torn detection under
+  simulated interleave, dirty coalescing, stable addressing across grow). Browser
+  2-worker test: physics worker writes a known ramp at high rate; render worker
+  reads, asserts zero torn values + dirty set matches; `evaluate_script` reads a
+  pass flag, console confirms. **Commit; continue.**
+
+### M2 — Re-base node transforms onto the arena *(no physics yet)*
+Feature-gate `DynamicUniformBuffer<TransformKey>` to back its mirror with the shared
+arena (semantic 64B `Mat4`); single-threaded build keeps the `Vec<u8>` path.
+Render-worker dirty descent packs 64B → 112B (model + inverse-transpose normal) into
+the existing staging path; `mapped_uploader` untouched. Settle the
+`writeBuffer`-from-shared-memory question here (copy-to-regular fallback if needed).
+- **Gate:** `cargo test` proving packed bytes equal current packing. Browser:
+  render worker hosts the renderer, populates the transform arena itself (no
+  physics), scene renders **identically** to single-threaded — `take_screenshot`
+  visual match, console clean. **Commit; continue.**
+
+### M3 — Physics worker writes transforms → objects move *(hot-path proof)*
+Physics-stub worker integrates simple motion for N bodies, writes world `Mat4` into
+arena slots + seqlock bump + chunk dirty bit; slot bindings via the topology command
+channel at spawn. Render worker reads dirty → packs → uploads. **Zero postMessage on
+the hot path.**
+- **Gate:** `take_screenshot` at t0/t1 shows objects moved; `list_network_requests`
+  /console shows no per-frame postMessage (only atomics); a `?stress=N` run shows
+  dirty-scan cost tracking movers, not total. **Commit; continue.**
+
+### M4 — Instance transforms + attributes *(variable-length buddy path)*
+Extend the arena/schema for the two instance buffers: count change = topology
+(owner-side), per-instance value writes = foreign. Mirror `transform_write_all` /
+`attribute_write_all` from the physics worker (the particle-sim pattern).
+- **Gate:** a crowd/particle stress scene driven by the physics worker — screenshot
+  shows the instanced motion; `?stress=N` bench holds. **Commit; continue.**
+
+### M5 — Full Layer 1 remote-renderer protocol
+Implement `RenderCommand`/`RenderEvent` with `serde_wasm_bindgen` + Transferable
+geometry/texture bytes; reuse `workers/blob.rs` + `post_message_with_transfer`. A
+main-thread DOM driver loads a glTF via commands; the worker streams
+`Loading(LoadingStats)`; `Pick` round-trips.
+- **Gate:** main-thread driver loads a model into the worker renderer; a progress
+  bar paints from `Loading` events (`take_screenshot` mid-load shows phases); final
+  screenshot shows the model; a `Pick` returns a hit. **Commit; continue.**
+
+### M6 — Input forwarding + responsiveness
+Wire all `WorkerInputEvent` variants main→worker + `ResizeObserver`. Confirm the
+main thread stays responsive during a heavy worker-side load/compile.
+- **Gate:** `performance_start_trace`/`stop_trace` shows main-thread frames keep
+  painting during a cold load in the worker (no long tasks on main). **Commit;
+  continue.**
+
+### M7 — Hardening + docs + reference example
+Confirm the backing-trait isolation; document the threaded build profile; capture
+the `writeBuffer`-from-shared-memory result; finalize `?stress` benches. Prove the
+editor + model-viewer still build/run on the **stable single-threaded** profile
+unchanged, alongside the threaded game build. Then finalize the two user-facing
+deliverables:
+- **Standalone reference example** (root `examples/`, started in M0): a complete,
+  copyable multithreaded app — Trunk + `index.html` + COOP/COEP serve config +
+  render worker + physics worker + the shared-memory sim-state hand-off — that a
+  consumer can run as-is and learn the pattern from.
+- **`docs/PLAYER-GUIDE.md` usage section** (the guide already exists — extend it):
+  how to opt a game into multithreading — the threaded build profile, COOP/COEP
+  headers, spawning the render + physics workers, the `RenderCommand`/`RenderEvent`
+  protocol, and binding bodies to sim-state slots. Link the reference example.
+- **Gate:** editor (single-threaded) and the game example (threaded) both run and
+  screenshot correctly from the same source tree; `PLAYER-GUIDE.md` documents the
+  flow and points at the runnable example. **Commit. Done.**
 
 ---
 
-## Open questions / risks
+## Autonomous `/loop` prompt
 
-- **Editor coupling (only if the editor is ever moved to a worker — out of scope
-  per the deployment decision).** The controller + many bridges call
-  `renderer_handle().lock().await` directly and pass closures touching main-thread
-  UI state in the same scope. Since the renderer is `!Send`, moving it to a worker
-  would turn that whole surface into an async message protocol — the bulk of the
-  work and the main risk. The plan keeps the editor main-thread precisely to avoid
-  this; it is documented here only so the cost is explicit if that ever changes.
-  The same applies to the two items below — they bite *only* a worker-hosted app
-  (a game), never the main-thread editor/model-viewer.
-- **Scene-graph ownership.** Single-owner-in-worker vs a mirrored copy on main (for
-  hit-testing / inspector reads) — and how an app's authored scene relates to the
-  worker's renderer scene.
-- **Interactive-query latency.** Picking / gizmo hit-tests become a main↔worker
-  round-trip; may need a main-thread spatial mirror for instant hit-testing, or to
-  accept a frame of latency.
-- **Bundle / wasm-bindgen.** Single bundle, two scopes (example pattern); watch
-  module-init duplication, and confirm `wasm-bindgen 0.2.118` SAB support.
-- **Sim-state schema scope.** Which buffers join the foreign-writable sim-owned set
-  beyond transforms (which uniforms? skins? morph weights?) — opt-in, decided per
-  buffer.
+Create a `multithreading` branch, then paste this as the `/loop` task (self-paced;
+runs unattended after M0). All work happens on the current branch — no new branches.
+
+> Implement `docs/plans/multithreading.md` fully and autonomously, milestones M0→M7
+> in order. Do ALL work on the current git branch — do NOT create new branches;
+> commit each milestone as its own commit. M0 is the go/no-go gate: relocate
+> examples, stand up the threaded build + COOP/COEP + the 2-worker shared-memory
+> smoke, verify via **chrome-devtools MCP**. If M0 cannot be made green (toolchain
+> won't link, `crossOriginIsolated` won't enable, needs my input), STOP and report —
+> do NOT proceed. If M0 passes, run the REST unattended WITHOUT stopping between
+> milestones: for each, do the code/build work, run `cargo test` + the threaded
+> build, serve with COOP/COEP, verify that milestone's gate EXACTLY as written via
+> chrome-devtools MCP (`evaluate_script` for `crossOriginIsolated`/assertion flags,
+> screenshots for visual/motion proof, network/console for "no per-frame
+> postMessage", performance traces for responsiveness); when GREEN, commit and
+> proceed IMMEDIATELY to the next milestone. If a gate is RED but fixable, iterate
+> and re-verify. STOP and summarize ONLY when: M7 is green and done, OR a gate stays
+> red after several genuine fix attempts, OR a milestone is blocked on something
+> needing my input. Never skip a gate, never advance past a red gate, never fake a
+> pass. Keep the single-threaded editor/model-viewer build working at every step.
+> Start with M0.
 
 ---
+
+## What already exists vs. must be built
+
+**Exists (reuse):** OffscreenCanvas transfer + `is_worker_scope` + single bundle +
+`WorkerInputEvent` (`examples/render-worker`); `WorkerPool` + blob bootstrap +
+shared `WebAssembly.Module` + `serde_wasm_bindgen` + `post_message_with_transfer`
+(`workers/{pool,blob,entry}.rs`); `web_global` main-vs-worker dispatch;
+`new_with_offscreen_canvas` builder; the dirty-range uploader + staging ring;
+`LoadingStats`/`PickResult` already `Copy`; the particle-sim zero-alloc instance
+write pattern.
+
+**Must build:** relocate `packages/examples/` → root `examples/` + a standalone
+multithreaded reference app (Trunk + COOP/COEP serve) (M0); threaded build profile
+(M0); shared arena + seqlock primitive (M1); arena-backed transforms with
+render-side pack (M2); physics worker + topology command channel (M3); instance/attr
+buddy arena path (M4); the full `RenderCommand`/`RenderEvent` protocol + Transferable
+payloads (M5); full input forwarding + responsiveness proof (M6); profile hardening +
+a `docs/PLAYER-GUIDE.md` usage section + the finalized reference example (M7).
+
+**Note:** `experiments/` is gitignored local scratch (parity-baseline PNGs) — not
+part of this work and not to be committed.
+
+## Reference files
+
+- `packages/examples/render-worker/{src/lib.rs,src/worker.rs,index.html}` — worker
+  bootstrap, `WorkerInputEvent`, OffscreenCanvas transfer, `render_worker_start`.
+- `packages/crates/renderer/src/workers/{pool,blob,entry}.rs` — `WorkerPool`,
+  `WORKER_BOOTSTRAP_JS`, `WorkerJob`, transfer-list messaging.
+- `packages/crates/renderer/src/web_global.rs` (+ renderer-core mirror) — main-vs-
+  worker globals.
+- `packages/crates/renderer/src/buffer/dynamic_uniform.rs` — `update_with`
+  (value/dirty/alloc coupling, decision C), `take_dirty_ranges`, `raw_slice`.
+- `packages/crates/renderer/src/buffer/dynamic_storage.rs` — buddy allocator
+  (instances/attrs, M4).
+- `packages/crates/renderer/src/buffer/{mapped_uploader.rs,mapped_staging_ring.rs}`
+  — the untouched downstream upload path (decision E).
+- `packages/crates/renderer/src/transforms.rs` — `set_local`/`update_world`/
+  `write_gpu`, 112B pack (decision A, M2).
+- `packages/crates/renderer/src/instances.rs` — `transform_write_all`/
+  `attribute_write_all`, `InstanceAttr` `repr(C)` (M4).
+- `packages/frontend/editor/src/engine/bridge/particles.rs` — the per-frame
+  zero-alloc instance write pattern (M4 proof-pattern).
+- `packages/crates/renderer/src/{loading.rs,renderer.rs,picker.rs}` —
+  `LoadingStats`/`LoadPhase`, `begin_load`/`register_geometry`/`add_mesh`/
+  `commit_load`, `pick`/`PickResult` (Layer 1 protocol, M5).
+- `.cargo/config.toml` — current single-threaded RUSTFLAGS (threaded profile builds
+  on top, M0).
+- `docs/DEPLOYMENT_MODES.md` — main-thread vs. OffscreenCanvas worker modes.
+- External: `wasm-bindgen` `raytrace-parallel`, `wasm-bindgen-rayon` — the
+  shared-memory bootstrap recipe (M0).
 
 ## Relationship to other plans
 
 Orthogonal to the "one geometry flow" epic (`docs/plans/todo.md`) — that
-consolidates *what* geometry is and how it's authored; this moves *where the
-renderer runs* and *who may write its sim state*. They don't depend on each other,
-but both serve the same "one obvious way, optimised + debugged in one place" goal.
-
-## Reference files
-
-- `docs/DEPLOYMENT_MODES.md` — main-thread vs. OffscreenCanvas worker modes.
-- `docs/ROADMAP.md` (§ Multithreading) — the deferred SAB item this plan resolves.
-- `packages/examples/render-worker/` — working OffscreenCanvas worker PoC.
-- `packages/crates/renderer/src/buffer/dynamic_uniform.rs` — `update_with` showing
-  the value/dirty/allocation coupling that Layer 2 decision 3 splits.
-- `packages/crates/renderer/src/buffer/dynamic_storage.rs` — buddy-allocated
-  variable-extent buffer; same value-vs-topology split.
-- `packages/crates/renderer/src/transforms.rs` — the world-matrix pack + dirty
-  upload; where the render-thread pack step lands.
-- `packages/crates/renderer/src/buffer/mapped_uploader.rs`,
-  `.../mapped_staging_ring.rs` — the untouched downstream upload path (decision 5).
-- `packages/crates/renderer/src/pipeline_scheduler/mod.rs` — single-thread
-  invariants documented inline (Platform prerequisites).
-- `CoverageReadbackState` / `EdgeOverflowReadbackState` in
-  `packages/crates/renderer/src/lib.rs` — the multi-thread-ready template.
-- `packages/crates/renderer/src/workers/{pool,blob}.rs` — existing CPU-only
-  WorkerPool infra to build the command channel on.
-- `packages/frontend/editor/src/engine/context.rs` — the `Rc<RefCell<…>>` renderer
-  handle + clippy escape (editor-frontend migration).
+consolidates *what* geometry is; this moves *where the renderer runs* and *who may
+write its sim state*. Independent, same "one obvious way" goal.
