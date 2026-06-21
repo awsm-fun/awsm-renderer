@@ -35,6 +35,17 @@ pub fn spawn_shared_worker(
     payload: &JsValue,
     on_message: &js_sys::Function,
 ) -> Result<Worker, JsValue> {
+    spawn_shared_worker_transfer(role, payload, &js_sys::Array::new(), on_message)
+}
+
+/// Like [`spawn_shared_worker`] but with a structured-clone `transfer` list
+/// (e.g. an `OffscreenCanvas` to hand the worker zero-copy).
+pub fn spawn_shared_worker_transfer(
+    role: &str,
+    payload: &JsValue,
+    transfer: &js_sys::Array,
+    on_message: &js_sys::Function,
+) -> Result<Worker, JsValue> {
     let blob_options = BlobPropertyBag::new();
     blob_options.set_type("application/javascript");
     let parts = js_sys::Array::new_with_length(1);
@@ -61,7 +72,11 @@ pub fn spawn_shared_worker(
     set(&init_msg, "glue_url", &JsValue::from_str(&bundle_url()));
     set(&init_msg, "role", &JsValue::from_str(role));
     set(&init_msg, "payload", payload);
-    worker.post_message(&init_msg)?;
+    if transfer.length() == 0 {
+        worker.post_message(&init_msg)?;
+    } else {
+        worker.post_message_with_transfer(&init_msg, transfer)?;
+    }
 
     Ok(worker)
 }
@@ -107,6 +122,7 @@ pub fn mt_worker_start(role: String, payload: JsValue) -> Result<(), JsValue> {
     match role.as_str() {
         "a" | "b" => crate::smoke::worker_dispatch(&role),
         "arena-render" | "arena-physics" => crate::arena_test::worker_dispatch(&role, payload),
+        "render" | "physics" => crate::render_demo::worker_dispatch(&role, payload),
         other => {
             tracing::warn!("unknown worker role {other:?}");
             Ok(())

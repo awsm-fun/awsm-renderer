@@ -364,7 +364,11 @@ dependencies = [
 name = "awsm-multithreaded-example"
 version = "0.3.1"
 dependencies = [
+ "awsm-materials",
+ "awsm-meshgen",
  "awsm-renderer",
+ "awsm-renderer-core",
+ "glam 0.32.1",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",

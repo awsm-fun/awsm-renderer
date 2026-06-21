@@ -30,6 +30,7 @@
 
 pub mod arena_test;
 pub mod bootstrap;
+pub mod render_demo;
 pub mod smoke;
 
 use wasm_bindgen::prelude::*;
@@ -76,7 +77,9 @@ fn main_thread_boot() -> Result<(), JsValue> {
     }
     match demo_param().as_str() {
         "smoke" => smoke::start_main(),
-        _ => arena_test::start_main(),
+        "arena" => arena_test::start_main(),
+        // Default + `render`/`physics`: the worker-hosted renderer demo.
+        _ => render_demo::start_main(),
     }
 }
 
