@@ -361,6 +361,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-multithreaded-example"
+version = "0.3.1"
+dependencies = [
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-web",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "awsm-particles"
 version = "0.3.1"
 dependencies = [

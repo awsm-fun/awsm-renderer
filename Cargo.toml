@@ -17,7 +17,8 @@ members = [
     "packages/frontend/web-shared",
     "packages/frontend/editor",
     "packages/frontend/model-tests",
-    "packages/examples/render-worker",
+    "examples/render-worker",
+    "examples/multithreaded",
     "packages/debugging",
     "packages/mcp",
 ]
@@ -254,6 +255,7 @@ features = [
     "WorkerOptions",
     "WorkerType",
     "WorkerNavigator",
+    "WorkerGlobalScope",
     "DedicatedWorkerGlobalScope",
     "Blob",
     "StyleSheet",

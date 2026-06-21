@@ -1,0 +1,104 @@
+#![allow(clippy::type_complexity)]
+//! Standalone **multithreaded reference app** for `awsm-renderer`.
+//!
+//! This is the living artifact the multithreading plan
+//! (`docs/plans/multithreading.md`) extends milestone by milestone. It
+//! is built with the **nightly threaded profile** — real wasm threads
+//! over a shared `WebAssembly.Memory` (`+atomics,+bulk-memory` +
+//! `-Z build-std`) — and served with the COOP/COEP headers that enable
+//! `crossOriginIsolated` (and therefore `SharedArrayBuffer`).
+//!
+//! ### Roles
+//!
+//! A single wasm bundle serves every thread; the active role is chosen
+//! at runtime (the `wasm-bindgen-rayon` pattern):
+//!
+//! - **Main thread** ([`main_thread_boot`]): owns the DOM, spawns the
+//!   worker(s), and posts each one the shared `WebAssembly.Module` +
+//!   `WebAssembly.Memory` so they attach to the *same* linear memory.
+//! - **Workers**: bootstrapped by [`crate::bootstrap::WORKER_BOOTSTRAP_JS`],
+//!   which initialises the wasm against the shared memory and then calls
+//!   a role-specific exported entry point.
+//!
+//! ### M0 — shared-memory smoke (this milestone)
+//!
+//! Two workers attach to one `WebAssembly.Memory`; worker **A**
+//! increments a native [`std::sync::atomic::AtomicU32`] in shared linear
+//! memory, worker **B** *only reads* it and observes A's increments
+//! crossing the thread boundary — proving real shared memory, no
+//! `postMessage` on the shared-state path. See [`crate::smoke`].
+
+pub mod bootstrap;
+pub mod smoke;
+
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::js_sys;
+
+/// `true` when running inside a `DedicatedWorkerGlobalScope`.
+pub fn is_worker_scope() -> bool {
+    js_sys::global()
+        .dyn_into::<web_sys::DedicatedWorkerGlobalScope>()
+        .is_ok()
+}
+
+/// Single entry point. `wasm-bindgen` runs this automatically on every
+/// `init()` (main thread *and* every worker). On the main thread it
+/// boots the app; in a worker it does nothing — the worker's real work
+/// is triggered explicitly by the bootstrap JS calling a role entry
+/// point *after* init returns (a worker can't `postMessage` to itself).
+#[wasm_bindgen(start)]
+pub fn boot() -> Result<(), JsValue> {
+    install_tracing();
+    if is_worker_scope() {
+        Ok(())
+    } else {
+        main_thread_boot()
+    }
+}
+
+/// Main-thread bootstrap. For M0 this is the 2-worker shared-memory
+/// smoke; later milestones replace it with the render + physics worker
+/// hand-off.
+fn main_thread_boot() -> Result<(), JsValue> {
+    tracing::info!("multithreaded example: main-thread boot");
+    let isolated = crossorigin_isolated();
+    let has_sab = shared_array_buffer_available();
+    tracing::info!("crossOriginIsolated = {isolated}, SharedArrayBuffer = {has_sab}");
+    if !isolated || !has_sab {
+        tracing::error!(
+            "cross-origin isolation is OFF — shared memory is unavailable. \
+             Serve with COOP: same-origin + COEP: require-corp."
+        );
+    }
+    smoke::start_main()
+}
+
+/// Install the browser-console tracing subscriber (idempotent — safe to
+/// call on the main thread and in every worker).
+pub fn install_tracing() {
+    use tracing_subscriber::prelude::*;
+    // The default `fmt` time formatter calls `SystemTime::now()`, which
+    // panics on wasm32; `without_time` strips it (the browser console
+    // prepends its own timestamp).
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(tracing_web::MakeWebConsoleWriter::new())
+        .with_target(false);
+    let _ = tracing_subscriber::registry().with(fmt_layer).try_init();
+}
+
+/// `globalThis.crossOriginIsolated` from whichever scope is active.
+pub fn crossorigin_isolated() -> bool {
+    js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("crossOriginIsolated"))
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// `typeof SharedArrayBuffer !== "undefined"` in the active scope.
+pub fn shared_array_buffer_available() -> bool {
+    js_sys::Reflect::has(&js_sys::global(), &JsValue::from_str("SharedArrayBuffer"))
+        .unwrap_or(false)
+}

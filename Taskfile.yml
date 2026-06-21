@@ -14,6 +14,8 @@ includes:
     taskfile: ./taskfiles/frontend/model-tests.yml
   mcp:
     taskfile: ./taskfiles/mcp.yml
+  mt:
+    taskfile: ./taskfiles/examples/multithreaded.yml
   debug-mobile:
     taskfile: ./taskfiles/debugging/mobile.yml
 

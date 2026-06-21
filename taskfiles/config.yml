@@ -27,6 +27,7 @@ vars:
   PORT_MEDIA_ADDITIONAL_ASSETS_DEV: 9083
   PORT_EDITOR_DEV: 9085
   PORT_MCP_HTTP_DEV: 9086 # TCP — rmcp /mcp + the editor link + control surface
+  PORT_MULTITHREADED_DEV: 9090 # threaded reference app (COOP/COEP, shared memory)
 
   # URLs — dev (served by the per-frontend dev recipes + media servers)
   URL_DEV_MODEL_TESTS: "http://localhost:{{.PORT_MODEL_TESTS_DEV}}"
