@@ -31,6 +31,7 @@
 pub mod arena_test;
 pub mod bootstrap;
 pub mod crowd_demo;
+pub mod input_demo;
 pub mod motion_demo;
 pub mod protocol;
 pub mod remote_demo;
@@ -85,8 +86,9 @@ fn main_thread_boot() -> Result<(), JsValue> {
         "render" => render_demo::start_main(),
         "motion" => motion_demo::start_main(),
         "crowd" => crowd_demo::start_main(),
-        // Default: M5 remote-renderer protocol (DOM driver + worker renderer).
-        _ => remote_demo::start_main(),
+        "remote" => remote_demo::start_main(),
+        // Default: M6 input forwarding + main-thread responsiveness.
+        _ => input_demo::start_main(),
     }
 }
 
