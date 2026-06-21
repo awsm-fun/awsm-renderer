@@ -159,8 +159,14 @@ impl ShaderIncludes {
                 | Self::BIT_LIGHT_ACCESS
                 | Self::BIT_SHADOWS
                 | Self::BIT_SKYBOX
-                | Self::BIT_EXTRAS
-                | Self::BIT_IBL,
+                | Self::BIT_EXTRAS,
+            // NOTE: `IBL` is deliberately NOT in `all()`. It pulls ~40 KB of
+            // split-sum sampling into the kernel, so — per the report's "costed
+            // only when used" — it's the one Tier-A helper that a custom material
+            // must opt into EXPLICITLY (declare `"ibl"` via shader includes). It's
+            // still `tier_a: true` in `KEY_TABLE` (offered on the custom menu) and
+            // reaches the kernel through the declared set (`ShaderIncludeFlags::
+            // for_custom`), independent of this default; it's just not auto-on.
         )
     }
 
@@ -447,15 +453,28 @@ mod tests {
         }
         assert_eq!(ShaderIncludes::from_key("nonsense"), None);
 
-        // The Tier-A catalog == exactly the bits in `all()` (the custom menu).
-        // If a new generic module is added, this forces updating the catalog too.
+        // The Tier-A catalog (the custom-facing menu) == the DEFAULT-ON set
+        // `all()` PLUS the explicit opt-in extras. Most Tier-A helpers are
+        // default-on, but a few heavy ones are offered + declarable yet NOT
+        // auto-on ("costed only when used"): `ibl` pulls split-sum env sampling
+        // into the kernel, so it must be declared. Any NEW generic module must
+        // either go in `all()` (default-on) or be added to `OPT_IN_TIER_A` here —
+        // this guard forces that decision rather than silent drift.
+        const OPT_IN_TIER_A: ShaderIncludes = ShaderIncludes::IBL;
         let catalog_union = ShaderIncludes::tier_a_catalog()
             .map(|(k, _)| ShaderIncludes::from_key(k).unwrap())
             .fold(ShaderIncludes::empty(), |a, b| a.union(b));
         assert_eq!(
             catalog_union.bits(),
-            ShaderIncludes::all().bits(),
-            "tier_a_catalog must cover exactly ShaderIncludes::all() (the custom-facing menu)"
+            ShaderIncludes::all().union(OPT_IN_TIER_A).bits(),
+            "tier_a_catalog must == all() (default-on) ∪ OPT_IN_TIER_A (offered-but-opt-in)"
+        );
+        // The opt-in extras are offered (Tier-A) but NOT default-on — i.e. not
+        // already in `all()` (otherwise "opt-in" is meaningless).
+        assert_eq!(
+            ShaderIncludes::all().bits() & OPT_IN_TIER_A.bits(),
+            0,
+            "OPT_IN_TIER_A must be disjoint from all() (offered but not default-on)"
         );
 
         // The Tier-B PBR internals are in the table (back-compat parsing) but NOT
