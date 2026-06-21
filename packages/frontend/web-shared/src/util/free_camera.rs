@@ -171,6 +171,19 @@ impl FreeCamera {
         self.aabb = aabb;
         self.margin = margin;
         self.view = CameraView::new_aabb(&self.aabb, self.margin);
+        // `CameraView::new_aabb` sets the orbit distance to `bounding_radius *
+        // margin`, which IGNORES the perspective FOV — fine for the nominal
+        // default-cube framing, but for an explicit "frame THIS node" it placed the
+        // camera far inside the ≥ r/sin(fov/2) distance a real fit needs, so the
+        // subject overflowed the frame as an extreme close-up (the P2 bug). Here we
+        // know the live FOV, so override the orbit distance to actually enclose the
+        // bounding sphere (+ `margin` breathing room). The `.max(..)` is a defensive
+        // floor so the camera never lands inside the bounds for an odd margin/FOV.
+        let bounding_radius = self.aabb.size().length() * 0.5;
+        let half_fov = (self.perspective.fov_y * 0.5).max(0.01);
+        let fit_distance = bounding_radius / half_fov.sin();
+        self.view
+            .set_radius((fit_distance * margin).max(bounding_radius * 1.05));
         self.perspective
             .refresh_clip_planes(&self.view, &self.aabb, self.margin);
         self.orthographic
@@ -266,6 +279,12 @@ impl CameraView {
             dragging: false,
             sensitivity: 0.005,
         }
+    }
+
+    /// Override the orbit distance from `look_at` (used by `frame_aabb` to seat the
+    /// camera at an FOV-aware fit distance). Floored at a small positive value.
+    pub fn set_radius(&mut self, radius: f32) {
+        self.radius = radius.max(0.01);
     }
 
     /// Right-handed look-at view matrix.

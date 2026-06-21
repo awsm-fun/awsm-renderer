@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` ✅ → `U2`.
 (`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
 turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
@@ -543,7 +543,27 @@ command path.)
 
 ---
 
-### P2 — "Frame node" can place the camera inside the subject
+### P2 — "Frame node" can place the camera inside the subject ✅ DONE (2026-06-21)
+
+**Was CONFIRMED REAL (live), now FIXED.** Re-audit reproduced it dramatically: `FrameNode` on a 2-unit box
+filled the **entire viewport** (camera far too close). Root cause: `CameraView::new_aabb` set the orbit
+distance to `bounding_radius * margin` (≈1.38·r) — it **ignored the perspective FOV**, far inside the
+`r / sin(fov/2)` (≈2.6·r for 45°) a real fit needs, so the subject overflowed the frame.
+
+**Fix (scoped to FrameNode only).** Left `CameraView::new_aabb` as-is (it also backs the tuned default-cube
+/ "Reset View" framing — changing it would zoom the default view out ~2.6×). Instead made
+`FreeCamera::frame_aabb` (`web-shared/src/util/free_camera.rs`) FOV-aware: after the base framing it
+overrides the orbit distance to `bounding_radius / sin(fov_y/2) * margin` using the camera's **live**
+`perspective.fov_y`, with a `.max(bounding_radius * 1.05)` floor so it can never seat inside the bounds.
+Added `CameraView::set_radius`.
+
+**Verified live (editor :9085):** `FrameNode` on a 2-unit box (padding 0.2) now **fits the whole box with
+breathing room** (box + surrounding grid visible) instead of overflowing the viewport; zero
+GPUValidationError. The default / Reset-View framing is unchanged (only `frame_aabb` was touched).
+
+---
+
+#### P2 (original spec — for reference)
 
 **Verified state — PARTIAL.** The fit uses `frame_aabb(aabb, 1.15×)` (`controller/state.rs` FrameNode
 handler) with breathing room but **no min-distance clamp**; the fit math lives in the external
@@ -685,6 +705,12 @@ matches `editor_snapshot_json`'s `selection`.
   with_renderer_mut + keeps the authored default, and drops mark_material_draft (its re-register didn't apply
   the value and would revert the poke). Verified live: SetMaterialUniform(tint, blue) turns the box blue
   immediately (luma 167→153, screenshot), zero GPU errors. Next: P2.
+- 2026-06-21 — **P2 DONE (frame-node fit math) — PASS (live).** Re-audit reproduced it: FrameNode on a
+  2-unit box filled the entire viewport (camera too close — `CameraView::new_aabb` used `bounding_radius *
+  margin`, ignoring the FOV). Fix scoped to `FreeCamera::frame_aabb` (left new_aabb for the tuned
+  default/reset view): override the orbit distance to `bounding_radius / sin(fov_y/2) * margin` using the
+  live fov_y, floored at `bounding_radius*1.05`; added `CameraView::set_radius`. Verified live: FrameNode
+  now fits the whole box with margin (box + grid visible), default view unchanged, zero GPU errors. Next: U2.
 
 ---
 
