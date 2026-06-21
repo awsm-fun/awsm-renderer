@@ -1,11 +1,16 @@
 # Plan: multithreading the renderer (worker-hosted + shared-memory sim state)
 
-**Status: committed direction, decisions locked, structured for autonomous
-execution.** A multi-PR effort delivered as committed checkpoint milestones (M0–M7),
-each with a self-verifiable gate (Rust tests + Chrome DevTools MCP). Designed to run
-**unattended end-to-end** once M0 (the go/no-go gate) is green. The single-threaded
-build is untouched throughout — the editor and model-viewer keep working exactly as
-today.
+**Status: ✅ COMPLETE (M0–M7).** Delivered as committed checkpoint milestones
+on the `multithreading` branch, each verified against its gate (Rust tests +
+Chrome DevTools MCP). The shared-memory sim-state primitive lives in
+`packages/crates/renderer/src/buffer/shared_arena.rs`; the runnable reference
+app is `examples/multithreaded/` (`task mt:dev`); the end-user guide is
+`docs/PLAYER-GUIDE.md` §9. The single-threaded build is untouched throughout —
+the editor and model-viewer keep working exactly as today (`cargo check
+--workspace` + the editor dev server verified green at M7).
+
+The original plan (decisions, architecture, and per-milestone gates) follows
+unchanged as the design record.
 
 This is the single source of truth for multithreading. It supersedes the old
 `docs/multithreading-prep.md` (its still-relevant parts are folded in below; the

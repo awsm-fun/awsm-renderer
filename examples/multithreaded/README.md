@@ -13,6 +13,23 @@ task mt:dev      # trunk serve on http://127.0.0.1:9090 (COOP/COEP enabled)
 
 Then open the URL in a browser that supports WebGPU + `SharedArrayBuffer`.
 
+## Demos (`?demo=`)
+
+Each milestone of `docs/plans/multithreading.md` is a selectable demo; the
+default is `input`.
+
+| `?demo=` | What it shows | Source |
+|---|---|---|
+| `smoke`  | two workers share one `WebAssembly.Memory` (an `AtomicU32` crosses the thread boundary) | `src/smoke.rs` |
+| `arena`  | the seqlock arena under a high-rate foreign writer — zero torn values accepted | `src/arena_test.rs` |
+| `render` | the full renderer hosted in a worker over the shared **transform arena** (A/B vs `?arena=0`) | `src/render_demo.rs` |
+| `motion` | a physics worker moving node transforms via shared memory (`?stress=N`) | `src/motion_demo.rs` |
+| `crowd`  | instanced transforms **and** attributes driven by the physics worker (`?stress=N`) | `src/crowd_demo.rs` |
+| `remote` | the Layer 1 `RenderCommand`/`RenderEvent` protocol — DOM driver loads a model + picks | `src/protocol.rs`, `src/remote_demo.rs` |
+| `input`  | full input forwarding (pointer/wheel/key/resize) + a main-thread responsiveness meter | `src/input_demo.rs` |
+
+The end-user guide for opting a game into this is **`docs/PLAYER-GUIDE.md` §9**.
+
 ## The threaded build profile (why it's different)
 
 A normal wasm build has a private, non-shared linear memory — workers can't
@@ -37,11 +54,13 @@ post `{ wasm_module, memory }` to the worker, which calls
 
 ## Status
 
-- **M0** — shared-memory smoke (`src/smoke.rs`): two workers attach to one
-  memory; worker A increments a native `AtomicU32`, worker B observes the
-  increments across the thread boundary with zero `postMessage` on the
-  shared-state path. Confirms `crossOriginIsolated` + cross-thread shared
-  linear memory.
+Complete (M0–M7): cross-origin isolation + shared-memory smoke; the
+`shared_arena` seqlock primitive; arena-backed node transforms with the
+render-side 64→112 pack; a physics worker driving node transforms; instanced
+transforms + attributes; the Layer 1 remote-renderer protocol; full input
+forwarding + a main-thread responsiveness proof. The shared-memory sim-state
+primitive lives in the renderer crate (`buffer/shared_arena.rs`); this app is
+the copyable consumer.
 
-The single-threaded editor / model-viewer builds are untouched and keep
-using the stable toolchain.
+The single-threaded editor / model-viewer builds are untouched and keep using
+the stable toolchain — `cargo check --workspace` stays green throughout.

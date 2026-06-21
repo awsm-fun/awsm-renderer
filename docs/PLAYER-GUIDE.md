@@ -383,3 +383,141 @@ clean:
 - `c98eb8d4` — `CameraMatrices::perspective(eye, target, up, fov_y, aspect,
   near, far)` constructor, removing the glam boilerplate every consumer was
   hand-rolling.
+
+---
+
+## 9. Multithreading (opt-in)
+
+Single-threaded is the default and stays first-class — the editor and
+model-viewer run it daily. A **game** can opt into running the renderer in a
+Web Worker (off the main thread) and, on top of that, into a **physics/sim
+worker** that shares the renderer's sim state through shared linear memory.
+The complete, runnable reference is **`examples/multithreaded/`** (`task
+mt:dev` → <http://127.0.0.1:9090>); each milestone is a `?demo=` mode:
+
+| `?demo=` | Shows |
+|---|---|
+| `smoke` | two workers share one `WebAssembly.Memory` (an `AtomicU32` crossing the boundary) |
+| `arena` | the seqlock arena under a high-rate foreign writer (torn-read safety) |
+| `render` | the renderer hosted in a worker over the shared **transform arena** |
+| `motion` | a physics worker moving node transforms via shared memory |
+| `crowd` | instanced transforms **and** attributes driven by the physics worker |
+| `remote` | the Layer 1 `RenderCommand`/`RenderEvent` protocol (DOM driver loads a model, picks) |
+| `input` | full input forwarding + a main-thread responsiveness meter |
+
+### 9.1 The threaded build profile
+
+A normal wasm build has a private, non-shared linear memory. Three things,
+together, produce a bundle that imports one **shared** memory every thread
+attaches to (see `examples/multithreaded/rust-toolchain.toml`,
+`taskfiles/examples/multithreaded.yml`, `Trunk.toml`):
+
+1. **Nightly + `rust-src`** (`rust-toolchain.toml`), for `-Z build-std`.
+2. **`RUSTFLAGS` + build-std** — keep the repo's existing cfgs and add:
+   ```
+   -C target-feature=+atomics,+bulk-memory,+mutable-globals
+   -C link-arg=--shared-memory -C link-arg=--import-memory
+   -C link-arg=--max-memory=<bytes>
+   -C link-arg=--export=__heap_base
+   -C link-arg=--export=__tls_base  -C link-arg=--export=__tls_size
+   -C link-arg=--export=__tls_align -C link-arg=--export=__wasm_init_tls
+   ```
+   plus `-Z build-std=std,panic_abort` (recompiles `std` with atomics).
+   The `--shared-memory --import-memory` pair is what makes the memory shared
+   AND imported; the `__heap_base`/`__tls_*`/`__wasm_init_tls` exports are what
+   `wasm-bindgen`'s thread transform needs to emit the `init(module, memory)`
+   glue. Without them you get a private memory and `init` that ignores `memory`.
+3. **COOP/COEP headers** on serve (`Trunk.toml [serve] headers`):
+   `Cross-Origin-Opener-Policy: same-origin` +
+   `Cross-Origin-Embedder-Policy: require-corp`. Without them
+   `crossOriginIsolated` is `false` and `SharedArrayBuffer` is unavailable.
+   **Production hosts must send the same two headers.**
+
+> Disable `wasm-opt` for the threaded bundle (`data-wasm-opt="0"`) unless your
+> `wasm-opt` is invoked with `--enable-threads --enable-bulk-memory`; otherwise
+> it can strip the atomics/shared-memory.
+
+### 9.2 Spawning workers on one shared memory
+
+Build a worker from an inline blob and post it `wasm_bindgen::module()` +
+`wasm_bindgen::memory()` (the shared module + shared memory); the worker calls
+`init({ module_or_path: wasm_module, memory })` and then a role entry point.
+See `examples/multithreaded/src/bootstrap.rs` — `spawn_shared_worker` /
+`WORKER_BOOTSTRAP_JS`. The render worker can itself spawn the physics worker
+the same way (the glue URL is stashed on the worker global). Hand the
+`OffscreenCanvas` to the render worker with a transfer list
+(`spawn_shared_worker_transfer`).
+
+### 9.3 Layer 1 — the remote-renderer protocol
+
+A main-thread driver that doesn't run game logic inside the worker controls it
+over a typed channel (`examples/multithreaded/src/protocol.rs`):
+
+- **`RenderCommand`** (main → worker): `Load { models }`, `Pick { x, y }`, … —
+  `serde_wasm_bindgen` values. Geometry/texture payloads ride alongside as
+  **Transferable** `ArrayBuffer`s (zero-copy), referenced by index — never
+  serialize `web_sys` GPU handles.
+- **`RenderEvent`** (worker → main): `Loading(LoadingStats)` per commit phase
+  (drive a progress bar — the DOM paints each phase off-main, the
+  responsiveness win), `Ready`, `PickResult`, `Error`.
+
+`SlotMap` handles (`MeshKey`/`TransformKey`/…) cross by value; `LoadingStats`
+/`PickResult` are already `Copy`.
+
+### 9.4 Layer 2 — shared-memory sim state
+
+The bridge is **`awsm_renderer::buffer::shared_arena`**: a chunked,
+stable-address arena with a per-slot `AtomicU32` seqlock + a coarse chunk
+dirty bitmap. It is the **single** foreign-writable primitive — everything
+else (materials, pipeline state, GPU handles) stays render-worker-private.
+Topology (`allocate`/`free`/grow) is owner-only; foreign threads only write
+values to already-bound slots.
+
+**Node transforms.** Switch the renderer into shared mode once at setup:
+
+```rust
+renderer.transforms.enable_shared_arena();
+// Per body, at spawn (one round-trip), hand the physics worker:
+let binding   = renderer.transforms.arena_slot_binding(transform_key).unwrap();
+let dirty_addr = renderer.transforms.arena_dirty_words_addr().unwrap();
+```
+
+The physics worker then writes a world `Mat4` (64 semantic bytes) every frame
+with **zero `postMessage`**:
+
+```rust
+use awsm_renderer::buffer::shared_arena::foreign_write;
+unsafe { foreign_write(binding, dirty_addr, &world_mat4_bytes); }
+```
+
+The render worker's `update_transforms()` descends the arena, packs each
+changed slot 64 B → 112 B (model + inverse-transpose normal), and uploads —
+work proportional to the number of movers, not the scene size.
+
+**Instances.** For instanced meshes, the physics worker writes per-instance
+world `Mat4`s (64 B) and `InstanceAttr`s (16 B) into two arenas; the render
+worker hands the contiguous mirrors straight to
+`renderer.instances.transform_write_all_bytes(key, bytes)` /
+`attribute_write_all_bytes(key, bytes)` (GPU-ready bytes, no `Transform`
+round-trip). Instance **count** is topology (owner-side); per-instance values
+are foreign.
+
+### 9.5 `queue.writeBuffer` from shared memory
+
+Settled by construction: the render-side descent packs the shared arena into
+the renderer's **regular** `Vec<u8>` mirror, and `queue.writeBuffer` uploads
+from that mirror — it never reads a shared-memory-backed view, so no
+copy-to-regular fallback is needed. The pack *is* the copy, and its cost is
+proportional to the dirty count.
+
+### 9.6 Gotchas (threaded)
+
+- The renderer is `!Send` and stays on the render worker; only the
+  shared-arena boundary (`SlotBinding` + raw addresses) crosses threads.
+- Build the worker renderer with `DeviceRequestLimits::max_all()` (the
+  renderer's advanced passes want >8 storage buffers / >16 sampled textures
+  per stage), exactly like the editor / model-viewer.
+- A foreign write is `unsafe`: the addresses must point into live shared
+  memory from the owning arena, and the owner must not be reallocating that
+  slot's topology concurrently (it never is — topology is quiescent during the
+  write loop).
