@@ -1,10 +1,11 @@
 # Plan: multithreading the renderer (worker-hosted + shared-memory sim state)
 
 **Status: committed direction, decisions locked, structured for autonomous
-execution.** A multi-PR effort delivered as checkpointed milestones (M0–M7), each
-with a self-verifiable gate (Rust tests + Chrome DevTools MCP) and a human-review
-pause. The single-threaded build is untouched throughout — the editor and
-model-viewer keep working exactly as today.
+execution.** A multi-PR effort delivered as committed checkpoint milestones (M0–M7),
+each with a self-verifiable gate (Rust tests + Chrome DevTools MCP). Designed to run
+**unattended end-to-end** once M0 (the go/no-go gate) is green. The single-threaded
+build is untouched throughout — the editor and model-viewer keep working exactly as
+today.
 
 This is the single source of truth for multithreading. It supersedes the old
 `docs/multithreading-prep.md` (its still-relevant parts are folded in below; the
@@ -89,7 +90,7 @@ work runs on the other thread; the shared arena is the bridge.
 | D4 | **Layer 1 = full remote-renderer protocol** | A typed command/event protocol so a main-thread driver can fully control the worker renderer (lifecycle, loading, scene mutation, queries). |
 | D5 | **Sim-state v1 schema** | **Node transforms + instance transforms + instance attributes.** Transforms first (fixed-slot arena), then instances/attributes (variable-length, buddy path). |
 | D6 | **`Send`/`Sync` scope** | Only the **shared-arena boundary types** need `Send + Sync`. The renderer stays `!Send` on the render worker; the editor never goes multithreaded, so the old `Rc→Arc`/`RefCell→Mutex`/`SendMutable` editor sweep and the pipeline-scheduler parallelization are **out of scope**. |
-| D7 | **Execution** | Checkpointed milestones (M0–M7), each with an autonomous verification gate and a human-review pause. |
+| D7 | **Execution** | Committed checkpoint milestones (M0–M7), each with an autonomous verification gate. Runs unattended end-to-end after M0 passes; stops only at M7 (done) or a genuine block. |
 
 ---
 
@@ -280,8 +281,13 @@ reference shape for any shared state that does arise.
 
 Execution model: for each milestone the agent (1) does the work, (2) runs
 `cargo test` + the threaded build, (3) serves with COOP/COEP, (4) drives the
-**Chrome DevTools MCP** to verify the gate, (5) commits on a branch at the gate,
-(6) **pauses for human review**. Gates are pass/fail; do not advance on a red gate.
+**Chrome DevTools MCP** to verify the gate, (5) commits the milestone on the run
+branch, (6) proceeds **immediately to the next milestone**. The run is **autonomous
+end-to-end** — milestones are committed checkpoints (review them by reading the
+commits afterward), not interactive pauses. Gates are pass/fail; never advance on a
+red gate. **M0 is the one hard go/no-go:** if it can't go green, stop and report
+rather than running the rest on a broken foundation. Otherwise stop only at M7
+(done) or on a genuine block needing human input.
 
 > **Chrome DevTools MCP toolkit:** `navigate_page`, `evaluate_script` (read
 > `crossOriginIsolated`, assertion flags), `list_console_messages`,
@@ -300,7 +306,7 @@ extends. Add the nightly threaded build profile (flags + `build-std`). Minimal
 worker A increments an `AtomicU32` in shared linear memory, worker B observes it.
 - **Gate:** `evaluate_script` → `crossOriginIsolated === true` and
   `typeof SharedArrayBuffer !== 'undefined'`; console shows B observing A's
-  increments across the thread boundary. **Commit + review.**
+  increments across the thread boundary. **Commit; continue.**
 
 ### M1 — Shared arena + seqlock primitive *(Rust, in shared memory)*
 New `packages/crates/renderer/src/buffer/shared_arena.rs`: chunked stable-address
@@ -312,7 +318,7 @@ detection.
   simulated interleave, dirty coalescing, stable addressing across grow). Browser
   2-worker test: physics worker writes a known ramp at high rate; render worker
   reads, asserts zero torn values + dirty set matches; `evaluate_script` reads a
-  pass flag, console confirms. **Commit + review.**
+  pass flag, console confirms. **Commit; continue.**
 
 ### M2 — Re-base node transforms onto the arena *(no physics yet)*
 Feature-gate `DynamicUniformBuffer<TransformKey>` to back its mirror with the shared
@@ -323,7 +329,7 @@ the existing staging path; `mapped_uploader` untouched. Settle the
 - **Gate:** `cargo test` proving packed bytes equal current packing. Browser:
   render worker hosts the renderer, populates the transform arena itself (no
   physics), scene renders **identically** to single-threaded — `take_screenshot`
-  visual match, console clean. **Commit + review.**
+  visual match, console clean. **Commit; continue.**
 
 ### M3 — Physics worker writes transforms → objects move *(hot-path proof)*
 Physics-stub worker integrates simple motion for N bodies, writes world `Mat4` into
@@ -332,14 +338,14 @@ channel at spawn. Render worker reads dirty → packs → uploads. **Zero postMe
 the hot path.**
 - **Gate:** `take_screenshot` at t0/t1 shows objects moved; `list_network_requests`
   /console shows no per-frame postMessage (only atomics); a `?stress=N` run shows
-  dirty-scan cost tracking movers, not total. **Commit + review.**
+  dirty-scan cost tracking movers, not total. **Commit; continue.**
 
 ### M4 — Instance transforms + attributes *(variable-length buddy path)*
 Extend the arena/schema for the two instance buffers: count change = topology
 (owner-side), per-instance value writes = foreign. Mirror `transform_write_all` /
 `attribute_write_all` from the physics worker (the particle-sim pattern).
 - **Gate:** a crowd/particle stress scene driven by the physics worker — screenshot
-  shows the instanced motion; `?stress=N` bench holds. **Commit + review.**
+  shows the instanced motion; `?stress=N` bench holds. **Commit; continue.**
 
 ### M5 — Full Layer 1 remote-renderer protocol
 Implement `RenderCommand`/`RenderEvent` with `serde_wasm_bindgen` + Transferable
@@ -348,14 +354,14 @@ main-thread DOM driver loads a glTF via commands; the worker streams
 `Loading(LoadingStats)`; `Pick` round-trips.
 - **Gate:** main-thread driver loads a model into the worker renderer; a progress
   bar paints from `Loading` events (`take_screenshot` mid-load shows phases); final
-  screenshot shows the model; a `Pick` returns a hit. **Commit + review.**
+  screenshot shows the model; a `Pick` returns a hit. **Commit; continue.**
 
 ### M6 — Input forwarding + responsiveness
 Wire all `WorkerInputEvent` variants main→worker + `ResizeObserver`. Confirm the
 main thread stays responsive during a heavy worker-side load/compile.
 - **Gate:** `performance_start_trace`/`stop_trace` shows main-thread frames keep
-  painting during a cold load in the worker (no long tasks on main). **Commit +
-  review.**
+  painting during a cold load in the worker (no long tasks on main). **Commit;
+  continue.**
 
 ### M7 — Hardening + docs + reference example
 Confirm the backing-trait isolation; document the threaded build profile; capture
@@ -373,25 +379,33 @@ deliverables:
   protocol, and binding bodies to sim-state slots. Link the reference example.
 - **Gate:** editor (single-threaded) and the game example (threaded) both run and
   screenshot correctly from the same source tree; `PLAYER-GUIDE.md` documents the
-  flow and points at the runnable example. **Commit + review. Done.**
+  flow and points at the runnable example. **Commit. Done.**
 
 ---
 
 ## Autonomous `/loop` prompt
 
-Paste this as the `/loop` task (self-paced; it pauses at each gate):
+Create a `multithreading` branch, then paste this as the `/loop` task (self-paced;
+runs unattended after M0). All work happens on the current branch — no new branches.
 
-> Implement `docs/plans/multithreading.md` one milestone at a time, in order
-> (M0→M7). For the current milestone: do the code/build work; run `cargo test` and
-> the threaded build; start the dev server with COOP/COEP headers; then use the
-> **chrome-devtools MCP** to verify that milestone's gate exactly as written
-> (navigate, `evaluate_script` for `crossOriginIsolated`/assertion flags,
+> Implement `docs/plans/multithreading.md` fully and autonomously, milestones M0→M7
+> in order. Do ALL work on the current git branch — do NOT create new branches;
+> commit each milestone as its own commit. M0 is the go/no-go gate: relocate
+> examples, stand up the threaded build + COOP/COEP + the 2-worker shared-memory
+> smoke, verify via **chrome-devtools MCP**. If M0 cannot be made green (toolchain
+> won't link, `crossOriginIsolated` won't enable, needs my input), STOP and report —
+> do NOT proceed. If M0 passes, run the REST unattended WITHOUT stopping between
+> milestones: for each, do the code/build work, run `cargo test` + the threaded
+> build, serve with COOP/COEP, verify that milestone's gate EXACTLY as written via
+> chrome-devtools MCP (`evaluate_script` for `crossOriginIsolated`/assertion flags,
 > screenshots for visual/motion proof, network/console for "no per-frame
-> postMessage", performance traces for responsiveness). If the gate is RED, iterate
-> and re-verify — do not advance. When the gate is GREEN, commit on a branch with a
-> milestone-tagged message, then STOP and summarize for human review before the next
-> milestone. Never skip a gate or advance past a red one. Keep the single-threaded
-> editor/model-viewer build working at every step.
+> postMessage", performance traces for responsiveness); when GREEN, commit and
+> proceed IMMEDIATELY to the next milestone. If a gate is RED but fixable, iterate
+> and re-verify. STOP and summarize ONLY when: M7 is green and done, OR a gate stays
+> red after several genuine fix attempts, OR a milestone is blocked on something
+> needing my input. Never skip a gate, never advance past a red gate, never fake a
+> pass. Keep the single-threaded editor/model-viewer build working at every step.
+> Start with M0.
 
 ---
 
