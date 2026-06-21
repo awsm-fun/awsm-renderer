@@ -491,6 +491,8 @@ pub enum BuiltinParamArg {
     Metallic,
     Roughness,
     Emissive,
+    NormalScale,
+    OcclusionStrength,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2275,7 +2277,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a built-in material factor on a mesh node's inline material. param: base_color | emissive (value = 3 floats) | metallic | roughness (value = 1 float)."
+        description = "Set a built-in material factor on a mesh node's inline material. param: base_color | emissive (value = 3 floats) | metallic | roughness | normal_scale | occlusion_strength (value = 1 float)."
     )]
     async fn set_builtin_param(
         &self,
@@ -2286,6 +2288,8 @@ impl EditorMcp {
             BuiltinParamArg::Metallic => BuiltinParamKind::Metallic,
             BuiltinParamArg::Roughness => BuiltinParamKind::Roughness,
             BuiltinParamArg::Emissive => BuiltinParamKind::Emissive,
+            BuiltinParamArg::NormalScale => BuiltinParamKind::NormalScale,
+            BuiltinParamArg::OcclusionStrength => BuiltinParamKind::OcclusionStrength,
         };
         self.dispatch(EditorCommand::SetBuiltinParam {
             node: parse_node(&p.node)?,

@@ -68,7 +68,10 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` → `D1` → `D3` → `P2` → `U2`.
+(`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
+(emissive_strength / alpha cutoff / toon ramp / flipbook fps·offset) are split as `B2-extra`, deferred —
+each needs per-feature plumbing (extension/alpha-mode/material-type), low priority.)
 (`B1` settable+UI was already built — split: `B1-anim` (animate the UV transform) is the remaining half.)
 (`D2-fix` split into `D2a` (codegen black-screen — DONE) and `D2b` (diagnostics lie — DEFERRED, needs a
 design decision; does not block anything). `P2` — "frame node inside subject" — was not exercised in T0;
@@ -258,7 +261,30 @@ over-time screenshots; settable half already verified above.
 
 ---
 
-### B2 — Broaden the animatable/settable built-in material params
+### B2 — Broaden the animatable/settable built-in material params ✅ DONE (PBR scalars; type-specific → B2-extra)
+
+**Landed + verified live.** Added `NormalScale` + `OcclusionStrength` to both `BuiltinParamKind` (scene)
+and `BuiltinMaterialParam` (renderer) — the always-present PBR scalars — wired uniformly as **settable AND
+animatable** (the report's "same list" principle): scene `patch_builtin_param` + renderer
+`apply_builtin_material_param` + `read_rest` + the `builtin_param()` resolvers (scene-loader + editor) +
+the `BuiltinParam` readback + the Add-Track rows + the MCP `set_builtin_param` tool
+(`BuiltinParamArg` + description). 311 unit tests green.
+
+**Verified live (editor :9085):** imported `NormalTangentTest.glb` (normal-mapped built-in PBR). Settable:
+`set_builtin_param(normal_scale, 0)` → `node_kind_details` readback shows `normal_scale: 0`. Animatable: a
+`builtin_param/normal_scale` track `3.0`@0 → `0.0`@1 scrubbed → the normal-mapped detail visibly
+**flattens** (t=0 bumpy spheres vs t=1 flat quads, screenshots), zero GPUValidationError.
+
+**Split — `B2-extra` (DEFERRED, low priority):** `emissive_strength`, alpha `cutoff`, toon ramp knobs
+(diffuse bands / specular steps / shininess / rim), and flipbook `fps`/`time_offset` are NOT plain
+`MaterialDef` scalars — each needs per-feature plumbing (emissive_strength is an `Option<…>` extension →
+creating it changes the shader feature-set / recompiles; cutoff lives on the alpha mode; toon/flipbook are
+material-type-specific fields). Add them the same way (enum arm + apply + resolver + readback + UI) when
+prioritized.
+
+---
+
+#### B2 (original spec — for reference)
 
 **Verified state — STILL-VALID.** Only `BaseColor | Metallic | Roughness | Emissive` are animatable, in
 two enums + one resolver that must stay in sync: `BuiltinParamKind`
@@ -548,6 +574,13 @@ matches `editor_snapshot_json`'s `selection`.
   311 unit tests green. Verified live: imported BoxTextured.glb, animated base_color UV offset `[0,0]→[1,0]`,
   scrubbed → texture visibly scrolls in U (t=0 vs t=0.5 screenshots), zero GPU errors; on-demand identity
   seed proven (imported tex had no transform). B1 is now fully complete (settable+UI + animation). Next: B2.
+- 2026-06-21 — **B2 DONE (PBR scalars normal_scale + occlusion_strength) — PASS (live).** Added both to
+  BuiltinParamKind/BuiltinMaterialParam, wired settable+animatable across scene/renderer/scene-loader/editor/MCP
+  (patch + apply + read_rest + resolvers + readback + Add-Track rows + set_builtin_param tool). 311 tests green.
+  Verified live: imported NormalTangentTest.glb; set_builtin_param(normal_scale,0) → node_kind_details readback
+  = 0; a normal_scale track 3→0 visibly flattens the normal-mapped detail (t=0 vs t=1 screenshots), zero GPU
+  errors. Type-specific knobs (emissive_strength/cutoff/toon/flipbook) split as B2-extra (deferred, needs
+  per-feature plumbing). Next: B3.
 
 ---
 

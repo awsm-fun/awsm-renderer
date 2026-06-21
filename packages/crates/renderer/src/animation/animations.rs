@@ -639,6 +639,14 @@ impl AwsmRenderer {
                         Material::Pbr(p) => Some(AnimationData::F32(p.roughness_factor)),
                         _ => None,
                     },
+                    BuiltinMaterialParam::NormalScale => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(p.normal_scale)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::OcclusionStrength => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(p.occlusion_strength)),
+                        _ => None,
+                    },
                 }
             }
             AnimationTarget::Light { light, param } => {
@@ -912,17 +920,24 @@ impl AwsmRenderer {
                     _ => {}
                 });
             }
-            BuiltinMaterialParam::Metallic | BuiltinMaterialParam::Roughness => {
+            BuiltinMaterialParam::Metallic
+            | BuiltinMaterialParam::Roughness
+            | BuiltinMaterialParam::NormalScale
+            | BuiltinMaterialParam::OcclusionStrength => {
                 let scalar = data_to_f32(value)?;
                 self.update_material(material, |m| {
                     if let Material::Pbr(pbr) = m {
                         match param {
                             BuiltinMaterialParam::Metallic => pbr.metallic_factor = scalar,
                             BuiltinMaterialParam::Roughness => pbr.roughness_factor = scalar,
+                            BuiltinMaterialParam::NormalScale => pbr.normal_scale = scalar,
+                            BuiltinMaterialParam::OcclusionStrength => {
+                                pbr.occlusion_strength = scalar
+                            }
                             _ => {}
                         }
                     }
-                    // Unlit / Toon have no metallic/roughness: no-op.
+                    // Unlit / Toon have no metallic/roughness/normal/occlusion: no-op.
                 });
             }
         }

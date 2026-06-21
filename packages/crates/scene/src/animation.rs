@@ -95,6 +95,11 @@ pub enum BuiltinParamKind {
     Metallic,
     Roughness,
     Emissive,
+    /// Normal-map intensity (`normal_scale`, scalar). Visible only with a normal map.
+    NormalScale,
+    /// Ambient-occlusion strength (`occlusion_strength`, scalar). Visible only with
+    /// an occlusion map.
+    OcclusionStrength,
 }
 
 /// Which built-in material texture slot a `TextureTransform` track drives

@@ -5321,6 +5321,14 @@ fn read_readback_target(
                     Material::Pbr(p) => json!(p.roughness_factor),
                     _ => serde_json::Value::Null,
                 },
+                P::NormalScale => match m {
+                    Material::Pbr(p) => json!(p.normal_scale),
+                    _ => serde_json::Value::Null,
+                },
+                P::OcclusionStrength => match m {
+                    Material::Pbr(p) => json!(p.occlusion_strength),
+                    _ => serde_json::Value::Null,
+                },
             }
         }
         R::LightParam { node, param } => {
@@ -5536,6 +5544,14 @@ fn patch_builtin_param(
         },
         P::Roughness => match value.first() {
             Some(&v) => inline.roughness = v,
+            None => return false,
+        },
+        P::NormalScale => match value.first() {
+            Some(&v) => inline.normal_scale = v,
+            None => return false,
+        },
+        P::OcclusionStrength => match value.first() {
+            Some(&v) => inline.occlusion_strength = v,
             None => return false,
         },
     }

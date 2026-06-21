@@ -127,6 +127,10 @@ pub enum BuiltinMaterialParam {
     Roughness,
     /// Emissive factor.
     Emissive,
+    /// Normal-map intensity (`normal_scale`, PBR only).
+    NormalScale,
+    /// Ambient-occlusion strength (`occlusion_strength`, PBR only).
+    OcclusionStrength,
 }
 
 /// Which parameter of a [`crate::cameras::CameraParams`] an animation channel

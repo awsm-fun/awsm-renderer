@@ -563,6 +563,8 @@ fn builtin_param(p: BuiltinParamKind) -> BuiltinMaterialParam {
         BuiltinParamKind::Metallic => BuiltinMaterialParam::Metallic,
         BuiltinParamKind::Roughness => BuiltinMaterialParam::Roughness,
         BuiltinParamKind::Emissive => BuiltinMaterialParam::Emissive,
+        BuiltinParamKind::NormalScale => BuiltinMaterialParam::NormalScale,
+        BuiltinParamKind::OcclusionStrength => BuiltinMaterialParam::OcclusionStrength,
     }
 }
 

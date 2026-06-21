@@ -545,6 +545,24 @@ fn mesh_material_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
             badge: Some("BUILTIN"),
             hint: "vec3 \u{00b7} builtin".into(),
         },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::NormalScale,
+            },
+            label: "Normal Scale".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} builtin".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::OcclusionStrength,
+            },
+            label: "Occlusion Strength".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} builtin".into(),
+        },
         // Base-color UV transform — the "scrolling/rotating texture" case. The
         // apply seeds an identity transform on the slot if it has none, so these
         // are offered unconditionally (a no-op if the slot is untextured).
