@@ -133,7 +133,7 @@ pub fn set_load_phase(label: Option<String>) {
 /// phase into the load-phase pill — geometry upload → texture finalize → pipeline
 /// compile — via the SHARED [`awsm_renderer::LoadingStats::phase_label`]. Pass it
 /// to `commit_load` in place of `|_| {}` so a live edit shows the same granular
-/// phases the boot loader and the model-tests overlay do (docs/plans/todo.md §6).
+/// phases the boot loader and the model-tests overlay do.
 /// The commit's final `Ready` callback maps to `None`, which clears the pill.
 pub fn commit_phase_handler() -> impl FnMut(awsm_renderer::LoadingStats) {
     |stats| set_load_phase(stats.phase_label())

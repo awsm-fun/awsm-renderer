@@ -458,7 +458,7 @@ impl AwsmRenderer {
     }
 
     // =====================================================================
-    // The load transaction (`docs/plans/todo.md`): begin_load → adds →
+    // The load transaction: begin_load → adds →
     // commit_load. The ONE public way to get content compiled + on screen.
     // =====================================================================
 

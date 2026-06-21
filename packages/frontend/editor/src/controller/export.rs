@@ -112,7 +112,7 @@ pub async fn bake_player_bundle(
                     let mesh = MeshData {
                         positions: raw.positions,
                         normals: raw.normals,
-                        uvs: raw.uvs,
+                        uvs: raw.uv_sets,
                         colors: raw.colors,
                         indices: raw.indices,
                     };
@@ -681,7 +681,7 @@ pub(crate) fn node_mesh(_scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
         NodeKind::Mesh { mesh, .. } => mesh_cache::get_raw(mesh.0).map(|r| MeshData {
             positions: r.positions,
             normals: r.normals,
-            uvs: r.uvs,
+            uvs: r.uv_sets,
             colors: r.colors,
             indices: r.indices,
         }),
@@ -743,6 +743,8 @@ fn tex_ref(t: &Option<TextureRef>, tex_index: &TexIndex) -> Option<TexRef> {
     Some(TexRef {
         image,
         tex_coord: t.uv_index,
+        // The editor doesn't author KHR_texture_transform yet (import-only follow-up).
+        transform: None,
     })
 }
 
@@ -765,6 +767,12 @@ fn map_material_def(
             normal_texture: tex_ref(&def.normal_texture, tex_index),
             occlusion_texture: tex_ref(&def.occlusion_texture, tex_index),
             emissive_texture: tex_ref(&def.emissive_texture, tex_index),
+            // The editor doesn't author KHR_* scalar extensions on its materials yet
+            // (they ride glTF import-only; round-tripping them through the editor is a
+            // separate follow-up). Absent → glTF defaults.
+            ior: None,
+            emissive_strength: None,
+            extensions_json: Default::default(),
         }),
         MaterialShading::Unlit => ExportMaterial::Unlit(UnlitMaterial {
             name: def.label.clone(),

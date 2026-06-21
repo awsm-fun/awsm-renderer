@@ -110,10 +110,10 @@ impl PointHandleSet {
             let raw = RawMeshData {
                 positions: mesh.positions,
                 normals: mesh.normals,
-                uvs: mesh.uvs,
-                uvs1: None,
+                uv_sets: mesh.uvs,
                 colors: mesh.colors,
                 indices: mesh.indices,
+                ..Default::default()
             };
             let mesh_key = renderer.add_raw_mesh(raw, transform_key, material_key)?;
             renderer.set_mesh_hud(mesh_key, true)?;

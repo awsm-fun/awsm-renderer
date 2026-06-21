@@ -49,7 +49,7 @@ impl AwsmRenderer {
     ///   `reconcile_material_variants` → `ensure_scene_pipelines` then
     ///   recompiles exactly the new config's `(msaa, mipmaps)` variant.
     ///   (Pre-load-transaction this happened reactively in the render
-    ///   preamble; that preamble is gone — see `docs/plans/todo.md` §1.)
+    ///   preamble; that preamble is gone.)
     /// - **Non-material passes** (geometry / HZB / picker / transparent /
     ///   effects / lines / shadows) have no scene-compile path, so their
     ///   MSAA-variant recompiles stay here, awaited up front.

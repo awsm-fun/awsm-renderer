@@ -51,6 +51,28 @@ pub struct CameraMatrices {
 }
 
 impl CameraMatrices {
+    /// Right-handed perspective camera from eye/target/up + frustum params — the
+    /// common case, so a consumer doesn't hand-roll glam matrices. `fov_y` is in
+    /// radians; `aspect` = width / height. Depth-of-field defaults to focusing on
+    /// `target` at f/16 (tweak `focus_distance` / `aperture` afterward if needed).
+    pub fn perspective(
+        eye: Vec3,
+        target: Vec3,
+        up: Vec3,
+        fov_y: f32,
+        aspect: f32,
+        near: f32,
+        far: f32,
+    ) -> Self {
+        Self {
+            view: Mat4::look_at_rh(eye, target, up),
+            projection: Mat4::perspective_rh(fov_y, aspect, near, far),
+            position_world: eye,
+            focus_distance: (target - eye).length().max(0.001),
+            aperture: 16.0,
+        }
+    }
+
     /// Returns the combined view-projection matrix.
     pub fn view_projection(&self) -> Mat4 {
         self.projection * self.view

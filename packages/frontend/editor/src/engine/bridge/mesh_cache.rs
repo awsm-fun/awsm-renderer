@@ -22,23 +22,14 @@ thread_local! {
 /// Freeze a generated mesh into a `CapturedMesh`. Procedural meshes are single-UV
 /// (`MeshData` carries no 2nd set), so `uvs1` is `None`.
 pub fn from_mesh_data(m: MeshData) -> CapturedMesh {
+    let mut uv_sets = m.uvs.into_iter();
     CapturedMesh {
         positions: m.positions,
         normals: m.normals,
-        uvs: m.uvs,
-        uvs1: None,
+        uvs: uv_sets.next(),
+        uvs1: uv_sets.next(),
         colors: m.colors,
         indices: m.indices,
-    }
-}
-
-/// Like [`from_mesh_data`] but with an explicit 2nd UV set (`TEXCOORD_1`) — the
-/// imported-mesh capture path (the 2nd set rides a parallel channel beside
-/// `MeshData`; see `gltf::extract_node_meshes`).
-pub fn from_mesh_data_with_uvs1(m: MeshData, uvs1: Option<Vec<[f32; 2]>>) -> CapturedMesh {
-    CapturedMesh {
-        uvs1,
-        ..from_mesh_data(m)
     }
 }
 
@@ -50,7 +41,8 @@ pub fn to_mesh_data(c: CapturedMesh) -> MeshData {
     MeshData {
         positions: c.positions,
         normals: c.normals,
-        uvs: c.uvs,
+        // Fold the captured set 0 + optional set 1 back into the N-set uvs vec.
+        uvs: c.uvs.into_iter().chain(c.uvs1).collect(),
         colors: c.colors,
         indices: c.indices,
     }
@@ -75,10 +67,10 @@ pub fn get_raw(id: AssetId) -> Option<RawMeshData> {
         c.borrow().get(&id).map(|m| RawMeshData {
             positions: m.positions.clone(),
             normals: m.normals.clone(),
-            uvs: m.uvs.clone(),
-            uvs1: m.uvs1.clone(),
+            uv_sets: m.uvs.clone().into_iter().chain(m.uvs1.clone()).collect(),
             colors: m.colors.clone(),
             indices: m.indices.clone(),
+            ..Default::default()
         })
     })
 }

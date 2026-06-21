@@ -3,8 +3,8 @@
 //! JSON (extension wiring + referenced-only images).
 
 use awsm_glb_export::{
-    write_glb, ExportLight, ExportMaterial, ExportNode, GlbScene, PbrMaterial, TexRef, Trs,
-    UnlitMaterial, AWSM_MATERIALS_NONE,
+    write_glb, ExportLight, ExportMaterial, ExportNode, GlbScene, PbrMaterial, TexRef,
+    TexTransform, Trs, UnlitMaterial, AWSM_MATERIALS_NONE,
 };
 use awsm_meshgen::box_mesh;
 use glam::Vec3;
@@ -130,6 +130,73 @@ fn lightweighting_drops_unreferenced_textures() {
 }
 
 #[test]
+fn texture_transform_roundtrip() {
+    // KHR_texture_transform on a base-color textureInfo survives write_glb (GAP 3).
+    let mut tr = TexRef::new(0);
+    tr.transform = Some(TexTransform {
+        offset: [0.25, 0.5],
+        rotation: 0.0,
+        scale: [2.0, 4.0],
+        tex_coord: None,
+    });
+    let scene = GlbScene {
+        nodes: vec![ExportNode::new("Cube")
+            .with_mesh(box_mesh(Vec3::ONE))
+            .with_material(ExportMaterial::Pbr(PbrMaterial {
+                base_color_texture: Some(tr),
+                ..Default::default()
+            }))],
+        images: vec![awsm_glb_export::ExportImage {
+            name: "albedo".into(),
+            bytes: include_bytes!("fixtures/1x1.png").to_vec(),
+            mime: awsm_glb_export::ImageMime::Png,
+        }],
+        ..Default::default()
+    };
+    let glb = write_glb(&scene);
+    // Gltf::from_slice parses JSON without decoding images (the 1x1 fixture isn't a
+    // real PNG; we only need the textureInfo extension JSON).
+    let gltf = gltf::Gltf::from_slice(&glb).expect("re-parse");
+    let m = gltf
+        .materials()
+        .find(|m| m.index().is_some())
+        .expect("material");
+    let info = m
+        .pbr_metallic_roughness()
+        .base_color_texture()
+        .expect("base color texture");
+    let xf = info
+        .texture_transform()
+        .expect("texture_transform survives");
+    assert_eq!(xf.offset(), [0.25, 0.5]);
+    assert_eq!(xf.scale(), [2.0, 4.0]);
+}
+
+#[test]
+fn pbr_scalar_extensions_roundtrip() {
+    // KHR_materials_ior + KHR_materials_emissive_strength survive write_glb as raw JSON
+    // in the material's `extensions.others` map (GAP 3). Re-parse via the gltf reader's
+    // typed accessors (features on) to confirm the values round-trip.
+    let scene = cube_scene_with(ExportMaterial::Pbr(PbrMaterial {
+        ior: Some(1.4),
+        emissive_strength: Some(3.0),
+        ..Default::default()
+    }));
+    let glb = write_glb(&scene);
+    let (doc, _b, _i) = gltf::import_slice(&glb).expect("re-parse");
+    let mat = doc
+        .materials()
+        .find(|m| m.index().is_some())
+        .expect("a non-default material");
+    assert_eq!(mat.ior(), Some(1.4), "ior round-trips");
+    assert_eq!(
+        mat.emissive_strength(),
+        Some(3.0),
+        "emissive_strength round-trips"
+    );
+}
+
+#[test]
 fn referenced_texture_is_embedded() {
     // A 1x1 PNG (smallest valid-ish payload for the writer; the reader only needs
     // the bytes present + a mimeType — it does not decode here).
@@ -158,6 +225,36 @@ fn referenced_texture_is_embedded() {
         v["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"],
         0
     );
+}
+
+#[test]
+fn extract_texture_images_roundtrips_encoded_bytes() {
+    // The editor captures imported textures for persistence via
+    // extract_texture_images_from_bytes — assert it returns the ORIGINAL encoded
+    // bytes (not re-encoded), keyed by glTF texture index, for a referenced texture.
+    let png = include_bytes!("fixtures/1x1.png").to_vec();
+    let scene = GlbScene {
+        nodes: vec![ExportNode::new("Cube")
+            .with_mesh(box_mesh(Vec3::ONE))
+            .with_material(ExportMaterial::Pbr(PbrMaterial {
+                base_color_texture: Some(TexRef::new(0)),
+                ..Default::default()
+            }))],
+        images: vec![awsm_glb_export::ExportImage {
+            name: "albedo".into(),
+            bytes: png.clone(),
+            mime: awsm_glb_export::ImageMime::Png,
+        }],
+        ..Default::default()
+    };
+    let glb = write_glb(&scene);
+    let images = awsm_glb_export::extract_texture_images_from_bytes(&glb);
+    // One texture, at index 0, with byte-identical PNG bytes + png ext.
+    assert_eq!(images.len(), 1);
+    let img = images.get(&0).expect("texture 0");
+    assert_eq!(img.bytes, png, "encoded bytes must round-trip exactly");
+    assert_eq!(img.mime, awsm_glb_export::ImageMime::Png);
+    assert_eq!(img.mime.ext(), "png");
 }
 
 #[test]
@@ -196,6 +293,69 @@ fn animation_channel_roundtrips() {
 }
 
 #[test]
+fn multi_uv_sets_roundtrip() {
+    use awsm_glb_export::MeshData;
+    // A triangle with TWO UV sets (TEXCOORD_0 + TEXCOORD_1) — both must survive
+    // write_glb so multi-UV meshes (e.g. an AO map on set 1) round-trip.
+    let tri = MeshData {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+        uvs: vec![
+            vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            vec![[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+        ],
+        colors: None,
+        indices: vec![0, 1, 2],
+    };
+    let scene = GlbScene {
+        nodes: vec![ExportNode::new("Tri").with_mesh(tri)],
+        ..Default::default()
+    };
+    let glb = write_glb(&scene);
+    let (doc, buffers, _i) = gltf::import_slice(&glb).expect("re-parse");
+    let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
+    let reader = prim.reader(|b| Some(&buffers[b.index()]));
+    let uv0: Vec<[f32; 2]> = reader
+        .read_tex_coords(0)
+        .expect("TEXCOORD_0")
+        .into_f32()
+        .collect();
+    let uv1: Vec<[f32; 2]> = reader
+        .read_tex_coords(1)
+        .expect("TEXCOORD_1")
+        .into_f32()
+        .collect();
+    assert_eq!(uv0[1], [1.0, 0.0]);
+    assert_eq!(uv1[2], [0.5, 0.6]);
+}
+
+#[test]
+fn extract_node_mesh_folds_uv_sets() {
+    use awsm_glb_export::{extract_node_mesh_from_bytes, MeshData};
+    // A 2-UV mesh, re-extracted via the editor's node path, folds BOTH sets into
+    // mesh.uvs (no separate uvs1 channel) — GPU multi-UV step 2.
+    let tri = MeshData {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+        uvs: vec![
+            vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            vec![[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+        ],
+        colors: None,
+        indices: vec![0, 1, 2],
+    };
+    let scene = GlbScene {
+        nodes: vec![ExportNode::new("Tri").with_mesh(tri)],
+        ..Default::default()
+    };
+    let bytes = write_glb(&scene);
+    let got = extract_node_mesh_from_bytes(&bytes, 0, None).expect("extract node mesh");
+    assert_eq!(got.uvs.len(), 2, "both UV sets folded into mesh.uvs");
+    assert_eq!(got.uvs[0][1], [1.0, 0.0]);
+    assert_eq!(got.uvs[1][2], [0.5, 0.6]);
+}
+
+#[test]
 fn skinned_morph_mesh_roundtrips() {
     use awsm_glb_export::{ExportSkin, MeshData, MorphTarget};
 
@@ -203,7 +363,7 @@ fn skinned_morph_mesh_roundtrips() {
     let tri = MeshData {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
-        uvs: None,
+        uvs: vec![],
         colors: None,
         indices: vec![0, 1, 2],
     };

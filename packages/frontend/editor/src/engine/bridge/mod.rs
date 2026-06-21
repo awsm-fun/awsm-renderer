@@ -18,6 +18,7 @@ pub mod particles;
 pub mod skin_bridge;
 pub mod skinned_bake_cache;
 mod state;
+pub mod texture_cache;
 pub mod vertex_highlight;
 
 pub use state::*;

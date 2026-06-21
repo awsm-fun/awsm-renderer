@@ -236,7 +236,9 @@ impl Builder {
                 attributes.insert(Checked::Valid(mesh::Semantic::Normals), acc);
             }
         }
-        if let Some(uvs) = &m.uvs {
+        // Emit every UV set as TEXCOORD_n (n = set index) — generalized to N sets so
+        // multi-UV meshes (e.g. an AO map on TEXCOORD_1) round-trip.
+        for (set, uvs) in m.uvs.iter().enumerate() {
             if uvs.len() == m.positions.len() {
                 let acc = self.push_accessor(
                     &flatten_f32x2(uvs),
@@ -246,7 +248,7 @@ impl Builder {
                     None,
                     None,
                 );
-                attributes.insert(Checked::Valid(mesh::Semantic::TexCoords(0)), acc);
+                attributes.insert(Checked::Valid(mesh::Semantic::TexCoords(set as u32)), acc);
             }
         }
         if let Some(colors) = &m.colors {
@@ -267,7 +269,8 @@ impl Builder {
         // MikkTSpace so the canonical/exported glb is self-contained and the
         // population path is a dumb upload (it skips generation when tangents are
         // present). Generated whenever normals+uvs exist — see `tangents` mod.
-        if let (Some(normals), Some(uvs)) = (&m.normals, &m.uvs) {
+        // Tangents are generated against UV set 0 (the base map's UVs).
+        if let (Some(normals), Some(uvs)) = (&m.normals, m.uvs.first()) {
             if let Some(tangents) =
                 crate::tangents::generate_tangents(&m.positions, normals, uvs, &m.indices)
             {
@@ -423,6 +426,28 @@ impl Builder {
             metallic_roughness_texture: p.metallic_roughness_texture.map(|t| tex_info(t, tex)),
             ..Default::default()
         };
+        // KHR_* material extensions — written as raw JSON into the material's
+        // `extensions.others` map (gltf-json types only `unlit` for this crate's
+        // feature set; the renderer reads these raw too, so a verbatim object is the
+        // uniform round-trip — texture-bearing extensions remap indices via `tex`).
+        let mut ext_others = serde_json::Map::new();
+        if let Some(ior) = p.ior {
+            ext_others.insert("KHR_materials_ior".to_string(), json!({ "ior": ior }));
+        }
+        if let Some(strength) = p.emissive_strength {
+            ext_others.insert(
+                "KHR_materials_emissive_strength".to_string(),
+                json!({ "emissiveStrength": strength }),
+            );
+        }
+        // Pre-built typed/raw extension objects (texture indices already remapped).
+        for (k, v) in &p.extensions_json {
+            ext_others.insert(k.clone(), v.clone());
+        }
+        let extensions = (!ext_others.is_empty()).then(|| extensions::material::Material {
+            others: ext_others,
+            ..Default::default()
+        });
         let mat = Material {
             alpha_cutoff: alpha_cutoff(p.alpha_mode),
             alpha_mode: Checked::Valid(gltf_alpha_mode(p.alpha_mode)),
@@ -445,6 +470,7 @@ impl Builder {
             }),
             emissive_texture: p.emissive_texture.map(|t| tex_info(t, tex)),
             emissive_factor: material::EmissiveFactor(p.emissive),
+            extensions,
             ..Default::default()
         };
         self.root.push(mat)
@@ -773,11 +799,33 @@ fn flatten<'a>(
     here
 }
 
+/// Build a textureInfo `extensions` object carrying `KHR_texture_transform` (raw JSON
+/// in the flattened `others` map — gltf-json doesn't type it for this crate's features).
+fn tex_transform_ext(t: &TexRef) -> Option<extensions::texture::Info> {
+    let xf = t.transform?;
+    let mut obj = serde_json::Map::new();
+    obj.insert("offset".to_string(), json!(xf.offset));
+    obj.insert("rotation".to_string(), json!(xf.rotation));
+    obj.insert("scale".to_string(), json!(xf.scale));
+    if let Some(tc) = xf.tex_coord {
+        obj.insert("texCoord".to_string(), json!(tc));
+    }
+    let mut others = serde_json::Map::new();
+    others.insert(
+        "KHR_texture_transform".to_string(),
+        serde_json::Value::Object(obj),
+    );
+    Some(extensions::texture::Info {
+        others,
+        ..Default::default()
+    })
+}
+
 fn tex_info(t: TexRef, tex: &[Index<Texture>]) -> texture::Info {
     texture::Info {
         index: tex[t.image],
         tex_coord: t.tex_coord,
-        extensions: Default::default(),
+        extensions: tex_transform_ext(&t),
         extras: Default::default(),
     }
 }

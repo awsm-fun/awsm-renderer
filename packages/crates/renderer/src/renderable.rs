@@ -473,7 +473,7 @@ enum RenderableRoute {
 /// (`wants_transparency` = `Materials::is_transparency_pass`) only *disambiguates*.
 ///
 /// Two cases make that disambiguation live, not theoretical:
-/// - **Both reps present (the dedup case, docs/plans/todo.md §7).** One geometry
+/// - **Both reps present (the dedup case).** One geometry
 ///   bound to BOTH an opaque and a transparent material builds visibility AND
 ///   transparency reps at commit; each instance routes by its own material's
 ///   `wants_transparency`. This is also what makes a live opaque↔blend material

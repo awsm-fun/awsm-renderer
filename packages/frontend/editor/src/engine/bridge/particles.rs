@@ -129,10 +129,10 @@ fn build_runtime(
     let raw = RawMeshData {
         positions: m.positions,
         normals: m.normals,
-        uvs: m.uvs,
-        uvs1: None,
+        uv_sets: m.uvs,
         colors: m.colors,
         indices: m.indices,
+        ..Default::default()
     };
     let transform_key = renderer
         .transforms

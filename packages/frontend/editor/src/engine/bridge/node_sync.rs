@@ -1,11 +1,27 @@
-//! Scene→GPU sync: observe the reactive scene tree and materialize/teardown
-//! each node's renderer resources. M4-C materializes primitives + lights; other
-//! kinds are passive (no GPU mesh yet).
+//! Scene→GPU sync: observe the reactive scene tree and materialize/teardown each
+//! node's renderer resources (primitives, captured + skinned + morph meshes, sprites,
+//! particles, instances, lights, cameras).
+//!
+//! ## Loading is ONE transaction
+//!
+//! A bulk scene load — a project reload (`apply_project` → `scene.nodes.replace_cloned`)
+//! or an imported subtree, i.e. a `VecDiff::Replace` — is ONE transaction: declare the
+//! WHOLE forest declare-only (the recursive `add_node(bulk_load=true)` join, with the
+//! kind/children observers skipping their initial fire), THEN `commit_bulk_load` commits
+//! ONCE. The commit dedups, runs concurrently, finalizes the texture pool, and recompiles
+//! pipelines a single time — matching the player loader `populate_awsm_scene`. There is no
+//! debounce, so no declared-but-unresolved window (which previously broke the decal
+//! texture-pool bind group).
+//!
+//! A live add/edit (`InsertAt`/`Push`/`UpdateAt`, a kind/transform/material change) keeps
+//! `bulk_load=false`: it declares AND commits per node, since the existing scene must stay
+//! rendering while the one new node compiles.
 
 use std::sync::Arc;
 
 use awsm_meshgen::MeshData;
-use awsm_renderer::raw_mesh::RawMeshData;
+use awsm_renderer::meshes::buffer_info::MeshBufferGeometryMorphInfo;
+use awsm_renderer::raw_mesh::{RawMeshData, RawMorph, RawSkin};
 use awsm_renderer::transforms::{Transform, TransformKey};
 // Shared with the runtime-bundle loader (`populate_awsm_scene`) so a light lowers
 // identically on the editor's live render and the player — the round-trip premise.
@@ -13,7 +29,7 @@ use awsm_scene_loader::camera::camera_params_from_config;
 use awsm_scene_loader::light::{light_from_config, light_shadow_params_from_config};
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::{SignalVecExt, VecDiff};
-use glam::{Quat, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec3, Vec4};
 
 use super::{bridge, material, RendererNode};
 use crate::engine::context::{renderer_handle, with_renderer_mut};
@@ -48,14 +64,29 @@ async fn handle_diff(
                 remove_node(id).await;
             }
             order_reset(parent_id);
+            // ⭐ TRANSACTION PRINCIPLE (§0): a bulk scene load (project reload) is one
+            // transaction — establish the ENTIRE transform hierarchy of the new forest
+            // BEFORE materialising any geometry, so a SkinnedMesh node's joint bones
+            // (often in a SIBLING subtree) exist when its geometry is declared. Without
+            // this, a skinned node could materialise before its bones → its skin can't
+            // resolve the bone TransformKeys → renders empty. `add_node` below reuses
+            // these pre-established transforms (idempotent). This is the ORDERING fix —
+            // NOT a post-hoc re-materialise.
+            establish_forest_transforms(parent_tk, values.clone()).await;
+            // BULK LOAD: materialize the whole forest declare-only (add_node recurses
+            // children directly + awaits — the JOIN), then commit ONCE. One transaction
+            // for the project reload / import — no per-node commits (⭐ §0 / §5b).
             for (i, node) in values.into_iter().enumerate() {
-                add_node(parent_id, parent_tk, i, node).await;
+                add_node(parent_id, parent_tk, i, node, true).await;
             }
+            commit_bulk_load().await;
         }
-        VecDiff::InsertAt { index, value } => add_node(parent_id, parent_tk, index, value).await,
+        VecDiff::InsertAt { index, value } => {
+            add_node(parent_id, parent_tk, index, value, false).await
+        }
         VecDiff::Push { value } => {
             let index = order_len(parent_id);
-            add_node(parent_id, parent_tk, index, value).await;
+            add_node(parent_id, parent_tk, index, value, false).await;
         }
         VecDiff::UpdateAt { index, value } => {
             if let Some(id) = order_get(parent_id, index) {
@@ -63,7 +94,7 @@ async fn handle_diff(
             }
             // Replace the slot.
             remove_order_at(parent_id, index);
-            add_node(parent_id, parent_tk, index, value).await;
+            add_node(parent_id, parent_tk, index, value, false).await;
         }
         VecDiff::RemoveAt { index } => {
             if let Some(id) = order_get(parent_id, index) {
@@ -141,23 +172,98 @@ fn order_reset(parent_id: Option<NodeId>) {
     b.child_order.lock().unwrap().insert(parent_id, Vec::new());
 }
 
+/// Establish a node's renderer transform + bridge entry — the transforms-first half
+/// of the load transaction (⭐ TRANSACTION PRINCIPLE, §0). NO geometry, NO observers.
+/// Idempotent: returns the existing transform key if the node was already established
+/// (so `add_node` reuses it). Lets [`establish_forest_transforms`] declare the whole
+/// transform hierarchy before any geometry, so a skinned mesh's joint bones exist when
+/// its geometry is declared (no re-materialise).
+async fn establish_transform_only(
+    node: &Arc<Node>,
+    parent_tk: Option<TransformKey>,
+) -> TransformKey {
+    let node_id = node.id;
+    if let Some(tk) = bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&node_id)
+        .map(|e| e.transform_key)
+    {
+        return tk;
+    }
+    let trs = node.transform.get();
+    let tk =
+        with_renderer_mut(move |r| r.transforms.insert(trs_to_transform(&trs), parent_tk)).await;
+    let entry = RendererNode::new(node.clone(), tk);
+    bridge().nodes.lock().unwrap().insert(node_id, entry);
+    tk
+}
+
+/// Recursively establish the transform hierarchy of a node forest BEFORE any geometry
+/// materialises (⭐ TRANSACTION PRINCIPLE, §0): transforms declared in dependency order
+/// (parent before child, ALL of them before geometry). Used on a bulk scene load (the
+/// `Replace` diff at the scene root — project reload), so a `SkinnedMesh` node's joint
+/// bones (which may be in a SIBLING subtree) exist when its geometry is declared. This
+/// is the ordering fix for skinned save→reload — NOT a post-hoc re-materialise pass.
+fn establish_forest_transforms(
+    parent_tk: Option<TransformKey>,
+    nodes: Vec<Arc<Node>>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
+    Box::pin(async move {
+        for node in nodes {
+            let tk = establish_transform_only(&node, parent_tk).await;
+            let children: Vec<Arc<Node>> = node.children.lock_ref().iter().cloned().collect();
+            establish_forest_transforms(Some(tk), children).await;
+        }
+    })
+}
+
+/// The single `commit_load` that closes a bulk load (the `Replace` join): after the
+/// whole forest has been DECLARED (declare-only `add_node`s), commit once — the commit
+/// dedups, runs concurrently, and recompiles the texture pool / pipelines ONCE. No
+/// debounce, so no declared-but-unresolved window (which broke the decal texture-pool
+/// bind group — §5b).
+async fn commit_bulk_load() {
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    if let Err(e) = r
+        .commit_load(crate::engine::activity::commit_phase_handler())
+        .await
+    {
+        tracing::warn!("bulk-load commit_load: {e}");
+    }
+}
+
 async fn add_node(
     parent_id: Option<NodeId>,
     parent_tk: Option<TransformKey>,
     index: usize,
     node: Arc<Node>,
+    bulk_load: bool,
 ) {
     let node_id = node.id;
-    let trs = node.transform.get();
-    let tk =
-        with_renderer_mut(move |r| r.transforms.insert(trs_to_transform(&trs), parent_tk)).await;
-
-    let entry = RendererNode::new(node.clone(), tk);
-    bridge()
-        .nodes
-        .lock()
-        .unwrap()
-        .insert(node_id, entry.clone());
+    // Reuse a transform established by a transforms-first pre-pass
+    // ([`establish_forest_transforms`]) if present — so a node's transform exists
+    // before its (or a sibling's) geometry materialises (⭐ §0). Otherwise establish
+    // it now (the incremental single-node add path — unchanged).
+    let entry = {
+        let existing = bridge().nodes.lock().unwrap().get(&node_id).cloned();
+        match existing {
+            Some(e) => e,
+            None => {
+                let trs = node.transform.get();
+                let tk = with_renderer_mut(move |r| {
+                    r.transforms.insert(trs_to_transform(&trs), parent_tk)
+                })
+                .await;
+                let e = RendererNode::new(node.clone(), tk);
+                bridge().nodes.lock().unwrap().insert(node_id, e.clone());
+                e
+            }
+        }
+    };
+    let tk = entry.transform_key;
     order_insert(parent_id, index, node_id);
 
     // A freshly materialized node may be the missing dependency of a PENDING
@@ -168,13 +274,34 @@ async fn add_node(
     // relower is a cheap no-op when no clips exist.
     super::animation_sync::schedule_relower();
 
-    // Kind observer — fires on the current value first, so this materializes
-    // the node on insert and re-materializes on any kind change.
+    // BULK LOAD (project reload / import = a `Replace` diff): materialize this node's
+    // geometry NOW, declare-only (the JOIN — awaited, no commit), then recurse its
+    // children directly. The observers below SKIP their initial fire (already done
+    // here). The caller (`handle_diff`'s `Replace` arm) commits ONCE after the whole
+    // forest declares — ONE transaction, no per-node commits, no texture-pool-grow
+    // window (⭐ §0 / §5b). Live add (`InsertAt`/`Push`/`UpdateAt`) passes
+    // `bulk_load=false`: the kind/children observers fire their initial as before.
+    if bulk_load {
+        let kind = node.kind.get_cloned();
+        apply_kind(entry.clone(), kind, true).await;
+        let children: Vec<Arc<Node>> = node.children.lock_ref().iter().cloned().collect();
+        for (ci, child) in children.into_iter().enumerate() {
+            Box::pin(add_node(Some(node_id), Some(tk), ci, child, true)).await;
+        }
+    }
+
+    // Kind observer — re-materializes on any kind change (declare+commit, a live
+    // edit). On a bulk load the initial value was already materialized above, so
+    // skip the first emission.
     {
         let loader = AsyncLoader::new();
         loader.load(clone!(entry => async move {
+            let first = std::cell::Cell::new(bulk_load);
             entry.node.kind.signal_cloned().for_each(clone!(entry => move |kind| {
-                clone!(entry => async move { apply_kind(entry, kind).await; })
+                let skip = first.replace(false);
+                clone!(entry => async move {
+                    if !skip { apply_kind(entry, kind, false).await; }
+                })
             })).await;
         }));
         entry.loaders.lock().unwrap().push(loader);
@@ -210,12 +337,18 @@ async fn add_node(
         }));
         entry.loaders.lock().unwrap().push(loader);
     }
-    // Children observer — recurse for nested nodes.
+    // Children observer — recurse for nested nodes. On a bulk load the children were
+    // already materialized by the direct recursion above, so skip the INITIAL
+    // `Replace` (subsequent live child diffs still process normally).
     {
         let loader = AsyncLoader::new();
         loader.load(clone!(node => async move {
+            let first_replace = std::cell::Cell::new(bulk_load);
             node.children.signal_vec_cloned().for_each(move |diff| {
-                clone!(node_id => async move { handle_diff(Some(node_id), Some(tk), diff).await; })
+                let skip = matches!(diff, VecDiff::Replace { .. }) && first_replace.replace(false);
+                clone!(node_id => async move {
+                    if !skip { handle_diff(Some(node_id), Some(tk), diff).await; }
+                })
             }).await;
         }));
         entry.loaders.lock().unwrap().push(loader);
@@ -376,7 +509,12 @@ async fn teardown(entry: &Arc<RendererNode>) {
 }
 
 /// Materialize (or re-materialize) a node for its current kind.
-async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
+/// Materialize a node's `kind` onto the renderer. `declare_only`: when true, the
+/// geometry/material is DECLARED into the open load transaction but NOT committed —
+/// the bulk-load (`Replace`) path materializes the whole forest declare-only, then
+/// commits ONCE (the ⭐ TRANSACTION PRINCIPLE; see `add_node` `bulk_load`). When false
+/// (live add / live edit), it declares AND commits, as before.
+async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool) {
     // Camera → Camera: update the params IN PLACE so the `CameraKey` stays
     // stable. Editing a camera param re-emits `node.kind`, but a numeric
     // `SetKind` doesn't bump `anim_revision`, so a lowered
@@ -418,17 +556,27 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
         NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
-        NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def).await,
+        NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def, declare_only).await,
         NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
         NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg).await,
-        NodeKind::InstancesAlongCurve(def) => materialize_instances(entry.clone(), def).await,
-        NodeKind::ParticleEmitter(def) => materialize_particle(entry.clone(), def).await,
+        NodeKind::InstancesAlongCurve(def) => {
+            materialize_instances(entry.clone(), def, declare_only).await
+        }
+        NodeKind::ParticleEmitter(def) => {
+            materialize_particle(entry.clone(), def, declare_only).await
+        }
         // The sole procedural-geometry path: read the baked stack from the mesh
         // cache + upload with the node's assigned material (magenta when None).
         // Primitives + sweeps are now `MeshDef` stacks behind this same arm.
         NodeKind::Mesh { mesh, material, .. } => match super::mesh_cache::get_raw(mesh.0) {
             Some(raw) => {
-                upload_simple_mesh(entry.clone(), raw, MeshMaterial::Assigned(material)).await;
+                upload_simple_mesh(
+                    entry.clone(),
+                    raw,
+                    MeshMaterial::Assigned(material),
+                    declare_only,
+                )
+                .await;
             }
             None => {
                 tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
@@ -439,7 +587,7 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind) {
         // joints) and just (re)assign this node's material/shadow to it. NOT the
         // captured-mesh pipeline — skinned geometry isn't editable.
         NodeKind::SkinnedMesh { skin, material, .. } => {
-            materialize_skinned_mesh(entry.clone(), skin, material).await
+            materialize_skinned_mesh(entry.clone(), skin, material, declare_only).await
         }
         NodeKind::Camera(cfg) => materialize_camera(entry.clone(), cfg).await,
         // Group: no procedural geometry, no renderer resource.
@@ -636,23 +784,212 @@ fn mesh_shadow_flags_from_config(
     }
 }
 
-/// Materialize a `SkinnedMesh` node: the renderer's `populate_gltf` already built
-/// the skinned mesh + skeleton at import (and `hide_template_meshes` left the
-/// skinned copies *visible*), so we don't build geometry — we look this node's
-/// glTF `node_index` up in the cached import template, find its (skinned)
-/// renderer mesh key(s), and (re)assign this node's material + shadow flags onto
-/// them. The mesh keeps deforming via the skeleton joints, which the per-frame
-/// `skin_bridge` drives from the editor's animated mirror bones.
+/// Build a node-owned skinned [`RawMeshData`] for a `SkinnedMesh` node by decoding
+/// the clean rig glb (our-format) at the node's `rig_node_index` — the MATERIALISER's
+/// geometry+skin read. The per-vertex `JOINTS_0` index into the skin's joint list;
+/// each joint's rig-glb node-index is mapped → its editor bone `TransformKey` via the
+/// `SkinnedMeshRef::joints` table (bone `NodeId` ↔ rig-glb flat index) + the bridge,
+/// so the skin deforms DIRECTLY from the animated editor bones (no `skin_bridge` hop).
+/// IBMs come from the same rig-glb decode (bit-identical to the original — proven by
+/// the glb-export round-trip proptest), so the bind pose is exact.
 ///
-/// The skinned mesh keys are owned by the populate pass (the hidden template
-/// hierarchy keeps the joints alive), so they are **not** pushed to
-/// `entry.model_meshes` — `teardown` must not remove them. Only the materials we
-/// insert here are this node's to own + free.
+/// Returns `None` when no rig glb is cached for the source (e.g. a legacy project's
+/// skinned node, or a morph-only node with no skin), the node carries no skin, or a
+/// joint can't be resolved to its bone yet — callers then fall back to the
+/// template-reuse path.
+fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawMeshData> {
+    let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
+        skin.source,
+        skin.rig_node_index,
+        skin.primitive_index,
+    ) else {
+        tracing::debug!(
+            "raw_mesh_from_rig: no rig decode for {:?} rig_node_index={}",
+            skin.source,
+            skin.rig_node_index
+        );
+        return None;
+    };
+    // SKIN (optional): build it when the decode carries one, mapping each rig-glb
+    // joint node-index → its editor bone `TransformKey`. A bone not yet in the bridge
+    // means the transforms-first pass hasn't landed it → return `None` so the caller
+    // retries (same ordering guard as before). Morph-only nodes have no skin → `None`.
+    let b = bridge();
+    let raw_skin = match decode.skin.as_ref() {
+        Some(ext_skin) => {
+            let mut joints = Vec::with_capacity(ext_skin.joint_node_indices.len());
+            for rig_idx in &ext_skin.joint_node_indices {
+                let bone_node = skin
+                    .joints
+                    .iter()
+                    .find(|sj| sj.index == *rig_idx as u32)
+                    .map(|sj| sj.node)?;
+                let tk = {
+                    let nodes = b.nodes.lock().unwrap();
+                    match nodes.get(&bone_node).map(|e| e.transform_key) {
+                        Some(tk) => tk,
+                        None => {
+                            tracing::warn!(
+                                "raw_mesh_from_rig: bone node {:?} (rig joint idx {}) not yet \
+                                 in bridge — falling back",
+                                bone_node,
+                                rig_idx
+                            );
+                            return None;
+                        }
+                    }
+                };
+                joints.push(tk);
+            }
+            let inverse_bind_matrices: Vec<Mat4> = ext_skin
+                .inverse_bind_matrices
+                .iter()
+                .map(Mat4::from_cols_array)
+                .collect();
+            Some(RawSkin {
+                joints,
+                inverse_bind_matrices,
+                set_count: 1,
+                index_weights: ext_skin.packed_index_weights(),
+            })
+        }
+        None => None,
+    };
+
+    // MORPH (optional): pack the decoded morph targets into the renderer's
+    // geometry-morph layout — `add_raw_mesh` inserts it + the relower auto-rebinds
+    // the morph-weight channel (node → mesh → geometry_morph_key).
+    let vertex_count = decode.mesh.positions.len();
+    let raw_morph = decode.morph.as_ref().map(|m| {
+        let values = m.packed_values(vertex_count);
+        RawMorph {
+            info: MeshBufferGeometryMorphInfo {
+                targets_len: m.targets_len(),
+                vertex_stride_size: m.vertex_stride_size(),
+                values_size: values.len(),
+            },
+            weights: m.weights_bytes(),
+            values,
+        }
+    });
+
+    // A node-owned drawable needs at least one of skin/morph (else it's a degenerate
+    // SkinnedMesh — fall back so behaviour is unchanged for that case).
+    if raw_skin.is_none() && raw_morph.is_none() {
+        tracing::debug!("raw_mesh_from_rig: rig decode has neither skin nor morph — falling back");
+        return None;
+    }
+
+    let m = decode.mesh;
+    Some(RawMeshData {
+        positions: m.positions,
+        normals: m.normals,
+        // All UV sets ride `mesh.uvs` now (incl. TEXCOORD_1).
+        uv_sets: m.uvs,
+        colors: m.colors,
+        indices: m.indices,
+        skin: raw_skin,
+        morph: raw_morph,
+    })
+}
+
+/// Materialize (or re-materialize) a `SkinnedMesh` node. **The unified path** decodes
+/// the clean rig glb (our-format) into a NODE-OWNED skinned drawable via
+/// [`raw_mesh_from_rig`] + `add_raw_mesh` with the CURRENT material, so an
+/// opaque↔blend material flip (or any edit) rebuilds through the SAME
+/// teardown+`apply_kind` path as static geometry — no more `set_mesh_material` on a
+/// shared populate template (which couldn't rebuild a never-built kind → the vanish
+/// bug). The drawable is pushed to `model_meshes`, so `teardown` frees it.
+///
+/// Falls back to the legacy template-reuse path ([`materialize_skinned_from_template`])
+/// only when `raw_mesh_from_rig` returns `None` — i.e. no rig decode is cached (a
+/// legacy project, or a source whose rig glb wasn't persisted). Both skinned AND
+/// morph-only nodes otherwise go node-owned through `raw_mesh_from_rig` (skin + morph
+/// are each optional there).
 async fn materialize_skinned_mesh(
     entry: Arc<RendererNode>,
     skin: awsm_editor_protocol::SkinnedMeshRef,
     material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+    declare_only: bool,
 ) {
+    let Some(raw) = raw_mesh_from_rig(&skin) else {
+        // No rig decode cached → the legacy template-reuse fallback (a SAFETY NET for
+        // legacy projects / sources whose rig glb wasn't persisted). Kept on purpose:
+        // its edge cases (uncached rig, plus the rare transient below) can't all be
+        // retired with confidence, and node-owned materialise needs the rig decode.
+        //
+        // ⭐ TRANSACTION PRINCIPLE (this module's docs): loading is ONE
+        // `begin_load → declare ops (transforms BEFORE the geometry that references
+        // them) → commit_load` transaction. `raw_mesh_from_rig` can ALSO return
+        // `None` transiently when a joint's bone scene-node isn't in `bridge.nodes`
+        // yet — an ORDERING issue (skinned geometry declared before its bone
+        // transforms). That ordering is now handled by the transforms-first bulk
+        // load (the join-barrier `establish_forest_transforms`), so this is rare; the
+        // fix is the ordering, NOT a post-hoc re-materialise. Do NOT "fix" reload by
+        // re-running materialise.
+        materialize_skinned_from_template(entry, skin, material, declare_only).await;
+        return;
+    };
+
+    let visible = entry.node.visible.get();
+    let shadow_cfg = entry
+        .node
+        .kind
+        .get_cloned()
+        .mesh_shadow()
+        .copied()
+        .unwrap_or_default();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
+    // Per the glTF rule "the transform of a skinned mesh node is ignored" — the skin
+    // deforms via the joints — the drawable rides an IDENTITY transform under the
+    // renderer root (independent of this editor node's transform, matching the prior
+    // populate behaviour). `teardown` frees it via `model_transforms`.
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    let root = r.transforms.root_node;
+    let vertex_color_set = raw.colors.as_ref().filter(|c| !c.is_empty()).map(|_| 0u32);
+    let mat_key = resolve_assigned_material(&mut r, material.as_ref(), vertex_color_set);
+    let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(root));
+    match r.add_raw_mesh(raw, sub_tk, mat_key) {
+        Ok(mk) => {
+            let _ = r.set_mesh_hidden(mk, !visible);
+            let _ = r.set_mesh_shadow_flags(mk, shadow_flags);
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("commit_load (skinned mesh): {e}");
+                }
+            }
+            drop(r);
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(sub_tk);
+            entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
+        }
+        Err(e) => {
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::error!("materialize skinned mesh (rig) failed: {e}");
+        }
+    }
+}
+
+/// Legacy skinned materialise: reuse the populate-built skinned mesh from the import
+/// template and (re)assign this node's material + shadow flags via `set_mesh_material`.
+/// SAFETY NET, retained on purpose for the nodes [`raw_mesh_from_rig`] can't serve —
+/// a legacy project / source whose rig glb isn't cached (no rig decode). The populate
+/// mesh keys are template-owned (they survive teardown), so they are NOT pushed to
+/// `model_meshes`.
+async fn materialize_skinned_from_template(
+    entry: Arc<RendererNode>,
+    skin: awsm_editor_protocol::SkinnedMeshRef,
+    material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+    declare_only: bool,
+) {
+    // The populate skinned mesh is hidden by `hide_template_meshes` (now hides all
+    // template meshes); un-hide it here since this path renders that copy directly.
     let Some(template) = bridge().get_template(skin.source) else {
         tracing::warn!(
             "SkinnedMesh {:?}: no import template cached (session-local — survives \
@@ -721,14 +1058,15 @@ async fn materialize_skinned_mesh(
             material_keys.push(mat_key);
             to_register.push(*mk);
         }
-        // Live add: commit the staged content through the one compile path
-        // (finalize textures + compile new pipelines). No begin_load — the
-        // existing scene keeps showing while the new content compiles.
-        if let Err(e) = r
-            .commit_load(crate::engine::activity::commit_phase_handler())
-            .await
-        {
-            tracing::warn!("commit_load (skinned mesh): {e}");
+        // Commit the staged content through the one compile path (finalize textures
+        // + compile new pipelines) — UNLESS the bulk-load join commits once at the end.
+        if !declare_only {
+            if let Err(e) = r
+                .commit_load(crate::engine::activity::commit_phase_handler())
+                .await
+            {
+                tracing::warn!("commit_load (skinned mesh): {e}");
+            }
         }
     }
 
@@ -841,7 +1179,11 @@ async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_editor_protoc
 /// Textured/tinted quad (`NodeKind::Sprite`) → a `sprite_quad` mesh with the
 /// renderer's billboard mode. Single-cell unlit-ish quad (the flipbook-animated
 /// variant is the follow-on); sprites don't cast/receive shadows.
-async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol::SpriteDef) {
+async fn materialize_sprite(
+    entry: Arc<RendererNode>,
+    def: awsm_editor_protocol::SpriteDef,
+    declare_only: bool,
+) {
     use awsm_meshgen::sprite_quad;
     use awsm_renderer::meshes::mesh::BillboardMode;
 
@@ -849,10 +1191,10 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
     let raw = RawMeshData {
         positions: mesh.positions,
         normals: mesh.normals,
-        uvs: mesh.uvs,
-        uvs1: None,
+        uv_sets: mesh.uvs,
         colors: mesh.colors,
         indices: mesh.indices,
+        ..Default::default()
     };
     let sprite_mat = awsm_editor_protocol::MaterialDef {
         base_color: def.tint,
@@ -877,11 +1219,13 @@ async fn materialize_sprite(entry: Arc<RendererNode>, def: awsm_editor_protocol:
     // material — `add_raw_mesh` handles opaque and transparent uniformly now.
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
-            if let Err(e) = r
-                .commit_load(crate::engine::activity::commit_phase_handler())
-                .await
-            {
-                tracing::warn!("sprite commit_load: {e}");
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("sprite commit_load: {e}");
+                }
             }
             let _ = r.set_mesh_billboard_mode(mk, mode);
             drop(r);
@@ -980,6 +1324,7 @@ async fn upload_simple_mesh(
     entry: Arc<RendererNode>,
     raw: RawMeshData,
     mat: MeshMaterial,
+    declare_only: bool,
 ) -> Option<awsm_renderer::meshes::MeshKey> {
     let parent_tk = entry.transform_key;
     let handle = renderer_handle();
@@ -1000,11 +1345,13 @@ async fn upload_simple_mesh(
     // to transparency geometry without a separate entry point.
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
-            if let Err(e) = r
-                .commit_load(crate::engine::activity::commit_phase_handler())
-                .await
-            {
-                tracing::warn!("upload_simple_mesh commit_load: {e}");
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("upload_simple_mesh commit_load: {e}");
+                }
             }
             drop(r);
             entry.model_meshes.lock().unwrap().push(mk);
@@ -1028,6 +1375,7 @@ async fn upload_simple_mesh(
 async fn materialize_instances(
     entry: Arc<RendererNode>,
     def: awsm_editor_protocol::InstancesAlongCurveDef,
+    declare_only: bool,
 ) {
     use awsm_curves::{CatmullRomCurve, Curve3, FrameSequence};
     use awsm_renderer::instances::InstanceAttr;
@@ -1056,7 +1404,7 @@ async fn materialize_instances(
             Some(raw) => MeshData {
                 positions: raw.positions,
                 normals: raw.normals,
-                uvs: raw.uvs,
+                uvs: raw.uv_sets,
                 colors: raw.colors,
                 indices: raw.indices,
             },
@@ -1109,15 +1457,16 @@ async fn materialize_instances(
     let raw = RawMeshData {
         positions: mesh.positions,
         normals: mesh.normals,
-        uvs: mesh.uvs,
-        uvs1: None,
+        uv_sets: mesh.uvs,
         colors: mesh.colors,
         indices: mesh.indices,
+        ..Default::default()
     };
     let mesh_key = upload_simple_mesh(
         entry,
         raw,
         MeshMaterial::Flat(awsm_editor_protocol::MaterialDef::default()),
+        declare_only,
     )
     .await;
     if let Some(mk) = mesh_key {
@@ -1142,6 +1491,7 @@ async fn materialize_instances(
 async fn materialize_particle(
     entry: Arc<RendererNode>,
     def: awsm_editor_protocol::ParticleEmitterDef,
+    declare_only: bool,
 ) {
     let parent_tk = entry.transform_key;
     let node_id = entry.node_id;
@@ -1155,8 +1505,11 @@ async fn materialize_particle(
     })
     .await;
     // The emitter inserts a PBR material (a feature-set variant) whose pipeline
-    // must compile — route through the one compile path (live add, no
-    // begin_load). render() no longer compiles reactively.
+    // must compile — route through the one compile path. Skipped under the bulk-load
+    // join (which commits once at the end). render() no longer compiles reactively.
+    if declare_only {
+        return;
+    }
     if let Err(e) = renderer_handle()
         .lock()
         .await
@@ -1242,7 +1595,8 @@ pub(crate) async fn rematerialize_mesh_nodes() {
     for entry in entries {
         let kind = entry.node.kind.get_cloned();
         if matches!(kind, NodeKind::Mesh { .. }) {
-            apply_kind(entry, kind).await;
+            // Live re-materialise (mesh edit) — declares AND commits, as before.
+            apply_kind(entry, kind, false).await;
         }
     }
 }

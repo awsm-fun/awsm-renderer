@@ -83,7 +83,7 @@ pub fn plane_mesh(width: f32, depth: f32, segments_x: u32, segments_z: u32) -> M
     MeshData {
         positions,
         normals: Some(normals),
-        uvs: Some(uvs),
+        uvs: vec![uvs],
         colors: None,
         indices,
     }
@@ -163,7 +163,7 @@ pub fn box_mesh(dims: Vec3) -> MeshData {
     MeshData {
         positions,
         normals: Some(normals),
-        uvs: Some(uvs),
+        uvs: vec![uvs],
         colors: None,
         indices,
     }
@@ -208,7 +208,7 @@ pub fn sphere_mesh(radius: f32, segments_long: u32, segments_lat: u32) -> MeshDa
     MeshData {
         positions,
         normals: Some(normals),
-        uvs: Some(uvs),
+        uvs: vec![uvs],
         colors: None,
         indices,
     }
@@ -278,7 +278,7 @@ pub fn cylinder_mesh(radius: f32, height: f32, radial_segments: u32) -> MeshData
     MeshData {
         positions,
         normals: Some(normals),
-        uvs: Some(uvs),
+        uvs: vec![uvs],
         colors: None,
         indices,
     }
@@ -333,7 +333,7 @@ pub fn cone_mesh(radius: f32, height: f32, radial_segments: u32) -> MeshData {
     MeshData {
         positions,
         normals: Some(normals),
-        uvs: Some(uvs),
+        uvs: vec![uvs],
         colors: None,
         indices,
     }
@@ -387,7 +387,7 @@ pub fn torus_mesh(
     MeshData {
         positions,
         normals: Some(normals),
-        uvs: Some(uvs),
+        uvs: vec![uvs],
         colors: None,
         indices,
     }
@@ -405,7 +405,7 @@ pub fn sprite_quad(size_x: f32, size_y: f32) -> MeshData {
             [-hx, hy, 0.0],
         ],
         normals: Some(vec![[0.0, 0.0, 1.0]; 4]),
-        uvs: Some(vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]),
+        uvs: vec![vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]],
         colors: None,
         indices: vec![0, 1, 2, 0, 2, 3],
     }

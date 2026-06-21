@@ -95,7 +95,7 @@ impl AwsmRenderer {
         // scheduler's apply_resolution path — see
         // pipeline_scheduler/mod.rs for the wiring.
 
-        // Render gate (load transaction, `docs/plans/todo.md`). Only draw scene
+        // Render gate (load transaction). Only draw scene
         // frames once a `commit_load` has compiled the scene against its final
         // content; until then clear to the clear-color so a loading overlay sits
         // over a clean frame, not a half-compiled scene. NEITHER branch
@@ -332,7 +332,7 @@ impl AwsmRenderer {
         // `ensure_scene_pipelines` preamble. It now runs ONLY in `commit_load`,
         // against the load's final content, so `render_all` never compiles and
         // the resolved-variant ids it stamps into the material payload are
-        // already settled by the time this draws. See `docs/plans/todo.md` §1.)
+        // already settled by the time this draws.)
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.materials

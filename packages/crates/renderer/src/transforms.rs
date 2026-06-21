@@ -153,15 +153,27 @@ impl AwsmRenderer {
 
         #[cfg(debug_assertions)]
         {
+            // Count only RESOLVED meshes (those that have a geometry resource).
+            // `scene_spatial` is fed exclusively by `sync_spatial_for_mesh`, which
+            // runs at `resolve_geometry` (commit). A mesh BOUND but not yet resolved
+            // legitimately carries a `world_aabb` — `bind_mesh` stamps it from the
+            // geometry source so the mesh stays OUT of `collect_renderables`'
+            // `world_aabb.is_none()` conservative-draw fallback (it must not draw
+            // before its GPU resource exists) — yet it is correctly absent from the
+            // spatial index until commit. The editor's deferred glTF import releases
+            // the renderer lock between `populate_gltf` (deferred `add_mesh`) and the
+            // materialise-time `commit_load`, so a render frame runs in that window;
+            // gating on "resolved" excludes that legitimate transient state while
+            // still catching a genuinely missing sync hook on any resolved mesh.
             let with_aabb = self
                 .meshes
                 .iter()
-                .filter(|(_, m)| m.world_aabb.is_some())
+                .filter(|(k, m)| m.world_aabb.is_some() && self.meshes.resource_key(*k).is_ok())
                 .count();
             let spatial_count = self.scene_spatial.len();
             debug_assert!(
                 with_aabb == spatial_count,
-                "scene_spatial leaf count ({spatial_count}) diverged from meshes with world_aabb ({with_aabb}) — sync hook missing on a mutation path"
+                "scene_spatial leaf count ({spatial_count}) diverged from RESOLVED meshes with world_aabb ({with_aabb}) — sync hook missing on a mutation path"
             );
         }
     }

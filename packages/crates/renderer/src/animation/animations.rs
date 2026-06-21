@@ -274,10 +274,18 @@ impl AwsmRenderer {
                 .players
                 .get(animation_key)
                 .ok_or(AwsmAnimationError::MissingKey(animation_key))?;
-            let transform = self.transforms.get_local(*transform_key)?;
+            // A loose player whose target transform was freed must NOT abort the
+            // WHOLE pose (this loop runs before the clip mixer below, so a single
+            // stale channel would otherwise skip ALL animation + spam an error). A
+            // scene reload frees the old skeleton's transforms before the players
+            // re-bind — skip the dangling player; the relower rebinds it. Present
+            // keys are byte-for-byte unchanged (same `apply` on the same `Transform`).
+            let Ok(transform) = self.transforms.get_local(*transform_key).cloned() else {
+                continue;
+            };
             match player.sample() {
                 AnimationData::Transform(transform_animation) => {
-                    let updated_transform = transform_animation.apply(transform.clone());
+                    let updated_transform = transform_animation.apply(transform);
                     self.transforms
                         .set_local(*transform_key, updated_transform)?;
                 }
@@ -295,22 +303,25 @@ impl AwsmRenderer {
                 .ok_or(AwsmAnimationError::MissingKey(animation_key))?;
 
             match player.sample() {
+                // A loose player whose target MORPH was freed must NOT abort the whole
+                // pose (a scene reload frees the morph before the player re-binds) —
+                // skip the dangling write; the relower rebinds it. Present keys unchanged.
                 AnimationData::Vertex(vertex_animation) => match morph_key {
                     AnimationMorphKey::Geometry(morph_key) => {
-                        self.meshes.morphs.geometry.update_morph_weights_with(
+                        let _ = self.meshes.morphs.geometry.update_morph_weights_with(
                             *morph_key,
                             |target| {
                                 target.copy_from_slice(&vertex_animation.weights);
                             },
-                        )?;
+                        );
                     }
                     AnimationMorphKey::Material(morph_key) => {
-                        self.meshes.morphs.material.update_morph_weights_with(
+                        let _ = self.meshes.morphs.material.update_morph_weights_with(
                             *morph_key,
                             |target| {
                                 target.copy_from_slice(&vertex_animation.weights);
                             },
-                        )?;
+                        );
                     }
                 },
                 _ => {
@@ -667,16 +678,21 @@ impl AwsmRenderer {
     }
 
     /// Writes a composited `value` to `target` via the real write paths
-    /// (transforms / morphs / materials / lights / cameras). Strict: a
-    /// kind mismatch returns `WrongKind`; a missing transform key propagates
-    /// the transform error.
+    /// (transforms / morphs / materials / lights / cameras). Strict on a kind
+    /// mismatch (`WrongKind`); a missing TARGET (transform freed) is SKIPPED, not
+    /// fatal — a single dangling channel (e.g. a scene reload frees the old
+    /// skeleton before the relower rebinds) must not abort the whole pose.
     fn write_anim_target(&mut self, target: AnimationTarget, value: &AnimationData) -> Result<()> {
         match target {
             AnimationTarget::Transform(transform_key) => {
-                let transform = self.transforms.get_local(transform_key)?;
+                // Skip a channel whose target transform no longer exists (the relower
+                // rebinds it next tick); present keys are byte-for-byte unchanged.
+                let Ok(transform) = self.transforms.get_local(transform_key).cloned() else {
+                    return Ok(());
+                };
                 match value {
                     AnimationData::Transform(transform_animation) => {
-                        let updated = transform_animation.apply(transform.clone());
+                        let updated = transform_animation.apply(transform);
                         self.transforms.set_local(transform_key, updated)?;
                     }
                     _ => {
@@ -687,24 +703,27 @@ impl AwsmRenderer {
                 }
             }
             AnimationTarget::Morph(morph_key) => match value {
+                // Skip a stale morph target (freed on reload before the relower rebinds)
+                // rather than aborting the whole pose — same robustness as the transform
+                // path; present keys are unchanged.
                 AnimationData::Vertex(vertex_animation) => match morph_key {
                     AnimationMorphKey::Geometry(morph_key) => {
-                        self.meshes.morphs.geometry.update_morph_weights_with(
+                        let _ = self.meshes.morphs.geometry.update_morph_weights_with(
                             morph_key,
                             |target| {
                                 let n = target.len().min(vertex_animation.weights.len());
                                 target[..n].copy_from_slice(&vertex_animation.weights[..n]);
                             },
-                        )?;
+                        );
                     }
                     AnimationMorphKey::Material(morph_key) => {
-                        self.meshes.morphs.material.update_morph_weights_with(
+                        let _ = self.meshes.morphs.material.update_morph_weights_with(
                             morph_key,
                             |target| {
                                 let n = target.len().min(vertex_animation.weights.len());
                                 target[..n].copy_from_slice(&vertex_animation.weights[..n]);
                             },
-                        )?;
+                        );
                     }
                 },
                 _ => {

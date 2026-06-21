@@ -221,10 +221,10 @@ pub(super) fn preview_sphere() -> RawMeshData {
     RawMeshData {
         positions: mesh.positions,
         normals: mesh.normals,
-        uvs: mesh.uvs,
-        uvs1: None,
+        uv_sets: mesh.uvs,
         colors: mesh.colors,
         indices: mesh.indices,
+        ..Default::default()
     }
 }
 

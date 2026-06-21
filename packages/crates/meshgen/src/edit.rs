@@ -194,7 +194,7 @@ mod tests {
         let m = MeshData {
             positions: (0..5).map(|i| [i as f32, 0.0, 0.0]).collect(),
             normals: None,
-            uvs: None,
+            uvs: vec![],
             colors: None,
             indices: vec![],
         };
@@ -225,7 +225,7 @@ mod tests {
         let m = MeshData {
             positions: (0..5).map(|i| [0.0, i as f32, 0.0]).collect(),
             normals: None,
-            uvs: None,
+            uvs: vec![],
             colors: None,
             indices: vec![],
         };

@@ -70,10 +70,25 @@ pub(crate) fn register_texture_key(asset_id: AssetId, key: TextureKey) {
 /// `createImageBitmap` + a 2D canvas readback). Cross-origin URLs need CORS
 /// headers (same constraint as glTF image loads).
 async fn fetch_rgba(url: &str) -> Result<(Vec<u8>, u32, u32), String> {
-    use wasm_bindgen::JsCast;
     let bitmap = awsm_renderer_core::image::bitmap::load(url.to_string(), None)
         .await
         .map_err(|e| format!("load image: {e}"))?;
+    bitmap_to_rgba(bitmap)
+}
+
+/// Decode ENCODED image bytes (PNG/JPEG) to RGBA8 via the browser, for restoring
+/// persisted textures on load. `mime` is the source mime (`image/png` etc.).
+async fn decode_rgba_from_bytes(bytes: &[u8], mime: &str) -> Result<(Vec<u8>, u32, u32), String> {
+    let bitmap = awsm_renderer_core::image::bitmap::load_u8(bytes, mime, None)
+        .await
+        .map_err(|e| format!("decode image: {e}"))?;
+    bitmap_to_rgba(bitmap)
+}
+
+/// Read an `ImageBitmap` back to RGBA8 bytes via a 2D canvas (shared by the
+/// URL-fetch + the encoded-bytes decode paths).
+fn bitmap_to_rgba(bitmap: web_sys::ImageBitmap) -> Result<(Vec<u8>, u32, u32), String> {
+    use wasm_bindgen::JsCast;
     let (w, h) = (bitmap.width().max(1), bitmap.height().max(1));
     let document = web_sys::window()
         .and_then(|w| w.document())
@@ -127,6 +142,65 @@ pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), Str
         .map_err(|e| format!("commit_load: {e}"))?;
     register_texture_key(id, key);
     Ok(())
+}
+
+/// Restore persisted raster textures on LOAD: decode each `(asset id, encoded
+/// bytes, mime)` and re-upload it to the GPU, registering the asset id against
+/// the new [`TextureKey`] so materials resolve their texture slots. This is a
+/// DECLARED LOAD INPUT — call it BEFORE the scene's materials/geometry
+/// materialise, so the slot is bound the first time a material resolves (NOT a
+/// post-hoc re-materialise). Decodes happen WITHOUT the renderer lock; all
+/// uploads + the single pool-finalising `commit_load` happen under one lock in
+/// ONE batch (not per-texture — transaction-aligned).
+///
+/// Color space: re-uploaded as sRGB albedo (the visible base-color case is
+/// correct). The per-slot linear-vs-sRGB classification isn't persisted on the
+/// texture asset yet, so normal/metallic-roughness/occlusion maps restore in the
+/// albedo color space — a follow-up (store the `TextureColorInfo` kind per
+/// `TextureDef::Raster`).
+pub(crate) async fn restore_raster_textures(items: Vec<(AssetId, Vec<u8>, String)>) {
+    if items.is_empty() {
+        return;
+    }
+    // Decode all (async, network/codec) BEFORE taking the renderer lock.
+    let mut decoded: Vec<(AssetId, Vec<u8>, u32, u32)> = Vec::with_capacity(items.len());
+    for (id, bytes, mime) in &items {
+        match decode_rgba_from_bytes(bytes, mime).await {
+            Ok((rgba, w, h)) => decoded.push((*id, rgba, w, h)),
+            Err(e) => tracing::warn!("restore texture {id}: {e}"),
+        }
+    }
+    if decoded.is_empty() {
+        return;
+    }
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    let Some(sampler_key) = sampler_for(&mut r, None) else {
+        tracing::warn!("restore textures: no sampler");
+        return;
+    };
+    let color = TextureColorInfo {
+        mipmap_kind: MipmapTextureKind::Albedo,
+        srgb_to_linear: true,
+        premultiplied_alpha: None,
+    };
+    for (id, rgba, w, h) in &decoded {
+        match r
+            .textures
+            .add_image_rgba_raw(rgba, *w, *h, sampler_key, color)
+        {
+            Ok(key) => register_texture_key(*id, key),
+            Err(e) => tracing::warn!("restore texture {id}: upload {e}"),
+        }
+    }
+    // ONE pool-finalising commit for the whole batch (the grow invalidates the
+    // texture-array-len-baked shaders; commit recompiles once).
+    if let Err(e) = r
+        .commit_load(crate::engine::activity::commit_phase_handler())
+        .await
+    {
+        tracing::warn!("restore textures commit_load: {e}");
+    }
 }
 
 /// The "missing material" colour: flat, unlit magenta. A mesh with **no** assigned

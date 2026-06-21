@@ -331,6 +331,7 @@ name = "awsm-model-tests"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "awsm-glb-export",
  "awsm-renderer",
  "awsm-renderer-gltf",
  "awsm-web-shared",

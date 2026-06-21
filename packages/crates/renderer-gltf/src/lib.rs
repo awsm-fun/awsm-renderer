@@ -28,3 +28,10 @@ pub use aabb::{aabb_from_gltf_doc, aabb_from_gltf_node, aabb_from_gltf_primitive
 pub use ext::AwsmRendererGltfExt;
 pub use extract::{extract_animations, ExtractedAnimation, ExtractedChannel, ExtractedProperty};
 pub use populate::{GltfKeyLookups, GltfMaterialSource, GltfPopulateContext, PopulateGltfOpts};
+// Crate-root re-exports of the types every consumer touches on the load path, so a
+// player can `use awsm_renderer_gltf::{GltfLoader, GltfData, populate_gltf}` without
+// reaching into submodules. (Ergonomic form: `renderer.populate_gltf(data, scene)` via
+// [`AwsmRendererGltfExt`]; `populate_gltf` is the equivalent free function.)
+pub use data::GltfData;
+pub use loader::GltfLoader;
+pub use populate::populate_gltf;

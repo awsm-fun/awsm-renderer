@@ -669,8 +669,7 @@ impl AwsmRenderer {
         // `reset` above (`last_ensured_bucket_layout = None` +
         // `mark_variants_dirty`) forces `commit_load`'s single
         // `reconcile_material_variants` → `ensure_scene_pipelines` →
-        // `launch_edge_resolve_compile` to rebuild it against the final pool.
-        // See `docs/plans/todo.md` §0/§1.5.)
+        // `launch_edge_resolve_compile` to rebuild it against the final pool.)
 
         Ok(())
     }

@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use awsm_editor_protocol::AssetId;
-use awsm_glb_export::MeshData;
+use awsm_glb_export::{ExtractedNodeMesh, MeshData};
 
 /// Cache key: `(source file AssetId, glTF node_index, primitive_index)` — the
 /// triple a `SkinnedMeshRef` carries.
@@ -31,6 +31,14 @@ type BakeKey = (AssetId, u32, Option<u32>);
 
 thread_local! {
     static SKINNED_BAKES: RefCell<HashMap<BakeKey, MeshData>> = RefCell::new(HashMap::new());
+    /// Per-`(source, RIG-GLB node_index, primitive_index)` decode of the clean rig
+    /// glb — geometry + 2nd UV set + the per-node skin (joints/weights/IBMs). The
+    /// MATERIALISER reads this to rebuild a skinned drawable from our-format; cached
+    /// so repeated (re-)materialise of the same node doesn't re-parse the glb.
+    /// Keyed by the RIG-GLB index (`SkinnedMeshRef::rig_node_index`), NOT the
+    /// original `node_index`. Session-local (same caveat as the bind-pose cache).
+    static RIG_NODE_DECODES: RefCell<HashMap<BakeKey, ExtractedNodeMesh>> =
+        RefCell::new(HashMap::new());
     /// Per-imported-source the **clean rig glb** (geometry + skeleton + joints/
     /// weights + morph, re-exported through our writer; materials/anims dropped),
     /// keyed by the source-file `AssetId`. This is what the player bundle ships
@@ -47,6 +55,30 @@ pub fn store_rig_glb(source: AssetId, glb: Vec<u8>) {
 /// The clean rig glb for an imported source, if present (the bundle reads this).
 pub fn get_rig_glb(source: AssetId) -> Option<Vec<u8>> {
     SOURCE_RIG_GLB.with(|c| c.borrow().get(&source).cloned())
+}
+
+/// Decode the clean rig glb for `source` at `rig_node_index` (+ optional
+/// primitive) into geometry + skin — the MATERIALISER's per-node our-format read.
+/// Lazily parses the rig glb on first request and caches the result per
+/// `(source, rig_node_index, primitive_index)`. Returns `None` when no rig glb is
+/// cached for the source or the node carries no extractable mesh.
+pub fn get_rig_node_decode(
+    source: AssetId,
+    rig_node_index: u32,
+    primitive_index: Option<u32>,
+) -> Option<ExtractedNodeMesh> {
+    let key = (source, rig_node_index, primitive_index);
+    if let Some(hit) = RIG_NODE_DECODES.with(|c| c.borrow().get(&key).cloned()) {
+        return Some(hit);
+    }
+    let bytes = get_rig_glb(source)?;
+    let decoded = awsm_glb_export::extract_node_mesh_with_skin_from_bytes(
+        &bytes,
+        rig_node_index,
+        primitive_index,
+    )?;
+    RIG_NODE_DECODES.with(|c| c.borrow_mut().insert(key, decoded.clone()));
+    Some(decoded)
 }
 
 /// Stash a skinned node's bind-pose geometry under its `(source, node_index,
@@ -71,6 +103,7 @@ pub fn get(source: AssetId, node_index: u32, primitive_index: Option<u32>) -> Op
 /// mid-session). Counterpart to [`store`]/[`store_rig_glb`].
 pub fn remove(source: AssetId) {
     SKINNED_BAKES.with(|c| c.borrow_mut().retain(|(s, _, _), _| *s != source));
+    RIG_NODE_DECODES.with(|c| c.borrow_mut().retain(|(s, _, _), _| *s != source));
     SOURCE_RIG_GLB.with(|c| {
         c.borrow_mut().remove(&source);
     });
@@ -79,5 +112,6 @@ pub fn remove(source: AssetId) {
 /// Drop every cached bake + rig glb (project reset).
 pub fn clear() {
     SKINNED_BAKES.with(|c| c.borrow_mut().clear());
+    RIG_NODE_DECODES.with(|c| c.borrow_mut().clear());
     SOURCE_RIG_GLB.with(|c| c.borrow_mut().clear());
 }

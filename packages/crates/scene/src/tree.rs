@@ -130,10 +130,26 @@ pub struct SkinnedMeshRef {
     /// The imported glTF/glb source file's `AssetId` (an `AssetSource::Filename`
     /// entry) — the key under which the bridge caches this import's node template.
     pub source: AssetId,
-    /// Which node inside the referenced glTF file carries this skinned mesh.
+    /// Which node inside the referenced ORIGINAL glTF file carries this skinned
+    /// mesh. Stable identity used by `drop_skinning` / export / the bind-pose
+    /// `skinned_bake_cache` (all original-indexed). NOT used to address the rig
+    /// glb — see [`Self::rig_node_index`].
     pub node_index: u32,
+    /// That same node's index in the re-exported **clean rig glb**
+    /// (`assets/<source>.glb`) — the DFS-flatten index `reexport_clean` assigns
+    /// (which differs from `node_index` when the source isn't already DFS-ordered).
+    /// This is what the MATERIALISER decodes the rig glb at to rebuild the skinned
+    /// drawable (geometry + skin) from our-format, uniformly for first-show /
+    /// reload / re-materialise. Captured at import from `node_flat_indices`;
+    /// `#[serde(default)]` (0) for legacy projects saved before this field — those
+    /// re-import to repopulate it. Shares the rig glb's single flat index space
+    /// with [`SkinJoint::index`].
+    #[serde(default)]
+    pub rig_node_index: u32,
     /// Optional primitive index within that node (for a multi-material skinned
     /// node destructured into per-primitive children). `None` = the whole node.
+    /// Same value for the original AND the rig glb (re-export preserves primitive
+    /// order).
     #[serde(default)]
     pub primitive_index: Option<u32>,
     /// Bone correspondence for driving the rig from our clips: each skeleton
@@ -322,6 +338,7 @@ mod tests {
                 skin: SkinnedMeshRef {
                     source: AssetId::new(),
                     node_index: 2,
+                    rig_node_index: 2,
                     primitive_index: None,
                     joints: vec![
                         SkinJoint {

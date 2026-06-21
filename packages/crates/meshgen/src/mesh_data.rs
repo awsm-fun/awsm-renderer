@@ -8,7 +8,11 @@ use glam::Vec3;
 pub struct MeshData {
     pub positions: Vec<[f32; 3]>,
     pub normals: Option<Vec<[f32; 3]>>,
-    pub uvs: Option<Vec<[f32; 2]>>,
+    /// UV sets, indexed by `TEXCOORD_n` (set `n` = `uvs[n]`). Empty = no UVs.
+    /// Generalized to N sets so multi-UV meshes round-trip (e.g. a base map on
+    /// `TEXCOORD_0` alongside a lightmap/AO on `TEXCOORD_1`); consumers that support
+    /// fewer sets take the leading ones (and should log if they cap — never silently).
+    pub uvs: Vec<Vec<[f32; 2]>>,
     pub colors: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
 }

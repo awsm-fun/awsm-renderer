@@ -325,3 +325,20 @@ pub fn editor_dispatch_json(cmd_json: &str) -> String {
         Err(err) => format!("decode error: {err}"),
     }
 }
+
+/// Test seam: advance the renderer's animation clock by `dt_ms`, then refresh world
+/// transforms. Lets a scriptable driver tick a scene whose clips live only in the
+/// renderer with no editor transport — notably a `LoadPlayerBundle` runtime reload
+/// (loaded via `populate_awsm_scene`, the player path). This is the exact call a game
+/// makes each frame, so ticking + screenshotting verifies the player-path skinned
+/// animation end-to-end. Async (acquires the renderer lock). `"ok"` or `"error: …"`.
+#[wasm_bindgen]
+pub async fn editor_tick_animation(dt_ms: f64) -> String {
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    if let Err(e) = r.update_animations(dt_ms) {
+        return format!("error: {e}");
+    }
+    r.update_transforms();
+    "ok".to_string()
+}

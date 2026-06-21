@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use awsm_editor_protocol::MaterialDef;
-use awsm_glb_export::MeshData;
+use awsm_glb_export::{ExportImage, MeshData};
 use awsm_renderer::textures::TextureKey;
 use awsm_renderer_gltf::data::GltfData;
 use awsm_renderer_gltf::extract::{extract_animations, ExtractedAnimation};
@@ -54,11 +54,6 @@ pub struct GltfImport {
     /// so the geometry is used as-is (no extra matrix). Skinned meshes bake to
     /// their bind pose (JOINTS/WEIGHTS are not read).
     pub node_meshes: HashMap<(u32, Option<u32>), MeshData>,
-    /// Optional 2nd UV set (`TEXCOORD_1`) per `(node_index, primitive_index)`,
-    /// vertex-aligned with `node_meshes`. Parallel to `node_meshes` so a captured
-    /// static mesh can carry UV set 1 (`material_uv(in, 1u)`) without bloating
-    /// `MeshData`. Absent key = that mesh has only UV set 0.
-    pub node_uvs1: HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
     /// `Some` when the import carries skins: the whole rig (geometry + skeleton +
     /// joints/weights + morph) re-exported through our writer into a clean glb
     /// (materials/animations dropped). This is what the player bundle ships for
@@ -71,6 +66,13 @@ pub struct GltfImport {
     /// `finish_model_import` to record each skin joint's bone `NodeId` → clean-glb
     /// index on `SkinnedMeshRef::joints`. Empty for unskinned imports.
     pub node_flat_indices: HashMap<u32, u32>,
+    /// The ENCODED image bytes (original PNG/JPEG) of every imported texture,
+    /// keyed by the renderer [`TextureKey`] `populate_gltf` uploaded it to. The
+    /// controller stashes these (by minted texture-asset id) so imported textures
+    /// persist across Save → reload (the renderer keeps only decoded pixels).
+    /// Built by pairing `extract_texture_images` (glTF-texture-index → bytes) with
+    /// the populate context's `GltfTextureKey.index → TextureKey` map.
+    pub texture_images: HashMap<TextureKey, ExportImage>,
 }
 
 /// A glTF material extracted into an editable [`MaterialDef`] (factors only;
@@ -205,34 +207,19 @@ pub async fn import_file(name: &str, url: &str) -> Result<GltfImport, String> {
 /// single Mesh node or destructure a multi-material node per-primitive — exactly
 /// the cases the old `Model` path covered. Positions are raw local accessor values
 /// (see [`awsm_glb_export::extract_node_mesh`] on the no-double-transform rule).
-/// Both the per-node primary geometry AND the optional 2nd UV set
-/// (`TEXCOORD_1`), keyed by `(node_index, primitive_index)`. `uvs1` rides this
-/// parallel map (not `MeshData`) so it reaches the editor's captured mesh →
-/// renderer UV set 1 without churning `MeshData`'s many construction sites.
-type NodeMeshMaps = (
-    HashMap<(u32, Option<u32>), MeshData>,
-    HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
-);
+/// Per-node primary geometry keyed by `(node_index, primitive_index)`. ALL UV sets
+/// (incl. `TEXCOORD_1`) ride `MeshData.uvs` now — no separate parallel map.
+type NodeMeshMaps = HashMap<(u32, Option<u32>), MeshData>;
 
 fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
     let buffers = &data.buffers.raw;
     let mut out = HashMap::new();
-    let mut uvs1 = HashMap::new();
-    let insert = |key: (u32, Option<u32>),
-                  ex: awsm_glb_export::ExtractedNodeMesh,
-                  out: &mut HashMap<_, _>,
-                  uvs1: &mut HashMap<_, _>| {
-        if let Some(u1) = ex.uvs1 {
-            uvs1.insert(key, u1);
-        }
-        out.insert(key, ex.mesh);
-    };
     for node in data.doc.nodes() {
         let Some(mesh) = node.mesh() else { continue };
         let node_index = node.index() as u32;
         // Whole-node merge (the common, single-material case).
         if let Some(ex) = awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None) {
-            insert((node_index, None), ex, &mut out, &mut uvs1);
+            out.insert((node_index, None), ex.mesh);
         }
         // Per-primitive (used when a node's primitives carry different materials
         // and the controller destructures it into one Mesh child per primitive).
@@ -242,12 +229,12 @@ fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
                 if let Some(ex) =
                     awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, Some(i))
                 {
-                    insert((node_index, Some(i)), ex, &mut out, &mut uvs1);
+                    out.insert((node_index, Some(i)), ex.mesh);
                 }
             }
         }
     }
-    (out, uvs1)
+    out
 }
 
 async fn import_typed(
@@ -263,10 +250,14 @@ async fn import_typed(
     // `data` is moved into `populate_gltf` — this is what becomes each editor
     // node's captured Mesh asset (the renderer's own meshes are only kept for
     // material/texture extraction, then hidden).
-    let (node_meshes, node_uvs1) = extract_node_meshes(&data);
+    let node_meshes = extract_node_meshes(&data);
     // Read material factors + texture indices from the document before it's moved
     // into `populate_gltf`; the indices are resolved to baked texture keys after.
     let mat_specs = extract_material_specs(&data);
+    // Grab the ENCODED texture bytes (PNG/JPEG) off the document before populate
+    // consumes it — the renderer keeps only decoded pixels, so these are what we
+    // persist (paired with the baked TextureKeys below). Keyed by glTF tex index.
+    let tex_images_by_index = awsm_glb_export::extract_texture_images(&data.doc, &data.buffers.raw);
     // Parse animations off the document before `data` is moved into populate.
     // A parse error must not abort the whole import — log it + import zero clips.
     let animations = match extract_animations(&data.doc, &data.buffers.raw) {
@@ -304,7 +295,7 @@ async fn import_typed(
     } else {
         HashMap::new()
     };
-    let (template, materials) = {
+    let (template, materials, texture_images) = {
         // Hold the renderer lock across the async populate + the synchronous
         // template snapshot, so nothing mutates the freshly-built tree first.
         let handle = renderer_handle();
@@ -313,6 +304,19 @@ async fn import_typed(
             .populate_gltf(data, None)
             .await
             .map_err(|e| format!("populate: {e}"))?;
+        // `populate_gltf` is a pure deferred ADD (load-transaction model): it stages
+        // geometry but resolves NOTHING until `commit_load`. The template snapshot
+        // below reads each node's renderer mesh keys (`keys_by_transform_key` →
+        // `transform_to_meshes`) + per-mesh skin/morph classification (`mesh_is_skinned`
+        // / `geometry_morph_key_for_mesh` → the mesh RESOURCE), ALL of which are
+        // populated only at resolve (commit). Without committing first the snapshot
+        // sees zero mesh keys, so `build_editor_subtree` makes every node an empty
+        // Group (no geometry, no skinned/morph detection). Commit here so the meshes
+        // resolve before we snapshot — and so they're synced into the spatial index
+        // before the lock releases (no bound-but-unresolved render-frame window).
+        r.commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+            .map_err(|e| format!("commit: {e}"))?;
         let template = asset_template::build_from_context(&r, &ctx);
         // The renderer already rendered these meshes directly; hide them so the
         // editor's user-movable Model-node duplicates are the only visible copy.
@@ -323,7 +327,23 @@ async fn import_typed(
         // they don't double up (and so the frozen populate-bound copy is gone).
         asset_template::remove_template_lights(&mut r, &ctx);
         let materials = resolve_materials(&ctx, mat_specs);
-        (template, materials)
+        // Pair each baked TextureKey with its encoded source bytes: the populate
+        // ctx maps GltfTextureKey{ index } → TextureKey, and `tex_images_by_index`
+        // maps that glTF texture index → encoded image. (Same key may map from
+        // several GltfTextureKeys that differ only by color info — fine, identical
+        // bytes; content-hash dedups at persist.)
+        let texture_images: HashMap<TextureKey, ExportImage> = ctx
+            .textures
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(gk, tk)| {
+                tex_images_by_index
+                    .get(&gk.index)
+                    .map(|img| (*tk, img.clone()))
+            })
+            .collect();
+        (template, materials, texture_images)
     };
     Ok(GltfImport {
         display_name: name.map(str::to_owned).unwrap_or_else(|| model_name(url)),
@@ -331,9 +351,9 @@ async fn import_typed(
         materials,
         animations,
         node_meshes,
-        node_uvs1,
         skinned_glb,
         node_flat_indices,
+        texture_images,
     })
 }
 
@@ -346,7 +366,7 @@ async fn import_typed(
 /// nodes materialize (i.e. before `apply_project` sets the scene). The
 /// reclaim-guard's scene check (`node_sync::scene_has_skinned_from`) keeps this
 /// template alive through the reload's old-node teardown.
-pub async fn repopulate_skinned_template(
+pub async fn rebuild_skinned_template(
     source: awsm_editor_protocol::AssetId,
     rig_bytes: Vec<u8>,
 ) -> Result<(), String> {
@@ -363,6 +383,12 @@ pub async fn repopulate_skinned_template(
             .populate_gltf(data, None)
             .await
             .map_err(|e| format!("rig populate: {e}"))?;
+        // Resolve the staged geometry before snapshotting — see the commit note in
+        // `import_typed`. Without it the rig template snapshots zero mesh keys and the
+        // reloaded SkinnedMesh nodes can't resolve their drawable.
+        r.commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+            .map_err(|e| format!("rig commit: {e}"))?;
         let template = asset_template::build_from_context(&r, &ctx);
         asset_template::hide_template_meshes(&mut r, &template);
         template

@@ -16,7 +16,7 @@ mod tests {
         let mesh = MeshData {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
-            uvs: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+            uvs: vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]],
             colors: None,
             indices: vec![0, 1, 2],
         };
@@ -43,7 +43,7 @@ mod tests {
         let mesh = MeshData {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
-            uvs: None,
+            uvs: vec![],
             colors: None,
             indices: vec![0, 1, 2],
         };

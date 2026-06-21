@@ -30,13 +30,16 @@
 //! record per original (non-exploded) vertex. The per-vertex stride is the sum
 //! of every declared `MeshBufferCustomVertexAttributeInfo::vertex_size()`.
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 
 use crate::{
     bounds::Aabb,
     materials::{Material, MaterialKey},
     meshes::{
-        buffer_info::{MeshBufferCustomVertexAttributeInfo, MeshBufferVertexAttributeInfo},
+        buffer_info::{
+            MeshBufferCustomVertexAttributeInfo, MeshBufferGeometryMorphInfo, MeshBufferSkinInfo,
+            MeshBufferVertexAttributeInfo,
+        },
         mesh::Mesh,
         MeshKey,
     },
@@ -52,17 +55,53 @@ pub struct RawMeshData {
     /// If `None`, the renderer computes per-vertex normals as the area-weighted
     /// average of incident face normals.
     pub normals: Option<Vec<[f32; 3]>>,
-    /// Optional UV-set 0.
-    pub uvs: Option<Vec<[f32; 2]>>,
-    /// Optional UV-set 1 (`TEXCOORD_1`). Packed contiguously right after set 0 so
-    /// `material_mesh_meta.uv_sets_index` points at set 0 and set 1 reads at
-    /// `+2` floats (matching the WGSL `_texture_uv_per_vertex` `set_index*2`
-    /// layout + the glTF populate path). Only meaningful when `uvs` is also set;
-    /// `uv_set_count` becomes 2 so custom materials can read `material_uv(in,1u)`.
-    pub uvs1: Option<Vec<[f32; 2]>>,
+    /// UV sets, indexed by `TEXCOORD_n` (set `n` = `uv_sets[n]`). Empty = no UVs.
+    /// Each set is packed contiguously per vertex in set order, so the derived
+    /// `material_mesh_meta.uv_set_count`/`uv_sets_index` (from the attribute layout)
+    /// let the WGSL `_texture_uv_per_vertex` read any set at `set_index*2` floats and
+    /// custom materials read `material_uv(in, iu)` for any `i < uv_set_count`.
+    /// Generalized to N (was a hardcoded `uvs` + `uvs1` pair).
+    pub uv_sets: Vec<Vec<[f32; 2]>>,
     /// Optional per-vertex RGBA colors.
     pub colors: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
+    /// Optional skin (rig) binding — makes this a SKINNED raw mesh. The deform
+    /// compute pass runs off the inserted `SkinKey` exactly like a glTF-imported
+    /// skin. `None` ⇒ a static mesh (unchanged).
+    pub skin: Option<RawSkin>,
+    /// Optional geometry morph targets. `None` ⇒ no morphs (unchanged).
+    pub morph: Option<RawMorph>,
+}
+
+/// Skin (rig) data for a [`RawMeshData`]. The fields match
+/// [`crate::meshes::skins::Skins::insert`] + the glTF decode's skin output
+/// (`skin_joint_index_weight_bytes` + joints + inverse-bind matrices), so the
+/// editor's per-node skinned capture (Phase 2) can supply the same shapes the
+/// importer already produces.
+#[derive(Debug, Clone)]
+pub struct RawSkin {
+    /// The skeleton's joint transforms (editor scene nodes / glTF joint nodes).
+    pub joints: Vec<TransformKey>,
+    /// Per-joint inverse-bind matrix, parallel to `joints`.
+    pub inverse_bind_matrices: Vec<Mat4>,
+    /// Number of skin sets (JOINTS_0/WEIGHTS_0, …); 4 joint influences per set.
+    pub set_count: usize,
+    /// Per-vertex packed joint indices + weights, the exact byte layout
+    /// `Skins::insert` consumes (`original_vertices * set_count * (vec4<u32> idx +
+    /// vec4<f32> weight)`).
+    pub index_weights: Vec<u8>,
+}
+
+/// Geometry morph-target data for a [`RawMeshData`]. Fields match
+/// [`crate::meshes::morphs`]' `insert_raw` (the same call the glTF decode uses).
+#[derive(Debug, Clone)]
+pub struct RawMorph {
+    /// Layout descriptor (targets count, per-vertex stride, total values size).
+    pub info: MeshBufferGeometryMorphInfo,
+    /// Default per-target weights, as little-endian `f32` bytes.
+    pub weights: Vec<u8>,
+    /// Packed per-target vertex deltas (position [+ normal + tangent]).
+    pub values: Vec<u8>,
 }
 
 impl RawMeshData {
@@ -145,27 +184,20 @@ impl RawMeshData {
         // one record per original vertex — pass-independent.
         let mut vertex_attributes: Vec<MeshBufferVertexAttributeInfo> = Vec::new();
         let mut custom_attribute_bytes: Vec<u8> = Vec::new();
-        let has_uvs = self.uvs.is_some();
-        let has_uvs1 = has_uvs && self.uvs1.is_some();
+        // Every UV set the mesh carries → one TEXCOORD_n attribute (the meta derives
+        // uv_set_count/uv_sets_index from these). A set is only meaningful packed in
+        // order, so a gap (set N present but N-1 absent) never arises — `uv_sets` is
+        // dense by construction.
+        for (index, _) in self.uv_sets.iter().enumerate() {
+            vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
+                MeshBufferCustomVertexAttributeInfo::TexCoords {
+                    index: index as u32,
+                    data_size: 4,
+                    component_len: 2,
+                },
+            ));
+        }
         let has_colors = self.colors.is_some();
-        if has_uvs {
-            vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::TexCoords {
-                    index: 0,
-                    data_size: 4,
-                    component_len: 2,
-                },
-            ));
-        }
-        if has_uvs1 {
-            vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
-                MeshBufferCustomVertexAttributeInfo::TexCoords {
-                    index: 1,
-                    data_size: 4,
-                    component_len: 2,
-                },
-            ));
-        }
         if has_colors {
             vertex_attributes.push(MeshBufferVertexAttributeInfo::Custom(
                 MeshBufferCustomVertexAttributeInfo::Colors {
@@ -176,15 +208,11 @@ impl RawMeshData {
             ));
         }
         for v in 0..vertex_count {
-            if let Some(uvs) = self.uvs.as_ref() {
-                let uv = uvs[v];
+            // UV sets in order (set 0, 1, …) — matches the attribute push above.
+            for set in &self.uv_sets {
+                let uv = set[v];
                 custom_attribute_bytes.extend_from_slice(&uv[0].to_le_bytes());
                 custom_attribute_bytes.extend_from_slice(&uv[1].to_le_bytes());
-            }
-            if has_uvs1 {
-                let uv1 = self.uvs1.as_ref().unwrap()[v];
-                custom_attribute_bytes.extend_from_slice(&uv1[0].to_le_bytes());
-                custom_attribute_bytes.extend_from_slice(&uv1[1].to_le_bytes());
             }
             if let Some(colors) = self.colors.as_ref() {
                 let c = colors[v];
@@ -197,7 +225,7 @@ impl RawMeshData {
         crate::meshes::geometry::GeometrySource {
             normals: self.normals.expect("ensure_normals filled this"),
             positions: self.positions,
-            uvs0: self.uvs,
+            uvs0: self.uv_sets.into_iter().next(),
             // Raw meshes don't author tangents — generated at commit if a normal-map
             // material is bound.
             tangents: None,
@@ -302,7 +330,7 @@ impl AwsmRenderer {
     /// `add_raw_mesh` repeatedly or `enable_mesh_instancing` after creation.
     pub fn add_raw_mesh(
         &mut self,
-        data: RawMeshData,
+        mut data: RawMeshData,
         transform_key: TransformKey,
         material_key: MaterialKey,
     ) -> crate::error::Result<MeshKey> {
@@ -311,9 +339,51 @@ impl AwsmRenderer {
                 crate::meshes::error::AwsmMeshError::MeshListEmpty,
             ));
         }
-        let geometry = self.register_geometry(
-            data.into_geometry_source(awsm_renderer_core::pipeline::primitive::FrontFace::Ccw),
-        );
+        // Insert optional skin / morph into the shared stores BEFORE building the
+        // source, so the GeometrySource carries the keys + layout the deferred
+        // resolve reattaches (the same path the glTF decode uses). `None` ⇒ a plain
+        // static mesh, exactly as before (default-equals-today).
+        let skin = data.skin.take();
+        let morph = data.morph.take();
+        let skin_bits = match skin {
+            Some(s) => {
+                let info = MeshBufferSkinInfo {
+                    set_count: s.set_count,
+                    index_weights_size: s.index_weights.len(),
+                };
+                let key = self.meshes.skins.insert(
+                    s.joints,
+                    &s.inverse_bind_matrices,
+                    s.set_count,
+                    &s.index_weights,
+                )?;
+                Some((key, info))
+            }
+            None => None,
+        };
+        let morph_bits = match morph {
+            Some(m) => {
+                let key = self.meshes.morphs.geometry.insert_raw(
+                    m.info.clone(),
+                    &m.weights,
+                    &m.values,
+                )?;
+                Some((key, m.info))
+            }
+            None => None,
+        };
+
+        let mut source =
+            data.into_geometry_source(awsm_renderer_core::pipeline::primitive::FrontFace::Ccw);
+        if let Some((key, info)) = skin_bits {
+            source.skin_key = Some(key);
+            source.skin_info = Some(info);
+        }
+        if let Some((key, info)) = morph_bits {
+            source.geometry_morph_key = Some(key);
+            source.geometry_morph_info = Some(info);
+        }
+        let geometry = self.register_geometry(source);
         let mesh_key = self.add_mesh(
             geometry,
             material_key,

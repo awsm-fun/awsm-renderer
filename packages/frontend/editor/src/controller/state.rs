@@ -907,6 +907,7 @@ impl EditorController {
                 clear_untracked_renderer_resources().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
+                crate::engine::bridge::texture_cache::clear();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
                 // Seed a sane default scene: a key directional light (tilted ~50°
@@ -982,6 +983,7 @@ impl EditorController {
                 clear_untracked_renderer_resources().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
+                crate::engine::bridge::texture_cache::clear();
                 self.missing_assets.set(Vec::new());
                 self.scene.environment.set(scene.environment.clone());
                 self.scene.bump_revision();
@@ -1041,6 +1043,7 @@ impl EditorController {
                 clear_untracked_renderer_resources().await;
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
+                crate::engine::bridge::texture_cache::clear();
                 persistence::apply_inmem(self, toml, mesh_map).await?;
                 Toast::info("Round-trip: project reloaded in-memory (cold caches)");
                 Ok(None)
@@ -1221,8 +1224,8 @@ impl EditorController {
                 // the node's kind. Reuses the import bake path (deterministic id =
                 // node id), so it persists like any captured mesh.
                 let label = n.name.get_cloned();
-                // drop_skinning bakes the single-UV bind pose (no 2nd UV set).
-                let mesh_ref = mint_imported_mesh(node, &label, &mesh, None, skin.source);
+                // drop_skinning bakes the bind pose; UV sets ride mesh.uvs.
+                let mesh_ref = mint_imported_mesh(node, &label, &mesh, skin.source);
                 // Hide the now-orphaned skinned populate copy so it stops rendering
                 // (the node now renders its captured bind-pose Mesh instead).
                 if let Some(template) = crate::engine::bridge::bridge().get_template(skin.source) {
@@ -1359,7 +1362,12 @@ impl EditorController {
                 let md = awsm_meshgen::MeshData {
                     positions: cap.positions.clone(),
                     normals: cap.normals.clone(),
-                    uvs: cap.uvs.clone(),
+                    uvs: cap
+                        .uvs
+                        .clone()
+                        .into_iter()
+                        .chain(cap.uvs1.clone())
+                        .collect(),
                     colors: cap.colors.clone(),
                     indices: cap.indices.clone(),
                 };
@@ -3026,7 +3034,12 @@ impl EditorController {
             awsm_renderer::textures::TextureKey,
             AssetId,
         > = std::collections::HashMap::new();
-        let mut texture_entries: Vec<(AssetId, String)> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut texture_entries: Vec<(
+            AssetId,
+            String,
+            Option<(String, awsm_glb_export::ImageMime)>,
+        )> = Vec::new();
         let mut mat_ids: Vec<AssetId> = Vec::with_capacity(import.materials.len());
 
         for ex in &import.materials {
@@ -3041,30 +3054,35 @@ impl EditorController {
                 &mut texture_entries,
                 ex.textures.base_color,
                 &format!("{label} · base color"),
+                &import.texture_images,
             );
             def.metallic_roughness_texture = ensure_import_texture(
                 &mut tex_for_key,
                 &mut texture_entries,
                 ex.textures.metallic_roughness,
                 &format!("{label} · metal/rough"),
+                &import.texture_images,
             );
             def.normal_texture = ensure_import_texture(
                 &mut tex_for_key,
                 &mut texture_entries,
                 ex.textures.normal,
                 &format!("{label} · normal"),
+                &import.texture_images,
             );
             def.occlusion_texture = ensure_import_texture(
                 &mut tex_for_key,
                 &mut texture_entries,
                 ex.textures.occlusion,
                 &format!("{label} · occlusion"),
+                &import.texture_images,
             );
             def.emissive_texture = ensure_import_texture(
                 &mut tex_for_key,
                 &mut texture_entries,
                 ex.textures.emissive,
                 &format!("{label} · emissive"),
+                &import.texture_images,
             );
             // KHR-extension texture slots (clearcoat normal map, specular colour
             // map, sheen colour map, …): create a texture asset for each + write
@@ -3075,6 +3093,7 @@ impl EditorController {
                     &mut texture_entries,
                     Some(*baked),
                     &format!("{label} · {slot}"),
+                    &import.texture_images,
                 );
                 set_ext_texture(&mut def.extensions, slot, tref);
             }
@@ -3098,16 +3117,26 @@ impl EditorController {
         // Track the source file + the texture assets in the table; record the
         // library material + texture ids on the file entry so `materialize_model`
         // can wire each mesh to its extracted material.
-        let img_ids: Vec<AssetId> = texture_entries.iter().map(|(id, _)| *id).collect();
+        let img_ids: Vec<AssetId> = texture_entries.iter().map(|(id, ..)| *id).collect();
         let asset_id = {
             let mut table = self.scene.assets.lock().unwrap();
-            for (id, name) in &texture_entries {
-                table.entries.insert(
-                    *id,
-                    AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
+            for (id, name, hash_mime) in &texture_entries {
+                // Captured bytes ⇒ a file-backed entry (content_hash addresses
+                // `assets/<hash>.<ext>`; the ext rides the display_name so
+                // `asset_filename` derives it). Otherwise a plain (session-only)
+                // entry — e.g. an external-file-URI texture we couldn't capture.
+                let entry = match hash_mime {
+                    Some((hash, mime)) => AssetEntry::new_with_hash(
+                        SceneAssetSource::Texture(TextureDef::Raster {
+                            display_name: format!("{name}.{}", mime.ext()),
+                        }),
+                        hash.clone(),
+                    ),
+                    None => AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
                         display_name: name.clone(),
                     })),
-                );
+                };
+                table.entries.insert(*id, entry);
             }
             let id = AssetId::new();
             let mut entry =
@@ -3167,7 +3196,7 @@ impl EditorController {
                 &mat_ids,
                 default_mat_id,
                 &import.node_meshes,
-                &import.node_uvs1,
+                &import.node_flat_indices,
                 Some(&import.display_name),
                 &mut node_map,
             ));
@@ -3980,7 +4009,7 @@ impl EditorController {
                                     "position": md.positions.get(idx),
                                     "normal": md.normals.as_ref().and_then(|n| n.get(idx)),
                                     "color": md.colors.as_ref().and_then(|c| c.get(idx)),
-                                    "uv": md.uvs.as_ref().and_then(|u| u.get(idx)),
+                                    "uv": md.uvs.first().and_then(|u| u.get(idx)),
                                 })
                             })
                             .collect();
@@ -5950,14 +5979,23 @@ pub(crate) fn set_ext_texture(
 /// `TextureRef` to it. The asset id is pre-registered against the already-baked
 /// renderer `TextureKey`, so when the material resolves this slot it reuses the
 /// GPU texture rather than re-decoding (preserving the model's real textures).
+#[allow(clippy::type_complexity)]
 fn ensure_import_texture(
     tex_for_key: &mut std::collections::HashMap<awsm_renderer::textures::TextureKey, AssetId>,
-    texture_entries: &mut Vec<(AssetId, String)>,
+    texture_entries: &mut Vec<(
+        AssetId,
+        String,
+        Option<(String, awsm_glb_export::ImageMime)>,
+    )>,
     baked: Option<(
         awsm_renderer::textures::TextureKey,
         crate::engine::bridge::gltf::TexBinding,
     )>,
     name: &str,
+    texture_images: &std::collections::HashMap<
+        awsm_renderer::textures::TextureKey,
+        awsm_glb_export::ExportImage,
+    >,
 ) -> Option<awsm_editor_protocol::TextureRef> {
     let (key, binding) = baked?;
     // The texture-asset id is deduped by baked key, but the binding (UV set +
@@ -5974,8 +6012,27 @@ fn ensure_import_texture(
     let id = AssetId::new();
     crate::engine::bridge::material::register_texture_key(id, key);
     tex_for_key.insert(key, id);
-    texture_entries.push((id, name.to_string()));
+    // Capture the encoded source bytes for PERSISTENCE (when populate uploaded
+    // this texture from an embedded / data-URI image). content_hash addresses the
+    // on-disk side file `assets/<hash>.<ext>` (+ dedups identical textures); the
+    // bytes live session-locally in texture_cache until Save reads them.
+    let hash_mime = texture_images.get(&key).map(|img| {
+        let hash = texture_content_hash(&img.bytes);
+        crate::engine::bridge::texture_cache::store(id, img.bytes.clone(), img.mime);
+        (hash, img.mime)
+    });
+    texture_entries.push((id, name.to_string(), hash_mime));
     Some(mk(id))
+}
+
+/// SHA-256 hex of texture bytes — the `content_hash` that addresses the on-disk
+/// `assets/<hash>.<ext>` side file (also dedups identical textures across models).
+fn texture_content_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let digest = h.finalize();
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Mint a captured-mesh `MeshDef` asset from CPU-extracted glTF geometry: store
@@ -5989,7 +6046,6 @@ fn mint_imported_mesh(
     node_id: NodeId,
     label: &str,
     mesh: &awsm_glb_export::MeshData,
-    uvs1: Option<Vec<[f32; 2]>>,
     source_asset: AssetId,
 ) -> awsm_editor_protocol::MeshRef {
     use crate::engine::bridge::mesh_cache;
@@ -5997,10 +6053,8 @@ fn mint_imported_mesh(
     use awsm_editor_protocol::{MeshBase, ModifierStack};
 
     let mesh_id = AssetId(node_id.0);
-    mesh_cache::store_with_id(
-        mesh_id,
-        mesh_cache::from_mesh_data_with_uvs1(mesh.clone(), uvs1),
-    );
+    // `from_mesh_data` folds every UV set (incl. TEXCOORD_1) from `mesh.uvs`.
+    mesh_cache::store_with_id(mesh_id, mesh_cache::from_mesh_data(mesh.clone()));
     let stack = ModifierStack {
         base: MeshBase::Captured(MeshRef(mesh_id)),
         modifiers: vec![],
@@ -6089,12 +6143,21 @@ fn build_editor_subtree(
     mat_ids: &[AssetId],
     default_mat_id: Option<AssetId>,
     node_meshes: &std::collections::HashMap<(u32, Option<u32>), awsm_glb_export::MeshData>,
-    node_uvs1: &std::collections::HashMap<(u32, Option<u32>), Vec<[f32; 2]>>,
+    node_flat_indices: &std::collections::HashMap<u32, u32>,
     fallback_name: Option<&str>,
     node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
     use awsm_editor_protocol::{dynamic_material::MaterialInstance, NodeKind, SkinnedMeshRef, Trs};
+
+    // This node's index in the clean rig glb (the DFS-flatten `reexport_clean`
+    // assigns), the index space the MATERIALISER decodes the rig glb at. Falls
+    // back to the original index when there's no rig glb (unskinned imports leave
+    // `node_flat_indices` empty — the value is then unused).
+    let rig_node_index = node_flat_indices
+        .get(&tn.gltf_node_index)
+        .copied()
+        .unwrap_or(tn.gltf_node_index);
 
     let name = tn.label.clone().unwrap_or_else(|| {
         fallback_name
@@ -6182,6 +6245,7 @@ fn build_editor_subtree(
                     skin: SkinnedMeshRef {
                         source: asset_id,
                         node_index: tn.gltf_node_index,
+                        rig_node_index,
                         primitive_index: None,
                         // Filled after the whole subtree is built (node_map
                         // complete) — see `assemble_skin_joints` / patch below.
@@ -6220,6 +6284,7 @@ fn build_editor_subtree(
                         skin: SkinnedMeshRef {
                             source: asset_id,
                             node_index: tn.gltf_node_index,
+                            rig_node_index,
                             primitive_index: Some(i as u32),
                             joints: Vec::new(),
                         },
@@ -6245,8 +6310,7 @@ fn build_editor_subtree(
             // The whole-node merged geometry (every primitive concatenated).
             let mesh_node = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
             if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, None)) {
-                let uvs1 = node_uvs1.get(&(tn.gltf_node_index, None)).cloned();
-                let mesh_ref = mint_imported_mesh(mesh_node.id, &name, mesh, uvs1, asset_id);
+                let mesh_ref = mint_imported_mesh(mesh_node.id, &name, mesh, asset_id);
                 mesh_node.kind.set(NodeKind::Mesh {
                     mesh: mesh_ref,
                     material,
@@ -6280,10 +6344,7 @@ fn build_editor_subtree(
                     NodeKind::Group,
                 );
                 if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32))) {
-                    let uvs1 = node_uvs1
-                        .get(&(tn.gltf_node_index, Some(i as u32)))
-                        .cloned();
-                    let mesh_ref = mint_imported_mesh(part.id, &part_label, mesh, uvs1, asset_id);
+                    let mesh_ref = mint_imported_mesh(part.id, &part_label, mesh, asset_id);
                     part.kind.set(NodeKind::Mesh {
                         mesh: mesh_ref,
                         material,
@@ -6316,7 +6377,7 @@ fn build_editor_subtree(
             mat_ids,
             default_mat_id,
             node_meshes,
-            node_uvs1,
+            node_flat_indices,
             None,
             node_map,
         ));

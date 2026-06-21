@@ -7,8 +7,6 @@
 //! is what let a mesh's built geometry drift from its routing — the frame-killing
 //! `VisibilityGeometryBufferNotFound` class. [`geometry_kind`] is the one function everything funnels
 //! through; the load transaction calls it at commit, against each geometry's final bound materials.
-//!
-//! See `docs/plans/todo.md` §4.
 
 use awsm_renderer_core::pipeline::primitive::FrontFace;
 use slotmap::new_key_type;
@@ -128,6 +126,44 @@ pub fn geometry_kind(material: &Material, is_hud: bool) -> GeometryKind {
     }
 }
 
+/// The set of pass representations a geometry must build at commit, derived by
+/// UNION over the [`geometry_kind`] of every material bound to it (§1 ③, §7 dedup).
+///
+/// The dedup guarantee lives here: [`count`](Self::count) is the number of
+/// *distinct* kinds needed, so a geometry bound by N meshes across K distinct kinds
+/// uploads K representations — once each into the one shared resource — NOT N. An
+/// opaque + a transparent material over the same geometry ⇒ `{visibility, transparency}`
+/// = 2 uploads total, regardless of how many instances carry each.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GeometryReps {
+    pub visibility: bool,
+    pub transparency: bool,
+}
+
+impl GeometryReps {
+    /// Fold the kinds of all bound materials into the union of reps to build.
+    pub fn from_kinds(kinds: impl IntoIterator<Item = GeometryKind>) -> Self {
+        let mut reps = Self::default();
+        for k in kinds {
+            match k {
+                GeometryKind::Visibility => reps.visibility = true,
+                GeometryKind::Transparency => reps.transparency = true,
+                GeometryKind::Both => {
+                    reps.visibility = true;
+                    reps.transparency = true;
+                }
+            }
+        }
+        reps
+    }
+
+    /// How many GPU representations this geometry uploads — one per distinct kind,
+    /// NOT per bound mesh (the dedup invariant, §7).
+    pub fn count(&self) -> usize {
+        self.visibility as usize + self.transparency as usize
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{geometry_kind, GeometryKind};
@@ -191,5 +227,50 @@ mod tests {
             };
             assert_eq!(geometry_kind(&m, false), expected);
         }
+    }
+
+    use super::{GeometryKind::*, GeometryReps};
+
+    #[test]
+    fn reps_union_dedups_to_distinct_kinds_not_instance_count() {
+        // §7 dedup: one geometry bound by MANY meshes across K distinct kinds uploads
+        // K reps once each, NOT one per mesh. Here three opaque + two transparent
+        // meshes share a geometry → exactly {visibility, transparency} = 2 uploads.
+        let reps = GeometryReps::from_kinds([
+            Visibility,
+            Visibility,
+            Visibility,
+            Transparency,
+            Transparency,
+        ]);
+        assert_eq!(
+            reps,
+            GeometryReps {
+                visibility: true,
+                transparency: true
+            }
+        );
+        assert_eq!(
+            reps.count(),
+            2,
+            "uploaded twice total, not once per instance"
+        );
+    }
+
+    #[test]
+    fn reps_single_kind_uploads_once() {
+        // All-opaque geometry → one rep; all-transparent → one rep.
+        assert_eq!(
+            GeometryReps::from_kinds([Visibility, Visibility]).count(),
+            1
+        );
+        assert_eq!(
+            GeometryReps::from_kinds([Transparency, Transparency]).count(),
+            1
+        );
+        // A HUD (Both) binding alone already needs both reps.
+        assert_eq!(GeometryReps::from_kinds([Both]).count(), 2);
+        // Empty (registered, never bound) → nothing to upload.
+        assert_eq!(GeometryReps::from_kinds([]).count(), 0);
     }
 }

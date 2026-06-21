@@ -39,8 +39,10 @@ mod write;
 pub use awsm_meshgen::MeshData;
 pub use bundle::{assemble_bundle, BundleFile, BundleInputs, PlayerBundle};
 pub use extract::{
-    extract_node_mesh, extract_node_mesh_from_bytes, reexport_clean, reexport_clean_scene,
-    scene_node_flat_indices, ExtractedNodeMesh,
+    extract_node_mesh, extract_node_mesh_from_bytes, extract_node_mesh_with_skin_from_bytes,
+    extract_texture_images, extract_texture_images_from_bytes, reexport_clean,
+    reexport_clean_scene, reexport_clean_scene_with_images, scene_node_flat_indices,
+    ExtractedMorph, ExtractedNodeMesh, ExtractedSkin,
 };
 pub use write::write_glb;
 
@@ -221,6 +223,10 @@ pub struct ExtraPrimitive {
 }
 
 /// How a material is emitted into the glTF. See the crate-level material policy.
+// PbrMaterial is the large variant (it carries the per-material extension JSON). This
+// is a cold export IR — one value per material at export time, never a hot path — so
+// the size skew doesn't matter; boxing would only add an alloc + indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum ExportMaterial {
     /// Real glTF metallic-roughness PBR.
@@ -250,6 +256,16 @@ pub struct PbrMaterial {
     pub normal_texture: Option<TexRef>,
     pub occlusion_texture: Option<TexRef>,
     pub emissive_texture: Option<TexRef>,
+    /// `KHR_materials_ior` — index of refraction (`None` = absent / default 1.5).
+    pub ior: Option<f32>,
+    /// `KHR_materials_emissive_strength` — emissive scale (`None` = absent / 1.0).
+    pub emissive_strength: Option<f32>,
+    /// Other KHR_* material extensions, by extension name → already-prepared JSON
+    /// object (texture `index`es ALREADY remapped to the clean glb's pool indices).
+    /// Written verbatim into the material's `extensions.others` map. The extractor
+    /// fills this (typed extensions built from the gltf accessors; raw ones passed
+    /// through + index-remapped) so `write_glb` stays a dumb serializer (GAP 3).
+    pub extensions_json: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for PbrMaterial {
@@ -267,6 +283,9 @@ impl Default for PbrMaterial {
             normal_texture: None,
             occlusion_texture: None,
             emissive_texture: None,
+            ior: None,
+            emissive_strength: None,
+            extensions_json: serde_json::Map::new(),
         }
     }
 }
@@ -305,6 +324,16 @@ pub enum AlphaMode {
     Blend,
 }
 
+/// `KHR_texture_transform` — a UV offset/rotation/scale (+ optional texcoord override)
+/// on a single textureInfo. Carried on [`TexRef`] so the clean re-export preserves it.
+#[derive(Clone, Copy, Debug)]
+pub struct TexTransform {
+    pub offset: [f32; 2],
+    pub rotation: f32,
+    pub scale: [f32; 2],
+    pub tex_coord: Option<u32>,
+}
+
 /// A reference from a material slot to an image in [`GlbScene::images`].
 #[derive(Clone, Copy, Debug)]
 pub struct TexRef {
@@ -312,6 +341,8 @@ pub struct TexRef {
     pub image: usize,
     /// Which `TEXCOORD_n` set the material samples (usually 0).
     pub tex_coord: u32,
+    /// `KHR_texture_transform` on this textureInfo, if any.
+    pub transform: Option<TexTransform>,
 }
 
 impl TexRef {
@@ -319,6 +350,7 @@ impl TexRef {
         Self {
             image,
             tex_coord: 0,
+            transform: None,
         }
     }
 }
@@ -343,6 +375,15 @@ impl ImageMime {
         match self {
             ImageMime::Png => "image/png",
             ImageMime::Jpeg => "image/jpeg",
+        }
+    }
+
+    /// File extension (no dot) for this mime — for content-hash-addressed
+    /// `assets/<hash>.<ext>` side files.
+    pub fn ext(self) -> &'static str {
+        match self {
+            ImageMime::Png => "png",
+            ImageMime::Jpeg => "jpg",
         }
     }
 }
