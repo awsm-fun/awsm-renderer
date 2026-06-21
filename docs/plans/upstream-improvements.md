@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` ✅ → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ⏸ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done.**
 (`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
 turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
@@ -581,7 +581,25 @@ not an interior close-up. Repeat on a small mesh (still framed reasonably).
 
 ---
 
-### U2 — Bring an outliner / scene-tree into the animation context (shared selection)
+### U2 — Bring an outliner / scene-tree into the animation context (shared selection) ✅ DONE (2026-06-21)
+
+**Landed + verified live.** Added a collapsible **"Scene Tree"** section to the Animation-mode left rail
+(`animation_mode/workspace.rs` `outliner_section()`) that embeds the **same** `scene_mode::outliner::render()`
+Scene mode uses — so it's the full filterable tree, and because the outliner reads/writes the shared
+`controller().selected`, selection is **visible and shared** between Scene and Animation editing (it already
+drives the gizmo + the selection-aware Add-Track flow). Defaults open; a slim chevron bar collapses it to
+reclaim vertical space above the clip library + key inspector.
+
+**Verified live (editor :9085):** in Animation mode the left rail shows the Scene Tree (Directional Light /
+Box / Directional Light) over the clip library; `set_selection([box])` highlights the Box row in the
+outliner AND shows its viewport gizmo (shared selection), screenshot-confirmed, zero GPUValidationError.
+
+> **Residual (from T0): morph track index >0** is still capped at 0 in `add_track.rs` (the editor `Node`
+> doesn't expose a mesh's morph-target count) — a minor, separate authoring limit, not part of U2.
+
+---
+
+#### U2 (original spec — for reference)
 
 **Verified state — MISSING (the one real UX gap left).** A full outliner exists in scene mode
 (`packages/frontend/editor/src/scene_mode/outliner.rs`) but the animation-mode workspace left column shows
@@ -711,6 +729,22 @@ matches `editor_snapshot_json`'s `selection`.
   default/reset view): override the orbit distance to `bounding_radius / sin(fov_y/2) * margin` using the
   live fov_y, floored at `bounding_radius*1.05`; added `CameraView::set_radius`. Verified live: FrameNode
   now fits the whole box with margin (box + grid visible), default view unchanged, zero GPU errors. Next: U2.
+- 2026-06-21 — **U2 DONE (animation-mode outliner) — PASS (live).** Added a collapsible "Scene Tree" to the
+  Animation-mode left rail embedding the shared `scene_mode::outliner::render()`; selection is the shared
+  `controller().selected`. Verified live: in Animation mode the Scene Tree shows the nodes; `set_selection`
+  highlights the Box row + its viewport gizmo (shared selection), zero GPU errors.
+- 2026-06-21 — **✅ LOOP COMPLETE — every primary task done + live-verified.** Delivered (10, each verified
+  in-browser via the wasm seams, zero GPUValidationError): T0 re-audit, D2a (codegen black-screen fix), A1
+  (vec2/vec4 keyframe kinds), A2 (add_keyframe interp), B1 (UV-transform settable+UI, pre-existing), B1-anim
+  (animate UV transform), B2 (normal_scale/occlusion_strength params), D1-ibl (`sample_ibl` include — the
+  "biggest win"), D3 (live uniform write), P2 (frame-node FOV fit), U2 (animation outliner). **Closed by T0
+  re-audit:** P1 (camera lock — not reproducible), U1 + U3 (add-track UI already built). **Deferred (each
+  documented with a turnkey design; reason is value/decision, not difficulty):** D2b (diagnostics reflect
+  real GPU compile — needs a naga-in-wasm vs error-scope DESIGN DECISION), D1-normalmap (TBN/normal_map —
+  needs tangents plumbed into the visibility-buffer shade kernel first), B3 (texture auto-flow — optional;
+  the scroll effect already ships via a looping B1-anim track), B2-extra (emissive_strength / alpha cutoff /
+  toon / flipbook param knobs — per-feature plumbing, lower value). Plus a residual morph-index>0 authoring
+  cap. 12 commits on `improvements` (2aacfb84…this).
 
 ---
 
