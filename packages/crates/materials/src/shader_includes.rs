@@ -96,6 +96,8 @@ impl ShaderIncludes {
     const BIT_SHADOWS: u32 = 1 << 10;
     const BIT_SKYBOX: u32 = 1 << 11;
     const BIT_EXTRAS: u32 = 1 << 12;
+    const BIT_IBL: u32 = 1 << 13;
+    const BIT_NORMAL_MAP: u32 = 1 << 14;
 
     /// `math.wgsl` — basic math helpers.
     pub const MATH: Self = Self(Self::BIT_MATH);
@@ -125,6 +127,24 @@ impl ShaderIncludes {
     pub const SKYBOX: Self = Self(Self::BIT_SKYBOX);
     /// `extras.wgsl` — the extras storage pool accessor.
     pub const EXTRAS: Self = Self(Self::BIT_EXTRAS);
+    /// `lighting/ibl.wgsl` — image-based-lighting primitive `sample_ibl(...)`
+    /// (diffuse irradiance + split-sum specular prefilter + BRDF LUT) over the
+    /// scene's always-bound environment cubemaps + BRDF LUT. Tier A (generic):
+    /// the single biggest "make a custom material first-class in an IBL-lit
+    /// scene" primitive — without it a dynamic material with no punctual lights
+    /// renders ~black. NOT a PBR re-implementation; just the ambient/environment
+    /// term. Depends on LIGHT_ACCESS (for the IBL mip-count info).
+    pub const IBL: Self = Self(Self::BIT_IBL);
+
+    /// Tier A (generic): normal mapping for custom materials. Exposes the
+    /// per-pixel orthonormal world tangent frame the engine already reconstructs
+    /// (the prep G-buffer) as `material_tbn(input)` + `apply_normal_map(input,
+    /// sampled_rgb)`, so a dynamic material perturbs its normal from a normal-map
+    /// sample WITHOUT re-deriving a TBN. Tiny (two helpers over always-present
+    /// `OpaqueShadingInput` fields, no extra bindings); opt-in like IBL so a lean
+    /// material that doesn't normal-map carries nothing. No hard dep (uses only
+    /// always-on `math`).
+    pub const NORMAL_MAP: Self = Self(Self::BIT_NORMAL_MAP);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -151,6 +171,13 @@ impl ShaderIncludes {
                 | Self::BIT_SHADOWS
                 | Self::BIT_SKYBOX
                 | Self::BIT_EXTRAS,
+            // NOTE: `IBL` is deliberately NOT in `all()`. It pulls ~40 KB of
+            // split-sum sampling into the kernel, so — per the report's "costed
+            // only when used" — it's the one Tier-A helper that a custom material
+            // must opt into EXPLICITLY (declare `"ibl"` via shader includes). It's
+            // still `tier_a: true` in `KEY_TABLE` (offered on the custom menu) and
+            // reaches the kernel through the declared set (`ShaderIncludeFlags::
+            // for_custom`), independent of this default; it's just not auto-on.
         )
     }
 
@@ -216,6 +243,18 @@ impl ShaderIncludes {
             Self::EXTRAS,
             true,
             "Extras storage-pool accessors (extras_load_*)",
+        ),
+        (
+            "ibl",
+            Self::IBL,
+            true,
+            "Image-based lighting: sample_ibl(albedo, normal, view, roughness, metallic) — environment irradiance + specular + BRDF LUT",
+        ),
+        (
+            "normal_map",
+            Self::NORMAL_MAP,
+            true,
+            "Normal mapping: apply_normal_map(input, sampled_rgb) + material_tbn(input) — perturb the normal from a normal-map sample using the engine's reconstructed tangent frame",
         ),
         (
             "apply_lighting",
@@ -289,6 +328,10 @@ impl ShaderIncludes {
             Self::BIT_SHADOWS => Self::MATH.union(Self::CAMERA),
             Self::BIT_SKYBOX => Self::CAMERA.union(Self::MATH),
             Self::BIT_TEXTURES => Self::MATH,
+            // IBL needs the LightsInfo/IblInfo accessor (mip counts) + math/camera.
+            Self::BIT_IBL => Self::LIGHT_ACCESS.union(Self::MATH).union(Self::CAMERA),
+            // normal_map only calls normalize() (math) over always-present fields.
+            Self::BIT_NORMAL_MAP => Self::MATH,
             _ => Self::empty(),
         }
     }
@@ -429,15 +472,28 @@ mod tests {
         }
         assert_eq!(ShaderIncludes::from_key("nonsense"), None);
 
-        // The Tier-A catalog == exactly the bits in `all()` (the custom menu).
-        // If a new generic module is added, this forces updating the catalog too.
+        // The Tier-A catalog (the custom-facing menu) == the DEFAULT-ON set
+        // `all()` PLUS the explicit opt-in extras. Most Tier-A helpers are
+        // default-on, but a few heavy ones are offered + declarable yet NOT
+        // auto-on ("costed only when used"): `ibl` pulls split-sum env sampling
+        // into the kernel, so it must be declared. Any NEW generic module must
+        // either go in `all()` (default-on) or be added to `OPT_IN_TIER_A` here —
+        // this guard forces that decision rather than silent drift.
+        const OPT_IN_TIER_A: ShaderIncludes = ShaderIncludes::IBL.union(ShaderIncludes::NORMAL_MAP);
         let catalog_union = ShaderIncludes::tier_a_catalog()
             .map(|(k, _)| ShaderIncludes::from_key(k).unwrap())
             .fold(ShaderIncludes::empty(), |a, b| a.union(b));
         assert_eq!(
             catalog_union.bits(),
-            ShaderIncludes::all().bits(),
-            "tier_a_catalog must cover exactly ShaderIncludes::all() (the custom-facing menu)"
+            ShaderIncludes::all().union(OPT_IN_TIER_A).bits(),
+            "tier_a_catalog must == all() (default-on) ∪ OPT_IN_TIER_A (offered-but-opt-in)"
+        );
+        // The opt-in extras are offered (Tier-A) but NOT default-on — i.e. not
+        // already in `all()` (otherwise "opt-in" is meaningless).
+        assert_eq!(
+            ShaderIncludes::all().bits() & OPT_IN_TIER_A.bits(),
+            0,
+            "OPT_IN_TIER_A must be disjoint from all() (offered but not default-on)"
         );
 
         // The Tier-B PBR internals are in the table (back-compat parsing) but NOT

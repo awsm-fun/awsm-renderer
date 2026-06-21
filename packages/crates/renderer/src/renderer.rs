@@ -2379,6 +2379,86 @@ impl AwsmRenderer {
         }
     }
 
+    /// Synchronously validate a registered dynamic (custom-WGSL) material's
+    /// ASSEMBLED opaque kernel with `naga`, returning the compile error
+    /// message(s) (empty = valid). naga is the same WGSL front-end Chrome's Tint
+    /// mirrors for the common breakage (undefined symbol / type mismatch / the
+    /// padding-constructor class), so this catches a broken custom material
+    /// up-front — the editor calls it at register time and surfaces the result in
+    /// material diagnostics. It exists because the GPU compiles the *shared*
+    /// `Material Opaque` kernel asynchronously and never attributes a failure back
+    /// to one material, so diagnostics otherwise reported a silent `ok` (D2b).
+    ///
+    /// Validation-only: it does NOT gate rendering (a false positive vs. Tint
+    /// would mis-report a diagnostic, never break a frame). No-op (always empty)
+    /// unless the `dynamic-material-validation` feature is on — the player never
+    /// authors materials, so it pays nothing for `naga`.
+    pub fn validate_dynamic_material_wgsl(
+        &self,
+        shader_id: awsm_materials::MaterialShaderId,
+    ) -> Vec<String> {
+        #[cfg(not(feature = "dynamic-material-validation"))]
+        {
+            let _ = shader_id;
+            Vec::new()
+        }
+        #[cfg(feature = "dynamic-material-validation")]
+        {
+            use crate::dynamic_materials::{first_party_bucket_entries, BucketEntry, ShadingBase};
+            use crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque;
+            use crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaque;
+
+            let Some(info) = self.dynamic_materials.shader_info_for(shader_id) else {
+                return Vec::new();
+            };
+            let mut bucket_entries = first_party_bucket_entries();
+            bucket_entries.push(BucketEntry {
+                shader_id,
+                base: ShadingBase::Custom,
+                pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                name: "custom".to_string(),
+            });
+            // Representative config: validation only depends on the dynamic
+            // struct/loader/fragment + declared includes, not the exact pool/AA
+            // sizes (those change array lengths, never the WGSL's validity).
+            let key = ShaderCacheKeyMaterialOpaque {
+                texture_pool_arrays_len: 1,
+                texture_pool_samplers_len: 1,
+                msaa_sample_count: None,
+                mipmaps: false,
+                max_shadow_casters: 4,
+                shader_id,
+                base: ShadingBase::Custom,
+                owns_skybox: false,
+                pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                dispatch_hash: 0,
+                dynamic_shader: Some(info),
+                bucket_entries,
+            };
+            let template = match ShaderTemplateMaterialOpaque::try_from(&key) {
+                Ok(t) => t,
+                Err(e) => return vec![format!("shader template build failed: {e:?}")],
+            };
+            let src = match template.into_source() {
+                Ok(s) => s,
+                Err(e) => return vec![format!("shader render failed: {e:?}")],
+            };
+            match naga::front::wgsl::parse_str(&src) {
+                Err(e) => vec![e.emit_to_string(&src)],
+                Ok(module) => {
+                    let mut validator = naga::valid::Validator::new(
+                        naga::valid::ValidationFlags::all(),
+                        naga::valid::Capabilities::all(),
+                    );
+                    match validator.validate(&module) {
+                        Ok(_) => Vec::new(),
+                        Err(e) => vec![e.emit_to_string(&src)],
+                    }
+                }
+            }
+        }
+    }
+
     /// Drop a material group. No-op if the id isn't in the scheduler.
     pub fn drop_material_group(&mut self, id: crate::pipeline_scheduler::MaterialId) {
         self.pipeline_scheduler.drop_material_group(id);

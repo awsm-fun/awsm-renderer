@@ -210,6 +210,17 @@ fn data_to_f32(value: &AnimationData) -> Result<f32> {
     }
 }
 
+/// Coerces an [`AnimationData`] to a `[f32; 2]` (from a `Vec2`). Any other
+/// kind is a `WrongKind` error.
+fn data_to_vec2(value: &AnimationData) -> Result<[f32; 2]> {
+    match value {
+        AnimationData::Vec2(v) => Ok([v.x, v.y]),
+        other => Err(AwsmAnimationError::WrongKind(format!(
+            "expected Vec2 animation data, got {other:?}"
+        ))),
+    }
+}
+
 /// Coerces an [`AnimationData`] to a `[f32; 3]` (from a `Vec3`). Any other
 /// kind is a `WrongKind` error.
 fn data_to_vec3(value: &AnimationData) -> Result<[f32; 3]> {
@@ -245,7 +256,9 @@ fn data_to_uniform_value(
     match value {
         AnimationData::F32(v) => Ok(UniformValue::F32(*v)),
         AnimationData::F64(v) => Ok(UniformValue::F32(*v as f32)),
+        AnimationData::Vec2(v) => Ok(UniformValue::Vec2([v.x, v.y])),
         AnimationData::Vec3(v) => Ok(UniformValue::Vec3([v.x, v.y, v.z])),
+        AnimationData::Vec4(v) => Ok(UniformValue::Vec4([v.x, v.y, v.z, v.w])),
         AnimationData::Quat(q) => Ok(UniformValue::Vec4([q.x, q.y, q.z, q.w])),
         other => Err(AwsmAnimationError::WrongKind(format!(
             "cannot convert {other:?} animation data to a UniformValue"
@@ -264,6 +277,9 @@ impl AwsmRenderer {
     /// durations. `speed`/`scale` are pure dimensionless multipliers.
     pub fn update_animations(&mut self, global_time_delta_ms: f64) -> Result<()> {
         let dt_seconds = global_time_delta_ms / 1000.0;
+        // B3: advance any auto-scrolling texture UV flows by real elapsed time
+        // (independent of clip playback; a no-op when nothing flows).
+        self.textures.advance_texture_flows(dt_seconds as f32);
         for player in self.animations.players.values_mut() {
             player.update(dt_seconds)
         }
@@ -580,12 +596,18 @@ impl AwsmRenderer {
                 };
                 match dynamic.values.get(slot)? {
                     UniformValue::F32(v) => Some(AnimationData::F32(*v)),
+                    UniformValue::Vec2(v) => Some(AnimationData::Vec2(glam::Vec2::from_array(*v))),
                     UniformValue::Vec3(v) | UniformValue::Color3(v) => {
                         Some(AnimationData::Vec3(glam::Vec3::from_array(*v)))
                     }
-                    UniformValue::Vec4(v) | UniformValue::Color4(v) => Some(AnimationData::Quat(
-                        glam::Quat::from_xyzw(v[0], v[1], v[2], v[3]),
-                    )),
+                    // vec4/color4 seed as Vec4 (component-lerped), matching the
+                    // vec4 keyframe kind. (Previously seeded as Quat — a slerp on a
+                    // non-rotation tint/rect is wrong; vec4 tracks are now
+                    // first-class, so rest must be the same Vec4 kind or the mixer
+                    // blend falls through to the unchanged rest. See A1.)
+                    UniformValue::Vec4(v) | UniformValue::Color4(v) => {
+                        Some(AnimationData::Vec4(glam::Vec4::from_array(*v)))
+                    }
                     // Other uniform kinds are not animatable via the mixer.
                     _ => None,
                 }
@@ -618,6 +640,59 @@ impl AwsmRenderer {
                     },
                     BuiltinMaterialParam::Roughness => match m {
                         Material::Pbr(p) => Some(AnimationData::F32(p.roughness_factor)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::NormalScale => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(p.normal_scale)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::OcclusionStrength => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(p.occlusion_strength)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::EmissiveStrength => match m {
+                        // Rest = the current strength (1.0 when the extension is off).
+                        Material::Pbr(p) => Some(AnimationData::F32(
+                            p.emissive_strength
+                                .as_ref()
+                                .map(|e| e.strength)
+                                .unwrap_or(1.0),
+                        )),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::AlphaCutoff => match m {
+                        // Rest = the current cutoff (0.5 default when not masked).
+                        Material::Pbr(p) => {
+                            Some(AnimationData::F32(p.alpha_cutoff().unwrap_or(0.5)))
+                        }
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::ToonDiffuseBands => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.diffuse_bands as f32)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::ToonSpecularSteps => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.specular_steps as f32)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::ToonShininess => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.shininess)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::ToonRimStrength => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.rim_strength)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::ToonRimPower => match m {
+                        Material::Toon(t) => Some(AnimationData::F32(t.rim_power)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::FlipbookFps => match m {
+                        Material::FlipBook(f) => Some(AnimationData::F32(f.fps)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::FlipbookTimeOffset => match m {
+                        Material::FlipBook(f) => Some(AnimationData::F32(f.time_offset)),
                         _ => None,
                     },
                 }
@@ -673,6 +748,30 @@ impl AwsmRenderer {
                     CameraParam::Aperture => Some(AnimationData::F32(p.aperture)),
                     CameraParam::FocusDistance => Some(AnimationData::F32(p.focus_distance)),
                 }
+            }
+            AnimationTarget::TextureUv {
+                material,
+                slot,
+                prop,
+            } => {
+                use crate::animation::TexTransformProp;
+                // Rest = the slot transform's current component (identity when the
+                // slot has a texture but no transform yet; None when no texture).
+                let t = match self.texture_slot_transform_key(material, slot)? {
+                    Some(key) => self
+                        .textures
+                        .get_texture_transform(key)
+                        .cloned()
+                        .unwrap_or_else(crate::textures::TextureTransform::identity),
+                    None => crate::textures::TextureTransform::identity(),
+                };
+                Some(match prop {
+                    TexTransformProp::Offset => {
+                        AnimationData::Vec2(glam::Vec2::from_array(t.offset))
+                    }
+                    TexTransformProp::Scale => AnimationData::Vec2(glam::Vec2::from_array(t.scale)),
+                    TexTransformProp::Rotation => AnimationData::F32(t.rotation),
+                })
             }
         }
     }
@@ -751,8 +850,81 @@ impl AwsmRenderer {
             AnimationTarget::Camera { camera, param } => {
                 apply_camera_param(&mut self.cameras, camera, param, value)?;
             }
+            AnimationTarget::TextureUv {
+                material,
+                slot,
+                prop,
+            } => {
+                self.apply_texture_uv(material, slot, prop, value)?;
+            }
         }
         Ok(())
+    }
+
+    /// Applies one UV-transform component (offset / scale / rotation) of a
+    /// built-in material texture slot. Reads the slot's current
+    /// `TextureTransform`, overwrites the driven component, and re-uploads — so
+    /// the other components (and other slots) are preserved. Creates an identity
+    /// transform on demand if the slot has a texture but no transform yet; a slot
+    /// with no texture is a no-op.
+    fn apply_texture_uv(
+        &mut self,
+        material: crate::materials::MaterialKey,
+        slot: crate::animation::TexSlot,
+        prop: crate::animation::TexTransformProp,
+        value: &AnimationData,
+    ) -> Result<()> {
+        // Resolve the slot's transform key, creating an identity one (and
+        // attaching it to the slot) the first time if the slot has a texture.
+        let key = match self.texture_slot_transform_key(material, slot) {
+            Some(Some(k)) => k,
+            Some(None) => {
+                // Slot has a texture but no transform yet — seed identity.
+                let k = self
+                    .textures
+                    .insert_texture_transform(&crate::textures::TextureTransform::identity());
+                self.set_texture_slot_transform_key(material, slot, k);
+                k
+            }
+            // Slot has no texture at all → nothing to transform.
+            None => return Ok(()),
+        };
+        let Some(mut t) = self.textures.get_texture_transform(key).cloned() else {
+            return Ok(());
+        };
+        match prop {
+            crate::animation::TexTransformProp::Offset => t.offset = data_to_vec2(value)?,
+            crate::animation::TexTransformProp::Scale => t.scale = data_to_vec2(value)?,
+            crate::animation::TexTransformProp::Rotation => t.rotation = data_to_f32(value)?,
+        }
+        self.textures.update_texture_transform(key, &t);
+        Ok(())
+    }
+
+    /// Read the slot's `MaterialTexture::transform_key`. Outer `Option`: does the
+    /// slot have a texture at all; inner: does that texture carry a transform.
+    fn texture_slot_transform_key(
+        &self,
+        material: crate::materials::MaterialKey,
+        slot: crate::animation::TexSlot,
+    ) -> Option<Option<crate::textures::TextureTransformKey>> {
+        let m = self.materials.get(material).ok()?;
+        let tex = material_slot_tex(m, slot)?;
+        Some(tex.transform_key)
+    }
+
+    /// Assign a (newly-created) transform key onto the slot's `MaterialTexture`.
+    fn set_texture_slot_transform_key(
+        &mut self,
+        material: crate::materials::MaterialKey,
+        slot: crate::animation::TexSlot,
+        key: crate::textures::TextureTransformKey,
+    ) {
+        self.update_material(material, |m| {
+            if let Some(tex) = material_slot_tex_mut(m, slot) {
+                tex.transform_key = Some(key);
+            }
+        });
     }
 
     /// Applies a [`BuiltinMaterialParam`] sample to a material. Params a
@@ -796,22 +968,107 @@ impl AwsmRenderer {
                     _ => {}
                 });
             }
-            BuiltinMaterialParam::Metallic | BuiltinMaterialParam::Roughness => {
+            BuiltinMaterialParam::Metallic
+            | BuiltinMaterialParam::Roughness
+            | BuiltinMaterialParam::NormalScale
+            | BuiltinMaterialParam::OcclusionStrength
+            | BuiltinMaterialParam::EmissiveStrength
+            | BuiltinMaterialParam::AlphaCutoff
+            | BuiltinMaterialParam::ToonDiffuseBands
+            | BuiltinMaterialParam::ToonSpecularSteps
+            | BuiltinMaterialParam::ToonShininess
+            | BuiltinMaterialParam::ToonRimStrength
+            | BuiltinMaterialParam::ToonRimPower
+            | BuiltinMaterialParam::FlipbookFps
+            | BuiltinMaterialParam::FlipbookTimeOffset => {
                 let scalar = data_to_f32(value)?;
-                self.update_material(material, |m| {
-                    if let Material::Pbr(pbr) = m {
-                        match param {
-                            BuiltinMaterialParam::Metallic => pbr.metallic_factor = scalar,
-                            BuiltinMaterialParam::Roughness => pbr.roughness_factor = scalar,
-                            _ => {}
+                // A band/step count is a positive integer — round + floor at 1.
+                let count = |v: f32| (v.round() as i64).max(1) as u32;
+                self.update_material(material, |m| match m {
+                    Material::Pbr(pbr) => match param {
+                        BuiltinMaterialParam::Metallic => pbr.metallic_factor = scalar,
+                        BuiltinMaterialParam::Roughness => pbr.roughness_factor = scalar,
+                        BuiltinMaterialParam::NormalScale => pbr.normal_scale = scalar,
+                        BuiltinMaterialParam::OcclusionStrength => pbr.occlusion_strength = scalar,
+                        // Animate the VALUE only when the feature is already enabled
+                        // (toggling it on/off would change the compiled feature set).
+                        BuiltinMaterialParam::EmissiveStrength => {
+                            if let Some(es) = pbr.emissive_strength.as_mut() {
+                                es.strength = scalar;
+                            }
                         }
-                    }
-                    // Unlit / Toon have no metallic/roughness: no-op.
+                        // No-op on Opaque/Blend (the mode isn't animatable).
+                        BuiltinMaterialParam::AlphaCutoff => pbr.set_alpha_cutoff(scalar),
+                        _ => {}
+                    },
+                    Material::Toon(toon) => match param {
+                        BuiltinMaterialParam::ToonDiffuseBands => {
+                            toon.diffuse_bands = count(scalar)
+                        }
+                        BuiltinMaterialParam::ToonSpecularSteps => {
+                            toon.specular_steps = count(scalar)
+                        }
+                        BuiltinMaterialParam::ToonShininess => toon.shininess = scalar,
+                        BuiltinMaterialParam::ToonRimStrength => toon.rim_strength = scalar,
+                        BuiltinMaterialParam::ToonRimPower => toon.rim_power = scalar,
+                        _ => {}
+                    },
+                    Material::FlipBook(fb) => match param {
+                        BuiltinMaterialParam::FlipbookFps => fb.fps = scalar,
+                        BuiltinMaterialParam::FlipbookTimeOffset => fb.time_offset = scalar,
+                        _ => {}
+                    },
+                    // Unlit / Custom lack these scalars: no-op.
+                    _ => {}
                 });
             }
         }
 
         Ok(())
+    }
+}
+
+/// Borrow a built-in material's texture slot (the glTF PBR set). `None` when the
+/// material kind lacks that slot or the slot is unbound. FlipBook/Custom have no
+/// addressable PBR slots here.
+fn material_slot_tex(
+    m: &crate::materials::Material,
+    slot: crate::animation::TexSlot,
+) -> Option<&awsm_materials::MaterialTexture> {
+    use crate::animation::TexSlot;
+    use crate::materials::Material;
+    match (m, slot) {
+        (Material::Pbr(p), TexSlot::BaseColor) => p.base_color_tex.as_ref(),
+        (Material::Pbr(p), TexSlot::MetallicRoughness) => p.metallic_roughness_tex.as_ref(),
+        (Material::Pbr(p), TexSlot::Normal) => p.normal_tex.as_ref(),
+        (Material::Pbr(p), TexSlot::Occlusion) => p.occlusion_tex.as_ref(),
+        (Material::Pbr(p), TexSlot::Emissive) => p.emissive_tex.as_ref(),
+        (Material::Unlit(u), TexSlot::BaseColor) => u.base_color_tex.as_ref(),
+        (Material::Unlit(u), TexSlot::Emissive) => u.emissive_tex.as_ref(),
+        (Material::Toon(t), TexSlot::BaseColor) => t.base_color_tex.as_ref(),
+        (Material::Toon(t), TexSlot::Emissive) => t.emissive_tex.as_ref(),
+        _ => None,
+    }
+}
+
+/// Mutable counterpart of [`material_slot_tex`].
+fn material_slot_tex_mut(
+    m: &mut crate::materials::Material,
+    slot: crate::animation::TexSlot,
+) -> Option<&mut awsm_materials::MaterialTexture> {
+    use crate::animation::TexSlot;
+    use crate::materials::Material;
+    match (m, slot) {
+        (Material::Pbr(p), TexSlot::BaseColor) => p.base_color_tex.as_mut(),
+        (Material::Pbr(p), TexSlot::MetallicRoughness) => p.metallic_roughness_tex.as_mut(),
+        (Material::Pbr(p), TexSlot::Normal) => p.normal_tex.as_mut(),
+        (Material::Pbr(p), TexSlot::Occlusion) => p.occlusion_tex.as_mut(),
+        (Material::Pbr(p), TexSlot::Emissive) => p.emissive_tex.as_mut(),
+        (Material::Unlit(u), TexSlot::BaseColor) => u.base_color_tex.as_mut(),
+        (Material::Unlit(u), TexSlot::Emissive) => u.emissive_tex.as_mut(),
+        (Material::Toon(t), TexSlot::BaseColor) => t.base_color_tex.as_mut(),
+        (Material::Toon(t), TexSlot::Emissive) => t.emissive_tex.as_mut(),
+        _ => None,
     }
 }
 

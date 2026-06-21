@@ -14,7 +14,7 @@ awsm-meshgen = { workspace = true, features = ["authoring"] }
 awsm-glb-export = { workspace = true }
 awsm-materials = { workspace = true }
 awsm-particles = { workspace = true, features = ["serde"] }
-awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export", "debug-views"] }
+awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export", "debug-views", "dynamic-material-validation"] }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 awsm-scene-loader = { workspace = true }

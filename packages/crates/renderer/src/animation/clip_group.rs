@@ -62,6 +62,40 @@ pub enum AnimationTarget {
         /// Which camera parameter to drive.
         param: CameraParam,
     },
+    /// One component (offset / scale / rotation) of a built-in material texture
+    /// slot's UV transform. The apply reads the slot's current `TextureTransform`,
+    /// overwrites the driven component, and re-uploads — so the other components
+    /// (and the other slots) are untouched. An identity transform is created on
+    /// demand if the slot has none yet.
+    TextureUv {
+        /// The material whose texture-slot transform is driven.
+        material: MaterialKey,
+        /// Which texture slot (base color / normal / …).
+        slot: TexSlot,
+        /// Which component of the UV transform.
+        prop: TexTransformProp,
+    },
+}
+
+/// Which built-in material texture slot an [`AnimationTarget::TextureUv`] drives
+/// (mirrors the glTF PBR texture set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TexSlot {
+    BaseColor,
+    MetallicRoughness,
+    Normal,
+    Occlusion,
+    Emissive,
+}
+
+/// Which component of a texture slot's UV transform an
+/// [`AnimationTarget::TextureUv`] drives. `Offset`/`Scale` are `vec2`,
+/// `Rotation` is a scalar (radians).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TexTransformProp {
+    Offset,
+    Scale,
+    Rotation,
 }
 
 /// Which scalar/color parameter of a [`crate::lights::Light`] an animation
@@ -93,6 +127,31 @@ pub enum BuiltinMaterialParam {
     Roughness,
     /// Emissive factor.
     Emissive,
+    /// Normal-map intensity (`normal_scale`, PBR only).
+    NormalScale,
+    /// Ambient-occlusion strength (`occlusion_strength`, PBR only).
+    OcclusionStrength,
+    /// Emissive-strength multiplier (`KHR_materials_emissive_strength`, PBR only).
+    /// Applied only when the material already has emissive strength enabled (the
+    /// feature is compiled in); a no-op otherwise (toggling it would recompile).
+    EmissiveStrength,
+    /// Alpha-test cutoff (the `Mask` alpha-mode threshold, PBR only). Applied only
+    /// to a `Mask` material; a no-op on Opaque/Blend (the mode isn't animatable).
+    AlphaCutoff,
+    /// Toon diffuse-band count (rounded to `u32`, ≥1). Toon only.
+    ToonDiffuseBands,
+    /// Toon specular-step count (rounded to `u32`, ≥1). Toon only.
+    ToonSpecularSteps,
+    /// Toon specular shininess exponent. Toon only.
+    ToonShininess,
+    /// Toon rim-light strength. Toon only.
+    ToonRimStrength,
+    /// Toon rim-light falloff power. Toon only.
+    ToonRimPower,
+    /// FlipBook playback rate (frames/sec; `0` freezes). FlipBook only.
+    FlipbookFps,
+    /// FlipBook time offset (seconds) — phase/scrub the sheet. FlipBook only.
+    FlipbookTimeOffset,
 }
 
 /// Which parameter of a [`crate::cameras::CameraParams`] an animation channel

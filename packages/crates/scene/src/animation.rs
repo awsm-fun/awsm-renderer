@@ -62,6 +62,10 @@ pub enum TrackValue {
     Quat([f32; 4]),
     /// A scalar (uniform / light / camera / morph weight).
     Scalar(f32),
+    /// A 2-component value (e.g. a UV offset / scale on a material uniform).
+    Vec2([f32; 2]),
+    /// A 4-component value (e.g. a tint / rect on a material uniform).
+    Vec4([f32; 4]),
 }
 
 /// One keyframe, aligned to a track's shared `times[i]`.
@@ -91,6 +95,60 @@ pub enum BuiltinParamKind {
     Metallic,
     Roughness,
     Emissive,
+    /// Normal-map intensity (`normal_scale`, scalar). Visible only with a normal map.
+    NormalScale,
+    /// Ambient-occlusion strength (`occlusion_strength`, scalar). Visible only with
+    /// an occlusion map.
+    OcclusionStrength,
+    /// Emissive strength multiplier (`KHR_materials_emissive_strength`, scalar) —
+    /// pulse a glow for bloom. Applies only when the material already has emissive
+    /// strength enabled (it's a feature-gated extension; toggling it on/off
+    /// recompiles, so a track animates the VALUE, not the feature). PBR only.
+    EmissiveStrength,
+    /// Alpha-test cutoff (`Mask` alpha mode threshold, scalar) — animate a
+    /// dissolve / cutout. Applies only to a `Mask` material (no-op otherwise; the
+    /// alpha MODE is a pipeline choice, not animatable). PBR only.
+    AlphaCutoff,
+    /// Toon: number of diffuse bands (scalar, rounded to `u32`, ≥1). Toon only.
+    ToonDiffuseBands,
+    /// Toon: number of specular steps (scalar, rounded to `u32`, ≥1). Toon only.
+    ToonSpecularSteps,
+    /// Toon: specular shininess exponent (scalar). Toon only.
+    ToonShininess,
+    /// Toon: rim-light strength (scalar). Toon only.
+    ToonRimStrength,
+    /// Toon: rim-light falloff power (scalar). Toon only.
+    ToonRimPower,
+    /// FlipBook: playback rate in frames/sec (scalar) — animate to speed up/slow
+    /// down a sprite sheet (`0` freezes). FlipBook only.
+    FlipbookFps,
+    /// FlipBook: time offset in seconds (scalar) — phase/scrub the sheet per
+    /// instance. FlipBook only.
+    FlipbookTimeOffset,
+}
+
+/// Which built-in material texture slot a `TextureTransform` track drives
+/// (mirrors the glTF PBR texture set / `BuiltinTextureSlot`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TexSlot {
+    BaseColor,
+    MetallicRoughness,
+    Normal,
+    Occlusion,
+    Emissive,
+}
+
+/// Which component of a texture slot's UV transform a `TextureTransform` track
+/// drives. `Offset`/`Scale` are `vec2` keyframes; `Rotation` is a scalar (radians).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TexTransformProp {
+    Offset,
+    Scale,
+    Rotation,
 }
 
 /// Which light parameter a `Light` track drives.
@@ -147,6 +205,14 @@ pub enum TrackTarget {
     Camera {
         node: NodeId,
         param: CameraParamKind,
+    },
+    /// One component (offset/scale/rotation) of a built-in material texture
+    /// slot's UV transform, on the node's assigned material. Offset/Scale are
+    /// vec2 keyframes; Rotation is scalar.
+    TextureTransform {
+        node: NodeId,
+        slot: TexSlot,
+        prop: TexTransformProp,
     },
 }
 
@@ -268,6 +334,8 @@ mod track_value_tests {
             TrackValue::Vec3([1.0, 2.0, 3.0]),
             TrackValue::Quat([0.0, 0.0, 0.0, 1.0]),
             TrackValue::Scalar(0.75),
+            TrackValue::Vec2([0.25, 0.5]),
+            TrackValue::Vec4([0.1, 0.2, 0.3, 0.4]),
         ] {
             let j = serde_json::to_string(&v).expect("json ser");
             let back: TrackValue = serde_json::from_str(&j).expect("json de");

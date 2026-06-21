@@ -1899,10 +1899,23 @@ impl EditorController {
                         return Ok(None);
                     };
                     let prev = slot.val.clone();
-                    slot.val = value;
+                    slot.val = value.clone();
                     mat.uniforms.set(slots);
-                    mark_material_draft(&mat);
                     self.dirty.set_neq(true);
+                    // D3: previously this only updated the authored default + flipped
+                    // the material to draft (mark_material_draft) for a debounced
+                    // re-register — which did NOT update the live render (the report's
+                    // complaint). Instead, push the value straight into the running
+                    // material(s) — the same write a uniform animation track does — so
+                    // the change shows IMMEDIATELY, no re-register / recompile. The
+                    // authored default (set above) persists + seeds the next register.
+                    let (asset, slot_name, val) = (material, name.clone(), value);
+                    crate::engine::context::with_renderer_mut(move |r| {
+                        crate::engine::bridge::dynamic::set_uniform_live(
+                            r, asset, &slot_name, &val,
+                        );
+                    })
+                    .await;
                     Ok(Some(EditorCommand::SetMaterialUniform {
                         material,
                         name,
@@ -2576,9 +2589,13 @@ impl EditorController {
                 track,
                 t,
                 value,
+                interp,
             } => match find_track(&self.custom_animations, clip, track) {
                 Some(tr) => {
-                    let interp = animation::sampler_to_interp(tr.sampler.get());
+                    // Caller-supplied interp wins; else derive from the track sampler
+                    // (prior behavior) so existing callers are unchanged.
+                    let interp =
+                        interp.unwrap_or_else(|| animation::sampler_to_interp(tr.sampler.get()));
                     let mut times = tr.times.lock_mut();
                     let mut keys = tr.keys.lock_mut();
                     // Replace an existing key at (almost) the same time, else insert
@@ -3309,7 +3326,8 @@ impl EditorController {
                 | TrackTarget::Morph { node, .. }
                 | TrackTarget::BuiltinParam { node, .. }
                 | TrackTarget::Light { node, .. }
-                | TrackTarget::Camera { node, .. } => {
+                | TrackTarget::Camera { node, .. }
+                | TrackTarget::TextureTransform { node, .. } => {
                     mutate::find_by_id(&self.scene, *node).is_none()
                 }
                 // A material-targeted track isn't node-orphaned — keep the clip.
@@ -3659,6 +3677,9 @@ impl EditorController {
                             TrackTarget::BuiltinParam { param, .. } => format!("builtin:{param:?}"),
                             TrackTarget::Light { param, .. } => format!("light:{param:?}"),
                             TrackTarget::Camera { param, .. } => format!("camera:{param:?}"),
+                            TrackTarget::TextureTransform { slot, prop, .. } => {
+                                format!("texuv:{slot:?}:{prop:?}")
+                            }
                         };
                         query::TrackSnapshot {
                             target: target.to_lowercase(),
@@ -5091,6 +5112,9 @@ pub(crate) async fn live_track_value(
         TrackTarget::BuiltinParam { node, param } => R::BuiltinParam { node, param },
         TrackTarget::Light { node, param } => R::LightParam { node, param },
         TrackTarget::Camera { node, param } => R::CameraParam { node, param },
+        // No readback target for a texture UV transform yet — the keyframe seeds
+        // from `default_value_for` (zero offset / unit scale / 0 rotation) instead.
+        TrackTarget::TextureTransform { .. } => return None,
     };
     let v = crate::engine::context::with_renderer_mut(move |r| read_readback_target(r, &rt)).await;
     // Shape the JSON by the track's expected kind (vec3 / quat / scalar).
@@ -5099,12 +5123,26 @@ pub(crate) async fn live_track_value(
         (TrackValue::Scalar(_), serde_json::Value::Number(n)) => {
             Some(TrackValue::Scalar(n.as_f64()? as f32))
         }
+        (TrackValue::Vec2(_), serde_json::Value::Array(a)) if a.len() >= 2 => {
+            let mut out = [0.0f32; 2];
+            for (i, x) in a.iter().take(2).enumerate() {
+                out[i] = x.as_f64()? as f32;
+            }
+            Some(TrackValue::Vec2(out))
+        }
         (TrackValue::Vec3(_), serde_json::Value::Array(a)) if a.len() >= 3 => {
             let mut out = [0.0f32; 3];
             for (i, x) in a.iter().take(3).enumerate() {
                 out[i] = x.as_f64()? as f32;
             }
             Some(TrackValue::Vec3(out))
+        }
+        (TrackValue::Vec4(_), serde_json::Value::Array(a)) if a.len() >= 4 => {
+            let mut out = [0.0f32; 4];
+            for (i, x) in a.iter().take(4).enumerate() {
+                out[i] = x.as_f64()? as f32;
+            }
+            Some(TrackValue::Vec4(out))
         }
         (TrackValue::Quat(_), serde_json::Value::Array(a)) if a.len() >= 4 => {
             let mut out = [0.0f32; 4];
@@ -5294,6 +5332,56 @@ fn read_readback_target(
                 },
                 P::Roughness => match m {
                     Material::Pbr(p) => json!(p.roughness_factor),
+                    _ => serde_json::Value::Null,
+                },
+                P::NormalScale => match m {
+                    Material::Pbr(p) => json!(p.normal_scale),
+                    _ => serde_json::Value::Null,
+                },
+                P::OcclusionStrength => match m {
+                    Material::Pbr(p) => json!(p.occlusion_strength),
+                    _ => serde_json::Value::Null,
+                },
+                P::EmissiveStrength => match m {
+                    Material::Pbr(p) => {
+                        json!(p
+                            .emissive_strength
+                            .as_ref()
+                            .map(|e| e.strength)
+                            .unwrap_or(1.0))
+                    }
+                    _ => serde_json::Value::Null,
+                },
+                P::AlphaCutoff => match m {
+                    Material::Pbr(p) => json!(p.alpha_cutoff().unwrap_or(0.5)),
+                    _ => serde_json::Value::Null,
+                },
+                P::ToonDiffuseBands => match m {
+                    Material::Toon(t) => json!(t.diffuse_bands as f32),
+                    _ => serde_json::Value::Null,
+                },
+                P::ToonSpecularSteps => match m {
+                    Material::Toon(t) => json!(t.specular_steps as f32),
+                    _ => serde_json::Value::Null,
+                },
+                P::ToonShininess => match m {
+                    Material::Toon(t) => json!(t.shininess),
+                    _ => serde_json::Value::Null,
+                },
+                P::ToonRimStrength => match m {
+                    Material::Toon(t) => json!(t.rim_strength),
+                    _ => serde_json::Value::Null,
+                },
+                P::ToonRimPower => match m {
+                    Material::Toon(t) => json!(t.rim_power),
+                    _ => serde_json::Value::Null,
+                },
+                P::FlipbookFps => match m {
+                    Material::FlipBook(f) => json!(f.fps),
+                    _ => serde_json::Value::Null,
+                },
+                P::FlipbookTimeOffset => match m {
+                    Material::FlipBook(f) => json!(f.time_offset),
                     _ => serde_json::Value::Null,
                 },
             }
@@ -5513,6 +5601,64 @@ fn patch_builtin_param(
             Some(&v) => inline.roughness = v,
             None => return false,
         },
+        P::NormalScale => match value.first() {
+            Some(&v) => inline.normal_scale = v,
+            None => return false,
+        },
+        P::OcclusionStrength => match value.first() {
+            Some(&v) => inline.occlusion_strength = v,
+            None => return false,
+        },
+        P::EmissiveStrength => match value.first() {
+            // Enables the `KHR_materials_emissive_strength` extension on first set
+            // (flips the feature → recompiles on re-register, like the material
+            // studio's emissive-strength toggle), then writes the multiplier.
+            Some(&v) => {
+                inline
+                    .extensions
+                    .emissive_strength
+                    .get_or_insert_with(Default::default)
+                    .strength = v;
+            }
+            None => return false,
+        },
+        P::AlphaCutoff => match value.first() {
+            // Only meaningful on a `Mask` material — the alpha MODE is a pipeline
+            // choice set elsewhere; here we just tune the threshold (no-op otherwise).
+            Some(&v) => {
+                if let awsm_editor_protocol::MaterialAlphaMode::Mask { cutoff } =
+                    &mut inline.alpha_mode
+                {
+                    *cutoff = v;
+                }
+            }
+            None => return false,
+        },
+        // Toon / FlipBook knobs live inside the `shading` variant — tune them only
+        // when the material is that kind (no-op otherwise).
+        P::ToonDiffuseBands
+        | P::ToonSpecularSteps
+        | P::ToonShininess
+        | P::ToonRimStrength
+        | P::ToonRimPower
+        | P::FlipbookFps
+        | P::FlipbookTimeOffset => {
+            use awsm_editor_protocol::MaterialShading as S;
+            let Some(&v) = value.first() else {
+                return false;
+            };
+            let count = (v.round() as i64).max(1) as u32;
+            match (&mut inline.shading, param) {
+                (S::Toon { diffuse_bands, .. }, P::ToonDiffuseBands) => *diffuse_bands = count,
+                (S::Toon { specular_steps, .. }, P::ToonSpecularSteps) => *specular_steps = count,
+                (S::Toon { shininess, .. }, P::ToonShininess) => *shininess = v,
+                (S::Toon { rim_strength, .. }, P::ToonRimStrength) => *rim_strength = v,
+                (S::Toon { rim_power, .. }, P::ToonRimPower) => *rim_power = v,
+                (S::FlipBook { fps, .. }, P::FlipbookFps) => *fps = v,
+                (S::FlipBook { time_offset, .. }, P::FlipbookTimeOffset) => *time_offset = v,
+                _ => {} // material isn't the matching kind: no-op
+            }
+        }
     }
     true
 }
@@ -5534,6 +5680,7 @@ fn patch_builtin_texture(
         uv_index: 0,
         transform: None,
         sampler: None,
+        flow: None,
     });
     match slot {
         S::BaseColor => inline.base_color_texture = tref,
@@ -5675,24 +5822,6 @@ pub(crate) fn compile_end() {
 /// RAF/compile loop on a backgrounded tab — the caller then stays optimistic).
 /// Polls on a frame cadence so `poll_pipeline_scheduler` (driven by the RAF
 /// render loop) can resolve the async compile between checks.
-async fn await_dynamic_compile(
-    shader_id: awsm_renderer::materials::MaterialShaderId,
-) -> Option<Result<(), String>> {
-    // ~2s ceiling (shader compiles are typically a handful of frames; the cap
-    // just bounds a stuck/backgrounded loop).
-    for _ in 0..120 {
-        let status = crate::engine::context::with_renderer_mut(move |r| {
-            r.dynamic_material_compile_status(shader_id)
-        })
-        .await;
-        if status.is_some() {
-            return status; // Ready (Ok) or Failed (Err) — resolved.
-        }
-        gloo_timers::future::TimeoutFuture::new(16).await;
-    }
-    None
-}
-
 async fn register_material(mat: &Arc<CM>) -> bool {
     // A debounced register that lost the race with a delete (create→edit→delete
     // faster than the ~400ms debounce) must not re-register the deleted material —
@@ -5726,30 +5855,38 @@ async fn register_material(mat: &Arc<CM>) -> bool {
     match crate::engine::bridge::dynamic::register(mat).await {
         Ok(shader_id) => {
             // `register` only QUEUES an async pipeline compile (the launch path
-            // skips synchronous shader validation), so a WGSL error in the
-            // author body — undefined symbol, type mismatch, garbage — isn't
-            // known yet. Poll the scheduler for this material's real compile
-            // result and report the truth (the trailing-`;` heuristic above
-            // never catches these).
-            match await_dynamic_compile(shader_id).await {
-                Some(Err(msg)) => {
-                    Toast::error(format!("Material compile failed: {msg}"));
-                    mat.last_diagnostics.set(vec![query::CompileError {
-                        line: None,
-                        message: msg,
-                    }]);
-                    mat.registered.set_neq(false);
-                    false
-                }
-                // Ready, or undetermined (timeout — e.g. a backgrounded tab whose
-                // RAF/compile loop is paused). Optimistic: don't invent an error.
-                _ => {
-                    mat.last_diagnostics.set(Vec::new());
-                    mat.registered.set_neq(true);
-                    crate::engine::bridge::rematerialize_for_material(mat.id);
-                    true
-                }
+            // skips synchronous shader validation), and that compile is of the
+            // SHARED kernel — a WGSL error in the author body (undefined symbol,
+            // type mismatch, …) fails the kernel without ever attributing back to
+            // this material, so the old scheduler poll reported a silent `ok`
+            // (D2b). Instead validate the assembled kernel with `naga` SYNCHRONOUSLY
+            // here (the same front-end Tint mirrors for these classes) and report
+            // the truth. Validation-only — it never gates a frame.
+            let errors = crate::engine::context::with_renderer_mut(move |r| {
+                r.validate_dynamic_material_wgsl(shader_id)
+            })
+            .await;
+            if !errors.is_empty() {
+                Toast::error(format!("Material compile failed:\n{}", errors.join("\n")));
+                mat.last_diagnostics.set(
+                    errors
+                        .into_iter()
+                        // naga line numbers index the ASSEMBLED module, not the
+                        // author's snippet, so omit them (the message — e.g.
+                        // "unresolved value 'foo'" — is the actionable part).
+                        .map(|message| query::CompileError {
+                            line: None,
+                            message,
+                        })
+                        .collect(),
+                );
+                mat.registered.set_neq(false);
+                return false;
             }
+            mat.last_diagnostics.set(Vec::new());
+            mat.registered.set_neq(true);
+            crate::engine::bridge::rematerialize_for_material(mat.id);
+            true
         }
         Err(e) => {
             // Registration-level rejection (name collision / bucket-cap overflow).
@@ -6005,6 +6142,7 @@ fn ensure_import_texture(
         uv_index: binding.uv_index,
         transform: binding.transform,
         sampler: binding.sampler,
+        flow: None,
     };
     if let Some(id) = tex_for_key.get(&key) {
         return Some(mk(*id));

@@ -1,10 +1,66 @@
 //! Interpolation helpers for animation sampling.
 
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec2, Vec3, Vec4};
 
 /// Linearly interpolates two Vec3 values.
 pub fn interpolate_linear_vec3(first: Vec3, second: Vec3, t: f64) -> Vec3 {
     first.lerp(second, t as f32)
+}
+
+/// Linearly interpolates two Vec2 values (e.g. an animated UV offset/scale).
+pub fn interpolate_linear_vec2(first: Vec2, second: Vec2, t: f64) -> Vec2 {
+    first.lerp(second, t as f32)
+}
+
+/// Linearly interpolates two Vec4 values (e.g. an animated tint/rect).
+pub fn interpolate_linear_vec4(first: Vec4, second: Vec4, t: f64) -> Vec4 {
+    first.lerp(second, t as f32)
+}
+
+/// Cubic spline interpolation for Vec2 values (Hermite, mirrors the Vec3 form).
+pub fn interpolate_cubic_spline_vec2(
+    first_value: Vec2,
+    first_tangent: Vec2,
+    second_value: Vec2,
+    second_tangent: Vec2,
+    delta_time: f64,
+    interpolation_time: f64,
+) -> Vec2 {
+    let delta_time = delta_time as f32;
+    let t = interpolation_time as f32;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+    (h00 * first_value)
+        + (h10 * first_tangent * delta_time)
+        + (h01 * second_value)
+        + (h11 * second_tangent * delta_time)
+}
+
+/// Cubic spline interpolation for Vec4 values (Hermite, mirrors the Vec3 form).
+pub fn interpolate_cubic_spline_vec4(
+    first_value: Vec4,
+    first_tangent: Vec4,
+    second_value: Vec4,
+    second_tangent: Vec4,
+    delta_time: f64,
+    interpolation_time: f64,
+) -> Vec4 {
+    let delta_time = delta_time as f32;
+    let t = interpolation_time as f32;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+    (h00 * first_value)
+        + (h10 * first_tangent * delta_time)
+        + (h01 * second_value)
+        + (h11 * second_tangent * delta_time)
 }
 
 /// Linearly interpolates two quaternions.

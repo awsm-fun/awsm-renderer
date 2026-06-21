@@ -742,7 +742,17 @@ pub struct Textures {
     sampler_cache: HashMap<SamplerCacheKey, SamplerKey>,
     // We keep a mirror of the sampler address modes so that materials can adjust UVs manually when
     sampler_address_modes: SecondaryMap<SamplerKey, (Option<AddressMode>, Option<AddressMode>)>,
-    texture_transforms: SlotMap<TextureTransformKey, ()>,
+    // Stores the CPU-side `TextureTransform` per key (not just `()`), so an
+    // animation track can read-modify-write a single component (offset / scale /
+    // rotation) while preserving the others. The GPU bytes live in
+    // `texture_transforms_buffer`; this is the authoritative struct mirror.
+    texture_transforms: SlotMap<TextureTransformKey, TextureTransform>,
+    // UV-flow (auto-scroll) state per transform key. `advance_texture_flows(dt)`
+    // (driven each frame by `update_animations`) accumulates `velocity * elapsed`
+    // into the transform's offset (recompute-from-`base_offset`, so no drift).
+    // Empty unless a binding declares `TextureRef.flow` — zero per-frame cost
+    // otherwise. (B3 — texture flow over the B1 UV transform.)
+    texture_flows: SecondaryMap<TextureTransformKey, TextureFlow>,
     texture_transforms_buffer: DynamicUniformBuffer<TextureTransformKey>,
     texture_transforms_gpu_dirty: bool,
     pub(crate) texture_transforms_gpu_buffer: web_sys::GpuBuffer,
@@ -798,6 +808,18 @@ impl std::hash::Hash for SamplerCacheKey {
         self.min_filter.map(|x| x as u32).hash(state);
         self.mipmap_filter.map(|x| x as u32).hash(state);
     }
+}
+
+/// Per-key UV-flow state: a `[u,v]` velocity (UV/sec) accumulated into the
+/// transform's offset, recomputed from `base_offset` each frame so it can't drift.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextureFlow {
+    /// The offset the flow accumulates ON TOP of (the binding's authored offset).
+    pub base_offset: [f32; 2],
+    /// UV-units per second.
+    pub velocity: [f32; 2],
+    /// Seconds accumulated since the flow was (re)set.
+    pub elapsed: f32,
 }
 
 /// Texture transform parameters.
@@ -901,7 +923,7 @@ impl Textures {
 
         let texture_transform_identity_offset = {
             let transform = TextureTransform::identity();
-            let key = texture_transforms.insert(());
+            let key = texture_transforms.insert(transform.clone());
 
             texture_transforms_buffer.update(key, &transform.as_gpu_bytes());
 
@@ -916,6 +938,7 @@ impl Textures {
             pool_textures: SlotMap::with_key(),
             cubemaps: SlotMap::with_key(),
             texture_transforms,
+            texture_flows: SecondaryMap::new(),
             texture_transforms_buffer,
             texture_transforms_gpu_buffer,
             texture_transforms_gpu_dirty: true,
@@ -1038,23 +1061,95 @@ impl Textures {
         &mut self,
         transform: &TextureTransform,
     ) -> TextureTransformKey {
-        let key = self.texture_transforms.insert(());
-        self.update_texture_transform(key, transform);
+        let key = self.texture_transforms.insert(transform.clone());
+        let bytes = transform.as_gpu_bytes();
+        self.texture_transforms_buffer.update(key, &bytes);
+        self.texture_transforms_gpu_dirty = true;
         key
     }
-    /// Updates an existing texture transform.
+    /// Updates an existing texture transform (CPU mirror + GPU bytes).
     pub fn update_texture_transform(
         &mut self,
         key: TextureTransformKey,
         transform: &TextureTransform,
     ) {
+        if let Some(slot) = self.texture_transforms.get_mut(key) {
+            *slot = transform.clone();
+        }
         let bytes = transform.as_gpu_bytes();
         self.texture_transforms_buffer.update(key, &bytes);
         self.texture_transforms_gpu_dirty = true;
     }
 
+    /// The current CPU-side transform for `key` (the read half of the
+    /// read-modify-write an animation track does on one component).
+    pub fn get_texture_transform(&self, key: TextureTransformKey) -> Option<&TextureTransform> {
+        self.texture_transforms.get(key)
+    }
+
+    /// Register (or clear) UV flow for a transform key — `velocity` in UV-units/sec
+    /// accumulated onto `base_offset` each frame by [`Self::advance_texture_flows`].
+    /// `velocity == [0,0]` clears the flow (and snaps the offset back to base).
+    pub fn set_texture_flow(
+        &mut self,
+        key: TextureTransformKey,
+        base_offset: [f32; 2],
+        velocity: [f32; 2],
+    ) {
+        if velocity == [0.0, 0.0] {
+            self.texture_flows.remove(key);
+            if let Some(t) = self.texture_transforms.get(key).cloned() {
+                let mut t = t;
+                if t.offset != base_offset {
+                    t.offset = base_offset;
+                    self.update_texture_transform(key, &t);
+                }
+            }
+            return;
+        }
+        self.texture_flows.insert(
+            key,
+            TextureFlow {
+                base_offset,
+                velocity,
+                elapsed: 0.0,
+            },
+        );
+    }
+
+    /// Advance every registered UV flow by `dt` seconds: `offset = base_offset +
+    /// velocity * elapsed` (recompute-from-base, no drift), re-uploading the
+    /// touched transforms. Called each frame from `update_animations`; a no-op
+    /// when nothing flows.
+    pub fn advance_texture_flows(&mut self, dt: f32) {
+        if self.texture_flows.is_empty() {
+            return;
+        }
+        // Collect the (key, new_offset) updates first — `update_texture_transform`
+        // borrows `self` mutably, so we can't hold the `texture_flows` iterator.
+        let mut updates: Vec<(TextureTransformKey, [f32; 2])> = Vec::new();
+        for (key, flow) in self.texture_flows.iter_mut() {
+            flow.elapsed += dt;
+            updates.push((
+                key,
+                [
+                    flow.base_offset[0] + flow.velocity[0] * flow.elapsed,
+                    flow.base_offset[1] + flow.velocity[1] * flow.elapsed,
+                ],
+            ));
+        }
+        for (key, offset) in updates {
+            if let Some(mut t) = self.texture_transforms.get(key).cloned() {
+                t.offset = offset;
+                self.update_texture_transform(key, &t);
+            }
+        }
+    }
+
     /// Removes a texture transform.
     pub fn remove_texture_transform(&mut self, key: TextureTransformKey) {
+        self.texture_transforms.remove(key);
+        self.texture_flows.remove(key);
         self.texture_transforms_buffer.remove(key);
         self.texture_transforms_gpu_dirty = true;
     }

@@ -285,6 +285,51 @@ pub fn slot_default_value(slot: &crate::controller::Slot) -> SceneUniformValue {
     renderer_to_scene(&parse_uniform_value(parse_field_type(&slot.ty), &slot.val))
 }
 
+/// Live preview (D3): push `value_str` into uniform slot `name` of every running
+/// `Material::Custom` built from `asset`'s registered shader — the SAME per-mesh
+/// `dm.values[slot]` write a uniform animation track does each frame
+/// (`animations.rs apply_to_target` Uniform). So a manual `SetMaterialUniform`
+/// previews IMMEDIATELY instead of only after a re-register. The scene-side
+/// authored default is updated separately by the command handler (persisted +
+/// used at the next full register / project reload). No-op until the material is
+/// registered + a mesh using it is materialized.
+pub fn set_uniform_live(r: &mut AwsmRenderer, asset: AssetId, name: &str, value_str: &str) {
+    let Some(shader_id) = registered_shader_id(asset) else {
+        return;
+    };
+    let Some((idx, ty)) = r.dynamic_material_registration(shader_id).and_then(|reg| {
+        reg.layout
+            .uniforms
+            .iter()
+            .enumerate()
+            .find(|(_, u)| u.name == name)
+            .map(|(i, u)| (i, u.ty))
+    }) else {
+        return;
+    };
+    let value = parse_uniform_value(ty, value_str);
+    // Collect first (immutable borrow) so the per-key `update_material` (mutable)
+    // doesn't overlap the iterator.
+    let keys: Vec<awsm_renderer::materials::MaterialKey> = r
+        .materials
+        .iter()
+        .filter_map(|(k, m)| match m {
+            Material::Custom(dm) if dm.shader_id == shader_id => Some(k),
+            _ => None,
+        })
+        .collect();
+    for k in keys {
+        let v = value.clone();
+        r.update_material(k, move |m| {
+            if let Material::Custom(dm) = m {
+                if let Some(slot) = dm.values.get_mut(idx) {
+                    *slot = v.clone();
+                }
+            }
+        });
+    }
+}
+
 /// Convert the serializable schema `UniformValue` (stored on a
 /// `MaterialInstance`) into the renderer's value type. The two enums have
 /// identical variants — this is the (deliberately exhaustive) bridge so adding a

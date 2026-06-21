@@ -320,7 +320,8 @@ fn target_under_subtree(target: &TrackTarget, root: NodeId) -> bool {
         | TrackTarget::Morph { node, .. }
         | TrackTarget::BuiltinParam { node, .. }
         | TrackTarget::Light { node, .. }
-        | TrackTarget::Camera { node, .. } => *node,
+        | TrackTarget::Camera { node, .. }
+        | TrackTarget::TextureTransform { node, .. } => *node,
         TrackTarget::Uniform { .. } => return true,
     };
     if node == root {
@@ -496,6 +497,46 @@ fn resolve_target(
                 }
             }
         }
+        TrackTarget::TextureTransform { node, slot, prop } => {
+            // Same binding as BuiltinParam: the node's first material key carries
+            // the built-in texture slots; the apply ensures an identity transform
+            // on the slot the first time if it has none.
+            let mk = b
+                .nodes
+                .lock()
+                .unwrap()
+                .get(node)
+                .and_then(|n| n.material_keys.lock().unwrap().first().copied());
+            mk.map(|material| AnimationTarget::TextureUv {
+                material,
+                slot: tex_slot(*slot),
+                prop: tex_prop(*prop),
+            })
+        }
+    }
+}
+
+fn tex_slot(s: awsm_editor_protocol::animation::TexSlot) -> awsm_renderer::animation::TexSlot {
+    use awsm_editor_protocol::animation::TexSlot as S;
+    use awsm_renderer::animation::TexSlot as R;
+    match s {
+        S::BaseColor => R::BaseColor,
+        S::MetallicRoughness => R::MetallicRoughness,
+        S::Normal => R::Normal,
+        S::Occlusion => R::Occlusion,
+        S::Emissive => R::Emissive,
+    }
+}
+
+fn tex_prop(
+    p: awsm_editor_protocol::animation::TexTransformProp,
+) -> awsm_renderer::animation::TexTransformProp {
+    use awsm_editor_protocol::animation::TexTransformProp as P;
+    use awsm_renderer::animation::TexTransformProp as R;
+    match p {
+        P::Offset => R::Offset,
+        P::Scale => R::Scale,
+        P::Rotation => R::Rotation,
     }
 }
 
@@ -520,6 +561,17 @@ fn builtin_param(p: BuiltinParamKind) -> BuiltinMaterialParam {
         BuiltinParamKind::Metallic => BuiltinMaterialParam::Metallic,
         BuiltinParamKind::Roughness => BuiltinMaterialParam::Roughness,
         BuiltinParamKind::Emissive => BuiltinMaterialParam::Emissive,
+        BuiltinParamKind::NormalScale => BuiltinMaterialParam::NormalScale,
+        BuiltinParamKind::OcclusionStrength => BuiltinMaterialParam::OcclusionStrength,
+        BuiltinParamKind::EmissiveStrength => BuiltinMaterialParam::EmissiveStrength,
+        BuiltinParamKind::AlphaCutoff => BuiltinMaterialParam::AlphaCutoff,
+        BuiltinParamKind::ToonDiffuseBands => BuiltinMaterialParam::ToonDiffuseBands,
+        BuiltinParamKind::ToonSpecularSteps => BuiltinMaterialParam::ToonSpecularSteps,
+        BuiltinParamKind::ToonShininess => BuiltinMaterialParam::ToonShininess,
+        BuiltinParamKind::ToonRimStrength => BuiltinMaterialParam::ToonRimStrength,
+        BuiltinParamKind::ToonRimPower => BuiltinMaterialParam::ToonRimPower,
+        BuiltinParamKind::FlipbookFps => BuiltinMaterialParam::FlipbookFps,
+        BuiltinParamKind::FlipbookTimeOffset => BuiltinMaterialParam::FlipbookTimeOffset,
     }
 }
 

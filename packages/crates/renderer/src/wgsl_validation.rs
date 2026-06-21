@@ -239,6 +239,53 @@ fn unified_shade_opaque_shaders_validate() {
 }
 
 #[test]
+fn custom_material_ibl_include_validates() {
+    // D1: a custom material that opts into the `ibl` include can call
+    // `sample_ibl(...)` and the assembled Custom kernel must validate (the helper
+    // references the always-bound IBL cubemaps/LUT + `get_lights_info`). Without
+    // the include the symbol is undefined → this guards the wiring.
+    use awsm_materials::ShaderIncludes;
+    for (msaa, mips) in CONFIGS {
+        let mut key = custom_key(ShaderIncludes::IBL, msaa, mips);
+        key.dynamic_shader.as_mut().unwrap().wgsl_fragment =
+            "let ibl = sample_ibl(vec3<f32>(0.8, 0.8, 0.8), input.world_normal, \
+             input.surface_to_camera, 0.3, 0.0); return OpaqueShadingOutput(ibl, 1.0);"
+                .to_string();
+        let label = format!("opaque/custom ibl msaa={msaa:?} mips={mips}");
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn sample_ibl("),
+            "{label}: `ibl` include did not emit sample_ibl"
+        );
+    }
+}
+
+#[test]
+fn custom_material_normal_map_include_validates() {
+    // D1-normalmap: a custom material that opts into `normal_map` can call
+    // `apply_normal_map(...)` / `material_tbn(...)` over the always-present
+    // world_tangent/world_bitangent/world_normal fields, and the assembled Custom
+    // kernel must validate. Without the include the symbols are undefined → guards
+    // both the include wiring AND that the OpaqueShadingInput tangent fields exist.
+    use awsm_materials::ShaderIncludes;
+    for (msaa, mips) in CONFIGS {
+        let mut key = custom_key(ShaderIncludes::NORMAL_MAP, msaa, mips);
+        key.dynamic_shader.as_mut().unwrap().wgsl_fragment =
+            "let n = apply_normal_map(input, vec3<f32>(0.6, 0.5, 0.9)); \
+             let _tbn = material_tbn(input); return OpaqueShadingOutput(n * 0.5 + 0.5, 1.0);"
+                .to_string();
+        let label = format!("opaque/custom normal_map msaa={msaa:?} mips={mips}");
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn apply_normal_map("),
+            "{label}: `normal_map` include did not emit apply_normal_map"
+        );
+    }
+}
+
+#[test]
 fn opaque_prep_read_variant_validates() {
     // Plan B (stage 2b): the prep-read opaque variant (prep enabled + MSAA
     // off) must compile, and `texture_uv()` / `vertex_color()` must read the

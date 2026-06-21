@@ -485,6 +485,7 @@ async fn auto_key_from_commit(node_id: NodeId, trs: crate::engine::scene::types:
                 track,
                 t,
                 value,
+                interp: None,
             })
             .await;
     }

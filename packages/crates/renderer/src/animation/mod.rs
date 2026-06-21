@@ -19,7 +19,7 @@ pub use blend::{blend_additive, blend_replace};
 pub use clip::AnimationClip;
 pub use clip_group::{
     AnimationChannel, AnimationClipGroup, AnimationClipKey, AnimationTarget, BuiltinMaterialParam,
-    CameraParam, LightParam,
+    CameraParam, LightParam, TexSlot, TexTransformProp,
 };
 pub use data::{Animatable, AnimationData, TransformAnimation, VertexAnimation};
 pub use error::AwsmAnimationError;

@@ -88,6 +88,12 @@
 /*************** END brdf.wgsl ******************/
 {% endif %}
 
+{% if inc.ibl %}
+/*************** START ibl.wgsl (Tier-A image-based-lighting primitive for custom materials) ******************/
+{% include "shared_wgsl/lighting/ibl.wgsl" %}
+/*************** END ibl.wgsl ******************/
+{% endif %}
+
 
 /*************** START material.wgsl ******************/
 {% include "shared_wgsl/material.wgsl" %}
@@ -171,6 +177,14 @@ struct OpaqueShadingInput {
     world_normal: vec3<f32>,
     world_position: vec3<f32>,
     surface_to_camera: vec3<f32>,
+    // The interpolated, orthonormal world-space tangent frame at this pixel,
+    // reconstructed by the prep pass and unpacked here (the SAME TBN built-in PBR
+    // uses for normal mapping — no per-author recompute). `world_normal` above is
+    // its N. A custom material that samples a normal map declares the `normal_map`
+    // include and calls `apply_normal_map(input, sampled_rgb)` (or `material_tbn`).
+    // Always populated (the prep G-buffer always carries it); zero cost if unused.
+    world_tangent: vec3<f32>,
+    world_bitangent: vec3<f32>,
     // Per-vertex attribute access (so a custom material can read COLOR_n / future
     // named streams the way built-in PBR does). The kernel computes these per
     // pixel anyway; we forward them rather than make the author recompute. Use
@@ -232,6 +246,27 @@ fn material_uv(input: OpaqueShadingInput, set_index: u32) -> vec2<f32> {
     return input.barycentric.x * uv0 + input.barycentric.y * uv1 + input.barycentric.z * uv2;
 }
 {% endif %}{# inc.textures (material_uv accessor) #}
+
+// ── Normal mapping for custom materials (D1) ─────────────────────────────────
+// The engine already reconstructs the orthonormal world-space tangent frame per
+// pixel (the prep G-buffer); these expose it so a custom material gets normal
+// mapping WITHOUT re-deriving a TBN. Gated on `inc.normal_map` — declare it and
+// build on the always-present `world_tangent`/`world_bitangent`/`world_normal`.
+{% if inc.normal_map %}
+// The orthonormal tangent→world basis at this pixel (columns T, B, N). Multiply a
+// tangent-space vector by this to get world space.
+fn material_tbn(input: OpaqueShadingInput) -> mat3x3<f32> {
+    return mat3x3<f32>(input.world_tangent, input.world_bitangent, input.world_normal);
+}
+// Perturb the surface normal with a tangent-space normal-map SAMPLE in the usual
+// `[0,1]` RGB encoding (so `(0.5,0.5,1.0)` decodes to the flat `(0,0,1)` and
+// returns the geometric `world_normal` unchanged). Returns a unit world-space
+// normal ready to feed `light_sample` / `sample_ibl` / a custom BRDF.
+fn apply_normal_map(input: OpaqueShadingInput, sampled_rgb: vec3<f32>) -> vec3<f32> {
+    let n_tangent = normalize(sampled_rgb * 2.0 - vec3<f32>(1.0));
+    return normalize(material_tbn(input) * n_tangent);
+}
+{% endif %}{# inc.normal_map #}
 
 {% if inc.light_access %}
 // ── Froxel-culled per-pixel lights for custom materials (Stage 7) ────────────

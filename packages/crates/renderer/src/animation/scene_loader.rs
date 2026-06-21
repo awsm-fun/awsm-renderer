@@ -36,7 +36,7 @@ use awsm_scene::animation::{
     TrackTarget, TrackValue, TransformProp,
 };
 use awsm_scene::{AssetId, NodeId};
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::{
     AnimationChannel, AnimationClipGroup, AnimationClipKey, AnimationData, AnimationLayer,
@@ -187,11 +187,16 @@ fn track_value_to_data(value: &TrackValue, prop: Option<TransformProp>) -> Anima
             AnimationData::Transform(TransformAnimation::new_rotation(Quat::from_array(*q)))
         }
         (None, TrackValue::Scalar(s)) => AnimationData::F32(*s),
+        (None, TrackValue::Vec2(v)) => AnimationData::Vec2(Vec2::from_array(*v)),
         (None, TrackValue::Vec3(v)) => AnimationData::Vec3(Vec3::from_array(*v)),
+        (None, TrackValue::Vec4(v)) => AnimationData::Vec4(Vec4::from_array(*v)),
         (None, TrackValue::Quat(q)) => AnimationData::Quat(Quat::from_array(*q)),
         // Shape mismatch — lower to inert data rather than panicking (the editor
-        // validates genuine mismatches as hard errors before saving).
+        // validates genuine mismatches as hard errors before saving). vec2/vec4
+        // never target a transform component, so they only reach here on mismatch.
         (Some(_), TrackValue::Scalar(s)) => AnimationData::F32(*s),
+        (Some(_), TrackValue::Vec2(v)) => AnimationData::Vec2(Vec2::from_array(*v)),
+        (Some(_), TrackValue::Vec4(v)) => AnimationData::Vec4(Vec4::from_array(*v)),
         (Some(TransformProp::Translation) | Some(TransformProp::Scale), TrackValue::Quat(q)) => {
             AnimationData::Quat(Quat::from_array(*q))
         }
@@ -207,7 +212,9 @@ fn track_value_to_data(value: &TrackValue, prop: Option<TransformProp>) -> Anima
 fn morph_scalar_to_vertex(value: &TrackValue, index: usize) -> AnimationData {
     let scalar = match value {
         TrackValue::Scalar(s) => *s,
+        TrackValue::Vec2(v) => v.first().copied().unwrap_or(0.0),
         TrackValue::Vec3(v) => v.first().copied().unwrap_or(0.0),
+        TrackValue::Vec4(v) => v.first().copied().unwrap_or(0.0),
         TrackValue::Quat(q) => q.first().copied().unwrap_or(0.0),
     };
     let mut weights = vec![0.0_f32; index + 1];

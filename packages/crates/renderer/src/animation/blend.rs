@@ -100,9 +100,11 @@ pub fn blend_replace(acc: &AnimationData, layer: &AnimationData, w: f32) -> Anim
         (AnimationData::F64(a), AnimationData::F64(l)) => {
             AnimationData::F64(a + (l - a) * w as f64)
         }
+        (AnimationData::Vec2(a), AnimationData::Vec2(l)) => AnimationData::Vec2(*a + (*l - *a) * w),
         (AnimationData::Vec3(a), AnimationData::Vec3(l)) => {
             AnimationData::Vec3(vec3_lerp(*a, *l, w))
         }
+        (AnimationData::Vec4(a), AnimationData::Vec4(l)) => AnimationData::Vec4(*a + (*l - *a) * w),
         (AnimationData::Quat(a), AnimationData::Quat(l)) => {
             AnimationData::Quat(quat_blend_replace(*a, *l, w))
         }
@@ -178,8 +180,14 @@ pub fn blend_additive(
         (AnimationData::F64(a), AnimationData::F64(l), AnimationData::F64(r)) => {
             AnimationData::F64(a + w as f64 * (l - r))
         }
+        (AnimationData::Vec2(a), AnimationData::Vec2(l), AnimationData::Vec2(r)) => {
+            AnimationData::Vec2(*a + (*l - *r) * w)
+        }
         (AnimationData::Vec3(a), AnimationData::Vec3(l), AnimationData::Vec3(r)) => {
             AnimationData::Vec3(*a + (*l - *r) * w)
+        }
+        (AnimationData::Vec4(a), AnimationData::Vec4(l), AnimationData::Vec4(r)) => {
+            AnimationData::Vec4(*a + (*l - *r) * w)
         }
         (AnimationData::Quat(a), AnimationData::Quat(l), AnimationData::Quat(r)) => {
             AnimationData::Quat((quat_scaled_delta(*l, *r, w) * *a).normalize())
