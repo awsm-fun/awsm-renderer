@@ -650,6 +650,23 @@ impl AwsmRenderer {
                         Material::Pbr(p) => Some(AnimationData::F32(p.occlusion_strength)),
                         _ => None,
                     },
+                    BuiltinMaterialParam::EmissiveStrength => match m {
+                        // Rest = the current strength (1.0 when the extension is off).
+                        Material::Pbr(p) => Some(AnimationData::F32(
+                            p.emissive_strength
+                                .as_ref()
+                                .map(|e| e.strength)
+                                .unwrap_or(1.0),
+                        )),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::AlphaCutoff => match m {
+                        // Rest = the current cutoff (0.5 default when not masked).
+                        Material::Pbr(p) => {
+                            Some(AnimationData::F32(p.alpha_cutoff().unwrap_or(0.5)))
+                        }
+                        _ => None,
+                    },
                 }
             }
             AnimationTarget::Light { light, param } => {
@@ -926,7 +943,9 @@ impl AwsmRenderer {
             BuiltinMaterialParam::Metallic
             | BuiltinMaterialParam::Roughness
             | BuiltinMaterialParam::NormalScale
-            | BuiltinMaterialParam::OcclusionStrength => {
+            | BuiltinMaterialParam::OcclusionStrength
+            | BuiltinMaterialParam::EmissiveStrength
+            | BuiltinMaterialParam::AlphaCutoff => {
                 let scalar = data_to_f32(value)?;
                 self.update_material(material, |m| {
                     if let Material::Pbr(pbr) = m {
@@ -937,10 +956,20 @@ impl AwsmRenderer {
                             BuiltinMaterialParam::OcclusionStrength => {
                                 pbr.occlusion_strength = scalar
                             }
+                            // Animate the VALUE only when the feature is already
+                            // enabled (toggling it on/off would change the compiled
+                            // feature set); no-op otherwise.
+                            BuiltinMaterialParam::EmissiveStrength => {
+                                if let Some(es) = pbr.emissive_strength.as_mut() {
+                                    es.strength = scalar;
+                                }
+                            }
+                            // No-op on Opaque/Blend (the mode isn't animatable).
+                            BuiltinMaterialParam::AlphaCutoff => pbr.set_alpha_cutoff(scalar),
                             _ => {}
                         }
                     }
-                    // Unlit / Toon have no metallic/roughness/normal/occlusion: no-op.
+                    // Unlit / Toon lack these scalars: no-op.
                 });
             }
         }

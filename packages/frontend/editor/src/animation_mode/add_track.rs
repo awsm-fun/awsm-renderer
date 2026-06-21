@@ -563,6 +563,24 @@ fn mesh_material_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
             badge: Some("BUILTIN"),
             hint: "f32 \u{00b7} builtin".into(),
         },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::EmissiveStrength,
+            },
+            label: "Emissive Strength".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} glow (needs emissive-strength ext)".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
+                param: BuiltinParamKind::AlphaCutoff,
+            },
+            label: "Alpha Cutoff".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} dissolve (mask materials)".into(),
+        },
         // Base-color UV transform — the "scrolling/rotating texture" case. The
         // apply seeds an identity transform on the slot if it has none, so these
         // are offered unconditionally (a no-op if the slot is untextured).

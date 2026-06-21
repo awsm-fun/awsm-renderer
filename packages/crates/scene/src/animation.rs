@@ -100,6 +100,15 @@ pub enum BuiltinParamKind {
     /// Ambient-occlusion strength (`occlusion_strength`, scalar). Visible only with
     /// an occlusion map.
     OcclusionStrength,
+    /// Emissive strength multiplier (`KHR_materials_emissive_strength`, scalar) —
+    /// pulse a glow for bloom. Applies only when the material already has emissive
+    /// strength enabled (it's a feature-gated extension; toggling it on/off
+    /// recompiles, so a track animates the VALUE, not the feature). PBR only.
+    EmissiveStrength,
+    /// Alpha-test cutoff (`Mask` alpha mode threshold, scalar) — animate a
+    /// dissolve / cutout. Applies only to a `Mask` material (no-op otherwise; the
+    /// alpha MODE is a pipeline choice, not animatable). PBR only.
+    AlphaCutoff,
 }
 
 /// Which built-in material texture slot a `TextureTransform` track drives

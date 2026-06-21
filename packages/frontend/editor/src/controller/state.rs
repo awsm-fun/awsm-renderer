@@ -5342,6 +5342,20 @@ fn read_readback_target(
                     Material::Pbr(p) => json!(p.occlusion_strength),
                     _ => serde_json::Value::Null,
                 },
+                P::EmissiveStrength => match m {
+                    Material::Pbr(p) => {
+                        json!(p
+                            .emissive_strength
+                            .as_ref()
+                            .map(|e| e.strength)
+                            .unwrap_or(1.0))
+                    }
+                    _ => serde_json::Value::Null,
+                },
+                P::AlphaCutoff => match m {
+                    Material::Pbr(p) => json!(p.alpha_cutoff().unwrap_or(0.5)),
+                    _ => serde_json::Value::Null,
+                },
             }
         }
         R::LightParam { node, param } => {
@@ -5565,6 +5579,31 @@ fn patch_builtin_param(
         },
         P::OcclusionStrength => match value.first() {
             Some(&v) => inline.occlusion_strength = v,
+            None => return false,
+        },
+        P::EmissiveStrength => match value.first() {
+            // Enables the `KHR_materials_emissive_strength` extension on first set
+            // (flips the feature → recompiles on re-register, like the material
+            // studio's emissive-strength toggle), then writes the multiplier.
+            Some(&v) => {
+                inline
+                    .extensions
+                    .emissive_strength
+                    .get_or_insert_with(Default::default)
+                    .strength = v;
+            }
+            None => return false,
+        },
+        P::AlphaCutoff => match value.first() {
+            // Only meaningful on a `Mask` material — the alpha MODE is a pipeline
+            // choice set elsewhere; here we just tune the threshold (no-op otherwise).
+            Some(&v) => {
+                if let awsm_editor_protocol::MaterialAlphaMode::Mask { cutoff } =
+                    &mut inline.alpha_mode
+                {
+                    *cutoff = v;
+                }
+            }
             None => return false,
         },
     }

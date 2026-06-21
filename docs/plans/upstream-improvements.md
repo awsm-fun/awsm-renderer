@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ✅ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ✅ → `D1`(ibl ✅; `D1-normalmap` ✅) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done; B3 + D2b + D1-normalmap landed. Remaining: `B2-extra`, `B3-extra` (prod-ship pass).**
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ✅ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ✅ → `D1`(ibl ✅; `D1-normalmap` ✅) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done; B3 + D2b + D1-normalmap + B2-extra landed. Remaining: `B3-extra` (UV-continuity warn — editor lint).**
 (`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
 turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
@@ -263,7 +263,7 @@ over-time screenshots; settable half already verified above.
 
 ---
 
-### B2 — Broaden the animatable/settable built-in material params ✅ DONE (PBR scalars; type-specific → B2-extra)
+### B2 — Broaden the animatable/settable built-in material params ✅ DONE (PBR scalars + emissive_strength + alpha cutoff; toon/flipbook knobs → B2-toon-flipbook)
 
 **Landed + verified live.** Added `NormalScale` + `OcclusionStrength` to both `BuiltinParamKind` (scene)
 and `BuiltinMaterialParam` (renderer) — the always-present PBR scalars — wired uniformly as **settable AND
@@ -277,12 +277,24 @@ the `BuiltinParam` readback + the Add-Track rows + the MCP `set_builtin_param` t
 `builtin_param/normal_scale` track `3.0`@0 → `0.0`@1 scrubbed → the normal-mapped detail visibly
 **flattens** (t=0 bumpy spheres vs t=1 flat quads, screenshots), zero GPUValidationError.
 
-**Split — `B2-extra` (DEFERRED, low priority):** `emissive_strength`, alpha `cutoff`, toon ramp knobs
-(diffuse bands / specular steps / shininess / rim), and flipbook `fps`/`time_offset` are NOT plain
-`MaterialDef` scalars — each needs per-feature plumbing (emissive_strength is an `Option<…>` extension →
-creating it changes the shader feature-set / recompiles; cutoff lives on the alpha mode; toon/flipbook are
-material-type-specific fields). Add them the same way (enum arm + apply + resolver + readback + UI) when
-prioritized.
+**`B2-extra` — `emissive_strength` + alpha `cutoff` ✅ DONE (2026-06-21, prod ship).** Both are now
+settable + animatable built-in params (full chain: `BuiltinParamKind`/`BuiltinMaterialParam` enums →
+scene-loader + editor `animation_sync` resolvers → renderer apply + `read_rest` → editor readback +
+`patch_builtin_param` → add-track UI + MCP `BuiltinParamArg`). `emissive_strength` writes the value only when
+the material has the extension enabled (toggling it on/off recompiles — by design); alpha `cutoff` calls a
+new `PbrMaterial::set_alpha_cutoff` (no-op off a `Mask` material). The editor's per-node override rule
+(`builtin_merged` — overrides tweak values, never enable a recompiling feature) means these tune a feature
+the material already has; enabling it is the material-studio's job.
+
+**Verified live (editor :9085):** `EmissiveStrengthTest.glb` — readback shows the real glTF strengths
+(16/8/4/2); set 3.0/25.0 round-trips; an animation track 2→20 samples 2.0/11.0/20.0 at t=0/0.5/1.0.
+`AlphaBlendModeTest.glb` (`TestCutoff25`) — readback 0.25; set 0.66 round-trips; a track 0.1→0.9 samples
+0.1/0.5/0.9. Zero GPU errors. Full `cargo test --workspace` green (42); `task lint` green.
+
+> **Still deferred — toon-ramp / flipbook knobs (`B2-toon-flipbook`, niche):** diffuse bands / specular
+> steps / shininess / rim (toon) + `fps` / `time_offset` (flipbook) are material-TYPE-specific (only toon /
+> flipbook materials, a small minority). The param system fully supports adding them — same mechanical chain
+> — when a toon/flipbook project needs them.
 
 ---
 
@@ -823,6 +835,14 @@ matches `editor_snapshot_json`'s `selection`.
   (TBN correct), tilted sample → clean per-face perturbed normals, `ok:true`, zero GPU errors. naga test
   added; size ceilings bumped for the always-present tangent ABI (~0.6 KB/shader, documented). Full
   `cargo test --workspace` green (42). Remaining: `B2-extra`, `B3-extra`.
+- 2026-06-21 — **`B2-extra` ✅ DONE** (emissive_strength + alpha cutoff; see B2 above). Full settable+animatable
+  chain across 8 files. Verified live on `EmissiveStrengthTest.glb` (readback 16/8/4/2; set 3/25; animate
+  2→11→20) + `AlphaBlendModeTest.glb` `TestCutoff25` (readback 0.25; set 0.66; animate 0.1→0.5→0.9), zero GPU
+  errors. The override rule (`builtin_merged`) means these tune a feature the material already has — enabling
+  is the studio's job — which is why a generic Opaque box reads the default (correct). Full
+  `cargo test --workspace` green (42); `task lint` green. Remaining: `B3-extra` (toon/flipbook knobs split as
+  the niche `B2-toon-flipbook`). **All four prod-ship deferrals (D2b, D1-normalmap, B2-extra) closed bar the
+  two niche UX/material-type items.**
 
 ---
 

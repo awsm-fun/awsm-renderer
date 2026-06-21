@@ -438,6 +438,15 @@ impl PbrMaterial {
         }
     }
 
+    /// Set the alpha-test cutoff — a no-op unless the material is already in `Mask`
+    /// alpha mode (the mode itself is a pipeline choice, not a uniform tweak). Used
+    /// by the settable/animatable `AlphaCutoff` built-in param.
+    pub fn set_alpha_cutoff(&mut self, cutoff: f32) {
+        if let MaterialAlphaMode::Mask { cutoff: c } = &mut self.alpha_mode {
+            *c = cutoff;
+        }
+    }
+
     /// Returns true if alpha blending is enabled.
     pub fn has_alpha_blend(&self) -> bool {
         matches!(self.alpha_mode, MaterialAlphaMode::Blend)

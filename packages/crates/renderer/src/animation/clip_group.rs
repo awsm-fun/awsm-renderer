@@ -131,6 +131,13 @@ pub enum BuiltinMaterialParam {
     NormalScale,
     /// Ambient-occlusion strength (`occlusion_strength`, PBR only).
     OcclusionStrength,
+    /// Emissive-strength multiplier (`KHR_materials_emissive_strength`, PBR only).
+    /// Applied only when the material already has emissive strength enabled (the
+    /// feature is compiled in); a no-op otherwise (toggling it would recompile).
+    EmissiveStrength,
+    /// Alpha-test cutoff (the `Mask` alpha-mode threshold, PBR only). Applied only
+    /// to a `Mask` material; a no-op on Opaque/Blend (the mode isn't animatable).
+    AlphaCutoff,
 }
 
 /// Which parameter of a [`crate::cameras::CameraParams`] an animation channel

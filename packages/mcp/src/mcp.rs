@@ -493,6 +493,8 @@ pub enum BuiltinParamArg {
     Emissive,
     NormalScale,
     OcclusionStrength,
+    EmissiveStrength,
+    AlphaCutoff,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2290,6 +2292,8 @@ impl EditorMcp {
             BuiltinParamArg::Emissive => BuiltinParamKind::Emissive,
             BuiltinParamArg::NormalScale => BuiltinParamKind::NormalScale,
             BuiltinParamArg::OcclusionStrength => BuiltinParamKind::OcclusionStrength,
+            BuiltinParamArg::EmissiveStrength => BuiltinParamKind::EmissiveStrength,
+            BuiltinParamArg::AlphaCutoff => BuiltinParamKind::AlphaCutoff,
         };
         self.dispatch(EditorCommand::SetBuiltinParam {
             node: parse_node(&p.node)?,

@@ -563,6 +563,8 @@ fn builtin_param(p: BuiltinParamKind) -> BuiltinMaterialParam {
         BuiltinParamKind::Emissive => BuiltinMaterialParam::Emissive,
         BuiltinParamKind::NormalScale => BuiltinMaterialParam::NormalScale,
         BuiltinParamKind::OcclusionStrength => BuiltinMaterialParam::OcclusionStrength,
+        BuiltinParamKind::EmissiveStrength => BuiltinMaterialParam::EmissiveStrength,
+        BuiltinParamKind::AlphaCutoff => BuiltinMaterialParam::AlphaCutoff,
     }
 }
 
