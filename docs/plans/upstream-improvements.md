@@ -68,8 +68,10 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2-fix` → `A1` → `A2` → `B1` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
-(`P2` — "frame node inside subject" — was not exercised in T0; verify it live in its own iteration.)
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` → `A1` → `A2` → `B1` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
+(`D2-fix` split into `D2a` (codegen black-screen — DONE) and `D2b` (diagnostics lie — NEXT, deeper
+async-compile-error capture). `P2` — "frame node inside subject" — was not exercised in T0; verify it live
+in its own iteration.)
 
 ---
 
@@ -246,44 +248,63 @@ re-deriving PBR.
 
 ---
 
-### D2-fix — Fix the padding-codegen "black screen" bug AND make diagnostics reflect the real GPU outcome
+### D2a — Fix the padding-codegen "black screen" bug ✅ DONE (2026-06-21)
 
-**Verified state — BOTH halves CONFIRMED REAL (T0, live).** This is the highest-impact item: any
-custom-material uniform layout that needs alignment padding (e.g. `f32` before `vec2`/`vec3`/`vec4`,
-`vec2` before `vec4`) generates a `MaterialData` struct with `_pad_N` members but a constructor that omits
-them → naga rejects the whole "Material Opaque" module → **every mesh on that kernel renders black**, and
-material diagnostics falsely report `ok:true`.
+**Was CONFIRMED REAL (T0, live), now FIXED + verified live.** Any custom-material uniform layout needing
+alignment padding (`f32` before `vec2`/`vec3`/`vec4`, `vec2` before `vec4`, …) generated a `MaterialData`
+struct with `_pad_N` members but a constructor that omitted them → naga rejected the "Material Opaque"
+module → every mesh on that kernel rendered black.
 
-**Do — (a) codegen.** In `generate_wgsl_loader` (`packages/crates/materials/src/dynamic_layout.rs` L367-501),
-emit a constructor argument for **every** struct member, including the pad fields. The struct generator
-(`generate_wgsl_struct` L254-279) emits one `_pad_N: u32` per 4-byte gap; the loader's `emit` closure must
-mirror that — when it advances `byte_offset` for alignment (L389), emit a literal `0u` for each skipped pad
-word **before** the real field's value, so the constructor's positional argument list matches the struct's
-member list exactly. (Alternative: drop the named pad members from the struct and rely on `@align`/`@size`
-attributes — but the matching-args approach is the smaller, more local change and keeps the struct
-self-describing.) Walk the same gap arithmetic in both functions so they can't drift again.
+**Fix landed.** `generate_wgsl_loader`'s `emit` closure (`packages/crates/materials/src/dynamic_layout.rs`
+~L388) now emits a literal `0u` constructor argument for **each pad word** it skips during alignment,
+mirroring the `_pad_N` members `generate_wgsl_struct` emits — so the positional arg list matches the struct
+member list exactly. Walks the same gap arithmetic in both functions.
 
-**Do — (b) regression test.** Add a `naga_validate`-backed test (the harness in
-`packages/crates/renderer/src/wgsl_validation.rs` parses+validates the assembled kernel natively, no GPU)
-that builds a `MaterialLayout` for `[a: f32, b: vec2<f32>]` (and `[f32, vec3]`, `[f32, vec4]`,
-`[vec2, vec4]`), generates struct+loader, assembles the opaque kernel, and asserts naga accepts it. This
-test FAILS today (reproduces "too few inputs") and passes after (a).
+**Regression test landed.** `loader_constructor_arg_count_matches_struct_members_with_padding` in
+`dynamic_layout.rs` asserts struct-member-count == constructor-arg-count for `[f32,vec2]`, `[f32,vec3]`,
+`[f32,vec4]`, `[vec2,vec4]`, and a padded-uniforms-then-texture/buffer tail, plus that a `0u, // _pad`
+placeholder is emitted. (The old `vec3_padding_against_following_field` test only checked the byte packer,
+never the struct-vs-constructor field counts — which is why this slipped through.) FAILS before the fix,
+passes after; all 15 `dynamic_layout` tests green.
 
-**Do — (c) diagnostics.** Make `CompileDiagnostics` (`packages/mcp/editor-protocol/src/query.rs` L85-91)
-and the `SetCustomMaterialWgsl` result reflect the real `CreateShaderModule`/pipeline-creation outcome, not
-just the pre-wrap WGSL parse — surface the GPU validation error in `errors` and flip `ok:false`. The GPU
-compile is async/deferred; wire the deferred compile-status back into the diagnostics the
-`material_diagnostics` query reads (see `renderer.rs` `dynamic_material_compile_status` ~L2363 and the
-compile scheduler). A pre-check via the `naga_validate` path can also catch the padding class synchronously
-and report it author-relative.
+**Verified live.** The exact T0 repro (`[a: f32, b: vec2<f32>]` custom material on a box) now renders the
+shaded **orange** `OpaqueShadingOutput` color, **zero** `GPUValidationError` in the console (was the
+"too few inputs: expected 3, found 2" error), `min_luma` 0 → 187 (no black region).
 
-**Verify (live).** Re-run the T0 repro: a `[f32, vec2<f32>]` custom material assigned to a box now renders
-the shaded color (NOT black), "buckets" > 0, **zero** `GPUValidationError` in the console. Then register a
-*deliberately* GPU-invalid material → `material_diagnostics` now reports `ok:false` with the real error; a
-valid one reports `ok:true`.
+---
 
-**Done when:** the padding layout renders correctly (screenshot, no GPU error), the new `naga_validate`
-test passes, and diagnostics no longer lie about a material that fails GPU pipeline creation.
+### D2b — Make material diagnostics reflect the REAL GPU compile outcome (NEXT)
+
+**Verified state — CONFIRMED REAL (live, this iteration), and BROADER than the report implied.** Even
+with D2a fixed, a custom material whose **author body** is GPU-invalid (e.g. `return OpaqueShadingOutput(
+this_symbol_does_not_exist, 1.0)` — passes the trailing-`;` syntax pre-check, fails naga/Tint) still
+reports `material_diagnostics → { registered:true, ok:true, errors:[] }` while the console shows
+`GPUValidationError: unresolved value … CreateShaderModule "Material Opaque"`. So the lie is not specific
+to the codegen bug — it's any deferred GPU module-compile failure.
+
+**Root cause (traced live).** The editor's `register_material` polls `await_dynamic_compile` →
+`renderer.dynamic_material_compile_status(shader_id)` → `pipeline_group_status` (`renderer.rs` ~L2363,
+`pipeline_scheduler`). The OpaqueDynamic resolution path *does* `mark_failed` on an `Err` result
+(`pipeline_scheduler/launch.rs` ~L1039) — **but the dynamic shade pipeline's async creation resolves `Ok`
+even when the module is invalid** (WebGPU's deferred-error model): the console shows only the *edge-resolve*
+failure (`launch.rs` ~L951, logged-and-dropped, "charged to no material"), never
+`pipeline-creation failed for material(...)`. So the material group never transitions to `Failed`, the
+poll times out → `None` → the optimistic arm sets `ok:true` / `registered:true`.
+
+**Do.** Validate the dynamic kernel module's compilation info on the **success** path and propagate errors,
+so `mark_failed` fires and `dynamic_material_compile_status` returns `Some(Err(msg))`. The infra exists:
+`renderer-core/src/shaders.rs` `get_compilation_info_ext` / `validate_shader_compilation` (`getCompilationInfo`,
+the real Tint diagnostic). Hook it into the dynamic compute-pipeline compile future (where the "Material
+Opaque" module is created) so a created-but-invalid module is treated as a compile failure attributed to
+the material (or its waiters). Then the existing `register_material` poll → `last_diagnostics` →
+`CompileDiagnostics` path surfaces it unchanged.
+
+**Verify (live).** Assign a GPU-invalid-body custom material → `material_diagnostics` reports `ok:false`
+with the real message; fix the body → `ok:true`. Re-confirm the D2a `[f32,vec2]` material still reports
+`ok:true` and renders. Zero unexpected GPU errors for the valid cases.
+
+**Done when:** diagnostics report `ok:false` (with the message) for any material that fails GPU
+pipeline/module creation, and `ok:true` only when it genuinely compiles — verified live.
 
 ---
 
@@ -376,6 +397,19 @@ matches `editor_snapshot_json`'s `selection`.
     `add_track.rs` covers all target families. Residual morph-index>0 cap folded into U2.
   - **U2 STILL MISSING** — animation-mode left rail is clip-list only; no scene-tree outliner.
   - Re-scoped: D2-fix promoted to first real task; P1/U1/U3 closed. Next: D2-fix.
+- 2026-06-21 — **D2a DONE (codegen black-screen fix) — PASS (live).** Fixed `generate_wgsl_loader` to emit
+  a `0u` constructor arg per pad word (mirrors `_pad_N` struct members); added regression test
+  `loader_constructor_arg_count_matches_struct_members_with_padding` (all 15 dynamic_layout tests green).
+  Live: the T0 `[f32, vec2<f32>]` repro now renders the orange `OpaqueShadingOutput` color (was black),
+  `min_luma` 0→187, **zero** GPUValidationError. Diagnostics correctly `ok:true` for the now-valid material.
+  Commit: materials crate only.
+- 2026-06-21 — **D2b SPLIT OUT (diagnostics lie) — still OPEN, root-caused live.** Found the lie is broader
+  than the codegen case: a GPU-invalid *author body* (`unresolved value …` at CreateShaderModule
+  "Material Opaque") still reports `{ok:true,errors:[]}`. Root cause: the dynamic shade pipeline's async
+  creation resolves `Ok` despite the invalid module (WebGPU deferred-error model); only the edge-resolve
+  failure is logged (`launch.rs` ~L951, not attributed to a material), so the group never goes `Failed` and
+  the `await_dynamic_compile` poll times out → optimistic `ok:true`. Fix = validate compilation-info on the
+  success path (`renderer-core/shaders.rs` `get_compilation_info_ext`) and propagate. Next iteration: D2b.
 
 ---
 

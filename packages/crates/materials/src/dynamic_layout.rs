@@ -386,7 +386,19 @@ pub fn generate_wgsl_loader(struct_name: &str, fn_name: &str, layout: &MaterialL
     let mut field_byte_offset: usize = 0;
 
     let emit = |out: &mut String, name: &str, ty: FieldType, byte_offset: &mut usize| {
-        *byte_offset = align_up(*byte_offset, ty.align());
+        // Mirror the `_pad_N: u32` members `generate_wgsl_struct` emits for an
+        // alignment gap with one literal `0u` constructor argument per pad word,
+        // so the positional argument list matches the struct's member list
+        // exactly. (Without these the constructor is short by one arg per pad
+        // field — `f32` before `vec2`/`vec3`/`vec4`, `vec2` before `vec4`, … —
+        // which naga rejects as "structure constructor has too few inputs",
+        // failing the whole material kernel module → every mesh renders black.)
+        let aligned = align_up(*byte_offset, ty.align());
+        let pad_words = (aligned - *byte_offset) / 4;
+        for _ in 0..pad_words {
+            out.push_str("        0u, // _pad\n");
+        }
+        *byte_offset = aligned;
         let word = *byte_offset / 4;
         match ty {
             FieldType::F32 => {
@@ -1079,6 +1091,87 @@ mod tests {
         assert!(src.contains("_pad_1: u32"));
         assert!(src.contains("_pad_2: u32"));
         assert!(src.contains("    v: vec3<f32>,"));
+    }
+
+    #[test]
+    fn loader_constructor_arg_count_matches_struct_members_with_padding() {
+        // Regression for the "black screen" bug (docs/plans/upstream-improvements.md
+        // D2): any layout that needs alignment padding emits `_pad_N` *struct*
+        // members; the loader's `MaterialData(...)` constructor must supply a
+        // matching positional arg for EVERY member (pads included), or naga
+        // rejects the module ("structure constructor has too few inputs:
+        // expected N, found N-1") and every mesh on the kernel renders black.
+        //
+        // `vec3_padding_against_following_field` / the packer tests only check
+        // byte output — they never compared the generated struct's member count
+        // to the constructor's arg count, which is the invariant that broke.
+
+        // Each member is one `<name>: <type>,` line (no `: ` appears inside the
+        // WGSL type strings we emit). Each constructor arg ends with a `, //`
+        // comment tag (pads → `, // _pad`); inner mat3/mat4 column lines do not.
+        fn struct_member_count(s: &str) -> usize {
+            s.lines().filter(|l| l.contains(": ")).count()
+        }
+        fn loader_arg_count(l: &str) -> usize {
+            l.matches(", //").count()
+        }
+
+        // Every padding-requiring adjacency the report named, plus a tail that
+        // mixes textures/buffers after a padded uniform run.
+        let cases: Vec<(&str, MaterialLayout)> = vec![
+            (
+                "f32_before_vec2",
+                MaterialLayout {
+                    uniforms: vec![ufield("a", FieldType::F32), ufield("b", FieldType::Vec2)],
+                    ..Default::default()
+                },
+            ),
+            (
+                "f32_before_vec3",
+                MaterialLayout {
+                    uniforms: vec![ufield("a", FieldType::F32), ufield("b", FieldType::Vec3)],
+                    ..Default::default()
+                },
+            ),
+            (
+                "f32_before_vec4",
+                MaterialLayout {
+                    uniforms: vec![ufield("a", FieldType::F32), ufield("b", FieldType::Vec4)],
+                    ..Default::default()
+                },
+            ),
+            (
+                "vec2_before_vec4",
+                MaterialLayout {
+                    uniforms: vec![ufield("a", FieldType::Vec2), ufield("b", FieldType::Vec4)],
+                    ..Default::default()
+                },
+            ),
+            (
+                "padded_uniforms_then_texture_buffer",
+                MaterialLayout {
+                    uniforms: vec![ufield("a", FieldType::F32), ufield("b", FieldType::Vec2)],
+                    textures: vec![tslot("tex")],
+                    buffers: vec![bslot("buf")],
+                },
+            ),
+        ];
+
+        for (label, layout) in cases {
+            let s = generate_wgsl_struct("MaterialData", &layout);
+            let l = generate_wgsl_loader("MaterialData", "material_data_load", &layout);
+            let members = struct_member_count(&s);
+            let args = loader_arg_count(&l);
+            assert_eq!(
+                members, args,
+                "{label}: struct has {members} members but constructor passes {args} args\n--- struct ---\n{s}\n--- loader ---\n{l}"
+            );
+            // And the pad is actually carried as a constructor arg, not just skipped.
+            assert!(
+                l.contains("0u, // _pad"),
+                "{label}: loader emitted no `0u, // _pad` placeholder\n{l}"
+            );
+        }
     }
 
     #[test]
