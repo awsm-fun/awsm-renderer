@@ -5730,24 +5730,6 @@ pub(crate) fn compile_end() {
 /// RAF/compile loop on a backgrounded tab — the caller then stays optimistic).
 /// Polls on a frame cadence so `poll_pipeline_scheduler` (driven by the RAF
 /// render loop) can resolve the async compile between checks.
-async fn await_dynamic_compile(
-    shader_id: awsm_renderer::materials::MaterialShaderId,
-) -> Option<Result<(), String>> {
-    // ~2s ceiling (shader compiles are typically a handful of frames; the cap
-    // just bounds a stuck/backgrounded loop).
-    for _ in 0..120 {
-        let status = crate::engine::context::with_renderer_mut(move |r| {
-            r.dynamic_material_compile_status(shader_id)
-        })
-        .await;
-        if status.is_some() {
-            return status; // Ready (Ok) or Failed (Err) — resolved.
-        }
-        gloo_timers::future::TimeoutFuture::new(16).await;
-    }
-    None
-}
-
 async fn register_material(mat: &Arc<CM>) -> bool {
     // A debounced register that lost the race with a delete (create→edit→delete
     // faster than the ~400ms debounce) must not re-register the deleted material —
@@ -5781,30 +5763,38 @@ async fn register_material(mat: &Arc<CM>) -> bool {
     match crate::engine::bridge::dynamic::register(mat).await {
         Ok(shader_id) => {
             // `register` only QUEUES an async pipeline compile (the launch path
-            // skips synchronous shader validation), so a WGSL error in the
-            // author body — undefined symbol, type mismatch, garbage — isn't
-            // known yet. Poll the scheduler for this material's real compile
-            // result and report the truth (the trailing-`;` heuristic above
-            // never catches these).
-            match await_dynamic_compile(shader_id).await {
-                Some(Err(msg)) => {
-                    Toast::error(format!("Material compile failed: {msg}"));
-                    mat.last_diagnostics.set(vec![query::CompileError {
-                        line: None,
-                        message: msg,
-                    }]);
-                    mat.registered.set_neq(false);
-                    false
-                }
-                // Ready, or undetermined (timeout — e.g. a backgrounded tab whose
-                // RAF/compile loop is paused). Optimistic: don't invent an error.
-                _ => {
-                    mat.last_diagnostics.set(Vec::new());
-                    mat.registered.set_neq(true);
-                    crate::engine::bridge::rematerialize_for_material(mat.id);
-                    true
-                }
+            // skips synchronous shader validation), and that compile is of the
+            // SHARED kernel — a WGSL error in the author body (undefined symbol,
+            // type mismatch, …) fails the kernel without ever attributing back to
+            // this material, so the old scheduler poll reported a silent `ok`
+            // (D2b). Instead validate the assembled kernel with `naga` SYNCHRONOUSLY
+            // here (the same front-end Tint mirrors for these classes) and report
+            // the truth. Validation-only — it never gates a frame.
+            let errors = crate::engine::context::with_renderer_mut(move |r| {
+                r.validate_dynamic_material_wgsl(shader_id)
+            })
+            .await;
+            if !errors.is_empty() {
+                Toast::error(format!("Material compile failed:\n{}", errors.join("\n")));
+                mat.last_diagnostics.set(
+                    errors
+                        .into_iter()
+                        // naga line numbers index the ASSEMBLED module, not the
+                        // author's snippet, so omit them (the message — e.g.
+                        // "unresolved value 'foo'" — is the actionable part).
+                        .map(|message| query::CompileError {
+                            line: None,
+                            message,
+                        })
+                        .collect(),
+                );
+                mat.registered.set_neq(false);
+                return false;
             }
+            mat.last_diagnostics.set(Vec::new());
+            mat.registered.set_neq(true);
+            crate::engine::bridge::rematerialize_for_material(mat.id);
+            true
         }
         Err(e) => {
             // Registration-level rejection (name collision / bucket-cap overflow).

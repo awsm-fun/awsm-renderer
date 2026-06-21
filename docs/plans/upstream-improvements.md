@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ✅ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done; B3 also landed.**
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ✅ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` ✅ → `B2` ✅ → `B3` ✅ → `D1`(ibl ✅; `D1-normalmap` ⏸) → `D3` ✅ → `P2` ✅ → `U2` ✅. **All primary tasks done; B3 + D2b also landed. Remaining: `D1-normalmap`, `B2-extra`, `B3-extra` (in progress — prod ship).**
 (`B3` deferred — optional + the auto-scroll capability already works via a looping B1-anim UV-offset track;
 turnkey CPU-flow design recorded. **Next: D1** — the report's "biggest win".)
 (`B2` landed the universal PBR scalars (normal_scale, occlusion_strength); the type-specific knobs
@@ -464,7 +464,35 @@ shaded **orange** `OpaqueShadingOutput` color, **zero** `GPUValidationError` in 
 
 ---
 
-### D2b — Make material diagnostics reflect the REAL GPU compile outcome ⏸ DEFERRED (needs design)
+### D2b — Make material diagnostics reflect the REAL GPU compile outcome ✅ DONE (2026-06-21, prod ship)
+
+**Landed + verified live.** A registered custom material is now validated SYNCHRONOUSLY with `naga` (the
+WGSL front-end Chrome's Tint mirrors for the common breakage classes) at register time, so diagnostics
+report the truth instead of a silent `ok`. Renderer: `AwsmRenderer::validate_dynamic_material_wgsl(shader_id)
+-> Vec<String>` assembles this material's opaque kernel (`shader_info_for` + a representative cache key) and
+runs `naga` parse+validate, returning the messages — feature-gated behind `dynamic-material-validation`
+(OFF by default; the player never authors materials, so it pays nothing for naga; the editor enables it).
+Editor: `register_material` calls it synchronously after register — non-empty ⇒ `registered=false` +
+`last_diagnostics` carry the message (line omitted — naga's line indexes the *assembled* module, not the
+author snippet, matching the existing convention); empty ⇒ register live. This replaced the old
+`await_dynamic_compile` scheduler poll (the unreliable mechanism: the shared kernel's async GPU compile
+never attributed a failure back to one material, and the poll could time out → optimistic `ok`).
+
+**Verified live (editor :9085):** valid body → `{ok:true, errors:[]}`; body with an undefined symbol
+(`this_symbol_does_not_exist`, which passes the trailing-`;` precheck) → **`{ok:false}`** with
+`"no definition in scope for identifier: this_symbol_does_not_exist"`; fixed body → `{ok:true}`. The
+material stays `registered=false` while invalid, so it never renders broken.
+
+> **Minor follow-up (not blocking):** validation runs *after* `register` submits the kernel to the GPU, so
+> the GPU also logs its own `GPUValidationError` for the invalid material during the edit window (devtools
+> console only — not user-facing; transient; `registered=false` prevents render). Validating *before* GPU
+> submission would need the kernel assembled from raw inputs pre-registration — a larger change; deferred.
+
+---
+
+#### D2b (original deferral note — for reference)
+
+### D2b — Make material diagnostics reflect the REAL GPU compile outcome ⏸ (was DEFERRED — needs design)
 
 **Verified state — CONFIRMED REAL (live), and BROADER than the report implied.** Even with D2a fixed, a
 custom material whose **author body** is GPU-invalid (e.g. `return OpaqueShadingOutput(
@@ -772,12 +800,13 @@ matches `editor_snapshot_json`'s `selection`.
   `all()` — matches the report's "costed only when used"); SSOT test now models default-on ∪ opt-in.
   Re-verified D1 live (declared `["ibl"]` still environment-lit). Then implemented **B3** (DONE above) —
   texture auto-flow, live-verified. Full workspace green throughout.
-- 2026-06-21 — **REMAINING DEFERRALS (post-runway):** `D2b` (truthful diagnostics — DECISION made:
-  synchronous per-material **naga** validation at register, feature-gated so the player stays lean; left for
-  the maintainer to bless adding `naga` as a renderer runtime dep — surfaced in the PR), `D1-normalmap`
-  (TBN — deep visibility-buffer kernel tangent-plumbing; too risky to land unattended), `B2-extra`
-  (emissive_strength / alpha-cutoff / toon / flipbook param knobs — per-feature, low value). All documented
-  turnkey.
+- 2026-06-21 — **PROD-SHIP PASS (David: "we need to ship to prod — why is anything deferred?").** Right call;
+  the deferrals were unattended-session caution + one dep decision, not "don't want them." Closing them all.
+  **`D2b` ✅ DONE** (see above): synchronous `naga` validation at register, feature-gated
+  (`dynamic-material-validation`, OFF by default so the player pays nothing). Verified live — invalid body →
+  `{ok:false}` with the real naga message; valid/fixed → `{ok:true}`. Replaced the flaky `await_dynamic_compile`
+  poll. Full `cargo test --workspace` green (42 binaries). Remaining this pass: `D1-normalmap`, `B2-extra`,
+  `B3-extra`.
 
 ---
 

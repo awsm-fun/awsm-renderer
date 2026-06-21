@@ -50,8 +50,19 @@ texture-export = ["awsm-renderer-core/texture-export"]
 # `schema_convert` modules next to each subsystem's runtime structs.
 # See the crate-root docs and `shadows::schema_convert` for the pattern.
 scene-schema = ["dep:awsm-scene"]
+# Compiles synchronous `naga` WGSL validation of custom (dynamic-WGSL) materials
+# at register time, so the editor reports a TRUE compile error in material
+# diagnostics instead of a silent `ok` (the deferred GPU compile of the shared
+# kernel never attributes its error back to the material — see D2b). OFF by
+# default: the player/runtime never authors materials, so it pays nothing for
+# `naga` (~hundreds of KB). The editor enables it.
+dynamic-material-validation = ["dep:naga"]
 
 [dependencies]
+# Optional — only compiled when `dynamic-material-validation` is on (the editor).
+# naga is also a dev-dependency (the wgsl_validation test suite), kept separately
+# so the existing tests run on a plain `cargo test`.
+naga = { version = "28.0.0", features = ["wgsl-in"], optional = true }
 awsm-renderer-core = { workspace = true, features = ["texture-pool"] }
 awsm-materials = { workspace = true }
 awsm-scene = { workspace = true, optional = true }
