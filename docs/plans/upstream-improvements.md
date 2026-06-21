@@ -68,7 +68,8 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` ✅ → `B1-anim` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
+(`B1` settable+UI was already built — split: `B1-anim` (animate the UV transform) is the remaining half.)
 (`D2-fix` split into `D2a` (codegen black-screen — DONE) and `D2b` (diagnostics lie — DEFERRED, needs a
 design decision; does not block anything). `P2` — "frame node inside subject" — was not exercised in T0;
 verify it live in its own iteration. **Next actionable: `A1`.**)
@@ -177,34 +178,63 @@ the keyframe and confirm its interp is `step` without a follow-up `SetKeyframe`.
 
 ---
 
-### B1 — Per-texture UV transform: make it settable AND animatable on built-in materials
+### B1 — Per-texture UV transform: settable + editor UI ✅ DONE (pre-existing; re-verified by code map)
 
-**Verified state — PARTIAL (infra already exists; only the runtime/anim/UI surface is missing).** The
-data model + GPU plumbing are done: `TextureTransform { offset, scale, rotation, origin }`
-(`packages/crates/renderer/src/textures.rs` ~L960), per-texture `MaterialTexture::transform_key`
-(`packages/crates/materials/src/texture.rs` L18), and `KHR_texture_transform` round-trips on glTF import
-across all slots (`packages/crates/renderer-gltf/src/populate/material.rs` L784-809). **What's missing:**
-(a) no runtime API to *set* a transform after material creation (it's load-time-only / read-only); (b) no
-animation-track target for it; (c) no editor UI to edit it on a built-in material.
+**Re-audit corrected the report.** The report's "built-in materials expose NO UV transform at all" is
+**stale** — per-texture offset/scale/rotation is already a first-class, settable, editor-editable feature:
 
-> Distinct from the existing per-texture **UV-set selector + wrap mode** in the material assign UI — that
-> picks *which* UV channel and wrap, it is **not** an offset/scale/rotation transform. Don't conflate them.
+- **Scene model:** `primitive.rs` `TextureRef { asset, uv_index, transform: Option<TextureTransform>,
+  sampler }` with `TextureTransform { offset, rotation, scale }` (default scale `[1,1]`); referenced by
+  every `MaterialDef` texture slot in `scene/material.rs` (base_color / metallic_roughness / normal /
+  occlusion / emissive). Serialized to the project.
+- **Renderer:** `TextureTransform { offset, origin, rotation, scale }` (`renderer/textures.rs` ~L805) +
+  `insert_texture_transform` / `update_texture_transform` (live, repacks GPU bytes + dirties for re-upload);
+  per-texture `MaterialTexture::transform_key` (`materials/texture.rs` L18); the WGSL applies it in
+  `shared_wgsl/textures.wgsl` `texture_transform_uvs` (affine M·uv + B). KHR_texture_transform round-trips
+  on glTF import (`renderer-gltf/populate/material.rs`).
+- **Editor UI (already built):** `scene_mode/inspector.rs` `texture_slot_rows` (~L2917) exposes per-slot
+  **UV set, Offset X/Y, Rotation, Scale X/Y, Wrap U/V**; each edit commits to `TextureRef.transform`, and
+  the material bridge (`engine/bridge/material.rs` ~L350) materializes it into a renderer
+  `TextureTransform` key. So scrolling/rotating a built-in texture by hand is a built-in feature today.
 
-**Do.** (a) Add a settable path — extend `AwsmRenderer::update_material` use / a `MaterialTexture`
-transform setter so a transform can be written live (repacks the material uniform buffer on next prep);
-expose an MCP/editor command (mirror the `SetMaterialTexture` shape, add transform fields). (b) Add a
-UV-transform animation target (new `BuiltinParamKind`/`BuiltinMaterialParam` arm, or a dedicated
-texture-transform target) carrying the offset `Vec2` (uses **A1**) + scale `Vec2` + rotation scalar,
-**per texture slot**. (c) Add the editor UI (offset/scale/rotation fields per texture slot on built-in
-materials), and wire it as an Add-Track target in `animation_mode/add_track.rs`.
+**Remaining gap → split out as `B1-anim` (next task).** The only missing half of the report's B1 is the
+**animation-track target** for the UV transform. That's a sizable, self-contained feature (its own task,
+below), so B1's settable+UI half is marked done here and the animation half is `B1-anim`.
 
-**Verify (live).** Built-in PBR mesh with a base-color texture: set a non-zero `offset` via dispatch →
-screenshot shows the texture shifted. Animate the offset as a single Vec2 track → `editor_tick_animation`
-→ screenshots over time show it scrolling. Confirm the normal-map slot's transform is independent
-(per-texture, not shared). No GPU error.
+---
 
-**Done when:** a built-in texture's UV offset is both live-settable and animatable per slot, proven by
-before/after + over-time screenshots.
+### B1-anim — Animate the per-texture UV transform (offset/scale/rotation) — NEXT
+
+**Verified state — STILL-VALID (no UV-transform animation target exists).** `TrackTarget`
+(`scene/animation.rs`) and renderer `AnimationTarget` (`clip_group.rs`) have Transform/Morph/Uniform/
+BuiltinParam/Light/Camera but **no texture-transform target**; `add_track.rs` lists no UV-transform rows.
+
+**Design (extension points mapped — turnkey).**
+1. **Renderer foundation:** change `Textures::texture_transforms` from `SlotMap<K, ()>` to
+   `SlotMap<K, TextureTransform>` (store the struct), and add `get_texture_transform(key) -> Option<&_>` +
+   have `update_texture_transform` keep the CPU mirror in sync — so a track can read-modify-write ONE
+   component while preserving the others. (This 3-line change was prototyped + reverted to keep B1's commit
+   clean; re-apply it as step 1.)
+2. **scene:** `TrackTarget::TextureTransform { node, slot: TexSlot, prop: TexTransformProp }` with new
+   `TexSlot` (BaseColor/MetallicRoughness/Normal/Occlusion/Emissive — mirror of `BuiltinTextureSlot`, but
+   defined in `scene` since `editor-protocol` depends on `scene`, not vice-versa) and `TexTransformProp`
+   (Offset → vec2 (**A1**), Scale → vec2, Rotation → scalar).
+3. **renderer:** `AnimationTarget::TextureUv { material: MaterialKey, slot, prop }`; apply reads the
+   material's slot `MaterialTexture` (`PbrMaterial.base_color_tex` etc. — `materials/pbr.rs` L22+) for its
+   `transform_key`, **ensuring an identity key exists** (insert + assign if `None`), then
+   `get_texture_transform` → set the animated component → `update_texture_transform`. Mind the borrow split
+   (mutate `materials` to read the key, then mutate `textures`). `read_rest` returns the slot transform's
+   current component. The mixer already blends vec2/scalar (A1).
+4. **editor lowering:** `animation_sync.rs resolve_target` — new arm: node → first `material_key` (like
+   `BuiltinParam`), emit `AnimationTarget::TextureUv`.
+5. **editor UI:** `add_track.rs` — per-textured-slot rows (Offset/Scale/Rotation) under the material group.
+
+**Verify (live).** Built-in PBR mesh + base-color texture (procedural checker): animate the base-color UV
+**offset** as a single Vec2 track → `editor_tick_animation`/scrub → screenshots over time show the texture
+scrolling; confirm the normal-map slot's transform is independent (per-texture). No GPU error.
+
+**Done when:** a built-in texture's UV offset (and scale/rotation) is animatable per slot, proven by
+over-time screenshots; settable half already verified above.
 
 ---
 
@@ -481,6 +511,16 @@ matches `editor_snapshot_json`'s `selection`.
   to `AddKeyframe` (serde default) + handler fallback to the track sampler; updated 3 editor call sites + the
   MCP tool/params; also finished A1's MCP `build_track_value` (vec2/vec4). Verified live: 3 keys in one call
   each → readback `["step","linear","cubic"]`, zero GPU errors, clean compile (no warnings). Next: B1.
+- 2026-06-21 — **B1 (settable + editor UI) DONE — already built (code-confirmed), report was STALE.**
+  Deep code map (Explore) found per-texture offset/scale/rotation is fully present: scene `TextureRef.transform`
+  (`primitive.rs`) on every `MaterialDef` slot; renderer `TextureTransform` + `insert/update_texture_transform`
+  (live) + `MaterialTexture.transform_key` + the `texture_transform_uvs` WGSL; KHR import round-trips; and the
+  editor inspector `texture_slot_rows` already exposes UV-set/Offset X·Y/Rotation/Scale X·Y/Wrap per slot,
+  committing to `TextureRef.transform` via the material bridge. So the report's "no UV transform at all" is
+  wrong — scrolling/rotating a built-in texture by hand works today. **Split:** the only missing half is the
+  animation-track target → re-scoped as `B1-anim` (next) with all extension points mapped + a renderer
+  foundation step (store `TextureTransform` in the SlotMap + a getter; prototyped then reverted to keep this
+  commit clean — no functional code change this iteration). Next: B1-anim.
 
 ---
 
