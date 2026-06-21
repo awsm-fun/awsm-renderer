@@ -224,16 +224,15 @@ fn resolve_target(
             let material = maps.custom_materials.get(material).copied()?;
             Some(AnimationTarget::Uniform { material, slot })
         }
-        TrackTarget::TextureTransform { node, slot, prop } => {
-            maps.node_materials
-                .get(node)
-                .copied()
-                .map(|material| AnimationTarget::TextureUv {
-                    material,
-                    slot: tex_slot(*slot),
-                    prop: tex_prop(*prop),
-                })
-        }
+        TrackTarget::TextureTransform { node, slot, prop } => maps
+            .node_materials
+            .get(node)
+            .copied()
+            .map(|material| AnimationTarget::TextureUv {
+                material,
+                slot: tex_slot(*slot),
+                prop: tex_prop(*prop),
+            }),
     }
 }
 

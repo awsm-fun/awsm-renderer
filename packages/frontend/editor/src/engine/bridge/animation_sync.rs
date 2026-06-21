@@ -516,9 +516,7 @@ fn resolve_target(
     }
 }
 
-fn tex_slot(
-    s: awsm_editor_protocol::animation::TexSlot,
-) -> awsm_renderer::animation::TexSlot {
+fn tex_slot(s: awsm_editor_protocol::animation::TexSlot) -> awsm_renderer::animation::TexSlot {
     use awsm_editor_protocol::animation::TexSlot as S;
     use awsm_renderer::animation::TexSlot as R;
     match s {
