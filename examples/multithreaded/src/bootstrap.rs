@@ -23,9 +23,18 @@ use web_sys::{Blob, BlobPropertyBag, Url, Worker, WorkerOptions, WorkerType};
 
 /// Spawn a worker that shares this thread's wasm module + linear memory,
 /// tagged with `role` (read back by the bootstrap JS to pick an entry
-/// point). `on_message` is installed as the worker's `onmessage` so the
-/// main thread can observe what the worker posts back.
-pub fn spawn_shared_worker(role: &str, on_message: &js_sys::Function) -> Result<Worker, JsValue> {
+/// point) and an arbitrary `payload` (delivered to the role entry point —
+/// pass `JsValue::UNDEFINED` for none). `on_message` is installed as the
+/// worker's `onmessage` so the spawner can observe what it posts back.
+///
+/// Callable from the main thread *or* from a worker (the render worker
+/// spawns the physics worker this way) — `wasm_bindgen::module/memory`
+/// return the shared module + shared memory in either scope.
+pub fn spawn_shared_worker(
+    role: &str,
+    payload: &JsValue,
+    on_message: &js_sys::Function,
+) -> Result<Worker, JsValue> {
     let blob_options = BlobPropertyBag::new();
     blob_options.set_type("application/javascript");
     let parts = js_sys::Array::new_with_length(1);
@@ -51,6 +60,7 @@ pub fn spawn_shared_worker(role: &str, on_message: &js_sys::Function) -> Result<
     set(&init_msg, "memory", &wasm_bindgen::memory());
     set(&init_msg, "glue_url", &JsValue::from_str(&bundle_url()));
     set(&init_msg, "role", &JsValue::from_str(role));
+    set(&init_msg, "payload", payload);
     worker.post_message(&init_msg)?;
 
     Ok(worker)
@@ -72,13 +82,16 @@ pub const WORKER_BOOTSTRAP_JS: &str = r#"
 self.onmessage = async (e) => {
     const d = e.data;
     if (!d || d.kind !== "awsm-mt-init") return;
-    const { wasm_module, memory, glue_url, role } = d;
+    const { wasm_module, memory, glue_url, role, payload } = d;
     try {
+        // Stash the glue URL so a worker that itself spawns another worker
+        // (render → physics) can recover it (no `document` in a worker).
+        self.__awsm_glue_url = glue_url;
         const wbg = await import(glue_url);
         await wbg.default({ module_or_path: wasm_module, memory });
         // boot() ran during init (worker scope → no-op). Now trigger the
         // role-specific work directly (a worker can't postMessage itself).
-        wbg.mt_worker_start(role);
+        wbg.mt_worker_start(role, payload);
     } catch (err) {
         self.postMessage({ kind: "awsm-mt-init-error", message: (err && err.message) ? err.message : String(err) });
     }
@@ -86,11 +99,19 @@ self.onmessage = async (e) => {
 "#;
 
 /// The worker-side entry point the bootstrap JS calls after init.
-/// Dispatches on `role`.
+/// Dispatches on `role`; `payload` is the per-role data posted with the
+/// init message (`JsValue::UNDEFINED` if none).
 #[wasm_bindgen]
-pub fn mt_worker_start(role: String) -> Result<(), JsValue> {
+pub fn mt_worker_start(role: String, payload: JsValue) -> Result<(), JsValue> {
     crate::install_tracing();
-    crate::smoke::worker_dispatch(&role)
+    match role.as_str() {
+        "a" | "b" => crate::smoke::worker_dispatch(&role),
+        "arena-render" | "arena-physics" => crate::arena_test::worker_dispatch(&role, payload),
+        other => {
+            tracing::warn!("unknown worker role {other:?}");
+            Ok(())
+        }
+    }
 }
 
 /// Recover the JS-glue bundle URL from the page (Trunk hashes the
@@ -98,6 +119,11 @@ pub fn mt_worker_start(role: String) -> Result<(), JsValue> {
 /// `import.meta.url` outside a DOM context.
 #[wasm_bindgen(inline_js = r#"
 export function awsm_mt_bundle_url() {
+    // A worker stashes the glue URL it was booted with (set in the worker
+    // bootstrap) so render→physics spawning works without a DOM.
+    if (typeof self !== "undefined" && self.__awsm_glue_url) {
+        return self.__awsm_glue_url;
+    }
     if (typeof document !== "undefined") {
         const scripts = document.querySelectorAll("script[type=module]");
         for (const s of scripts) {

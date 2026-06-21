@@ -28,6 +28,7 @@
 //! crossing the thread boundary — proving real shared memory, no
 //! `postMessage` on the shared-state path. See [`crate::smoke`].
 
+pub mod arena_test;
 pub mod bootstrap;
 pub mod smoke;
 
@@ -57,9 +58,11 @@ pub fn boot() -> Result<(), JsValue> {
     }
 }
 
-/// Main-thread bootstrap. For M0 this is the 2-worker shared-memory
-/// smoke; later milestones replace it with the render + physics worker
-/// hand-off.
+/// Main-thread bootstrap. Selects a demo via the `?demo=` query param so
+/// each milestone's gate stays independently runnable:
+/// - `smoke` (M0): 2-worker shared-memory smoke.
+/// - `arena` (M1, default): physics worker writes a ramp into the shared
+///   arena at high rate; render worker reads with torn-read detection.
 fn main_thread_boot() -> Result<(), JsValue> {
     tracing::info!("multithreaded example: main-thread boot");
     let isolated = crossorigin_isolated();
@@ -71,7 +74,19 @@ fn main_thread_boot() -> Result<(), JsValue> {
              Serve with COOP: same-origin + COEP: require-corp."
         );
     }
-    smoke::start_main()
+    match demo_param().as_str() {
+        "smoke" => smoke::start_main(),
+        _ => arena_test::start_main(),
+    }
+}
+
+/// Read the `?demo=` query param (defaults to empty).
+fn demo_param() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok())
+        .and_then(|p| p.get("demo"))
+        .unwrap_or_default()
 }
 
 /// Install the browser-console tracing subscriber (idempotent — safe to

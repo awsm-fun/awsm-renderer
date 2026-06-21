@@ -34,8 +34,8 @@ pub fn start_main() -> Result<(), JsValue> {
 
     let on_a = make_main_listener("a");
     let on_b = make_main_listener("b");
-    crate::bootstrap::spawn_shared_worker("a", on_a.as_ref().unchecked_ref())?;
-    crate::bootstrap::spawn_shared_worker("b", on_b.as_ref().unchecked_ref())?;
+    crate::bootstrap::spawn_shared_worker("a", &JsValue::UNDEFINED, on_a.as_ref().unchecked_ref())?;
+    crate::bootstrap::spawn_shared_worker("b", &JsValue::UNDEFINED, on_b.as_ref().unchecked_ref())?;
     on_a.forget();
     on_b.forget();
 

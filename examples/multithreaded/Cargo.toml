@@ -17,6 +17,7 @@ rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+awsm-renderer = { workspace = true }
 web-sys = { workspace = true }
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
