@@ -68,7 +68,7 @@ highest-impact item. Then `A1` (vec2/vec4 tracks) unblocks animating the `B1` UV
 settable-transform unblocks `B2`/`B3`; `D1`/`D3` are independent; `U2` is the last real UX gap.
 P1, U1, U3 were **closed by T0** (not reproducible / already built).
 
-**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` → `B1` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
+**Order:** `T0` ✅ → `D2a` ✅ → `D2b` ⏸ → `A1` ✅ → `A2` ✅ → `B1` → `B2` → `B3` → `D1` → `D3` → `P2` → `U2`.
 (`D2-fix` split into `D2a` (codegen black-screen — DONE) and `D2b` (diagnostics lie — DEFERRED, needs a
 design decision; does not block anything). `P2` — "frame node inside subject" — was not exercised in T0;
 verify it live in its own iteration. **Next actionable: `A1`.**)
@@ -146,7 +146,21 @@ confirm it matches componentwise lerp. Screenshot a scene whose visible param is
 
 ---
 
-### A2 — Accept an optional `interp` on `add_keyframe`
+### A2 — Accept an optional `interp` on `add_keyframe` ✅ DONE (2026-06-21)
+
+**Landed + verified live.** Added `#[serde(default)] interp: Option<Interp>` to `AddKeyframe`
+(`editor-protocol/command.rs`); the handler (`controller/state.rs`) uses it when `Some`, else derives from
+the track sampler (so existing callers are unchanged). Updated the 3 editor construction sites
+(`inspector.rs`, `timeline/transport.rs`, `gizmo.rs`) to pass `interp: None`, and the MCP tool
+(`mcp.rs add_keyframe` + `AddKeyframeParams.interp: Option<String>` parsed via the existing `parse_interp`).
+Also completed A1's MCP surface: `build_track_value` now accepts `vec2`/`vec4` (the tool description lists
+`vec2 | vec3 | vec4 | quat | scalar`). Verified live (editor :9085): three keys added in one call each →
+readback `["step","linear","cubic"]` (explicit step@0, no-arg→sampler linear@0.5, explicit cubic@1); no
+GPU errors. No follow-up `SetKeyframe` needed.
+
+---
+
+#### A2 (original spec — for reference)
 
 **Verified state — STILL-VALID but tiny.** `AddKeyframe` has no `interp`
 (`packages/mcp/editor-protocol/src/command.rs` ~L674); the handler derives interp from the track sampler
@@ -463,6 +477,10 @@ matches `editor_snapshot_json`'s `selection`.
   wrongly seeded as Quat → slerp on a non-rotation value). Verified live: a Vec4 `tint` track red→blue scrubs
   through magenta `[0.5,0,0.5]` at the midpoint (3 screenshots + region-luma 131→63→110), zero GPU errors.
   Tests: scene round-trip extended (Vec2/Vec4), 44 renderer animation tests green. Next: A2.
+- 2026-06-21 — **A2 DONE (optional interp on add_keyframe) — PASS (live).** Added `interp: Option<Interp>`
+  to `AddKeyframe` (serde default) + handler fallback to the track sampler; updated 3 editor call sites + the
+  MCP tool/params; also finished A1's MCP `build_track_value` (vec2/vec4). Verified live: 3 keys in one call
+  each → readback `["step","linear","cubic"]`, zero GPU errors, clean compile (no warnings). Next: B1.
 
 ---
 

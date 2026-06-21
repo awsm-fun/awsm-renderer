@@ -2576,9 +2576,13 @@ impl EditorController {
                 track,
                 t,
                 value,
+                interp,
             } => match find_track(&self.custom_animations, clip, track) {
                 Some(tr) => {
-                    let interp = animation::sampler_to_interp(tr.sampler.get());
+                    // Caller-supplied interp wins; else derive from the track sampler
+                    // (prior behavior) so existing callers are unchanged.
+                    let interp =
+                        interp.unwrap_or_else(|| animation::sampler_to_interp(tr.sampler.get()));
                     let mut times = tr.times.lock_mut();
                     let mut keys = tr.keys.lock_mut();
                     // Replace an existing key at (almost) the same time, else insert

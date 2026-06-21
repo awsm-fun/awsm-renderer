@@ -18,7 +18,7 @@
 //! `acc` is always a fully-populated `Transform` because it is
 //! seeded from rest.
 
-use glam::{Quat, Vec2, Vec3, Vec4};
+use glam::{Quat, Vec3};
 
 use super::data::{AnimationData, TransformAnimation, VertexAnimation};
 

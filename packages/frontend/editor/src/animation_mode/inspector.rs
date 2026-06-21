@@ -483,6 +483,7 @@ fn transform_value_rows(
                             track: track_idx,
                             t,
                             value,
+                            interp: None,
                         });
                     }))
                     .render(),

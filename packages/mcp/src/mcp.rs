@@ -752,6 +752,10 @@ pub struct AddKeyframeParams {
     /// Time in seconds.
     pub t: f64,
     pub value: TrackValueArg,
+    /// Interpolation for the new key: step | linear | cubic, optional. Omit to
+    /// derive from the track's sampler (the default).
+    #[serde(default)]
+    pub interp: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2849,17 +2853,22 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Insert a keyframe at time `t` (seconds) with `value` on a track. value.kind = vec3 | quat (xyzw) | scalar. Replaces any existing key at `t`."
+        description = "Insert a keyframe at time `t` (seconds) with `value` on a track. value.kind = vec2 | vec3 | vec4 | quat (xyzw) | scalar. Optional `interp` = step | linear | cubic (omit to use the track's sampler). Replaces any existing key at `t`."
     )]
     async fn add_keyframe(
         &self,
         Parameters(p): Parameters<AddKeyframeParams>,
     ) -> Result<CallToolResult, McpError> {
+        let interp = match p.interp.as_deref() {
+            None => None,
+            Some(s) => Some(parse_interp(s)?),
+        };
         self.dispatch(EditorCommand::AddKeyframe {
             clip: parse_asset(&p.clip)?,
             track: p.track as usize,
             t: p.t,
             value: build_track_value(&p.value)?,
+            interp,
         })
         .await
     }
@@ -3539,11 +3548,23 @@ fn build_track_value(a: &TrackValueArg) -> Result<TrackValue, McpError> {
     let bad =
         |n: usize| McpError::invalid_params(format!("{} value needs {n} number(s)", a.kind), None);
     Ok(match a.kind.as_str() {
+        "vec2" => {
+            if a.value.len() < 2 {
+                return Err(bad(2));
+            }
+            TrackValue::Vec2([a.value[0], a.value[1]])
+        }
         "vec3" => {
             if a.value.len() < 3 {
                 return Err(bad(3));
             }
             TrackValue::Vec3([a.value[0], a.value[1], a.value[2]])
+        }
+        "vec4" => {
+            if a.value.len() < 4 {
+                return Err(bad(4));
+            }
+            TrackValue::Vec4([a.value[0], a.value[1], a.value[2], a.value[3]])
         }
         "quat" => {
             if a.value.len() < 4 {

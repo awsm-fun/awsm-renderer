@@ -676,6 +676,11 @@ pub enum EditorCommand {
         track: usize,
         t: f64,
         value: TrackValue,
+        /// Interpolation for the new key. `None` ⇒ derive from the track's
+        /// sampler (the prior default), so existing callers are unchanged;
+        /// `Some` sets it in one step (no follow-up `SetKeyframe`).
+        #[serde(default)]
+        interp: Option<Interp>,
     },
     /// Delete a keyframe (by index). Inverse: `InsertKeyframe` of the captured key.
     DeleteKeyframe {
