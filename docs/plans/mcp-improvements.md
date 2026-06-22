@@ -198,6 +198,21 @@ fract exp log` and multi-arg calls) in the CPU `displace` expr evaluator
 (`meshgen/src/expr.rs`, `authoring` feature) — the agent composes fbm / ridged /
 domain-warp from `noise()` + arithmetic, evaluated at mesh-bake time.
 
+> ✅ **(1) DONE (`7bbca00a`) · (2) BLOCKED (stretch).** Shipped the
+> displace-from-texture data hook: `displace_from_texture { node, data, strength }`
+> → `DisplaceFromTexture` decodes the heightmap (data:/base64, same path as
+> create_texture) and offsets each vertex along its normal by
+> `luminance(heightmap @ vertex-UV) * strength` (black = flat, white = raised;
+> negative carves). Editor-side (meshgen is pure — the noted constraint),
+> collapsing to a frozen-topology override layer like the sculpt verbs; undoable.
+> **Verified live:** a 32² heightmap of three gaussian bumps (heights 1.0/0.9/0.7)
+> displaced a 100×100 plane into three distinct peaks matching the image's
+> positions + relative heights (bbox.y 0 → 0.97). **(2) the programmable GPU WGSL
+> displacement stage is BLOCKED** as the doc's explicit stretch — a large new
+> programmable geometry-stage feature (its own ABI/contract + compute/vertex pass,
+> ≈ the whole custom-material system but for vertices); out of scope for one pass
+> once the texture path landed. Flagged for a human decision, not dropped.
+
 **Still owed.** A way for the agent to supply displacement from **arbitrary data
 it authored**, not just a formula — the original doc's stated generic fix. Two
 legitimate generic primitives (either fully satisfies the design principle;
@@ -293,5 +308,5 @@ becomes the skybox AND a metallic/low-roughness sphere reflects + is lit by it
 | 3 | Full per-variant JSONSchema for NodeKind / kind-config types | TODO | |
 | 10 | Reusable vertex-selection handle + read-path pagination | DONE | `135cf797` |
 | 14 | True soft-gradient particle blend (transparent instancing) | DONE | `a0c70ee6` |
-| 16 | Agent displacement data: displace-from-texture (+ WGSL stage stretch) | TODO | |
+| 16 | Displace-from-texture DONE; GPU WGSL stage BLOCKED (stretch) | DONE* | `7bbca00a` |
 | 18 | Agent panorama environment: equirect → skybox + IBL | DONE | `ef39c1bb` |
