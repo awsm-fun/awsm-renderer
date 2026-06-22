@@ -188,25 +188,25 @@ visual change and no feedback — the worst failure mode (looks like success).
 > but isn't callable through the harness without a `/mcp` reconnect; its command is
 > exercised via `dispatch_command` meanwhile.
 >
-> ⏳ **REMAINING BLOCKER — texture-transform doesn't RENDER (deferred, deep
-> renderer/prep-pass bug; §1 stays WIP).** With §11 landed I verified the
-> transform path end-to-end with instrumentation: applying any transform
-> (`set_node_texture_transform scale:[4,4]`, or even **identity**) makes the
-> checker **vanish to flat** — the shader reads a **zero matrix** (UV→(0,0) →
-> uniform corner texel). PROVEN-CORRECT on the CPU/data side: `resolve_texture`
-> logs `transform_key offset=32 slot_index=1`; the transform buffer's CPU slot 1 =
-> `[4,0,0,4, 0,0]` (the scale matrix); the dirty-range flush uploads it; and even a
-> **synchronous full-buffer `gpu.write_buffer`** (bypassing the mapped uploader)
-> still renders flat. So the upload lands but the **shader reads `texture_transforms`
-> as zero for any slot ≥ 1** (slot 0 / identity works → §11). The UV transform for
-> interior pixels is applied in the **prep pass** (`render_passes/material_prep`,
-> the `{% if prep_present %}` branch in `material_opaque_wgsl/helpers/texture_uvs.wgsl`)
-> — strong lead: the prep pass binds a stale/separate texture-transforms buffer, or
-> its materialized-UV cache isn't invalidated when a transform changes live. Fix
-> there, then verify scale/offset tile+shift the checker and `flow` scrolls it.
-> **This same blocker gates §2** (the `texture_transform` keyframe channel needs
-> transforms to render). Diagnostics were reverted; the tool + reject-loudly + the
-> §11 unblock are committed (`3d0102c7`, `8c7d2264`).
+> ✅ **RENDER FIXED (2026-06-22) — root cause was texture reclaim on
+> re-materialize, NOT the transform buffer.** Earlier instrumentation pointed at
+> the prep pass, but a GPU readback (a custom material outputting
+> `texture_transforms[1].m`) proved the transform buffer + upload + binding are
+> all CORRECT (it read back the scale matrix). The real bug: a textured built-in
+> material's `set_node_texture_transform` (or ANY edit) re-materializes the node,
+> and the re-materialize **tore the old material down first** —
+> `Materials::remove_material` reclaimed the (momentarily unreferenced) **texture**
+> from the pool, then the immediate rebuild cache-hit the now-dead `TextureKey`,
+> so `map_texture`'s `texture_entry(key)` returned `None` → the mesh rendered
+> **untextured** (flat). It only bit when the OLD material already carried the
+> texture (so `set_node_texture` from a textureless material worked — §11 — but a
+> second edit on it didn't). **Fix:** the editor's re-materialize teardown now
+> KEEPS the material's textures (`remove_material_keep_textures` — textures are
+> owned by the session texture cache, keyed by asset id, and re-referenced by the
+> rebuild); only an actual node DELETE reclaims them (the glTF leak fix preserved).
+> **Verified live**: `scale:[4,4]` tiles the checker 4×, `offset:[0.5,0]` shifts
+> it (chrome-devtools screenshots). This also fixes editing any textured built-in
+> material generally. Unblocks §2 + §7.
 
 ---
 
@@ -750,7 +750,7 @@ or a naga quirk; either way an author hits it fast.
 | 3 | Machine-readable command schema + patch-style `set_kind` | DONE | `72839eb2` (patch_kind; full JSONSchema bounded-deferred — see §3) |
 | 4 | Typed/patch particle emitter config | DONE | `1a38e67c` |
 | 5 | Unassigned-material node: render magenta/warn + fix docs | DONE | `8815c9be` |
-| 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | WIP | |
+| 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | DONE | `a52f4550` |
 | 7 | `set_frame_time` pins builtin texture `Flow` | TODO | |
 | 8 | Per-model facing/orientation hint | TODO | |
 | 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | TODO | |

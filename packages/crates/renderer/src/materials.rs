@@ -87,6 +87,25 @@ impl AwsmRenderer {
     /// (e.g. tear down meshes first). Returns `true` if the material
     /// existed; `false` if it was already gone.
     pub fn remove_material(&mut self, key: MaterialKey) -> bool {
+        self.remove_material_inner(key, true)
+    }
+
+    /// Like [`remove_material`] but does NOT reclaim the material's pooled
+    /// **textures** (it still reclaims its texture-transforms). Used by the
+    /// editor's RE-MATERIALIZE teardown: a kind/material edit tears the old
+    /// material down and immediately rebuilds, and the rebuild re-references the
+    /// SAME textures **by key** (they're owned by the editor's session texture
+    /// cache, keyed by asset id — not by the material). Reclaiming them here would
+    /// free a `TextureKey` the rebuild then resolves on the cache-hit path and
+    /// reads as absent (`texture_entry` → None) → the mesh renders untextured.
+    /// Transforms ARE reclaimed (recreated fresh each build, not cache-owned).
+    /// Actual node deletion uses [`remove_material`] (full reclaim — the glTF
+    /// import/delete leak fix).
+    pub fn remove_material_keep_textures(&mut self, key: MaterialKey) -> bool {
+        self.remove_material_inner(key, false)
+    }
+
+    fn remove_material_inner(&mut self, key: MaterialKey, reclaim_textures: bool) -> bool {
         // Texture-leak fix: reclaim this material's pooled GPU textures + their
         // texture-transforms when NO OTHER live material still references them.
         // Imported-model textures were never freed (`remove_texture` was dead
@@ -94,7 +113,8 @@ impl AwsmRenderer {
         // an "aw snap" contributor. A scan-on-remove (rather than refcounting the
         // insert path) keeps every insert site untouched, and freeing only
         // unreferenced keys is dangle-free — a texture shared by another live
-        // material is kept.
+        // material is kept. `reclaim_textures = false` keeps the textures (the
+        // editor re-materialize case — see `remove_material_keep_textures`).
         let handles = self
             .materials
             .get(key)
@@ -115,7 +135,7 @@ impl AwsmRenderer {
                 }
             }
             for (tk, ttk) in handles {
-                if !live_tex.contains(&tk) {
+                if reclaim_textures && !live_tex.contains(&tk) {
                     self.textures.remove(tk);
                 }
                 if let Some(tt) = ttk {

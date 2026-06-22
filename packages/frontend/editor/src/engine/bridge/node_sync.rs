@@ -371,7 +371,8 @@ async fn remove_node(node_id: NodeId) {
         e
     };
     if let Some(entry) = entry {
-        teardown(&entry).await;
+        // Real deletion: reclaim the node's textures too (glTF leak fix).
+        teardown(&entry, true).await;
         // Free the node's OWN transform. `teardown` only frees sub-transforms
         // (`model_transforms`); the node's `transform_key` is a SlotMap key into
         // `r.transforms`, and dropping the `Arc<RendererNode>` below does NOT free
@@ -467,7 +468,14 @@ async fn reclaim_templates_for_removed(entry: &Arc<RendererNode>, node_id: NodeI
 /// light). Deliberately leaves the node's own `transform_key` alone so a kind
 /// change (re-materialize) keeps a stable transform; when the node is actually
 /// deleted, `remove_node` frees that `transform_key` explicitly after this.
-async fn teardown(entry: &Arc<RendererNode>) {
+///
+/// `reclaim_textures`: a RE-MATERIALIZE (`false`) must KEEP the material's
+/// textures — the immediate rebuild re-references them by key from the session
+/// texture cache, and freeing them here would leave the rebuilt material reading
+/// a dead `TextureKey` as absent → the mesh renders untextured (§1: a UV
+/// transform / any edit on a textured built-in material made the texture vanish).
+/// An actual node DELETE (`true`) reclaims them (the glTF leak fix).
+async fn teardown(entry: &Arc<RendererNode>, reclaim_textures: bool) {
     let meshes: Vec<_> = entry.model_meshes.lock().unwrap().drain(..).collect();
     let transforms: Vec<_> = entry.model_transforms.lock().unwrap().drain(..).collect();
     let materials: Vec<_> = entry.material_keys.lock().unwrap().drain(..).collect();
@@ -487,7 +495,11 @@ async fn teardown(entry: &Arc<RendererNode>) {
             r.transforms.remove(tk);
         }
         for mat in materials {
-            r.remove_material(mat);
+            if reclaim_textures {
+                r.remove_material(mat);
+            } else {
+                r.remove_material_keep_textures(mat);
+            }
         }
         for lk in lines {
             r.remove_line(lk);
@@ -549,8 +561,10 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         }
     }
 
-    // Tear down the previous materialization (no-op on first apply).
-    teardown(&entry).await;
+    // Tear down the previous materialization (no-op on first apply). KEEP the old
+    // material's textures — the rebuild below re-references them by key from the
+    // session cache; reclaiming here would make the rebuilt mesh render untextured.
+    teardown(&entry, false).await;
 
     match kind {
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
