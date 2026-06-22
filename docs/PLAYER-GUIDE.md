@@ -405,6 +405,7 @@ mt:dev` → <http://127.0.0.1:9090>); each milestone is a `?demo=` mode:
 | `churn` | live spawn/despawn topology as a bind→ack→free transaction (slot reuse, invariant-checked) |
 | `lights` | a physics worker animating a **light** via its bound transform (the lit spot sweeps a static surface) |
 | `skin` | a physics worker flexing a real rigged glTF (CesiumMan) by driving its **skin joints** through the arena |
+| `scene` | the **player path** — `load_scene_for_player` runs *in the worker* (the editor-export loader), then a runtime light is added + driven by physics through the arena |
 | `remote` | the Layer 1 `RenderCommand`/`RenderEvent` protocol — DOM driver loads a real **glTF** (DamagedHelmet), streams a progress bar, picks, queries bounds, recolours the material |
 | `input` | full input forwarding + a main-thread responsiveness meter (Long Tasks API) |
 
@@ -538,6 +539,19 @@ write. The owner-side flow is bind → (foreign writes) → on retire, *unbind* 
 slot and wait for the sim worker's ack before *freeing* it (so the freed slot
 can be safely reused). `?demo=churn` exercises this with slot-reuse + an
 invariant check.
+
+**The player path runs in the worker.** A shipped game doesn't load glTF
+directly (that's the editor / model-viewer route) — it loads a `Scene` the
+editor exported, via `awsm_scene_loader::load_scene_for_player(renderer, &scene,
+&assets, on_phase)`. That call works unchanged inside the render worker:
+materials, primitive + baked meshes, lights, environment and the commit
+transaction all run off-main. After it returns, the static world is driven by
+`LoadedScene.nodes` (each node's `transform` is an arena-backed `TransformKey` —
+hook it to physics), prefabs by `LoadedScene.prefabs[..].instantiate(...)`, and
+new lights by `insert_light` + a bound transform. `?demo=scene` loads a scene,
+adds a light at runtime, and sweeps it from the physics worker. `assets` is any
+`SceneAssets` — an in-memory map, or an **async same-origin fetcher** (COEP
+blocks cross-origin asset fetches).
 
 ### 9.5 `queue.writeBuffer` from shared memory
 

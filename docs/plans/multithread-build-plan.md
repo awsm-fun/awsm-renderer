@@ -47,6 +47,21 @@ A robust capture needs renderer support:
 - **Acceptance:** `?demo=remote` `Screenshot` returns non-empty bytes whose
   decoded image matches the on-screen frame.
 
+## B4 — Migrate the stale `assets/world/*` scene fixtures
+The bundled sample scenes (`assets/world/*/project.json`) are a **stale
+pre-refactor format**: they use a `primitive` node kind that no longer exists
+(the current schema is `Mesh { mesh: MeshRef }` with a primitive *base* in the
+mesh asset's modifier stack). Neither the current `EditorProject` nor `Scene`
+deserializes them, and `project_to_scene` can't bake them. `?demo=scene` works
+around this by building an equivalent `Scene` in code.
+
+- Either re-export these fixtures from the current editor, or write a one-shot
+  migration (old-format → current `EditorProject`), then bundle a real exported
+  scene so `?demo=scene` loads from a file (closer to the shipped path) and the
+  fixtures are usable by tests/tools again.
+- **Acceptance:** `?demo=scene` deserializes a bundled scene file + `project_to_scene`
+  + `load_scene_for_player` with no in-code scene construction.
+
 ## B3 — (conditional) Arena growth policy
 Only if T3's churn soak shows shared-memory growth is *unbounded*: add slab
 reuse / compaction so long spawn/despawn sessions keep memory flat. Default

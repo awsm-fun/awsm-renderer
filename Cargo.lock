@@ -369,6 +369,8 @@ dependencies = [
  "awsm-renderer",
  "awsm-renderer-core",
  "awsm-renderer-gltf",
+ "awsm-scene",
+ "awsm-scene-loader",
  "glam 0.32.1",
  "gloo-net",
  "js-sys",

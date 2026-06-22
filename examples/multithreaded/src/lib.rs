@@ -33,6 +33,7 @@ pub mod motion_demo;
 pub mod protocol;
 pub mod remote_demo;
 pub mod render_demo;
+pub mod scene_demo;
 pub mod skin_demo;
 pub mod smoke;
 pub mod viewport;
@@ -88,6 +89,7 @@ fn main_thread_boot() -> Result<(), JsValue> {
         "churn" => churn_demo::start_main(),
         "lights" => lights_demo::start_main(),
         "skin" => skin_demo::start_main(),
+        "scene" => scene_demo::start_main(),
         "remote" => remote_demo::start_main(),
         // Default: M6 input forwarding + main-thread responsiveness.
         _ => input_demo::start_main(),

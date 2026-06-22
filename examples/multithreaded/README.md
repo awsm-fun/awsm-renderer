@@ -26,6 +26,7 @@ Each capability is a selectable demo; the default is `input`.
 | `churn`  | live spawn/despawn topology as a bind→ack→free transaction (slot reuse, invariant-checked) | `src/churn_demo.rs` |
 | `lights` | a physics worker animating a **light** via its bound transform (the lit spot sweeps a static ground) | `src/lights_demo.rs` |
 | `skin`   | a physics worker flexing a real rigged glTF (CesiumMan) by driving its **skin joints** through the arena | `src/skin_demo.rs` |
+| `scene`  | the **player path** — `load_scene_for_player` runs in the worker, then a runtime light is added + driven by physics through the arena | `src/scene_demo.rs` |
 | `remote` | the Layer 1 protocol — DOM driver loads a real **glTF** (DamagedHelmet) over the wire, streams a progress bar, picks, queries bounds, recolours the material | `src/protocol.rs`, `src/remote_demo.rs` |
 | `input`  | full input forwarding (pointer/wheel/key/resize) + a main-thread responsiveness meter (Long Tasks API) | `src/input_demo.rs` |
 
