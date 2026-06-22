@@ -2421,7 +2421,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras. The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + the generic brdf primitives). Unknown keys are dropped. Call material_helper_catalog for descriptions."
+        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras, ibl. `ibl` exposes sample_ibl(albedo, normal, surface_to_camera, roughness, metallic) (+ sample_ibl_diffuse/_specular) — the SAME environment ambient + reflection first-party PBR gets, so a custom material matches the scene IBL instead of hand-faking a sky gradient (fixes black custom materials in IBL-only scenes; pair with normals + view_dir fragment_inputs). The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + ibl). Unknown keys are dropped. Call material_helper_catalog for descriptions."
     )]
     async fn set_material_includes(
         &self,
@@ -4059,7 +4059,15 @@ const MATERIAL_KEYS_DOC: &str = "\
 
 shader_includes (set_material_includes): math, camera, color_space, textures, \
 vertex_color, light_access, apply_lighting, brdf, material_color_calc, shadows, \
-skybox, extras.
+skybox, extras, ibl.
+
+`ibl` (image-based lighting): declare it + call `sample_ibl(albedo, normal, \
+surface_to_camera, roughness, metallic) -> vec3<f32>` (or `sample_ibl_diffuse(n)` \
+/ `sample_ibl_specular(reflect_dir, roughness)`) to get the SAME environment \
+ambient + reflection first-party PBR gets — so a custom material matches the \
+scene's IBL instead of hand-faking a sky gradient (the fix for custom materials \
+rendering black in an IBL-only, no-punctual-light scene). Pair with the `normals` \
++ `view_dir` fragment_inputs for `input.world_normal` + `input.surface_to_camera`.
 
 fragment_inputs (set_material_fragment_inputs): normals, tangents, uv, lights, \
 view_dir, vertex_color.

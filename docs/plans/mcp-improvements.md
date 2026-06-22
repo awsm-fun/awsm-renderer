@@ -883,6 +883,26 @@ reflections (no IBL include). **Suggested fix:** expose an `ibl` include
 (prefiltered + irradiance sampler) to custom materials, so they can match
 first-party PBR ambient/reflection instead of hand-faking a sky gradient.
 
+> ✅ **DONE (2026-06-22) — the `ibl` include EXISTS + works; the gap was
+> discoverability.** The renderer already ships `shared_wgsl/lighting/ibl.wgsl`
+> with `sample_ibl(albedo, normal, surface_to_camera, roughness, metallic)` +
+> `sample_ibl_diffuse` / `sample_ibl_specular`; `ibl` is a Tier-A
+> custom-allowed `ShaderIncludes` key (`KEY_TABLE`), gated into the opaque kernel
+> (`opaque_kernel_includes.wgsl` `{% if inc.ibl %}`), and `from_key("ibl")` maps
+> it — so `set_material_includes [..., "ibl"]` works. The §12 validator fix means
+> it validates correctly too. The ACTUAL gap was that the legal-includes list
+> advertised to the agent **omitted `ibl`** — the contract output
+> (`MATERIAL_KEYS_DOC`), the `set_material_includes` tool description, and the
+> opaque-contract doc all left it out, so the agent never knew to declare it (and
+> hand-faked sky gradients instead). Added `ibl` + a worked `sample_ibl` usage
+> note to all three. **Verified live**: a sphere with a custom material declaring
+> `["ibl"]` + `normals`/`view_dir` and a body `return OpaqueShadingOutput(
+> sample_ibl(albedo, input.world_normal, input.surface_to_camera, 0.2, 0.1), 1.0)`
+> compiles (`get_material_diagnostics` ok) and renders **environment-lit** (soft
+> sky ambient/reflection), NOT black (chrome-devtools screenshot) — matching what
+> first-party PBR gets. (Punctual scene-light auto-response stays an explicit
+> `light_access` opt-in by design — Tier-A, costed only when used.)
+
 ## 18. 🟡 Environment customization is builtin-or-KTX2-only
 
 `set_environment` accepts only `'builtin'`, a **KTX2 cubemap** asset UUID, or a
@@ -944,7 +964,7 @@ or a naga quirk; either way an author hits it fast.
 | 13 | `set_builtin_alpha_mode` + base_color rgba | DONE | `edbbdd01` |
 | 14 | Particle realism (sprite upload, alpha sampled→discs, doc `forces`; soft-gradient blend deferred-noted) | DONE | `327b8159` |
 | 15 | Vertex-color default footgun — doc + clear-to-0 option | DONE | `3c984ce3` |
-| 16 | Programmable displacement WGSL stage | TODO | |
+| 16 | Displace expr noise() primitive (GPU WGSL stage deferred-noted) | DONE | `9b307e8c` |
 | 17 | `ibl` include + light-list for custom materials | TODO | |
 | 18 | Env-from-agent-data (raw cubemap bytes / skybox WGSL) | TODO | |
 | 19 | Toon shading — add regression test (positive, keep) | TODO | |
