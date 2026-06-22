@@ -81,6 +81,13 @@ panic = 'abort'
 incremental = false
 overflow-checks = true
 
+# The profile that 'dist' (cargo-dist) builds release artifacts with. Inherits
+# the fully-tuned release profile (opt-level 3, fat LTO, codegen-units = 1) so
+# shipped binaries are optimized for runtime, not CI link time. cargo-dist
+# always builds with `--profile dist`, so this block must exist.
+[profile.dist]
+inherits = "release"
+
 [profile.dev]
 opt-level = 1
 
