@@ -416,4 +416,165 @@ impl AwsmRendererWebGpu {
         }
         Ok(rgba)
     }
+
+    /// Capture a swapchain/canvas texture as an **opaque** PNG.
+    ///
+    /// Builds on [`Self::export_texture_as_rgba8`] (BGRA→RGBA swizzle + sRGB
+    /// display bytes handled there) then forces every pixel's alpha to fully
+    /// opaque before encoding. A renderer presents to a canvas with a don't-care
+    /// alpha channel — for an opaque-composited canvas the swapchain alpha is
+    /// often left at 0, which would otherwise decode as a fully transparent PNG
+    /// (RGB premultiplied away by image viewers / `drawImage`). A screenshot must
+    /// be opaque, so we clamp alpha here. Used by `renderer.capture_frame()` (B2).
+    pub async fn export_texture_as_png_opaque(
+        &self,
+        texture: &web_sys::GpuTexture,
+        width: u32,
+        height: u32,
+        array_index: u32,
+        format: TextureFormat,
+    ) -> Result<Vec<u8>> {
+        let mut rgba = self
+            .export_texture_as_rgba8(texture, width, height, array_index, format)
+            .await?;
+        for px in rgba.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        let mut png_output: Vec<u8> = Vec::new();
+        PngEncoder::new(&mut png_output)
+            .write_image(&rgba, width, height, ColorType::Rgba8.into())
+            .map_err(AwsmCoreError::TextureExportFailedWrite)?;
+        Ok(png_output)
+    }
+
+    /// **Synchronously** encode + submit a `copyTextureToBuffer` of `texture`
+    /// into a fresh MAP_READ buffer, returning a [`TextureReadback`] handle whose
+    /// async `finish_*` maps + decodes it later.
+    ///
+    /// Splitting the synchronous copy from the async readback is load-bearing for
+    /// capturing a **worker `OffscreenCanvas` swapchain**: the canvas implicitly
+    /// presents (and *expires* the current texture) when control returns to the
+    /// event loop, so a deferred copy (e.g. one issued from a `spawn_local`
+    /// microtask) can race past present and read a blank texture. Issuing the
+    /// copy here, inside the render callback before yielding, snapshots the live
+    /// frame; only the `mapAsync` readback is deferred. (`renderer.capture_frame`.)
+    pub fn copy_texture_for_readback(
+        &self,
+        texture: &web_sys::GpuTexture,
+        width: u32,
+        height: u32,
+        array_index: u32,
+        format: TextureFormat,
+    ) -> Result<TextureReadback> {
+        let format_info = get_format_info(format, None)?;
+        let unpadded_bytes_per_row = width * format_info.bytes_per_pixel;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(256) * 256;
+        let buffer_size = padded_bytes_per_row * height;
+
+        let buffer = self.create_buffer(
+            &BufferDescriptor::new(
+                Some("Texture Readback"),
+                buffer_size as usize,
+                BufferUsage::new().with_copy_dst().with_map_read(),
+            )
+            .into(),
+        )?;
+
+        let command_encoder = self.create_command_encoder(Some("Texture Readback"));
+        let image_copy_texture =
+            TexelCopyTextureInfo::new(texture).with_origin(Origin3d::new().with_z(array_index));
+        let image_copy_buffer = TexelCopyBufferInfo::new(&buffer)
+            .with_bytes_per_row(padded_bytes_per_row)
+            .with_rows_per_image(height);
+        command_encoder.copy_texture_to_buffer(
+            &image_copy_texture.into(),
+            &image_copy_buffer.into(),
+            &Extent3d::new(width, Some(height), Some(1)).into(),
+        )?;
+        self.submit_commands(&command_encoder.finish());
+
+        Ok(TextureReadback {
+            buffer,
+            padded_bytes_per_row,
+            unpadded_bytes_per_row,
+            width,
+            height,
+            format,
+            is_srgb: format_info.is_srgb,
+        })
+    }
+}
+
+/// A pending GPU→CPU texture readback. The `copyTextureToBuffer` was already
+/// submitted (see [`AwsmRendererWebGpu::copy_texture_for_readback`]); the async
+/// `finish_*` methods map the buffer and decode the bytes.
+pub struct TextureReadback {
+    buffer: web_sys::GpuBuffer,
+    padded_bytes_per_row: u32,
+    unpadded_bytes_per_row: u32,
+    width: u32,
+    height: u32,
+    format: TextureFormat,
+    is_srgb: bool,
+}
+
+impl TextureReadback {
+    /// Map the buffer and return tightly-packed display-space RGBA8 bytes
+    /// (BGRA→RGBA swizzle + linear→sRGB applied to match what's on screen).
+    pub async fn finish_rgba8(self) -> Result<Vec<u8>> {
+        JsFuture::from(self.buffer.map_async(MapMode::Read as u32))
+            .await
+            .map_err(AwsmCoreError::buffer_map)?;
+        let array_buffer = self
+            .buffer
+            .get_mapped_range()
+            .map_err(AwsmCoreError::buffer_map_range)?;
+        let padded_data: Vec<u8> = js_sys::Uint8Array::new(&array_buffer).to_vec();
+
+        let mut data: Vec<u8> =
+            Vec::with_capacity((self.unpadded_bytes_per_row * self.height) as usize);
+        for row in 0..self.height {
+            let row_start = (row * self.padded_bytes_per_row) as usize;
+            data.extend_from_slice(
+                &padded_data[row_start..row_start + self.unpadded_bytes_per_row as usize],
+            );
+        }
+        self.buffer.unmap();
+        self.buffer.destroy();
+
+        let mut rgba = match self.format {
+            TextureFormat::Rgba8unorm | TextureFormat::Rgba8unormSrgb => data,
+            TextureFormat::Bgra8unorm | TextureFormat::Bgra8unormSrgb => {
+                for chunk in data.chunks_exact_mut(4) {
+                    chunk.swap(0, 2);
+                }
+                data
+            }
+            _ => {
+                return Err(AwsmCoreError::TextureExportUnsupportedPngEncoding(
+                    self.format,
+                ))
+            }
+        };
+        if !self.is_srgb {
+            rgba = convert_linear_to_srgb_u8(&rgba);
+        }
+        Ok(rgba)
+    }
+
+    /// Map + decode as an **opaque** PNG (alpha forced to 1.0). See
+    /// [`AwsmRendererWebGpu::export_texture_as_png_opaque`] for why opaque.
+    pub async fn finish_png_opaque(self) -> Result<Vec<u8>> {
+        let width = self.width;
+        let height = self.height;
+        let mut rgba = self.finish_rgba8().await?;
+        for px in rgba.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        let mut png_output: Vec<u8> = Vec::new();
+        PngEncoder::new(&mut png_output)
+            .write_image(&rgba, width, height, ColorType::Rgba8.into())
+            .map_err(AwsmCoreError::TextureExportFailedWrite)?;
+        Ok(png_output)
+    }
 }

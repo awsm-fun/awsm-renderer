@@ -247,6 +247,12 @@ fn handle_event(e: &web_sys::MessageEvent, worker: &Rc<RefCell<Option<web_sys::W
         RenderEvent::ScreenshotBytes { len } => {
             tracing::info!("remote demo: ScreenshotBytes len={len}");
             set_state("screenshotBytes", &JsValue::from_f64(len as f64));
+            // Surface the Transferable PNG bytes (sibling `bytes` on the message)
+            // so a driver can decode + verify the image matches the on-screen
+            // frame (B2 acceptance).
+            if let Ok(bytes) = js_sys::Reflect::get(&data, &JsValue::from_str("bytes")) {
+                set_state("screenshotData", &bytes);
+            }
         }
         RenderEvent::Error { message } => {
             tracing::error!("remote demo: worker error: {message}");
@@ -346,6 +352,22 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
     let canvas_handle = canvas.clone();
     let gpu = navigator_gpu().ok_or_else(|| JsValue::from_str("worker: no navigator.gpu"))?;
     let gpu_builder = AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)
+        // RENDER_ATTACHMENT (to draw) + COPY_SRC so the WebGPU swapchain texture
+        // is host-copyable — `renderer.capture_frame()` GPU-copies it for the
+        // Screenshot path (B2). Without COPY_SRC `copyTextureToBuffer` would be a
+        // validation error, the same way `convertToBlob` returns NotReadableError.
+        .with_configuration(
+            awsm_renderer_core::configuration::CanvasConfiguration::default()
+                // Opaque so the presented + read-back alpha is 1.0 — without it
+                // the swapchain alpha stays 0 and the captured PNG decodes fully
+                // transparent (RGB premultiplied away). Mirrors the editor.
+                .with_alpha_mode(awsm_renderer_core::configuration::CanvasAlphaMode::Opaque)
+                .with_usage(
+                    awsm_renderer_core::texture::TextureUsage::new()
+                        .with_render_attachment()
+                        .with_copy_src(),
+                ),
+        )
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
     wasm_bindgen_futures::spawn_local(async move {
@@ -381,18 +403,6 @@ fn post_event_transfer(evt: &RenderEvent, bytes: &js_sys::Uint8Array, transfer: 
     }
 }
 
-/// Capture the worker's `OffscreenCanvas` to PNG bytes via `convertToBlob` —
-/// a clean platform readback (no manual `copyTextureToBuffer` plumbing).
-async fn capture_png(canvas: &web_sys::OffscreenCanvas) -> Result<Vec<u8>, JsValue> {
-    let blob_promise = canvas.convert_to_blob()?;
-    let blob: web_sys::Blob = wasm_bindgen_futures::JsFuture::from(blob_promise)
-        .await?
-        .unchecked_into();
-    let buf = wasm_bindgen_futures::JsFuture::from(blob.array_buffer()).await?;
-    let arr = js_sys::Uint8Array::new(&buf);
-    Ok(arr.to_vec())
-}
-
 async fn run_worker(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     canvas: web_sys::OffscreenCanvas,
@@ -414,6 +424,10 @@ async fn run_worker(
     #[allow(clippy::arc_with_non_send_sync)]
     let cell = Rc::new(RefCell::new(renderer));
     let loading = Rc::new(Cell::new(false));
+    // Screenshot is a one-shot flag the command handler sets and the render loop
+    // consumes RIGHT AFTER `render()` — the only moment the WebGPU swapchain
+    // texture holds this frame's pixels and is still the current texture (B2).
+    let screenshot = Rc::new(Cell::new(false));
     // Orbit camera shared by the render loop and the UpdateCamera command.
     // Auto-spins until the driver issues an UpdateCamera.
     let orbit = Rc::new(RefCell::new(Orbit {
@@ -435,7 +449,11 @@ async fn run_worker(
         let loading_loop = loading.clone();
         let canvas_loop = canvas.clone();
         let orbit_loop = orbit.clone();
+        let screenshot_loop = screenshot.clone();
         *raf_init.borrow_mut() = Some(Closure::new(move || {
+            // Capture future built inside the renderer borrow (it snapshots the
+            // swapchain texture handle), awaited after the borrow drops.
+            let mut capture = None;
             if !loading_loop.get() {
                 if let Ok(mut r) = cell_loop.try_borrow_mut() {
                     let eye = {
@@ -462,7 +480,31 @@ async fn run_worker(
                     });
                     r.update_transforms();
                     let _ = r.render(None);
+                    if screenshot_loop.replace(false) {
+                        // Build the capture future NOW (pre-present); the encode
+                        // happens on first poll, the await is just the readback.
+                        capture = Some(r.capture_frame());
+                    }
                 }
+            }
+            if let Some(fut) = capture {
+                wasm_bindgen_futures::spawn_local(async move {
+                    match fut.await {
+                        Ok(bytes) => {
+                            let arr = js_sys::Uint8Array::from(bytes.as_slice());
+                            let transfer = js_sys::Array::new();
+                            transfer.push(&arr.buffer());
+                            post_event_transfer(
+                                &RenderEvent::ScreenshotBytes { len: bytes.len() },
+                                &arr,
+                                &transfer,
+                            );
+                        }
+                        Err(err) => post_event(&RenderEvent::Error {
+                            message: format!("screenshot: {err}"),
+                        }),
+                    }
+                });
             }
             if let Some(cb) = raf_run.borrow().as_ref() {
                 let _ =
@@ -481,12 +523,13 @@ async fn run_worker(
     let loading_cmd = loading.clone();
     let canvas_cmd = canvas.clone();
     let orbit_cmd = orbit.clone();
+    let screenshot_cmd = screenshot.clone();
     let on_cmd =
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
             if crate::viewport::try_apply_resize(&canvas_cmd, &e.data()).is_some() {
                 return;
             }
-            handle_command(e, &cell_cmd, &loading_cmd, &orbit_cmd, &canvas_cmd);
+            handle_command(e, &cell_cmd, &loading_cmd, &orbit_cmd, &screenshot_cmd);
         });
     worker_scope().set_onmessage(Some(on_cmd.as_ref().unchecked_ref()));
     on_cmd.forget();
@@ -525,7 +568,7 @@ fn handle_command(
     cell: &Rc<RefCell<awsm_renderer::AwsmRenderer>>,
     loading: &Rc<Cell<bool>>,
     orbit: &Rc<RefCell<Orbit>>,
-    canvas: &web_sys::OffscreenCanvas,
+    screenshot: &Rc<Cell<bool>>,
 ) {
     let data = e.data();
     if js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
@@ -636,24 +679,10 @@ fn handle_command(
             post_event(&RenderEvent::MaterialChanged { meshes: changed });
         }
         RenderCommand::Screenshot => {
-            let canvas = canvas.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match capture_png(&canvas).await {
-                    Ok(bytes) => {
-                        let arr = js_sys::Uint8Array::from(bytes.as_slice());
-                        let transfer = js_sys::Array::new();
-                        transfer.push(&arr.buffer());
-                        post_event_transfer(
-                            &RenderEvent::ScreenshotBytes { len: bytes.len() },
-                            &arr,
-                            &transfer,
-                        );
-                    }
-                    Err(err) => post_event(&RenderEvent::Error {
-                        message: format!("screenshot: {err:?}"),
-                    }),
-                }
-            });
+            // Defer to the render loop: it captures the swapchain texture right
+            // after the next `render()` (the only host-copyable moment) and
+            // posts `ScreenshotBytes` + the Transferable buffer. See B2.
+            screenshot.set(true);
         }
         RenderCommand::Pick { x, y } => {
             let cell = cell.clone();

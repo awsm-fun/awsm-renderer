@@ -17,7 +17,9 @@ rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-awsm-renderer = { workspace = true }
+# `texture-export` pulls in the GPU `copyTextureToBuffer` → PNG readback path
+# (`renderer.capture_frame()`) that backs `RenderCommand::Screenshot` (B2).
+awsm-renderer = { workspace = true, features = ["texture-export"] }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 awsm-scene = { workspace = true }

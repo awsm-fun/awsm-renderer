@@ -27,18 +27,18 @@ pub enum RenderCommand {
     /// Recolour every loaded mesh's emissive factor — a visible material
     /// mutation over the protocol (reply → `RenderEvent::MaterialChanged`).
     SetMeshMaterial { emissive: [f32; 3] },
-    /// Capture the current frame off the worker's `OffscreenCanvas`
-    /// (`convertToBlob`) and reply → `RenderEvent::ScreenshotBytes`.
+    /// Capture the current frame and reply → `RenderEvent::ScreenshotBytes`
+    /// (PNG bytes ride alongside as a Transferable `ArrayBuffer`).
     ///
-    /// PLATFORM-BOUNDED (measured): on a WebGPU-configured `OffscreenCanvas`
-    /// Chrome rejects `convertToBlob` with `NotReadableError: Readback of the
-    /// source image has failed` — the swapchain image isn't host-readable after
-    /// present. A robust screenshot would need an in-renderer
-    /// `copyTextureToBuffer` + `mapAsync` capture path (rendering to an
-    /// explicit COPY_SRC color target), which the renderer doesn't yet expose;
-    /// building a one-off readback here would be fragile. The command therefore
-    /// stays in the protocol and surfaces the real `Error` rather than faking a
-    /// capture — the honest result of the platform probe.
+    /// B2 (landed): the render worker configures its `OffscreenCanvas` swapchain
+    /// with `COPY_SRC` usage and, right after the next `render()` (the only
+    /// host-copyable moment — the swapchain texture goes blank on the following
+    /// `getCurrentTexture`), calls `renderer.capture_frame()`. That GPU-copies
+    /// the current context texture via `copyTextureToBuffer` → `mapAsync`
+    /// (256-byte row-stride handled by the exporter) and PNG-encodes it. This
+    /// replaces the old `OffscreenCanvas.convertToBlob` path, which Chrome
+    /// rejects on a WebGPU canvas with `NotReadableError` (swapchain not
+    /// host-readable post-present).
     Screenshot,
     /// Pick the mesh under a canvas pixel (request → `RenderEvent::PickResult`).
     Pick { x: i32, y: i32 },
