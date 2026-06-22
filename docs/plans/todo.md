@@ -97,7 +97,7 @@ deferred piece — the programmable GPU vertex stage — is **Part A** below.
 | CV2 | Custom vertex: transparent + geometry-masked + shadow-masked variants (Phase 2) | TODO | |
 | CV3 | Custom vertex: editor 3rd WGSL window + toggle + `set_material_vertex_wgsl` MCP + contract doc + starter body (Phase 3) | TODO | |
 | CV4 | Custom vertex: polish — normal-from-height helper, vertex texture-fetch example, skinned-mesh tests (Phase 4, optional) | TODO | |
-| B2 | Multithread: screenshot capture path (`renderer.capture_frame`) | TODO | |
+| B2 | Multithread: screenshot capture path (`renderer.capture_frame`) | DONE | 4c593c02 |
 | B1 | Multithread: device-loss + worker-crash recovery | TODO | |
 | T4 | Multithread: resilience VERIFICATION (after B1) | TODO | |
 | T3 | Multithread: perf at scale + soak (Chrome) | TODO | |
