@@ -30,6 +30,7 @@ pub fn start_main() -> Result<(), JsValue> {
         .get_element_by_id("canvas")
         .ok_or_else(|| JsValue::from_str("no #canvas"))?
         .unchecked_into();
+    let _ = crate::viewport::size_canvas_to_display(&canvas);
     let offscreen = canvas.transfer_control_to_offscreen()?;
 
     let search = window.location().search().unwrap_or_default();
@@ -57,13 +58,14 @@ pub fn start_main() -> Result<(), JsValue> {
     });
     let transfer = js_sys::Array::new();
     transfer.push(&offscreen);
-    crate::bootstrap::spawn_shared_worker_transfer(
+    let worker = crate::bootstrap::spawn_shared_worker_transfer(
         "render",
         &payload,
         &transfer,
         on_msg.as_ref().unchecked_ref(),
     )?;
     on_msg.forget();
+    crate::viewport::observe_resize(&canvas, &worker)?;
     tracing::info!("render demo: spawned render worker (arena={arena}, spin={spin})");
     Ok(())
 }
@@ -82,6 +84,8 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
 
     let canvas: web_sys::OffscreenCanvas =
         js_sys::Reflect::get(&payload, &JsValue::from_str("canvas"))?.unchecked_into();
+    let canvas_handle = canvas.clone();
+    crate::viewport::install_worker_resize(&canvas_handle);
     let use_arena = js_sys::Reflect::get(&payload, &JsValue::from_str("arena"))?
         .as_bool()
         .unwrap_or(true);
@@ -97,7 +101,7 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_renderer(gpu_builder, use_arena, spin).await {
+        if let Err(err) = run_renderer(gpu_builder, use_arena, spin, canvas_handle).await {
             tracing::error!("render demo: {err:?}");
         }
     });
@@ -108,6 +112,7 @@ async fn run_renderer(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     use_arena: bool,
     spin: bool,
+    canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
     use awsm_materials::pbr::PbrMaterial;
     use awsm_materials::MaterialAlphaMode;
@@ -202,7 +207,12 @@ async fn run_renderer(
             );
         }
         let view = Mat4::look_at_rh(Vec3::new(0.0, 1.5, 3.0), Vec3::new(0.0, 0.0, -3.0), Vec3::Y);
-        let projection = Mat4::perspective_rh(60.0_f32.to_radians(), 800.0 / 600.0, 0.1, 100.0);
+        let projection = Mat4::perspective_rh(
+            60.0_f32.to_radians(),
+            crate::viewport::aspect(&canvas),
+            0.1,
+            100.0,
+        );
         let _ = r.update_camera(CameraMatrices {
             view,
             projection,

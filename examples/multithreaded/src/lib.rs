@@ -37,6 +37,7 @@ pub mod protocol;
 pub mod remote_demo;
 pub mod render_demo;
 pub mod smoke;
+pub mod viewport;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;

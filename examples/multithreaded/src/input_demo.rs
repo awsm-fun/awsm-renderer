@@ -44,6 +44,9 @@ pub fn start_main() -> Result<(), JsValue> {
         .get_element_by_id("canvas")
         .ok_or_else(|| JsValue::from_str("no #canvas"))?
         .unchecked_into();
+    // Size the backing store to CSS size × devicePixelRatio so the worker
+    // renders at native resolution (no upscaling) — then transfer.
+    let _ = crate::viewport::size_canvas_to_display(&canvas);
     let offscreen = canvas.transfer_control_to_offscreen()?;
 
     if let Some(hud) = document.get_element_by_id("hud") {
@@ -73,6 +76,7 @@ pub fn start_main() -> Result<(), JsValue> {
     noop.forget();
 
     install_input_forwarding(&document, &canvas, &worker)?;
+    crate::viewport::observe_resize(&canvas, &worker)?;
     start_main_responsiveness_loop(&document)?;
 
     tracing::info!("input demo: worker spawned, input forwarding + main rAF armed");
@@ -154,26 +158,7 @@ fn install_input_forwarding(
         cb.forget();
     }
 
-    // ResizeObserver → Resize
-    {
-        let w = worker.clone();
-        let cb = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
-            if let Some(entry) = entries.get(0).dyn_ref::<web_sys::ResizeObserverEntry>() {
-                let rect = entry.content_rect();
-                post(
-                    &w,
-                    &WorkerInputEvent::Resize {
-                        width: rect.width() as u32,
-                        height: rect.height() as u32,
-                    },
-                );
-            }
-        });
-        let observer = web_sys::ResizeObserver::new(cb.as_ref().unchecked_ref())?;
-        observer.observe(canvas);
-        cb.forget();
-        std::mem::forget(observer);
-    }
+    // Resize is handled by `viewport::observe_resize` (CSS size × dpr).
 
     Ok(())
 }
@@ -274,6 +259,9 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
     use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
 
     let canvas: web_sys::OffscreenCanvas = payload.unchecked_into();
+    // Keep a handle to the canvas for live resize + camera aspect (cloning an
+    // OffscreenCanvas is a cheap JS ref to the same backing store).
+    let canvas_handle = canvas.clone();
     let gpu = navigator_gpu().ok_or_else(|| JsValue::from_str("worker: no navigator.gpu"))?;
     let gpu_builder = AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)
         .with_device_request_limits(DeviceRequestLimits::max_all());
@@ -287,11 +275,17 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
         dragging: false,
     }));
 
-    // Input handler (replaces the bootstrap init onmessage).
+    // Message handler (replaces the bootstrap init onmessage): resize messages
+    // first, then forwarded input events.
     let camera_in = camera.clone();
+    let canvas_msg = canvas_handle.clone();
     let on_input =
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
-            if let Ok(ev) = serde_wasm_bindgen::from_value::<WorkerInputEvent>(e.data()) {
+            let data = e.data();
+            if crate::viewport::try_apply_resize(&canvas_msg, &data).is_some() {
+                return;
+            }
+            if let Ok(ev) = serde_wasm_bindgen::from_value::<WorkerInputEvent>(data) {
                 apply_input(&mut camera_in.borrow_mut(), ev);
             }
         });
@@ -301,7 +295,7 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
     on_input.forget();
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_render(gpu_builder, camera).await {
+        if let Err(err) = run_render(gpu_builder, camera, canvas_handle).await {
             tracing::error!("input demo render: {err:?}");
         }
     });
@@ -346,6 +340,7 @@ fn apply_input(cam: &mut CameraState, ev: WorkerInputEvent) {
 async fn run_render(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     camera: Rc<RefCell<CameraState>>,
+    canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
     use awsm_materials::pbr::PbrMaterial;
     use awsm_materials::MaterialAlphaMode;
@@ -417,7 +412,12 @@ async fn run_render(
             cam.distance * cam.pitch.cos() * cam.yaw.cos(),
         );
         let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
-        let projection = Mat4::perspective_rh(60.0_f32.to_radians(), 800.0 / 600.0, 0.1, 100.0);
+        let projection = Mat4::perspective_rh(
+            60.0_f32.to_radians(),
+            crate::viewport::aspect(&canvas),
+            0.1,
+            100.0,
+        );
         let _ = r.update_camera(CameraMatrices {
             view,
             projection,

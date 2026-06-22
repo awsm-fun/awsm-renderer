@@ -31,6 +31,7 @@ pub fn start_main() -> Result<(), JsValue> {
         .get_element_by_id("canvas")
         .ok_or_else(|| JsValue::from_str("no #canvas"))?
         .unchecked_into();
+    let _ = crate::viewport::size_canvas_to_display(&canvas);
     let offscreen = canvas.transfer_control_to_offscreen()?;
 
     // DOM progress bar overlay (the thing that paints from Loading events).
@@ -68,6 +69,7 @@ pub fn start_main() -> Result<(), JsValue> {
         },
         on_msg.as_ref().unchecked_ref(),
     )?;
+    crate::viewport::observe_resize(&canvas, &w)?;
     *worker.borrow_mut() = Some(w);
     on_msg.forget();
     tracing::info!("remote demo: spawned worker, awaiting Initialized");
@@ -289,12 +291,13 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
     use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
 
     let canvas: web_sys::OffscreenCanvas = payload.unchecked_into();
+    let canvas_handle = canvas.clone();
     let gpu = navigator_gpu().ok_or_else(|| JsValue::from_str("worker: no navigator.gpu"))?;
     let gpu_builder = AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_worker(gpu_builder).await {
+        if let Err(err) = run_worker(gpu_builder, canvas_handle).await {
             tracing::error!("remote demo worker: {err:?}");
         }
     });
@@ -316,6 +319,7 @@ fn post_event(evt: &RenderEvent) {
 
 async fn run_worker(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
+    canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
     use awsm_renderer::camera::CameraMatrices;
     use awsm_renderer::features::RendererFeatures;
@@ -344,13 +348,18 @@ async fn run_worker(
         let raf_run = raf.clone();
         let cell_loop = cell.clone();
         let loading_loop = loading.clone();
+        let canvas_loop = canvas.clone();
         *raf_init.borrow_mut() = Some(Closure::new(move || {
             if !loading_loop.get() {
                 if let Ok(mut r) = cell_loop.try_borrow_mut() {
                     let eye = Vec3::new(0.0, 0.0, 6.0);
                     let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
-                    let projection =
-                        Mat4::perspective_rh(60.0_f32.to_radians(), 800.0 / 600.0, 0.1, 100.0);
+                    let projection = Mat4::perspective_rh(
+                        60.0_f32.to_radians(),
+                        crate::viewport::aspect(&canvas_loop),
+                        0.1,
+                        100.0,
+                    );
                     let _ = r.update_camera(CameraMatrices {
                         view,
                         projection,
@@ -374,10 +383,15 @@ async fn run_worker(
     }
 
     // Command channel — replaces the bootstrap's init onmessage (init is done).
+    // Resize messages are handled inline; everything else is a RenderCommand.
     let cell_cmd = cell.clone();
     let loading_cmd = loading.clone();
+    let canvas_cmd = canvas.clone();
     let on_cmd =
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
+            if crate::viewport::try_apply_resize(&canvas_cmd, &e.data()).is_some() {
+                return;
+            }
             handle_command(e, &cell_cmd, &loading_cmd);
         });
     worker_scope().set_onmessage(Some(on_cmd.as_ref().unchecked_ref()));
