@@ -103,7 +103,7 @@ deferred piece — the programmable GPU vertex stage — is **Part A** below.
 | T3 | Multithread: perf at scale + soak (Chrome) | DONE | (verification — see §Verification results) |
 | T5 | Multithread: allocation / GC validation (Chrome) | DONE | (verification — see §Verification results) |
 | B3 | Multithread: arena growth policy (only if T3 shows unbounded growth) | DONE (N/A) | not needed — T3 churn soak proved memory bounded |
-| B4 | Multithread: bundled scene fixture for `?demo=scene` (optional) | TODO | |
+| B4 | Multithread: bundled scene fixture for `?demo=scene` (optional) | DONE | eec614d2 |
 
 **Suggested order:** CV1 → CV2 → CV3 → B2 → B1 → T4 → T3 → T5 → B3 (conditional)
 → B4 (optional) → CV4 (polish). Custom vertex is the headline feature and fully
