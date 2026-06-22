@@ -587,11 +587,26 @@ impl Transforms {
 
     /// Shared mode: read changed semantic 64-byte world matrices out of the
     /// arena (torn-read-safe) and pack them into the 112-byte GPU mirror
-    /// buffer. Pack cost is proportional to the dirty count (decision A);
-    /// the copy into the regular `buffer` mirror is also what keeps GPU
-    /// upload off shared memory (so `queue.writeBuffer` never reads a
-    /// shared-memory-backed view — the open empirical question, settled by
-    /// construction here).
+    /// buffer. Pack cost is proportional to the dirty count (decision A).
+    ///
+    /// H8 — the per-frame "copy at the pack step", settled empirically. The
+    /// plan flagged GPU-upload-from-shared-memory as an open question (would
+    /// `queue.writeBuffer` reject a `SharedArrayBuffer`-backed view?). MEASURED
+    /// in Chrome: `writeBuffer` ACCEPTS shared-backed views (and a mapped range
+    /// can be written from one) — corroborated by the fact that this whole
+    /// threaded renderer already uploads from the (shared) wasm heap every
+    /// frame and renders correctly. So the upload is NOT forced off shared
+    /// memory by the platform.
+    ///
+    /// The work here is therefore necessary computation, not a removable copy:
+    /// for each MOVED transform we (1) snapshot its 64 B model matrix out of
+    /// shared memory torn-read-safe (seqlock), (2) PACK to the 112 B GPU layout
+    /// — which computes the inverse-transpose normal matrix
+    /// ([`pack_world_transform`]) — into the CPU mirror, (3) upload via the
+    /// mapped ring. Each step earns its keep (tear safety / derived-data
+    /// compute / upload); none is a redundant memcpy, and all cost is ∝ movers.
+    /// The mirror is the single source the ST and MT paths share, so there is
+    /// no shared-only divergent upload path to maintain.
     fn descend_pack_arena(&mut self) {
         let mut scratch = std::mem::take(&mut self.arena_pack_scratch);
         scratch.clear();
