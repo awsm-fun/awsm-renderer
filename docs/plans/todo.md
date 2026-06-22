@@ -93,13 +93,13 @@ deferred piece — the programmable GPU vertex stage — is **Part A** below.
 
 | id | item | status | commit |
 |----|------|--------|--------|
-| CV1 | Custom vertex: ABI + `apply_vertex` hook + geometry & shadow per-material pipelines + registration/cache-key + naga validation (Phase 1) | TODO | |
-| CV2 | Custom vertex: transparent + geometry-masked + shadow-masked variants (Phase 2) | TODO | |
-| CV3 | Custom vertex: editor 3rd WGSL window + toggle + `set_material_vertex_wgsl` MCP + contract doc + starter body (Phase 3) | TODO | |
-| CV4 | Custom vertex: polish — normal-from-height helper, vertex texture-fetch example, skinned-mesh tests (Phase 4, optional) | TODO | |
+| CV1 | Custom vertex: ABI + `apply_vertex` hook + geometry & shadow per-material pipelines + registration/cache-key + naga validation (Phase 1) | BLOCKED | see §Blocked items |
+| CV2 | Custom vertex: transparent + geometry-masked + shadow-masked variants (Phase 2) | BLOCKED | depends on CV1 |
+| CV3 | Custom vertex: editor 3rd WGSL window + toggle + `set_material_vertex_wgsl` MCP + contract doc + starter body (Phase 3) | BLOCKED | depends on CV1 |
+| CV4 | Custom vertex: polish — normal-from-height helper, vertex texture-fetch example, skinned-mesh tests (Phase 4, optional) | BLOCKED | depends on CV1–CV3 |
 | B2 | Multithread: screenshot capture path (`renderer.capture_frame`) | DONE | 4c593c02 |
-| B1 | Multithread: device-loss + worker-crash recovery | TODO | |
-| T4 | Multithread: resilience VERIFICATION (after B1) | TODO | |
+| B1 | Multithread: device-loss + worker-crash recovery | BLOCKED | see §Blocked items |
+| T4 | Multithread: resilience VERIFICATION (after B1) | BLOCKED | depends on B1 |
 | T3 | Multithread: perf at scale + soak (Chrome) | DONE | (verification — see §Verification results) |
 | T5 | Multithread: allocation / GC validation (Chrome) | DONE | (verification — see §Verification results) |
 | B3 | Multithread: arena growth policy (only if T3 shows unbounded growth) | DONE (N/A) | not needed — T3 churn soak proved memory bounded |
@@ -115,6 +115,45 @@ Chrome-doable, so the target is a genuine 100%.
 > (recovery) are the two genuinely large items — attempt them phase by phase; if a
 > phase can't complete + verify in this run, BLOCK it with the specific reason
 > rather than half-shipping.
+
+## Blocked items (overnight run 2026-06-22)
+
+Both are the two genuinely-large items the tracker flagged; each is multi-day with
+unresolved design questions, so per the execution rules they are BLOCKED (not
+half-shipped) with the specific reason rather than a silent slice.
+
+- **CV1 (→ blocks CV2/CV3/CV4).** The custom-vertex feature's *full* Phase-1 scope
+  can't be completed + **live-verified** in one run:
+  1. **ABI not threaded.** `apply_vertex()` (`shared_wgsl/vertex/apply_vertex.wgsl`)
+     and its five callers only carry `position/normal/tangent/vertex_index` (+
+     instance rows). The §2 ABI also needs `uv`, `instance_id`, the `MaterialData`
+     uniforms, and `FrameGlobals` — none are currently passed into `apply_vertex`,
+     and the geometry/shadow passes don't even carry UVs in their vertex buffers.
+     Threading the full ABI touches all five vertex entry points + their vertex
+     buffer layouts.
+  2. **Per-material pipelines.** The geometry masked path already proves the shape
+     (a lazy per-`shader_id` pool + material/texture bind groups —
+     `geometry/masked_pipeline.rs`), so the geometry side is mirrorable; but the
+     shadow + shadow-masked passes need the same per-material split built from
+     scratch, and all five must stay byte-identical or shadows detach.
+  3. **Verification is coupled to CV3.** The DONE bar (a displaced mesh whose
+     shadow + silhouette match) needs an authoring path to inject vertex WGSL —
+     i.e. CV3's `set_material_vertex_wgsl` MCP setter + editor window + registration
+     plumbing. Native tests can't render (no GPU). So a genuine CV1 verification
+     requires CV1 **and** CV3 substantially built — multi-day combined.
+
+- **B1 (→ blocks T4).** Device-loss + worker-crash recovery is greenfield and has
+  unresolved design questions in this very doc:
+  - No `GPUDevice.lost` subscription and no `renderer.rebuild_gpu()` exist; recovery
+    means recreating the *entire* GPU-handle graph (buffers/textures/pipelines/bind
+    groups) from the CPU mirrors. Open question (per §B1): how much rebuilds behind
+    one call vs. needs a full re-`commit_load`.
+  - No render-worker respawn path exists (`workers/pool.rs` `onerror` only fails the
+    in-flight meshgen job; it is not the render worker). A respawn must re-transfer a
+    fresh `OffscreenCanvas`, re-post the shared module+memory, and re-hand every live
+    arena `SlotBinding` — and the render-worker topology (slot→key map) must be
+    re-derived (open question: persist it in shared memory vs. reload the scene).
+  - T4 is the *verification* of B1's code; with no code to exercise it is blocked too.
 
 ## Verification results (overnight run 2026-06-22)
 
