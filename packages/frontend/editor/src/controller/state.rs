@@ -2375,11 +2375,56 @@ impl EditorController {
                             glam::Vec3::from_array(wmax),
                         )
                     });
-                    // Live mesh AABBs are exact, which FEELS tight when framing
-                    // rigs/characters — breathe a little beyond the request.
+                    // §9: `frame_aabb` already fits the bounding SPHERE to the FOV
+                    // (conservative — encloses the box at any orbit angle), so the
+                    // subject reads small. Frame to margin `1.0 + padding` with NO
+                    // extra breathe multiplier (the old `* 1.15` left heads/parts
+                    // too small in frame); the user's `padding` is the only slack.
                     crate::engine::context::try_with_camera_mut(|c| {
-                        c.frame_aabb(aabb, (1.0 + padding.max(0.0)) * 1.15)
+                        c.frame_aabb(aabb, 1.0 + padding.max(0.0))
                     });
+                })
+                .await;
+                Ok(None)
+            }
+            EditorCommand::ResetPose { node } => {
+                // Collect (node + descendants) scene transforms, then re-push them
+                // onto the renderer mirror locals — reverting a clip's last
+                // previewed pose (pin_pose writes the mirror directly, NOT the
+                // scene, so the scene transform is the base). Viewport-only: no
+                // scene mutation, no undo entry (like FrameNode/SetFrameTime).
+                fn collect(
+                    node: &crate::engine::scene::node::Node,
+                    out: &mut Vec<(NodeId, awsm_editor_protocol::Trs)>,
+                ) {
+                    out.push((node.id, node.transform.get()));
+                    for c in node.children.lock_ref().iter() {
+                        collect(c, out);
+                    }
+                }
+                let mut scene_trs: Vec<(NodeId, awsm_editor_protocol::Trs)> = Vec::new();
+                if let Some(n) = mutate::find_by_id(&self.scene, node) {
+                    collect(&n, &mut scene_trs);
+                }
+                // Resolve transform keys from the bridge BEFORE the renderer lock.
+                let pairs: Vec<(
+                    awsm_renderer::transforms::TransformKey,
+                    awsm_editor_protocol::Trs,
+                )> = {
+                    let b = crate::engine::bridge::bridge();
+                    let nodes = b.nodes.lock().unwrap();
+                    scene_trs
+                        .into_iter()
+                        .filter_map(|(id, trs)| nodes.get(&id).map(|e| (e.transform_key, trs)))
+                        .collect()
+                };
+                crate::engine::context::with_renderer_mut(move |r| {
+                    for (tk, trs) in &pairs {
+                        let _ = r.transforms.set_local(
+                            *tk,
+                            crate::engine::bridge::node_sync::trs_to_transform(trs),
+                        );
+                    }
                 })
                 .await;
                 Ok(None)
@@ -4630,12 +4675,15 @@ impl EditorController {
                 end_node,
                 target,
                 pole,
+                root_node,
             } => {
                 use serde_json::json;
                 // Chain from the renderer's MIRROR hierarchy (bones are scene
                 // nodes; mirrors are parented exactly like the scene tree):
-                // end → parent (mid) → grandparent (root).
-                let (tk_e, tk_to_node) = {
+                // auto = end → parent (mid) → grandparent (root). When `root_node`
+                // is given, root is pinned to it and mid = root's child toward end
+                // (§9 — pick the chain when the auto-walk picks wrong, e.g. fingers).
+                let (tk_e, tk_root_opt, tk_to_node) = {
                     let b = crate::engine::bridge::bridge();
                     let nodes = b.nodes.lock().unwrap();
                     let Some(entry) = nodes.get(&end_node) else {
@@ -4643,13 +4691,47 @@ impl EditorController {
                             error: format!("end_node {end_node} not materialized"),
                         };
                     };
+                    let tk_root_opt = match root_node {
+                        Some(rn) => match nodes.get(&rn) {
+                            Some(re) => Some(re.transform_key),
+                            None => {
+                                return QueryResult::Error {
+                                    error: format!("root_node {rn} not materialized"),
+                                }
+                            }
+                        },
+                        None => None,
+                    };
                     let map: std::collections::HashMap<_, _> =
                         nodes.iter().map(|(id, n)| (n.transform_key, *id)).collect();
-                    (entry.transform_key, map)
+                    (entry.transform_key, tk_root_opt, map)
                 };
                 let solved = crate::engine::context::with_renderer_mut(move |r| {
-                    let tk_m = r.transforms.get_parent(tk_e).ok()?;
-                    let tk_r = r.transforms.get_parent(tk_m).ok()?;
+                    // Resolve the 2-bone chain (mid, root). Auto: end's parent +
+                    // grandparent. Explicit root: walk UP from end to root_node;
+                    // mid = the joint just below root on that path.
+                    let (tk_m, tk_r) = match tk_root_opt {
+                        None => {
+                            let tk_m = r.transforms.get_parent(tk_e).ok()?;
+                            let tk_r = r.transforms.get_parent(tk_m).ok()?;
+                            (tk_m, tk_r)
+                        }
+                        Some(tk_root) => {
+                            let mut cur = tk_e;
+                            let mut mid = None;
+                            for _ in 0..128 {
+                                let p = r.transforms.get_parent(cur).ok()?;
+                                if p == tk_root {
+                                    mid = Some(cur);
+                                    break;
+                                }
+                                cur = p;
+                            }
+                            // mid = child of root toward end; None ⇒ root isn't an
+                            // ancestor of end. mid==end ⇒ 1-bone (l2 check rejects).
+                            (mid?, tk_root)
+                        }
+                    };
                     let mid_id = tk_to_node.get(&tk_m).copied()?;
                     let root_id = tk_to_node.get(&tk_r).copied()?;
                     let we = *r.transforms.get_world(tk_e).ok()?;

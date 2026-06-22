@@ -466,6 +466,28 @@ but in scope and required, not optional.)
   re-`set_node_transform` them. A "restore base pose on clip clear" (or a
   `reset_pose { node }`) would avoid surprise raised-arms in a neutral view.
 
+> ✅ **ALL FOUR SHIPPED (2026-06-22).**
+> - **`frame_node` framing** — `frame_aabb` already fits the bounding SPHERE to
+>   the FOV (conservative at any orbit angle), and the handler piled an extra
+>   `× 1.15` breathe on top → subjects read small. Dropped the multiplier (margin
+>   = `1.0 + padding`; padding is the only slack). **Verified**: a framed box
+>   fills the viewport. (Bounded: a mesh-less joint node still falls back to a
+>   unit-cube AABB — frame a meshed descendant.)
+> - **Screenshot timeout message** — `link.rs` now returns "editor request timed
+>   out — is the editor tab foregrounded? A screenshot/render needs a live
+>   requestAnimationFrame frame, which browsers throttle/pause in a backgrounded
+>   tab…" instead of the opaque original.
+> - **`solve_ik` root joint** — new optional `root_node`: the chain becomes
+>   `root_node → (its child toward end) → end_node`, so you pick the upper joint
+>   instead of the auto end→parent→grandparent walk (which climbed into finger
+>   bones). Must be an ancestor of `end_node`. **Verified**: on a 4-joint chain,
+>   `root_node` returns a different (root, mid) pair than the auto-pick.
+> - **`reset_pose { node }`** — restores a node + all descendants to their
+>   scene-stored base transforms in the renderer mirror (clip pin_pose writes the
+>   mirror, not the scene). **Verified**: a cone posed by a cleared clip stayed
+>   displaced, then `reset_pose` snapped it back to the origin. Roundtrip test +
+>   lint; viewport-only (not undoable, like FrameNode).
+
 ---
 
 ## What worked well (keep)
@@ -794,8 +816,8 @@ or a naga quirk; either way an author hits it fast.
 | 5 | Unassigned-material node: render magenta/warn + fix docs | DONE | `8815c9be` |
 | 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | DONE | `a52f4550` |
 | 7 | `set_frame_time` pins builtin texture `Flow` | DONE | `0d52f981` |
-| 8 | Per-model facing/orientation hint | WIP | |
-| 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | TODO | |
+| 8 | Per-model facing/orientation hint | DONE | `e2982c85` |
+| 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | DONE | `be1d90bc` |
 | 10 | Selection handles + pagination + fused `paint_where` | TODO | |
 | 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | `8c7d2264` |
 | 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | TODO | |

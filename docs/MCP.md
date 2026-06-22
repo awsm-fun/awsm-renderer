@@ -248,7 +248,11 @@ every command/query, and each tool self-describes over the MCP schema.
 **View / camera / time**
 - `switch_mode { mode }`, `snap_camera_to_axis { axis }`, `reset_camera`.
 - `set_camera_orbit { yaw, pitch, radius, look_at }`,
-  `set_camera_projection { perspective, fov_y? }`, `frame_node { node, padding? }`.
+  `set_camera_projection { perspective, fov_y? }`, `frame_node { node, padding? }`
+  (padding 0 = tight; fits the node's bounds to fill the view).
+- `reset_pose { node }` — restore a node + all descendants to their scene base
+  transforms; reverts a clip's last-previewed pose left baked after clearing the
+  current clip (pass a rig root to reset a skeleton). Transient, not undoable.
 - `set_frame_time { seconds }` / `clear_frame_time` — pin `frame_globals.time` for
   deterministic temporal-material screenshots. Also pins texture **UV flow** scroll
   (`set_node_texture_transform flow=`) to that absolute time (`offset =
@@ -287,7 +291,9 @@ every command/query, and each tool self-describes over the MCP schema.
 **Rig / skin**
 - `get_skin_data` (joints as node ids — see Discover), `get_skin_weights { node }`
   / `set_skin_weights { node, entries }` (per-vertex joints+weights, live re-deform),
-  `solve_ik { end_node, target }` (analytic two-bone IK), `drop_skinning { node }`
+  `solve_ik { end_node, target, root_node? }` (analytic two-bone IK; `root_node`
+  pins the chain root when the auto end→parent→grandparent walk picks wrong
+  bones), `drop_skinning { node }`
   (bake a skinned mesh to a static editable Mesh).
 
 **Bake / export / bundle**

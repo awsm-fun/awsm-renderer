@@ -449,6 +449,13 @@ pub enum EditorCommand {
     /// (0 = tight, 0.2 = 20% margin). **Transient** (view state).
     FrameNode { node: NodeId, padding: f32 },
 
+    /// Restore a node + all its descendants to their scene-stored base
+    /// transforms in the renderer mirror — reverts a clip's last-previewed pose
+    /// (which writes the renderer mirror directly, not the scene) so a neutral
+    /// view doesn't keep showing e.g. raised arms after `SetCurrentClip {}`.
+    /// **Transient** (re-syncs renderer locals from the scene; no scene edit).
+    ResetPose { node: NodeId },
+
     /// Pin the renderer's `frame_globals.time` to `seconds` (overrides the
     /// wall-clock). A temporal material (`sin(time*f)`) then screenshots the same
     /// phase every call. Separate from the animation playhead. **Transient**.
@@ -924,6 +931,7 @@ impl EditorCommand {
                 | EditorCommand::SetCameraOrbit { .. }
                 | EditorCommand::SetCameraProjection { .. }
                 | EditorCommand::FrameNode { .. }
+                | EditorCommand::ResetPose { .. }
                 | EditorCommand::SetFrameTime { .. }
                 | EditorCommand::ClearFrameTime
                 | EditorCommand::SetMorphWeight { .. }
@@ -955,6 +963,7 @@ impl EditorCommand {
                 | EditorCommand::SetCameraOrbit { .. }
                 | EditorCommand::SetCameraProjection { .. }
                 | EditorCommand::FrameNode { .. }
+                | EditorCommand::ResetPose { .. }
                 | EditorCommand::SetFrameTime { .. }
                 | EditorCommand::ClearFrameTime
                 | EditorCommand::SetMorphWeight { .. }
@@ -1134,6 +1143,7 @@ impl EditorCommand {
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",
             EditorCommand::SetCameraProjection { .. } => "Set projection",
             EditorCommand::FrameNode { .. } => "Frame node",
+            EditorCommand::ResetPose { .. } => "Reset pose",
             EditorCommand::SetFrameTime { .. } => "Pin frame time",
             EditorCommand::ClearFrameTime => "Clear frame time",
             EditorCommand::SetMorphWeight { .. } => "Set morph weight",

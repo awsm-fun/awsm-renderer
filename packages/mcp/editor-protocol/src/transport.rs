@@ -221,6 +221,12 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "reset_pose",
+                EditorCommand::ResetPose {
+                    node: NodeId::new(),
+                },
+            ),
+            (
                 "add_track",
                 EditorCommand::AddTrack {
                     clip: AssetId::new(),

@@ -248,6 +248,13 @@ pub enum EditorQuery {
         target: [f32; 3],
         #[serde(default)]
         pole: Option<[f32; 3]>,
+        /// Optional explicit chain ROOT joint. When given, the 2-bone chain is
+        /// `root_node → (its child toward end) → end_node`, so you control which
+        /// upper joint bends instead of the auto-pick (end → parent → grandparent),
+        /// which can walk into the wrong bones (e.g. finger joints above a hand).
+        /// Must be an ancestor of `end_node`.
+        #[serde(default)]
+        root_node: Option<NodeId>,
     },
     /// Per-vertex skin weights (set 0) for a skinned node — `{ vertex_count,
     /// set_count, weights: { "<vertex>": { joints:[u32;4], weights:[f32;4] } } }`

@@ -72,7 +72,13 @@ impl Connection {
             }
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
-                Err("editor request timed out".into())
+                Err(
+                    "editor request timed out — is the editor tab foregrounded? \
+                     A screenshot/render needs a live requestAnimationFrame frame, \
+                     which browsers throttle or pause in a backgrounded/hidden tab. \
+                     Foreground the tab (or keep it visible) and retry."
+                        .into(),
+                )
             }
         }
     }

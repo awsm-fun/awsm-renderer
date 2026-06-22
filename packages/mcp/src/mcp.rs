@@ -708,6 +708,13 @@ pub struct SolveIkParams {
     /// Optional world-space pole hint — the chain bends toward it (e.g. put it
     /// in front of a knee). Omit to keep the chain's current bend plane.
     pub pole: Option<[f32; 3]>,
+    /// Optional explicit chain ROOT joint UUID. When set, the 2-bone chain is
+    /// `root_node → (its child toward end_node) → end_node`, so you choose which
+    /// upper joint bends instead of the auto-pick (end → parent → grandparent),
+    /// which can walk into the wrong bones (e.g. finger joints above a hand).
+    /// Must be an ancestor of `end_node`. Discover chains via get_skin_data.
+    #[serde(default)]
+    pub root_node: Option<String>,
     /// Apply the solution (default true): one DispatchBatch of two
     /// SetTransforms = one undo step. False = solve-only (returns rotations).
     #[serde(default = "default_true_param")]
@@ -2723,19 +2730,21 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Two-bone IK: bring a chain TIP (end_node, e.g. a foot joint) to a world-space target, bending at its parent (knee) under its grandparent (upper leg). Solves analytically and (by default) APPLIES the two joint rotations as one undoable batch — auto-key compatible. `pole` biases the bend direction. Returns { root_node, mid_node, root_rotation, mid_rotation, reach } (reach < 1 ⇒ target beyond the chain's span, clamped). Discover chains via get_skin_data; clips OWN bones while active (delete/pause first)."
+        description = "Two-bone IK: bring a chain TIP (end_node, e.g. a foot joint) to a world-space target, bending at its parent (knee) under its grandparent (upper leg). Solves analytically and (by default) APPLIES the two joint rotations as one undoable batch — auto-key compatible. `pole` biases the bend direction. `root_node` (optional) pins the chain ROOT explicitly (root_node → its child toward end → end_node) when the auto-pick (end→parent→grandparent) would walk into the wrong bones (e.g. finger joints above a hand); must be an ancestor of end_node. Returns { root_node, mid_node, root_rotation, mid_rotation, reach } (reach < 1 ⇒ target beyond the chain's span, clamped). Discover chains via get_skin_data; clips OWN bones while active (delete/pause first)."
     )]
     async fn solve_ik(
         &self,
         Parameters(p): Parameters<SolveIkParams>,
     ) -> Result<CallToolResult, McpError> {
         let end_node = parse_node(&p.end_node)?;
+        let root_node = p.root_node.as_deref().map(parse_node).transpose()?;
         // 1. Solve (read-only).
         let sol = match self
             .req(Request::Query(EditorQuery::SolveIk {
                 end_node,
                 target: p.target,
                 pole: p.pole,
+                root_node,
             }))
             .await?
         {
@@ -2965,6 +2974,19 @@ impl EditorMcp {
         self.dispatch(EditorCommand::FrameNode {
             node: parse_node(&p.node)?,
             padding: p.padding.unwrap_or(0.1),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Restore a node + all its descendants to their scene base transforms — reverts a clip's last-previewed pose (clearing the current clip with set_current_clip leaves the last pose baked in the viewport). Pass a rig ROOT to reset a whole skeleton. Transient (re-syncs the renderer from the scene; no scene edit, not undoable)."
+    )]
+    async fn reset_pose(
+        &self,
+        Parameters(p): Parameters<NodeArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ResetPose {
+            node: parse_node(&p.node)?,
         })
         .await
     }
