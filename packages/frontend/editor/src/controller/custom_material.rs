@@ -248,15 +248,37 @@ pub fn find_material(
 /// `compileWGSL`): flags statements that begin with `let`/`var`/`return` but
 /// don't end in `;`/`{`/`}`. Real validation lands with renderer registration;
 /// this gives instant in-editor feedback (line + message).
+///
+/// §20: a single statement may legally span MULTIPLE lines (`let c = a\n + b;`),
+/// so a `let`/`var`/`return` line that isn't terminated is only an error when the
+/// statement does NOT continue onto the next line — i.e. neither does this line
+/// end in a continuation token (a binary operator / `(` / `,` / `.`, "op at
+/// end") nor does the next non-blank line begin with one ("op at start"). naga
+/// accepts these continuations; the old line-by-line heuristic false-rejected
+/// them with a spurious "expected ';'".
 pub fn compile_wgsl(code: &str) -> Vec<(usize, String)> {
+    // Comment-stripped + trimmed physical lines (kept index-aligned via `lines`).
+    let lines: Vec<String> = code
+        .lines()
+        .map(|raw| match raw.find("//") {
+            Some(c) => raw[..c].trim().to_string(),
+            None => raw.trim().to_string(),
+        })
+        .collect();
+    // Trailing token ⇒ "the statement continues on the next line".
+    let continues_after = |s: &str| {
+        s.chars()
+            .last()
+            .is_some_and(|c| "+-*/%<>&|^=(,.".contains(c))
+    };
+    // Leading token ⇒ "this line continues the PREVIOUS line's statement".
+    let continues_before = |s: &str| {
+        s.chars()
+            .next()
+            .is_some_and(|c| "+-*/%<>&|^=),.?:".contains(c))
+    };
     let mut errs = Vec::new();
-    for (i, raw) in code.lines().enumerate() {
-        // strip line comment
-        let line = match raw.find("//") {
-            Some(c) => &raw[..c],
-            None => raw,
-        };
-        let t = line.trim();
+    for (i, t) in lines.iter().enumerate() {
         if t.is_empty() {
             continue;
         }
@@ -265,9 +287,60 @@ pub fn compile_wgsl(code: &str) -> Vec<(usize, String)> {
             || t.starts_with("return ")
             || t == "return";
         let ends = t.ends_with(';') || t.ends_with('{') || t.ends_with('}');
-        if starts && !ends {
-            errs.push((i + 1, "expected ';' at end of statement".to_string()));
+        if !starts || ends {
+            continue;
         }
+        // Unterminated — but a legal multi-line statement (continuation) is NOT an
+        // error. Only flag a genuinely dangling statement.
+        if continues_after(t) {
+            continue;
+        }
+        let next_continues = lines[i + 1..]
+            .iter()
+            .find(|n| !n.is_empty())
+            .is_some_and(|n| continues_before(n));
+        if next_continues {
+            continue;
+        }
+        errs.push((i + 1, "expected ';' at end of statement".to_string()));
     }
     errs
+}
+
+#[cfg(test)]
+mod compile_wgsl_tests {
+    use super::compile_wgsl;
+
+    #[test]
+    fn single_line_statements_ok() {
+        assert!(compile_wgsl("let c = 0.5 + 0.3 + 0.1;\nreturn c;").is_empty());
+        // Multiple statements, each on its own terminated line (the §12/§17 shape).
+        assert!(compile_wgsl("let a = 1.0;\nlet b = 2.0;\nreturn a + b;").is_empty());
+    }
+
+    #[test]
+    fn multiline_statement_continuations_ok() {
+        // §20: a single statement split across lines is legal WGSL — must NOT flag.
+        assert!(
+            compile_wgsl("let c = 0.5\n    + 0.3\n    + 0.1;\nreturn c;").is_empty(),
+            "op-leading continuation false-flagged"
+        );
+        assert!(
+            compile_wgsl("let c = 0.5 +\n    0.3 +\n    0.1;\nreturn c;").is_empty(),
+            "op-trailing continuation false-flagged"
+        );
+        // A multi-line function call (ends in `(` / `,`).
+        assert!(
+            compile_wgsl("return OpaqueShadingOutput(\n    vec3(c),\n    1.0\n);").is_empty(),
+            "multi-line call false-flagged"
+        );
+    }
+
+    #[test]
+    fn genuine_missing_semicolon_still_flagged() {
+        // A real dangling statement (no continuation) must still be caught.
+        let errs = compile_wgsl("let x = 5\nreturn x;");
+        assert_eq!(errs.len(), 1, "should flag the missing semicolon");
+        assert_eq!(errs[0].0, 1);
+    }
 }

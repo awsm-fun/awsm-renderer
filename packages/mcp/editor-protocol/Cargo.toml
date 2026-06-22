@@ -16,6 +16,8 @@ awsm-scene = { workspace = true }
 awsm-meshgen = { workspace = true, features = ["recipes"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+# Decode `create_texture` payloads (base64 / `data:` URI) — pure, host-testable.
+base64 = { workspace = true }
 # Optional: JSON Schemas for strongly-typed MCP tool params (e.g. VertexPredicate).
 schemars = { version = "1", optional = true }
 

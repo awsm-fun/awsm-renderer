@@ -140,10 +140,21 @@ every command/query, and each tool self-describes over the MCP schema.
   live morph weights (+ target names via glTF `mesh.extras.targetNames`);
   set is a transient preview, tracks own the weights during playback.
 - `get_node_transforms { nodes? }` — local TRS + world matrix per node (empty = all).
+- `get_children { node }` — direct children as a lightweight `[{ id, name, kind }]`
+  list. `get_subtree { node? }` — the id/name/kind subtree rooted at `node` (or
+  EVERY scene root when omitted), with nested `children`. Both avoid the heavy
+  whole-scene `get_snapshot` when you just need to navigate the hierarchy (e.g.
+  find the descendants of a node you just created/duplicated).
 - `get_node_details { nodes? }` — full per-kind config + material assignment.
 - `resolve_node_material { node }` — the material a node actually RENDERS with
   (the direct answer, vs parsing the `NodeKind` blob).
-- `get_node_bounds { nodes? }` — world-space AABB per node (for framing/sizing).
+- `get_node_bounds { nodes? }` — world-space AABB `{ min, max }` per node (for
+  framing/sizing) **+ a facing hint** `{ forward, up, right }`: the node's local
+  axes (−Z / +Y / +X) in world space, derived from its world matrix. `forward` is
+  the project's −Z-forward convention — use it to place things relative to a
+  node's orientation ("on the back" = −`forward`). NOTE: this is the node's
+  *transform* orientation; an imported model's *geometry* may face a different way
+  (the convention; verify visually).
 - `get_material_wgsl { asset }` — a custom material's WGSL source.
 - `get_material_diagnostics { asset }` — `{ registered, ok, errors }` (tell a
   compile failure from a successful-but-dark shader).
@@ -164,6 +175,18 @@ every command/query, and each tool self-describes over the MCP schema.
   — **return the new node id.** Other node kinds (Line, Sprite, Curve, Sweep,
   Instances) are created via `dispatch_command { command: { cmd: "insert", spec:
   "line" | "sprite" | "curve" | "sweep" | "instances", … } }`.
+- `set_particle_emitter { node, spawn_rate?, burst_count?, max_alive?, one_shot?,
+  space?, shape?, initial_speed?, lifetime?, size?, forces?, color_over_life?,
+  size_over_life?, blend?, texture? }` — typed, **patch-style** emitter config
+  (send any subset; only those change). `texture` = a billboard SPRITE asset id:
+  author a soft radial-alpha disc with `create_texture` and bind it for
+  disc-shaped (alpha-masked) particles instead of hard squares. `shape` is
+  `{point}`/`{sphere:{radius}}`/`{cone:{
+  angle_radians, direction}}` (cone `direction` is in the emitter's **local**
+  space); `forces` is a list of `{gravity:{acceleration:[x,y,z]}}` /
+  `{linear_drag:{coefficient_x1000}}`; `blend:true` routes through the
+  transparent-blend pass for true alpha fades (smoke/glows). Errors if the node
+  isn't an emitter.
 - `set_mesh_shadow { node, cast, receive }` — toggle a Mesh / SkinnedMesh /
   InstancesAlongCurve node's shadow casting / receiving (read-modify-write of its
   `shadow` config via `SetKind`). `set_instance_colors { node, colors }` — set an
@@ -171,9 +194,11 @@ every command/query, and each tool self-describes over the MCP schema.
 - `node_set_transform { node, translation, rotation, scale }` (rotation is a local
   quaternion `[x,y,z,w]`), plus convenience: `set_translation`, `translate_by`,
   `set_scale`, `set_rotation_euler { euler, order? }`.
-- `rename_node`, `delete_node`, `duplicate_node`, `reparent_node`,
-  `set_node_visible`, `set_node_locked`, `set_selection`, `set_prefab` (mark/clear
-  a node as a prefab root).
+- `rename_node`, `delete_node`, `duplicate_node` (deep clone as a following
+  sibling — **returns the new clone's root node id**; descendants get fresh ids,
+  found via `get_children`/`get_subtree`), `reparent_node`, `set_node_visible`,
+  `set_node_locked`, `set_selection`, `set_prefab` (mark/clear a node as a prefab
+  root).
 
 **Project / import / history**
 - `new_project` (seeds a key light + IBL), `load_project_from_url { base_url }`,
@@ -186,15 +211,29 @@ every command/query, and each tool self-describes over the MCP schema.
   `update_builtin_material` (replace a built-in's variant `MaterialDef` wholesale).
 - `set_material_wgsl { material, wgsl }` — replace source + synchronous recompile;
   **answers truthfully** (errors carry the compiler diagnostics, no silent `ok`).
+  The WGSL is validated against the contract for the material's CURRENT alpha mode
+  (Blend → transparent `TransparentShadingOutput`; Opaque/Mask → opaque
+  `OpaqueShadingOutput`), so **set `set_material_alpha_mode blend` BEFORE pushing a
+  transparent body** — otherwise that one call reports a transient contract error
+  (the final state self-corrects once both are set, in either order, since each
+  re-validates). Tool calls in one message aren't ordered — sequence them.
 - Authoring: `set_material_alpha_mode`, `set_material_double_sided`,
   `set_material_debug_color`, `set_material_layout { uniforms, textures, buffers }`,
   `set_material_includes { keys }`, `set_material_fragment_inputs { keys }`,
   `set_material_uniform { material, name, value }`, `set_material_texture
-  { node, slot, texture? }`, `set_builtin_param { node, param, value }`.
+  { node, slot, texture? }`, `set_builtin_param { node, param, value }`
+  (`base_color` accepts 3 floats RGB **or 4 = RGBA** with the 4th = alpha),
+  `set_builtin_alpha_mode { node, mode: opaque|mask|blend, cutoff? }` — typed
+  alpha mode for a built-in/inline material (glass = `blend` + base_color alpha<1),
+  no whole-`MaterialDef` resend.
 
 **Lighting / environment**
 - `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles`.
-- `set_environment { skybox?, ibl_prefiltered?, ibl_irradiance? }` (builtin or KTX).
+- `set_environment { skybox?, ibl_prefiltered?, ibl_irradiance?, zenith?, nadir? }`
+  — builtin, KTX cubemap (asset/.ktx2 URL), OR an **agent-authored sky gradient**:
+  pass `zenith` + `nadir` (`[r,g,b]` linear) and it sets both skybox + IBL to that
+  two-color gradient (author dusk/overcast/night/studio from your own colors, no
+  hosted `.ktx2`).
 
 **Textures**
 - `add_texture_asset { proc }` (checker/gradient/noise) and
@@ -202,20 +241,50 @@ every command/query, and each tool self-describes over the MCP schema.
   — both return the new id; bind with `set_material_texture`, or
   `set_node_texture { node, slot, texture? }` for a mesh node's built-in (inline
   PBR) slot (base_color | metallic_roughness | normal | occlusion | emissive).
+- `set_node_texture_transform { node, slot, offset?, scale?, rotation?, flow?,
+  wrap_u?, wrap_v?, uv_set? }` — patch the UV transform / flow / sampler-wrap of a
+  built-in slot that already has a texture bound (patch-style: only the fields you
+  pass change). `scale>1` tiles; `flow=[u,v]` auto-scrolls the texture in
+  UV-units/sec (conveyors/water/lava; `[0,0]` stops it); `wrap_*` =
+  repeat|clamp_to_edge|mirrored_repeat. Applying to an empty slot is rejected, not
+  silently ignored. For a directional/keyframed scroll, use a `texture_transform`
+  animation track instead.
+- `create_texture { data, width?, height?, format?, linear? }` — the generic
+  "author **any** texture" primitive: the agent ships the pixels itself instead
+  of picking a procedural preset. Two modes: **raw pixels** — `format="rgba8"` +
+  `width` + `height`, `data` = base64 of `width*height*4` RGBA8 bytes (row-major,
+  top-left origin); or **encoded image** — `data` = a `data:` URI
+  (`data:image/png;base64,…`) or bare base64 of a PNG/JPEG/WebP (dims/format
+  derived). Set `linear=true` for data/normal/roughness/height maps (skips the
+  sRGB→linear conversion). Returns the new id; bind with `set_material_texture`.
+  Use it for soft particle sprites, fbm height/normal maps, gradients, cubemap
+  faces — no built-in generator required. (Session-local, like
+  `import_texture_from_url`.) Invalid payloads are **rejected loudly** (e.g. an
+  `rgba8` byte count that doesn't match `width*height*4`).
 
 **View / camera / time**
 - `switch_mode { mode }`, `snap_camera_to_axis { axis }`, `reset_camera`.
 - `set_camera_orbit { yaw, pitch, radius, look_at }`,
-  `set_camera_projection { perspective, fov_y? }`, `frame_node { node, padding? }`.
+  `set_camera_projection { perspective, fov_y? }`, `frame_node { node, padding? }`
+  (padding 0 = tight; fits the node's bounds to fill the view).
+- `reset_pose { node }` — restore a node + all descendants to their scene base
+  transforms; reverts a clip's last-previewed pose left baked after clearing the
+  current clip (pass a rig root to reset a skeleton). Transient, not undoable.
 - `set_frame_time { seconds }` / `clear_frame_time` — pin `frame_globals.time` for
-  deterministic temporal-material screenshots.
+  deterministic temporal-material screenshots. Also pins texture **UV flow** scroll
+  (`set_node_texture_transform flow=`) to that absolute time (`offset =
+  base + velocity*t`), so a scrolling texture screenshots the same phase every call.
 
 **Animation**
 - `add_clip` (returns the new id), `delete_clip`, `duplicate_clip`, `rename_clip`,
   `set_clip_duration`, `set_clip_speed`, `set_clip_loop`, `set_current_clip`,
   `set_playhead { t }`, `set_playing { on }`.
 - Typed tracks/keys: `add_track { clip, target }`, `add_keyframe`, `set_keyframe`,
-  `delete_keyframe`, `delete_track { clip, index }`.
+  `delete_keyframe`, `delete_track { clip, index }`. `target.kind`: transform |
+  morph | uniform | builtin_param | light | camera | **texture_transform**
+  (`node` + `slot` [base_color|metallic_roughness|normal|occlusion|emissive] +
+  `prop` [offset(vec2) | scale(vec2) | rotation(scalar)] — keyframe a built-in
+  texture's UV transform, e.g. a directional/reversible conveyor scroll per clip).
 - Track flags + transport: `set_track_mute`, `set_track_solo` (any solo ⇒ only
   soloed tracks pose), `set_track_sampler { sampler: step|linear|cubic }`,
   `step_playhead { to: home|prev|next|end }`.
@@ -235,11 +304,35 @@ every command/query, and each tool self-describes over the MCP schema.
   → indices, `set_vertex_positions`, `set_vertex_normals`, `paint_vertex_colors`,
   `soft_transform_vertices { falloff }` (radial falloff), `set_vertex_selection`
   (viewport highlight).
+- **Fused select-and-act (scales to full-res meshes — the index array stays
+  server-side, never round-trips):** `paint_where { node, predicate, color }`
+  (= select_vertices_where + paint_vertex_colors in one call) and
+  `transform_where { node, predicate, translation, falloff }` (= select +
+  soft_transform). Prefer these over the select→indices→act pattern when a
+  predicate matches thousands of verts (a real terrain's height band), which
+  overflows the tool-result token cap if returned. Painted colors still only
+  DISPLAY under a vertex-color-reading material (built-in PBR with
+  `vertex_colors_enabled`).
+- **Reusable selection HANDLE (§10 — when one selection drives *many* ops):**
+  `select_vertices_where { …, store: true }` keeps the indices server-side and
+  returns `{ id, count }`. Then `paint_vertex_colors`, `soft_transform_vertices`,
+  `set_vertex_positions`, `set_vertex_normals` and `get_vertex_data` all accept
+  `selection: <id>` instead of `indices` — so one full-res selection can be
+  painted, sculpted, then read back without the index array ever crossing the
+  wire. `count_only: true` returns just the count; `offset`/`limit` page the raw
+  `indices` (and `get_vertex_data`'s output) for a large selection.
+  - ⚠️ **Splat-weight footgun:** unpainted vertex color is **`(1,1,1,1)` white**,
+    not 0 — `mix(base, snow, vColor.r)` reads full weight everywhere until you
+    paint. **Clear-to-0 first:** `paint_where { node, predicate:
+    {"kind":"within_aabb","min":[-1e9,-1e9,-1e9],"max":[1e9,1e9,1e9]},
+    color:[0,0,0,1] }` zeroes every vertex in one call, then paint the band.
 
 **Rig / skin**
 - `get_skin_data` (joints as node ids — see Discover), `get_skin_weights { node }`
   / `set_skin_weights { node, entries }` (per-vertex joints+weights, live re-deform),
-  `solve_ik { end_node, target }` (analytic two-bone IK), `drop_skinning { node }`
+  `solve_ik { end_node, target, root_node? }` (analytic two-bone IK; `root_node`
+  pins the chain root when the auto end→parent→grandparent walk picks wrong
+  bones), `drop_skinning { node }`
   (bake a skinned mesh to a static editable Mesh).
 
 **Bake / export / bundle**
@@ -254,6 +347,12 @@ every command/query, and each tool self-describes over the MCP schema.
   atomically as one undo step (one round-trip).
 - `dispatch_command { command }` — a single raw `EditorCommand` (tagged by `"cmd"`).
 - `run_query { query }` — a raw `EditorQuery` (tagged by `"query"`).
+- `patch_kind { node, patch }` — edit a node's kind with an **RFC 7386 JSON
+  merge-patch** instead of resending the whole `NodeKind` via `SetKind`. Only the
+  fields in `patch` change; `null` removes a key; nested objects merge; arrays
+  replace. The result must still be a valid `NodeKind` (rejected loudly). The
+  ergonomic pattern for escape-hatch edits without a typed tool: `get_node_details`
+  to see the exact shape + field names, then send just the delta.
 
 **Resources** (read-only docs): `awsm://docs/mcp`,
 `awsm://docs/material-contract-opaque`, `awsm://docs/material-contract-transparent`.

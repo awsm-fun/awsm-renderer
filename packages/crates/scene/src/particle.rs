@@ -3,6 +3,7 @@
 use super::primitive::TextureRef;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 #[derive(Copy)]
 pub enum SpawnShapeDef {
@@ -12,6 +13,8 @@ pub enum SpawnShapeDef {
     },
     Cone {
         angle_radians: f32,
+        /// Spawn direction in the emitter's **local** space (rotated by the
+        /// node's transform). Default `[0,1,0]` shoots particles up the local +Y.
         direction: [f32; 3],
     },
 }
@@ -35,7 +38,12 @@ impl Default for SpawnShapeDef {
     }
 }
 
+/// A per-frame force applied to live particles. Serializes externally-tagged:
+/// `{"gravity": {"acceleration": [x,y,z]}}` or
+/// `{"linear_drag": {"coefficient_x1000": <u32>}}` (drag coefficient ×1000, so
+/// `500` = 0.5/s). World-space acceleration.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 #[derive(Copy)]
 pub enum ForceDef {
@@ -44,6 +52,7 @@ pub enum ForceDef {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 #[derive(Eq, Hash, Copy, Default)]
 pub enum EmitterSpaceDef {
@@ -54,14 +63,20 @@ pub enum EmitterSpaceDef {
     Local,
 }
 
+/// Externally-tagged: `{"const": [r,g,b,a]}` or
+/// `{"linear": {"start": [r,g,b,a], "end": [r,g,b,a]}}`. Alpha is the only
+/// transparency knob (see `ParticleEmitterDef::color_over_life`).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ColorOverLifeDef {
     Const([f32; 4]),
     Linear { start: [f32; 4], end: [f32; 4] },
 }
 
+/// Externally-tagged: `{"const": <f32>}` or `{"linear": {"start": <f32>, "end": <f32>}}`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 #[derive(Copy)]
 pub enum SizeOverLifeDef {
@@ -71,6 +86,7 @@ pub enum SizeOverLifeDef {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ParticleEmitterDef {
     pub spawn_rate: f32,
     pub burst_count: u32,

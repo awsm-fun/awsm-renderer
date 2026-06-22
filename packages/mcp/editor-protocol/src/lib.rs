@@ -27,10 +27,12 @@ mod anim_ui;
 mod assets;
 mod bake;
 mod command;
+mod merge_patch;
 mod mesh_def;
 mod node_spec;
 mod project;
 mod query;
+mod texture_payload;
 mod transport;
 
 pub use anim_ui::{AnimSel, AnimView, StepKind};
@@ -40,6 +42,7 @@ pub use command::{
     BuiltinTextureSlot, CameraAxis, CustomAlphaMode, EditorCommand, EditorMode, ProceduralKind,
     SkinWeightEntry, SlotSpec,
 };
+pub use merge_patch::json_merge_patch;
 pub use mesh_def::{CapturedMesh, CapturedSource, MeshDef, VertexOverrides};
 pub use node_spec::{kind_tag, InsertSpec, NodeQuery, NodeSpec};
 pub use project::{EditorProject, StoredMaterial, StoredSlot};
@@ -49,6 +52,7 @@ pub use query::{
     SettledResult, StatsResult, TextureSnapshot, TimeseriesFrame, TimeseriesResult, TrackSnapshot,
     VertexPredicate,
 };
+pub use texture_payload::{decode_texture_payload, TexturePayload};
 pub use transport::{EditorEvent, PngHandle, Request, Response, WsClientMsg, WsServerMsg};
 
 // Re-export the meshgen recipe types so editor + mcp callers that build/send a

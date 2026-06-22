@@ -195,6 +195,141 @@ mod wire_roundtrip_tests {
                     shading: MaterialShading::Pbr,
                 },
             ),
+            (
+                "create_texture",
+                EditorCommand::CreateTexture {
+                    id: AssetId::new(),
+                    data: "AAAA".to_string(),
+                    width: Some(1),
+                    height: Some(1),
+                    format: Some("rgba8".to_string()),
+                    linear: true,
+                },
+            ),
+            (
+                "patch_kind",
+                EditorCommand::PatchKind {
+                    id: NodeId::new(),
+                    patch: serde_json::json!({"mesh": {"shadow": {"cast": false}}}),
+                },
+            ),
+            (
+                "duplicate",
+                EditorCommand::Duplicate {
+                    id: NodeId::new(),
+                    new_id: Some(NodeId::new()),
+                },
+            ),
+            (
+                "reset_pose",
+                EditorCommand::ResetPose {
+                    node: NodeId::new(),
+                },
+            ),
+            (
+                "paint_vertex_colors",
+                EditorCommand::PaintVertexColors {
+                    mesh: AssetId::new(),
+                    indices: Vec::new(),
+                    color: [1.0, 0.0, 0.0, 1.0],
+                    selection: Some(7),
+                },
+            ),
+            (
+                "set_environment_equirect",
+                EditorCommand::SetEnvironmentEquirect {
+                    id: AssetId::new(),
+                    data: "data:image/png;base64,AAAA".to_string(),
+                },
+            ),
+            (
+                "displace_from_texture",
+                EditorCommand::DisplaceFromTexture {
+                    node: NodeId::new(),
+                    data: "data:image/png;base64,AAAA".to_string(),
+                    strength: 0.5,
+                },
+            ),
+            (
+                "set_builtin_alpha_mode",
+                EditorCommand::SetBuiltinAlphaMode {
+                    node: NodeId::new(),
+                    mode: crate::MaterialAlphaMode::Mask { cutoff: 0.4 },
+                },
+            ),
+            (
+                "paint_vertices_where",
+                EditorCommand::PaintVerticesWhere {
+                    node: NodeId::new(),
+                    predicate: crate::query::VertexPredicate::TopPercent {
+                        axis: 1,
+                        percent: 0.2,
+                    },
+                    color: [1.0, 0.0, 0.0, 1.0],
+                },
+            ),
+            (
+                "transform_vertices_where",
+                EditorCommand::TransformVerticesWhere {
+                    node: NodeId::new(),
+                    predicate: crate::query::VertexPredicate::WithinRadius {
+                        center: [0.0, 0.0, 0.0],
+                        radius: 1.0,
+                    },
+                    translation: [0.0, 1.0, 0.0],
+                    falloff: 0.5,
+                },
+            ),
+            (
+                "add_track",
+                EditorCommand::AddTrack {
+                    clip: AssetId::new(),
+                    target: awsm_scene::animation::TrackTarget::TextureTransform {
+                        node: NodeId::new(),
+                        slot: awsm_scene::animation::TexSlot::BaseColor,
+                        prop: awsm_scene::animation::TexTransformProp::Offset,
+                    },
+                },
+            ),
+            (
+                "set_particle_emitter",
+                EditorCommand::SetParticleEmitter {
+                    node: NodeId::new(),
+                    spawn_rate: Some(120.0),
+                    burst_count: None,
+                    max_alive: Some(512),
+                    one_shot: Some(false),
+                    space: Some(awsm_scene::particle::EmitterSpaceDef::World),
+                    shape: Some(awsm_scene::particle::SpawnShapeDef::Cone {
+                        angle_radians: 0.5,
+                        direction: [0.0, 1.0, 0.0],
+                    }),
+                    initial_speed: Some([1.0, 3.0]),
+                    lifetime: None,
+                    size: None,
+                    forces: Some(vec![awsm_scene::particle::ForceDef::Gravity {
+                        acceleration: [0.0, -9.8, 0.0],
+                    }]),
+                    color_over_life: None,
+                    size_over_life: None,
+                    blend: Some(true),
+                    texture: Some(Some(AssetId::new())),
+                },
+            ),
+            (
+                "set_node_texture_transform",
+                EditorCommand::SetNodeTextureTransform {
+                    node: NodeId::new(),
+                    slot: crate::BuiltinTextureSlot::BaseColor,
+                    offset: Some([0.25, 0.0]),
+                    scale: Some([2.0, 2.0]),
+                    rotation: Some(0.5),
+                    flow: Some([0.4, 0.0]),
+                    wrap_u: Some(awsm_scene::primitive::TextureWrap::MirroredRepeat),
+                    wrap_v: None,
+                    uv_set: Some(1),
+                },
+            ),
             // Track flags + transport (newly typed MCP tools — must round-trip).
             (
                 "delete_track",
@@ -276,6 +411,18 @@ mod wire_roundtrip_tests {
                 EditorQuery::GetSkinWeights {
                     node: NodeId::new(),
                     indices: vec![0, 1, 2],
+                },
+            ),
+            (
+                "get_children",
+                EditorQuery::GetChildren {
+                    node: NodeId::new(),
+                },
+            ),
+            (
+                "get_subtree",
+                EditorQuery::GetSubtree {
+                    root: Some(NodeId::new()),
                 },
             ),
         ];

@@ -248,6 +248,13 @@ pub enum EditorQuery {
         target: [f32; 3],
         #[serde(default)]
         pole: Option<[f32; 3]>,
+        /// Optional explicit chain ROOT joint. When given, the 2-bone chain is
+        /// `root_node → (its child toward end) → end_node`, so you control which
+        /// upper joint bends instead of the auto-pick (end → parent → grandparent),
+        /// which can walk into the wrong bones (e.g. finger joints above a hand).
+        /// Must be an ancestor of `end_node`.
+        #[serde(default)]
+        root_node: Option<NodeId>,
     },
     /// Per-vertex skin weights (set 0) for a skinned node — `{ vertex_count,
     /// set_count, weights: { "<vertex>": { joints:[u32;4], weights:[f32;4] } } }`
@@ -291,13 +298,26 @@ pub enum EditorQuery {
         #[serde(default)]
         node: Option<NodeId>,
     },
-    /// Select the vertices of a node's resolved mesh matching `predicate`,
-    /// returning their indices (a read — the agent feeds them to
-    /// `SetVertexPositions` / `SoftTransformVertices`). Command-only selection,
-    /// no cursor. MCP: `select_vertices_where`.
+    /// Select the vertices of a node's resolved mesh matching `predicate`. By
+    /// default returns `{ count, indices }` (a read — feed the indices to
+    /// `SetVertexPositions` / `SoftTransformVertices`). §10: `store: true` keeps
+    /// the indices SERVER-SIDE and returns a reusable `{ id, count }` HANDLE
+    /// instead — the paint/sculpt commands accept `selection: <id>` so one
+    /// selection drives many ops with no index array crossing the wire (a
+    /// full-res band overflows the token cap otherwise). `count_only: true`
+    /// returns just `{ count }`; `offset` / `limit` page the returned `indices`
+    /// (when not storing). MCP: `select_vertices_where`.
     SelectVerticesWhere {
         node: NodeId,
         predicate: VertexPredicate,
+        #[serde(default)]
+        store: bool,
+        #[serde(default)]
+        count_only: bool,
+        #[serde(default)]
+        offset: Option<u32>,
+        #[serde(default)]
+        limit: Option<u32>,
     },
     /// Bake the whole project to a player runtime bundle **directory**: a
     /// `scene.toml` (the runtime scene — nodes / transforms / material instances /
@@ -315,6 +335,14 @@ pub enum EditorQuery {
     /// builtin|custom|unassigned|none, asset, name, shading, base_color }`.
     /// MCP: `resolve_node_material`.
     ResolveNodeMaterial { node: NodeId },
+    /// Direct children of a node — a lightweight `[{ id, name, kind }]` list so an
+    /// agent doesn't need the whole-scene `get_snapshot` to find a node it just
+    /// created (§6). MCP: `get_children`.
+    GetChildren { node: NodeId },
+    /// The id/name/kind subtree rooted at `root` (or every scene root when
+    /// `None`), with nested `children` — the lightweight whole-tree alternative to
+    /// `get_snapshot` (§6). MCP: `get_subtree`.
+    GetSubtree { root: Option<NodeId> },
     /// Geometry stats for a node's resolved mesh (Primitive / Mesh / Sweep):
     /// vertex+triangle counts, bbox, centroid, surface area, volume, watertight.
     /// A read — the perceive half of the agent's measure→adjust loop. MCP:
@@ -334,9 +362,22 @@ pub enum EditorQuery {
     /// index of a node's resolved mesh: `{ index, position, normal, color, uv }`
     /// (color/uv `null` when the mesh has no such channel). The read counterpart
     /// to the paint/sculpt verbs — verify what `paint_vertex_colors` /
-    /// `set_vertex_normals` / `set_vertex_positions` actually produced. MCP:
-    /// `get_vertex_data`.
-    GetVertexData { node: NodeId, indices: Vec<u32> },
+    /// `set_vertex_normals` / `set_vertex_positions` actually produced. §10: pass
+    /// a `selection` HANDLE (from `select_vertices_where { store: true }`) to read
+    /// a stored set without sending its indices, and `offset` / `limit` to PAGE
+    /// the result so a large selection's data doesn't overflow the token cap.
+    /// MCP: `get_vertex_data`.
+    GetVertexData {
+        node: NodeId,
+        #[serde(default)]
+        indices: Vec<u32>,
+        #[serde(default)]
+        selection: Option<u32>,
+        #[serde(default)]
+        offset: Option<u32>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     /// The **layer summary** of a node's resolved mesh: the base kind
     /// (primitive/lathe/superquadric/sweep/sdf/captured), the ordered modifier
     /// list, and whether a per-vertex override layer is present (i.e. the mesh is

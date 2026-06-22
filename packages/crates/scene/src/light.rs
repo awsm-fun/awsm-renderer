@@ -7,6 +7,7 @@
 /// round-trip cleanly thanks to `#[serde(default)]`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum LightConfig {
     Directional {
         color: [f32; 3],
@@ -37,6 +38,7 @@ pub enum LightConfig {
 /// editor converts between them in its renderer bridge.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct LightShadowConfig {
     /// Master shadow-cast toggle for this light.
     #[serde(default = "default_true")]
@@ -103,6 +105,7 @@ impl Default for LightShadowConfig {
 /// Sample-site filter mode for a light's shadow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum LightShadowHardness {
     /// 1-tap comparison sample.
     Hard,
@@ -116,6 +119,7 @@ pub enum LightShadowHardness {
 /// How many trailing directional cascades use EVSM instead of PCF.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EvsmCutoff {
     /// Every cascade uses PCF / PCSS.
     Off,
@@ -134,6 +138,7 @@ pub enum EvsmCutoff {
 /// hit is invisible on typical scenes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum FarCascadeUpdateRate {
     /// Re-render the far cascade every frame.
     EveryFrame,
@@ -151,6 +156,7 @@ pub enum FarCascadeUpdateRate {
 /// per-frame cube pass cost — fine for slow-moving lights and casters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CubeFaceUpdateRate {
     /// All 6 faces re-render every frame.
     #[default]

@@ -34,8 +34,8 @@ use awsm_editor_protocol::{
     ProceduralKind, QueryResult, Request, Response, SlotSpec, StepKind,
 };
 use awsm_scene::animation::{
-    BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TrackTarget, TrackValue,
-    TransformProp,
+    BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TexSlot, TexTransformProp,
+    TrackTarget, TrackValue, TransformProp,
 };
 use awsm_scene::{
     AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, MeshShadowConfig, NodeId,
@@ -66,6 +66,13 @@ pub struct EditorMcp {
 pub struct NodeArg {
     /// Target node UUID (from `get_snapshot`'s `scene_tree` ids).
     pub node: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct OptionalNodeParams {
+    /// Root node UUID, or omit for every scene root.
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -138,6 +145,44 @@ pub struct SelectVerticesParams {
     pub node: String,
     /// Strongly-typed selection predicate (the schema lists every `kind`).
     pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+    /// §10: `true` ⇒ keep the indices SERVER-SIDE and return a reusable
+    /// `{ id, count }` handle (pass `selection: <id>` to the paint/sculpt verbs)
+    /// instead of the index array. Use this for full-res selections that would
+    /// overflow the tool-result token cap.
+    #[serde(default)]
+    pub store: bool,
+    /// Return just `{ count }` (no indices).
+    #[serde(default)]
+    pub count_only: bool,
+    /// Page the returned `indices` (when not storing): start index.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Page the returned `indices` (when not storing): max returned.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PaintWhereParams {
+    /// UUID of the geometry node.
+    pub node: String,
+    /// Selection predicate (same shapes as `select_vertices_where`).
+    pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+    /// Linear RGBA `[r,g,b,a]` painted on every selected vertex.
+    pub color: [f32; 4],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TransformWhereParams {
+    /// UUID of the geometry node.
+    pub node: String,
+    /// Selection predicate (same shapes as `select_vertices_where`).
+    pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+    /// World-space translation `[x,y,z]` applied to the selection.
+    pub translation: [f32; 3],
+    /// Smooth radial falloff radius (0 = rigid move of exactly the selection).
+    #[serde(default)]
+    pub falloff: f32,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -155,21 +200,32 @@ pub struct MeshIdParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetVertexPositionsParams {
     pub mesh: String,
-    /// Vertex indices to move.
+    /// Vertex indices to move (omit when using `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
-    /// New positions, aligned with `indices`.
+    /// New positions, aligned with `indices` (or with the `selection` handle's
+    /// stored order — read it back with `get_vertex_data { selection }`).
     pub positions: Vec<[f32; 3]>,
+    /// §10: a selection HANDLE id (from `select_vertices_where { store: true }`)
+    /// supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SoftTransformParams {
     pub mesh: String,
-    /// The selected vertex indices (the move's full-weight center).
+    /// The selected vertex indices (the move's full-weight center; omit when
+    /// using `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
     /// Translation applied at the selection, fading over the falloff radius.
     pub translation: [f32; 3],
     /// Falloff radius (world units); 0 = hard move of exactly the selection.
     pub falloff: f32,
+    /// §10: a selection HANDLE id supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -219,28 +275,60 @@ pub struct GetMeshModifiersParams {
 pub struct PaintVertexColorsParams {
     /// UUID of the editable mesh asset.
     pub mesh: String,
-    /// Vertex indices (into the resolved/baked topology) to paint.
+    /// Vertex indices (into the resolved/baked topology) to paint (omit when using
+    /// `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
     /// Linear RGBA color to set on each index.
     pub color: [f32; 4],
+    /// §10: a selection HANDLE id supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetVertexNormalsParams {
     /// UUID of the editable mesh asset.
     pub mesh: String,
-    /// Vertex indices to override the normal of.
+    /// Vertex indices to override the normal of (omit when using `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
     /// The normal vector to set on each index (should be unit-length).
     pub normal: [f32; 3],
+    /// §10: a selection HANDLE id supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DisplaceFromTextureParams {
+    /// UUID of the geometry node to displace.
+    pub node: String,
+    /// The heightmap as a `data:image/png;base64,…` URI (or bare base64). Decoded
+    /// to RGBA; per-vertex height = perceptual luminance (black = flat, white =
+    /// raised). Author ANY heightfield (eroded terrain, a logo, fbm) externally.
+    pub data: String,
+    /// Displacement distance (world units) at full white. Negative carves inward.
+    pub strength: f32,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetVertexDataParams {
     /// UUID of the node whose resolved mesh to read.
     pub node: String,
-    /// Vertex indices to read the final (post-eval + override) data of.
+    /// Vertex indices to read the final (post-eval + override) data of (omit when
+    /// using `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
+    /// §10: read a stored selection HANDLE's vertices instead of sending indices.
+    #[serde(default)]
+    pub selection: Option<u32>,
+    /// Page the result (start index) — for a large selection.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Page the result (max returned).
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -437,6 +525,16 @@ pub struct MaterialBoolParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BuiltinAlphaModeParams {
+    /// Mesh node UUID (its built-in/inline material).
+    pub node: String,
+    pub mode: AlphaModeArg,
+    /// Alpha cutoff for `mask` mode (default 0.5; ignored otherwise).
+    #[serde(default)]
+    pub cutoff: Option<f64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MaterialHexParams {
     pub material: String,
     /// Hex color `#rrggbb`.
@@ -525,6 +623,112 @@ pub struct BuiltinTextureParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ParticleEmitterParams {
+    /// ParticleEmitter node UUID.
+    pub node: String,
+    /// Particles spawned per second.
+    #[serde(default)]
+    pub spawn_rate: Option<f32>,
+    /// One-shot burst count (with `one_shot`).
+    #[serde(default)]
+    pub burst_count: Option<u32>,
+    /// Max simultaneously-alive particles.
+    #[serde(default)]
+    pub max_alive: Option<u32>,
+    /// Emit one burst then stop (vs continuous).
+    #[serde(default)]
+    pub one_shot: Option<bool>,
+    /// Simulation space: `"world"` (particles persist) or `"local"` (follow the
+    /// emitter transform).
+    #[serde(default)]
+    pub space: Option<awsm_editor_protocol::EmitterSpaceDef>,
+    /// Spawn shape (externally-tagged): `{"point":{}}`, `{"sphere":{"radius":r}}`,
+    /// or `{"cone":{"angle_radians":a,"direction":[x,y,z]}}` (direction in the
+    /// emitter's LOCAL space).
+    #[serde(default)]
+    pub shape: Option<awsm_editor_protocol::SpawnShapeDef>,
+    /// `[min, max]` initial speed (m/s).
+    #[serde(default)]
+    pub initial_speed: Option<[f32; 2]>,
+    /// `[min, max]` lifetime (seconds).
+    #[serde(default)]
+    pub lifetime: Option<[f32; 2]>,
+    /// `[min, max]` spawn size.
+    #[serde(default)]
+    pub size: Option<[f32; 2]>,
+    /// Forces: list of `{"gravity":{"acceleration":[x,y,z]}}` /
+    /// `{"linear_drag":{"coefficient_x1000":n}}` (replaces the whole list).
+    #[serde(default)]
+    pub forces: Option<Vec<awsm_editor_protocol::ForceDef>>,
+    /// Color over life: `{"const":[r,g,b,a]}` or
+    /// `{"linear":{"start":[r,g,b,a],"end":[r,g,b,a]}}` (alpha = transparency).
+    #[serde(default)]
+    pub color_over_life: Option<awsm_editor_protocol::ColorOverLifeDef>,
+    /// Size over life: `{"const":s}` or `{"linear":{"start":s,"end":s}}`.
+    #[serde(default)]
+    pub size_over_life: Option<awsm_editor_protocol::SizeOverLifeDef>,
+    /// Route through the transparent-blend pass (true alpha fades) vs the cheaper
+    /// opaque-emissive path.
+    #[serde(default)]
+    pub blend: Option<bool>,
+    /// Billboard SPRITE texture asset id the particles sample — e.g. a soft
+    /// radial-alpha disc (author one with `create_texture`) for soft-edged
+    /// particles instead of hard squares. Pair with `blend: true` so the sprite
+    /// alpha fades the edges. Omit to leave unchanged.
+    #[serde(default)]
+    pub texture: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PatchKindParams {
+    /// Node UUID to patch.
+    pub node: String,
+    /// RFC 7386 JSON merge-patch over the node's `NodeKind`: only the fields you
+    /// include change; `null` removes a key; nested objects merge recursively;
+    /// arrays replace wholesale. Read `get_node_details` first to see the exact
+    /// shape + field names, then send just the delta.
+    pub patch: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct KindSchemaParams {
+    /// Which schema: `"node"` (default) for the full `NodeKind` config schema, or
+    /// `"modifier"` for the `ModifierStack` (mesh base + modifiers) schema.
+    #[serde(default)]
+    pub schema: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NodeTextureTransformParams {
+    /// Mesh node UUID (the slot must already have a texture bound).
+    pub node: String,
+    /// Which built-in PBR slot to transform.
+    pub slot: awsm_editor_protocol::BuiltinTextureSlot,
+    /// UV offset `[u, v]` (the base the `flow` scroll accumulates onto).
+    #[serde(default)]
+    pub offset: Option<[f32; 2]>,
+    /// UV scale `[u, v]` (>1 tiles the texture; default 1).
+    #[serde(default)]
+    pub scale: Option<[f32; 2]>,
+    /// UV rotation in radians.
+    #[serde(default)]
+    pub rotation: Option<f32>,
+    /// UV **flow** `[u, v]` auto-scroll velocity in UV-units/sec (set `[0,0]` to
+    /// stop). Composes over `offset`; integrated from real time each frame.
+    #[serde(default)]
+    pub flow: Option<[f32; 2]>,
+    /// Sampler wrap on U: `repeat` | `clamp_to_edge` | `mirrored_repeat`.
+    #[serde(default)]
+    pub wrap_u: Option<String>,
+    /// Sampler wrap on V: `repeat` | `clamp_to_edge` | `mirrored_repeat`.
+    #[serde(default)]
+    pub wrap_v: Option<String>,
+    /// Which TEXCOORD set this slot samples (glTF `texCoord` index).
+    #[serde(default)]
+    pub uv_set: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProceduralArg {
     Checker,
@@ -536,6 +740,29 @@ pub enum ProceduralArg {
 pub struct AddTextureParams {
     /// Procedural generator: checker | gradient | noise.
     pub proc: ProceduralArg,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateTextureParams {
+    /// Image data the AGENT authored. Either RAW PIXELS — base64 of
+    /// `width*height*4` RGBA8 bytes (row-major, top-left origin), with
+    /// `format="rgba8"` + `width` + `height`; or an ENCODED IMAGE — a `data:`
+    /// URI (`data:image/png;base64,…`) or bare base64 of a PNG/JPEG/WebP
+    /// (`width`/`height`/`format` derived).
+    pub data: String,
+    /// Pixel width. REQUIRED for raw `rgba8`; ignored/derived for encoded images.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Pixel height. REQUIRED for raw `rgba8`; ignored/derived for encoded images.
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Raw pixel format — only `"rgba8"` today. Omit for an encoded image.
+    #[serde(default)]
+    pub format: Option<String>,
+    /// Upload as LINEAR data (normal / roughness / height maps) instead of sRGB
+    /// albedo. Default false (sRGB).
+    #[serde(default)]
+    pub linear: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -586,6 +813,13 @@ pub struct SolveIkParams {
     /// Optional world-space pole hint — the chain bends toward it (e.g. put it
     /// in front of a knee). Omit to keep the chain's current bend plane.
     pub pole: Option<[f32; 3]>,
+    /// Optional explicit chain ROOT joint UUID. When set, the 2-bone chain is
+    /// `root_node → (its child toward end_node) → end_node`, so you choose which
+    /// upper joint bends instead of the auto-pick (end → parent → grandparent),
+    /// which can walk into the wrong bones (e.g. finger joints above a hand).
+    /// Must be an ancestor of `end_node`. Discover chains via get_skin_data.
+    #[serde(default)]
+    pub root_node: Option<String>,
     /// Apply the solution (default true): one DispatchBatch of two
     /// SetTransforms = one undo step. False = solve-only (returns rotations).
     #[serde(default = "default_true_param")]
@@ -650,6 +884,24 @@ pub struct EnvironmentParams {
     /// IBL irradiance KTX asset UUID (required when `ibl_prefiltered` is a UUID).
     #[serde(default)]
     pub ibl_irradiance: Option<String>,
+    /// Agent-authored SKY-GRADIENT environment (§18): linear-RGB `[r,g,b]` zenith
+    /// (sky) color. When `zenith`+`nadir` are both given they set BOTH the skybox
+    /// and the IBL to that two-color gradient (overriding skybox/ibl_* above) —
+    /// author dusk / overcast / night / studio from your own colors, no hosted
+    /// `.ktx2` needed.
+    #[serde(default)]
+    pub zenith: Option<[f32; 3]>,
+    /// Agent-authored sky-gradient nadir (ground) color, linear-RGB `[r,g,b]`.
+    /// Pairs with `zenith`.
+    #[serde(default)]
+    pub nadir: Option<[f32; 3]>,
+    /// Agent-authored **panorama** environment (§18): an equirectangular
+    /// (lat/long, 2:1) image as a `data:image/png;base64,…` URI (or bare base64).
+    /// It's projected to a cubemap that drives BOTH the skybox and the IBL — so
+    /// any panorama you can draw (nebula, sunset, gradient sky) becomes a
+    /// reflecting + lighting environment. Overrides skybox/ibl_*/zenith/nadir.
+    #[serde(default)]
+    pub equirect: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -720,14 +972,21 @@ pub struct ClipOptParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct TrackTargetArg {
-    /// Target kind: transform | morph | uniform | builtin_param | light | camera.
+    /// Target kind: transform | morph | uniform | builtin_param | light | camera |
+    /// texture_transform.
     pub kind: String,
-    /// Node UUID (transform / morph / builtin_param / light / camera).
+    /// Node UUID (transform / morph / builtin_param / light / camera /
+    /// texture_transform).
     #[serde(default)]
     pub node: Option<String>,
-    /// Transform property: translation | rotation | scale.
+    /// Property: for `transform` translation | rotation | scale; for
+    /// `texture_transform` offset (vec2) | scale (vec2) | rotation (scalar radians).
     #[serde(default)]
     pub prop: Option<String>,
+    /// Built-in texture slot for `texture_transform`: base_color |
+    /// metallic_roughness | normal | occlusion | emissive.
+    #[serde(default)]
+    pub slot: Option<String>,
     /// Morph target index.
     #[serde(default)]
     pub index: Option<u32>,
@@ -1339,7 +1598,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Insert a CPU particle emitter node under an optional parent. Spawns short-lived sprites with configurable spawn rate, lifetime, initial velocity / forces, texture, and blend mode. Its full emitter config is edited via the kind (dispatch_command SetKind) for now."
+        description = "Insert a CPU particle emitter node under an optional parent. Spawns short-lived sprites with configurable spawn rate, lifetime, initial velocity / forces, texture, and blend mode. Tune its full config (patch-style) with set_particle_emitter; bind a sprite with set_node_texture."
     )]
     async fn insert_particle(
         &self,
@@ -1438,13 +1697,51 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Duplicate a node (deep clone, fresh ids) as a following sibling.")]
+    #[tool(
+        description = "Duplicate a node (deep clone, fresh ids) as a following sibling. Returns the new clone's root node id (descendants get fresh ids — use get_children/get_subtree on the returned id to find them)."
+    )]
     async fn duplicate_node(
         &self,
         Parameters(p): Parameters<NodeArg>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::Duplicate {
-            id: parse_node(&p.node)?,
+        let new_id = NodeId::new();
+        match self
+            .req(Request::Dispatch(EditorCommand::Duplicate {
+                id: parse_node(&p.node)?,
+                new_id: Some(new_id),
+            }))
+            .await?
+        {
+            Response::Ok => Ok(text(new_id.to_string())),
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Direct children of a node as a lightweight [{ id, name, kind }] list — find a node you just created (e.g. a duplicate_node clone's descendants) without the heavy whole-scene get_snapshot."
+    )]
+    async fn get_children(
+        &self,
+        Parameters(p): Parameters<NodeArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetChildren {
+            node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "The id/name/kind subtree rooted at `node` (or EVERY scene root when `node` is omitted), with nested `children` — the lightweight alternative to get_snapshot for navigating the hierarchy without the per-node config blobs."
+    )]
+    async fn get_subtree(
+        &self,
+        Parameters(p): Parameters<OptionalNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetSubtree {
+            root: parse_node_opt(&p.node)?,
         })
         .await
     }
@@ -1847,6 +2144,7 @@ impl EditorMcp {
             mesh: parse_asset(&p.mesh)?,
             indices: p.indices,
             positions: p.positions,
+            selection: p.selection,
         })
         .await
     }
@@ -1863,6 +2161,7 @@ impl EditorMcp {
             indices: p.indices,
             translation: p.translation,
             falloff: p.falloff,
+            selection: p.selection,
         })
         .await
     }
@@ -1882,7 +2181,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON. For \"the top of the mesh\" pick the right notion: {\"kind\":\"top_count\",\"axis\":1,\"count\":40} = the 40 HIGHEST verts by count (use get_mesh_stats for the total to turn a fraction into a count); {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} = every vert in the top 20% of the axis EXTENT (a height band — the count it returns depends on tessellation, not 0.2). Others: {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection)."
+        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON. For \"the top of the mesh\" pick the right notion: {\"kind\":\"top_count\",\"axis\":1,\"count\":40} = the 40 HIGHEST verts by count (use get_mesh_stats for the total to turn a fraction into a count); {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} = every vert in the top 20% of the axis EXTENT (a height band — the count it returns depends on tessellation, not 0.2). Others: {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection). §10: pass `store:true` to keep the indices SERVER-SIDE and get back a reusable `{id,count}` HANDLE — then paint_vertex_colors / soft_transform_vertices / set_vertex_positions / set_vertex_normals / get_vertex_data accept `selection:<id>` so ONE selection drives many ops and a full-res band never crosses the token cap. `count_only:true` returns just the count; `offset`/`limit` page the raw indices. (The fused paint_where/transform_where are the one-shot alternative.)"
     )]
     async fn select_vertices_where(
         &self,
@@ -1891,12 +2190,16 @@ impl EditorMcp {
         self.query(EditorQuery::SelectVerticesWhere {
             node: parse_node(&p.node)?,
             predicate: p.predicate.0,
+            store: p.store,
+            count_only: p.count_only,
+            offset: p.offset,
+            limit: p.limit,
         })
         .await
     }
 
     #[tool(
-        description = "Paint per-vertex COLORS on an editable mesh. `mesh` is the mesh asset UUID; `indices` are vertex indices (into the resolved/baked topology — get them from select_vertices_where); `color` is a linear RGBA [r,g,b,a]. TERMINAL/COLLAPSE: the first per-vertex authoring op freezes the procedural stack to a Captured base (topology locks; modifier params bake in) — after this only the sparse override layer is editable. NOTE: painted colors only DISPLAY under a material that reads vertex colors — built-in PBR with `vertex_colors_enabled`, or a custom material that samples them (see the texture-splatting recipe in `awsm://docs/mesh-tools`). Re-bakes geometry; coalesces consecutive strokes on one mesh into one undo step. Verify with get_vertex_data."
+        description = "Paint per-vertex COLORS on an editable mesh. `mesh` is the mesh asset UUID; `indices` are vertex indices (into the resolved/baked topology — get them from select_vertices_where); `color` is a linear RGBA [r,g,b,a]. FOOTGUN: UNPAINTED vertices default to (1,1,1,1) WHITE, not 0 — a splat shader mix(base, snow, vColor.r) reads full weight everywhere until painted (whole mesh = snow). Clear-to-0 first: paint the whole mesh to [0,0,0,1] (use paint_where with a giant within_aabb predicate), THEN paint the band. TERMINAL/COLLAPSE: the first per-vertex authoring op freezes the procedural stack to a Captured base (topology locks; modifier params bake in) — after this only the sparse override layer is editable. NOTE: painted colors only DISPLAY under a material that reads vertex colors — built-in PBR with `vertex_colors_enabled`, or a custom material that samples them (see the texture-splatting recipe in `awsm://docs/mesh-tools`). Re-bakes geometry; coalesces consecutive strokes on one mesh into one undo step. Verify with get_vertex_data."
     )]
     async fn paint_vertex_colors(
         &self,
@@ -1906,6 +2209,38 @@ impl EditorMcp {
             mesh: parse_asset(&p.mesh)?,
             indices: p.indices,
             color: p.color,
+            selection: p.selection,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "FUSED select-and-paint: pick the vertices of `node`'s resolved mesh matching `predicate` (same shapes as select_vertices_where) and paint them `color` (linear RGBA) in ONE call. Use this instead of select_vertices_where→paint_vertex_colors for full-resolution selections — a height-band/slope match on a real terrain can be tens of thousands of indices that overflow the tool-result token cap when round-tripped; here the index array stays server-side. TIP: clear a splat mask to 0 in one call with predicate {\"kind\":\"within_aabb\",\"min\":[-1e9,-1e9,-1e9],\"max\":[1e9,1e9,1e9]} + color [0,0,0,1] BEFORE painting the band (unpainted verts default to (1,1,1,1) WHITE = full weight). Same collapse/re-bake/undo semantics + display caveat as paint_vertex_colors (needs a vertex-color-reading material). Verify with get_vertex_data or a screenshot."
+    )]
+    async fn paint_where(
+        &self,
+        Parameters(p): Parameters<PaintWhereParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::PaintVerticesWhere {
+            node: parse_node(&p.node)?,
+            predicate: p.predicate.0,
+            color: p.color,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "FUSED select-and-soft-transform: pick the vertices of `node`'s resolved mesh matching `predicate` and translate them by `translation` with a smooth radial `falloff` (0 = move exactly the selection), in ONE call (indices stay server-side — see paint_where). Same collapse/re-bake/undo semantics as soft_transform_vertices. Verify with get_mesh_stats / get_vertex_data / a screenshot."
+    )]
+    async fn transform_where(
+        &self,
+        Parameters(p): Parameters<TransformWhereParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::TransformVerticesWhere {
+            node: parse_node(&p.node)?,
+            predicate: p.predicate.0,
+            translation: p.translation,
+            falloff: p.falloff,
         })
         .await
     }
@@ -1921,6 +2256,22 @@ impl EditorMcp {
             mesh: parse_asset(&p.mesh)?,
             indices: p.indices,
             normal: p.normal,
+            selection: p.selection,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Displace a node's mesh by an agent-authored HEIGHTMAP image (§16) — the generic 'supply your own heightfield' hook. `data` is a data:image/png;base64 heightmap; each vertex moves along its normal by luminance(heightmap @ its UV) * `strength` (black = flat, white = raised; negative strength carves in). Author ANY terrain externally (eroded ridges, a stamped logo, scanned relief, multi-octave fbm baked to a PNG) and feed it — composes with create_texture-style raw upload. Needs a UV-mapped, sufficiently TESSELLATED mesh (subdivide a plane via set_mesh_modifiers first — displacement only moves existing verts). Collapses to a frozen-topology override layer (like the sculpt verbs) and re-bakes; undoable. Verify with get_mesh_stats (bbox grows) or a screenshot."
+    )]
+    async fn displace_from_texture(
+        &self,
+        Parameters(p): Parameters<DisplaceFromTextureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DisplaceFromTexture {
+            node: parse_node(&p.node)?,
+            data: p.data,
+            strength: p.strength,
         })
         .await
     }
@@ -1943,6 +2294,9 @@ impl EditorMcp {
         self.query(EditorQuery::GetVertexData {
             node: parse_node(&p.node)?,
             indices: p.indices,
+            selection: p.selection,
+            offset: p.offset,
+            limit: p.limit,
         })
         .await
     }
@@ -2177,7 +2531,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras. The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + the generic brdf primitives). Unknown keys are dropped. Call material_helper_catalog for descriptions."
+        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras, ibl. `ibl` exposes sample_ibl(albedo, normal, surface_to_camera, roughness, metallic) (+ sample_ibl_diffuse/_specular) — the SAME environment ambient + reflection first-party PBR gets, so a custom material matches the scene IBL instead of hand-faking a sky gradient (fixes black custom materials in IBL-only scenes; pair with normals + view_dir fragment_inputs). The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + ibl). Unknown keys are dropped. Call material_helper_catalog for descriptions."
     )]
     async fn set_material_includes(
         &self,
@@ -2286,7 +2640,29 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a built-in material factor on a mesh node's inline material. param: base_color | emissive (value = 3 floats) | metallic | roughness | normal_scale | occlusion_strength (value = 1 float)."
+        description = "Create a texture from AGENT-AUTHORED image data — the generic 'author any texture' primitive. Two modes: (1) RAW PIXELS — set format=\"rgba8\" + width + height, data = base64 of width*height*4 RGBA8 bytes (row-major, top-left origin); (2) ENCODED IMAGE — data = a data: URI (data:image/png;base64,…) or bare base64 of a PNG/JPEG/WebP, dims derived. Use this to upload soft particle sprites, fbm height/normal maps, gradients, cubemap faces, etc. — no procedural preset required. Set linear=true for data/normal/roughness maps (skips sRGB conversion). Returns the new texture id; bind with set_material_texture (or set_node_texture)."
+    )]
+    async fn create_texture(
+        &self,
+        Parameters(p): Parameters<CreateTextureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = AssetId::new();
+        self.dispatch_echo_asset(
+            EditorCommand::CreateTexture {
+                id,
+                data: p.data,
+                width: p.width,
+                height: p.height,
+                format: p.format,
+                linear: p.linear,
+            },
+            id,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength (1 float)."
     )]
     async fn set_builtin_param(
         &self,
@@ -2318,6 +2694,27 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Set a mesh node's BUILT-IN/inline material alpha mode: opaque | mask (with `cutoff`) | blend. The typed alternative to resending the whole NodeKind via set_kind. For glass: `blend` + set_builtin_param base_color with a 4th alpha float < 1. Re-materializes the node (pipeline-feature flip)."
+    )]
+    async fn set_builtin_alpha_mode(
+        &self,
+        Parameters(p): Parameters<BuiltinAlphaModeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mode = match p.mode {
+            AlphaModeArg::Opaque => awsm_editor_protocol::MaterialAlphaMode::Opaque,
+            AlphaModeArg::Mask => awsm_editor_protocol::MaterialAlphaMode::Mask {
+                cutoff: p.cutoff.unwrap_or(0.5) as f32,
+            },
+            AlphaModeArg::Blend => awsm_editor_protocol::MaterialAlphaMode::Blend,
+        };
+        self.dispatch(EditorCommand::SetBuiltinAlphaMode {
+            node: parse_node(&p.node)?,
+            mode,
+        })
+        .await
+    }
+
+    #[tool(
         description = "Bind a texture asset onto a mesh node's BUILT-IN (inline PBR) material slot: base_color | metallic_roughness | normal | occlusion | emissive. Omit `texture` to clear. Create textures with import_texture_from_url (raster) or add_texture_asset (procedural). (set_material_texture is the custom-WGSL-material counterpart.)"
     )]
     async fn set_node_texture(
@@ -2328,6 +2725,88 @@ impl EditorMcp {
             node: parse_node(&p.node)?,
             slot: p.slot,
             texture: parse_asset_opt(&p.texture)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Patch a node's kind with a JSON merge-patch (RFC 7386) — edit only the fields you name instead of resending the whole NodeKind via dispatch_command SetKind. `node` is the node UUID; `patch` is a partial object merged over the node's current kind (fields present overwrite; null removes a key; nested objects merge recursively; arrays replace wholesale). Read get_node_details to see the exact shape + field names, then send just the delta. The result must still be a valid NodeKind (rejected loudly with the deserialize error otherwise). Ideal for escape-hatch edits with no typed tool: particle-emitter config, decal, sprite, collider, etc."
+    )]
+    async fn patch_kind(
+        &self,
+        Parameters(p): Parameters<PatchKindParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::PatchKind {
+            id: parse_node(&p.node)?,
+            patch: p.patch,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "§3: the machine-readable JSON Schema for a node's `kind` config — the EXACT field shape + enum options of every NodeKind variant, so you can author a fresh kind via set_kind / patch_kind without guessing (the complement to get_node_details, which only shows an existing instance). Default (`schema: \"node\"`) returns the full `NodeKind` schema: every variant under `oneOf`, and every referenced sub-type (LightConfig, CameraConfig, MaterialInstance, ParticleEmitterDef, the KHR PBR extensions, …) fully expanded under `$defs`. `schema: \"modifier\"` returns the `ModifierStack` schema (mesh base + every modifier) for set_mesh_modifiers. Static metadata — no scene state. Returns a JSON Schema (draft 2020-12)."
+    )]
+    async fn get_kind_schema(
+        &self,
+        Parameters(p): Parameters<KindSchemaParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let json = match p.schema.as_deref() {
+            Some("modifier") | Some("modifier_stack") | Some("modifiers") => {
+                serde_json::to_string_pretty(&schemars::schema_for!(
+                    awsm_editor_protocol::ModifierStack
+                ))
+            }
+            _ => serde_json::to_string_pretty(&schemars::schema_for!(NodeKind)),
+        }
+        .map_err(|e| McpError::internal_error(format!("serialize schema: {e}"), None))?;
+        Ok(text(json))
+    }
+
+    #[tool(
+        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive), texture (billboard SPRITE asset id — a soft radial-alpha disc from create_texture gives soft-edged particles; pair with blend:true so the alpha fades the edges). Errors if the node isn't a particle emitter."
+    )]
+    async fn set_particle_emitter(
+        &self,
+        Parameters(p): Parameters<ParticleEmitterParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetParticleEmitter {
+            node: parse_node(&p.node)?,
+            spawn_rate: p.spawn_rate,
+            burst_count: p.burst_count,
+            max_alive: p.max_alive,
+            one_shot: p.one_shot,
+            space: p.space,
+            shape: p.shape,
+            initial_speed: p.initial_speed,
+            lifetime: p.lifetime,
+            size: p.size,
+            forces: p.forces,
+            color_over_life: p.color_over_life,
+            size_over_life: p.size_over_life,
+            blend: p.blend,
+            texture: p.texture.as_deref().map(parse_asset).transpose()?.map(Some),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the UV transform / flow / wrap of a mesh node's BUILT-IN (inline PBR) texture slot (base_color | metallic_roughness | normal | occlusion | emissive). Patch-style: only the fields you pass change. offset/scale/rotation set the KHR_texture_transform (scale>1 tiles); flow=[u,v] auto-scrolls the texture (UV-units/sec — conveyors/water/lava — set [0,0] to stop); wrap_u/wrap_v = repeat|clamp_to_edge|mirrored_repeat; uv_set picks the TEXCOORD set. The slot must already have a texture bound (set_node_texture first) — an empty slot is rejected, not silently ignored. Renders immediately. For a directional/keyframed scroll use a texture_transform animation track instead."
+    )]
+    async fn set_node_texture_transform(
+        &self,
+        Parameters(p): Parameters<NodeTextureTransformParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetNodeTextureTransform {
+            node: parse_node(&p.node)?,
+            slot: p.slot,
+            offset: p.offset,
+            scale: p.scale,
+            rotation: p.rotation,
+            flow: p.flow,
+            wrap_u: p.wrap_u.as_deref().map(parse_wrap).transpose()?,
+            wrap_v: p.wrap_v.as_deref().map(parse_wrap).transpose()?,
+            uv_set: p.uv_set,
         })
         .await
     }
@@ -2473,19 +2952,21 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Two-bone IK: bring a chain TIP (end_node, e.g. a foot joint) to a world-space target, bending at its parent (knee) under its grandparent (upper leg). Solves analytically and (by default) APPLIES the two joint rotations as one undoable batch — auto-key compatible. `pole` biases the bend direction. Returns { root_node, mid_node, root_rotation, mid_rotation, reach } (reach < 1 ⇒ target beyond the chain's span, clamped). Discover chains via get_skin_data; clips OWN bones while active (delete/pause first)."
+        description = "Two-bone IK: bring a chain TIP (end_node, e.g. a foot joint) to a world-space target, bending at its parent (knee) under its grandparent (upper leg). Solves analytically and (by default) APPLIES the two joint rotations as one undoable batch — auto-key compatible. `pole` biases the bend direction. `root_node` (optional) pins the chain ROOT explicitly (root_node → its child toward end → end_node) when the auto-pick (end→parent→grandparent) would walk into the wrong bones (e.g. finger joints above a hand); must be an ancestor of end_node. Returns { root_node, mid_node, root_rotation, mid_rotation, reach } (reach < 1 ⇒ target beyond the chain's span, clamped). Discover chains via get_skin_data; clips OWN bones while active (delete/pause first)."
     )]
     async fn solve_ik(
         &self,
         Parameters(p): Parameters<SolveIkParams>,
     ) -> Result<CallToolResult, McpError> {
         let end_node = parse_node(&p.end_node)?;
+        let root_node = p.root_node.as_deref().map(parse_node).transpose()?;
         // 1. Solve (read-only).
         let sol = match self
             .req(Request::Query(EditorQuery::SolveIk {
                 end_node,
                 target: p.target,
                 pole: p.pole,
+                root_node,
             }))
             .await?
         {
@@ -2585,12 +3066,34 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment (skybox + IBL). Each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default cubemap/lighting, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap (fetched + registered on the fly, like import_texture_from_url). IBL needs both ibl_prefiltered + ibl_irradiance. A fresh scene already seeds the built-in environment."
+        description = "Set the scene environment (skybox + IBL). AGENT-AUTHORED (no hosting), three ways: (1) `equirect` = a data:image/png;base64 EQUIRECTANGULAR (2:1 lat/long) PANORAMA you drew — projected to a cubemap that drives BOTH skybox + IBL (any sky you can paint: nebula, sunset, gradient — reflects + lights the scene). (2) `zenith` + `nadir` ([r,g,b] linear) for a two-color SKY GRADIENT (skybox + IBL) — author dusk / overcast / night / studio from your own colors. (3) Otherwise each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap. KTX IBL needs both ibl_prefiltered + ibl_irradiance. Precedence: equirect > zenith/nadir > skybox/ibl_*. A fresh scene already seeds the built-in environment."
     )]
     async fn set_environment(
         &self,
         Parameters(p): Parameters<EnvironmentParams>,
     ) -> Result<CallToolResult, McpError> {
+        // §18: agent-authored panorama short-circuit — an equirect image becomes
+        // the skybox + IBL (projected to a cubemap in the env bridge).
+        if let Some(data) = p.equirect {
+            return self
+                .dispatch(EditorCommand::SetEnvironmentEquirect {
+                    id: AssetId::new(),
+                    data,
+                })
+                .await;
+        }
+        // §18: agent-authored sky-gradient short-circuit — zenith+nadir drive both
+        // the skybox and the IBL from the same two colors (no KTX2 needed).
+        if let (Some(zenith), Some(nadir)) = (p.zenith, p.nadir) {
+            return self
+                .dispatch(EditorCommand::SetEnvironment {
+                    env: EnvironmentConfig {
+                        skybox: SkyboxConfig::SkyGradient { zenith, nadir },
+                        ibl: IblConfig::SkyGradient { zenith, nadir },
+                    },
+                })
+                .await;
+        }
         let is_url = |s: &str| s.starts_with("http://") || s.starts_with("https://");
         // Resolve a cubemap arg → an existing KTX asset id, registering a
         // URL-sourced asset first when given a URL (the cubemap analogue of
@@ -2715,6 +3218,19 @@ impl EditorMcp {
         self.dispatch(EditorCommand::FrameNode {
             node: parse_node(&p.node)?,
             padding: p.padding.unwrap_or(0.1),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Restore a node + all its descendants to their scene base transforms — reverts a clip's last-previewed pose (clearing the current clip with set_current_clip leaves the last pose baked in the viewport). Pass a rig ROOT to reset a whole skeleton. Transient (re-syncs the renderer from the scene; no scene edit, not undoable)."
+    )]
+    async fn reset_pose(
+        &self,
+        Parameters(p): Parameters<NodeArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ResetPose {
+            node: parse_node(&p.node)?,
         })
         .await
     }
@@ -2861,7 +3377,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Add an animation track to a clip, bound to a target. target.kind = transform (node+prop) | morph (node+index) | uniform (material+name) | builtin_param/light/camera (node+param). Tracks append; the new index is the prior track count."
+        description = "Add an animation track to a clip, bound to a target. target.kind = transform (node+prop) | morph (node+index) | uniform (material+name) | builtin_param/light/camera (node+param) | texture_transform (node + slot[base_color|metallic_roughness|normal|occlusion|emissive] + prop[offset(vec2)|scale(vec2)|rotation(scalar)] — keyframe a built-in texture's UV offset/scale/rotation, e.g. a directional/reversible conveyor scroll). Tracks append; the new index is the prior track count."
     )]
     async fn add_track(
         &self,
@@ -3440,6 +3956,19 @@ fn parse_node_opt(s: &Option<String>) -> Result<Option<NodeId>, McpError> {
     s.as_deref().map(parse_node).transpose()
 }
 
+fn parse_wrap(s: &str) -> Result<awsm_editor_protocol::TextureWrap, McpError> {
+    use awsm_editor_protocol::TextureWrap as W;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "repeat" => Ok(W::Repeat),
+        "clamp" | "clamp_to_edge" | "clamptoedge" => Ok(W::ClampToEdge),
+        "mirror" | "mirrored_repeat" | "mirroredrepeat" => Ok(W::MirroredRepeat),
+        other => Err(McpError::invalid_params(
+            format!("invalid wrap {other:?} (use repeat | clamp_to_edge | mirrored_repeat)"),
+            None,
+        )),
+    }
+}
+
 fn parse_nodes(ids: &[String]) -> Result<Vec<NodeId>, McpError> {
     ids.iter().map(|s| parse_node(s)).collect()
 }
@@ -3551,6 +4080,25 @@ fn build_track_target(a: &TrackTargetArg) -> Result<TrackTarget, McpError> {
             node: need_node()?,
             param: parse_enum(param_str(a)?, "camera param")?,
         },
+        "texture_transform" => {
+            let slot_s = a.slot.as_deref().ok_or_else(|| {
+                McpError::invalid_params(
+                    "texture_transform target requires `slot` (base_color | metallic_roughness | normal | occlusion | emissive)",
+                    None,
+                )
+            })?;
+            let prop_s = a.prop.as_deref().ok_or_else(|| {
+                McpError::invalid_params(
+                    "texture_transform target requires `prop` (offset | scale | rotation)",
+                    None,
+                )
+            })?;
+            TrackTarget::TextureTransform {
+                node: need_node()?,
+                slot: parse_enum::<TexSlot>(slot_s, "texture slot")?,
+                prop: parse_enum::<TexTransformProp>(prop_s, "texture transform prop")?,
+            }
+        }
         other => {
             return Err(McpError::invalid_params(
                 format!("unknown target kind {other:?}"),
@@ -3663,7 +4211,15 @@ const MATERIAL_KEYS_DOC: &str = "\
 
 shader_includes (set_material_includes): math, camera, color_space, textures, \
 vertex_color, light_access, apply_lighting, brdf, material_color_calc, shadows, \
-skybox, extras.
+skybox, extras, ibl.
+
+`ibl` (image-based lighting): declare it + call `sample_ibl(albedo, normal, \
+surface_to_camera, roughness, metallic) -> vec3<f32>` (or `sample_ibl_diffuse(n)` \
+/ `sample_ibl_specular(reflect_dir, roughness)`) to get the SAME environment \
+ambient + reflection first-party PBR gets — so a custom material matches the \
+scene's IBL instead of hand-faking a sky gradient (the fix for custom materials \
+rendering black in an IBL-only, no-punctual-light scene). Pair with the `normals` \
++ `view_dir` fragment_inputs for `input.world_normal` + `input.surface_to_camera`.
 
 fragment_inputs (set_material_fragment_inputs): normals, tangents, uv, lights, \
 view_dir, vertex_color.

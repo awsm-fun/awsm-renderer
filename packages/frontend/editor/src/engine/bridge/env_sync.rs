@@ -46,6 +46,37 @@ fn stashed_ktx(id: AssetId) -> Option<Vec<u8>> {
     KTX_BYTES.with(|m| m.borrow().get(&id).cloned())
 }
 
+/// A decoded equirect panorama: RGBA8 pixels + `(width, height)` (§18).
+type EquirectImage = (Vec<u8>, u32, u32);
+
+thread_local! {
+    /// §18 DECODE MEMO for equirect panoramas, keyed by `AssetId`. The encoded
+    /// PNG/JPEG bytes live in the [`texture_cache`](crate::engine::bridge::texture_cache)
+    /// (so they persist via `persistence::texture_files` + restore on reload, like
+    /// any imported texture); this memo just avoids re-decoding the same panorama
+    /// for the skybox + IBL applies.
+    static EQUIRECT_RGBA: RefCell<HashMap<AssetId, EquirectImage>> =
+        RefCell::new(HashMap::new());
+}
+
+/// The decoded RGBA panorama for `id`: from the memo, else decoded from the
+/// persisted encoded bytes in `texture_cache` (and memoized). Errors loudly if
+/// the bytes aren't available (never set, or a reload that dropped them).
+async fn equirect_rgba(id: AssetId) -> anyhow::Result<EquirectImage> {
+    if let Some(v) = EQUIRECT_RGBA.with(|m| m.borrow().get(&id).cloned()) {
+        return Ok(v);
+    }
+    let (bytes, mime) = crate::engine::bridge::texture_cache::get(id).ok_or_else(|| {
+        anyhow::anyhow!("equirect panorama {id} bytes aren't available (re-set the environment)")
+    })?;
+    let (rgba, w, h) =
+        crate::engine::bridge::material::decode_rgba_from_bytes(&bytes, mime.as_str())
+            .await
+            .map_err(|e| anyhow::anyhow!("decode equirect {id}: {e}"))?;
+    EQUIRECT_RGBA.with(|m| m.borrow_mut().insert(id, (rgba.clone(), w, h)));
+    Ok((rgba, w, h))
+}
+
 /// Apply the current `scene.environment` (skybox + IBL) ONCE, awaited — call at
 /// boot AFTER the renderer is ready but BEFORE the render loop starts.
 ///
@@ -105,12 +136,32 @@ pub fn start() {
     });
 }
 
+/// Build a `CubemapSkyGradient` from agent-supplied linear-RGB zenith/nadir (§18).
+fn sky_gradient(zenith: [f32; 3], nadir: [f32; 3]) -> CubemapSkyGradient {
+    use awsm_renderer_core::command::color::Color;
+    let c = |v: [f32; 3]| Color::new_values(v[0] as f64, v[1] as f64, v[2] as f64, 1.0);
+    CubemapSkyGradient::new(c(zenith), c(nadir))
+}
+
 async fn apply_skybox(cfg: &SkyboxConfig) -> anyhow::Result<()> {
     let image = match cfg {
         SkyboxConfig::BuiltInDefault => {
             CubemapImage::new_sky_gradient(CubemapSkyGradient::default(), 1024, 1024)
                 .await
                 .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))?
+        }
+        // §18: agent-authored sky gradient — same generator as BuiltInDefault.
+        SkyboxConfig::SkyGradient { zenith, nadir } => {
+            CubemapImage::new_sky_gradient(sky_gradient(*zenith, *nadir), 1024, 1024)
+                .await
+                .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))?
+        }
+        // §18: agent panorama — project the (persisted) equirect to a skybox cubemap.
+        SkyboxConfig::Equirect { asset_id } => {
+            let (rgba, w, h) = equirect_rgba(*asset_id).await?;
+            CubemapImage::new_equirect(&rgba, w, h, 1024)
+                .await
+                .map_err(|e| anyhow::anyhow!("equirect skybox: {e}"))?
         }
         SkyboxConfig::Ktx { asset_id } => load_ktx_by_id(*asset_id).await?,
     };
@@ -121,15 +172,24 @@ async fn apply_skybox(cfg: &SkyboxConfig) -> anyhow::Result<()> {
 
 async fn apply_ibl(cfg: &IblConfig) -> anyhow::Result<()> {
     let (prefiltered, irradiance) = match cfg {
-        IblConfig::BuiltInDefault => {
-            let gradient = CubemapSkyGradient::default();
-            let p = CubemapImage::new_sky_gradient(gradient.clone(), 1024, 1024)
+        IblConfig::BuiltInDefault => gradient_ibl(CubemapSkyGradient::default()).await?,
+        // §18: agent-authored sky-gradient IBL — same generator as BuiltInDefault.
+        IblConfig::SkyGradient { zenith, nadir } => {
+            gradient_ibl(sky_gradient(*zenith, *nadir)).await?
+        }
+        // §18: agent panorama IBL — the specular-env cubemap (with mips) + a
+        // proper cosine-convolved DIFFUSE irradiance cubemap (SH-L2, matching the
+        // shader's E(n)·π convention; a uniform sky round-trips, a directional one
+        // gets the correct smooth hemisphere integral).
+        IblConfig::Equirect { asset_id } => {
+            let (rgba, w, h) = equirect_rgba(*asset_id).await?;
+            let prefiltered = CubemapImage::new_equirect(&rgba, w, h, 256)
                 .await
-                .map_err(|e| anyhow::anyhow!("prefiltered: {e}"))?;
-            let i = CubemapImage::new_sky_gradient(gradient, 32, 32)
+                .map_err(|e| anyhow::anyhow!("equirect prefiltered: {e}"))?;
+            let irradiance = CubemapImage::new_equirect_irradiance(&rgba, w, h, 32)
                 .await
-                .map_err(|e| anyhow::anyhow!("irradiance: {e}"))?;
-            (p, i)
+                .map_err(|e| anyhow::anyhow!("equirect irradiance: {e}"))?;
+            (prefiltered, irradiance)
         }
         IblConfig::Ktx {
             prefiltered_asset_id,
@@ -143,6 +203,19 @@ async fn apply_ibl(cfg: &IblConfig) -> anyhow::Result<()> {
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
     set_ibl_on_renderer(&mut renderer, prefiltered, irradiance).await
+}
+
+/// Prefiltered (1024²) + irradiance (32²) env from a sky gradient.
+async fn gradient_ibl(
+    gradient: CubemapSkyGradient,
+) -> anyhow::Result<(CubemapImage, CubemapImage)> {
+    let p = CubemapImage::new_sky_gradient(gradient.clone(), 1024, 1024)
+        .await
+        .map_err(|e| anyhow::anyhow!("prefiltered: {e}"))?;
+    let i = CubemapImage::new_sky_gradient(gradient, 32, 32)
+        .await
+        .map_err(|e| anyhow::anyhow!("irradiance: {e}"))?;
+    Ok((p, i))
 }
 
 /// Resolve a KTX cubemap by `AssetId`: the scene asset table gives the source,

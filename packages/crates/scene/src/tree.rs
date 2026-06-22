@@ -126,6 +126,7 @@ impl std::fmt::Display for NodeId {
 /// path until `drop_skinning` bakes its bind pose into a captured `Mesh`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SkinnedMeshRef {
     /// The imported glTF/glb source file's `AssetId` (an `AssetSource::Filename`
     /// entry) — the key under which the bridge caches this import's node template.
@@ -170,6 +171,7 @@ pub struct SkinnedMeshRef {
 /// [`SkinnedMeshRef::joints`].
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SkinJoint {
     /// The bone's scene node id (an animation `Transform` track targets this).
     pub node: NodeId,
@@ -182,6 +184,7 @@ pub struct SkinJoint {
 // `Mesh` (the common, dominant variant) inlines a `MaterialInstance`, which makes
 // it much larger than the leaf variants. Boxing it would penalise the hot path to
 // shrink the rare ones, so accept the size spread (same call as `AssetSource`).
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[allow(clippy::large_enum_variant)]
 pub enum NodeKind {
     Group,
@@ -249,6 +252,7 @@ pub enum NodeKind {
 /// material's alpha mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshShadowConfig {
     /// Whether the mesh appears in the shadow-generation pass.
     #[serde(default = "default_true_msc")]
@@ -384,5 +388,29 @@ mod tests {
         let skin: SkinnedMeshRef = toml::from_str(toml).expect("deserialize legacy");
         assert!(skin.joints.is_empty());
         assert_eq!(skin.node_index, 1);
+    }
+}
+
+#[cfg(all(test, feature = "schemars"))]
+mod schema_tests {
+    use crate::NodeKind;
+
+    // §3: the generated NodeKind schema must expose every variant's real field
+    // shape (transitively, via $defs) — that's what makes it machine-readable for
+    // authoring a fresh kind without an existing instance to copy.
+    #[test]
+    fn node_kind_schema_lists_variant_fields() {
+        let json = serde_json::to_string(&schemars::schema_for!(NodeKind)).unwrap();
+        for needle in [
+            "ParticleEmitterDef",
+            "spawn_rate", // a ParticleEmitterDef field
+            "CameraConfig",
+            "projection",       // a CameraConfig field
+            "LightConfig",      // a NodeKind::Light sub-type
+            "MaterialInstance", // inlined by NodeKind::Mesh
+            "AnisotropyExt",    // a macro-generated KHR PBR extension, deep in the tree
+        ] {
+            assert!(json.contains(needle), "NodeKind schema missing `{needle}`");
+        }
     }
 }

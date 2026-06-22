@@ -12,6 +12,9 @@ use awsm_scene::animation::{
     BuiltinParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc,
     LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
+use awsm_scene::particle::{
+    ColorOverLifeDef, EmitterSpaceDef, ForceDef, SizeOverLifeDef, SpawnShapeDef,
+};
 use awsm_scene::{AssetId, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind, Trs};
 
 use awsm_meshgen::recipe::{Modifier, ModifierStack};
@@ -139,6 +142,67 @@ pub enum EditorCommand {
     /// the largest payload). Inverse: restore the prior kind. Coalesces.
     SetKind { id: NodeId, kind: Box<NodeKind> },
 
+    /// **Patch** a node's kind with an [RFC 7386](https://datatracker.ietf.org/doc/html/rfc7386)
+    /// JSON merge-patch (§3) — the composable alternative to resending the entire
+    /// `NodeKind` via `SetKind`. The node's current kind is serialized to JSON, the
+    /// `patch` is merged in (fields present overwrite; `null` removes a key; nested
+    /// objects merge recursively; arrays replace wholesale), and the result is
+    /// deserialized back. The patched JSON **must still be a valid `NodeKind`** —
+    /// rejected loudly otherwise (never a silent no-op). Pairs with
+    /// `get_node_details` (read the exact shape + field names, then send just the
+    /// delta). Re-materializes like `SetKind`. Inverse: restore the prior kind.
+    PatchKind {
+        id: NodeId,
+        patch: serde_json::Value,
+    },
+
+    /// Typed, **patch-style** config for a `ParticleEmitter` node (§4) — the
+    /// discoverable companion to `InsertParticle` (which only creates the node).
+    /// Every field is optional; send any subset and only those change (the rest
+    /// keep their current values). The node must be a `ParticleEmitter` (rejected
+    /// otherwise). Re-materializes like `SetKind`. Inverse: restore the prior kind.
+    /// (For anything not covered here — e.g. `texture` — use `PatchKind`.)
+    SetParticleEmitter {
+        node: NodeId,
+        #[serde(default)]
+        spawn_rate: Option<f32>,
+        #[serde(default)]
+        burst_count: Option<u32>,
+        #[serde(default)]
+        max_alive: Option<u32>,
+        #[serde(default)]
+        one_shot: Option<bool>,
+        #[serde(default)]
+        space: Option<EmitterSpaceDef>,
+        #[serde(default)]
+        shape: Option<SpawnShapeDef>,
+        /// `[min, max]` initial speed range (m/s).
+        #[serde(default)]
+        initial_speed: Option<[f32; 2]>,
+        /// `[min, max]` lifetime range (seconds).
+        #[serde(default)]
+        lifetime: Option<[f32; 2]>,
+        /// `[min, max]` spawn-size range.
+        #[serde(default)]
+        size: Option<[f32; 2]>,
+        #[serde(default)]
+        forces: Option<Vec<ForceDef>>,
+        #[serde(default)]
+        color_over_life: Option<ColorOverLifeDef>,
+        #[serde(default)]
+        size_over_life: Option<SizeOverLifeDef>,
+        /// Route through the transparent-blend pass (true alpha fades: smoke /
+        /// soft glows) instead of the cheaper opaque-emissive path.
+        #[serde(default)]
+        blend: Option<bool>,
+        /// Bind a billboard SPRITE texture (asset id) the particles sample —
+        /// e.g. a soft radial-alpha disc (author one with `create_texture`) for
+        /// soft-edged particles instead of hard squares. Pair with `blend: true`
+        /// so the sprite's alpha actually fades the edges. `Some(None)` clears it.
+        #[serde(default)]
+        texture: Option<Option<AssetId>>,
+    },
+
     /// Set a node's local transform (TRS). Inverse: restore the prior transform.
     /// Consecutive `SetTransform`s on the same node coalesce into one undo step
     /// (so a drag-scrub is a single undo).
@@ -158,7 +222,15 @@ pub enum EditorCommand {
 
     /// Duplicate a node (deep clone, fresh ids) as a following sibling. Inverse:
     /// delete the clone.
-    Duplicate { id: NodeId },
+    /// Deep-clone a node (fresh ids) as a following sibling. `new_id` (optional,
+    /// caller-minted) forces the clone's **root** id so the MCP `duplicate_node`
+    /// can echo it back (§6); `None` mints one. Descendants always get fresh ids.
+    /// Inverse: `Delete` of the new root.
+    Duplicate {
+        id: NodeId,
+        #[serde(default)]
+        new_id: Option<NodeId>,
+    },
 
     /// Reparent a node under `new_parent` at `index` (root when `None`).
     /// Inverse: reparent back to its prior parent + index.
@@ -260,6 +332,31 @@ pub enum EditorCommand {
     /// of the new id.
     AddTextureAsset { id: AssetId, proc: ProceduralKind },
 
+    /// Create a 2D texture from **agent-authored** image data — the generic
+    /// "author any texture" primitive (★ in `docs/plans/mcp-improvements.md`),
+    /// the GPU-side companion to the three procedural presets. Either:
+    /// - **raw pixels**: `format = "rgba8"` + `width`/`height`, `data` = base64
+    ///   of `width*height*4` RGBA8 bytes (row-major, top-left origin); or
+    /// - **encoded image**: `data` = a `data:` URI or bare base64 of a
+    ///   PNG/JPEG/WebP; dims/format derived (`format` omitted).
+    ///
+    /// `linear` uploads as linear data (normal/roughness/height maps) instead of
+    /// sRGB albedo. **Carries its `id`** (caller-minted, idempotent). The asset
+    /// is session-local (same as [`ImportTextureFromUrl`](Self::ImportTextureFromUrl)
+    /// — raw pixels carry no encoded bytes to persist). Inverse: `DeleteAsset`.
+    CreateTexture {
+        id: AssetId,
+        data: String,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+        #[serde(default)]
+        format: Option<String>,
+        #[serde(default)]
+        linear: bool,
+    },
+
     /// Remove an asset from the project asset table. Inverse: `RestoreAsset` with
     /// the captured entry (so undo round-trips the exact asset + id).
     DeleteAsset { id: AssetId },
@@ -329,6 +426,15 @@ pub enum EditorCommand {
     /// side effect. Inverse: restore the prior environment.
     SetEnvironment { env: EnvironmentConfig },
 
+    /// §18: upload an agent-authored **equirectangular panorama** and make it the
+    /// environment. `data` is a base64 / `data:` image string (decoded to RGBA in
+    /// the env bridge), stashed under `id`, and projected to a cubemap that drives
+    /// BOTH the skybox and the IBL (`skybox` + `ibl` set to `Equirect { id }`).
+    /// The composable alternative to the built-in / sky-gradient / hosted-KTX
+    /// environments — the agent supplies any panorama it can draw. Inverse:
+    /// restore the prior `EnvironmentConfig`.
+    SetEnvironmentEquirect { id: AssetId, data: String },
+
     /// Snap the viewport camera to a world axis (the nav-cube directions).
     /// **Transient** — camera/view state, not recorded in the undo log.
     SnapCameraToAxis { axis: CameraAxis },
@@ -357,6 +463,13 @@ pub enum EditorCommand {
     /// Frame a node in the viewport — fit its world-space bounds with `padding`
     /// (0 = tight, 0.2 = 20% margin). **Transient** (view state).
     FrameNode { node: NodeId, padding: f32 },
+
+    /// Restore a node + all its descendants to their scene-stored base
+    /// transforms in the renderer mirror — reverts a clip's last-previewed pose
+    /// (which writes the renderer mirror directly, not the scene) so a neutral
+    /// view doesn't keep showing e.g. raised arms after `SetCurrentClip {}`.
+    /// **Transient** (re-syncs renderer locals from the scene; no scene edit).
+    ResetPose { node: NodeId },
 
     /// Pin the renderer's `frame_globals.time` to `seconds` (overrides the
     /// wall-clock). A temporal material (`sin(time*f)`) then screenshots the same
@@ -461,17 +574,28 @@ pub enum EditorCommand {
     /// whole-mesh snapshot).
     SetVertexPositions {
         mesh: AssetId,
+        #[serde(default)]
         indices: Vec<u32>,
         positions: Vec<[f32; 3]>,
+        /// §10: when set, the target indices come from a stored selection HANDLE
+        /// (`select_vertices_where { store: true }`) instead of `indices` —
+        /// `positions[k]` aligns with the handle's stored order (read it back with
+        /// `get_vertex_data { selection }`).
+        #[serde(default)]
+        selection: Option<u32>,
     },
     /// Translate a vertex selection with a smooth radial falloff (server computes
     /// the per-vertex weights via `meshgen::edit::soft_transform_positions`).
     /// Inverse: a sparse `SetVertexPositions` of every vertex the move touched.
     SoftTransformVertices {
         mesh: AssetId,
+        #[serde(default)]
         indices: Vec<u32>,
         translation: [f32; 3],
         falloff: f32,
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
     },
     /// Bake an editable mesh's modifier stack into raw triangles and clear the
     /// recipe (the deliberate heavy snapshot). Inverse:
@@ -494,16 +618,36 @@ pub enum EditorCommand {
     /// possibly batched with a stack restore).
     PaintVertexColors {
         mesh: AssetId,
+        #[serde(default)]
         indices: Vec<u32>,
         color: [f32; 4],
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
     },
     /// Set the per-vertex **normal** override of `indices` to `normal`. An
     /// explicit normal override always wins over the eval/recompute. Inverse:
     /// restore the prior overrides.
     SetVertexNormals {
         mesh: AssetId,
+        #[serde(default)]
         indices: Vec<u32>,
         normal: [f32; 3],
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
+    },
+    /// §16: displace a node's mesh by an agent-authored **heightmap image** — the
+    /// generic "supply your own heightfield" hook. `data` is a base64 / `data:`
+    /// image (decoded to RGBA in the bridge); each vertex is offset along its
+    /// normal by `luminance(heightmap @ vertex-UV) * strength` (black = flat,
+    /// white = raised). Collapses to a frozen-topology override layer first (like
+    /// the sculpt verbs) and re-bakes. Inverse: restore the prior overrides
+    /// (+ stack if the collapse fired).
+    DisplaceFromTexture {
+        node: NodeId,
+        data: String,
+        strength: f32,
     },
     /// Replace a mesh's entire sparse [`VertexOverrides`] map wholesale (the
     /// idempotent setter, used as the universal inverse of the authoring
@@ -512,6 +656,27 @@ pub enum EditorCommand {
     SetVertexOverrides {
         mesh: AssetId,
         overrides: VertexOverrides,
+    },
+    /// FUSED select-and-paint (§10): pick the vertices of `node`'s resolved mesh
+    /// matching `predicate` and set their per-vertex **color** override to
+    /// `color`, in ONE call — the index array stays server-side (a full-res
+    /// height-band selection can be tens of thousands of indices that overflow
+    /// the MCP token cap when round-tripped). Same collapse/re-bake/inverse
+    /// semantics as `PaintVertexColors`.
+    PaintVerticesWhere {
+        node: NodeId,
+        predicate: crate::query::VertexPredicate,
+        color: [f32; 4],
+    },
+    /// FUSED select-and-soft-transform (§10): pick the vertices of `node`'s
+    /// resolved mesh matching `predicate` and translate them with a smooth radial
+    /// `falloff`, in ONE call (indices stay server-side). Same semantics as
+    /// `SoftTransformVertices`.
+    TransformVerticesWhere {
+        node: NodeId,
+        predicate: crate::query::VertexPredicate,
+        translation: [f32; 3],
+        falloff: f32,
     },
     /// Project-wide finalize: collapse **every** Mesh asset's stack (freeze all
     /// topology, bake all overrides into the cache, then flatten recipes to
@@ -526,6 +691,36 @@ pub enum EditorCommand {
         node: NodeId,
         slot: BuiltinTextureSlot,
         texture: Option<AssetId>,
+    },
+
+    /// Patch the UV transform / flow / sampler-wrap of a mesh node's
+    /// **built-in/inline** material texture slot (§1) — the typed companion to
+    /// `SetBuiltinTexture`. **Patch semantics**: only the provided fields change.
+    /// `offset`/`scale`/`rotation` compose into the slot's `KHR_texture_transform`
+    /// (offset is also the base the `flow` scroll accumulates onto); `flow` is a
+    /// `[u,v]` UV-units/sec auto-scroll (set `[0,0]` to stop); `wrap_u`/`wrap_v`
+    /// set the sampler address mode; `uv_set` picks the TEXCOORD set. The slot
+    /// **must already have a texture bound** (`SetBuiltinTexture` first) — applying
+    /// to an empty slot is **rejected loudly**, never a silent no-op. Setting any
+    /// field re-materializes the node so the change actually renders. Inverse:
+    /// restore the node's prior kind.
+    SetNodeTextureTransform {
+        node: NodeId,
+        slot: BuiltinTextureSlot,
+        #[serde(default)]
+        offset: Option<[f32; 2]>,
+        #[serde(default)]
+        scale: Option<[f32; 2]>,
+        #[serde(default)]
+        rotation: Option<f32>,
+        #[serde(default)]
+        flow: Option<[f32; 2]>,
+        #[serde(default)]
+        wrap_u: Option<awsm_scene::primitive::TextureWrap>,
+        #[serde(default)]
+        wrap_v: Option<awsm_scene::primitive::TextureWrap>,
+        #[serde(default)]
+        uv_set: Option<u32>,
     },
 
     // ─────────────────── Custom (dynamic-WGSL) material authoring ─────────────
@@ -565,12 +760,22 @@ pub enum EditorCommand {
     },
     /// Set a built-in material factor on a mesh node's inline material (the
     /// writable counterpart of `ReadbackTarget::BuiltinParam`). `value` is 1
-    /// element for `Metallic`/`Roughness`, 3 for `BaseColor`/`Emissive`. Inverse:
+    /// element for `Metallic`/`Roughness`, 3 for `Emissive`, and 3-or-4 for
+    /// `BaseColor` (a 4th element is the base-color ALPHA, §13). Inverse:
     /// restore the node's prior kind.
     SetBuiltinParam {
         node: NodeId,
         param: BuiltinParamKind,
         value: Vec<f32>,
+    },
+    /// Set the alpha mode of a mesh node's **built-in/inline** material (§13) —
+    /// `Opaque | Mask { cutoff } | Blend`. A pipeline-feature flip (e.g. glass =
+    /// `Blend` + a sub-1 base-color alpha), so the node re-materializes. The typed
+    /// alternative to resending the whole `NodeKind` via `set_kind`. Inverse:
+    /// restore the node's prior kind.
+    SetBuiltinAlphaMode {
+        node: NodeId,
+        mode: crate::MaterialAlphaMode,
     },
     /// Set a light parameter on a light node (writable counterpart of
     /// `ReadbackTarget::LightParam`). `value` is 3 floats for `Color`, 1 for
@@ -803,6 +1008,7 @@ impl EditorCommand {
                 | EditorCommand::SetCameraOrbit { .. }
                 | EditorCommand::SetCameraProjection { .. }
                 | EditorCommand::FrameNode { .. }
+                | EditorCommand::ResetPose { .. }
                 | EditorCommand::SetFrameTime { .. }
                 | EditorCommand::ClearFrameTime
                 | EditorCommand::SetMorphWeight { .. }
@@ -834,6 +1040,7 @@ impl EditorCommand {
                 | EditorCommand::SetCameraOrbit { .. }
                 | EditorCommand::SetCameraProjection { .. }
                 | EditorCommand::FrameNode { .. }
+                | EditorCommand::ResetPose { .. }
                 | EditorCommand::SetFrameTime { .. }
                 | EditorCommand::ClearFrameTime
                 | EditorCommand::SetMorphWeight { .. }
@@ -949,6 +1156,8 @@ impl EditorCommand {
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",
+            EditorCommand::PatchKind { .. } => "Patch properties",
+            EditorCommand::SetParticleEmitter { .. } => "Configure emitter",
             EditorCommand::SetTransform { .. } => "Transform",
             EditorCommand::Rename { .. } => "Rename",
             EditorCommand::SetVisible { .. } => "Toggle visibility",
@@ -963,6 +1172,7 @@ impl EditorCommand {
             EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",
             EditorCommand::AddMaterialAsset { .. } => "Add material",
             EditorCommand::AddTextureAsset { .. } => "Add texture",
+            EditorCommand::CreateTexture { .. } => "Create texture",
             EditorCommand::DeleteAsset { .. } | EditorCommand::RestoreAsset { .. } => {
                 "Delete asset"
             }
@@ -988,10 +1198,14 @@ impl EditorCommand {
             EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
             EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",
             EditorCommand::PaintVertexColors { .. } => "Paint vertex colors",
+            EditorCommand::PaintVerticesWhere { .. } => "Paint vertices (where)",
+            EditorCommand::TransformVerticesWhere { .. } => "Transform vertices (where)",
             EditorCommand::SetVertexNormals { .. } => "Set vertex normals",
+            EditorCommand::DisplaceFromTexture { .. } => "Displace from texture",
             EditorCommand::SetVertexOverrides { .. } => "Set vertex overrides",
             EditorCommand::BakeAll {} => "Bake all meshes",
             EditorCommand::SetBuiltinTexture { .. } => "Bind texture",
+            EditorCommand::SetNodeTextureTransform { .. } => "Set texture transform",
             EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
             EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",
             EditorCommand::SetCustomMaterialDebugColor { .. } => "Set base color",
@@ -1000,15 +1214,18 @@ impl EditorCommand {
             EditorCommand::SetCustomMaterialFragmentInputs { .. } => "Set fragment inputs",
             EditorCommand::SetMaterialUniform { .. } => "Set uniform",
             EditorCommand::SetBuiltinParam { .. } => "Set material param",
+            EditorCommand::SetBuiltinAlphaMode { .. } => "Set builtin alpha mode",
             EditorCommand::SetLightParam { .. } => "Set light param",
             EditorCommand::SetMaterialTexture { .. } => "Bind texture",
             EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",
             EditorCommand::SetEnvironment { .. } => "Set environment",
+            EditorCommand::SetEnvironmentEquirect { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",
             EditorCommand::SetCameraProjection { .. } => "Set projection",
             EditorCommand::FrameNode { .. } => "Frame node",
+            EditorCommand::ResetPose { .. } => "Reset pose",
             EditorCommand::SetFrameTime { .. } => "Pin frame time",
             EditorCommand::ClearFrameTime => "Clear frame time",
             EditorCommand::SetMorphWeight { .. } => "Set morph weight",

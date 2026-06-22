@@ -99,6 +99,12 @@ impl FrameGlobals {
         self.time_override = Some(time);
     }
 
+    /// The current pinned time, if a [`set_time_source`](Self::set_time_source)
+    /// override is active (else `None` = wall-clock).
+    pub fn time_source(&self) -> Option<f32> {
+        self.time_override
+    }
+
     /// Drop the time-source override; subsequent frames go back to the
     /// `Performance.now()` wall clock.
     pub fn clear_time_source(&mut self) {
@@ -210,6 +216,26 @@ impl AwsmRenderer {
     /// wall-clock source.
     pub fn set_time_source(&mut self, time: f32) {
         self.frame_globals.set_time_source(time);
+    }
+
+    /// The current pinned frame time, if a `set_time_source` override is active
+    /// (else `None` = wall-clock). Used to make UV flows deterministic when the
+    /// time is pinned (§7).
+    pub fn time_source(&self) -> Option<f32> {
+        self.frame_globals.time_source()
+    }
+
+    /// Advance auto-scrolling texture UV flows once per frame (§7). When the time
+    /// is PINNED (`set_frame_time`), pins each flow to that absolute time
+    /// (`offset = base + velocity * t`) so a flow scroll is deterministic for
+    /// temporal screenshots; otherwise integrates `dt_seconds` of real time. A
+    /// no-op when nothing flows. The editor render loop and `update_animations`
+    /// both call this so flows scroll on every render path.
+    pub fn tick_texture_flows(&mut self, dt_seconds: f32) {
+        match self.time_source() {
+            Some(t) => self.textures.set_texture_flows_elapsed(t),
+            None => self.textures.advance_texture_flows(dt_seconds),
+        }
     }
 
     /// Stop overriding the time source; subsequent frames go back to

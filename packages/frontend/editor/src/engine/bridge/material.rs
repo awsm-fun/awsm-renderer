@@ -78,11 +78,33 @@ async fn fetch_rgba(url: &str) -> Result<(Vec<u8>, u32, u32), String> {
 
 /// Decode ENCODED image bytes (PNG/JPEG) to RGBA8 via the browser, for restoring
 /// persisted textures on load. `mime` is the source mime (`image/png` etc.).
-async fn decode_rgba_from_bytes(bytes: &[u8], mime: &str) -> Result<(Vec<u8>, u32, u32), String> {
+pub(crate) async fn decode_rgba_from_bytes(
+    bytes: &[u8],
+    mime: &str,
+) -> Result<(Vec<u8>, u32, u32), String> {
     let bitmap = awsm_renderer_core::image::bitmap::load_u8(bytes, mime, None)
         .await
         .map_err(|e| format!("decode image: {e}"))?;
     bitmap_to_rgba(bitmap)
+}
+
+/// Decode an agent texture **payload string** (a `data:` URI or bare base64
+/// PNG/JPEG, or a raw-RGBA descriptor) to RGBA8 + dims (§18 equirect upload).
+/// Mirrors the `CreateTexture` decode but with no caller-supplied dims/format.
+pub(crate) async fn decode_rgba_from_payload(data: &str) -> Result<(Vec<u8>, u32, u32), String> {
+    use awsm_editor_protocol::TexturePayload;
+    let payload = awsm_editor_protocol::decode_texture_payload(data, None, None, None)
+        .map_err(|e| e.to_string())?;
+    match payload {
+        TexturePayload::RawRgba8 {
+            bytes,
+            width,
+            height,
+        } => Ok((bytes, width, height)),
+        TexturePayload::Encoded { bytes, mime } => {
+            decode_rgba_from_bytes(&bytes, mime.as_deref().unwrap_or("image/png")).await
+        }
+    }
 }
 
 /// Read an `ImageBitmap` back to RGBA8 bytes via a 2D canvas (shared by the
@@ -137,6 +159,53 @@ pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), Str
     // pipeline shaders (they bake in `texture_pool_arrays_len`), so route
     // through the one compile path — `commit_load` finalizes the pool AND
     // recompiles against it (the render preamble no longer does).
+    r.commit_load(crate::engine::activity::commit_phase_handler())
+        .await
+        .map_err(|e| format!("commit_load: {e}"))?;
+    register_texture_key(id, key);
+    Ok(())
+}
+
+/// Create a texture from **agent-authored** data (the ★ raw-upload primitive):
+/// raw RGBA8 pixels, or an encoded PNG/JPEG/WebP the browser decodes — uploaded
+/// to the GPU texture pool + registered under `id` so it resolves for material
+/// binding + `screenshot_texture`. Mirrors [`import_texture_url`], but the bytes
+/// come from the agent (not a URL). `linear` uploads as linear data
+/// (normal/roughness/height maps) instead of sRGB albedo. The caller creates the
+/// `TextureDef::Raster` asset entry.
+pub(crate) async fn create_texture(
+    id: AssetId,
+    payload: awsm_editor_protocol::TexturePayload,
+    linear: bool,
+) -> Result<(), String> {
+    use awsm_editor_protocol::TexturePayload;
+    // Decode WITHOUT holding the renderer lock (the encoded path is async).
+    let (rgba, w, h) = match payload {
+        TexturePayload::RawRgba8 {
+            bytes,
+            width,
+            height,
+        } => (bytes, width, height),
+        TexturePayload::Encoded { bytes, mime } => {
+            decode_rgba_from_bytes(&bytes, mime.as_deref().unwrap_or("image/png")).await?
+        }
+    };
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    let sampler_key = sampler_for(&mut r, None).ok_or("sampler")?;
+    let color = TextureColorInfo {
+        mipmap_kind: MipmapTextureKind::Albedo,
+        // sRGB albedo by default; `linear` opts data/normal maps out of the
+        // sRGB→linear conversion so their values are sampled verbatim.
+        srgb_to_linear: !linear,
+        premultiplied_alpha: None,
+    };
+    let key = r
+        .textures
+        .add_image_rgba_raw(&rgba, w, h, sampler_key, color)
+        .map_err(|e| format!("upload: {e}"))?;
+    // Live texture add: a pool grow invalidates the texture-array-len-baked
+    // shaders, so route through `commit_load` (finalize pool + recompile once).
     r.commit_load(crate::engine::activity::commit_phase_handler())
         .await
         .map_err(|e| format!("commit_load: {e}"))?;

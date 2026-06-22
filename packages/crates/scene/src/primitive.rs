@@ -98,6 +98,7 @@ impl PrimitiveShape {
 /// `Deserialize` still accepts the legacy bare-id form so old projects load.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TextureRef {
     pub asset: AssetId,
     /// Which UV set this texture samples (glTF `texCoord`). Defaults to 0.
@@ -182,6 +183,7 @@ fn is_zero_u32(v: &u32) -> bool {
 /// How a texture's UVs are wrapped outside `[0,1]` (glTF `wrapS`/`wrapT`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TextureWrap {
     #[default]
     Repeat,
@@ -192,6 +194,7 @@ pub enum TextureWrap {
 /// Texture filtering mode (glTF mag/min/mipmap filters reduce to nearest/linear).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TextureFilter {
     #[default]
     Linear,
@@ -203,6 +206,7 @@ pub enum TextureFilter {
 /// `Default` (repeat + linear) matches glTF's defaults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TextureSampler {
     #[serde(default)]
     pub wrap_u: TextureWrap,
@@ -220,6 +224,7 @@ pub struct TextureSampler {
 /// before sampling. Per-mesh uniform (no recompile).
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TextureTransform {
     #[serde(default)]
     pub offset: [f32; 2],

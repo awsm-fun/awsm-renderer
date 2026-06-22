@@ -36,6 +36,38 @@ pub const TEXTURE_TRANSFORMS_INITIAL_CAPACITY: usize = 32; // 32 elements is a g
 /// Byte size for a single texture transform.
 pub const TEXTURE_TRANSFORMS_BYTE_SIZE: usize = 32; // 32 bytes per texture transform (must match shader struct size)
 
+/// A UV flow's offset at elapsed time `t`: `base + velocity * t` (recompute from
+/// base, no drift). Shared by `advance_texture_flows` (real dt) and
+/// `set_texture_flows_elapsed` (pinned absolute time, §7) so both agree.
+fn flow_offset(base: [f32; 2], velocity: [f32; 2], t: f32) -> [f32; 2] {
+    [base[0] + velocity[0] * t, base[1] + velocity[1] * t]
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::flow_offset;
+
+    fn close(a: [f32; 2], b: [f32; 2]) -> bool {
+        (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5
+    }
+
+    #[test]
+    fn flow_offset_is_base_plus_velocity_times_time() {
+        // Deterministic: same t → same offset; t scales linearly from base.
+        assert!(close(flow_offset([0.1, 0.2], [0.3, 0.0], 0.0), [0.1, 0.2]));
+        assert!(close(flow_offset([0.1, 0.2], [0.3, 0.0], 2.0), [0.7, 0.2]));
+        assert!(close(
+            flow_offset([0.0, 0.0], [0.3, -0.5], 2.0),
+            [0.6, -1.0]
+        ));
+        // Idempotent at a fixed t (the §7 determinism property): bit-identical.
+        assert_eq!(
+            flow_offset([0.1, 0.2], [0.3, 0.0], 1.5),
+            flow_offset([0.1, 0.2], [0.3, 0.0], 1.5),
+        );
+    }
+}
+
 impl AwsmRenderer {
     // this should ideally only be called after all the textures have been loaded
     /// Uploads texture pool data and refreshes dependent pipelines.
@@ -753,6 +785,11 @@ pub struct Textures {
     // Empty unless a binding declares `TextureRef.flow` — zero per-frame cost
     // otherwise. (B3 — texture flow over the B1 UV transform.)
     texture_flows: SecondaryMap<TextureTransformKey, TextureFlow>,
+    // Pooled scratch for the per-frame flow flush — reused (capacity retained)
+    // so an active UV flow does NOT heap-allocate every frame in the render hot
+    // path. Borrowed out via `mem::take` while `update_texture_transform` needs
+    // `&mut self`. Empty/cap-0 until the first flow ticks.
+    texture_flow_scratch: Vec<(TextureTransformKey, [f32; 2])>,
     texture_transforms_buffer: DynamicUniformBuffer<TextureTransformKey>,
     texture_transforms_gpu_dirty: bool,
     pub(crate) texture_transforms_gpu_buffer: web_sys::GpuBuffer,
@@ -939,6 +976,7 @@ impl Textures {
             cubemaps: SlotMap::with_key(),
             texture_transforms,
             texture_flows: SecondaryMap::new(),
+            texture_flow_scratch: Vec::new(),
             texture_transforms_buffer,
             texture_transforms_gpu_buffer,
             texture_transforms_gpu_dirty: true,
@@ -1125,25 +1163,48 @@ impl Textures {
         if self.texture_flows.is_empty() {
             return;
         }
-        // Collect the (key, new_offset) updates first — `update_texture_transform`
-        // borrows `self` mutably, so we can't hold the `texture_flows` iterator.
-        let mut updates: Vec<(TextureTransformKey, [f32; 2])> = Vec::new();
-        for (key, flow) in self.texture_flows.iter_mut() {
+        for (_key, flow) in self.texture_flows.iter_mut() {
             flow.elapsed += dt;
-            updates.push((
-                key,
-                [
-                    flow.base_offset[0] + flow.velocity[0] * flow.elapsed,
-                    flow.base_offset[1] + flow.velocity[1] * flow.elapsed,
-                ],
-            ));
         }
-        for (key, offset) in updates {
+        self.flush_texture_flow_offsets();
+    }
+
+    /// Pin every UV flow to an ABSOLUTE elapsed time `t` (instead of integrating
+    /// real `dt`): `offset = base_offset + velocity * t`. Used when the renderer's
+    /// time source is pinned (`set_frame_time`, §7) so a flow scroll is
+    /// **deterministic** for temporal screenshots — re-capturing at the same `t`
+    /// yields the same offset. Idempotent; a no-op when nothing flows.
+    pub fn set_texture_flows_elapsed(&mut self, t: f32) {
+        if self.texture_flows.is_empty() {
+            return;
+        }
+        for (_key, flow) in self.texture_flows.iter_mut() {
+            flow.elapsed = t;
+        }
+        self.flush_texture_flow_offsets();
+    }
+
+    /// Recompute every flow's offset from its (already-updated) `elapsed` and
+    /// re-upload the touched transforms. Splitting the offset compute from the
+    /// `update_texture_transform` (which needs `&mut self`) needs a temporary —
+    /// it reuses the pooled `texture_flow_scratch` (`mem::take`, capacity
+    /// retained) so an active flow does NOT allocate every frame.
+    fn flush_texture_flow_offsets(&mut self) {
+        let mut updates = std::mem::take(&mut self.texture_flow_scratch);
+        updates.clear();
+        updates.extend(self.texture_flows.iter().map(|(key, flow)| {
+            (
+                key,
+                flow_offset(flow.base_offset, flow.velocity, flow.elapsed),
+            )
+        }));
+        for &(key, offset) in &updates {
             if let Some(mut t) = self.texture_transforms.get(key).cloned() {
                 t.offset = offset;
                 self.update_texture_transform(key, &t);
             }
         }
+        self.texture_flow_scratch = updates;
     }
 
     /// Removes a texture transform.

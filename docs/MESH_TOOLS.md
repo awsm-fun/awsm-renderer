@@ -56,7 +56,8 @@ project; the baked triangles are a regenerable cache.
 { "smooth":     { "iterations": 2, "factor": 0.5 } }   // Laplacian smoothing
 { "mirror":     { "axis": "x" } }                      // mirror across the origin plane (keeps both halves)
 { "array":      { "count": 3, "offset": [2,0,0] } }    // linear array of copies
-{ "displace":   { "expr": "0.1*sin(y*8.0)" } }         // formula displ. along normal; vars: x,y,z,nx,ny,nz,u,v,i,pi,tau; fns: sin cos tan abs sqrt floor sign
+{ "displace":   { "expr": "0.1*sin(y*8.0)" } }         // formula displ. along normal; vars: x,y,z,nx,ny,nz,u,v,i,pi,tau; fns: sin cos tan abs sqrt floor fract sign exp log, min max pow mod atan2 step (2-arg), clamp(v,lo,hi), noise(x,y)/noise(x,y,z) (smooth value noise, [-1,1])
+// NOISE TERRAIN: noise() is the generic primitive — compose fbm by SUMMING octaves yourself, e.g. { "displace": { "expr": "noise(x*1.5,z*1.5)*0.6 + noise(x*4,z*4)*0.2 + noise(x*9,z*9)*0.08" } }; ridged = "abs(noise(x*3,z*3))", domain-warp = "noise(x + noise(x*0.5,z*0.5), z)". Subdivide the plane (segments_x/z) for resolution first.
 ```
 `axis` is `"x"|"y"|"z"`.
 
@@ -209,9 +210,24 @@ modifiers) or already frozen (terminal authoring).
 Vertex colors are a cheap per-vertex **blend mask** for a multi-texture (splat)
 material — no UV painting needed:
 
+> ⚠️ **Footgun: unpainted vertex color is `(1,1,1,1)` WHITE, not 0.** So a splat
+> shader doing `mix(base, snow, vColor.r)` reads **full weight everywhere** until
+> you paint — the whole mesh comes out as `snow`, the *opposite* of intent. Two
+> fixes: **(a) clear-to-0 baseline** — before painting the splat, zero the whole
+> mesh: `paint_where { node, predicate: {"kind":"within_aabb","min":[-1e9,-1e9,-1e9],"max":[1e9,1e9,1e9]}, color:[0,0,0,1] }`
+> (the `within_aabb` covers every vertex; `paint_where` keeps the index array
+> server-side — see §10), *then* paint the splat band into the channel. **(b)**
+> Or author the shader so the *zeroed* channel means "blend in" (`mix(snow, base,
+> vColor.r)` with painted `r=0` patches). Always `get_vertex_data` to confirm the
+> baseline before the band paint.
+
+0. **Clear the blend mask to 0** (see footgun above): `paint_where` the whole
+   mesh to `[0,0,0,1]`, so unpainted = "no blend".
 1. Insert + shape the mesh (e.g. a ground `plane`, subdivided for resolution).
-2. Select the region to texture-A: `select_vertices_where {node, predicate}`
-   (e.g. `top_percent` along Y for peaks, or `within_radius` for a patch).
+2. Select+paint the region to texture-A in one call with **`paint_where {node,
+   predicate, color}`** (fused, scales to full-res — §10), or
+   `select_vertices_where {node, predicate}` → `paint_vertex_colors` (e.g.
+   `top_percent` along Y for peaks, or `within_radius` for a patch).
 3. `paint_vertex_colors {mesh, indices, color:[1,0,0,1]}` — store the blend
    weight in a channel (R = grass, G = rock, B = sand, A = …). Paint other
    regions into other channels. The first paint collapses the stack (terminal).

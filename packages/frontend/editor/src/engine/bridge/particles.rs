@@ -92,7 +92,7 @@ fn def_to_emitter(def: &ParticleEmitterDef) -> Emitter {
     }
 }
 
-fn build_runtime(
+async fn build_runtime(
     renderer: &mut AwsmRenderer,
     parent_transform: TransformKey,
     parent_world_pos: Vec3,
@@ -109,7 +109,36 @@ fn build_runtime(
         ColorOverLifeDef::Const(c) => *c,
         ColorOverLifeDef::Linear { start, .. } => *start,
     };
-    let mut pbr = PbrMaterial::new(MaterialAlphaMode::Opaque, true);
+    // §14: bind the emitter's billboard SPRITE (def.texture) so particles sample
+    // its alpha instead of rendering as hard squares. Two routes by `def.blend`:
+    //   - blend=false: alpha-TEST (Mask, cutoff 0.5) — the sprite's transparent
+    //     rim is discarded so the particle takes the sprite's SHAPE, but the edge
+    //     is a hard cutout and the fade-out pops at the cutoff. Cheaper (opaque
+    //     instancing pass).
+    //   - blend=true: transparent BLEND — the sprite's per-texel alpha (and the
+    //     per-particle color.a, ramped by color_over_life) drive a real
+    //     (src.a, 1-src.a) blend → SOFT-GRADIENT edges + a smooth fade with no
+    //     Mask pop. Routes through the transparent instancing pipeline (async).
+    // The sprite drives base-color (the blended/masked alpha) AND emissive (the
+    // glow keeps the sprite shape).
+    let sprite = def.texture.as_ref().and_then(|tref| {
+        super::material::resolve_texture_binding(renderer, tref).map(|(key, sampler_key)| {
+            awsm_renderer::materials::MaterialTexture {
+                key,
+                sampler_key: Some(sampler_key),
+                uv_index: Some(0),
+                transform_key: None,
+            }
+        })
+    });
+    let alpha_mode = if def.blend {
+        MaterialAlphaMode::Blend
+    } else if sprite.is_some() {
+        MaterialAlphaMode::Mask { cutoff: 0.5 }
+    } else {
+        MaterialAlphaMode::Opaque
+    };
+    let mut pbr = PbrMaterial::new(alpha_mode, true);
     pbr.base_color_factor = [1.0, 1.0, 1.0, 1.0];
     pbr.metallic_factor = 0.0;
     pbr.roughness_factor = 1.0;
@@ -118,6 +147,11 @@ fn build_runtime(
         base_color[1] * 1.6,
         base_color[2] * 1.6,
     ];
+    // The sprite's ALPHA drives the mask cutout (→ the particle takes the
+    // sprite's shape); binding it to emissive too keeps the kept disc brightly
+    // glowing (emissive-only base reads washed-out against a bright IBL).
+    pbr.base_color_tex = sprite.clone();
+    pbr.emissive_tex = sprite;
     let material_key = renderer.materials.insert(
         Material::Pbr(Box::new(pbr)),
         &renderer.textures,
@@ -163,8 +197,14 @@ fn build_runtime(
     let dead_attr = InstanceAttr::from_rgba_alpha_size([1.0, 1.0, 1.0, 0.0], 0.0, 1.0);
     let initial_transforms = vec![dead.clone(); max];
     let initial_attrs = vec![dead_attr; max];
-    if let Err(err) = renderer.enable_mesh_instancing_opaque(mesh_key, &initial_transforms) {
-        tracing::warn!("particles: enable_mesh_instancing_opaque failed: {err}");
+    // Async instancing builds the TRANSPARENT pipeline when the material is Blend;
+    // for Opaque/Mask it early-returns after the transform insert (same as the old
+    // `enable_mesh_instancing_opaque`), so this one call serves both routes.
+    if let Err(err) = renderer
+        .enable_mesh_instancing(mesh_key, &initial_transforms)
+        .await
+    {
+        tracing::warn!("particles: enable_mesh_instancing failed: {err}");
         renderer.remove_mesh(mesh_key);
         renderer.remove_material(material_key);
         renderer.transforms.remove(transform_key);
@@ -185,8 +225,10 @@ fn build_runtime(
     })
 }
 
-/// Build + register an auto-playing emitter runtime for a node.
-pub fn materialize(
+/// Build + register an auto-playing emitter runtime for a node. Async because the
+/// transparent-blend route (§14, `def.blend`) compiles a transparent instancing
+/// pipeline; the opaque/mask route awaits a cheap early-return.
+pub async fn materialize(
     renderer: &mut AwsmRenderer,
     node_id: NodeId,
     parent_transform: TransformKey,
@@ -194,7 +236,7 @@ pub fn materialize(
     def: &ParticleEmitterDef,
 ) {
     teardown(renderer, node_id);
-    if let Some(rt) = build_runtime(renderer, parent_transform, parent_world_pos, def) {
+    if let Some(rt) = build_runtime(renderer, parent_transform, parent_world_pos, def).await {
         RUNTIMES.with(|m| m.borrow_mut().insert(node_id, rt));
     }
 }

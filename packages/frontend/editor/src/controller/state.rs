@@ -542,6 +542,82 @@ impl EditorController {
     /// the recipe-restore into its undo inverse), `Ok(false)` if already authorable,
     /// and the prior stack (for the inverse) via the out-param. Errors if `mesh`
     /// isn't a mesh asset.
+    /// Resolve a node to its editable mesh asset id + resolved (post-eval)
+    /// geometry — the pair the fused `*_where` vertex ops (§10) need: the asset
+    /// id to write overrides on, the geometry to run the predicate against.
+    /// Errors (as a string) on a skinned node, a missing node, or a non-mesh kind.
+    fn node_editable_mesh(
+        &self,
+        node: NodeId,
+    ) -> Result<(AssetId, awsm_meshgen::MeshData), String> {
+        use awsm_editor_protocol::{MeshRef, NodeKind};
+        if node_is_skinned(&self.scene, node) {
+            return Err(skinned_edit_error(node));
+        }
+        let n = mutate::find_by_id(&self.scene, node)
+            .ok_or_else(|| format!("node {node} not found"))?;
+        let kind = n.kind.get_cloned();
+        let mesh_id = match &kind {
+            NodeKind::Mesh {
+                mesh: MeshRef(id), ..
+            } => *id,
+            _ => {
+                return Err(format!(
+                    "node {node} has no editable mesh (not a Mesh node)"
+                ))
+            }
+        };
+        let md = crate::controller::export::node_mesh(&self.scene, &kind)
+            .ok_or_else(|| format!("node {node} has no resolvable mesh geometry"))?;
+        Ok((mesh_id, md))
+    }
+
+    /// Soft-transform a vertex selection on `mesh` (shared by
+    /// `SoftTransformVertices` and the fused `TransformVerticesWhere`, §10).
+    fn soft_transform_mesh(
+        &self,
+        mesh: AssetId,
+        indices: &[u32],
+        translation: [f32; 3],
+        falloff: f32,
+    ) -> EditorResult<Option<EditorCommand>> {
+        use crate::engine::bridge::mesh_cache;
+        // Resolve the current (post-eval+override) geometry to weight the falloff
+        // against, then bake the move into `overrides.positions`.
+        let collapse = self.ensure_authorable(mesh)?;
+        let Some(cap) = mesh_cache::get_captured(mesh) else {
+            return Ok(None);
+        };
+        let md = awsm_meshgen::MeshData {
+            positions: cap.positions.clone(),
+            normals: cap.normals.clone(),
+            uvs: cap
+                .uvs
+                .clone()
+                .into_iter()
+                .chain(cap.uvs1.clone())
+                .collect(),
+            colors: cap.colors.clone(),
+            indices: cap.indices.clone(),
+        };
+        let new_positions =
+            awsm_meshgen::edit::soft_transform_positions(&md, indices, translation, falloff);
+        // Only override the verts the falloff actually moved.
+        let mut moved = false;
+        let prior = self.apply_vertex_overrides(mesh, |ov| {
+            for (i, (old, new)) in cap.positions.iter().zip(&new_positions).enumerate() {
+                if old != new {
+                    ov.positions.insert(i as u32, *new);
+                    moved = true;
+                }
+            }
+        })?;
+        if !moved {
+            return Ok(None);
+        }
+        Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+    }
+
     fn ensure_authorable(&self, mesh: AssetId) -> EditorResult<Option<ModifierStack>> {
         use crate::engine::bridge::mesh_cache;
         use awsm_editor_protocol::MeshRef;
@@ -796,6 +872,115 @@ impl EditorController {
                 }
                 None => Ok(None),
             },
+            EditorCommand::PatchKind { id, patch } => {
+                // RFC 7386 merge-patch over the node's serialized kind (§3). Reject
+                // loudly if the result isn't a valid NodeKind — never store-and-
+                // ignore. Delegate the actual swap to SetKind so the structure-rev
+                // / light-relower / re-materialize bookkeeping + inverse match a
+                // full kind replacement exactly.
+                let prev = match mutate::find_by_id(&self.scene, id) {
+                    Some(node) => node.kind.get_cloned(),
+                    None => return Ok(None),
+                };
+                let mut json = serde_json::to_value(&prev)
+                    .map_err(|e| crate::error::EditorError::msg(format!("serialize kind: {e}")))?;
+                awsm_editor_protocol::json_merge_patch(&mut json, &patch);
+                let next: NodeKind = serde_json::from_value(json).map_err(|e| {
+                    crate::error::EditorError::msg(format!(
+                        "patched kind is not a valid NodeKind: {e}"
+                    ))
+                })?;
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id,
+                    kind: Box::new(next),
+                }))
+                .await
+            }
+            EditorCommand::SetParticleEmitter {
+                node,
+                spawn_rate,
+                burst_count,
+                max_alive,
+                one_shot,
+                space,
+                shape,
+                initial_speed,
+                lifetime,
+                size,
+                forces,
+                color_over_life,
+                size_over_life,
+                blend,
+                texture,
+            } => {
+                let prev = match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => n.kind.get_cloned(),
+                    None => return Ok(None),
+                };
+                // Reject loudly if the node isn't an emitter (no silent no-op).
+                let NodeKind::ParticleEmitter(mut def) = prev.clone() else {
+                    return Err(crate::error::EditorError::msg(
+                        "node is not a particle emitter",
+                    ));
+                };
+                // Patch only the provided fields; the rest keep their values.
+                if let Some(v) = spawn_rate {
+                    def.spawn_rate = v;
+                }
+                if let Some(v) = burst_count {
+                    def.burst_count = v;
+                }
+                if let Some(v) = max_alive {
+                    def.max_alive = v;
+                }
+                if let Some(v) = one_shot {
+                    def.one_shot = v;
+                }
+                if let Some(v) = space {
+                    def.space = v;
+                }
+                if let Some(v) = shape {
+                    def.shape = v;
+                }
+                if let Some(v) = initial_speed {
+                    def.initial_speed = v;
+                }
+                if let Some(v) = lifetime {
+                    def.lifetime = v;
+                }
+                if let Some(v) = size {
+                    def.size = v;
+                }
+                if let Some(v) = forces {
+                    def.forces = v;
+                }
+                if let Some(v) = color_over_life {
+                    def.color_over_life = v;
+                }
+                if let Some(v) = size_over_life {
+                    def.size_over_life = v;
+                }
+                if let Some(v) = blend {
+                    def.blend = v;
+                }
+                // §14: bind/clear the billboard sprite texture. Some(Some) binds,
+                // Some(None) clears, None leaves it untouched.
+                if let Some(tex) = texture {
+                    def.texture = tex.map(|asset| awsm_editor_protocol::TextureRef {
+                        asset,
+                        uv_index: 0,
+                        transform: None,
+                        sampler: None,
+                        flow: None,
+                    });
+                }
+                // Delegate to SetKind for identical re-materialize + inverse.
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(NodeKind::ParticleEmitter(def)),
+                }))
+                .await
+            }
             EditorCommand::SetTransform { id, transform } => {
                 match mutate::find_by_id(&self.scene, id) {
                     Some(node) => {
@@ -848,14 +1033,16 @@ impl EditorController {
                 }
                 None => Ok(None),
             },
-            EditorCommand::Duplicate { id } => match mutate::duplicate_by_id(&self.scene, id) {
-                Some(new_id) => {
-                    self.scene.bump_revision();
-                    self.selected.set(vec![new_id]);
-                    Ok(Some(EditorCommand::Delete { id: new_id }))
+            EditorCommand::Duplicate { id, new_id } => {
+                match mutate::duplicate_by_id(&self.scene, id, new_id) {
+                    Some(new_id) => {
+                        self.scene.bump_revision();
+                        self.selected.set(vec![new_id]);
+                        Ok(Some(EditorCommand::Delete { id: new_id }))
+                    }
+                    None => Ok(None),
                 }
-                None => Ok(None),
-            },
+            }
             EditorCommand::Reparent {
                 id,
                 new_parent,
@@ -1332,7 +1519,9 @@ impl EditorController {
                 mesh,
                 indices,
                 positions,
+                selection,
             } => {
+                let indices = resolve_vertex_selection_or(selection, indices)?;
                 // Migrated: write to the sparse `overrides.positions` layer
                 // (collapse-then-override) instead of mutating captured bytes —
                 // same observable result, now non-destructive + uniform.
@@ -1351,52 +1540,18 @@ impl EditorController {
                 indices,
                 translation,
                 falloff,
+                selection,
             } => {
-                use crate::engine::bridge::mesh_cache;
-                // Resolve the current (post-eval+override) geometry to weight the
-                // falloff against, then bake the move into `overrides.positions`.
-                let collapse = self.ensure_authorable(mesh)?;
-                let Some(cap) = mesh_cache::get_captured(mesh) else {
-                    return Ok(None);
-                };
-                let md = awsm_meshgen::MeshData {
-                    positions: cap.positions.clone(),
-                    normals: cap.normals.clone(),
-                    uvs: cap
-                        .uvs
-                        .clone()
-                        .into_iter()
-                        .chain(cap.uvs1.clone())
-                        .collect(),
-                    colors: cap.colors.clone(),
-                    indices: cap.indices.clone(),
-                };
-                let new_positions = awsm_meshgen::edit::soft_transform_positions(
-                    &md,
-                    &indices,
-                    translation,
-                    falloff,
-                );
-                // Only override the verts the falloff actually moved.
-                let mut moved = false;
-                let prior = self.apply_vertex_overrides(mesh, |ov| {
-                    for (i, (old, new)) in cap.positions.iter().zip(&new_positions).enumerate() {
-                        if old != new {
-                            ov.positions.insert(i as u32, *new);
-                            moved = true;
-                        }
-                    }
-                })?;
-                if !moved {
-                    return Ok(None);
-                }
-                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+                let indices = resolve_vertex_selection_or(selection, indices)?;
+                self.soft_transform_mesh(mesh, &indices, translation, falloff)
             }
             EditorCommand::PaintVertexColors {
                 mesh,
                 indices,
                 color,
+                selection,
             } => {
+                let indices = resolve_vertex_selection_or(selection, indices)?;
                 let collapse = self.ensure_authorable(mesh)?;
                 let prior = self.apply_vertex_overrides(mesh, |ov| {
                     for &idx in &indices {
@@ -1405,11 +1560,59 @@ impl EditorController {
                 })?;
                 Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
             }
+            EditorCommand::PaintVerticesWhere {
+                node,
+                predicate,
+                color,
+            } => {
+                // §10: select + paint in one call so the (potentially huge) index
+                // array never crosses the MCP boundary.
+                let (mesh, md) = match self.node_editable_mesh(node) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        Toast::error(e);
+                        return Ok(None);
+                    }
+                };
+                let indices = select_vertices_by_predicate(&md, &predicate);
+                if indices.is_empty() {
+                    return Ok(None);
+                }
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for &idx in &indices {
+                        ov.colors.insert(idx, color);
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::TransformVerticesWhere {
+                node,
+                predicate,
+                translation,
+                falloff,
+            } => {
+                // §10: select + soft-transform in one call (indices stay server-side).
+                let (mesh, md) = match self.node_editable_mesh(node) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        Toast::error(e);
+                        return Ok(None);
+                    }
+                };
+                let indices = select_vertices_by_predicate(&md, &predicate);
+                if indices.is_empty() {
+                    return Ok(None);
+                }
+                self.soft_transform_mesh(mesh, &indices, translation, falloff)
+            }
             EditorCommand::SetVertexNormals {
                 mesh,
                 indices,
                 normal,
+                selection,
             } => {
+                let indices = resolve_vertex_selection_or(selection, indices)?;
                 let collapse = self.ensure_authorable(mesh)?;
                 let prior = self.apply_vertex_overrides(mesh, |ov| {
                     for &idx in &indices {
@@ -1422,6 +1625,46 @@ impl EditorController {
                 let collapse = self.ensure_authorable(mesh)?;
                 let prior = self.apply_vertex_overrides(mesh, |ov| {
                     *ov = overrides;
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::DisplaceFromTexture {
+                node,
+                data,
+                strength,
+            } => {
+                // §16: displace every vertex along its normal by the heightmap's
+                // luminance at the vertex UV — the generic "supply your own
+                // heightfield" hook. Decode (loudly) BEFORE collapsing.
+                let (mesh, md) = self
+                    .node_editable_mesh(node)
+                    .map_err(crate::error::EditorError::msg)?;
+                let (rgba, w, h) = crate::engine::bridge::material::decode_rgba_from_payload(&data)
+                    .await
+                    .map_err(crate::error::EditorError::msg)?;
+                let normals = md.normals.clone();
+                let uvs0 = md.uvs.first().cloned();
+                let positions = md.positions.clone();
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for (i, p) in positions.iter().enumerate() {
+                        let uv = uvs0
+                            .as_ref()
+                            .and_then(|u| u.get(i))
+                            .copied()
+                            .unwrap_or([0.0, 0.0]);
+                        let height = sample_heightmap_luminance(&rgba, w, h, uv[0], uv[1]);
+                        let n = normals
+                            .as_ref()
+                            .and_then(|nn| nn.get(i))
+                            .copied()
+                            .unwrap_or([0.0, 1.0, 0.0]);
+                        let d = height * strength;
+                        ov.positions.insert(
+                            i as u32,
+                            [p[0] + n[0] * d, p[1] + n[1] * d, p[2] + n[2] * d],
+                        );
+                    }
                 })?;
                 Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
             }
@@ -1943,6 +2186,24 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::SetBuiltinAlphaMode { node, mode } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.kind.get_cloned();
+                        let mut next = prev.clone();
+                        if !patch_builtin_alpha_mode(&mut next, mode) {
+                            return Ok(None);
+                        }
+                        n.kind.set(next);
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetKind {
+                            id: node,
+                            kind: Box::new(prev),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::SetBuiltinTexture {
                 node,
                 slot,
@@ -1954,6 +2215,36 @@ impl EditorController {
                     if !patch_builtin_texture(&mut next, slot, texture) {
                         return Ok(None);
                     }
+                    n.kind.set(next);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetKind {
+                        id: node,
+                        kind: Box::new(prev),
+                    }))
+                }
+                None => Ok(None),
+            },
+            EditorCommand::SetNodeTextureTransform {
+                node,
+                slot,
+                offset,
+                scale,
+                rotation,
+                flow,
+                wrap_u,
+                wrap_v,
+                uv_set,
+            } => match mutate::find_by_id(&self.scene, node) {
+                Some(n) => {
+                    let prev = n.kind.get_cloned();
+                    let mut next = prev.clone();
+                    // Reject loudly (§1): no silent no-op when the slot has no
+                    // texture to transform. `kind.set` re-materializes the node so
+                    // the new transform/flow actually renders.
+                    patch_builtin_texture_transform(
+                        &mut next, slot, offset, scale, rotation, flow, wrap_u, wrap_v, uv_set,
+                    )
+                    .map_err(crate::error::EditorError::msg)?;
                     n.kind.set(next);
                     self.scene.bump_revision();
                     Ok(Some(EditorCommand::SetKind {
@@ -2158,6 +2449,52 @@ impl EditorController {
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
             }
+            EditorCommand::SetEnvironmentEquirect { id, data } => {
+                // §18: decode the wire payload to ENCODED image bytes (loudly — a bad
+                // payload is a rejected op), register it as a content-hashed raster
+                // texture asset + seed the texture_cache, so the existing texture
+                // persistence (texture_files / restore_textures) saves the panorama
+                // and restores it on reload; env_sync decodes + projects it lazily.
+                // Then point both skybox + IBL at it. Inverse restores the prior env.
+                use awsm_editor_protocol::TexturePayload;
+                let payload = awsm_editor_protocol::decode_texture_payload(&data, None, None, None)
+                    .map_err(crate::error::EditorError::msg)?;
+                let (bytes, mime, ext) = match payload {
+                    TexturePayload::Encoded { bytes, mime } => {
+                        let m = mime.as_deref().unwrap_or("image/png");
+                        if m.contains("jpeg") || m.contains("jpg") {
+                            (bytes, awsm_glb_export::ImageMime::Jpeg, "jpg")
+                        } else {
+                            (bytes, awsm_glb_export::ImageMime::Png, "png")
+                        }
+                    }
+                    TexturePayload::RawRgba8 { .. } => {
+                        return Err(crate::error::EditorError::msg(
+                            "equirect environment must be an encoded PNG/JPEG (data: URI / base64)",
+                        ))
+                    }
+                };
+                let hash = texture_content_hash(&bytes);
+                self.scene.assets.lock().unwrap().entries.insert(
+                    id,
+                    AssetEntry::new_with_hash(
+                        SceneAssetSource::Texture(TextureDef::Raster {
+                            display_name: format!("env-{}.{ext}", &id.to_string()[..8]),
+                        }),
+                        hash,
+                    ),
+                );
+                crate::engine::bridge::texture_cache::store(id, bytes, mime);
+                let prev = self.scene.environment.get_cloned();
+                self.scene
+                    .environment
+                    .set(awsm_editor_protocol::EnvironmentConfig {
+                        skybox: awsm_editor_protocol::SkyboxConfig::Equirect { asset_id: id },
+                        ibl: awsm_editor_protocol::IblConfig::Equirect { asset_id: id },
+                    });
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetEnvironment { env: prev }))
+            }
             EditorCommand::SnapCameraToAxis { axis } => {
                 use std::f32::consts::PI;
                 // Just under ±90° for top/bottom to dodge the look-at gimbal.
@@ -2246,11 +2583,56 @@ impl EditorController {
                             glam::Vec3::from_array(wmax),
                         )
                     });
-                    // Live mesh AABBs are exact, which FEELS tight when framing
-                    // rigs/characters — breathe a little beyond the request.
+                    // §9: `frame_aabb` already fits the bounding SPHERE to the FOV
+                    // (conservative — encloses the box at any orbit angle), so the
+                    // subject reads small. Frame to margin `1.0 + padding` with NO
+                    // extra breathe multiplier (the old `* 1.15` left heads/parts
+                    // too small in frame); the user's `padding` is the only slack.
                     crate::engine::context::try_with_camera_mut(|c| {
-                        c.frame_aabb(aabb, (1.0 + padding.max(0.0)) * 1.15)
+                        c.frame_aabb(aabb, 1.0 + padding.max(0.0))
                     });
+                })
+                .await;
+                Ok(None)
+            }
+            EditorCommand::ResetPose { node } => {
+                // Collect (node + descendants) scene transforms, then re-push them
+                // onto the renderer mirror locals — reverting a clip's last
+                // previewed pose (pin_pose writes the mirror directly, NOT the
+                // scene, so the scene transform is the base). Viewport-only: no
+                // scene mutation, no undo entry (like FrameNode/SetFrameTime).
+                fn collect(
+                    node: &crate::engine::scene::node::Node,
+                    out: &mut Vec<(NodeId, awsm_editor_protocol::Trs)>,
+                ) {
+                    out.push((node.id, node.transform.get()));
+                    for c in node.children.lock_ref().iter() {
+                        collect(c, out);
+                    }
+                }
+                let mut scene_trs: Vec<(NodeId, awsm_editor_protocol::Trs)> = Vec::new();
+                if let Some(n) = mutate::find_by_id(&self.scene, node) {
+                    collect(&n, &mut scene_trs);
+                }
+                // Resolve transform keys from the bridge BEFORE the renderer lock.
+                let pairs: Vec<(
+                    awsm_renderer::transforms::TransformKey,
+                    awsm_editor_protocol::Trs,
+                )> = {
+                    let b = crate::engine::bridge::bridge();
+                    let nodes = b.nodes.lock().unwrap();
+                    scene_trs
+                        .into_iter()
+                        .filter_map(|(id, trs)| nodes.get(&id).map(|e| (e.transform_key, trs)))
+                        .collect()
+                };
+                crate::engine::context::with_renderer_mut(move |r| {
+                    for (tk, trs) in &pairs {
+                        let _ = r.transforms.set_local(
+                            *tk,
+                            crate::engine::bridge::node_sync::trs_to_transform(trs),
+                        );
+                    }
                 })
                 .await;
                 Ok(None)
@@ -2315,6 +2697,49 @@ impl EditorController {
                     // silent `ok`.
                     Err(e) => Err(crate::error::EditorError::msg(format!(
                         "texture import failed: {e}"
+                    ))),
+                }
+            }
+            EditorCommand::CreateTexture {
+                id,
+                data,
+                width,
+                height,
+                format,
+                linear,
+            } => {
+                // Idempotent: skip if this id already exists (cross-tab replay).
+                if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
+                    return Ok(None);
+                }
+                // Decode the wire payload (base64 / data: URI) loudly BEFORE any
+                // GPU work — a bad payload is a rejected op, not a silent `ok`.
+                let payload = awsm_editor_protocol::decode_texture_payload(
+                    &data,
+                    width,
+                    height,
+                    format.as_deref(),
+                )
+                .map_err(crate::error::EditorError::msg)?;
+                let _activity =
+                    crate::engine::activity::begin_activity("Creating texture — uploading to GPU…");
+                match crate::engine::bridge::material::create_texture(id, payload, linear).await {
+                    Ok(()) => {
+                        self.scene.assets.lock().unwrap().entries.insert(
+                            id,
+                            AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
+                                display_name: format!("created-{}", &id.to_string()[..8]),
+                            })),
+                        );
+                        self.scene.bump_revision();
+                        self.asset_selection.set(Some(id));
+                        self.dirty.set_neq(true);
+                        Toast::info("Created texture");
+                        Ok(Some(EditorCommand::DeleteAsset { id }))
+                    }
+                    // Fail loudly — surfaced as an MCP error, not a silent `ok`.
+                    Err(e) => Err(crate::error::EditorError::msg(format!(
+                        "create texture failed: {e}"
                     ))),
                 }
             }
@@ -3828,13 +4253,8 @@ impl EditorController {
                 let mut entries = std::collections::BTreeMap::new();
                 match node_material_ref(&kind) {
                     None => {
-                        let is_geo =
-                            matches!(kind, NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. });
                         entries.insert("assigned".to_string(), json!(false));
-                        entries.insert(
-                            "kind".to_string(),
-                            json!(if is_geo { "unassigned" } else { "none" }),
-                        );
+                        entries.insert("kind".to_string(), json!(unassigned_material_kind(&kind)));
                     }
                     Some(inst) => {
                         entries.insert("assigned".to_string(), json!(true));
@@ -3870,12 +4290,58 @@ impl EditorController {
                     entries,
                 })
             }
-            EditorQuery::SelectVerticesWhere { node, predicate } => {
-                use awsm_editor_protocol::VertexPredicate as P;
-                use awsm_meshgen::edit::{
-                    select_by_axis, select_by_normal_dir, select_top_count_axis,
-                    select_top_percent_axis, select_within_aabb, select_within_radius, Cmp,
+            EditorQuery::GetChildren { node } => {
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return QueryResult::Error {
+                        error: format!("no node {node}"),
+                    };
                 };
+                let children: Vec<serde_json::Value> = n
+                    .children
+                    .lock_ref()
+                    .iter()
+                    .map(|c| node_brief(c))
+                    .collect();
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("children".to_string(), serde_json::json!(children));
+                QueryResult::Map(query::MapResult {
+                    kind: "children".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::GetSubtree { root } => {
+                let tree: Vec<serde_json::Value> = match root {
+                    Some(id) => {
+                        let Some(n) = mutate::find_by_id(&self.scene, id) else {
+                            return QueryResult::Error {
+                                error: format!("no node {id}"),
+                            };
+                        };
+                        vec![node_subtree_json(&n)]
+                    }
+                    None => self
+                        .scene
+                        .nodes
+                        .lock_ref()
+                        .iter()
+                        .map(|n| node_subtree_json(n))
+                        .collect(),
+                };
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("tree".to_string(), serde_json::json!(tree));
+                QueryResult::Map(query::MapResult {
+                    kind: "subtree".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::SelectVerticesWhere {
+                node,
+                predicate,
+                store,
+                count_only,
+                offset,
+                limit,
+            } => {
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
                     return QueryResult::Error {
@@ -3887,40 +4353,26 @@ impl EditorController {
                 });
                 match mesh {
                     Some(mesh) => {
-                        let idx = match predicate {
-                            P::NormalDir { dir, threshold } => {
-                                select_by_normal_dir(&mesh, dir, threshold)
-                            }
-                            P::AxisGreater { axis, value } => {
-                                select_by_axis(&mesh, axis as usize, Cmp::Greater, value)
-                            }
-                            P::AxisLess { axis, value } => {
-                                select_by_axis(&mesh, axis as usize, Cmp::Less, value)
-                            }
-                            P::TopPercent { axis, percent } => {
-                                if !(0.0..=1.0).contains(&percent) {
-                                    // percent is a 0..1 FRACTION; out-of-range input
-                                    // silently clamps in the selector, which reads as
-                                    // "selected everything" to a confused caller.
-                                    tracing::warn!(
-                                        "select_vertices_where top_percent: percent {percent} \
-                                         is outside 0..1 (it is a fraction, not a percentage) — \
-                                         clamping"
-                                    );
-                                }
-                                select_top_percent_axis(&mesh, axis as usize, percent)
-                            }
-                            P::TopCount { axis, count } => {
-                                select_top_count_axis(&mesh, axis as usize, count)
-                            }
-                            P::WithinRadius { center, radius } => {
-                                select_within_radius(&mesh, center, radius)
-                            }
-                            P::WithinAabb { min, max } => select_within_aabb(&mesh, min, max),
-                        };
+                        let idx = select_vertices_by_predicate(&mesh, &predicate);
                         let mut entries = std::collections::BTreeMap::new();
                         entries.insert("count".to_string(), json!(idx.len()));
-                        entries.insert("indices".to_string(), json!(idx));
+                        if store {
+                            // §10: keep the indices server-side, hand back a reusable
+                            // handle — no array crosses the wire.
+                            entries.insert("id".to_string(), json!(store_vertex_selection(idx)));
+                        } else if !count_only {
+                            // Optional pagination so a big raw read can be windowed.
+                            let start = offset.unwrap_or(0) as usize;
+                            let page: Vec<u32> = match limit {
+                                Some(l) => {
+                                    idx.iter().skip(start).take(l as usize).copied().collect()
+                                }
+                                None => idx.iter().skip(start).copied().collect(),
+                            };
+                            entries.insert("offset".to_string(), json!(start));
+                            entries.insert("returned".to_string(), json!(page.len()));
+                            entries.insert("indices".to_string(), json!(page));
+                        }
                         QueryResult::Map(query::MapResult {
                             kind: "vertex_selection".to_string(),
                             entries,
@@ -4009,19 +4461,51 @@ impl EditorController {
                     Err(error) => QueryResult::Error { error },
                 }
             }
-            EditorQuery::GetVertexData { node, indices } => {
+            EditorQuery::GetVertexData {
+                node,
+                indices,
+                selection,
+                offset,
+                limit,
+            } => {
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
                     return QueryResult::Error {
                         error: skinned_edit_error(node),
                     };
                 }
+                // §10: a `selection` handle's indices win over an explicit list; a
+                // dangling handle errors loudly.
+                let target: Vec<u32> = match selection {
+                    Some(id) => match lookup_vertex_selection(id) {
+                        Some(v) => v,
+                        None => {
+                            return QueryResult::Error {
+                                error: format!("no vertex-selection handle {id}"),
+                            }
+                        }
+                    },
+                    None => indices,
+                };
                 let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
                     crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
                 });
                 match mesh {
                     Some(md) => {
-                        let verts: Vec<serde_json::Value> = indices
+                        // §10: window the (possibly large) selection so its per-vertex
+                        // data doesn't overflow the token cap.
+                        let start = offset.unwrap_or(0) as usize;
+                        let selected = target.len();
+                        let page: Vec<u32> = match limit {
+                            Some(l) => target
+                                .iter()
+                                .skip(start)
+                                .take(l as usize)
+                                .copied()
+                                .collect(),
+                            None => target.iter().skip(start).copied().collect(),
+                        };
+                        let verts: Vec<serde_json::Value> = page
                             .iter()
                             .map(|&i| {
                                 let idx = i as usize;
@@ -4036,6 +4520,9 @@ impl EditorController {
                             .collect();
                         let mut entries = std::collections::BTreeMap::new();
                         entries.insert("vertex_count".to_string(), json!(md.positions.len()));
+                        entries.insert("selected".to_string(), json!(selected));
+                        entries.insert("offset".to_string(), json!(start));
+                        entries.insert("returned".to_string(), json!(verts.len()));
                         entries.insert("vertices".to_string(), json!(verts));
                         QueryResult::Map(query::MapResult {
                             kind: "vertex_data".to_string(),
@@ -4419,12 +4906,15 @@ impl EditorController {
                 end_node,
                 target,
                 pole,
+                root_node,
             } => {
                 use serde_json::json;
                 // Chain from the renderer's MIRROR hierarchy (bones are scene
                 // nodes; mirrors are parented exactly like the scene tree):
-                // end → parent (mid) → grandparent (root).
-                let (tk_e, tk_to_node) = {
+                // auto = end → parent (mid) → grandparent (root). When `root_node`
+                // is given, root is pinned to it and mid = root's child toward end
+                // (§9 — pick the chain when the auto-walk picks wrong, e.g. fingers).
+                let (tk_e, tk_root_opt, tk_to_node) = {
                     let b = crate::engine::bridge::bridge();
                     let nodes = b.nodes.lock().unwrap();
                     let Some(entry) = nodes.get(&end_node) else {
@@ -4432,13 +4922,47 @@ impl EditorController {
                             error: format!("end_node {end_node} not materialized"),
                         };
                     };
+                    let tk_root_opt = match root_node {
+                        Some(rn) => match nodes.get(&rn) {
+                            Some(re) => Some(re.transform_key),
+                            None => {
+                                return QueryResult::Error {
+                                    error: format!("root_node {rn} not materialized"),
+                                }
+                            }
+                        },
+                        None => None,
+                    };
                     let map: std::collections::HashMap<_, _> =
                         nodes.iter().map(|(id, n)| (n.transform_key, *id)).collect();
-                    (entry.transform_key, map)
+                    (entry.transform_key, tk_root_opt, map)
                 };
                 let solved = crate::engine::context::with_renderer_mut(move |r| {
-                    let tk_m = r.transforms.get_parent(tk_e).ok()?;
-                    let tk_r = r.transforms.get_parent(tk_m).ok()?;
+                    // Resolve the 2-bone chain (mid, root). Auto: end's parent +
+                    // grandparent. Explicit root: walk UP from end to root_node;
+                    // mid = the joint just below root on that path.
+                    let (tk_m, tk_r) = match tk_root_opt {
+                        None => {
+                            let tk_m = r.transforms.get_parent(tk_e).ok()?;
+                            let tk_r = r.transforms.get_parent(tk_m).ok()?;
+                            (tk_m, tk_r)
+                        }
+                        Some(tk_root) => {
+                            let mut cur = tk_e;
+                            let mut mid = None;
+                            for _ in 0..128 {
+                                let p = r.transforms.get_parent(cur).ok()?;
+                                if p == tk_root {
+                                    mid = Some(cur);
+                                    break;
+                                }
+                                cur = p;
+                            }
+                            // mid = child of root toward end; None ⇒ root isn't an
+                            // ancestor of end. mid==end ⇒ 1-bone (l2 check rejects).
+                            (mid?, tk_root)
+                        }
+                    };
                     let mid_id = tk_to_node.get(&tk_m).copied()?;
                     let root_id = tk_to_node.get(&tk_r).copied()?;
                     let we = *r.transforms.get_world(tk_e).ok()?;
@@ -4732,6 +5256,12 @@ impl EditorController {
         let entries = crate::engine::context::with_renderer_mut(move |r| {
             let mut m = std::collections::BTreeMap::new();
             for (id, (lmin, lmax), meshes, tk) in &resolved {
+                let world = tk
+                    .and_then(|tk| r.transforms.get_world(tk).ok().copied())
+                    .unwrap_or(glam::Mat4::IDENTITY);
+                // §8 facing hint: the node's local axes in WORLD space (see
+                // `world_forward_up_right`).
+                let (forward, up, right) = world_forward_up_right(world);
                 // Prefer the renderer's LIVE world AABB (union over the node's
                 // materialized meshes) — exact for whatever actually renders,
                 // including populate-baked SkinnedMesh nodes whose scene-side
@@ -4749,18 +5279,20 @@ impl EditorController {
                         acc.extend(&b);
                         acc
                     });
-                if let Some(aabb) = live {
-                    m.insert(
-                        id.to_string(),
-                        json!({ "min": aabb.min.to_array(), "max": aabb.max.to_array() }),
-                    );
-                    continue;
-                }
-                let world = tk
-                    .and_then(|tk| r.transforms.get_world(tk).ok().copied())
-                    .unwrap_or(glam::Mat4::IDENTITY);
-                let (wmin, wmax) = transform_aabb(world, *lmin, *lmax);
-                m.insert(id.to_string(), json!({ "min": wmin, "max": wmax }));
+                let (mn, mx) = match live {
+                    Some(aabb) => (aabb.min.to_array(), aabb.max.to_array()),
+                    None => transform_aabb(world, *lmin, *lmax),
+                };
+                m.insert(
+                    id.to_string(),
+                    json!({
+                        "min": mn,
+                        "max": mx,
+                        "forward": forward,
+                        "up": up,
+                        "right": right,
+                    }),
+                );
             }
             m
         })
@@ -5554,6 +6086,156 @@ fn node_material_ref(
     }
 }
 
+thread_local! {
+    /// §10 session-scoped vertex-selection store. `select_vertices_where { store }`
+    /// puts a predicate's indices here under a fresh id and returns just
+    /// `{ id, count }`; the paint/sculpt commands resolve `selection: <id>` back to
+    /// the indices, so a full-resolution selection (tens of thousands of indices)
+    /// drives many ops without ever crossing the MCP boundary. Cleared on reload
+    /// (session-scoped, like the texture-key cache).
+    static VERTEX_SELECTIONS: RefCell<std::collections::HashMap<u32, Vec<u32>>> =
+        RefCell::new(std::collections::HashMap::new());
+    static NEXT_VERTEX_SELECTION_ID: Cell<u32> = const { Cell::new(1) };
+}
+
+/// Store an index list and return its handle id (§10).
+fn store_vertex_selection(indices: Vec<u32>) -> u32 {
+    let id = NEXT_VERTEX_SELECTION_ID.with(|c| {
+        let id = c.get();
+        c.set(id.wrapping_add(1).max(1));
+        id
+    });
+    VERTEX_SELECTIONS.with(|m| m.borrow_mut().insert(id, indices));
+    id
+}
+
+/// The indices a selection handle holds, if it exists (§10).
+fn lookup_vertex_selection(id: u32) -> Option<Vec<u32>> {
+    VERTEX_SELECTIONS.with(|m| m.borrow().get(&id).cloned())
+}
+
+/// Sample an RGBA8 heightmap's perceptual luminance in `[0, 1]` at normalized
+/// `(u, v)` (nearest, UV wraps) — the §16 displace-from-texture height source.
+fn sample_heightmap_luminance(rgba: &[u8], w: u32, h: u32, u: f32, v: f32) -> f32 {
+    if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+        return 0.0;
+    }
+    let x = ((u.rem_euclid(1.0)) * w as f32).floor().min(w as f32 - 1.0) as u32;
+    let y = ((v.rem_euclid(1.0)) * h as f32).floor().min(h as f32 - 1.0) as u32;
+    let o = ((y * w + x) * 4) as usize;
+    let (r, g, b) = (rgba[o] as f32, rgba[o + 1] as f32, rgba[o + 2] as f32);
+    (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+}
+
+/// Resolve a paint/sculpt command's target indices: a `selection` handle wins
+/// over an explicit `indices` list; a dangling handle errors loudly (§10).
+fn resolve_vertex_selection_or(
+    selection: Option<u32>,
+    indices: Vec<u32>,
+) -> EditorResult<Vec<u32>> {
+    match selection {
+        Some(id) => lookup_vertex_selection(id).ok_or_else(|| {
+            crate::error::EditorError::msg(format!(
+                "no vertex-selection handle {id} (create one with select_vertices_where {{ store: true }})"
+            ))
+        }),
+        None => Ok(indices),
+    }
+}
+
+/// `resolve_node_material` kind for a node carrying **no** material (§5):
+/// renderable geometry (Mesh / SkinnedMesh) is `"unassigned"` — it renders the
+/// flat **magenta** missing-material sentinel (a visible "you forgot to assign",
+/// NOT invisible); anything else is `"none"` (not a geometry node). The magenta
+/// render itself lives in `node_sync::resolve_assigned_material` (`None` →
+/// `insert_magenta`).
+fn unassigned_material_kind(kind: &NodeKind) -> &'static str {
+    if matches!(kind, NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. }) {
+        "unassigned"
+    } else {
+        "none"
+    }
+}
+
+/// Select the vertex indices of `mesh` matching `predicate` — shared by the
+/// `SelectVerticesWhere` query and the fused `PaintVerticesWhere` /
+/// `TransformVerticesWhere` commands (§10), so a full-res selection can be acted
+/// on server-side without round-tripping the (huge) index array through MCP.
+fn select_vertices_by_predicate(
+    mesh: &awsm_meshgen::MeshData,
+    predicate: &awsm_editor_protocol::VertexPredicate,
+) -> Vec<u32> {
+    use awsm_editor_protocol::VertexPredicate as P;
+    use awsm_meshgen::edit::{
+        select_by_axis, select_by_normal_dir, select_top_count_axis, select_top_percent_axis,
+        select_within_aabb, select_within_radius, Cmp,
+    };
+    match predicate {
+        P::NormalDir { dir, threshold } => select_by_normal_dir(mesh, *dir, *threshold),
+        P::AxisGreater { axis, value } => {
+            select_by_axis(mesh, *axis as usize, Cmp::Greater, *value)
+        }
+        P::AxisLess { axis, value } => select_by_axis(mesh, *axis as usize, Cmp::Less, *value),
+        P::TopPercent { axis, percent } => {
+            if !(0.0..=1.0).contains(percent) {
+                // percent is a 0..1 FRACTION; out-of-range input silently clamps
+                // in the selector, which reads as "selected everything" to a
+                // confused caller.
+                tracing::warn!(
+                    "select_vertices_where top_percent: percent {percent} is outside 0..1 \
+                     (it is a fraction, not a percentage) — clamping"
+                );
+            }
+            select_top_percent_axis(mesh, *axis as usize, *percent)
+        }
+        P::TopCount { axis, count } => select_top_count_axis(mesh, *axis as usize, *count),
+        P::WithinRadius { center, radius } => select_within_radius(mesh, *center, *radius),
+        P::WithinAabb { min, max } => select_within_aabb(mesh, *min, *max),
+    }
+}
+
+/// The node's local axes expressed in WORLD space, derived from its world matrix
+/// (§8 facing hint): `(forward, up, right)` where `forward` is local **-Z** (the
+/// project's "-Z forward" convention), `up` is local +Y, `right` is local +X —
+/// each a unit vector. Lets an agent place things relative to a node's
+/// orientation ("on the back" = `-forward`) without trial-and-error. This is the
+/// node's TRANSFORM orientation; an imported model's *geometry* may face a
+/// different way (the convention; verify visually).
+fn world_forward_up_right(world: glam::Mat4) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    (
+        (-world.z_axis.truncate()).normalize_or_zero().to_array(),
+        world.y_axis.truncate().normalize_or_zero().to_array(),
+        world.x_axis.truncate().normalize_or_zero().to_array(),
+    )
+}
+
+/// Lightweight `{ id, name, kind }` for a node (no per-kind config blob) — the
+/// row shape `get_children` / `get_subtree` return (§6).
+fn node_brief(node: &crate::engine::scene::node::Node) -> serde_json::Value {
+    serde_json::json!({
+        "id": node.id.to_string(),
+        "name": node.name.get_cloned(),
+        "kind": awsm_editor_protocol::kind_tag(&node.kind.get_cloned()),
+    })
+}
+
+/// `node_brief` plus a nested `children` array — the recursive subtree shape
+/// `get_subtree` returns (§6).
+fn node_subtree_json(node: &crate::engine::scene::node::Node) -> serde_json::Value {
+    let children: Vec<serde_json::Value> = node
+        .children
+        .lock_ref()
+        .iter()
+        .map(|c| node_subtree_json(c))
+        .collect();
+    serde_json::json!({
+        "id": node.id.to_string(),
+        "name": node.name.get_cloned(),
+        "kind": awsm_editor_protocol::kind_tag(&node.kind.get_cloned()),
+        "children": children,
+    })
+}
+
 /// Mutable variant of [`node_material_ref`].
 fn node_material_mut(
     kind: &mut NodeKind,
@@ -5586,6 +6268,11 @@ fn patch_builtin_param(
             inline.base_color[0] = value[0];
             inline.base_color[1] = value[1];
             inline.base_color[2] = value[2];
+            // §13: accept an optional 4th float as the base-color ALPHA (for a
+            // sub-1 alpha on a Blend material — glass). 3 floats leaves alpha as-is.
+            if let Some(&a) = value.get(3) {
+                inline.base_color[3] = a;
+            }
         }
         P::Emissive => {
             if value.len() < 3 {
@@ -5663,6 +6350,21 @@ fn patch_builtin_param(
     true
 }
 
+/// Set the alpha mode (Opaque | Mask { cutoff } | Blend) of a node's
+/// **built-in/inline** `MaterialDef` (§13). Changing the mode is a pipeline
+/// feature flip, so the node re-materializes (the kind observer). Returns false
+/// if the node has no inline material (unassigned / non-geometry).
+fn patch_builtin_alpha_mode(
+    kind: &mut NodeKind,
+    mode: awsm_editor_protocol::MaterialAlphaMode,
+) -> bool {
+    let Some(inst) = node_material_mut(kind) else {
+        return false;
+    };
+    inst.inline.alpha_mode = mode;
+    true
+}
+
 /// Bind (or clear) a texture on a node's **built-in/inline** `MaterialDef` slot.
 /// Returns false if the node is unassigned (no inline store to tweak).
 fn patch_builtin_texture(
@@ -5690,6 +6392,76 @@ fn patch_builtin_texture(
         S::Emissive => inline.emissive_texture = tref,
     }
     true
+}
+
+/// Patch the UV transform / flow / sampler-wrap of a node's **built-in/inline**
+/// `MaterialDef` texture slot (§1). Patch semantics — only provided fields
+/// change. Returns `Err` (caller surfaces it as an MCP error) when there's no
+/// inline material or the slot has no texture bound, so the op is never a silent
+/// no-op (the original §1 trap).
+#[allow(clippy::too_many_arguments)]
+fn patch_builtin_texture_transform(
+    kind: &mut NodeKind,
+    slot: awsm_editor_protocol::BuiltinTextureSlot,
+    offset: Option<[f32; 2]>,
+    scale: Option<[f32; 2]>,
+    rotation: Option<f32>,
+    flow: Option<[f32; 2]>,
+    wrap_u: Option<awsm_editor_protocol::TextureWrap>,
+    wrap_v: Option<awsm_editor_protocol::TextureWrap>,
+    uv_set: Option<u32>,
+) -> Result<(), String> {
+    use awsm_editor_protocol::BuiltinTextureSlot as S;
+    let Some(inst) = node_material_mut(kind) else {
+        return Err(
+            "node has no built-in material — assign one and bind a texture first".to_string(),
+        );
+    };
+    let inline = &mut inst.inline;
+    let tref = match slot {
+        S::BaseColor => &mut inline.base_color_texture,
+        S::MetallicRoughness => &mut inline.metallic_roughness_texture,
+        S::Normal => &mut inline.normal_texture,
+        S::Occlusion => &mut inline.occlusion_texture,
+        S::Emissive => &mut inline.emissive_texture,
+    };
+    let Some(tref) = tref.as_mut() else {
+        return Err(format!(
+            "texture slot `{slot:?}` has no texture bound — bind one with set_node_texture first"
+        ));
+    };
+    // Affine transform: touch it only when an affine field is supplied; seed an
+    // identity transform first so a partial patch (e.g. offset only) keeps scale 1.
+    if offset.is_some() || scale.is_some() || rotation.is_some() {
+        let t = tref
+            .transform
+            .get_or_insert_with(awsm_editor_protocol::TextureTransform::default);
+        if let Some(o) = offset {
+            t.offset = o;
+        }
+        if let Some(s) = scale {
+            t.scale = s;
+        }
+        if let Some(r) = rotation {
+            t.rotation = r;
+        }
+    }
+    if let Some(f) = flow {
+        tref.flow = Some(f);
+    }
+    if wrap_u.is_some() || wrap_v.is_some() {
+        let s = tref.sampler.get_or_insert_with(Default::default);
+        if let Some(w) = wrap_u {
+            s.wrap_u = w;
+        }
+        if let Some(w) = wrap_v {
+            s.wrap_v = w;
+        }
+    }
+    if let Some(uv) = uv_set {
+        tref.uv_index = uv;
+    }
+    Ok(())
 }
 
 /// Bind (or clear) a texture override on a node's assigned custom material.
@@ -6801,6 +7573,56 @@ mod ik_tests {
 }
 
 #[cfg(test)]
+mod unassigned_material_tests {
+    use super::unassigned_material_kind;
+    use awsm_editor_protocol::{AssetId, MeshRef, NodeKind};
+
+    // §5 regression guard: a geometry node with no material must report
+    // `unassigned` (→ the visible magenta sentinel), never be treated as
+    // non-geometry / invisible.
+    #[test]
+    fn unassigned_geometry_is_magenta_sentinel() {
+        let mesh = NodeKind::Mesh {
+            mesh: MeshRef(AssetId::new()),
+            material: None,
+            shadow: Default::default(),
+        };
+        assert_eq!(unassigned_material_kind(&mesh), "unassigned");
+    }
+
+    #[test]
+    fn non_geometry_is_none() {
+        assert_eq!(unassigned_material_kind(&NodeKind::Group), "none");
+    }
+}
+
+#[cfg(test)]
+mod facing_tests {
+    use super::world_forward_up_right;
+    use glam::Mat4;
+
+    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5)
+    }
+
+    #[test]
+    fn identity_is_minus_z_forward() {
+        let (f, u, r) = world_forward_up_right(Mat4::IDENTITY);
+        assert!(close(f, [0.0, 0.0, -1.0]), "forward {f:?}");
+        assert!(close(u, [0.0, 1.0, 0.0]), "up {u:?}");
+        assert!(close(r, [1.0, 0.0, 0.0]), "right {r:?}");
+    }
+
+    #[test]
+    fn rotation_tracks_orientation() {
+        // Yaw 90° about +Y: local -Z forward swings to world -X.
+        let (f, _u, _r) =
+            world_forward_up_right(Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        assert!(close(f, [-1.0, 0.0, 0.0]), "forward {f:?}");
+    }
+}
+
+#[cfg(test)]
 mod mesh_rebake_tests {
     use super::*;
     use crate::engine::bridge::mesh_cache;
@@ -6870,6 +7692,7 @@ mod mesh_rebake_tests {
             indices: vec![0],
             translation: [0.0, 0.2, 0.0],
             falloff: 0.3,
+            selection: None,
         }))
         .unwrap();
         assert!(
@@ -6921,6 +7744,7 @@ mod mesh_rebake_tests {
             indices: vec![0],
             translation: [0.0, 5.0, 0.0],
             falloff: 0.2,
+            selection: None,
         }))
         .unwrap();
         let pulled_max_y = mesh_cache::get_captured(mesh)
@@ -6988,6 +7812,7 @@ mod mesh_rebake_tests {
             indices: vec![0],
             translation: [0.0, 3.0, 0.0],
             falloff: 0.25,
+            selection: None,
         }))
         .unwrap()
         .expect("sculpt records an inverse");
@@ -7054,6 +7879,7 @@ mod mesh_rebake_tests {
             indices: vec![0],
             translation: [0.0, 0.3, 0.0],
             falloff: 0.25,
+            selection: None,
         }))
         .unwrap();
         block_on(ctrl.apply(EditorCommand::AddModifier {
@@ -7070,6 +7896,59 @@ mod mesh_rebake_tests {
             files.iter().any(|(p, _)| *p == want),
             "snapshot {snap} must be in the saved mesh files: {:?}",
             files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod equirect_persistence_tests {
+    use super::*;
+    use awsm_editor_protocol::{SkyboxConfig, TextureDef};
+    use futures::executor::block_on;
+
+    // §18 follow-up: an agent equirect environment must register as a
+    // content-hashed raster texture + seed the texture_cache, so the EXISTING
+    // texture persistence (texture_files / restore_textures) saves + restores the
+    // panorama across reload — it's no longer session-only.
+    #[test]
+    fn equirect_env_registers_persistable_texture() {
+        let ctrl = EditorController::new();
+        let id = AssetId::new();
+        block_on(ctrl.apply(EditorCommand::SetEnvironmentEquirect {
+            id,
+            data: "data:image/png;base64,AAAA".to_string(),
+        }))
+        .unwrap();
+
+        // (a) both skybox + IBL point at the equirect asset
+        let env = ctrl.scene.environment.get_cloned();
+        assert!(matches!(env.skybox, SkyboxConfig::Equirect { asset_id } if asset_id == id));
+
+        // (b) a content-hashed raster texture asset was registered (.png so the
+        // loader can derive the mime; content_hash so asset_filename → Some).
+        {
+            let assets = ctrl.scene.assets.lock().unwrap();
+            let entry = assets
+                .entries
+                .get(&id)
+                .expect("env texture asset registered");
+            assert!(
+                matches!(&entry.source, SceneAssetSource::Texture(TextureDef::Raster { display_name }) if display_name.ends_with(".png")),
+                "env asset must be a .png raster texture"
+            );
+            assert!(
+                !entry.content_hash.is_empty(),
+                "content_hash unset → won't persist"
+            );
+        }
+
+        // (c) the encoded bytes are in the texture_cache (what Save reads).
+        let cached = crate::engine::bridge::texture_cache::get(id).expect("bytes in cache");
+        // (d) the persistence pass emits a side file carrying exactly those bytes.
+        let files = crate::controller::persistence::texture_files(&ctrl);
+        assert!(
+            files.iter().any(|(_, bytes)| *bytes == cached.0),
+            "texture_files did not include the equirect panorama side file"
         );
     }
 }

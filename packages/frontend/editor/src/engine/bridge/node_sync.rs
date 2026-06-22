@@ -371,7 +371,8 @@ async fn remove_node(node_id: NodeId) {
         e
     };
     if let Some(entry) = entry {
-        teardown(&entry).await;
+        // Real deletion: reclaim the node's textures too (glTF leak fix).
+        teardown(&entry, true).await;
         // Free the node's OWN transform. `teardown` only frees sub-transforms
         // (`model_transforms`); the node's `transform_key` is a SlotMap key into
         // `r.transforms`, and dropping the `Arc<RendererNode>` below does NOT free
@@ -467,7 +468,14 @@ async fn reclaim_templates_for_removed(entry: &Arc<RendererNode>, node_id: NodeI
 /// light). Deliberately leaves the node's own `transform_key` alone so a kind
 /// change (re-materialize) keeps a stable transform; when the node is actually
 /// deleted, `remove_node` frees that `transform_key` explicitly after this.
-async fn teardown(entry: &Arc<RendererNode>) {
+///
+/// `reclaim_textures`: a RE-MATERIALIZE (`false`) must KEEP the material's
+/// textures — the immediate rebuild re-references them by key from the session
+/// texture cache, and freeing them here would leave the rebuilt material reading
+/// a dead `TextureKey` as absent → the mesh renders untextured (§1: a UV
+/// transform / any edit on a textured built-in material made the texture vanish).
+/// An actual node DELETE (`true`) reclaims them (the glTF leak fix).
+async fn teardown(entry: &Arc<RendererNode>, reclaim_textures: bool) {
     let meshes: Vec<_> = entry.model_meshes.lock().unwrap().drain(..).collect();
     let transforms: Vec<_> = entry.model_transforms.lock().unwrap().drain(..).collect();
     let materials: Vec<_> = entry.material_keys.lock().unwrap().drain(..).collect();
@@ -487,7 +495,11 @@ async fn teardown(entry: &Arc<RendererNode>) {
             r.transforms.remove(tk);
         }
         for mat in materials {
-            r.remove_material(mat);
+            if reclaim_textures {
+                r.remove_material(mat);
+            } else {
+                r.remove_material_keep_textures(mat);
+            }
         }
         for lk in lines {
             r.remove_line(lk);
@@ -549,8 +561,10 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         }
     }
 
-    // Tear down the previous materialization (no-op on first apply).
-    teardown(&entry).await;
+    // Tear down the previous materialization (no-op on first apply). KEEP the old
+    // material's textures — the rebuild below re-references them by key from the
+    // session cache; reclaiming here would make the rebuilt mesh render untextured.
+    teardown(&entry, false).await;
 
     match kind {
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
@@ -597,6 +611,21 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
     *entry.last_kind.lock().unwrap() = Some(entry.node.kind.get_cloned());
 }
 
+/// Resolve a built-in material slot's texture binding (§11 priority). The
+/// per-mesh **inline** texture (what `set_node_texture` /
+/// `set_node_texture_transform` write) wins and ENABLES the slot even when the
+/// shared variant lacks it; otherwise a custom `texture_overrides` swap; otherwise
+/// the shared variant's default image. Pure (no controller state) so it is
+/// unit-tested directly — the regression guard for the §11 "bound texture renders
+/// flat" silent failure.
+fn merge_slot_texture(
+    inline_tex: Option<awsm_editor_protocol::TextureRef>,
+    override_tex: Option<awsm_editor_protocol::TextureRef>,
+    variant_default: Option<awsm_editor_protocol::TextureRef>,
+) -> Option<awsm_editor_protocol::TextureRef> {
+    inline_tex.or(override_tex).or(variant_default)
+}
+
 /// If `id` names a **built-in** library material, merge its shared variant
 /// settings (shading / alpha / double-sided / vertex-colors / texture-enables)
 /// with this mesh's per-mesh uniform values (`inline`: base color / metallic /
@@ -614,20 +643,31 @@ fn builtin_merged(
     let variant = mat.builtin.get_cloned()?;
 
     // ── The override rule ────────────────────────────────────────────────────
-    // VARIANT fields (anything in the pipeline cache key — shading model, alpha
-    // *mode*, double-sided cull, vertex-colors, texture-slot *presence*, KHR
-    // extension *enables*) come ONLY from the shared `variant`, so every mesh
-    // using this material shares one pipeline. Everything else — the entire
-    // uniform-buffer surface — is per-mesh: factors + extension *parameters* +
-    // Toon knobs + mask cutoff from `inline`, and the bound *image* per declared
-    // texture slot from `texture_overrides`. None of these recompile.
+    // Most VARIANT fields (shading model, alpha *mode*, double-sided cull,
+    // vertex-colors, KHR extension *enables*) come ONLY from the shared `variant`,
+    // so meshes sharing those features share one pipeline. The uniform-buffer
+    // surface — factors + extension *parameters* + Toon knobs + mask cutoff — is
+    // per-mesh from `inline`.
+    //
+    // Texture-slot *presence* (§11) is ALSO per-mesh: a per-node `inline` texture
+    // (what `set_node_texture` / `set_node_texture_transform` write) ENABLES the
+    // slot even when the shared variant lacks it, re-specializing THIS mesh's
+    // pipeline to sample it — instead of storing the binding and silently
+    // rendering flat. Variants key on texture *presence* (not the image), so this
+    // adds at most one extra bucket per distinct slot-presence combination, not
+    // one per mesh; the bound *image* is still a per-mesh binding (no recompile).
 
-    // Texture binding: presence gated by the variant; image swapped per mesh.
-    let tex = |slot: &str, default: Option<TextureRef>| -> Option<TextureRef> {
-        match default {
-            Some(_) => inst.texture_overrides.get(slot).cloned().or(default),
-            None => None,
-        }
+    // Texture binding: per-mesh `inline` texture wins (+ enables the slot), then a
+    // custom `texture_overrides` swap, then the shared variant's default image.
+    let tex = |slot: &str,
+               inline_tex: Option<TextureRef>,
+               default: Option<TextureRef>|
+     -> Option<TextureRef> {
+        merge_slot_texture(
+            inline_tex,
+            inst.texture_overrides.get(slot).cloned(),
+            default,
+        )
     };
 
     // Extension PARAMS per mesh, ENABLE from the variant: an extension the
@@ -680,14 +720,31 @@ fn builtin_merged(
         emissive: inline.emissive,
         normal_scale: inline.normal_scale,
         occlusion_strength: inline.occlusion_strength,
-        base_color_texture: tex("base_color_texture", variant.base_color_texture),
+        base_color_texture: tex(
+            "base_color_texture",
+            inline.base_color_texture,
+            variant.base_color_texture,
+        ),
         metallic_roughness_texture: tex(
             "metallic_roughness_texture",
+            inline.metallic_roughness_texture,
             variant.metallic_roughness_texture,
         ),
-        normal_texture: tex("normal_texture", variant.normal_texture),
-        occlusion_texture: tex("occlusion_texture", variant.occlusion_texture),
-        emissive_texture: tex("emissive_texture", variant.emissive_texture),
+        normal_texture: tex(
+            "normal_texture",
+            inline.normal_texture,
+            variant.normal_texture,
+        ),
+        occlusion_texture: tex(
+            "occlusion_texture",
+            inline.occlusion_texture,
+            variant.occlusion_texture,
+        ),
+        emissive_texture: tex(
+            "emissive_texture",
+            inline.emissive_texture,
+            variant.emissive_texture,
+        ),
         alpha_mode,
         shading,
         extensions,
@@ -1495,15 +1552,19 @@ async fn materialize_particle(
 ) {
     let parent_tk = entry.transform_key;
     let node_id = entry.node_id;
-    with_renderer_mut(move |r| {
+    // §14: the blend route compiles a transparent instancing pipeline, so the
+    // materialize is async — hold the renderer lock across it (like `commit_load`
+    // below) instead of the sync `with_renderer_mut` closure.
+    {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
         let world_pos = r
             .transforms
             .get_world(parent_tk)
             .map(|m| m.w_axis.truncate())
             .unwrap_or(Vec3::ZERO);
-        super::particles::materialize(r, node_id, parent_tk, world_pos, &def);
-    })
-    .await;
+        super::particles::materialize(&mut r, node_id, parent_tk, world_pos, &def).await;
+    }
     // The emitter inserts a PBR material (a feature-set variant) whose pipeline
     // must compile — route through the one compile path. Skipped under the bulk-load
     // join (which commits once at the end). render() no longer compiles reactively.
@@ -1598,5 +1659,44 @@ pub(crate) async fn rematerialize_mesh_nodes() {
             // Live re-materialise (mesh edit) — declares AND commits, as before.
             apply_kind(entry, kind, false).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod slot_texture_tests {
+    use super::merge_slot_texture;
+    use awsm_editor_protocol::{AssetId, TextureRef};
+
+    // §11 regression guard: a per-mesh inline texture must ENABLE a slot the
+    // shared variant lacks (the old code forced `None` here → flat render).
+    #[test]
+    fn inline_enables_slot_the_variant_lacks() {
+        let t = TextureRef::new(AssetId::new());
+        assert_eq!(merge_slot_texture(Some(t), None, None), Some(t));
+    }
+
+    #[test]
+    fn inline_beats_override_and_variant() {
+        let inline = TextureRef::new(AssetId::new());
+        let over = TextureRef::new(AssetId::new());
+        let def = TextureRef::new(AssetId::new());
+        assert_eq!(
+            merge_slot_texture(Some(inline), Some(over), Some(def)),
+            Some(inline)
+        );
+    }
+
+    #[test]
+    fn override_beats_variant_without_inline() {
+        let over = TextureRef::new(AssetId::new());
+        let def = TextureRef::new(AssetId::new());
+        assert_eq!(merge_slot_texture(None, Some(over), Some(def)), Some(over));
+    }
+
+    #[test]
+    fn variant_default_is_the_fallback() {
+        let def = TextureRef::new(AssetId::new());
+        assert_eq!(merge_slot_texture(None, None, Some(def)), Some(def));
+        assert_eq!(merge_slot_texture(None, None, None), None);
     }
 }

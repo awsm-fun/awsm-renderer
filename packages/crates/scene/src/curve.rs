@@ -2,6 +2,7 @@
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CurveDef {
     /// Catmull-Rom control points in world (or node-local) space.
     pub control_points: Vec<[f32; 3]>,

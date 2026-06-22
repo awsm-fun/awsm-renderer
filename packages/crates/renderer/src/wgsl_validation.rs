@@ -176,6 +176,53 @@ fn first_party_opaque_shaders_validate() {
 }
 
 #[test]
+fn toon_shader_is_banded_and_gated() {
+    // §19 regression guard: `first_party_opaque_shaders_validate` proves Toon
+    // COMPILES, but not that it still cel-SHADES. A refactor could drop the
+    // banding and toon would silently render like smooth PBR (and still validate).
+    // Assert the assembled Toon module carries the banded shading branch AND its
+    // quantizer; and that a non-Toon base (Unlit) does NOT invoke the toon branch.
+    let toon = render(
+        &first_party_key(
+            MaterialShaderId::TOON,
+            ShadingBase::Toon,
+            false,
+            None,
+            false,
+        ),
+        "opaque/toon",
+    );
+    assert!(
+        toon.contains("compute_toon_lit_color"),
+        "toon base lost its shading branch (compute_toon_lit_color)"
+    );
+    assert!(
+        toon.contains("fn toon_quantize"),
+        "toon lost its cel-shading BANDING (toon_quantize) — would render smooth"
+    );
+    assert!(
+        toon.contains("floor("),
+        "toon banding quantizer (floor) missing"
+    );
+
+    // The toon shading branch is base-gated: a non-Toon base must not call it.
+    let unlit = render(
+        &first_party_key(
+            MaterialShaderId::UNLIT,
+            ShadingBase::Unlit,
+            false,
+            None,
+            false,
+        ),
+        "opaque/unlit",
+    );
+    assert!(
+        !unlit.contains("compute_toon_lit_color"),
+        "non-Toon (Unlit) base wrongly assembled the toon shading branch"
+    );
+}
+
+#[test]
 fn unified_shade_opaque_shaders_validate() {
     // U1 (`docs/plans/unified-edge-shading.md`): under MSAA the opaque module
     // emits the merged `cs_shade` entry point (interior sample-0 → opaque_tex +

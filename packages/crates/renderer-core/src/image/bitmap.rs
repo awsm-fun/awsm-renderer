@@ -181,6 +181,41 @@ pub async fn load_f64<T: AsRef<[f64]>>(
     .await
 }
 
+/// Build an `ImageBitmap` from raw RGBA8 pixel data (`width * height * 4` bytes,
+/// row-major, top-left origin). The CPU counterpart to [`create_color`] for
+/// procedurally-generated images (e.g. the §18 equirect→cubemap face projection).
+pub async fn create_from_rgba(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    options: Option<ImageBitmapOptions>,
+) -> Result<web_sys::ImageBitmap> {
+    let expected = (width as usize) * (height as usize) * 4;
+    if rgba.len() != expected {
+        return Err(AwsmCoreError::create_image_bitmap(
+            wasm_bindgen::JsValue::from_str(&format!(
+                "create_from_rgba: got {} bytes, expected {expected} ({width}x{height} RGBA8)",
+                rgba.len()
+            )),
+        ));
+    }
+    let uint8_array = js_sys::Uint8ClampedArray::from(rgba);
+    let image_data = web_sys::ImageData::new_with_js_u8_clamped_array(&uint8_array, width)
+        .map_err(AwsmCoreError::create_image_bitmap)?;
+    let promise = match options {
+        Some(options) => web_global::create_image_bitmap_with_image_data_and_image_bitmap_options(
+            &image_data,
+            &options.into(),
+        ),
+        None => web_global::create_image_bitmap_with_image_data(&image_data),
+    }
+    .map_err(AwsmCoreError::create_image_bitmap)?;
+    let js_value = JsFuture::from(promise)
+        .await
+        .map_err(AwsmCoreError::create_image_bitmap)?;
+    Ok(js_value.unchecked_into())
+}
+
 pub async fn create_color(
     color: Color,
     width: u32,

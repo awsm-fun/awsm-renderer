@@ -2404,43 +2404,88 @@ impl AwsmRenderer {
         #[cfg(feature = "dynamic-material-validation")]
         {
             use crate::dynamic_materials::{first_party_bucket_entries, BucketEntry, ShadingBase};
-            use crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque;
-            use crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaque;
+            use awsm_materials::MaterialAlphaMode;
 
             let Some(info) = self.dynamic_materials.shader_info_for(shader_id) else {
                 return Vec::new();
             };
-            let mut bucket_entries = first_party_bucket_entries();
-            bucket_entries.push(BucketEntry {
-                shader_id,
-                base: ShadingBase::Custom,
-                pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
-                name: "custom".to_string(),
-            });
+            // §12: a BLEND custom material's MAIN WGSL is wrapped in the
+            // TRANSPARENT contract (`TransparentShadingOutput`); Opaque/Mask route
+            // to the opaque contract (`OpaqueShadingOutput`). Validating against
+            // the wrong template falsely reported "no definition in scope for
+            // identifier: TransparentShadingOutput". Pick the template that matches
+            // the material's actual render pass (mirrors `launch.rs` build_opaque).
+            let is_blend = matches!(
+                self.dynamic_materials.get(shader_id).map(|r| r.alpha_mode),
+                Some(MaterialAlphaMode::Blend)
+            );
             // Representative config: validation only depends on the dynamic
             // struct/loader/fragment + declared includes, not the exact pool/AA
             // sizes (those change array lengths, never the WGSL's validity).
-            let key = ShaderCacheKeyMaterialOpaque {
-                texture_pool_arrays_len: 1,
-                texture_pool_samplers_len: 1,
-                msaa_sample_count: None,
-                mipmaps: false,
-                max_shadow_casters: 4,
-                shader_id,
-                base: ShadingBase::Custom,
-                owns_skybox: false,
-                pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
-                dispatch_hash: 0,
-                dynamic_shader: Some(info),
-                bucket_entries,
-            };
-            let template = match ShaderTemplateMaterialOpaque::try_from(&key) {
-                Ok(t) => t,
-                Err(e) => return vec![format!("shader template build failed: {e:?}")],
-            };
-            let src = match template.into_source() {
-                Ok(s) => s,
-                Err(e) => return vec![format!("shader render failed: {e:?}")],
+            let src = if is_blend {
+                use crate::render_passes::light_culling::buffers::DEFAULT_SLICE_COUNT;
+                use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
+                use crate::render_passes::material_transparent::shader::template::ShaderTemplateMaterialTransparent;
+                use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;
+                let key = ShaderCacheKeyMaterialTransparent {
+                    instancing_transforms: false,
+                    attributes: ShaderMaterialVertexAttributes {
+                        normals: true,
+                        tangents: true,
+                        color_sets: None,
+                        uv_sets: Some(1),
+                    },
+                    texture_pool_arrays_len: 1,
+                    texture_pool_samplers_len: 1,
+                    msaa_sample_count: None,
+                    mipmaps: false,
+                    base: ShadingBase::Custom,
+                    pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                    dispatch_hash: 0,
+                    dynamic_shader_id: Some(shader_id),
+                    dynamic_shader: Some(info),
+                    froxel_slice_count: DEFAULT_SLICE_COUNT,
+                };
+                let template = match ShaderTemplateMaterialTransparent::try_from(&key) {
+                    Ok(t) => t,
+                    Err(e) => return vec![format!("shader template build failed: {e:?}")],
+                };
+                match template.into_source() {
+                    Ok(s) => s,
+                    Err(e) => return vec![format!("shader render failed: {e:?}")],
+                }
+            } else {
+                use crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque;
+                use crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaque;
+                let mut bucket_entries = first_party_bucket_entries();
+                bucket_entries.push(BucketEntry {
+                    shader_id,
+                    base: ShadingBase::Custom,
+                    pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                    name: "custom".to_string(),
+                });
+                let key = ShaderCacheKeyMaterialOpaque {
+                    texture_pool_arrays_len: 1,
+                    texture_pool_samplers_len: 1,
+                    msaa_sample_count: None,
+                    mipmaps: false,
+                    max_shadow_casters: 4,
+                    shader_id,
+                    base: ShadingBase::Custom,
+                    owns_skybox: false,
+                    pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                    dispatch_hash: 0,
+                    dynamic_shader: Some(info),
+                    bucket_entries,
+                };
+                let template = match ShaderTemplateMaterialOpaque::try_from(&key) {
+                    Ok(t) => t,
+                    Err(e) => return vec![format!("shader template build failed: {e:?}")],
+                };
+                match template.into_source() {
+                    Ok(s) => s,
+                    Err(e) => return vec![format!("shader render failed: {e:?}")],
+                }
             };
             match naga::front::wgsl::parse_str(&src) {
                 Err(e) => vec![e.emit_to_string(&src)],

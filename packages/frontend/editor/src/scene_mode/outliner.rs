@@ -500,7 +500,7 @@ fn row_context_menu(node: Arc<Node>, x: f64, y: f64, open: Mutable<Option<(f64, 
 
     let rows = vec![
         MenuItem::new("Rename").icon("code").on_click(clone!(close => move || { select_node(id, false, false); close(); })).render(),
-        MenuItem::new("Duplicate").icon("copy").hint("\u{2318}D").on_click(clone!(close => move || { dispatch(EditorCommand::Duplicate { id }); close(); })).render(),
+        MenuItem::new("Duplicate").icon("copy").hint("\u{2318}D").on_click(clone!(close => move || { dispatch(EditorCommand::Duplicate { id, new_id: None }); close(); })).render(),
         MenuItem::new(if locked { "Unlock" } else { "Lock" }).icon(if locked { "unlock" } else { "lock" })
             .on_click(clone!(close => move || { dispatch(EditorCommand::SetLocked { id, locked: !locked }); close(); })).render(),
         MenuItem::new(if vis { "Hide" } else { "Show" }).icon(if vis { "eyeoff" } else { "eye" })

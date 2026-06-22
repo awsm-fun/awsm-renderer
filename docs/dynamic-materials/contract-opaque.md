@@ -234,6 +234,26 @@ for you — read fields directly: `let tint = input.material.tint;`.
 Every symbol declared in the renderer's `shared_wgsl/` directory is in
 scope for your fragment. The most useful:
 
+### Image-based lighting — `shared_wgsl/lighting/ibl.wgsl` (declare `ibl`)
+
+Declare the `ibl` shader-include (`set_material_includes [..., "ibl"]`), then:
+
+```wgsl
+// The full environment ambient + reflection — exactly what first-party PBR
+// gets. Add your punctual/emissive terms on top.
+let ambient = sample_ibl(albedo, input.world_normal, input.surface_to_camera, roughness, metallic);
+// Or the split pieces:
+let irradiance  = sample_ibl_diffuse(input.world_normal);              // diffuse env
+let prefiltered = sample_ibl_specular(reflect_dir, roughness);        // specular env
+```
+
+This is the fix for custom materials rendering **black** in an IBL-only scene
+(no punctual lights): instead of hand-faking a sky gradient, sample the same IBL
+the built-in PBR meshes do, so your material stays consistent with them. Pair
+with the `normals` + `view_dir` fragment-inputs for `input.world_normal` +
+`input.surface_to_camera`. (Punctual scene lights: declare `light_access` and
+loop them yourself — `get_lights_info()` / `light_sample(...)`.)
+
 ### `shared_wgsl/frame_globals.wgsl`
 
 ```wgsl

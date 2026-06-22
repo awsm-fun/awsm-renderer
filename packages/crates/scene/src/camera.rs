@@ -22,6 +22,7 @@ use super::tree::NodeId;
 /// preview cameras.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CameraProjection {
     /// Standard pin-hole projection. `fov_y_rad` is the **vertical**
     /// field-of-view in radians; the horizontal FOV is derived from
@@ -40,6 +41,7 @@ pub enum CameraProjection {
 /// geometry is visible while authoring.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CameraConfig {
     pub projection: CameraProjection,
     /// Near clip plane in meters. Anything closer than this is not
@@ -63,6 +65,7 @@ pub struct CameraConfig {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CameraBehavior {
     /// Camera transform is whatever the author / per-game module sets.
     /// Use for first-person cameras driven from gameplay code.
