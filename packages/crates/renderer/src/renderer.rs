@@ -810,9 +810,8 @@ impl AwsmRenderer {
 
     /// Aggregate Phase-2.1 upload-ring telemetry across every
     /// renderer subsystem with a `MappedUploader`. Returned as a
-    /// `(label, stats)` list so callers (e.g. the scene-editor's
-    /// `read_upload_ring_stats` wasm export) can render per-subsystem
-    /// + rolled-up totals.
+    /// `(label, stats)` list so a caller (e.g. a dev telemetry export)
+    /// can render per-subsystem + rolled-up totals.
     pub fn upload_ring_stats(
         &self,
     ) -> Vec<(

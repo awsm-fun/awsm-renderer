@@ -564,87 +564,90 @@ close zoom — that asymmetry was a major factor in earlier misdiagnoses.
 
 ---
 
-## Scene-editor: load a tuning scene + read timings non-interactively
+## Debugging the editor without the MCP server
 
-> **⚠️ Legacy / non-functional (pre-editor-unification).** The `load_scene_by_path` /
-> `read_render_pass_timings` dev exports below lived on the v1 scene-editor, which has
-> since been removed. They were **not** re-ported to `packages/frontend/editor`, AND the
-> `assets/world/*` tuning fixtures they loaded have been **deleted** (they were a stale
-> pre-refactor format — a `primitive` node kind that no longer exists, serialized as
-> JSON while the current loader expects a TOML `EditorProject`). So the recipes below
-> will not work as-is; they're kept only as a sketch for when a perf-measurement
-> harness + fresh fixtures are re-created. (The `?trace=` tier system itself is live in
-> `packages/frontend/web-shared/src/perf.rs` + `model-tests`.)
+The editor exposes dev `#[wasm_bindgen]` exports (in
+`packages/frontend/editor/src/main.rs`) that are the **same read/write seams the
+MCP transport sits on** — callable straight from the browser console as
+`window.wasmBindings.editor_*(...)`, no MCP server needed. This is how to drive +
+inspect the editor non-interactively (headless tests, automated capture, or just
+poking at it while debugging).
 
-The **scene-editor** loads projects through a native directory picker
-(File System Access) — there is **no `?project=` URL route**. But for
-automated measurement there is a dev-only `#[wasm_bindgen]` export that
-loads a scene from `assets/world/<name>/` over HTTP, **bypassing the
-picker entirely**:
+**Write — run any editor command.** Every `EditorCommand` variant is reachable by
+JSON through one seam:
 
 ```js
-// debug builds only (gated on cfg(debug_assertions))
-await window.wasmBindings.load_scene_by_path("tuning-50-materials")
+// dispatch any EditorCommand (async, spawned); returns "ok" or "decode error: …"
+window.wasmBindings.editor_dispatch_json('{"SelectNode":{"id":"…"}}')
 ```
 
-It fetches `assets/world/<name>/project.json` (Trunk copies
-`assets/world` into the dist, see scene-editor `index.html`), drops
-prior renderer caches, applies the snapshot, hydrates raster-texture
-assets over HTTP, and resolves once every node has materialised on the
-GPU. (Implemented in the v1 editor's `measurement.rs`, since removed.)
-
-> **Limitation — custom/dynamic materials don't load this way.** The
-> loader only hydrates raster textures, and the editor's live
-> materialization path (`renderer_bridge/node_sync.rs`) does not yet
-> consume a primitive's `custom_material` field at all. Scenes that
-> rely on registered custom-material folders need the interactive
-> import flow; tuning scenes use only inline (PBR/Toon/Unlit) materials.
-
-### Reading per-pass timings
-
-Render-pass timing spans route through `tracing-web`'s performance
-layer into the browser Performance API. Enable the sub-frame tier with
-`?trace=sub-frame`, then read aggregated stats via another dev-only
-export:
+**Loading a project** is just a command — this is the non-interactive equivalent
+of the File System Access directory picker (there is **no `?project=` URL route**):
 
 ```js
-// returns JSON: { "<span name>": {count, mean_ms, p50_ms, p95_ms, max_ms, total_ms}, ... }
-JSON.parse(window.wasmBindings.read_render_pass_timings(30))
+window.wasmBindings.editor_dispatch_json(
+  '{"LoadProjectFromUrl":{"base_url":"http://localhost:9085/my-scene"}}')
+// fetches <base_url>/project.toml (the current EditorProject format) + the asset
+// side-files it references.
 ```
 
-(`read_render_pass_timings(min_count)` groups
-`performance.getEntriesByType('measure')` by base span name and drops
-spans that fired fewer than `min_count` times — pass e.g. `30` to keep
-only spans that ran across a steady ~30+ frame window.) The span names
-match the per-pass spans in `render.rs`: `"Render"`, `"Geometry
-RenderPass"`, `"Material Classify RenderPass"`, `"Material Opaque
-RenderPass"`, `"Material Transparent RenderPass"`, etc.
+**Read — inspect state:**
 
-### Full non-interactive capture recipe (real Chrome)
-
-```
-1. Start the dev server (background), trace tier on by default in debug:
-     task editor:dev         # serves http://localhost:9085
-   Wait for "applying new distribution" in the log.
-2. list_connected_browsers → select_browser → tabs_context_mcp.
-3. navigate the (foreground, visible) tab to
-     http://localhost:9081/?trace=sub-frame
-   ⚠ The tab MUST be the foreground active tab of a non-minimized
-     window or rAF pauses and NO timing measures accumulate (see the
-     visibility gotcha at the top of this doc).
-4. await window.wasmBindings.load_scene_by_path("tuning-50-materials")
-5. Let it render ~3-5 s to accumulate frames (clear stale measures
-     first if comparing: performance.clearMeasures()).
-6. JSON.parse(window.wasmBindings.read_render_pass_timings(30))
-7. Record mean_ms for Render + Material Opaque + Material Classify +
-     Geometry. For before/after, repeat on each branch with the SAME
-     scene + camera + canvas size.
+```js
+window.wasmBindings.editor_snapshot_json()   // full scene snapshot (JSON)
+window.wasmBindings.editor_project_toml()    // live project serialized as project.toml
+window.wasmBindings.editor_query_mode()      // "scene" | "material" | "animation"
+await window.wasmBindings.editor_query_json('{…EditorQuery…}')  // structured query
 ```
 
-Timing is **CPU wall-clock around the span**, not GPU timestamp
-queries (there are none) — so it includes JS↔wasm + submit overhead and
-is noisy frame-to-frame. Use `mean_ms`/`p50_ms` over a multi-second
-window and keep the canvas size identical between captures.
+**Capture — PNGs via GPU readback:**
+
+```js
+await window.wasmBindings.editor_query_scene_png()       // scene viewport (active camera)
+window.wasmBindings.editor_query_material_png()          // material-mode preview sphere
+await window.wasmBindings.editor_query_texture_png("<uuid>")
+```
+
+**Animation:** `await window.wasmBindings.editor_tick_animation(dt_ms)` advances the
+renderer's animation clock + refreshes transforms — the exact per-frame call a game
+makes, so tick + `editor_query_scene_png` verifies player-path / skinned animation
+end-to-end with no editor gestures.
+
+### Per-pass timings
+
+Render-pass timing spans route through `tracing-web` into the browser Performance
+API. Enable the sub-frame tier with `?trace=sub-frame` (resolved in
+`packages/frontend/web-shared/src/perf.rs`), then read the measures directly —
+there is **no** dedicated timings-readback export (the v1 editor's
+`read_render_pass_timings` was removed):
+
+```js
+// group these by base span name yourself; names match render.rs spans:
+// "Render", "Geometry RenderPass", "Material Classify RenderPass",
+// "Material Opaque RenderPass", "Material Transparent RenderPass", …
+performance.getEntriesByType('measure')
+```
+
+### Non-interactive capture recipe (real Chrome)
+
+```
+1. task editor:dev    # serves http://localhost:9085; wait for "applying new distribution"
+2. Connect via the browser MCP; navigate the FOREGROUND, visible tab to
+     http://localhost:9085/?trace=sub-frame
+   ⚠ The tab MUST be the foreground tab of a non-minimized window or rAF pauses
+     and NO timing measures accumulate (see the visibility gotcha above).
+3. Load a scene:  window.wasmBindings.editor_dispatch_json(
+       '{"LoadProjectFromUrl":{"base_url":"http://localhost:9085/<scene>"}}')
+4. Let it render ~3-5 s (performance.clearMeasures() first if comparing branches).
+5. Read performance.getEntriesByType('measure'); average mean over the window.
+6. await window.wasmBindings.editor_query_scene_png() for a pixel-level before/after.
+   Repeat on each branch with the SAME scene + camera + canvas size.
+```
+
+Timing is **CPU wall-clock around the span**, not GPU timestamp queries (there are
+none) — so it includes JS↔wasm + submit overhead and is noisy frame-to-frame. Use
+the mean/median over a multi-second window and keep the canvas size identical
+between captures.
 
 ---
 

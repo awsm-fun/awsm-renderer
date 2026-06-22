@@ -220,11 +220,14 @@ field; when set, the editor's `materialize_sprite` builds a
 `test-assets/flipbook-test/` ships a canonical 4×4 numbered
 debug atlas (cells labeled 0..15 with distinct colors) + a
 three-quad scene exercising Loop, PingPong, and Loop+0.5 s offset.
-Load via the dev-only `load_external_test_scene("flipbook-test")`
-wasm export — sibling to `load_scene_by_path` but fetches off
-`MEDIA_BASE_URL_ADDITIONAL_ASSETS` (port 9083 in dev,
-cdn.awsm.fun/test-assets in prod) so test fixtures with binary
-assets live in the assets repo, not the editor's build tree.
+It lives in the assets repo, served off `MEDIA_BASE_URL_ADDITIONAL_ASSETS`
+(port 9083 in dev, cdn.awsm.fun/test-assets in prod) — test fixtures with
+binary assets live there, not in the editor's build tree. The v1
+`load_external_test_scene` wasm export that loaded it was removed; load it
+through the current editor seam instead —
+`editor_dispatch_json('{"LoadProjectFromUrl":{"base_url":"<test-assets>/flipbook-test"}}')`
+(see [DEBUGGING-PREVIEW.md](DEBUGGING-PREVIEW.md)) — assuming the fixture is in
+the current `project.toml` format.
 
 ---
 

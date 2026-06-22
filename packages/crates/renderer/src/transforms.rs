@@ -133,8 +133,8 @@ impl AwsmRenderer {
             self.sync_spatial_for_mesh(mesh_key);
         }
 
-        // Periodic BVH refresh. Span so `read_render_pass_timings`
-        // can attribute the rebuild cost when tuning the cadence
+        // Periodic BVH refresh. Span so the rebuild cost shows up in the
+        // browser Performance API (`?trace=sub-frame`) when tuning the cadence
         // defaults (`SceneSpatialConfig::rebuild_period_frames` /
         // `rebuild_dirty_threshold`).
         {

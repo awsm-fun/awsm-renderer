@@ -72,10 +72,9 @@ static STAGING_USAGE: LazyLock<BufferUsage> =
 /// Telemetry surfaced via
 /// [`crate::AwsmRenderer::upload_ring_stats`] — each renderer
 /// subsystem (Meshes, Materials, Transforms, …) exposes its
-/// `MappedUploader::stats()` through that method, and the editor's
-/// `read_upload_ring_stats()` wasm export serialises the collected
-/// map to JSON. `read_render_pass_timings()` is a separate API for
-/// `performance.measure` spans — these counters don't appear there.
+/// `MappedUploader::stats()` through that method. These are CPU-side
+/// counters: they do NOT appear in the browser Performance API spans that
+/// `?trace=sub-frame` emits — read them via `upload_ring_stats()` directly.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UploadStats {
     /// Peak number of *non-acquirable* slots seen since the last reset
