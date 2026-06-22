@@ -1,4 +1,129 @@
-# Custom vertex shaders — design & plan
+# docs/plans/todo.md — consolidated overnight work (SSOT)
+
+> **Provenance.** Consolidates `custom-vertex.md` (the headline feature),
+> `multithread-build-plan.md`, and `multithread-testing.md`. `mcp-improvements.md`
+> is **complete + merged to main** (summarized under "Already shipped"); its full
+> record lives in git history. `nanite.md` is intentionally SEPARATE — not in scope.
+>
+> This is the single source of truth for the autonomous overnight run. Work the
+> [Master tracker](#master-tracker) top to bottom.
+
+## ✅ Definition of done & execution rules
+
+1. **One item at a time.** Pick the next `TODO` row (set it `WIP`). Read that
+   item's full section. Implement the FULL scope — not a slice.
+2. **Verify before DONE:**
+   - Rust tests (unit/roundtrip where testable) + `task lint` clean (rustfmt +
+     clippy `-D warnings`, all features, tests).
+   - **Live verification** via the chrome-devtools MCP — a screenshot / measured
+     gate proving the actual behavior (renders, shadows match, demo gate passes).
+3. **Commit per completed+verified item** on this branch (`more-mcp`), co-author
+   trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+   Flip the tracker row to `DONE` + record the short hash. Two-commit-per-item is
+   fine (impl, then doc/tracker) — it avoids amend-hash drift.
+4. **Full scope or BLOCKED — never a silent slice.** If an item is genuinely too
+   large or can't be finished/verified in this run, set the row `BLOCKED` with a
+   one-line reason and move on. Do NOT mark a partial DONE. (This rule exists
+   because the previous round shipped slices and falsely claimed 100%.)
+5. **Do NOT claim "100%"** at the end unless every row is genuinely `DONE`.
+   Write an honest summary: what landed (hashes), what's BLOCKED and why.
+
+## ⚠️ Autonomy boundary (read this before starting T1/T2)
+
+The chrome-devtools MCP is **Chrome-desktop only**. Items that require a *real
+other browser or device* cannot be done autonomously:
+
+- **T1 (cross-browser: Safari/Firefox)** and **T2 (mobile: iOS Safari / Android
+  Chrome)** → mark `BLOCKED (human — needs real Safari/Firefox/iOS/Android; Chrome
+  MCP can't drive them)` immediately. Do not fake them. Everything else in this
+  doc is autonomously implementable + Chrome-verifiable.
+
+## Dev environment
+
+Two dev servers (each a background task you own; logs under `/tmp/`):
+
+- **`task mcp-dev`** → editor (trunk, `:9085`) + the awsm-scene MCP (`:9086`).
+  For **Part A (custom vertex)** + any editor/renderer/MCP work. Drive the editor
+  + `awsm-scene` MCP through chrome-devtools at
+  `http://localhost:9085/?mcp=http://127.0.0.1:9086&pair=<CODE>`.
+- **`task mt:dev`** → the multithreaded renderer demos (`:9090`, COOP/COEP).
+  For **Part B/C (multithread)**. Drive `http://localhost:9090/?demo=<name>` (e.g.
+  `remote`, `crowd`, `churn`, `motion`) through chrome-devtools.
+
+**Build/restart cycle** (recurs whenever you touch the server or a crate):
+- Free ports before relaunch (`lsof -ti tcp:PORT | xargs kill`): 9085/9086/9082/9083
+  for mcp-dev; 9090 for mt:dev.
+- Relaunch with `run_in_background: true` (NOT inline `&`). Wait for HTTP 200 +
+  the "server listening" log line + a trunk "success".
+- After a `task mcp-dev` server rebuild (changes under `packages/mcp` /
+  `editor-protocol` / `scene` / renderer crates), reload the editor in
+  chrome-devtools; **the MCP pair code rotates on restart** — the next tool call
+  errors with the new code; navigate `?pair=<NEW CODE>` to re-pair.
+- Editor-only changes hot-reload via trunk; a renderer/meshgen-crate-only change
+  needs an editor-file touch (append+remove a comment in `node_sync.rs`) to
+  trigger a trunk dep rebuild, then reload.
+- Harness CACHES the MCP tool/query schema across restarts → exercise NEW
+  commands via `dispatch_command {command:{cmd:...}}` and NEW queries/fields via
+  `run_query {query:{query:...}}` (the harness forwards extra query fields).
+
+**Native tests:** editor / editor-protocol via `cargo test -p awsm-editor` /
+`-p awsm-editor-protocol`; renderer via `cargo test -p awsm-renderer` (validation
+tests need `--features dynamic-material-validation`); renderer-core via
+`cargo test -p awsm-renderer-core`; meshgen via
+`cargo test -p awsm-meshgen --features authoring --lib`.
+
+**Gotchas worth keeping in mind** (from prior rounds): reproduce before assuming a
+capability is missing (several "missing" things were already-implemented-but-
+undiscoverable); a long base64 in a tool param can get mangled — keep payloads
+small; for custom materials read `get_material_contract` first +
+`get_material_diagnostics` after. The accumulated detail lives in memory
+`mcp-improvements-loop-mechanics`.
+
+## Already shipped (merged to main — context, not work)
+
+The `mcp-improvements` effort (PR #137 + follow-ups) is **done**: raw texture
+upload, UV-transform tool+render, keyframe channels, `patch_kind` +
+`get_kind_schema` (full NodeKind JSON Schema), magenta unassigned sentinel,
+duplicate-id + subtree queries, facing hints, fused `paint_where`/`transform_where`
++ a reusable selection handle + read pagination, custom transparent/alpha,
+particle sprites + true soft-gradient blend, the `ibl` include, vertex-color
+footgun docs, `displace`-`noise()` + **displace-from-texture**, toon banding guard,
+multi-line-WGSL fix, and the agent **equirect panorama environment** (skybox + a
+proper SH cosine-convolved diffuse IBL + disk persistence). The ONE deliberately
+deferred piece — the programmable GPU vertex stage — is **Part A** below.
+
+## Master tracker
+
+| id | item | status | commit |
+|----|------|--------|--------|
+| CV1 | Custom vertex: ABI + `apply_vertex` hook + geometry & shadow per-material pipelines + registration/cache-key + naga validation (Phase 1) | TODO | |
+| CV2 | Custom vertex: transparent + geometry-masked + shadow-masked variants (Phase 2) | TODO | |
+| CV3 | Custom vertex: editor 3rd WGSL window + toggle + `set_material_vertex_wgsl` MCP + contract doc + starter body (Phase 3) | TODO | |
+| CV4 | Custom vertex: polish — normal-from-height helper, vertex texture-fetch example, skinned-mesh tests (Phase 4, optional) | TODO | |
+| B2 | Multithread: screenshot capture path (`renderer.capture_frame`) | TODO | |
+| B1 | Multithread: device-loss + worker-crash recovery | TODO | |
+| T4 | Multithread: resilience VERIFICATION (after B1) | TODO | |
+| T3 | Multithread: perf at scale + soak (Chrome) | TODO | |
+| T5 | Multithread: allocation / GC validation (Chrome) | TODO | |
+| B3 | Multithread: arena growth policy (only if T3 shows unbounded growth) | TODO | |
+| B4 | Multithread: bundled scene fixture for `?demo=scene` (optional) | TODO | |
+| T1 | Multithread: cross-browser bring-up (Safari/Firefox) | BLOCKED | human — Chrome MCP can't drive other browsers |
+| T2 | Multithread: mobile (iOS Safari / Android Chrome) | BLOCKED | human — needs real devices |
+
+**Suggested order:** CV1 → CV2 → CV3 → B2 → B1 → T4 → T3 → T5 → B3 (conditional)
+→ B4 (optional) → CV4 (polish). T1/T2 stay BLOCKED (human). Custom vertex is the
+headline feature and fully Chrome-verifiable (render a displaced mesh; confirm its
+shadow + silhouette match). The multithread items are smaller + self-contained.
+
+> **Note on scale:** CV1 (per-material geometry/shadow pipeline split) and B1
+> (recovery) are the two genuinely large items — attempt them phase by phase; if a
+> phase can't complete + verify in this run, BLOCK it with the specific reason
+> rather than half-shipping.
+
+---
+
+# Part A — Custom vertex shaders (the headline feature)
+
 
 > **Goal.** A custom (dynamic-WGSL) material can control its **vertices**, the same
 > way it already controls **masking and color** in the fragment stage. The agent
@@ -317,3 +442,133 @@ pipeline selection + binding the material groups for custom-vertex draws. Scope
 this first (Phase 1) and gate the success criterion on **shadows + silhouette
 matching the displaced surface** — that's the proof the five passes stayed in
 sync.
+
+---
+
+# Part B — Multithreaded renderer: build items
+
+
+Code work deferred from the Phase 2 hardening. These are *not* testing (that
+lives in `docs/plans/multithread-testing.md`) — they are renderer/protocol
+features still to be written. Architecture + the landed work: `PLAYER-GUIDE`
+§9.
+
+> Not here: the **game-API parity** work (load an exported scene in the worker +
+> runtime ops) — that is being built directly, not deferred.
+
+## B1 — Device-loss + worker-crash recovery (resilience)
+Production sessions must survive a lost GPU device and a dead worker. The arena
++ the renderer's CPU mirrors are already the source of truth, so recovery is
+largely "rebuild the GPU side from data we still hold."
+
+- **GPU device loss.** Subscribe to `GPUDevice.lost`. On loss: request a fresh
+  adapter/device, recreate the surface config + all GPU buffers/textures/
+  pipelines, and re-upload from the existing CPU mirrors (transforms buffer,
+  instance arenas, materials, mesh geometry). The scene graph / arena state in
+  shared memory is untouched — only `web_sys` GPU handles are rebuilt.
+  - Open question: how much of the renderer's GPU-handle graph can be rebuilt
+    behind a single `renderer.rebuild_gpu()` vs. needs a full re-`commit_load`.
+- **Worker crash.** Main thread watches `worker.onerror` / a heartbeat. On death:
+  respawn the worker from the same bootstrap, re-transfer a fresh
+  `OffscreenCanvas` (the old one is gone with the worker), re-post the shared
+  module+memory, and re-hand every live arena `SlotBinding` (the sim worker's
+  bindings are addresses into shared memory that *survived* — but the render
+  worker that owned topology did not, so topology must be re-derived; design
+  whether the sim worker or a persisted manifest re-seeds it).
+  - Open question: can the render worker's topology (slot→key map) live in shared
+    memory so a respawn recovers it, rather than reloading the scene?
+- **Acceptance:** T4 in the testing doc (force device loss / kill the worker →
+  renderer continues).
+
+## B2 — Screenshot capture path (the platform-bounded gap)
+`OffscreenCanvas.convertToBlob` is rejected by Chrome on a WebGPU canvas
+(`NotReadableError` — swapchain not host-readable post-present; measured in H7).
+A robust capture needs renderer support:
+
+- Render (or blit) the final frame into an explicit color target created with
+  `COPY_SRC`, then `copyTextureToBuffer` → `mapAsync` → read the bytes →
+  (optionally PNG-encode) → return over the protocol's `Screenshot` →
+  `ScreenshotBytes` (+ Transferable buffer, already wired).
+- Expose this as a renderer API (`renderer.capture_frame() -> Vec<u8>`) so both
+  the single-threaded model-viewer and the worker path share it.
+- Watch row-stride alignment (`bytesPerRow` 256-byte multiple) on readback.
+- **Acceptance:** `?demo=remote` `Screenshot` returns non-empty bytes whose
+  decoded image matches the on-screen frame.
+
+## B4 — (optional) A real bundled scene fixture for `?demo=scene`
+The stale `assets/world/*` fixtures were deleted (pre-refactor format). If you
+want `?demo=scene` to load a real scene **file** (closer to the shipped path)
+rather than building a `Scene` in code, export one from the current editor as a
+TOML `EditorProject`, bundle it same-origin (Trunk `copy-dir`), and have the
+worker fetch + `project_to_scene` + `load_scene_for_player`. Low priority — the
+in-code scene already proves the player loader runs in the worker.
+
+## B3 — (conditional) Arena growth policy
+Only if T3's churn soak shows shared-memory growth is *unbounded*: add slab
+reuse / compaction so long spawn/despawn sessions keep memory flat. Default
+assumption is that free-slot reuse already bounds it — confirm in T3 first.
+
+---
+
+# Part C — Multithreaded renderer: testing
+
+
+The Phase 1 + Phase 2 architecture is landed and verified (see
+`docs/PLAYER-GUIDE.md` §9). What remains before a public ship is **validation**,
+not architecture. This doc is *testing only* — code work deferred from the
+hardening lives in `docs/plans/multithread-build-plan.md`, not here.
+
+Everything below was verified **in Chrome (desktop) only**; that is the single
+biggest source of unknowns.
+
+## T1 — Cross-browser bring-up (highest priority)
+Run every `?demo=` (esp. `remote`, `skin`, `lights`, `crowd`, `churn`) on:
+- **Safari** (macOS + iOS): WebGPU is newest here; verify `SharedArrayBuffer`
+  under COOP/COEP, the worker bootstrap (`init({module, memory})`), and
+  `OffscreenCanvas` transfer all work.
+- **Firefox**: same matrix; confirm `+atomics` shared memory import + COEP.
+- **Per-API checks:** `crossOriginIsolated`, shared `WebAssembly.Memory`,
+  `queue.writeBuffer` from a SAB-backed view (works in Chrome — re-confirm),
+  `OffscreenCanvas.convertToBlob` (fails in Chrome on a WebGPU canvas — check if
+  it differs; informs the build-plan's screenshot path).
+- **Exit:** each demo renders + its gate passes, or the failure is logged with
+  the engine-specific cause.
+
+## T2 — Mobile (one real device each: iOS Safari, Android Chrome)
+- Memory headroom vs the `--max-memory` ceiling (currently 2 GiB); confirm a
+  large scene + churn doesn't OOM the shared memory.
+- DPR / backing-store sizing (the resize path) on a high-DPR phone.
+- Touch input forwarding (`?demo=input` pointer events).
+- Thermal / sustained frame-time on mobile GPUs.
+
+## T3 — Performance at scale + soak (the one that catches slow leaks)
+- **Frame-time budgets** under `?stress=N` for `motion` / `crowd` at rising N;
+  record the mover-count where the render worker misses 16.6 ms.
+- **Multi-minute soak with a heap trace** (`?trace=sub-frame`,
+  `take_heapsnapshot`): confirm **no per-frame heap growth** in the render hot
+  path (the pack/upload path is pooled by construction — verify under load).
+- **Shared-memory growth is BOUNDED under sustained spawn/despawn churn**
+  (`?demo=churn` over many minutes). Shared `WebAssembly.Memory` grows but never
+  shrinks; confirm the arena's free-slot reuse keeps growth flat rather than
+  ratcheting. **If growth is unbounded, that flips to a build item** (arena
+  compaction / slab reuse policy) — note it back in the build-plan.
+- **Exit:** documented N-vs-frametime curve; flat memory over a 10-min churn soak.
+
+## T4 — Resilience **verification** (after the build-plan lands the code)
+The recovery *code* is in `multithread-build-plan.md`; this is its test side:
+- Force `GPUDevice` loss (devtools / `device.destroy()`) mid-session → renderer
+  rebuilds and keeps rendering.
+- Kill the render worker mid-session → main thread respawns it, re-hands the
+  `OffscreenCanvas`, re-establishes arena bindings, scene is intact.
+- Asset-fetch failure during a scene load → clean `Error` event, no hang.
+
+## T5 — Allocation / GC validation (David's standard)
+- Under `?stress` + `?trace=sub-frame`, confirm the render hot path does **zero**
+  per-frame heap allocation (pooled scratch in `transforms::descend_pack_arena`;
+  pre-allocated binding/bind tables in the physics workers). Catch any
+  regression that reintroduces a per-frame `Vec`/`Box`.
+
+## How to run
+- Desktop Chrome gates: chrome-devtools MCP (as used throughout Phase 2).
+- Cross-browser / mobile: real browsers + devices (MCP is Chrome-only).
+- Server: `task mt:dev` (port 9090, COOP/COEP).
