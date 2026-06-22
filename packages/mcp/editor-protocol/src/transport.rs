@@ -206,6 +206,20 @@ mod wire_roundtrip_tests {
                     linear: true,
                 },
             ),
+            (
+                "set_node_texture_transform",
+                EditorCommand::SetNodeTextureTransform {
+                    node: NodeId::new(),
+                    slot: crate::BuiltinTextureSlot::BaseColor,
+                    offset: Some([0.25, 0.0]),
+                    scale: Some([2.0, 2.0]),
+                    rotation: Some(0.5),
+                    flow: Some([0.4, 0.0]),
+                    wrap_u: Some(awsm_scene::primitive::TextureWrap::MirroredRepeat),
+                    wrap_v: None,
+                    uv_set: Some(1),
+                },
+            ),
             // Track flags + transport (newly typed MCP tools — must round-trip).
             (
                 "delete_track",

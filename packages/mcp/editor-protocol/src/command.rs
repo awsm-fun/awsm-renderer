@@ -553,6 +553,36 @@ pub enum EditorCommand {
         texture: Option<AssetId>,
     },
 
+    /// Patch the UV transform / flow / sampler-wrap of a mesh node's
+    /// **built-in/inline** material texture slot (§1) — the typed companion to
+    /// `SetBuiltinTexture`. **Patch semantics**: only the provided fields change.
+    /// `offset`/`scale`/`rotation` compose into the slot's `KHR_texture_transform`
+    /// (offset is also the base the `flow` scroll accumulates onto); `flow` is a
+    /// `[u,v]` UV-units/sec auto-scroll (set `[0,0]` to stop); `wrap_u`/`wrap_v`
+    /// set the sampler address mode; `uv_set` picks the TEXCOORD set. The slot
+    /// **must already have a texture bound** (`SetBuiltinTexture` first) — applying
+    /// to an empty slot is **rejected loudly**, never a silent no-op. Setting any
+    /// field re-materializes the node so the change actually renders. Inverse:
+    /// restore the node's prior kind.
+    SetNodeTextureTransform {
+        node: NodeId,
+        slot: BuiltinTextureSlot,
+        #[serde(default)]
+        offset: Option<[f32; 2]>,
+        #[serde(default)]
+        scale: Option<[f32; 2]>,
+        #[serde(default)]
+        rotation: Option<f32>,
+        #[serde(default)]
+        flow: Option<[f32; 2]>,
+        #[serde(default)]
+        wrap_u: Option<awsm_scene::primitive::TextureWrap>,
+        #[serde(default)]
+        wrap_v: Option<awsm_scene::primitive::TextureWrap>,
+        #[serde(default)]
+        uv_set: Option<u32>,
+    },
+
     // ─────────────────── Custom (dynamic-WGSL) material authoring ─────────────
     // The Studio surface that used to mutate the reactive `CustomMaterial`
     // `Mutable`s directly now routes through these commands (the "all via
@@ -1018,6 +1048,7 @@ impl EditorCommand {
             EditorCommand::SetVertexOverrides { .. } => "Set vertex overrides",
             EditorCommand::BakeAll {} => "Bake all meshes",
             EditorCommand::SetBuiltinTexture { .. } => "Bind texture",
+            EditorCommand::SetNodeTextureTransform { .. } => "Set texture transform",
             EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
             EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",
             EditorCommand::SetCustomMaterialDebugColor { .. } => "Set base color",

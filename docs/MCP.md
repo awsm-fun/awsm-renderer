@@ -202,6 +202,14 @@ every command/query, and each tool self-describes over the MCP schema.
   — both return the new id; bind with `set_material_texture`, or
   `set_node_texture { node, slot, texture? }` for a mesh node's built-in (inline
   PBR) slot (base_color | metallic_roughness | normal | occlusion | emissive).
+- `set_node_texture_transform { node, slot, offset?, scale?, rotation?, flow?,
+  wrap_u?, wrap_v?, uv_set? }` — patch the UV transform / flow / sampler-wrap of a
+  built-in slot that already has a texture bound (patch-style: only the fields you
+  pass change). `scale>1` tiles; `flow=[u,v]` auto-scrolls the texture in
+  UV-units/sec (conveyors/water/lava; `[0,0]` stops it); `wrap_*` =
+  repeat|clamp_to_edge|mirrored_repeat. Applying to an empty slot is rejected, not
+  silently ignored. For a directional/keyframed scroll, use a `texture_transform`
+  animation track instead.
 - `create_texture { data, width?, height?, format?, linear? }` — the generic
   "author **any** texture" primitive: the agent ships the pixels itself instead
   of picking a procedural preset. Two modes: **raw pixels** — `format="rgba8"` +

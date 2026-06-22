@@ -525,6 +525,36 @@ pub struct BuiltinTextureParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NodeTextureTransformParams {
+    /// Mesh node UUID (the slot must already have a texture bound).
+    pub node: String,
+    /// Which built-in PBR slot to transform.
+    pub slot: awsm_editor_protocol::BuiltinTextureSlot,
+    /// UV offset `[u, v]` (the base the `flow` scroll accumulates onto).
+    #[serde(default)]
+    pub offset: Option<[f32; 2]>,
+    /// UV scale `[u, v]` (>1 tiles the texture; default 1).
+    #[serde(default)]
+    pub scale: Option<[f32; 2]>,
+    /// UV rotation in radians.
+    #[serde(default)]
+    pub rotation: Option<f32>,
+    /// UV **flow** `[u, v]` auto-scroll velocity in UV-units/sec (set `[0,0]` to
+    /// stop). Composes over `offset`; integrated from real time each frame.
+    #[serde(default)]
+    pub flow: Option<[f32; 2]>,
+    /// Sampler wrap on U: `repeat` | `clamp_to_edge` | `mirrored_repeat`.
+    #[serde(default)]
+    pub wrap_u: Option<String>,
+    /// Sampler wrap on V: `repeat` | `clamp_to_edge` | `mirrored_repeat`.
+    #[serde(default)]
+    pub wrap_v: Option<String>,
+    /// Which TEXCOORD set this slot samples (glTF `texCoord` index).
+    #[serde(default)]
+    pub uv_set: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProceduralArg {
     Checker,
@@ -2377,6 +2407,27 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(
+        description = "Set the UV transform / flow / wrap of a mesh node's BUILT-IN (inline PBR) texture slot (base_color | metallic_roughness | normal | occlusion | emissive). Patch-style: only the fields you pass change. offset/scale/rotation set the KHR_texture_transform (scale>1 tiles); flow=[u,v] auto-scrolls the texture (UV-units/sec — conveyors/water/lava — set [0,0] to stop); wrap_u/wrap_v = repeat|clamp_to_edge|mirrored_repeat; uv_set picks the TEXCOORD set. The slot must already have a texture bound (set_node_texture first) — an empty slot is rejected, not silently ignored. Renders immediately. For a directional/keyframed scroll use a texture_transform animation track instead."
+    )]
+    async fn set_node_texture_transform(
+        &self,
+        Parameters(p): Parameters<NodeTextureTransformParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetNodeTextureTransform {
+            node: parse_node(&p.node)?,
+            slot: p.slot,
+            offset: p.offset,
+            scale: p.scale,
+            rotation: p.rotation,
+            flow: p.flow,
+            wrap_u: p.wrap_u.as_deref().map(parse_wrap).transpose()?,
+            wrap_v: p.wrap_v.as_deref().map(parse_wrap).transpose()?,
+            uv_set: p.uv_set,
+        })
+        .await
+    }
+
     // ── lighting / environment ───────────────────────────────────────────────
 
     #[tool(description = "Set a light node's color (linear RGB).")]
@@ -3483,6 +3534,19 @@ fn parse_node(s: &str) -> Result<NodeId, McpError> {
 
 fn parse_node_opt(s: &Option<String>) -> Result<Option<NodeId>, McpError> {
     s.as_deref().map(parse_node).transpose()
+}
+
+fn parse_wrap(s: &str) -> Result<awsm_editor_protocol::TextureWrap, McpError> {
+    use awsm_editor_protocol::TextureWrap as W;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "repeat" => Ok(W::Repeat),
+        "clamp" | "clamp_to_edge" | "clamptoedge" => Ok(W::ClampToEdge),
+        "mirror" | "mirrored_repeat" | "mirroredrepeat" => Ok(W::MirroredRepeat),
+        other => Err(McpError::invalid_params(
+            format!("invalid wrap {other:?} (use repeat | clamp_to_edge | mirrored_repeat)"),
+            None,
+        )),
+    }
 }
 
 fn parse_nodes(ids: &[String]) -> Result<Vec<NodeId>, McpError> {

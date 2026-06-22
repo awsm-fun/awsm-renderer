@@ -1963,6 +1963,36 @@ impl EditorController {
                 }
                 None => Ok(None),
             },
+            EditorCommand::SetNodeTextureTransform {
+                node,
+                slot,
+                offset,
+                scale,
+                rotation,
+                flow,
+                wrap_u,
+                wrap_v,
+                uv_set,
+            } => match mutate::find_by_id(&self.scene, node) {
+                Some(n) => {
+                    let prev = n.kind.get_cloned();
+                    let mut next = prev.clone();
+                    // Reject loudly (§1): no silent no-op when the slot has no
+                    // texture to transform. `kind.set` re-materializes the node so
+                    // the new transform/flow actually renders.
+                    patch_builtin_texture_transform(
+                        &mut next, slot, offset, scale, rotation, flow, wrap_u, wrap_v, uv_set,
+                    )
+                    .map_err(crate::error::EditorError::msg)?;
+                    n.kind.set(next);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetKind {
+                        id: node,
+                        kind: Box::new(prev),
+                    }))
+                }
+                None => Ok(None),
+            },
             EditorCommand::SetLightParam { node, param, value } => {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {
@@ -5733,6 +5763,76 @@ fn patch_builtin_texture(
         S::Emissive => inline.emissive_texture = tref,
     }
     true
+}
+
+/// Patch the UV transform / flow / sampler-wrap of a node's **built-in/inline**
+/// `MaterialDef` texture slot (§1). Patch semantics — only provided fields
+/// change. Returns `Err` (caller surfaces it as an MCP error) when there's no
+/// inline material or the slot has no texture bound, so the op is never a silent
+/// no-op (the original §1 trap).
+#[allow(clippy::too_many_arguments)]
+fn patch_builtin_texture_transform(
+    kind: &mut NodeKind,
+    slot: awsm_editor_protocol::BuiltinTextureSlot,
+    offset: Option<[f32; 2]>,
+    scale: Option<[f32; 2]>,
+    rotation: Option<f32>,
+    flow: Option<[f32; 2]>,
+    wrap_u: Option<awsm_editor_protocol::TextureWrap>,
+    wrap_v: Option<awsm_editor_protocol::TextureWrap>,
+    uv_set: Option<u32>,
+) -> Result<(), String> {
+    use awsm_editor_protocol::BuiltinTextureSlot as S;
+    let Some(inst) = node_material_mut(kind) else {
+        return Err(
+            "node has no built-in material — assign one and bind a texture first".to_string(),
+        );
+    };
+    let inline = &mut inst.inline;
+    let tref = match slot {
+        S::BaseColor => &mut inline.base_color_texture,
+        S::MetallicRoughness => &mut inline.metallic_roughness_texture,
+        S::Normal => &mut inline.normal_texture,
+        S::Occlusion => &mut inline.occlusion_texture,
+        S::Emissive => &mut inline.emissive_texture,
+    };
+    let Some(tref) = tref.as_mut() else {
+        return Err(format!(
+            "texture slot `{slot:?}` has no texture bound — bind one with set_node_texture first"
+        ));
+    };
+    // Affine transform: touch it only when an affine field is supplied; seed an
+    // identity transform first so a partial patch (e.g. offset only) keeps scale 1.
+    if offset.is_some() || scale.is_some() || rotation.is_some() {
+        let t = tref
+            .transform
+            .get_or_insert_with(awsm_editor_protocol::TextureTransform::default);
+        if let Some(o) = offset {
+            t.offset = o;
+        }
+        if let Some(s) = scale {
+            t.scale = s;
+        }
+        if let Some(r) = rotation {
+            t.rotation = r;
+        }
+    }
+    if let Some(f) = flow {
+        tref.flow = Some(f);
+    }
+    if wrap_u.is_some() || wrap_v.is_some() {
+        let s = tref.sampler.get_or_insert_with(Default::default);
+        if let Some(w) = wrap_u {
+            s.wrap_u = w;
+        }
+        if let Some(w) = wrap_v {
+            s.wrap_v = w;
+        }
+    }
+    if let Some(uv) = uv_set {
+        tref.uv_index = uv;
+    }
+    Ok(())
 }
 
 /// Bind (or clear) a texture override on a node's assigned custom material.

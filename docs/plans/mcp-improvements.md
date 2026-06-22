@@ -171,6 +171,25 @@ visual change and no feedback — the worst failure mode (looks like success).
 3. If `Flow` is integrated from real `delta_time`, make `set_frame_time` pin it
    too so temporal captures are deterministic (today it doesn't — see §7).
 
+> **Status (2026-06-22) — code landed, visual confirm gated by §11.** Implemented
+> the typed `set_node_texture_transform { node, slot, offset?, scale?, rotation?,
+> flow?, wrap_u?, wrap_v?, uv_set? }` tool (patch-style) + `EditorCommand::
+> SetNodeTextureTransform`. The render path is already correct: the editor's
+> `resolve_texture` (bridge/material.rs) builds the GPU `TextureTransform` from
+> `transform` AND wires `flow` via `set_texture_flow`, and the kind-observer
+> (node_sync.rs) re-materializes the node on the edit — so a transform set via the
+> tool (or `set_kind`) *does* re-pack the material. The original "silent no-op via
+> `set_kind`" predates that wiring (likely the multithreading merge added it).
+> Empty-slot edits are now **rejected loudly** (not stored-and-ignored).
+> **Blocker for the pixel screenshot:** §11 — a procedural/raster texture bound to
+> a *builtin* material renders **flat** (the texture itself doesn't sample), so a
+> UV transform on it can't be seen until §11 lands. §1's visual confirm + the
+> reject-loudly screenshot are bundled with §11's fix. Also: the **harness MCP
+> client caches its tool list across a server restart** — the new typed tool is
+> server-registered (confirmed via `tools/list`) but won't be callable through the
+> harness until a `/mcp` reconnect; its command is exercised via `dispatch_command`
+> meanwhile.
+
 ---
 
 ## 2. 🔴 Texture offset/flow is not a keyframe-able animation target → a directional tread is impossible with the builtin material
@@ -627,8 +646,8 @@ or a naga quirk; either way an author hits it fast.
 
 | # | Item | Status | Commit |
 |---|------|--------|--------|
-| ★ | Raw texture-data upload (`create_texture` / `data:` URI) | DONE | _pending_ |
-| 1 | Texture UV transform — typed tool + render-path apply | TODO | |
+| ★ | Raw texture-data upload (`create_texture` / `data:` URI) | DONE | `ece042d3` |
+| 1 | Texture UV transform — typed tool + render-path apply | WIP | |
 | 2 | Texture offset/flow keyframe channel | TODO | |
 | 3 | Machine-readable command schema + patch-style `set_kind` | TODO | |
 | 4 | Typed/patch particle emitter config | TODO | |
