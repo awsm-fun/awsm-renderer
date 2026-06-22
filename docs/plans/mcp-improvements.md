@@ -799,6 +799,30 @@ can bake a heightmap/normalmap itself and feed it as a displacement source.
 (Aside worth documenting: vertex displacement must be **geometry** — custom
 materials are fragment-only, so a heightmap can't live in a material shader.)
 
+> ✅ **DONE (2026-06-22) — added the one missing generic PRIMITIVE, not a menu.**
+> The `displace` `expr` evaluator (`meshgen/src/expr.rs`) already existed and was
+> wired (`modifiers.rs`) — programmable arithmetic displacement along the normal
+> over `x,y,z,nx,ny,nz,u,v,i,pi,tau`. The only real gap was **`noise()`** (the doc
+> itself: "no `noise()` → hand-rolled summed sines"). Extended the evaluator with
+> multi-arg calls + `noise(x,y)` / `noise(x,y,z)` (deterministic hash-lattice +
+> smoothstep value noise in `[-1,1]`, no RNG → stable native+wasm) plus
+> `min max pow mod atan2 step clamp fract exp log`. This is the generic primitive
+> (NOT a preset menu, NOT "add one fn at a time"): the agent composes **fbm**
+> (sum octaves), **ridged** (`abs(noise(...))`), **domain-warp**
+> (`noise(x+noise(...), z)`), erosion-ish, etc. ITSELF from `noise()` + arithmetic.
+> **Verified**: 5 native expr unit tests (multi-arg, arity rejection, noise
+> determinism/bounds/composition); live — an 80×80 plane with
+> `noise(x*1.5,z*1.5)*0.6 + noise(x*4,z*4)*0.2 + noise(x*9,z*9)*0.08` displaces
+> into a bumpy terrain (`bbox.y` `[-0.88,0.72]`, chrome-devtools screenshot). Docs
+> (`MESH_TOOLS.md`) updated with the vocabulary + fbm/ridged/warp recipes.
+>
+> **Deferred (noted):** a full GPU **WGSL vertex-displacement stage** (the doc's
+> stated ideal — loops, texture sampling, the material-style hook) remains a large
+> renderer follow-on; and a **displace-from-texture** source (sample an agent-baked
+> heightmap via ★ `create_texture`). The CPU expr stage + `noise()` already cover
+> real procedural terrain generically (the agent writes the math), which is the
+> documented pain; the GPU stage is a power/perf upgrade, not a capability gate.
+
 ## What worked well this session (keep / lean on)
 
 - **Modifier-stack meshing is genuinely good.** `lathe` (domed tanks, bell
@@ -919,7 +943,7 @@ or a naga quirk; either way an author hits it fast.
 | 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | DONE | `a7b5adab` |
 | 13 | `set_builtin_alpha_mode` + base_color rgba | DONE | `edbbdd01` |
 | 14 | Particle realism (sprite upload, alpha sampled→discs, doc `forces`; soft-gradient blend deferred-noted) | DONE | `327b8159` |
-| 15 | Vertex-color default footgun — doc + clear-to-0 option | TODO | |
+| 15 | Vertex-color default footgun — doc + clear-to-0 option | DONE | `3c984ce3` |
 | 16 | Programmable displacement WGSL stage | TODO | |
 | 17 | `ibl` include + light-list for custom materials | TODO | |
 | 18 | Env-from-agent-data (raw cubemap bytes / skybox WGSL) | TODO | |
