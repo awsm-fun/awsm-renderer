@@ -50,22 +50,31 @@ fn stashed_ktx(id: AssetId) -> Option<Vec<u8>> {
 type EquirectImage = (Vec<u8>, u32, u32);
 
 thread_local! {
-    /// §18 decoded equirect panoramas keyed by the `AssetId` the
-    /// `SetEnvironmentEquirect` command minted. `env_sync` projects them to a
-    /// cubemap when a `SkyboxConfig`/`IblConfig::Equirect` applies. Session-scoped
-    /// like [`KTX_BYTES`] — persisting the panorama to the project dir is the
-    /// follow-on.
+    /// §18 DECODE MEMO for equirect panoramas, keyed by `AssetId`. The encoded
+    /// PNG/JPEG bytes live in the [`texture_cache`](crate::engine::bridge::texture_cache)
+    /// (so they persist via `persistence::texture_files` + restore on reload, like
+    /// any imported texture); this memo just avoids re-decoding the same panorama
+    /// for the skybox + IBL applies.
     static EQUIRECT_RGBA: RefCell<HashMap<AssetId, EquirectImage>> =
         RefCell::new(HashMap::new());
 }
 
-/// Stash a decoded equirect panorama so `env_sync` can project it (§18).
-pub fn stash_equirect(id: AssetId, rgba: Vec<u8>, width: u32, height: u32) {
-    EQUIRECT_RGBA.with(|m| m.borrow_mut().insert(id, (rgba, width, height)));
-}
-
-fn stashed_equirect(id: AssetId) -> Option<EquirectImage> {
-    EQUIRECT_RGBA.with(|m| m.borrow().get(&id).cloned())
+/// The decoded RGBA panorama for `id`: from the memo, else decoded from the
+/// persisted encoded bytes in `texture_cache` (and memoized). Errors loudly if
+/// the bytes aren't available (never set, or a reload that dropped them).
+async fn equirect_rgba(id: AssetId) -> anyhow::Result<EquirectImage> {
+    if let Some(v) = EQUIRECT_RGBA.with(|m| m.borrow().get(&id).cloned()) {
+        return Ok(v);
+    }
+    let (bytes, mime) = crate::engine::bridge::texture_cache::get(id).ok_or_else(|| {
+        anyhow::anyhow!("equirect panorama {id} bytes aren't available (re-set the environment)")
+    })?;
+    let (rgba, w, h) =
+        crate::engine::bridge::material::decode_rgba_from_bytes(&bytes, mime.as_str())
+            .await
+            .map_err(|e| anyhow::anyhow!("decode equirect {id}: {e}"))?;
+    EQUIRECT_RGBA.with(|m| m.borrow_mut().insert(id, (rgba.clone(), w, h)));
+    Ok((rgba, w, h))
 }
 
 /// Apply the current `scene.environment` (skybox + IBL) ONCE, awaited — call at
@@ -147,14 +156,9 @@ async fn apply_skybox(cfg: &SkyboxConfig) -> anyhow::Result<()> {
                 .await
                 .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))?
         }
-        // §18: agent panorama — project the stashed equirect to a skybox cubemap.
+        // §18: agent panorama — project the (persisted) equirect to a skybox cubemap.
         SkyboxConfig::Equirect { asset_id } => {
-            let (rgba, w, h) = stashed_equirect(*asset_id).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "equirect panorama {asset_id} bytes aren't in memory \
-                     (re-upload via set_environment equirect)"
-                )
-            })?;
+            let (rgba, w, h) = equirect_rgba(*asset_id).await?;
             CubemapImage::new_equirect(&rgba, w, h, 1024)
                 .await
                 .map_err(|e| anyhow::anyhow!("equirect skybox: {e}"))?
@@ -173,18 +177,16 @@ async fn apply_ibl(cfg: &IblConfig) -> anyhow::Result<()> {
         IblConfig::SkyGradient { zenith, nadir } => {
             gradient_ibl(sky_gradient(*zenith, *nadir)).await?
         }
-        // §18: agent panorama IBL — project the stashed equirect to a specular-env
-        // cubemap (with mips) + a tiny irradiance cubemap. The 16² irradiance is a
-        // heavy box-downsample of the panorama (a cheap stand-in for a true cosine
-        // convolution) — it lights consistently with the skybox.
+        // §18: agent panorama IBL — the specular-env cubemap (with mips) + a
+        // proper cosine-convolved DIFFUSE irradiance cubemap (SH-L2, matching the
+        // shader's E(n)·π convention; a uniform sky round-trips, a directional one
+        // gets the correct smooth hemisphere integral).
         IblConfig::Equirect { asset_id } => {
-            let (rgba, w, h) = stashed_equirect(*asset_id).ok_or_else(|| {
-                anyhow::anyhow!("equirect panorama {asset_id} bytes aren't in memory")
-            })?;
+            let (rgba, w, h) = equirect_rgba(*asset_id).await?;
             let prefiltered = CubemapImage::new_equirect(&rgba, w, h, 256)
                 .await
                 .map_err(|e| anyhow::anyhow!("equirect prefiltered: {e}"))?;
-            let irradiance = CubemapImage::new_equirect(&rgba, w, h, 16)
+            let irradiance = CubemapImage::new_equirect_irradiance(&rgba, w, h, 32)
                 .await
                 .map_err(|e| anyhow::anyhow!("equirect irradiance: {e}"))?;
             (prefiltered, irradiance)

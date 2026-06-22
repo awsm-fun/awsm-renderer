@@ -191,10 +191,9 @@ pub async fn new_sky_gradient(
 /// Project an equirectangular (lat/long) RGBA8 panorama into a cubemap with
 /// `face_size`² faces (§18). For each face texel the cube direction is sampled
 /// from the equirect (bilinear, longitude wrapping). Pure-CPU, so an
-/// agent-authored panorama (from `create_texture`) becomes a skybox / IBL
-/// source. Call at a large `face_size` for the skybox + specular env, and a tiny
-/// one for a cheap diffuse-irradiance approximation (the heavy box-downsample
-/// stands in for a true cosine convolution).
+/// agent-authored panorama (from `create_texture`) becomes a skybox / specular
+/// IBL source. For the DIFFUSE irradiance cubemap use [`new_equirect_irradiance`]
+/// (a proper cosine convolution), not a tiny `face_size` here.
 pub async fn new_equirect(
     rgba: &[u8],
     src_w: u32,
@@ -222,6 +221,156 @@ pub async fn new_equirect(
         z_negative: it.next().unwrap(),
         mipmaps: true,
     })
+}
+
+/// Build the DIFFUSE-irradiance cubemap of an equirect panorama by a proper
+/// cosine convolution (§18 follow-up) — a true hemisphere integral, not the
+/// box-downsample stand-in. Uses the order-2 spherical-harmonics method
+/// (Ramamoorthi & Hanrahan 2001): project the panorama to 9 SH coefficients per
+/// channel, then evaluate the cosine-convolved irradiance per output direction.
+///
+/// Stores **E(n)/π** (the cosine-weighted average radiance), matching the IBL
+/// shader convention (`sample_ibl_diffuse` does `texture(n) * PI`): a uniform
+/// panorama maps to itself, exactly like the old downsample, but a directional
+/// sky now produces the correct smooth, hemisphere-integrated diffuse term.
+/// `face_size` can be tiny (16–32) — SH irradiance is inherently low-frequency.
+pub async fn new_equirect_irradiance(
+    rgba: &[u8],
+    src_w: u32,
+    src_h: u32,
+    face_size: u32,
+) -> Result<CubemapImage> {
+    let sh = equirect_to_sh9(rgba, src_w, src_h);
+    let faces: [Vec<u8>; 6] = std::array::from_fn(|face| {
+        let n = face_size;
+        let mut buf = vec![0u8; (n * n * 4) as usize];
+        for j in 0..n {
+            let t = 2.0 * (j as f32 + 0.5) / n as f32 - 1.0;
+            for i in 0..n {
+                let s = 2.0 * (i as f32 + 0.5) / n as f32 - 1.0;
+                let dir = cube_face_dir(face, s, t);
+                let e = sh9_irradiance(&sh, dir); // E/π per channel
+                let o = ((j * n + i) * 4) as usize;
+                buf[o] = (e[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+                buf[o + 1] = (e[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+                buf[o + 2] = (e[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+                buf[o + 3] = 255;
+            }
+        }
+        buf
+    });
+    let mut bitmaps = Vec::with_capacity(6);
+    for face in &faces {
+        bitmaps.push(ImageData::Bitmap {
+            image: crate::image::bitmap::create_from_rgba(face, face_size, face_size, None).await?,
+            options: None,
+        });
+    }
+    let mut it = bitmaps.into_iter();
+    Ok(CubemapImage::Images {
+        x_positive: it.next().unwrap(),
+        x_negative: it.next().unwrap(),
+        y_positive: it.next().unwrap(),
+        y_negative: it.next().unwrap(),
+        z_positive: it.next().unwrap(),
+        z_negative: it.next().unwrap(),
+        mipmaps: true,
+    })
+}
+
+/// A GL cube-face direction for face texel coords `(s, t) ∈ [-1, 1]` (faces
+/// ordered +X, -X, +Y, -Y, +Z, -Z). Not normalized.
+fn cube_face_dir(face: usize, s: f32, t: f32) -> [f32; 3] {
+    match face {
+        0 => [1.0, -t, -s],
+        1 => [-1.0, -t, s],
+        2 => [s, 1.0, t],
+        3 => [s, -1.0, -t],
+        4 => [s, -t, 1.0],
+        _ => [-s, -t, -1.0],
+    }
+}
+
+/// The 9 order-2 real SH basis functions evaluated at a unit direction.
+fn sh9_basis(d: [f32; 3]) -> [f32; 9] {
+    let (x, y, z) = (d[0], d[1], d[2]);
+    [
+        0.282095,
+        0.488603 * y,
+        0.488603 * z,
+        0.488603 * x,
+        1.092548 * x * y,
+        1.092548 * y * z,
+        0.315392 * (3.0 * z * z - 1.0),
+        1.092548 * x * z,
+        0.546274 * (x * x - y * y),
+    ]
+}
+
+/// Project an equirect panorama to 9 SH coefficients per RGB channel (the cube
+/// direction + solid-angle weighting match [`new_equirect`]'s convention).
+fn equirect_to_sh9(rgba: &[u8], w: u32, h: u32) -> [[f32; 3]; 9] {
+    use std::f32::consts::PI;
+    let mut sh = [[0.0f32; 3]; 9];
+    if w == 0 || h == 0 {
+        return sh;
+    }
+    let dphi = 2.0 * PI / w as f32;
+    let dtheta = PI / h as f32;
+    for y in 0..h {
+        // latitude (from the equator); +Y is up — matches new_equirect's `v`.
+        let lat = (0.5 - (y as f32 + 0.5) / h as f32) * PI;
+        let (clat, slat) = (lat.cos(), lat.sin());
+        let domega = clat * dphi * dtheta; // sin(polar) = cos(lat)
+        for x in 0..w {
+            let lon = ((x as f32 + 0.5) / w as f32 - 0.5) * 2.0 * PI;
+            let dir = [clat * lon.cos(), slat, clat * lon.sin()];
+            let o = ((y * w + x) * 4) as usize;
+            let rgb = [
+                rgba[o] as f32 / 255.0,
+                rgba[o + 1] as f32 / 255.0,
+                rgba[o + 2] as f32 / 255.0,
+            ];
+            let basis = sh9_basis(dir);
+            for (k, b) in basis.iter().enumerate() {
+                let bw = b * domega;
+                sh[k][0] += rgb[0] * bw;
+                sh[k][1] += rgb[1] * bw;
+                sh[k][2] += rgb[2] * bw;
+            }
+        }
+    }
+    sh
+}
+
+/// Evaluate cosine-convolved irradiance / π at direction `dir` from SH coeffs.
+/// Band factors are Ramamoorthi's `A_l/π` = [1, 2/3, 1/4] (the `/π` folds out the
+/// shader's `* PI`, so a uniform panorama round-trips to itself).
+fn sh9_irradiance(sh: &[[f32; 3]; 9], dir: [f32; 3]) -> [f32; 3] {
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2])
+        .sqrt()
+        .max(1e-6);
+    let n = [dir[0] / len, dir[1] / len, dir[2] / len];
+    let basis = sh9_basis(n);
+    const A: [f32; 9] = [
+        1.0,
+        2.0 / 3.0,
+        2.0 / 3.0,
+        2.0 / 3.0,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+    ];
+    let mut out = [0.0f32; 3];
+    for k in 0..9 {
+        let w = A[k] * basis[k];
+        out[0] += sh[k][0] * w;
+        out[1] += sh[k][1] * w;
+        out[2] += sh[k][2] * w;
+    }
+    [out[0].max(0.0), out[1].max(0.0), out[2].max(0.0)]
 }
 
 /// Sample an RGBA8 image with bilinear filtering at normalized `(u, v)` (origin
@@ -393,7 +542,61 @@ pub async fn create_texture(
 
 #[cfg(test)]
 mod equirect_tests {
-    use super::project_equirect_faces;
+    use super::{cube_face_dir, equirect_to_sh9, project_equirect_faces, sh9_irradiance};
+
+    // Build a w*h equirect by sampling a per-direction radiance closure.
+    fn equirect(w: u32, h: u32, f: impl Fn([f32; 3]) -> [f32; 3]) -> Vec<u8> {
+        use std::f32::consts::PI;
+        let mut img = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            let lat = (0.5 - (y as f32 + 0.5) / h as f32) * PI;
+            for x in 0..w {
+                let lon = ((x as f32 + 0.5) / w as f32 - 0.5) * 2.0 * PI;
+                let dir = [lat.cos() * lon.cos(), lat.sin(), lat.cos() * lon.sin()];
+                let c = f(dir);
+                let o = ((y * w + x) * 4) as usize;
+                for k in 0..3 {
+                    img[o + k] = (c[k].clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+                img[o + 3] = 255;
+            }
+        }
+        img
+    }
+
+    // A UNIFORM panorama must round-trip to itself (E/π = L) — this is what keeps
+    // the new convolution scale-compatible with the old box-downsample + the
+    // shader's `* PI`.
+    #[test]
+    fn uniform_irradiance_round_trips() {
+        let img = equirect(32, 16, |_| [0.5, 0.3, 0.7]);
+        let sh = equirect_to_sh9(&img, 32, 16);
+        for face in 0..6 {
+            let e = sh9_irradiance(&sh, cube_face_dir(face, 0.0, 0.0));
+            assert!((e[0] - 0.5).abs() < 0.02, "R {} != 0.5", e[0]);
+            assert!((e[1] - 0.3).abs() < 0.02, "G {} != 0.3", e[1]);
+            assert!((e[2] - 0.7).abs() < 0.02, "B {} != 0.7", e[2]);
+        }
+    }
+
+    // A directional panorama (bright UP hemisphere) must produce a smooth diffuse
+    // gradient: +Y irradiance clearly brighter than -Y, and bounded by the source.
+    #[test]
+    fn directional_irradiance_gradient() {
+        // white where dir.y > 0, black below — a hard top/bottom split.
+        let img = equirect(64, 32, |d| if d[1] > 0.0 { [1.0; 3] } else { [0.0; 3] });
+        let sh = equirect_to_sh9(&img, 64, 32);
+        let up = sh9_irradiance(&sh, [0.0, 1.0, 0.0])[0];
+        let down = sh9_irradiance(&sh, [0.0, -1.0, 0.0])[0];
+        assert!(
+            up > down + 0.3,
+            "up {up} not clearly brighter than down {down}"
+        );
+        assert!(
+            up <= 1.01 && down >= -0.01,
+            "out of [0,1]: up {up} down {down}"
+        );
+    }
 
     // A 4x2 equirect split left=red / right=green; every cube face should sample
     // only those source colors (projection stays in-gamut, hits real texels).

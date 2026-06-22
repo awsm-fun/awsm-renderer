@@ -273,19 +273,26 @@ sky-gradient that drives both skybox + IBL, reusing the built-in's
 `CubemapImage::new_sky_gradient` generator via `SkyboxConfig::SkyGradient` /
 `IblConfig::SkyGradient` (`scene/src/environment.rs`, `engine/bridge/env_sync.rs`).
 
-> ✅ **DONE (`ef39c1bb`).** `set_environment { equirect: <data:image/png> }` →
-> `SetEnvironmentEquirect` decodes the panorama, stashes it (session-scoped like
-> the KTX HDR stash), and `env_sync` projects it to a cubemap via the new
-> `CubemapImage::new_equirect` (pure-CPU per-face direction → equirect bilinear,
-> longitude-wrapping; unit-tested + `create_from_rgba` RGBA→ImageBitmap helper).
-> Skybox + specular env at 1024²/256² faces with mips; a 16² irradiance cubemap
-> approximates the diffuse convolution (heavy box-downsample — lights
-> consistently; a true cosine convolution is the noted follow-on). New
+> ✅ **DONE (`ef39c1bb`, + quality follow-ups).** `set_environment { equirect:
+> <data:image/png> }` → `SetEnvironmentEquirect`, and `env_sync` projects it to a
+> cubemap via `CubemapImage::new_equirect` (pure-CPU per-face direction → equirect
+> bilinear, longitude-wrapping; unit-tested + `create_from_rgba` RGBA→ImageBitmap
+> helper). Skybox + specular env at 1024²/256² faces with mips. New
 > `SkyboxConfig`/`IblConfig::Equirect { asset_id }`. **Verified live:** a
 > hand-drawn equirect (sky gradient + sun + a green aurora band) becomes the
-> skybox AND a metallic/low-roughness sphere reflects it — the blue zenith, warm
-> horizon, and green aurora band all show in the reflection + the sphere is
-> IBL-lit.
+> skybox AND a metallic/low-roughness sphere reflects it.
+>
+> **Quality follow-ups landed** (both have zero per-frame cost):
+> - **True diffuse irradiance** (`CubemapImage::new_equirect_irradiance`) — an
+>   order-2 SH cosine convolution (Ramamoorthi), replacing the box-downsample.
+>   Stores E(n)/π to match the shader's `* PI`, so a uniform sky round-trips but a
+>   directional one gets the correct smooth hemisphere integral. Unit-tested
+>   (uniform round-trip + directional gradient) + verified live (a diffuse sphere
+>   under a directional panorama shows a smooth, correctly-oriented gradient).
+> - **Disk persistence** — the panorama now registers as a content-hashed
+>   `Texture(Raster)` asset + seeds the `texture_cache`, so the existing
+>   `persistence::texture_files` / `restore_textures` save + restore it across
+>   reload (no longer session-only). Native test on the save side.
 
 **Still owed.** Let the agent supply a **full arbitrary environment image** it
 authored — an **equirect 2D texture** (via `create_texture`) and/or **6 cubemap

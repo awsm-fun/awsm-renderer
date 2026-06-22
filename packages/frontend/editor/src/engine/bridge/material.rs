@@ -78,7 +78,10 @@ async fn fetch_rgba(url: &str) -> Result<(Vec<u8>, u32, u32), String> {
 
 /// Decode ENCODED image bytes (PNG/JPEG) to RGBA8 via the browser, for restoring
 /// persisted textures on load. `mime` is the source mime (`image/png` etc.).
-async fn decode_rgba_from_bytes(bytes: &[u8], mime: &str) -> Result<(Vec<u8>, u32, u32), String> {
+pub(crate) async fn decode_rgba_from_bytes(
+    bytes: &[u8],
+    mime: &str,
+) -> Result<(Vec<u8>, u32, u32), String> {
     let bitmap = awsm_renderer_core::image::bitmap::load_u8(bytes, mime, None)
         .await
         .map_err(|e| format!("decode image: {e}"))?;

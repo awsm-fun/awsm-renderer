@@ -2450,13 +2450,41 @@ impl EditorController {
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
             }
             EditorCommand::SetEnvironmentEquirect { id, data } => {
-                // §18: decode the agent's panorama to RGBA (loudly — a bad image is
-                // a rejected op), stash it for env_sync to project, then point both
-                // skybox + IBL at it. Inverse restores the prior environment.
-                let (rgba, w, h) = crate::engine::bridge::material::decode_rgba_from_payload(&data)
-                    .await
+                // §18: decode the wire payload to ENCODED image bytes (loudly — a bad
+                // payload is a rejected op), register it as a content-hashed raster
+                // texture asset + seed the texture_cache, so the existing texture
+                // persistence (texture_files / restore_textures) saves the panorama
+                // and restores it on reload; env_sync decodes + projects it lazily.
+                // Then point both skybox + IBL at it. Inverse restores the prior env.
+                use awsm_editor_protocol::TexturePayload;
+                let payload = awsm_editor_protocol::decode_texture_payload(&data, None, None, None)
                     .map_err(crate::error::EditorError::msg)?;
-                crate::engine::bridge::env_sync::stash_equirect(id, rgba, w, h);
+                let (bytes, mime, ext) = match payload {
+                    TexturePayload::Encoded { bytes, mime } => {
+                        let m = mime.as_deref().unwrap_or("image/png");
+                        if m.contains("jpeg") || m.contains("jpg") {
+                            (bytes, awsm_glb_export::ImageMime::Jpeg, "jpg")
+                        } else {
+                            (bytes, awsm_glb_export::ImageMime::Png, "png")
+                        }
+                    }
+                    TexturePayload::RawRgba8 { .. } => {
+                        return Err(crate::error::EditorError::msg(
+                            "equirect environment must be an encoded PNG/JPEG (data: URI / base64)",
+                        ))
+                    }
+                };
+                let hash = texture_content_hash(&bytes);
+                self.scene.assets.lock().unwrap().entries.insert(
+                    id,
+                    AssetEntry::new_with_hash(
+                        SceneAssetSource::Texture(TextureDef::Raster {
+                            display_name: format!("env-{}.{ext}", &id.to_string()[..8]),
+                        }),
+                        hash,
+                    ),
+                );
+                crate::engine::bridge::texture_cache::store(id, bytes, mime);
                 let prev = self.scene.environment.get_cloned();
                 self.scene
                     .environment
@@ -7868,6 +7896,59 @@ mod mesh_rebake_tests {
             files.iter().any(|(p, _)| *p == want),
             "snapshot {snap} must be in the saved mesh files: {:?}",
             files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod equirect_persistence_tests {
+    use super::*;
+    use awsm_editor_protocol::{SkyboxConfig, TextureDef};
+    use futures::executor::block_on;
+
+    // §18 follow-up: an agent equirect environment must register as a
+    // content-hashed raster texture + seed the texture_cache, so the EXISTING
+    // texture persistence (texture_files / restore_textures) saves + restores the
+    // panorama across reload — it's no longer session-only.
+    #[test]
+    fn equirect_env_registers_persistable_texture() {
+        let ctrl = EditorController::new();
+        let id = AssetId::new();
+        block_on(ctrl.apply(EditorCommand::SetEnvironmentEquirect {
+            id,
+            data: "data:image/png;base64,AAAA".to_string(),
+        }))
+        .unwrap();
+
+        // (a) both skybox + IBL point at the equirect asset
+        let env = ctrl.scene.environment.get_cloned();
+        assert!(matches!(env.skybox, SkyboxConfig::Equirect { asset_id } if asset_id == id));
+
+        // (b) a content-hashed raster texture asset was registered (.png so the
+        // loader can derive the mime; content_hash so asset_filename → Some).
+        {
+            let assets = ctrl.scene.assets.lock().unwrap();
+            let entry = assets
+                .entries
+                .get(&id)
+                .expect("env texture asset registered");
+            assert!(
+                matches!(&entry.source, SceneAssetSource::Texture(TextureDef::Raster { display_name }) if display_name.ends_with(".png")),
+                "env asset must be a .png raster texture"
+            );
+            assert!(
+                !entry.content_hash.is_empty(),
+                "content_hash unset → won't persist"
+            );
+        }
+
+        // (c) the encoded bytes are in the texture_cache (what Save reads).
+        let cached = crate::engine::bridge::texture_cache::get(id).expect("bytes in cache");
+        // (d) the persistence pass emits a side file carrying exactly those bytes.
+        let files = crate::controller::persistence::texture_files(&ctrl);
+        assert!(
+            files.iter().any(|(_, bytes)| *bytes == cached.0),
+            "texture_files did not include the equirect panorama side file"
         );
     }
 }
