@@ -1,0 +1,74 @@
+version: "3"
+
+includes:
+  config:
+    taskfile: ../config.yml
+    flatten: true
+
+vars:
+  PATH_CRATE: '{{joinPath .PATH_REPO_ROOT "examples" "multithreaded"}}'
+  PATH_DIST: '{{joinPath .PATH_BUILD_ARTIFACTS "multithreaded"}}'
+  # The THREADED build profile. These three pieces, together, produce a
+  # wasm bundle that imports a SHARED WebAssembly.Memory (real wasm
+  # threads), which is what the whole multithreading effort rests on:
+  #   1. RUSTFLAGS: +atomics,+bulk-memory,+mutable-globals (kept ON TOP of
+  #      the repo-root .cargo/config.toml cfgs, which an env RUSTFLAGS would
+  #      otherwise REPLACE — so they are repeated here verbatim).
+  #   2. -Z build-std=std,panic_abort: recompiles std with those features
+  #      (stable std has no atomics). Needs nightly + rust-src — pinned by
+  #      examples/multithreaded/rust-toolchain.toml.
+  #   3. COOP/COEP headers on serve (Trunk.toml) → crossOriginIsolated.
+  THREADED_RUSTFLAGS: >-
+    --cfg=web_sys_unstable_apis
+    --cfg=getrandom_backend="wasm_js"
+    -C target-feature=+atomics,+bulk-memory,+mutable-globals
+    -C link-arg=--shared-memory
+    -C link-arg=--import-memory
+    -C link-arg=--max-memory=2147483648
+    -C link-arg=--export=__heap_base
+    -C link-arg=--export=__tls_base
+    -C link-arg=--export=__tls_size
+    -C link-arg=--export=__tls_align
+    -C link-arg=--export=__wasm_init_tls
+
+tasks:
+  dev:
+    desc: "multithreaded example: trunk serve with the threaded profile + COOP/COEP"
+    env:
+      RUSTFLAGS: "{{.THREADED_RUSTFLAGS}}"
+      CARGO_UNSTABLE_BUILD_STD: "std,panic_abort"
+    cmds:
+      - >
+        cd {{.PATH_CRATE}} &&
+        trunk serve --port {{.PORT_MULTITHREADED_DEV}}
+        --watch "{{.PATH_CRATE}}"
+        --watch "{{.PATH_CRATE_RENDERER}}"
+        --watch "{{.PATH_CRATE_RENDERER_CORE}}"
+        --watch "{{.PATH_CRATE_MATERIALS}}"
+        --watch "{{joinPath .PATH_CRATES "meshgen"}}"
+
+  build:
+    desc: "multithreaded example: production build (threaded profile)"
+    env:
+      RUSTFLAGS: "{{.THREADED_RUSTFLAGS}}"
+      CARGO_UNSTABLE_BUILD_STD: "std,panic_abort"
+    cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}
+      - cd {{.PATH_CRATE}} && trunk build --release --public-url "/"
+      - mkdir -p {{.PATH_DIST}}
+      - cp -r {{joinPath .PATH_CRATE "dist"}}/* {{.PATH_DIST}}/
+
+  check:
+    desc: "multithreaded example: cargo check on the threaded profile (no serve)"
+    env:
+      RUSTFLAGS: "{{.THREADED_RUSTFLAGS}}"
+      CARGO_UNSTABLE_BUILD_STD: "std,panic_abort"
+    cmds:
+      - cd {{.PATH_CRATE}} && cargo check --target wasm32-unknown-unknown
+
+  clean:
+    desc: "multithreaded example: remove dist + .build-artifacts output"
+    cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}

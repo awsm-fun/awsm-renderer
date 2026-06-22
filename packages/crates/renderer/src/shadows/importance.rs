@@ -162,7 +162,7 @@ fn light_importance_decision(
     let dist_sq = (position - camera_pos).length_squared().max(0.001);
     let score = intensity / (1.0 + dist_sq);
 
-    // Cutoffs — tuned against `tuning-importance-tiers`.
+    // Cutoffs — tuned against a dense importance-tiered light scene.
     // 4×4 (distance × intensity) grid: distances
     // {1, 5, 15, 50} m, intensities {1, 10, 100, 1000}. With the
     // old (0.1 / 1.0 / 4.0) cutoffs the distribution was 7 / 4 / 1 / 4

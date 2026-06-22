@@ -1,10 +1,11 @@
 # Perf tracing — runtime knobs
 
-> **Note (pre-editor-unification).** The `?trace=` tier system is live in
-> `packages/frontend/web-shared/src/perf.rs` and is consumed by `model-tests` (and
-> the editor). The `load_scene_by_path` / `read_render_pass_timings` dev exports
-> shown below lived on the v1 scene-editor, which has since been removed; they were
-> never re-ported to `packages/frontend/editor`. Treat those snippets as historical.
+> **Note.** The `?trace=` tier system is live in
+> `packages/frontend/web-shared/src/perf.rs` and is consumed by `model-tests` and
+> the editor. The v1 `load_scene_by_path` / `read_render_pass_timings` JS exports
+> some older snippets reference were **removed** — read render-pass spans straight
+> off `performance.getEntriesByType('measure')`, and drive the editor through its
+> `editor_*` debug exports (see [DEBUGGING-PREVIEW.md](DEBUGGING-PREVIEW.md)).
 
 How to measure renderer frame work without paying for the
 measurement. Three tiers, two URL params, one rule of thumb.

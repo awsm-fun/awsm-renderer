@@ -36,7 +36,7 @@ is the worker-mode constructor; internally the builder stores a
 acquisition + resize handling accordingly.
 
 A reference consumer lives at
-[`packages/examples/render-worker/`](../packages/examples/render-worker/)
+[`examples/render-worker/`](../examples/render-worker/)
 — a single wasm-bindgen target that boots into either
 `main_thread_boot()` or `worker_thread_boot()` based on the
 active global, transfers an `OffscreenCanvas` to the worker, and
@@ -74,7 +74,7 @@ consumer-specific (different games want different event shapes,
 different latency trade-offs, different filtering). The shape above
 is the documented pattern; consumers DIY the actual implementation
 against the `WorkerInputEvent` enum exposed by the example crate
-([`packages/examples/render-worker/src/lib.rs`](../packages/examples/render-worker/src/lib.rs)).
+([`examples/render-worker/src/lib.rs`](../examples/render-worker/src/lib.rs)).
 
 ## Worker pools vs the renderer worker
 

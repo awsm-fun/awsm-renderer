@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>awsm-renderer — multithreaded reference app</title>
+    <style>
+        html, body { margin: 0; padding: 0; background: #111; height: 100%; color: #ddd; font-family: system-ui, sans-serif; }
+        #canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+        #hud { position: fixed; top: 8px; left: 8px; font-size: 12px; white-space: pre; opacity: 0.8; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas" width="800" height="600"></canvas>
+    <div id="hud"></div>
+    <!-- wasm-opt is disabled (data-wasm-opt="0"): the threaded build emits
+         atomics + bulk-memory + a shared memory import, which the wasm-opt
+         version Trunk bundles can silently strip without the threads feature.
+         Keeping it off preserves the shared-memory bootstrap. -->
+    <link data-trunk rel="rust" data-wasm-opt="0" />
+    <!-- Bundle a few glTF sample assets SAME-ORIGIN (COEP: require-corp blocks
+         cross-origin fetches, so the worker must load them from our own origin).
+         The `remote` demo loads DamagedHelmet over the Layer-1 protocol; the
+         skin/morph demos load CesiumMan / AnimatedMorphCube. -->
+    <link data-trunk rel="copy-file" href="../../media/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb" />
+    <link data-trunk rel="copy-file" href="../../media/glTF-Sample-Assets/Models/CesiumMan/glTF-Binary/CesiumMan.glb" />
+    <link data-trunk rel="copy-file" href="../../media/glTF-Sample-Assets/Models/AnimatedMorphCube/glTF-Binary/AnimatedMorphCube.glb" />
+</body>
+</html>

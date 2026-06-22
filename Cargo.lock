@@ -361,6 +361,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-multithreaded-example"
+version = "0.3.1"
+dependencies = [
+ "awsm-materials",
+ "awsm-meshgen",
+ "awsm-renderer",
+ "awsm-renderer-core",
+ "awsm-renderer-gltf",
+ "awsm-scene",
+ "awsm-scene-loader",
+ "glam 0.32.1",
+ "gloo-net",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-web",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "awsm-particles"
 version = "0.3.1"
 dependencies = [

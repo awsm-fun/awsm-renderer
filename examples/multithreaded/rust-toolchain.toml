@@ -1,0 +1,13 @@
+# Scoped nightly toolchain for the THREADED build profile only.
+#
+# This file applies to `cargo` invocations rooted in this directory (the
+# multithreaded example) — the editor / model-viewer build from their own
+# directories on the stable default toolchain and are unaffected.
+#
+# Nightly + `rust-src` are required for `-Z build-std`, which recompiles
+# `std` with `+atomics,+bulk-memory` so shared linear memory works. See
+# Trunk.toml (COOP/COEP) and the `mt:*` taskfile (RUSTFLAGS + build-std).
+[toolchain]
+channel = "nightly"
+components = ["rust-src"]
+targets = ["wasm32-unknown-unknown"]

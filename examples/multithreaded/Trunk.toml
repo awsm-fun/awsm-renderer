@@ -1,0 +1,8 @@
+# Trunk config for the multithreaded reference app.
+#
+# The COOP/COEP headers below are *required*: without them
+# `crossOriginIsolated` is false and `SharedArrayBuffer` (hence shared
+# wasm memory / wasm threads) is unavailable. Any production host serving
+# a threaded build must send the same two headers.
+[serve]
+headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "require-corp" }

@@ -20,9 +20,46 @@ use crate::{
     bind_groups::{BindGroupCreate, BindGroups},
     buffer::dynamic_uniform::DynamicUniformBuffer,
     buffer::mapped_uploader::MappedUploader,
+    buffer::shared_arena::{SharedArena, SlotBinding},
     meshes::skins::AwsmSkinError,
     AwsmRenderer, AwsmRendererLogging,
 };
+
+/// Semantic stride of a transform in the shared sim-state arena: one world
+/// `Mat4` (decision D2). The render side packs this to the 112-byte GPU
+/// layout (model + inverse-transpose normal) on its dirty descent; the sim
+/// worker only ever writes these 64 semantic bytes.
+pub const TRANSFORM_ARENA_STRIDE: usize = 64;
+
+/// Pack a world `Mat4` into the 112-byte GPU transform entry: the model
+/// matrix (64 B) followed by the inverse-transpose normal matrix as a
+/// `mat3x3<f32>` with vec3 columns padded to vec4 (48 B, 12 B useful per
+/// column). This is the **single** packing routine — both the
+/// single-threaded hierarchy walk and the arena-backed descent call it, so
+/// the two paths are byte-identical by construction (pinned by
+/// `packed_bytes_match_reference`).
+pub fn pack_world_transform(world: &Mat4) -> [u8; Transforms::BYTE_SIZE] {
+    let mut packed = [0u8; Transforms::BYTE_SIZE];
+
+    // Model matrix: 64 bytes (4 columns × 16 B).
+    let model_values = world.to_cols_array();
+    let model_bytes = unsafe { std::slice::from_raw_parts(model_values.as_ptr() as *const u8, 64) };
+    packed[0..64].copy_from_slice(model_bytes);
+
+    // Normal matrix: 9 floats as 3 columns × (vec3 + 4-byte pad). Padding
+    // floats stay zero; the shader's `mat3x3<f32>` ctor reads only the 9
+    // useful values.
+    let normal_matrix = glam::Mat3::from_mat4(world.inverse().transpose());
+    let nm = normal_matrix.to_cols_array();
+    for col in 0..3usize {
+        let col_off = Transforms::NORMAL_OFFSET + col * 16;
+        let src = col * 3;
+        let col_bytes =
+            unsafe { std::slice::from_raw_parts(nm[src..src + 3].as_ptr() as *const u8, 12) };
+        packed[col_off..col_off + 12].copy_from_slice(col_bytes);
+    }
+    packed
+}
 
 impl AwsmRenderer {
     /// Updates world transforms and mesh bounds from dirty transforms,
@@ -96,8 +133,8 @@ impl AwsmRenderer {
             self.sync_spatial_for_mesh(mesh_key);
         }
 
-        // Periodic BVH refresh. Span so `read_render_pass_timings`
-        // can attribute the rebuild cost when tuning the cadence
+        // Periodic BVH refresh. Span so the rebuild cost shows up in the
+        // browser Performance API (`?trace=sub-frame`) when tuning the cadence
         // defaults (`SceneSpatialConfig::rebuild_period_frames` /
         // `rebuild_dirty_threshold`).
         {
@@ -199,6 +236,42 @@ pub struct Transforms {
     /// Mapped-ring upload companion (Phase 2.1). Lazy-initialised on
     /// first write_gpu call; sized to mirror `gpu_buffer`.
     uploader: MappedUploader,
+
+    /// Shared sim-state mode (`docs/PLAYER-GUIDE.md §9`, M2). When
+    /// `Some`, world matrices are stored as semantic 64-byte values in a
+    /// shared-memory [`SharedArena`] (foreign-writable by a physics worker)
+    /// and the 112-byte GPU layout is produced on the render-side dirty
+    /// descent ([`Transforms::descend_pack_arena`]). `None` on the
+    /// single-threaded build → the classic in-place 112-byte pack, untouched.
+    arena: Option<TransformArena>,
+
+    /// Reused across descents to carry each updated slot's (key, world
+    /// matrix) without a per-frame heap allocation (shared mode only). The
+    /// world matrix drives BOTH the 112-byte GPU pack AND the CPU-side bounds
+    /// refresh (decision A / H3).
+    arena_pack_scratch: Vec<(TransformKey, Mat4)>,
+
+    /// Stats from the most recent arena descent (shared mode) — exposed for
+    /// the stress/hot-path proof (work tracks movers, not total slots).
+    last_descend: TransformDescendStats,
+}
+
+/// Per-frame arena-descent stats (shared mode).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TransformDescendStats {
+    /// Slots that took a fresh value (≈ number of movers) this frame.
+    pub updated: usize,
+    /// Slots that read torn (reused last value) this frame.
+    pub torn: usize,
+    /// Dirty chunks descended this frame.
+    pub chunks: usize,
+}
+
+/// Arena-backed semantic transform store + key↔slot mapping (shared mode).
+struct TransformArena {
+    arena: SharedArena,
+    key_to_slot: SecondaryMap<TransformKey, usize>,
+    slot_to_key: Vec<Option<TransformKey>>,
 }
 
 static BUFFER_USAGE: LazyLock<BufferUsage> =
@@ -277,7 +350,83 @@ impl Transforms {
             buffer,
             gpu_buffer,
             uploader: MappedUploader::new("Transforms"),
+            arena: None,
+            arena_pack_scratch: Vec::new(),
+            last_descend: TransformDescendStats::default(),
         })
+    }
+
+    /// Switch this transform store into **shared sim-state mode**
+    /// (`docs/PLAYER-GUIDE.md §9`, M2/M3): back world matrices with a
+    /// shared-memory [`SharedArena`] of semantic 64-byte values, foreign-
+    /// writable by a physics worker. Existing transforms are migrated into
+    /// the arena (a slot allocated + current world matrix written) and all
+    /// future world updates flow through the arena → 112-byte pack on
+    /// descent.
+    ///
+    /// Idempotent-ish: only meaningful once, at setup, before the hot loop.
+    /// The single-threaded editor / model-viewer never call this, so their
+    /// path is byte-for-byte unchanged.
+    pub fn enable_shared_arena(&mut self) {
+        if self.arena.is_some() {
+            return;
+        }
+        // ~1M-slot ceiling (1024 slots × 1024 chunks) at 64 B/slot.
+        let mut arena = SharedArena::new(TRANSFORM_ARENA_STRIDE, 1024, 1024);
+        let mut key_to_slot = SecondaryMap::new();
+        let mut slot_to_key = Vec::new();
+        // Migrate every existing transform (deterministic key order via the
+        // slotmap iteration) and seed its current world matrix.
+        let keys: Vec<TransformKey> = self.locals.keys().collect();
+        for key in keys {
+            let slot = arena.allocate();
+            key_to_slot.insert(key, slot);
+            if slot_to_key.len() <= slot {
+                slot_to_key.resize(slot + 1, None);
+            }
+            slot_to_key[slot] = Some(key);
+            let world = self
+                .world_matrices
+                .get(key)
+                .copied()
+                .unwrap_or(Mat4::IDENTITY);
+            let bytes = world.to_cols_array();
+            let raw = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, 64) };
+            arena.write_value(slot, raw);
+        }
+        self.arena = Some(TransformArena {
+            arena,
+            key_to_slot,
+            slot_to_key,
+        });
+        // Force a full descend+pack+upload on the next frame.
+        self.gpu_dirty = true;
+    }
+
+    /// `true` when the shared sim-state arena is active.
+    pub fn is_shared(&self) -> bool {
+        self.arena.is_some()
+    }
+
+    /// Stats from the most recent `update_world` arena descent (shared
+    /// mode). `updated` tracks the number of movers, not the total slot
+    /// count — the hot-path scalability property (M3 stress proof).
+    pub fn last_descend_stats(&self) -> TransformDescendStats {
+        self.last_descend
+    }
+
+    /// Base address of the arena's chunk dirty bitmap (for a foreign
+    /// writer). `None` outside shared mode.
+    pub fn arena_dirty_words_addr(&self) -> Option<usize> {
+        self.arena.as_ref().map(|a| a.arena.dirty_words_addr())
+    }
+
+    /// Raw [`SlotBinding`] a physics worker uses to write `key`'s world
+    /// matrix into shared memory. `None` if not shared / key unbound.
+    pub fn arena_slot_binding(&self, key: TransformKey) -> Option<SlotBinding> {
+        let a = self.arena.as_ref()?;
+        let slot = *a.key_to_slot.get(key)?;
+        Some(a.arena.slot_binding(slot))
     }
 
     /// Mapped-ring upload telemetry for this subsystem.
@@ -296,6 +445,18 @@ impl Transforms {
         self.dirties.insert(key);
 
         self.buffer.update(key, &[0; Self::BYTE_SIZE]);
+
+        // Shared mode: bind the key to an arena slot now (topology is
+        // owner-only). The world matrix is written on the next
+        // `update_world` descent (the key is in `dirties`).
+        if let Some(a) = self.arena.as_mut() {
+            let slot = a.arena.allocate();
+            a.key_to_slot.insert(key, slot);
+            if a.slot_to_key.len() <= slot {
+                a.slot_to_key.resize(slot + 1, None);
+            }
+            a.slot_to_key[slot] = Some(key);
+        }
 
         self.set_parent(key, parent);
 
@@ -323,6 +484,15 @@ impl Transforms {
         self.children.remove(key);
         self.dirties.remove(&key);
         self.buffer.remove(key);
+
+        if let Some(a) = self.arena.as_mut() {
+            if let Some(slot) = a.key_to_slot.remove(key) {
+                a.arena.free(slot);
+                if slot < a.slot_to_key.len() {
+                    a.slot_to_key[slot] = None;
+                }
+            }
+        }
 
         self.gpu_dirty = true;
     }
@@ -406,6 +576,89 @@ impl Transforms {
         self.update_inner_recursively(self.root_node, false);
 
         self.dirties.clear();
+
+        // Shared mode: descend the arena (picking up this thread's writes
+        // above *and* any foreign physics-worker writes) and pack each
+        // changed slot 64 B → 112 B into the GPU mirror.
+        if self.arena.is_some() {
+            self.descend_pack_arena();
+        }
+    }
+
+    /// Shared mode: read changed semantic 64-byte world matrices out of the
+    /// arena (torn-read-safe) and pack them into the 112-byte GPU mirror
+    /// buffer. Pack cost is proportional to the dirty count (decision A).
+    ///
+    /// H8 — the per-frame "copy at the pack step", settled empirically. The
+    /// plan flagged GPU-upload-from-shared-memory as an open question (would
+    /// `queue.writeBuffer` reject a `SharedArrayBuffer`-backed view?). MEASURED
+    /// in Chrome: `writeBuffer` ACCEPTS shared-backed views (and a mapped range
+    /// can be written from one) — corroborated by the fact that this whole
+    /// threaded renderer already uploads from the (shared) wasm heap every
+    /// frame and renders correctly. So the upload is NOT forced off shared
+    /// memory by the platform.
+    ///
+    /// The work here is therefore necessary computation, not a removable copy:
+    /// for each MOVED transform we (1) snapshot its 64 B model matrix out of
+    /// shared memory torn-read-safe (seqlock), (2) PACK to the 112 B GPU layout
+    /// — which computes the inverse-transpose normal matrix
+    /// ([`pack_world_transform`]) — into the CPU mirror, (3) upload via the
+    /// mapped ring. Each step earns its keep (tear safety / derived-data
+    /// compute / upload); none is a redundant memcpy, and all cost is ∝ movers.
+    /// The mirror is the single source the ST and MT paths share, so there is
+    /// no shared-only divergent upload path to maintain.
+    fn descend_pack_arena(&mut self) {
+        let mut scratch = std::mem::take(&mut self.arena_pack_scratch);
+        scratch.clear();
+        {
+            let Some(a) = self.arena.as_mut() else {
+                self.arena_pack_scratch = scratch;
+                return;
+            };
+            let result = a.arena.descend();
+            self.last_descend = TransformDescendStats {
+                updated: result.updated,
+                torn: result.torn,
+                chunks: result.chunks,
+            };
+            let stride = TRANSFORM_ARENA_STRIDE;
+            for (off, len) in &result.ranges {
+                let start = off / stride;
+                let count = len / stride;
+                for slot in start..start + count {
+                    if let Some(Some(key)) = a.slot_to_key.get(slot).copied() {
+                        let m = &a.arena.mirror()[slot * stride..slot * stride + stride];
+                        let mut cols = [0f32; 16];
+                        // SAFETY: `m` is exactly 64 bytes = 16 f32 columns.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                m.as_ptr(),
+                                cols.as_mut_ptr() as *mut u8,
+                                64,
+                            );
+                        }
+                        let world = Mat4::from_cols_array(&cols);
+                        scratch.push((key, world));
+                    }
+                }
+            }
+        }
+        if !scratch.is_empty() {
+            for (key, world) in scratch.iter().copied() {
+                // GPU pack (model + inverse-transpose normal).
+                self.buffer.update(key, &pack_world_transform(&world));
+                // H3: refresh the CPU-side world matrix + mark the node dirty
+                // for the bounds/spatial/culling pass, so a physics-driven
+                // transform's `world_aabb` (frustum culling, shadows, picking)
+                // tracks its real position — not a stale one. `update_world`'s
+                // hierarchy walk skips these nodes (they're not in `dirties`),
+                // so this descent is the ONLY place their bounds get refreshed.
+                self.world_matrices.insert(key, world);
+                self.dirty_meshes.push(key);
+            }
+            self.gpu_dirty = true;
+        }
+        self.arena_pack_scratch = scratch;
     }
 
     // This *does* write to the gpu, should be called only once per frame
@@ -535,34 +788,23 @@ impl Transforms {
 
             self.world_matrices[key] = world_matrix;
 
-            // Pack model (mat4x4) + normal (mat3x3 with vec3 columns
-            // padded to vec4) into one 112-byte struct entry. The
-            // padding bytes between normal columns stay zero — the
-            // shader's `mat3x3<f32>` constructor reads 3 vec3s and
-            // ignores the column padding.
-            let mut packed = [0u8; Self::BYTE_SIZE];
-
-            // Model matrix: 64 bytes.
-            let model_values = world_matrix.to_cols_array();
-            let model_bytes =
-                unsafe { std::slice::from_raw_parts(model_values.as_ptr() as *const u8, 64) };
-            packed[0..64].copy_from_slice(model_bytes);
-
-            // Normal matrix: 9 floats laid out as 3 columns × (vec3 +
-            // 4-byte pad). At byte offsets 64..76 (col0), 80..92
-            // (col1), 96..108 (col2). Padding floats (76..80, 92..96,
-            // 108..112) stay zero.
-            let normal_matrix = glam::Mat3::from_mat4(world_matrix.inverse().transpose());
-            let nm = normal_matrix.to_cols_array(); // [c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z]
-            for col in 0..3usize {
-                let col_off = Self::NORMAL_OFFSET + col * 16;
-                let src = col * 3;
-                let col_bytes = unsafe {
-                    std::slice::from_raw_parts(nm[src..src + 3].as_ptr() as *const u8, 12)
-                };
-                packed[col_off..col_off + 12].copy_from_slice(col_bytes);
+            if let Some(a) = self.arena.as_mut() {
+                // Shared mode: store the semantic 64-byte world matrix in
+                // the arena. The 112-byte GPU pack happens on the descent
+                // (`descend_pack_arena`), sourced from the arena so a
+                // foreign physics worker can feed the same slots (M3).
+                if let Some(&slot) = a.key_to_slot.get(key) {
+                    let cols = world_matrix.to_cols_array();
+                    let raw = unsafe { std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64) };
+                    a.arena.write_value(slot, raw);
+                }
+            } else {
+                // Single-threaded path: pack model + normal directly into
+                // the 112-byte GPU mirror (byte-identical to the shared
+                // path's pack — both call `pack_world_transform`).
+                let packed = pack_world_transform(&world_matrix);
+                self.buffer.update(key, &packed);
             }
-            self.buffer.update(key, &packed);
 
             self.dirty_meshes.push(key);
         }
@@ -722,4 +964,134 @@ pub enum AwsmTransformError {
 
     #[error("[transform] {0:?}")]
     Skin(#[from] AwsmSkinError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::buffer::shared_arena::SharedArena;
+    use glam::{Quat, Vec3};
+
+    fn sample_worlds() -> Vec<Mat4> {
+        vec![
+            Mat4::IDENTITY,
+            Mat4::from_translation(Vec3::new(1.0, -2.0, 3.5)),
+            Mat4::from_scale_rotation_translation(
+                Vec3::new(2.0, 0.5, 1.25),
+                Quat::from_rotation_y(0.7) * Quat::from_rotation_x(-0.3),
+                Vec3::new(-4.0, 5.0, 6.0),
+            ),
+            Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)), // mirrored (determinant < 0)
+        ]
+    }
+
+    /// The packed 112-byte entry equals the reference layout: model matrix
+    /// in bytes 0..64, inverse-transpose normal matrix as three padded
+    /// vec3 columns at NORMAL_OFFSET.
+    #[test]
+    fn packed_bytes_match_reference() {
+        for world in sample_worlds() {
+            let packed = pack_world_transform(&world);
+
+            // Model bytes.
+            let model = world.to_cols_array();
+            let model_bytes =
+                unsafe { std::slice::from_raw_parts(model.as_ptr() as *const u8, 64) };
+            assert_eq!(&packed[0..64], model_bytes, "model bytes mismatch");
+
+            // Normal bytes (3 columns × 12 useful bytes, 4 pad each).
+            let nm = glam::Mat3::from_mat4(world.inverse().transpose()).to_cols_array();
+            for col in 0..3usize {
+                let off = Transforms::NORMAL_OFFSET + col * 16;
+                let src = col * 3;
+                let want = unsafe {
+                    std::slice::from_raw_parts(nm[src..src + 3].as_ptr() as *const u8, 12)
+                };
+                assert_eq!(&packed[off..off + 12], want, "normal col {col} mismatch");
+                // Padding float stays zero.
+                assert_eq!(&packed[off + 12..off + 16], &[0u8; 4], "normal pad {col}");
+            }
+        }
+    }
+
+    /// H3: a world `Mat4` round-trips through the arena byte-for-byte, so any
+    /// `world_aabb` the bounds pass derives from the arena-sourced matrix (it
+    /// transforms the geometry's local AABB by exactly this matrix) equals the
+    /// single-threaded compute. This is the basis for sim-owned culling /
+    /// shadow / pick correctness.
+    #[test]
+    fn arena_world_matrix_roundtrips_for_bounds() {
+        let worlds = sample_worlds();
+        let mut arena = SharedArena::new(TRANSFORM_ARENA_STRIDE, 8, 8);
+        let mut slots = Vec::new();
+        for world in &worlds {
+            let slot = arena.allocate();
+            slots.push(slot);
+            let cols = world.to_cols_array();
+            let raw = unsafe { std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64) };
+            arena.write_value(slot, raw);
+        }
+        let r = arena.descend();
+        assert_eq!(r.updated, worlds.len());
+        for (i, world) in worlds.iter().enumerate() {
+            let m = &arena.mirror()
+                [slots[i] * TRANSFORM_ARENA_STRIDE..(slots[i] + 1) * TRANSFORM_ARENA_STRIDE];
+            let mut cols = [0f32; 16];
+            unsafe {
+                std::ptr::copy_nonoverlapping(m.as_ptr(), cols.as_mut_ptr() as *mut u8, 64);
+            }
+            let from_arena = Mat4::from_cols_array(&cols);
+            assert_eq!(
+                from_arena.to_cols_array(),
+                world.to_cols_array(),
+                "arena world matrix differs from source for world {i}"
+            );
+            // A representative local-AABB corner transforms identically.
+            let corner = glam::Vec3::new(0.5, -0.5, 0.5);
+            assert_eq!(
+                from_arena.transform_point3(corner),
+                world.transform_point3(corner),
+                "arena-derived AABB corner differs for world {i}"
+            );
+        }
+    }
+
+    /// The arena descent → pack pipeline (M2's shared path) produces the
+    /// SAME 112 bytes as the direct single-threaded pack. This is the
+    /// gate's "packed bytes equal current packing", proven without a GPU:
+    /// write semantic 64-byte world matrices into the arena, descend, read
+    /// the mirror back, pack, compare.
+    #[test]
+    fn arena_descend_pack_matches_direct_pack() {
+        let worlds = sample_worlds();
+        let mut arena = SharedArena::new(TRANSFORM_ARENA_STRIDE, 8, 8);
+        let mut slots = Vec::new();
+        for world in &worlds {
+            let slot = arena.allocate();
+            slots.push(slot);
+            let cols = world.to_cols_array();
+            let raw = unsafe { std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64) };
+            arena.write_value(slot, raw);
+        }
+
+        let result = arena.descend();
+        assert_eq!(result.torn, 0);
+        assert_eq!(result.updated, worlds.len());
+
+        for (i, world) in worlds.iter().enumerate() {
+            let slot = slots[i];
+            let m =
+                &arena.mirror()[slot * TRANSFORM_ARENA_STRIDE..(slot + 1) * TRANSFORM_ARENA_STRIDE];
+            let mut cols = [0f32; 16];
+            unsafe {
+                std::ptr::copy_nonoverlapping(m.as_ptr(), cols.as_mut_ptr() as *mut u8, 64);
+            }
+            let from_arena = pack_world_transform(&Mat4::from_cols_array(&cols));
+            let direct = pack_world_transform(world);
+            assert_eq!(
+                from_arena, direct,
+                "arena pack != direct pack for world {i}"
+            );
+        }
+    }
 }

@@ -650,8 +650,8 @@ documented method instead of reaching for raw `gpu.write_buffer`;
 those bytes count against `bytes_uploaded_via_writebuffer`
 (separate from the ring's `bytes_uploaded_via_fallback`).
 
-Telemetry is surfaced via the
-[`read_upload_ring_stats()`](#9-measurement-harness) wasm export.
+Telemetry is surfaced via the renderer's `upload_ring_stats()` method
+(the v1 JS export was removed — see [§9](#9-measurement-harness)).
 Expected steady-state on `tuning-10k-meshes`:
 `_total.fallback_count` settles at 1-2 after the cold-start frame,
 `peak_ring_depth_used == 3` (full ring rotation), `resize_count == 0`
@@ -1390,9 +1390,16 @@ in its PR description.
 
 ## 5d. Steady-state perf — `tuning-10k-meshes` reference numbers
 
+> **⚠️ Fixtures removed.** The `assets/world/*` tuning scenes
+> (`tuning-10k-meshes`, `tuning-1024-lights`, …) referenced throughout this doc
+> have been **deleted** — they were a stale pre-refactor format (a `primitive`
+> node kind that no longer exists; JSON where the loader now wants a TOML
+> `EditorProject`) and could no longer be loaded. The numbers below are kept as
+> **historical reference**; re-running any of these recipes requires
+> regenerating the fixtures from the current editor first.
+
 Captured via `read_render_pass_timings(min_count=30)` on Chrome
-through the Claude Preview MCP, after loading
-[`assets/world/tuning-10k-meshes`](../assets/world/tuning-10k-meshes)
+through the Claude Preview MCP, after loading `tuning-10k-meshes`
 and letting 181 frames accumulate. Hardware: M2 MacBook. These
 numbers are the bar a renderer change should clear before it lands.
 
@@ -1766,26 +1773,30 @@ The two metrics to watch:
 
 ## 9. Measurement harness
 
-Driven by the Claude Preview MCP (or any equivalent). The
-scene-editor exposes four `#[cfg(debug_assertions)]`
-`#[wasm_bindgen]` helpers from the v1 editor's `measurement.rs` (since removed):
+> **The v1 `measurement.rs` JS harness was removed** along with the v1
+> scene-editor — `load_scene_by_path`, `read_render_pass_timings`,
+> `read_mesh_coverage_stats`, `read_importance_tier_histogram`,
+> `read_oversized_mesh_stats`, `read_upload_ring_stats`, and
+> `measure_gltf_load_ab` no longer exist, and the `assets/world/*` tuning
+> fixtures they loaded were deleted (stale format). The numbers throughout this
+> doc are kept as historical reference.
 
-| Helper | Returns | Use |
-|---|---|---|
-| `load_scene_by_path("tuning-Xxx")` | Promise<()> | Loads `assets/world/<name>/project.json` via fetch. |
-| `read_mesh_coverage_stats()` | JSON string | Verifies the GPU coverage producer reached the CPU table. |
-| `read_importance_tier_histogram()` | JSON string | Shadow-caster-light tier histogram. |
-| `read_oversized_mesh_stats()` | JSON string | `{ last_max_bucket, oversized_count }` from `LightMeshBuckets`. |
-| `read_render_pass_timings(min_count)` | JSON string | Per-pass `count / mean / p50 / p95 / max / total` (ms). Strips the `[id]: span-measure` suffix `tracing-web` appends so call sites collapse into one bucket. Clears measures after sampling. Pass `min_count=0` to include rare init spans (GLTF parse, etc.). |
-| `read_upload_ring_stats()` | JSON string | Phase-2.1 mapped-upload-ring telemetry, keyed by subsystem (`transforms`, `materials`, `instances.transforms`, `meshes.meta.*`, …) plus a `_total` rollup. Each entry includes `peak_ring_depth_used / fallback_count / map_async_wait_ms / bytes_uploaded_via_{ring,fallback,writebuffer} / resize_count`. Steady state on `tuning-10k-meshes` should see `_total.fallback_count == 0`; non-zero means a buffer's ring depth (default 3) is too shallow for its frame cadence. |
-| `measure_gltf_load_ab(url, iterations)` | JSON string | A/B harness for `GltfParseJob`: returns `{ inline_ms[], worker_ms[], inline_mean, worker_mean, speedup }` so the inline `GltfLoader::load` path can be compared against the worker `pool.dispatch::<GltfParseJob>(..)` path. Canonical reference on M2 Chrome / Corset.glb (12.8 MB): inline **196 ms** / worker **91 ms** → **2.15×**. The editor defaults to worker mode (pre-warmed pool + sticky inline fallback); `?gltf-worker=off` is the dev-only opt-out for re-running the inline baseline. See [§5c](#5c-worker-mode-gltf-parse--default-in-the-editor). |
+Drive + inspect the current editor through its live debug seams instead — the
+`editor_*` `#[wasm_bindgen]` exports, callable as `window.wasmBindings.editor_*`,
+no MCP server required (full list +recipe in
+[DEBUGGING-PREVIEW.md → "Debugging the editor without the MCP server"](DEBUGGING-PREVIEW.md)):
+`editor_dispatch_json` runs any `EditorCommand` (incl. `LoadProjectFromUrl` to
+load a scene); `editor_query_json` / `editor_snapshot_json` / `editor_project_toml`
+read state; `editor_query_scene_png` captures the viewport. The worker-mode glTF
+A/B reference (inline 196 ms / worker 91 ms → 2.15× on Corset.glb) lives in
+[§5c](#5c-worker-mode-gltf-parse--default-in-the-editor).
 
 Per-frame render-pass timings come from
 `performance.getEntriesByType('measure')` — `tracing-web`'s
 `performance_layer` routes every renderer span through the
-browser's Performance API when the renderer is running at the
-`SubFrame` tier. `read_render_pass_timings(...)` is the one-shot
-summariser if you don't want to walk the entries manually.
+browser's Performance API when the renderer runs at the
+`SubFrame` tier (`?trace=sub-frame`); group the entries by base span name
+(`"Render"`, `"Geometry RenderPass"`, …) yourself.
 
 URL switches (all dev-friendly, can be combined):
 

@@ -383,3 +383,217 @@ clean:
 - `c98eb8d4` — `CameraMatrices::perspective(eye, target, up, fov_y, aspect,
   near, far)` constructor, removing the glam boilerplate every consumer was
   hand-rolling.
+
+---
+
+## 9. Multithreading (opt-in)
+
+Single-threaded is the default and stays first-class — the editor and
+model-viewer run it daily. A **game** can opt into running the renderer in a
+Web Worker (off the main thread) and, on top of that, into a **physics/sim
+worker** that shares the renderer's sim state through shared linear memory.
+The complete, runnable reference is **`examples/multithreaded/`** (`task
+mt:dev` → <http://127.0.0.1:9090>); each milestone is a `?demo=` mode:
+
+| `?demo=` | Shows |
+|---|---|
+| `smoke` | two workers share one `WebAssembly.Memory` (an `AtomicU32` crossing the boundary) |
+| `arena` | the seqlock arena under a high-rate foreign writer (torn-read safety) |
+| `render` | the renderer hosted in a worker over the shared **transform arena** |
+| `motion` | a physics worker moving node transforms via shared memory (bounds/culling track the moved positions) |
+| `crowd` | instanced transforms **and** attributes driven by the physics worker |
+| `churn` | live spawn/despawn topology as a bind→ack→free transaction (slot reuse, invariant-checked) |
+| `lights` | a physics worker animating a **light** via its bound transform (the lit spot sweeps a static surface) |
+| `skin` | a physics worker flexing a real rigged glTF (CesiumMan) by driving its **skin joints** through the arena |
+| `scene` | the **player path** — `load_scene_for_player` runs *in the worker* (the editor-export loader), then a runtime light is added + driven by physics through the arena |
+| `remote` | the Layer 1 `RenderCommand`/`RenderEvent` protocol — DOM driver loads a real **glTF** (DamagedHelmet), streams a progress bar, picks, queries bounds, recolours the material |
+| `input` | full input forwarding + a main-thread responsiveness meter (Long Tasks API) |
+
+### 9.1 The threaded build profile
+
+A normal wasm build has a private, non-shared linear memory. Three things,
+together, produce a bundle that imports one **shared** memory every thread
+attaches to (see `examples/multithreaded/rust-toolchain.toml`,
+`taskfiles/examples/multithreaded.yml`, `Trunk.toml`):
+
+1. **Nightly + `rust-src`** (`rust-toolchain.toml`), for `-Z build-std`.
+2. **`RUSTFLAGS` + build-std** — keep the repo's existing cfgs and add:
+   ```
+   -C target-feature=+atomics,+bulk-memory,+mutable-globals
+   -C link-arg=--shared-memory -C link-arg=--import-memory
+   -C link-arg=--max-memory=<bytes>
+   -C link-arg=--export=__heap_base
+   -C link-arg=--export=__tls_base  -C link-arg=--export=__tls_size
+   -C link-arg=--export=__tls_align -C link-arg=--export=__wasm_init_tls
+   ```
+   plus `-Z build-std=std,panic_abort` (recompiles `std` with atomics).
+   The `--shared-memory --import-memory` pair is what makes the memory shared
+   AND imported; the `__heap_base`/`__tls_*`/`__wasm_init_tls` exports are what
+   `wasm-bindgen`'s thread transform needs to emit the `init(module, memory)`
+   glue. Without them you get a private memory and `init` that ignores `memory`.
+3. **COOP/COEP headers** on serve (`Trunk.toml [serve] headers`):
+   `Cross-Origin-Opener-Policy: same-origin` +
+   `Cross-Origin-Embedder-Policy: require-corp`. Without them
+   `crossOriginIsolated` is `false` and `SharedArrayBuffer` is unavailable.
+   **Production hosts must send the same two headers.**
+
+> Disable `wasm-opt` for the threaded bundle (`data-wasm-opt="0"`) unless your
+> `wasm-opt` is invoked with `--enable-threads --enable-bulk-memory`; otherwise
+> it can strip the atomics/shared-memory.
+
+### 9.2 Spawning workers on one shared memory
+
+Build a worker from an inline blob and post it `wasm_bindgen::module()` +
+`wasm_bindgen::memory()` (the shared module + shared memory); the worker calls
+`init({ module_or_path: wasm_module, memory })` and then a role entry point.
+See `examples/multithreaded/src/bootstrap.rs` — `spawn_shared_worker` /
+`WORKER_BOOTSTRAP_JS`. The render worker can itself spawn the physics worker
+the same way (the glue URL is stashed on the worker global). Hand the
+`OffscreenCanvas` to the render worker with a transfer list
+(`spawn_shared_worker_transfer`).
+
+### 9.3 Layer 1 — the remote-renderer protocol
+
+A main-thread driver that doesn't run game logic inside the worker controls it
+over a typed channel (`examples/multithreaded/src/protocol.rs`):
+
+- **`RenderCommand`** (main → worker): `LoadGltf { url }` (the worker fetches a
+  **same-origin** `.glb` and runs the load transaction), `Load { models }`
+  (geometry as Transferable `ArrayBuffer`s, referenced by index — never
+  serialize `web_sys` GPU handles), `UpdateCamera`, `Bounds`,
+  `SetMeshMaterial { emissive }`, `Screenshot`, `Pick { x, y }`.
+- **`RenderEvent`** (worker → main): `Loading(LoadingStats)` per commit phase
+  (drive a progress bar — the DOM paints each phase off-main, the
+  responsiveness win), `Ready`, `PickResult`, `BoundsResult`, `MaterialChanged`,
+  `ScreenshotBytes`, `Error`.
+
+Serialize request→reply commands that take an async renderer borrow (`Pick`,
+`LoadGltf`) one at a time — chain the next on the previous reply — so two
+`&mut`-borrowing futures never overlap (the render loop already yields via
+`try_borrow_mut`).
+
+Two real constraints surfaced here:
+- **Same-origin assets.** COEP `require-corp` blocks cross-origin fetches, and a
+  worker resolves relative URLs against its `blob:` base — so pass an **absolute**
+  same-origin URL (bundle the `.glb` with Trunk `copy-file`).
+- **`Screenshot` is platform-bounded.** `OffscreenCanvas.convertToBlob` is
+  rejected by Chrome (`NotReadableError`) on a WebGPU-configured canvas — the
+  swapchain image isn't host-readable after present. A robust capture needs an
+  in-renderer `copyTextureToBuffer`+`mapAsync` path; the command surfaces the
+  real `Error` rather than faking one.
+
+`SlotMap` handles (`MeshKey`/`TransformKey`/…) cross by value; `LoadingStats`
+/`PickResult` are already `Copy`.
+
+### 9.4 Layer 2 — shared-memory sim state
+
+The bridge is **`awsm_renderer::buffer::shared_arena`**: a chunked,
+stable-address arena with a per-slot `AtomicU32` seqlock + a coarse chunk
+dirty bitmap. It is the **single** foreign-writable primitive — everything
+else (materials, pipeline state, GPU handles) stays render-worker-private.
+Topology (`allocate`/`free`/grow) is owner-only; foreign threads only write
+values to already-bound slots.
+
+**Node transforms.** Switch the renderer into shared mode once at setup:
+
+```rust
+renderer.transforms.enable_shared_arena();
+// Per body, at spawn (one round-trip), hand the physics worker:
+let binding   = renderer.transforms.arena_slot_binding(transform_key).unwrap();
+let dirty_addr = renderer.transforms.arena_dirty_words_addr().unwrap();
+```
+
+The physics worker then writes a world `Mat4` (64 semantic bytes) every frame
+with **zero `postMessage`**:
+
+```rust
+use awsm_renderer::buffer::shared_arena::foreign_write;
+unsafe { foreign_write(binding, dirty_addr, &world_mat4_bytes); }
+```
+
+The render worker's `update_transforms()` descends the arena, packs each
+changed slot 64 B → 112 B (model + inverse-transpose normal), and uploads —
+work proportional to the number of movers, not the scene size.
+
+**Instances.** For instanced meshes, the physics worker writes per-instance
+world `Mat4`s (64 B) and `InstanceAttr`s (16 B) into two arenas; the render
+worker hands the contiguous mirrors straight to
+`renderer.instances.transform_write_all_bytes(key, bytes)` /
+`attribute_write_all_bytes(key, bytes)` (GPU-ready bytes, no `Transform`
+round-trip). Instance **count** is topology (owner-side); per-instance values
+are foreign.
+
+**Lights and skins ride the transform arena for free.** A punctual light
+derives its world pose from a **bound transform** (`lights.bind_transform` +
+`update_from_transforms`), and skin **joints are themselves `TransformKey`s**
+(`meshes::update_world` → `skins.update_transforms` recomputes joint matrices
+from the same per-frame dirty set). So a physics worker animates a light, or
+flexes a skinned mesh, with **no new foreign-writable buffer** — it just moves
+the light's bound transform / the skin's joint transforms in the arena
+(`?demo=lights`, `?demo=skin`). Read a glTF's joint keys from
+`GltfPopulateContext.transform_is_joint` after `populate_gltf`.
+
+**Live spawn/despawn is a transaction, not a per-node poke.** Topology
+(`allocate`/`free`) is owner-only and must be quiescent while foreign threads
+write. The owner-side flow is bind → (foreign writes) → on retire, *unbind* the
+slot and wait for the sim worker's ack before *freeing* it (so the freed slot
+can be safely reused). `?demo=churn` exercises this with slot-reuse + an
+invariant check.
+
+**The player path runs in the worker.** A shipped game doesn't load glTF
+directly (that's the editor / model-viewer route) — it loads a `Scene` the
+editor exported, via `awsm_scene_loader::load_scene_for_player(renderer, &scene,
+&assets, on_phase)`. That call works unchanged inside the render worker:
+materials, primitive + baked meshes, lights, environment and the commit
+transaction all run off-main. After it returns, the static world is driven by
+`LoadedScene.nodes` (each node's `transform` is an arena-backed `TransformKey` —
+hook it to physics), prefabs by `LoadedScene.prefabs[..].instantiate(...)`, and
+new lights by `insert_light` + a bound transform. `?demo=scene` loads a scene,
+adds a light at runtime, and sweeps it from the physics worker. `assets` is any
+`SceneAssets` — an in-memory map, or an **async same-origin fetcher** (COEP
+blocks cross-origin asset fetches).
+
+### 9.5 `queue.writeBuffer` from shared memory
+
+**Measured (Chrome, crossOriginIsolated):** `queue.writeBuffer` *accepts* a
+`SharedArrayBuffer`-backed `TypedArray`, and a mapped range can be written from
+one — corroborated by the fact that the threaded renderer already uploads from
+the (shared) wasm heap every frame and renders correctly. So the upload is **not
+forced off shared memory** by the platform.
+
+Given that, the render-side descent's per-frame "copy at the pack step" is not a
+removable redundant copy — it is **necessary computation**, already proportional
+to the dirty count. For each *moved* transform it (1) snapshots the 64 B model
+matrix out of shared memory torn-read-safe (seqlock), (2) **packs** to the 112 B
+GPU layout — which computes the inverse-transpose **normal matrix**, genuine
+derived data — into the renderer's regular `Vec<u8>` mirror, (3) uploads via the
+mapped ring. Each step earns its keep; none is a redundant memcpy. The mirror is
+the single source the single-threaded and threaded paths share.
+
+### 9.6 Gotchas (threaded)
+
+- The renderer is `!Send` and stays on the render worker; only the
+  shared-arena boundary (`SlotBinding` + raw addresses) crosses threads.
+- Build the worker renderer with `DeviceRequestLimits::max_all()` (the
+  renderer's advanced passes want >8 storage buffers / >16 sampled textures
+  per stage), exactly like the editor / model-viewer.
+- A foreign write is `unsafe`: the addresses must point into live shared
+  memory from the owning arena, and the owner must not be reallocating that
+  slot's topology concurrently (it never is — topology is quiescent during the
+  write loop).
+- **The arena's value region is `UnsafeCell<u8>`, not `u8`.** A foreign thread
+  writing a `&[u8]` you reached via `&mut` would be UB under Stacked Borrows
+  (`SharedReadOnly` provenance); backing the bytes with `UnsafeCell` gives the
+  `SharedReadWrite` provenance the cross-thread write needs. Verified with miri.
+- **Image decode needs a non-shared copy.** The browser's `Blob` constructor
+  rejects a `SharedArrayBuffer`-backed `ArrayBufferView` (*"must not be
+  shared"*), so decoding an embedded glTF image in a worker fails if you pass a
+  *view* over the (shared) wasm heap. `renderer-core`'s `image::bitmap::load_u8`
+  copies into a fresh non-shared `Uint8Array` first — correct on both builds.
+- **Resize / DPR.** The render worker owns an `OffscreenCanvas`; size it to the
+  display backing store (`devicePixelRatio`) and forward main-thread
+  `ResizeObserver` + `matchMedia` DPR changes to the worker as messages (see
+  `examples/multithreaded/src/viewport.rs`).
+- **Measure responsiveness honestly** with the Long Tasks API
+  (`PerformanceObserver('longtask')`), not rAF gaps — the main thread should log
+  *zero* long tasks while the worker compiles/loads (`?demo=input`).
