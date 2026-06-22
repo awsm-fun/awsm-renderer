@@ -127,6 +127,7 @@ pub fn mt_worker_start(role: String, payload: JsValue) -> Result<(), JsValue> {
         "crowd-render" | "crowd-physics" => crate::crowd_demo::worker_dispatch(&role, payload),
         "churn-render" | "churn-physics" => crate::churn_demo::worker_dispatch(&role, payload),
         "lights-render" | "lights-physics" => crate::lights_demo::worker_dispatch(&role, payload),
+        "skin-render" | "skin-physics" => crate::skin_demo::worker_dispatch(&role, payload),
         "remote-render" => crate::remote_demo::worker_dispatch(&role, payload),
         "input-render" => crate::input_demo::worker_dispatch(&role, payload),
         other => {
