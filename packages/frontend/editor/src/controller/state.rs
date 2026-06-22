@@ -945,14 +945,16 @@ impl EditorController {
                 }
                 None => Ok(None),
             },
-            EditorCommand::Duplicate { id } => match mutate::duplicate_by_id(&self.scene, id) {
-                Some(new_id) => {
-                    self.scene.bump_revision();
-                    self.selected.set(vec![new_id]);
-                    Ok(Some(EditorCommand::Delete { id: new_id }))
+            EditorCommand::Duplicate { id, new_id } => {
+                match mutate::duplicate_by_id(&self.scene, id, new_id) {
+                    Some(new_id) => {
+                        self.scene.bump_revision();
+                        self.selected.set(vec![new_id]);
+                        Ok(Some(EditorCommand::Delete { id: new_id }))
+                    }
+                    None => Ok(None),
                 }
-                None => Ok(None),
-            },
+            }
             EditorCommand::Reparent {
                 id,
                 new_parent,
@@ -4035,6 +4037,50 @@ impl EditorController {
                     entries,
                 })
             }
+            EditorQuery::GetChildren { node } => {
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return QueryResult::Error {
+                        error: format!("no node {node}"),
+                    };
+                };
+                let children: Vec<serde_json::Value> = n
+                    .children
+                    .lock_ref()
+                    .iter()
+                    .map(|c| node_brief(c))
+                    .collect();
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("children".to_string(), serde_json::json!(children));
+                QueryResult::Map(query::MapResult {
+                    kind: "children".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::GetSubtree { root } => {
+                let tree: Vec<serde_json::Value> = match root {
+                    Some(id) => {
+                        let Some(n) = mutate::find_by_id(&self.scene, id) else {
+                            return QueryResult::Error {
+                                error: format!("no node {id}"),
+                            };
+                        };
+                        vec![node_subtree_json(&n)]
+                    }
+                    None => self
+                        .scene
+                        .nodes
+                        .lock_ref()
+                        .iter()
+                        .map(|n| node_subtree_json(n))
+                        .collect(),
+                };
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("tree".to_string(), serde_json::json!(tree));
+                QueryResult::Map(query::MapResult {
+                    kind: "subtree".to_string(),
+                    entries,
+                })
+            }
             EditorQuery::SelectVerticesWhere { node, predicate } => {
                 use awsm_editor_protocol::VertexPredicate as P;
                 use awsm_meshgen::edit::{
@@ -5731,6 +5777,33 @@ fn unassigned_material_kind(kind: &NodeKind) -> &'static str {
     } else {
         "none"
     }
+}
+
+/// Lightweight `{ id, name, kind }` for a node (no per-kind config blob) — the
+/// row shape `get_children` / `get_subtree` return (§6).
+fn node_brief(node: &crate::engine::scene::node::Node) -> serde_json::Value {
+    serde_json::json!({
+        "id": node.id.to_string(),
+        "name": node.name.get_cloned(),
+        "kind": awsm_editor_protocol::kind_tag(&node.kind.get_cloned()),
+    })
+}
+
+/// `node_brief` plus a nested `children` array — the recursive subtree shape
+/// `get_subtree` returns (§6).
+fn node_subtree_json(node: &crate::engine::scene::node::Node) -> serde_json::Value {
+    let children: Vec<serde_json::Value> = node
+        .children
+        .lock_ref()
+        .iter()
+        .map(|c| node_subtree_json(c))
+        .collect();
+    serde_json::json!({
+        "id": node.id.to_string(),
+        "name": node.name.get_cloned(),
+        "kind": awsm_editor_protocol::kind_tag(&node.kind.get_cloned()),
+        "children": children,
+    })
 }
 
 /// Mutable variant of [`node_material_ref`].

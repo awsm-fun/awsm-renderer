@@ -99,9 +99,12 @@ pub fn remove_by_id(scene: &Scene, id: NodeId) -> Option<Arc<Node>> {
 
 /// Duplicate the node with `id`, giving the clone fresh UUIDs, and insert
 /// the clone as a sibling immediately after the original. Returns the new id.
-pub fn duplicate_by_id(scene: &Scene, id: NodeId) -> Option<NodeId> {
+pub fn duplicate_by_id(scene: &Scene, id: NodeId, new_root_id: Option<NodeId>) -> Option<NodeId> {
     let original = find_by_id(scene, id)?;
-    let clone = original.deep_clone_with_new_ids();
+    let clone = match new_root_id {
+        Some(rid) => original.deep_clone_with_root_id(rid),
+        None => original.deep_clone_with_new_ids(),
+    };
     let new_id = clone.id;
 
     // Insert as sibling after the original.

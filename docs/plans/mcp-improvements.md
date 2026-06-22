@@ -369,6 +369,19 @@ recover the id.
 3. Consider a `node_ref` echo on creation tools generally (some already return
    ids — `insert_*` do; `duplicate_node` is the odd one out).
 
+> ✅ **SHIPPED (2026-06-22).** (1) `duplicate_node` now **returns the clone's
+> root node id** — the MCP tool mints it caller-side (new
+> `EditorCommand::Duplicate { id, new_id }`, with `Node::deep_clone_with_root_id`
+> forcing the root id; `None` keeps the old mint-internally behavior for the UI's
+> Cmd-D). Descendants get fresh ids. (2) Two lightweight queries:
+> `get_children { node }` → `[{ id, name, kind }]`, and
+> `get_subtree { node? }` → the nested id/name/kind tree (whole scene when `node`
+> is omitted) — the `get_snapshot` alternative for hierarchy navigation, no
+> per-node config blobs. **Verified live**: duplicating a box+2-empties returned a
+> fresh uuid; `get_children` on it showed the 2 cloned children with NEW ids;
+> `get_subtree` returned the whole 2-root tree. Roundtrip tests + `task lint`
+> clean; UI Duplicate callers updated.
+
 ---
 
 ## 7. 🟡 `set_frame_time` doesn't pin builtin texture `Flow`
@@ -736,8 +749,8 @@ or a naga quirk; either way an author hits it fast.
 | 2 | Texture offset/flow keyframe channel | TODO | |
 | 3 | Machine-readable command schema + patch-style `set_kind` | DONE | `72839eb2` (patch_kind; full JSONSchema bounded-deferred — see §3) |
 | 4 | Typed/patch particle emitter config | DONE | `1a38e67c` |
-| 5 | Unassigned-material node: render magenta/warn + fix docs | WIP | |
-| 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | TODO | |
+| 5 | Unassigned-material node: render magenta/warn + fix docs | DONE | `8815c9be` |
+| 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | WIP | |
 | 7 | `set_frame_time` pins builtin texture `Flow` | TODO | |
 | 8 | Per-model facing/orientation hint | TODO | |
 | 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | TODO | |

@@ -4026,7 +4026,7 @@ fn batch(count: usize) -> Dom {
             .text(&format!("{count} objects selected"))
         }))
         .child(Btn::new().label("Duplicate selected").icon("copy").variant(BtnVariant::Solid).full(true)
-            .on_click(|| for_each_selected(|id| EditorCommand::Duplicate { id })).render())
+            .on_click(|| for_each_selected(|id| EditorCommand::Duplicate { id, new_id: None })).render())
         .child(Btn::new().label("Deselect all").variant(BtnVariant::Ghost).full(true)
             .on_click(|| spawn_local(async { let _ = controller().dispatch(EditorCommand::SetSelection { ids: vec![] }).await; })).render())
         .child(Btn::new().label("Delete selected").icon("trash").variant(BtnVariant::Ghost).full(true)

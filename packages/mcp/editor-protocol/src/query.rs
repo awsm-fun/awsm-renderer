@@ -315,6 +315,14 @@ pub enum EditorQuery {
     /// builtin|custom|unassigned|none, asset, name, shading, base_color }`.
     /// MCP: `resolve_node_material`.
     ResolveNodeMaterial { node: NodeId },
+    /// Direct children of a node — a lightweight `[{ id, name, kind }]` list so an
+    /// agent doesn't need the whole-scene `get_snapshot` to find a node it just
+    /// created (§6). MCP: `get_children`.
+    GetChildren { node: NodeId },
+    /// The id/name/kind subtree rooted at `root` (or every scene root when
+    /// `None`), with nested `children` — the lightweight whole-tree alternative to
+    /// `get_snapshot` (§6). MCP: `get_subtree`.
+    GetSubtree { root: Option<NodeId> },
     /// Geometry stats for a node's resolved mesh (Primitive / Mesh / Sweep):
     /// vertex+triangle counts, bbox, centroid, surface area, volume, watertight.
     /// A read — the perceive half of the agent's measure→adjust loop. MCP:

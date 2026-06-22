@@ -225,8 +225,24 @@ impl Node {
     /// Deep-copy this node with fresh UUIDs at every level. Use this for
     /// `Duplicate`: the new subtree is fully independent of the original.
     pub fn deep_clone_with_new_ids(&self) -> Arc<Self> {
+        self.deep_clone_inner(None)
+    }
+
+    /// Like [`deep_clone_with_new_ids`], but the cloned **root** takes `root_id`
+    /// (descendants still get fresh ids). Lets a caller mint the root id up front
+    /// so `duplicate_node` can echo it back to the agent (§6).
+    pub fn deep_clone_with_root_id(&self, root_id: NodeId) -> Arc<Self> {
+        self.deep_clone_inner(Some(root_id))
+    }
+
+    fn deep_clone_inner(&self, root_id: Option<NodeId>) -> Arc<Self> {
         Arc::new(Self {
-            id: NodeId::new(),
+            // `NodeId::new()` mints a fresh UUID — not a `Default`, so spell out
+            // the fallback rather than `unwrap_or_default`.
+            id: match root_id {
+                Some(id) => id,
+                None => NodeId::new(),
+            },
             name: Mutable::new(self.name.get_cloned()),
             transform: Mutable::new(self.transform.get()),
             kind: Mutable::new(self.kind.get_cloned()),

@@ -69,6 +69,13 @@ pub struct NodeArg {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct OptionalNodeParams {
+    /// Root node UUID, or omit for every scene root.
+    #[serde(default)]
+    pub node: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetTransformParams {
     /// Target node UUID.
     pub node: String,
@@ -1553,13 +1560,51 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Duplicate a node (deep clone, fresh ids) as a following sibling.")]
+    #[tool(
+        description = "Duplicate a node (deep clone, fresh ids) as a following sibling. Returns the new clone's root node id (descendants get fresh ids — use get_children/get_subtree on the returned id to find them)."
+    )]
     async fn duplicate_node(
         &self,
         Parameters(p): Parameters<NodeArg>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::Duplicate {
-            id: parse_node(&p.node)?,
+        let new_id = NodeId::new();
+        match self
+            .req(Request::Dispatch(EditorCommand::Duplicate {
+                id: parse_node(&p.node)?,
+                new_id: Some(new_id),
+            }))
+            .await?
+        {
+            Response::Ok => Ok(text(new_id.to_string())),
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Direct children of a node as a lightweight [{ id, name, kind }] list — find a node you just created (e.g. a duplicate_node clone's descendants) without the heavy whole-scene get_snapshot."
+    )]
+    async fn get_children(
+        &self,
+        Parameters(p): Parameters<NodeArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetChildren {
+            node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "The id/name/kind subtree rooted at `node` (or EVERY scene root when `node` is omitted), with nested `children` — the lightweight alternative to get_snapshot for navigating the hierarchy without the per-node config blobs."
+    )]
+    async fn get_subtree(
+        &self,
+        Parameters(p): Parameters<OptionalNodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetSubtree {
+            root: parse_node_opt(&p.node)?,
         })
         .await
     }

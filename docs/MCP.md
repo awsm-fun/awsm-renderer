@@ -140,6 +140,11 @@ every command/query, and each tool self-describes over the MCP schema.
   live morph weights (+ target names via glTF `mesh.extras.targetNames`);
   set is a transient preview, tracks own the weights during playback.
 - `get_node_transforms { nodes? }` — local TRS + world matrix per node (empty = all).
+- `get_children { node }` — direct children as a lightweight `[{ id, name, kind }]`
+  list. `get_subtree { node? }` — the id/name/kind subtree rooted at `node` (or
+  EVERY scene root when omitted), with nested `children`. Both avoid the heavy
+  whole-scene `get_snapshot` when you just need to navigate the hierarchy (e.g.
+  find the descendants of a node you just created/duplicated).
 - `get_node_details { nodes? }` — full per-kind config + material assignment.
 - `resolve_node_material { node }` — the material a node actually RENDERS with
   (the direct answer, vs parsing the `NodeKind` blob).
@@ -180,9 +185,11 @@ every command/query, and each tool self-describes over the MCP schema.
 - `node_set_transform { node, translation, rotation, scale }` (rotation is a local
   quaternion `[x,y,z,w]`), plus convenience: `set_translation`, `translate_by`,
   `set_scale`, `set_rotation_euler { euler, order? }`.
-- `rename_node`, `delete_node`, `duplicate_node`, `reparent_node`,
-  `set_node_visible`, `set_node_locked`, `set_selection`, `set_prefab` (mark/clear
-  a node as a prefab root).
+- `rename_node`, `delete_node`, `duplicate_node` (deep clone as a following
+  sibling — **returns the new clone's root node id**; descendants get fresh ids,
+  found via `get_children`/`get_subtree`), `reparent_node`, `set_node_visible`,
+  `set_node_locked`, `set_selection`, `set_prefab` (mark/clear a node as a prefab
+  root).
 
 **Project / import / history**
 - `new_project` (seeds a key light + IBL), `load_project_from_url { base_url }`,

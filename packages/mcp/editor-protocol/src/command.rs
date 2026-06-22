@@ -216,7 +216,15 @@ pub enum EditorCommand {
 
     /// Duplicate a node (deep clone, fresh ids) as a following sibling. Inverse:
     /// delete the clone.
-    Duplicate { id: NodeId },
+    /// Deep-clone a node (fresh ids) as a following sibling. `new_id` (optional,
+    /// caller-minted) forces the clone's **root** id so the MCP `duplicate_node`
+    /// can echo it back (§6); `None` mints one. Descendants always get fresh ids.
+    /// Inverse: `Delete` of the new root.
+    Duplicate {
+        id: NodeId,
+        #[serde(default)]
+        new_id: Option<NodeId>,
+    },
 
     /// Reparent a node under `new_parent` at `index` (root when `None`).
     /// Inverse: reparent back to its prior parent + index.

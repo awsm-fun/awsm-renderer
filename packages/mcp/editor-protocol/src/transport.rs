@@ -214,6 +214,13 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "duplicate",
+                EditorCommand::Duplicate {
+                    id: NodeId::new(),
+                    new_id: Some(NodeId::new()),
+                },
+            ),
+            (
                 "set_particle_emitter",
                 EditorCommand::SetParticleEmitter {
                     node: NodeId::new(),
@@ -332,6 +339,18 @@ mod wire_roundtrip_tests {
                 EditorQuery::GetSkinWeights {
                     node: NodeId::new(),
                     indices: vec![0, 1, 2],
+                },
+            ),
+            (
+                "get_children",
+                EditorQuery::GetChildren {
+                    node: NodeId::new(),
+                },
+            ),
+            (
+                "get_subtree",
+                EditorQuery::GetSubtree {
+                    root: Some(NodeId::new()),
                 },
             ),
         ];
