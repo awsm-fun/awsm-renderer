@@ -52,8 +52,9 @@ pub fn start_main() -> Result<(), JsValue> {
     if let Some(hud) = document.get_element_by_id("hud") {
         hud.set_inner_html(
             r#"<div style="font:13px system-ui;color:#9f9">
-                 main-thread frames: <span id="frames">0</span> ·
-                 worst gap: <span id="gap">0</span>ms
+                 main frames: <span id="frames">0</span> ·
+                 long tasks &gt;50ms: <span id="longtasks">0</span> ·
+                 steady worst gap: <span id="gap">0</span>ms
                  <div id="spinner" style="width:18px;height:18px;background:#4f4;margin-top:6px;border-radius:3px"></div>
                </div>"#,
         );
@@ -62,7 +63,13 @@ pub fn start_main() -> Result<(), JsValue> {
     let state = js_sys::Object::new();
     set(&state, "mainFrames", &JsValue::from_f64(0.0));
     set(&state, "maxGapMs", &JsValue::from_f64(0.0));
+    set(&state, "longTaskCount", &JsValue::from_f64(0.0));
+    set(&state, "maxLongTaskMs", &JsValue::from_f64(0.0));
     let _ = js_sys::Reflect::set(&js_sys::global(), &JsValue::from_str("__mt_input"), &state);
+    // The honest main-thread-blocking metric: the Long Tasks API reports any
+    // task >50 ms on the main thread directly (unlike rAF gaps, which also
+    // capture vsync/compositor scheduling).
+    install_longtask_observer();
 
     let noop = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(|_| {});
     let transfer = js_sys::Array::new();
@@ -174,6 +181,7 @@ fn start_main_responsiveness_loop(document: &web_sys::Document) -> Result<(), Js
     let spinner = document.get_element_by_id("spinner");
     let frames_el = document.get_element_by_id("frames");
     let gap_el = document.get_element_by_id("gap");
+    let longtasks_el = document.get_element_by_id("longtasks");
 
     let raf: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let raf_init = raf.clone();
@@ -191,8 +199,12 @@ fn start_main_responsiveness_loop(document: &web_sys::Document) -> Result<(), Js
             *fb += 1;
             *fb
         };
-        // Ignore the first frame's gap (startup).
-        if f > 1 && gap > *max_gap.borrow() {
+        // Steady-state worst gap: skip the warmup window (first ~60 frames),
+        // where rAF naturally has large gaps before first paint / layout
+        // settle — those are scheduling, not main-thread blocking. Real
+        // main-thread blocking is reported separately via the Long Tasks API
+        // (see `install_longtask_observer`), which is the honest metric.
+        if f > 60 && gap > *max_gap.borrow() {
             *max_gap.borrow_mut() = gap;
         }
         // Animate the DOM indicator so the trace shows real main-thread paint.
@@ -207,6 +219,14 @@ fn start_main_responsiveness_loop(document: &web_sys::Document) -> Result<(), Js
         }
         if let Some(el) = &gap_el {
             el.set_text_content(Some(&format!("{:.0}", *max_gap.borrow())));
+        }
+        if let Some(el) = &longtasks_el {
+            let count = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("__mt_input"))
+                .ok()
+                .and_then(|s| js_sys::Reflect::get(&s, &JsValue::from_str("longTaskCount")).ok())
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            el.set_text_content(Some(&format!("{count:.0}")));
         }
         if let Ok(state) = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("__mt_input"))
         {
@@ -441,4 +461,24 @@ async fn run_render(
 
 fn set(obj: &js_sys::Object, key: &str, value: &JsValue) {
     let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), value);
+}
+
+#[wasm_bindgen(inline_js = r#"
+export function install_longtask_observer() {
+    try {
+        let count = 0, max = 0;
+        const obs = new PerformanceObserver((list) => {
+            for (const e of list.getEntries()) {
+                count++;
+                if (e.duration > max) max = e.duration;
+            }
+            const s = globalThis.__mt_input;
+            if (s) { s.longTaskCount = count; s.maxLongTaskMs = Math.round(max); }
+        });
+        obs.observe({ entryTypes: ['longtask'] });
+    } catch (e) { /* longtask API unsupported — leave the counters at 0 */ }
+}
+"#)]
+extern "C" {
+    fn install_longtask_observer();
 }
