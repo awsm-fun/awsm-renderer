@@ -106,14 +106,13 @@ async fn run_render(
     renderer.transforms.enable_shared_arena();
 
     // ── Build a current-format Scene + load it via the PLAYER path ──────────
-    // NOTE: the repo's bundled scenes (assets/world/*) are a stale pre-refactor
-    // format (a `primitive` node kind that no longer exists) the current loader
-    // / baker can't parse, so we construct an equivalent runtime `Scene` in code
-    // and run the SAME `load_scene_for_player` a shipped game uses. The point is
-    // that the player loader runs IN THE WORKER (materials, primitive meshes,
-    // lights, environment, the commit transaction) — per-frame state then rides
-    // Layer 2 (the arena) below. A scene with external assets would pass a
-    // same-origin async `SceneAssets` fetcher instead of the empty map.
+    // The repo ships no current-format scene fixture to bundle, so we construct
+    // an equivalent runtime `Scene` in code and run the SAME
+    // `load_scene_for_player` a shipped game uses. The point is that the player
+    // loader runs IN THE WORKER (materials, primitive meshes, lights,
+    // environment, the commit transaction) — per-frame state then rides Layer 2
+    // (the arena) below. A scene with external assets would pass a same-origin
+    // async `SceneAssets` fetcher instead of the empty map.
     let scene = demo_scene();
     let assets: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
     let loaded = awsm_scene_loader::load_scene_for_player(&mut renderer, &scene, &assets, |_| {})

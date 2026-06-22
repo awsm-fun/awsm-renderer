@@ -566,12 +566,15 @@ close zoom — that asymmetry was a major factor in earlier misdiagnoses.
 
 ## Scene-editor: load a tuning scene + read timings non-interactively
 
-> **⚠️ Legacy (pre-editor-unification).** The `load_scene_by_path` /
+> **⚠️ Legacy / non-functional (pre-editor-unification).** The `load_scene_by_path` /
 > `read_render_pass_timings` dev exports below lived on the v1 scene-editor, which has
-> since been removed. They were **not** re-ported to `packages/frontend/editor`, so the
-> recipes here will not work as-is against the current editor — kept as a reference
-> for when the measurement harness is re-ported. (The `?trace=` tier system itself
-> is live in `packages/frontend/web-shared/src/perf.rs` + `model-tests`.)
+> since been removed. They were **not** re-ported to `packages/frontend/editor`, AND the
+> `assets/world/*` tuning fixtures they loaded have been **deleted** (they were a stale
+> pre-refactor format — a `primitive` node kind that no longer exists, serialized as
+> JSON while the current loader expects a TOML `EditorProject`). So the recipes below
+> will not work as-is; they're kept only as a sketch for when a perf-measurement
+> harness + fresh fixtures are re-created. (The `?trace=` tier system itself is live in
+> `packages/frontend/web-shared/src/perf.rs` + `model-tests`.)
 
 The **scene-editor** loads projects through a native directory picker
 (File System Access) — there is **no `?project=` URL route**. But for

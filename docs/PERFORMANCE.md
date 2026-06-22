@@ -1390,9 +1390,16 @@ in its PR description.
 
 ## 5d. Steady-state perf — `tuning-10k-meshes` reference numbers
 
+> **⚠️ Fixtures removed.** The `assets/world/*` tuning scenes
+> (`tuning-10k-meshes`, `tuning-1024-lights`, …) referenced throughout this doc
+> have been **deleted** — they were a stale pre-refactor format (a `primitive`
+> node kind that no longer exists; JSON where the loader now wants a TOML
+> `EditorProject`) and could no longer be loaded. The numbers below are kept as
+> **historical reference**; re-running any of these recipes requires
+> regenerating the fixtures from the current editor first.
+
 Captured via `read_render_pass_timings(min_count=30)` on Chrome
-through the Claude Preview MCP, after loading
-[`assets/world/tuning-10k-meshes`](../assets/world/tuning-10k-meshes)
+through the Claude Preview MCP, after loading `tuning-10k-meshes`
 and letting 181 frames accumulate. Hardware: M2 MacBook. These
 numbers are the bar a renderer change should clear before it lands.
 
