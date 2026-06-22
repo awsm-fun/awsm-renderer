@@ -454,6 +454,20 @@ renders; or, if that's by-design, **reject/​warn** when a texture is bound to 
 node whose material variant can't sample it (don't store-and-ignore). A
 `set_node_texture` that silently no-ops is a trap.
 
+> ✅ **RESOLVED 2026-06-22 (builtin/inline path).** Root cause: `builtin_merged`
+> (`engine/bridge/node_sync.rs`) — the SSOT that builds a mesh's built-in material
+> — sourced each texture slot from `texture_overrides` + the shared *variant*
+> default and **forced `None` when the variant lacked the slot**, never reading
+> `inline.<slot>_texture` (what `set_node_texture` writes). Fix: a per-mesh
+> `inline` texture now WINS and ENABLES the slot (`merge_slot_texture`,
+> unit-tested), re-specializing that mesh's pipeline to sample it (variants key on
+> texture *presence*, not the image, so this adds ≤1 bucket per slot-presence
+> combo, not per mesh). **Verified live:** the exact freshly-created-PBR +
+> `set_node_texture base_color` flow that rendered FLAT now renders the checker
+> crisply. This also unblocks §1 (the inline `TextureRef`'s transform/flow now
+> reach `resolve_texture`). The custom-WGSL `texture_pool_sample` include note
+> above is a **separate** custom-material-include defect — tracked under §17.
+
 ## 12. 🟠 Custom transparent material: `alpha_mode` doesn't re-wrap the shader after creation
 
 For the glass dome I made a custom material, `set_material_alpha_mode blend`,
@@ -647,7 +661,7 @@ or a naga quirk; either way an author hits it fast.
 | # | Item | Status | Commit |
 |---|------|--------|--------|
 | ★ | Raw texture-data upload (`create_texture` / `data:` URI) | DONE | `ece042d3` |
-| 1 | Texture UV transform — typed tool + render-path apply | WIP | |
+| 1 | Texture UV transform — typed tool + render-path apply | WIP | `3d0102c7` (code; visual gated by §11) |
 | 2 | Texture offset/flow keyframe channel | TODO | |
 | 3 | Machine-readable command schema + patch-style `set_kind` | TODO | |
 | 4 | Typed/patch particle emitter config | TODO | |
@@ -657,7 +671,7 @@ or a naga quirk; either way an author hits it fast.
 | 8 | Per-model facing/orientation hint | TODO | |
 | 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | TODO | |
 | 10 | Selection handles + pagination + fused `paint_where` | TODO | |
-| 11 | Per-node texture override re-specializes variant (or rejects loudly) | TODO | |
+| 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | _pending_ |
 | 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | TODO | |
 | 13 | `set_builtin_alpha_mode` + base_color rgba | TODO | |
 | 14 | Particle realism (raw sprite upload, alpha sampled, doc `forces`) | TODO | |
