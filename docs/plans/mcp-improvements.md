@@ -337,6 +337,21 @@ is visually obvious), or auto-assign a default visible PBR on
 `insert_primitive`, or have `resolve_node_material`/`screenshot` surface a
 "node(s) unassigned → invisible" notice. At minimum, fix the docs.
 
+> ✅ **RESOLVED (2026-06-22) — behavior now matches the docs.** The
+> "invisible" was a stale finding; the missing-material path already renders the
+> documented flat **magenta** sentinel (`node_sync::resolve_assigned_material`:
+> `None` → `insert_magenta`, base_color `[1,0,1,1]`, both the Mesh and SkinnedMesh
+> paths). **Verified live**: three freshly-inserted primitives (box/cylinder) with
+> NO material rendered bright magenta (chrome-devtools screenshot), and
+> `resolve_node_material` reports `{ assigned: false, kind: "unassigned" }` (its
+> tool description already states "renders magenta") — so the state is both
+> visible AND machine-discoverable. No stale "invisible" claim remains in
+> docs/MCP.md or the tool surface. Added a native regression guard
+> (`unassigned_material_kind`: Mesh/SkinnedMesh → `"unassigned"`, else `"none"`)
+> so a geometry node with no material can never silently report as non-geometry.
+> (Auto-assigning a default PBR was deliberately NOT done — magenta is the
+> intentional "you forgot to assign" signal, per the editor's material model.)
+
 ---
 
 ## 6. 🟠 `duplicate_node` returns no id, and there's no lightweight "get children/subtree"
@@ -720,8 +735,8 @@ or a naga quirk; either way an author hits it fast.
 | 1 | Texture UV transform — typed tool + render-path apply | WIP | `3d0102c7` (code; visual gated by §11) |
 | 2 | Texture offset/flow keyframe channel | TODO | |
 | 3 | Machine-readable command schema + patch-style `set_kind` | DONE | `72839eb2` (patch_kind; full JSONSchema bounded-deferred — see §3) |
-| 4 | Typed/patch particle emitter config | WIP | |
-| 5 | Unassigned-material node: render magenta/warn + fix docs | TODO | |
+| 4 | Typed/patch particle emitter config | DONE | `1a38e67c` |
+| 5 | Unassigned-material node: render magenta/warn + fix docs | WIP | |
 | 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | TODO | |
 | 7 | `set_frame_time` pins builtin texture `Flow` | TODO | |
 | 8 | Per-model facing/orientation hint | TODO | |

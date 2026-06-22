@@ -3998,13 +3998,8 @@ impl EditorController {
                 let mut entries = std::collections::BTreeMap::new();
                 match node_material_ref(&kind) {
                     None => {
-                        let is_geo =
-                            matches!(kind, NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. });
                         entries.insert("assigned".to_string(), json!(false));
-                        entries.insert(
-                            "kind".to_string(),
-                            json!(if is_geo { "unassigned" } else { "none" }),
-                        );
+                        entries.insert("kind".to_string(), json!(unassigned_material_kind(&kind)));
                     }
                     Some(inst) => {
                         entries.insert("assigned".to_string(), json!(true));
@@ -5724,6 +5719,20 @@ fn node_material_ref(
     }
 }
 
+/// `resolve_node_material` kind for a node carrying **no** material (§5):
+/// renderable geometry (Mesh / SkinnedMesh) is `"unassigned"` — it renders the
+/// flat **magenta** missing-material sentinel (a visible "you forgot to assign",
+/// NOT invisible); anything else is `"none"` (not a geometry node). The magenta
+/// render itself lives in `node_sync::resolve_assigned_material` (`None` →
+/// `insert_magenta`).
+fn unassigned_material_kind(kind: &NodeKind) -> &'static str {
+    if matches!(kind, NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. }) {
+        "unassigned"
+    } else {
+        "none"
+    }
+}
+
 /// Mutable variant of [`node_material_ref`].
 fn node_material_mut(
     kind: &mut NodeKind,
@@ -7037,6 +7046,30 @@ mod ik_tests {
         let n = ik_bend_plane_normal(a, b, c, dir_t, None, Vec3::NEG_Z);
         assert!((n.length() - 1.0).abs() < 1e-5);
         assert!(n.dot(dir_t).abs() < 1e-5, "normal must be ⊥ the reach line");
+    }
+}
+
+#[cfg(test)]
+mod unassigned_material_tests {
+    use super::unassigned_material_kind;
+    use awsm_editor_protocol::{AssetId, MeshRef, NodeKind};
+
+    // §5 regression guard: a geometry node with no material must report
+    // `unassigned` (→ the visible magenta sentinel), never be treated as
+    // non-geometry / invisible.
+    #[test]
+    fn unassigned_geometry_is_magenta_sentinel() {
+        let mesh = NodeKind::Mesh {
+            mesh: MeshRef(AssetId::new()),
+            material: None,
+            shadow: Default::default(),
+        };
+        assert_eq!(unassigned_material_kind(&mesh), "unassigned");
+    }
+
+    #[test]
+    fn non_geometry_is_none() {
+        assert_eq!(unassigned_material_kind(&NodeKind::Group), "none");
     }
 }
 
