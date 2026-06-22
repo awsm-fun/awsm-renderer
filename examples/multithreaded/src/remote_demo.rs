@@ -70,6 +70,13 @@ pub fn start_main() -> Result<(), JsValue> {
         on_msg.as_ref().unchecked_ref(),
     )?;
     crate::viewport::observe_resize(&canvas, &w)?;
+    // Stash the worker so the gate can post additional commands on demand
+    // (e.g. SetMeshMaterial) without re-deriving the channel from JS.
+    let _ = js_sys::Reflect::set(
+        &js_sys::global(),
+        &JsValue::from_str("__mt_remote_worker"),
+        &w,
+    );
     *worker.borrow_mut() = Some(w);
     on_msg.forget();
     tracing::info!("remote demo: spawned worker, awaiting Initialized");
@@ -203,7 +210,11 @@ fn handle_event(e: &web_sys::MessageEvent, worker: &Rc<RefCell<Option<web_sys::W
             }
             set_state("phase", &JsValue::from_str("loaded"));
             set_state("ready", &JsValue::from_bool(true));
-            // Pick the centre of the canvas (where the model is).
+            // Exercise the Layer-1 surface, SERIALIZED by reply (a command's
+            // async borrow must finish before the next borrows the renderer):
+            // Ready → Pick → (PickResult) Bounds. SetMeshMaterial is triggered
+            // on demand via the stashed worker so the default visual stays
+            // textured. Screenshot is platform-bounded (see the command).
             if let Some(w) = worker.borrow().as_ref() {
                 let _ = send_command(
                     w,
@@ -216,6 +227,26 @@ fn handle_event(e: &web_sys::MessageEvent, worker: &Rc<RefCell<Option<web_sys::W
             tracing::info!("remote demo: PickResult hit={hit} mesh_id={mesh_id}");
             set_state("pickHit", &JsValue::from_bool(hit));
             set_state("pickMeshId", &JsValue::from_f64(mesh_id));
+            // Next in the serialized chain: scene bounds.
+            if let Some(w) = worker.borrow().as_ref() {
+                let _ = send_command(w, &RenderCommand::Bounds, &js_sys::Array::new());
+            }
+        }
+        RenderEvent::BoundsResult { min, max } => {
+            tracing::info!("remote demo: BoundsResult min={min:?} max={max:?}");
+            let arr = js_sys::Array::new();
+            for v in min.iter().chain(max.iter()) {
+                arr.push(&JsValue::from_f64(*v as f64));
+            }
+            set_state("bounds", &arr);
+        }
+        RenderEvent::MaterialChanged { meshes } => {
+            tracing::info!("remote demo: MaterialChanged meshes={meshes}");
+            set_state("materialChanged", &JsValue::from_f64(meshes as f64));
+        }
+        RenderEvent::ScreenshotBytes { len } => {
+            tracing::info!("remote demo: ScreenshotBytes len={len}");
+            set_state("screenshotBytes", &JsValue::from_f64(len as f64));
         }
         RenderEvent::Error { message } => {
             tracing::error!("remote demo: worker error: {message}");
@@ -338,6 +369,30 @@ fn post_event(evt: &RenderEvent) {
     }
 }
 
+/// Like [`post_event`] but attaches a Transferable payload (e.g. screenshot
+/// bytes) under `bytes`, transferring `transfer`'s `ArrayBuffer`s zero-copy.
+fn post_event_transfer(evt: &RenderEvent, bytes: &js_sys::Uint8Array, transfer: &js_sys::Array) {
+    if let Ok(v) = serde_wasm_bindgen::to_value(evt) {
+        let msg = js_sys::Object::new();
+        set(&msg, "kind", &JsValue::from_str("evt"));
+        set(&msg, "evt", &v);
+        set(&msg, "bytes", bytes);
+        let _ = worker_scope().post_message_with_transfer(&msg, transfer);
+    }
+}
+
+/// Capture the worker's `OffscreenCanvas` to PNG bytes via `convertToBlob` —
+/// a clean platform readback (no manual `copyTextureToBuffer` plumbing).
+async fn capture_png(canvas: &web_sys::OffscreenCanvas) -> Result<Vec<u8>, JsValue> {
+    let blob_promise = canvas.convert_to_blob()?;
+    let blob: web_sys::Blob = wasm_bindgen_futures::JsFuture::from(blob_promise)
+        .await?
+        .unchecked_into();
+    let buf = wasm_bindgen_futures::JsFuture::from(blob.array_buffer()).await?;
+    let arr = js_sys::Uint8Array::new(&buf);
+    Ok(arr.to_vec())
+}
+
 async fn run_worker(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     canvas: web_sys::OffscreenCanvas,
@@ -431,7 +486,7 @@ async fn run_worker(
             if crate::viewport::try_apply_resize(&canvas_cmd, &e.data()).is_some() {
                 return;
             }
-            handle_command(e, &cell_cmd, &loading_cmd, &orbit_cmd);
+            handle_command(e, &cell_cmd, &loading_cmd, &orbit_cmd, &canvas_cmd);
         });
     worker_scope().set_onmessage(Some(on_cmd.as_ref().unchecked_ref()));
     on_cmd.forget();
@@ -470,6 +525,7 @@ fn handle_command(
     cell: &Rc<RefCell<awsm_renderer::AwsmRenderer>>,
     loading: &Rc<Cell<bool>>,
     orbit: &Rc<RefCell<Orbit>>,
+    canvas: &web_sys::OffscreenCanvas,
 ) {
     let data = e.data();
     if js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
@@ -536,6 +592,68 @@ fn handle_command(
             o.pitch = pitch.clamp(-1.4, 1.4);
             o.distance = distance.clamp(0.5, 50.0);
             o.auto = false; // manual control takes over from the auto-spin
+        }
+        RenderCommand::Bounds => {
+            let r = cell.borrow();
+            let mut min = glam::Vec3::splat(f32::INFINITY);
+            let mut max = glam::Vec3::splat(f32::NEG_INFINITY);
+            let mut any = false;
+            for node in r.scene_spatial.iter_all() {
+                min = min.min(node.aabb.min);
+                max = max.max(node.aabb.max);
+                any = true;
+            }
+            if !any {
+                min = glam::Vec3::ZERO;
+                max = glam::Vec3::ZERO;
+            }
+            post_event(&RenderEvent::BoundsResult {
+                min: min.to_array(),
+                max: max.to_array(),
+            });
+        }
+        RenderCommand::SetMeshMaterial { emissive } => {
+            use awsm_materials::pbr::PbrMaterial;
+            use awsm_materials::MaterialAlphaMode;
+            use awsm_renderer::materials::Material;
+            let mut guard = cell.borrow_mut();
+            let r = &mut *guard; // reborrow to &mut AwsmRenderer for split field borrows
+            let mut mat = PbrMaterial::new(MaterialAlphaMode::Opaque, false);
+            mat.emissive_factor = emissive;
+            let new_key = r.materials.insert(
+                Material::Pbr(Box::new(mat)),
+                &r.textures,
+                &r.dynamic_materials,
+                &r.extras_pool,
+            );
+            let keys: Vec<_> = r.meshes.keys().collect();
+            let mut changed = 0usize;
+            for mk in keys {
+                if r.set_mesh_material(mk, new_key).is_ok() {
+                    changed += 1;
+                }
+            }
+            post_event(&RenderEvent::MaterialChanged { meshes: changed });
+        }
+        RenderCommand::Screenshot => {
+            let canvas = canvas.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match capture_png(&canvas).await {
+                    Ok(bytes) => {
+                        let arr = js_sys::Uint8Array::from(bytes.as_slice());
+                        let transfer = js_sys::Array::new();
+                        transfer.push(&arr.buffer());
+                        post_event_transfer(
+                            &RenderEvent::ScreenshotBytes { len: bytes.len() },
+                            &arr,
+                            &transfer,
+                        );
+                    }
+                    Err(err) => post_event(&RenderEvent::Error {
+                        message: format!("screenshot: {err:?}"),
+                    }),
+                }
+            });
         }
         RenderCommand::Pick { x, y } => {
             let cell = cell.clone();

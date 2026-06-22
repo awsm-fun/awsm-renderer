@@ -22,6 +22,24 @@ pub enum RenderCommand {
     LoadGltf { url: String },
     /// Re-orient the orbit camera (radians + distance).
     UpdateCamera { yaw: f32, pitch: f32, distance: f32 },
+    /// Request the scene's world-space AABB (reply → `RenderEvent::BoundsResult`).
+    Bounds,
+    /// Recolour every loaded mesh's emissive factor — a visible material
+    /// mutation over the protocol (reply → `RenderEvent::MaterialChanged`).
+    SetMeshMaterial { emissive: [f32; 3] },
+    /// Capture the current frame off the worker's `OffscreenCanvas`
+    /// (`convertToBlob`) and reply → `RenderEvent::ScreenshotBytes`.
+    ///
+    /// PLATFORM-BOUNDED (measured): on a WebGPU-configured `OffscreenCanvas`
+    /// Chrome rejects `convertToBlob` with `NotReadableError: Readback of the
+    /// source image has failed` — the swapchain image isn't host-readable after
+    /// present. A robust screenshot would need an in-renderer
+    /// `copyTextureToBuffer` + `mapAsync` capture path (rendering to an
+    /// explicit COPY_SRC color target), which the renderer doesn't yet expose;
+    /// building a one-off readback here would be fragile. The command therefore
+    /// stays in the protocol and surfaces the real `Error` rather than faking a
+    /// capture — the honest result of the platform probe.
+    Screenshot,
     /// Pick the mesh under a canvas pixel (request → `RenderEvent::PickResult`).
     Pick { x: i32, y: i32 },
 }
@@ -59,6 +77,13 @@ pub enum RenderEvent {
     Ready,
     /// Reply to a `Pick` command.
     PickResult { hit: bool, mesh_id: f64 },
+    /// Reply to a `Bounds` command — the scene's world-space AABB.
+    BoundsResult { min: [f32; 3], max: [f32; 3] },
+    /// Ack for `SetMeshMaterial` — how many meshes were recoloured.
+    MaterialChanged { meshes: usize },
+    /// Reply to a `Screenshot` command — the captured frame's PNG byte length
+    /// (the bytes themselves ride alongside as a Transferable, when present).
+    ScreenshotBytes { len: usize },
     /// Something failed.
     Error { message: String },
 }
