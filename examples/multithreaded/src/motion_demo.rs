@@ -229,6 +229,13 @@ async fn run_render(
     // count, proving descent work tracks movers, not the total slot count.
     let max_updated = Rc::new(RefCell::new(0usize));
     let max_chunks = Rc::new(RefCell::new(0usize));
+    // H3 culling proof: track the min/max frustum-visible mesh count. Body 0 is
+    // a "traveler" that sweeps far off-screen and back; if its CPU world_aabb
+    // tracks the physics position, the spatial index excludes it when it leaves
+    // the frustum → min_visible < total. With stale bounds it would always be
+    // counted (min_visible == total).
+    let min_visible = Rc::new(RefCell::new(usize::MAX));
+    let max_visible = Rc::new(RefCell::new(0usize));
 
     *raf_init.borrow_mut() = Some(Closure::new(move || {
         let mut r = cell_loop.borrow_mut();
@@ -253,6 +260,20 @@ async fn run_render(
             aperture: 5.6,
         });
         r.update_transforms();
+        // Probe the spatial index AFTER the descent has refreshed sim-owned
+        // bounds — this is what frustum culling / shadows / picking consult.
+        {
+            let frustum = awsm_renderer::frustum::Frustum::from_view_projection(projection * view);
+            let visible = r.scene_spatial.query_frustum_raw(&frustum).count();
+            let mn = &mut *min_visible.borrow_mut();
+            if visible < *mn {
+                *mn = visible;
+            }
+            let mx = &mut *max_visible.borrow_mut();
+            if visible > *mx {
+                *mx = visible;
+            }
+        }
         if let Err(err) = r.render(None) {
             tracing::warn!("motion demo: render error: {err}");
         }
@@ -297,6 +318,16 @@ async fn run_render(
                 &msg,
                 "physicsMessages",
                 &JsValue::from_f64(*phys_msgs.borrow() as f64),
+            );
+            set(
+                &msg,
+                "minVisible",
+                &JsValue::from_f64(*min_visible.borrow() as f64),
+            );
+            set(
+                &msg,
+                "maxVisible",
+                &JsValue::from_f64(*max_visible.borrow() as f64),
             );
             let _ = scope.post_message(&msg);
         }
@@ -345,15 +376,22 @@ fn physics_main(payload: JsValue) -> Result<(), JsValue> {
         // shared arena. No postMessage — pure shared-memory writes.
         for i in 0..movers {
             let base = bases[i];
-            let bob = (t * 0.06 + i as f32 * 0.5).sin() * 0.6;
+            // Body 0 is the "traveler": it sweeps far along X, fully off-screen
+            // and back, so the H3 frustum-culling probe can confirm its CPU
+            // world_aabb tracks the physics position. Others bob in place.
+            let (dx, dy) = if i == 0 {
+                ((t * 0.02).sin() * 16.0, 0.0)
+            } else {
+                (0.0, (t * 0.06 + i as f32 * 0.5).sin() * 0.6)
+            };
             // Column-major translation matrix (glam Mat4 layout).
             let mut cols = [0f32; 16];
             cols[0] = 1.0;
             cols[5] = 1.0;
             cols[10] = 1.0;
             cols[15] = 1.0;
-            cols[12] = base[0];
-            cols[13] = base[1] + bob;
+            cols[12] = base[0] + dx;
+            cols[13] = base[1] + dy;
             cols[14] = base[2];
             let bytes = unsafe { std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64) };
             // SAFETY: bindings/dirty_addr point into the shared memory both

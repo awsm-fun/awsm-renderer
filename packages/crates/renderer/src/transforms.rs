@@ -245,9 +245,11 @@ pub struct Transforms {
     /// single-threaded build → the classic in-place 112-byte pack, untouched.
     arena: Option<TransformArena>,
 
-    /// Reused across descents to pack arena values without a per-frame heap
-    /// allocation (shared mode only).
-    arena_pack_scratch: Vec<(TransformKey, [u8; Self::BYTE_SIZE])>,
+    /// Reused across descents to carry each updated slot's (key, world
+    /// matrix) without a per-frame heap allocation (shared mode only). The
+    /// world matrix drives BOTH the 112-byte GPU pack AND the CPU-side bounds
+    /// refresh (decision A / H3).
+    arena_pack_scratch: Vec<(TransformKey, Mat4)>,
 
     /// Stats from the most recent arena descent (shared mode) — exposed for
     /// the stress/hot-path proof (work tracks movers, not total slots).
@@ -621,14 +623,23 @@ impl Transforms {
                             );
                         }
                         let world = Mat4::from_cols_array(&cols);
-                        scratch.push((key, pack_world_transform(&world)));
+                        scratch.push((key, world));
                     }
                 }
             }
         }
         if !scratch.is_empty() {
-            for (key, packed) in scratch.iter() {
-                self.buffer.update(*key, packed);
+            for (key, world) in scratch.iter().copied() {
+                // GPU pack (model + inverse-transpose normal).
+                self.buffer.update(key, &pack_world_transform(&world));
+                // H3: refresh the CPU-side world matrix + mark the node dirty
+                // for the bounds/spatial/culling pass, so a physics-driven
+                // transform's `world_aabb` (frustum culling, shadows, picking)
+                // tracks its real position — not a stale one. `update_world`'s
+                // hierarchy walk skips these nodes (they're not in `dirties`),
+                // so this descent is the ONLY place their bounds get refreshed.
+                self.world_matrices.insert(key, world);
+                self.dirty_meshes.push(key);
             }
             self.gpu_dirty = true;
         }
@@ -985,6 +996,48 @@ mod tests {
                 // Padding float stays zero.
                 assert_eq!(&packed[off + 12..off + 16], &[0u8; 4], "normal pad {col}");
             }
+        }
+    }
+
+    /// H3: a world `Mat4` round-trips through the arena byte-for-byte, so any
+    /// `world_aabb` the bounds pass derives from the arena-sourced matrix (it
+    /// transforms the geometry's local AABB by exactly this matrix) equals the
+    /// single-threaded compute. This is the basis for sim-owned culling /
+    /// shadow / pick correctness.
+    #[test]
+    fn arena_world_matrix_roundtrips_for_bounds() {
+        let worlds = sample_worlds();
+        let mut arena = SharedArena::new(TRANSFORM_ARENA_STRIDE, 8, 8);
+        let mut slots = Vec::new();
+        for world in &worlds {
+            let slot = arena.allocate();
+            slots.push(slot);
+            let cols = world.to_cols_array();
+            let raw = unsafe { std::slice::from_raw_parts(cols.as_ptr() as *const u8, 64) };
+            arena.write_value(slot, raw);
+        }
+        let r = arena.descend();
+        assert_eq!(r.updated, worlds.len());
+        for (i, world) in worlds.iter().enumerate() {
+            let m = &arena.mirror()
+                [slots[i] * TRANSFORM_ARENA_STRIDE..(slots[i] + 1) * TRANSFORM_ARENA_STRIDE];
+            let mut cols = [0f32; 16];
+            unsafe {
+                std::ptr::copy_nonoverlapping(m.as_ptr(), cols.as_mut_ptr() as *mut u8, 64);
+            }
+            let from_arena = Mat4::from_cols_array(&cols);
+            assert_eq!(
+                from_arena.to_cols_array(),
+                world.to_cols_array(),
+                "arena world matrix differs from source for world {i}"
+            );
+            // A representative local-AABB corner transforms identically.
+            let corner = glam::Vec3::new(0.5, -0.5, 0.5);
+            assert_eq!(
+                from_arena.transform_point3(corner),
+                world.transform_point3(corner),
+                "arena-derived AABB corner differs for world {i}"
+            );
         }
     }
 
