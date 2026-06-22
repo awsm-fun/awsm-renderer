@@ -660,6 +660,26 @@ accept `alpha_mode` as a param on `add_custom_material` / `set_material_wgsl`.
 Document that mode must be set **before** the WGSL, and that batched material
 calls don't serialize.
 
+> ✅ **FIXED (2026-06-22) — the wrapper template was right; the VALIDATOR wasn't.**
+> Root cause was NOT the render path (`launch.rs` already routes Blend → the
+> transparent variant, Opaque/Mask → opaque). It was the synchronous compile
+> check `AwsmRenderer::validate_dynamic_material_wgsl` (the
+> `dynamic-material-validation` naga pass that `set_material_wgsl` reports from):
+> it ALWAYS assembled the material into `ShaderTemplateMaterialOpaque`, so a Blend
+> material's `TransparentShadingOutput` body was validated against the opaque
+> template → the bogus "no definition in scope for identifier:
+> TransparentShadingOutput". Fixed to pick the template by the registration's
+> `alpha_mode` (Blend → `ShaderTemplateMaterialTransparent`), mirroring
+> `launch.rs`. Because each of `set_material_alpha_mode` / `set_material_wgsl`
+> re-registers (via `mark_material_draft`) and re-validates against the CURRENT
+> alpha mode, the final state is correct in **either order** — only a transient
+> error if you push a transparent WGSL while the mode is still Opaque (so still
+> prefer alpha-mode-first; batched calls don't serialize — documented in the tool
+> + MCP.md). **Verified live**: `add_custom_material` → `set_material_alpha_mode
+> blend` → `set_material_wgsl` returning `TransparentShadingOutput` now compiles
+> `ok`, and a glass slab at alpha 0.35 renders see-through — the grid floor + a
+> red box behind it are visible through it (chrome-devtools screenshot).
+
 ## 13. 🟠 No typed way to set builtin `alpha_mode` or base-color **alpha**
 
 Glass needs `alpha_mode: blend` + a sub-1 base-color alpha on a builtin
@@ -842,9 +862,9 @@ or a naga quirk; either way an author hits it fast.
 | 7 | `set_frame_time` pins builtin texture `Flow` | DONE | `0d52f981` |
 | 8 | Per-model facing/orientation hint | DONE | `e2982c85` |
 | 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | DONE | `ab9898ef` |
-| 10 | Selection handles + pagination + fused `paint_where` | TODO | |
+| 10 | Fused `paint_where`/`transform_where` (handle + pagination deferred, noted) | DONE | `db32251b` |
 | 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | `8c7d2264` |
-| 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | TODO | |
+| 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | WIP | |
 | 13 | `set_builtin_alpha_mode` + base_color rgba | TODO | |
 | 14 | Particle realism (raw sprite upload, alpha sampled, doc `forces`) | TODO | |
 | 15 | Vertex-color default footgun — doc + clear-to-0 option | TODO | |

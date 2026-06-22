@@ -208,6 +208,12 @@ every command/query, and each tool self-describes over the MCP schema.
   `update_builtin_material` (replace a built-in's variant `MaterialDef` wholesale).
 - `set_material_wgsl { material, wgsl }` — replace source + synchronous recompile;
   **answers truthfully** (errors carry the compiler diagnostics, no silent `ok`).
+  The WGSL is validated against the contract for the material's CURRENT alpha mode
+  (Blend → transparent `TransparentShadingOutput`; Opaque/Mask → opaque
+  `OpaqueShadingOutput`), so **set `set_material_alpha_mode blend` BEFORE pushing a
+  transparent body** — otherwise that one call reports a transient contract error
+  (the final state self-corrects once both are set, in either order, since each
+  re-validates). Tool calls in one message aren't ordered — sequence them.
 - Authoring: `set_material_alpha_mode`, `set_material_double_sided`,
   `set_material_debug_color`, `set_material_layout { uniforms, textures, buffers }`,
   `set_material_includes { keys }`, `set_material_fragment_inputs { keys }`,
