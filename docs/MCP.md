@@ -148,7 +148,13 @@ every command/query, and each tool self-describes over the MCP schema.
 - `get_node_details { nodes? }` — full per-kind config + material assignment.
 - `resolve_node_material { node }` — the material a node actually RENDERS with
   (the direct answer, vs parsing the `NodeKind` blob).
-- `get_node_bounds { nodes? }` — world-space AABB per node (for framing/sizing).
+- `get_node_bounds { nodes? }` — world-space AABB `{ min, max }` per node (for
+  framing/sizing) **+ a facing hint** `{ forward, up, right }`: the node's local
+  axes (−Z / +Y / +X) in world space, derived from its world matrix. `forward` is
+  the project's −Z-forward convention — use it to place things relative to a
+  node's orientation ("on the back" = −`forward`). NOTE: this is the node's
+  *transform* orientation; an imported model's *geometry* may face a different way
+  (the convention; verify visually).
 - `get_material_wgsl { asset }` — a custom material's WGSL source.
 - `get_material_diagnostics { asset }` — `{ registered, ok, errors }` (tell a
   compile failure from a successful-but-dark shader).

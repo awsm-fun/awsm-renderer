@@ -433,6 +433,19 @@ bounds/normal-derived facing hint, or a documented convention check, would save
 a round-trip. (Model-specific; smaller payoff and likely later in the queue —
 but in scope and required, not optional.)
 
+> ✅ **SHIPPED (2026-06-22).** `get_node_bounds` now returns, alongside the AABB,
+> a facing hint `{ forward, up, right }` — the node's local axes (-Z / +Y / +X) in
+> world space, derived from its world matrix (`world_forward_up_right`,
+> unit-tested). `forward` is the project's -Z-forward convention; place relative
+> to it ("on the back" = `-forward`). **Verified live**: an identity box reports
+> `forward [0,0,-1]`; after a 90° +Y rotation `forward` → `[-1,0,~0]` and `right`
+> → `[~0,0,-1]` (tracks orientation). Documented (MCP.md) that this is the
+> *transform* orientation — an imported model's *geometry* may face differently,
+> so verify visually (the "+Z geometry vs -Z convention" case). A geometry-derived
+> facing (mesh normal/area analysis) was deliberately NOT added — it's a heavier,
+> model-specific heuristic; the transform-orientation hint + the convention note
+> + a screenshot cover the placement workflow generically.
+
 ---
 
 ## 9. 🟡 Misc papercuts
@@ -780,8 +793,8 @@ or a naga quirk; either way an author hits it fast.
 | 4 | Typed/patch particle emitter config | DONE | `1a38e67c` |
 | 5 | Unassigned-material node: render magenta/warn + fix docs | DONE | `8815c9be` |
 | 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | DONE | `a52f4550` |
-| 7 | `set_frame_time` pins builtin texture `Flow` | WIP | |
-| 8 | Per-model facing/orientation hint | TODO | |
+| 7 | `set_frame_time` pins builtin texture `Flow` | DONE | `0d52f981` |
+| 8 | Per-model facing/orientation hint | WIP | |
 | 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | TODO | |
 | 10 | Selection handles + pagination + fused `paint_where` | TODO | |
 | 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | `8c7d2264` |

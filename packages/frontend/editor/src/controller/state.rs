@@ -4943,6 +4943,12 @@ impl EditorController {
         let entries = crate::engine::context::with_renderer_mut(move |r| {
             let mut m = std::collections::BTreeMap::new();
             for (id, (lmin, lmax), meshes, tk) in &resolved {
+                let world = tk
+                    .and_then(|tk| r.transforms.get_world(tk).ok().copied())
+                    .unwrap_or(glam::Mat4::IDENTITY);
+                // §8 facing hint: the node's local axes in WORLD space (see
+                // `world_forward_up_right`).
+                let (forward, up, right) = world_forward_up_right(world);
                 // Prefer the renderer's LIVE world AABB (union over the node's
                 // materialized meshes) — exact for whatever actually renders,
                 // including populate-baked SkinnedMesh nodes whose scene-side
@@ -4960,18 +4966,20 @@ impl EditorController {
                         acc.extend(&b);
                         acc
                     });
-                if let Some(aabb) = live {
-                    m.insert(
-                        id.to_string(),
-                        json!({ "min": aabb.min.to_array(), "max": aabb.max.to_array() }),
-                    );
-                    continue;
-                }
-                let world = tk
-                    .and_then(|tk| r.transforms.get_world(tk).ok().copied())
-                    .unwrap_or(glam::Mat4::IDENTITY);
-                let (wmin, wmax) = transform_aabb(world, *lmin, *lmax);
-                m.insert(id.to_string(), json!({ "min": wmin, "max": wmax }));
+                let (mn, mx) = match live {
+                    Some(aabb) => (aabb.min.to_array(), aabb.max.to_array()),
+                    None => transform_aabb(world, *lmin, *lmax),
+                };
+                m.insert(
+                    id.to_string(),
+                    json!({
+                        "min": mn,
+                        "max": mx,
+                        "forward": forward,
+                        "up": up,
+                        "right": right,
+                    }),
+                );
             }
             m
         })
@@ -5777,6 +5785,21 @@ fn unassigned_material_kind(kind: &NodeKind) -> &'static str {
     } else {
         "none"
     }
+}
+
+/// The node's local axes expressed in WORLD space, derived from its world matrix
+/// (§8 facing hint): `(forward, up, right)` where `forward` is local **-Z** (the
+/// project's "-Z forward" convention), `up` is local +Y, `right` is local +X —
+/// each a unit vector. Lets an agent place things relative to a node's
+/// orientation ("on the back" = `-forward`) without trial-and-error. This is the
+/// node's TRANSFORM orientation; an imported model's *geometry* may face a
+/// different way (the convention; verify visually).
+fn world_forward_up_right(world: glam::Mat4) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    (
+        (-world.z_axis.truncate()).normalize_or_zero().to_array(),
+        world.y_axis.truncate().normalize_or_zero().to_array(),
+        world.x_axis.truncate().normalize_or_zero().to_array(),
+    )
 }
 
 /// Lightweight `{ id, name, kind }` for a node (no per-kind config blob) — the
@@ -7143,6 +7166,32 @@ mod unassigned_material_tests {
     #[test]
     fn non_geometry_is_none() {
         assert_eq!(unassigned_material_kind(&NodeKind::Group), "none");
+    }
+}
+
+#[cfg(test)]
+mod facing_tests {
+    use super::world_forward_up_right;
+    use glam::Mat4;
+
+    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5)
+    }
+
+    #[test]
+    fn identity_is_minus_z_forward() {
+        let (f, u, r) = world_forward_up_right(Mat4::IDENTITY);
+        assert!(close(f, [0.0, 0.0, -1.0]), "forward {f:?}");
+        assert!(close(u, [0.0, 1.0, 0.0]), "up {u:?}");
+        assert!(close(r, [1.0, 0.0, 0.0]), "right {r:?}");
+    }
+
+    #[test]
+    fn rotation_tracks_orientation() {
+        // Yaw 90° about +Y: local -Z forward swings to world -X.
+        let (f, _u, _r) =
+            world_forward_up_right(Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        assert!(close(f, [-1.0, 0.0, 0.0]), "forward {f:?}");
     }
 }
 
