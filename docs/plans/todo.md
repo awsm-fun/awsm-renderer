@@ -28,15 +28,12 @@
 5. **Do NOT claim "100%"** at the end unless every row is genuinely `DONE`.
    Write an honest summary: what landed (hashes), what's BLOCKED and why.
 
-## ⚠️ Autonomy boundary (read this before starting T1/T2)
+## Scope: Chrome desktop only
 
-The chrome-devtools MCP is **Chrome-desktop only**. Items that require a *real
-other browser or device* cannot be done autonomously:
-
-- **T1 (cross-browser: Safari/Firefox)** and **T2 (mobile: iOS Safari / Android
-  Chrome)** → mark `BLOCKED (human — needs real Safari/Firefox/iOS/Android; Chrome
-  MCP can't drive them)` immediately. Do not fake them. Everything else in this
-  doc is autonomously implementable + Chrome-verifiable.
+This project targets **Chrome desktop only** — by decision, there is no
+cross-browser or mobile work. Every item below is therefore Chrome-verifiable via
+the chrome-devtools MCP, so a complete run reaches **100% DONE**. (The old
+cross-browser / mobile testing items were removed for this reason.)
 
 ## Dev environment
 
@@ -107,13 +104,12 @@ deferred piece — the programmable GPU vertex stage — is **Part A** below.
 | T5 | Multithread: allocation / GC validation (Chrome) | TODO | |
 | B3 | Multithread: arena growth policy (only if T3 shows unbounded growth) | TODO | |
 | B4 | Multithread: bundled scene fixture for `?demo=scene` (optional) | TODO | |
-| T1 | Multithread: cross-browser bring-up (Safari/Firefox) | BLOCKED | human — Chrome MCP can't drive other browsers |
-| T2 | Multithread: mobile (iOS Safari / Android Chrome) | BLOCKED | human — needs real devices |
 
 **Suggested order:** CV1 → CV2 → CV3 → B2 → B1 → T4 → T3 → T5 → B3 (conditional)
-→ B4 (optional) → CV4 (polish). T1/T2 stay BLOCKED (human). Custom vertex is the
-headline feature and fully Chrome-verifiable (render a displaced mesh; confirm its
-shadow + silhouette match). The multithread items are smaller + self-contained.
+→ B4 (optional) → CV4 (polish). Custom vertex is the headline feature and fully
+Chrome-verifiable (render a displaced mesh; confirm its shadow + silhouette
+match). The multithread items are smaller + self-contained. Every row is
+Chrome-doable, so the target is a genuine 100%.
 
 > **Note on scale:** CV1 (per-material geometry/shadow pipeline split) and B1
 > (recovery) are the two genuinely large items — attempt them phase by phase; if a
@@ -518,28 +514,8 @@ The Phase 1 + Phase 2 architecture is landed and verified (see
 not architecture. This doc is *testing only* — code work deferred from the
 hardening lives in `docs/plans/multithread-build-plan.md`, not here.
 
-Everything below was verified **in Chrome (desktop) only**; that is the single
-biggest source of unknowns.
-
-## T1 — Cross-browser bring-up (highest priority)
-Run every `?demo=` (esp. `remote`, `skin`, `lights`, `crowd`, `churn`) on:
-- **Safari** (macOS + iOS): WebGPU is newest here; verify `SharedArrayBuffer`
-  under COOP/COEP, the worker bootstrap (`init({module, memory})`), and
-  `OffscreenCanvas` transfer all work.
-- **Firefox**: same matrix; confirm `+atomics` shared memory import + COEP.
-- **Per-API checks:** `crossOriginIsolated`, shared `WebAssembly.Memory`,
-  `queue.writeBuffer` from a SAB-backed view (works in Chrome — re-confirm),
-  `OffscreenCanvas.convertToBlob` (fails in Chrome on a WebGPU canvas — check if
-  it differs; informs the build-plan's screenshot path).
-- **Exit:** each demo renders + its gate passes, or the failure is logged with
-  the engine-specific cause.
-
-## T2 — Mobile (one real device each: iOS Safari, Android Chrome)
-- Memory headroom vs the `--max-memory` ceiling (currently 2 GiB); confirm a
-  large scene + churn doesn't OOM the shared memory.
-- DPR / backing-store sizing (the resize path) on a high-DPR phone.
-- Touch input forwarding (`?demo=input` pointer events).
-- Thermal / sustained frame-time on mobile GPUs.
+Target is **Chrome desktop** (the project's only platform). All gates below run
+through the chrome-devtools MCP.
 
 ## T3 — Performance at scale + soak (the one that catches slow leaks)
 - **Frame-time budgets** under `?stress=N` for `motion` / `crowd` at rising N;
@@ -569,6 +545,5 @@ The recovery *code* is in `multithread-build-plan.md`; this is its test side:
   regression that reintroduces a per-frame `Vec`/`Box`.
 
 ## How to run
-- Desktop Chrome gates: chrome-devtools MCP (as used throughout Phase 2).
-- Cross-browser / mobile: real browsers + devices (MCP is Chrome-only).
+- All gates: chrome-devtools MCP (as used throughout Phase 2).
 - Server: `task mt:dev` (port 9090, COOP/COEP).
