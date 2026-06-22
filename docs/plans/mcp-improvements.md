@@ -944,6 +944,17 @@ agent can author dusk, nebula, studio, overcast itself; it only needs a generic
 clean cel-shaded sphere — no escape hatch needed. Good. (Noted mostly as a
 *positive* — this is the shape the other material features should match.)
 
+> ✅ **DONE (2026-06-22) — added a real regression guard.** Toon already
+> validates-COMPILES in `first_party_opaque_shaders_validate` /
+> `first_party_transparent_shaders_validate`, but a compile test wouldn't catch
+> toon silently losing its cel-shading (rendering smooth like PBR while still
+> compiling). Added `toon_shader_is_banded_and_gated` (renderer
+> `wgsl_validation`): it asserts the assembled Toon module carries
+> `compute_toon_lit_color` + `fn toon_quantize` (the `floor()` band quantizer —
+> the actual cel-shading), AND that a non-Toon base (Unlit) does NOT assemble the
+> toon branch (base-gating). A genuine behavioral guard, not a no-op. Passes;
+> `task lint` clean.
+
 ## 20. 🟡 Custom WGSL: leading-operator line continuations fail to parse
 
 `let c = a\n  + b\n  + d;` (operator at the start of the continuation line)
@@ -986,7 +997,7 @@ or a naga quirk; either way an author hits it fast.
 | 15 | Vertex-color default footgun — doc + clear-to-0 option | DONE | `3c984ce3` |
 | 16 | Displace expr noise() primitive (GPU WGSL stage deferred-noted) | DONE | `9b307e8c` |
 | 17 | `ibl` include for custom materials (existed; discoverability fixed + verified) | DONE | `59743db5` |
-| 18 | Env-from-agent-data (raw cubemap bytes / skybox WGSL) | TODO | |
+| 18 | Env-from-agent-data: sky-gradient (equirect/cubemap-bytes + skybox WGSL deferred-noted) | DONE | `19b80c21` |
 | 19 | Toon shading — add regression test (positive, keep) | TODO | |
 | 20 | Custom WGSL leading-operator line continuations — fix or doc | TODO | |
 
