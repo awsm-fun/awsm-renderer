@@ -227,6 +227,29 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "paint_vertices_where",
+                EditorCommand::PaintVerticesWhere {
+                    node: NodeId::new(),
+                    predicate: crate::query::VertexPredicate::TopPercent {
+                        axis: 1,
+                        percent: 0.2,
+                    },
+                    color: [1.0, 0.0, 0.0, 1.0],
+                },
+            ),
+            (
+                "transform_vertices_where",
+                EditorCommand::TransformVerticesWhere {
+                    node: NodeId::new(),
+                    predicate: crate::query::VertexPredicate::WithinRadius {
+                        center: [0.0, 0.0, 0.0],
+                        radius: 1.0,
+                    },
+                    translation: [0.0, 1.0, 0.0],
+                    falloff: 0.5,
+                },
+            ),
+            (
                 "add_track",
                 EditorCommand::AddTrack {
                     clip: AssetId::new(),

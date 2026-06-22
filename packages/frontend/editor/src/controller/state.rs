@@ -542,6 +542,82 @@ impl EditorController {
     /// the recipe-restore into its undo inverse), `Ok(false)` if already authorable,
     /// and the prior stack (for the inverse) via the out-param. Errors if `mesh`
     /// isn't a mesh asset.
+    /// Resolve a node to its editable mesh asset id + resolved (post-eval)
+    /// geometry — the pair the fused `*_where` vertex ops (§10) need: the asset
+    /// id to write overrides on, the geometry to run the predicate against.
+    /// Errors (as a string) on a skinned node, a missing node, or a non-mesh kind.
+    fn node_editable_mesh(
+        &self,
+        node: NodeId,
+    ) -> Result<(AssetId, awsm_meshgen::MeshData), String> {
+        use awsm_editor_protocol::{MeshRef, NodeKind};
+        if node_is_skinned(&self.scene, node) {
+            return Err(skinned_edit_error(node));
+        }
+        let n = mutate::find_by_id(&self.scene, node)
+            .ok_or_else(|| format!("node {node} not found"))?;
+        let kind = n.kind.get_cloned();
+        let mesh_id = match &kind {
+            NodeKind::Mesh {
+                mesh: MeshRef(id), ..
+            } => *id,
+            _ => {
+                return Err(format!(
+                    "node {node} has no editable mesh (not a Mesh node)"
+                ))
+            }
+        };
+        let md = crate::controller::export::node_mesh(&self.scene, &kind)
+            .ok_or_else(|| format!("node {node} has no resolvable mesh geometry"))?;
+        Ok((mesh_id, md))
+    }
+
+    /// Soft-transform a vertex selection on `mesh` (shared by
+    /// `SoftTransformVertices` and the fused `TransformVerticesWhere`, §10).
+    fn soft_transform_mesh(
+        &self,
+        mesh: AssetId,
+        indices: &[u32],
+        translation: [f32; 3],
+        falloff: f32,
+    ) -> EditorResult<Option<EditorCommand>> {
+        use crate::engine::bridge::mesh_cache;
+        // Resolve the current (post-eval+override) geometry to weight the falloff
+        // against, then bake the move into `overrides.positions`.
+        let collapse = self.ensure_authorable(mesh)?;
+        let Some(cap) = mesh_cache::get_captured(mesh) else {
+            return Ok(None);
+        };
+        let md = awsm_meshgen::MeshData {
+            positions: cap.positions.clone(),
+            normals: cap.normals.clone(),
+            uvs: cap
+                .uvs
+                .clone()
+                .into_iter()
+                .chain(cap.uvs1.clone())
+                .collect(),
+            colors: cap.colors.clone(),
+            indices: cap.indices.clone(),
+        };
+        let new_positions =
+            awsm_meshgen::edit::soft_transform_positions(&md, indices, translation, falloff);
+        // Only override the verts the falloff actually moved.
+        let mut moved = false;
+        let prior = self.apply_vertex_overrides(mesh, |ov| {
+            for (i, (old, new)) in cap.positions.iter().zip(&new_positions).enumerate() {
+                if old != new {
+                    ov.positions.insert(i as u32, *new);
+                    moved = true;
+                }
+            }
+        })?;
+        if !moved {
+            return Ok(None);
+        }
+        Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+    }
+
     fn ensure_authorable(&self, mesh: AssetId) -> EditorResult<Option<ModifierStack>> {
         use crate::engine::bridge::mesh_cache;
         use awsm_editor_protocol::MeshRef;
@@ -1450,47 +1526,7 @@ impl EditorController {
                 indices,
                 translation,
                 falloff,
-            } => {
-                use crate::engine::bridge::mesh_cache;
-                // Resolve the current (post-eval+override) geometry to weight the
-                // falloff against, then bake the move into `overrides.positions`.
-                let collapse = self.ensure_authorable(mesh)?;
-                let Some(cap) = mesh_cache::get_captured(mesh) else {
-                    return Ok(None);
-                };
-                let md = awsm_meshgen::MeshData {
-                    positions: cap.positions.clone(),
-                    normals: cap.normals.clone(),
-                    uvs: cap
-                        .uvs
-                        .clone()
-                        .into_iter()
-                        .chain(cap.uvs1.clone())
-                        .collect(),
-                    colors: cap.colors.clone(),
-                    indices: cap.indices.clone(),
-                };
-                let new_positions = awsm_meshgen::edit::soft_transform_positions(
-                    &md,
-                    &indices,
-                    translation,
-                    falloff,
-                );
-                // Only override the verts the falloff actually moved.
-                let mut moved = false;
-                let prior = self.apply_vertex_overrides(mesh, |ov| {
-                    for (i, (old, new)) in cap.positions.iter().zip(&new_positions).enumerate() {
-                        if old != new {
-                            ov.positions.insert(i as u32, *new);
-                            moved = true;
-                        }
-                    }
-                })?;
-                if !moved {
-                    return Ok(None);
-                }
-                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
-            }
+            } => self.soft_transform_mesh(mesh, &indices, translation, falloff),
             EditorCommand::PaintVertexColors {
                 mesh,
                 indices,
@@ -1503,6 +1539,52 @@ impl EditorController {
                     }
                 })?;
                 Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::PaintVerticesWhere {
+                node,
+                predicate,
+                color,
+            } => {
+                // §10: select + paint in one call so the (potentially huge) index
+                // array never crosses the MCP boundary.
+                let (mesh, md) = match self.node_editable_mesh(node) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        Toast::error(e);
+                        return Ok(None);
+                    }
+                };
+                let indices = select_vertices_by_predicate(&md, &predicate);
+                if indices.is_empty() {
+                    return Ok(None);
+                }
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for &idx in &indices {
+                        ov.colors.insert(idx, color);
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
+            EditorCommand::TransformVerticesWhere {
+                node,
+                predicate,
+                translation,
+                falloff,
+            } => {
+                // §10: select + soft-transform in one call (indices stay server-side).
+                let (mesh, md) = match self.node_editable_mesh(node) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        Toast::error(e);
+                        return Ok(None);
+                    }
+                };
+                let indices = select_vertices_by_predicate(&md, &predicate);
+                if indices.is_empty() {
+                    return Ok(None);
+                }
+                self.soft_transform_mesh(mesh, &indices, translation, falloff)
             }
             EditorCommand::SetVertexNormals {
                 mesh,
@@ -4127,11 +4209,6 @@ impl EditorController {
                 })
             }
             EditorQuery::SelectVerticesWhere { node, predicate } => {
-                use awsm_editor_protocol::VertexPredicate as P;
-                use awsm_meshgen::edit::{
-                    select_by_axis, select_by_normal_dir, select_top_count_axis,
-                    select_top_percent_axis, select_within_aabb, select_within_radius, Cmp,
-                };
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
                     return QueryResult::Error {
@@ -4143,37 +4220,7 @@ impl EditorController {
                 });
                 match mesh {
                     Some(mesh) => {
-                        let idx = match predicate {
-                            P::NormalDir { dir, threshold } => {
-                                select_by_normal_dir(&mesh, dir, threshold)
-                            }
-                            P::AxisGreater { axis, value } => {
-                                select_by_axis(&mesh, axis as usize, Cmp::Greater, value)
-                            }
-                            P::AxisLess { axis, value } => {
-                                select_by_axis(&mesh, axis as usize, Cmp::Less, value)
-                            }
-                            P::TopPercent { axis, percent } => {
-                                if !(0.0..=1.0).contains(&percent) {
-                                    // percent is a 0..1 FRACTION; out-of-range input
-                                    // silently clamps in the selector, which reads as
-                                    // "selected everything" to a confused caller.
-                                    tracing::warn!(
-                                        "select_vertices_where top_percent: percent {percent} \
-                                         is outside 0..1 (it is a fraction, not a percentage) — \
-                                         clamping"
-                                    );
-                                }
-                                select_top_percent_axis(&mesh, axis as usize, percent)
-                            }
-                            P::TopCount { axis, count } => {
-                                select_top_count_axis(&mesh, axis as usize, count)
-                            }
-                            P::WithinRadius { center, radius } => {
-                                select_within_radius(&mesh, center, radius)
-                            }
-                            P::WithinAabb { min, max } => select_within_aabb(&mesh, min, max),
-                        };
+                        let idx = select_vertices_by_predicate(&mesh, &predicate);
                         let mut entries = std::collections::BTreeMap::new();
                         entries.insert("count".to_string(), json!(idx.len()));
                         entries.insert("indices".to_string(), json!(idx));
@@ -5866,6 +5913,43 @@ fn unassigned_material_kind(kind: &NodeKind) -> &'static str {
         "unassigned"
     } else {
         "none"
+    }
+}
+
+/// Select the vertex indices of `mesh` matching `predicate` — shared by the
+/// `SelectVerticesWhere` query and the fused `PaintVerticesWhere` /
+/// `TransformVerticesWhere` commands (§10), so a full-res selection can be acted
+/// on server-side without round-tripping the (huge) index array through MCP.
+fn select_vertices_by_predicate(
+    mesh: &awsm_meshgen::MeshData,
+    predicate: &awsm_editor_protocol::VertexPredicate,
+) -> Vec<u32> {
+    use awsm_editor_protocol::VertexPredicate as P;
+    use awsm_meshgen::edit::{
+        select_by_axis, select_by_normal_dir, select_top_count_axis, select_top_percent_axis,
+        select_within_aabb, select_within_radius, Cmp,
+    };
+    match predicate {
+        P::NormalDir { dir, threshold } => select_by_normal_dir(mesh, *dir, *threshold),
+        P::AxisGreater { axis, value } => {
+            select_by_axis(mesh, *axis as usize, Cmp::Greater, *value)
+        }
+        P::AxisLess { axis, value } => select_by_axis(mesh, *axis as usize, Cmp::Less, *value),
+        P::TopPercent { axis, percent } => {
+            if !(0.0..=1.0).contains(percent) {
+                // percent is a 0..1 FRACTION; out-of-range input silently clamps
+                // in the selector, which reads as "selected everything" to a
+                // confused caller.
+                tracing::warn!(
+                    "select_vertices_where top_percent: percent {percent} is outside 0..1 \
+                     (it is a fraction, not a percentage) — clamping"
+                );
+            }
+            select_top_percent_axis(mesh, *axis as usize, *percent)
+        }
+        P::TopCount { axis, count } => select_top_count_axis(mesh, *axis as usize, *count),
+        P::WithinRadius { center, radius } => select_within_radius(mesh, *center, *radius),
+        P::WithinAabb { min, max } => select_within_aabb(mesh, *min, *max),
     }
 }
 

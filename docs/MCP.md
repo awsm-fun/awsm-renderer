@@ -287,6 +287,15 @@ every command/query, and each tool self-describes over the MCP schema.
   → indices, `set_vertex_positions`, `set_vertex_normals`, `paint_vertex_colors`,
   `soft_transform_vertices { falloff }` (radial falloff), `set_vertex_selection`
   (viewport highlight).
+- **Fused select-and-act (scales to full-res meshes — the index array stays
+  server-side, never round-trips):** `paint_where { node, predicate, color }`
+  (= select_vertices_where + paint_vertex_colors in one call) and
+  `transform_where { node, predicate, translation, falloff }` (= select +
+  soft_transform). Prefer these over the select→indices→act pattern when a
+  predicate matches thousands of verts (a real terrain's height band), which
+  overflows the tool-result token cap if returned. Painted colors still only
+  DISPLAY under a vertex-color-reading material (built-in PBR with
+  `vertex_colors_enabled`).
 
 **Rig / skin**
 - `get_skin_data` (joints as node ids — see Discover), `get_skin_weights { node }`

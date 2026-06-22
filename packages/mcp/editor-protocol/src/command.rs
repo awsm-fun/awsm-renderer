@@ -611,6 +611,27 @@ pub enum EditorCommand {
         mesh: AssetId,
         overrides: VertexOverrides,
     },
+    /// FUSED select-and-paint (§10): pick the vertices of `node`'s resolved mesh
+    /// matching `predicate` and set their per-vertex **color** override to
+    /// `color`, in ONE call — the index array stays server-side (a full-res
+    /// height-band selection can be tens of thousands of indices that overflow
+    /// the MCP token cap when round-tripped). Same collapse/re-bake/inverse
+    /// semantics as `PaintVertexColors`.
+    PaintVerticesWhere {
+        node: NodeId,
+        predicate: crate::query::VertexPredicate,
+        color: [f32; 4],
+    },
+    /// FUSED select-and-soft-transform (§10): pick the vertices of `node`'s
+    /// resolved mesh matching `predicate` and translate them with a smooth radial
+    /// `falloff`, in ONE call (indices stay server-side). Same semantics as
+    /// `SoftTransformVertices`.
+    TransformVerticesWhere {
+        node: NodeId,
+        predicate: crate::query::VertexPredicate,
+        translation: [f32; 3],
+        falloff: f32,
+    },
     /// Project-wide finalize: collapse **every** Mesh asset's stack (freeze all
     /// topology, bake all overrides into the cache, then flatten recipes to
     /// `Captured`-self). Inverse: a `Batch` restoring each mesh's prior stack.
@@ -1121,6 +1142,8 @@ impl EditorCommand {
             EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
             EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",
             EditorCommand::PaintVertexColors { .. } => "Paint vertex colors",
+            EditorCommand::PaintVerticesWhere { .. } => "Paint vertices (where)",
+            EditorCommand::TransformVerticesWhere { .. } => "Transform vertices (where)",
             EditorCommand::SetVertexNormals { .. } => "Set vertex normals",
             EditorCommand::SetVertexOverrides { .. } => "Set vertex overrides",
             EditorCommand::BakeAll {} => "Bake all meshes",

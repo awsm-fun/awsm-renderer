@@ -148,6 +148,29 @@ pub struct SelectVerticesParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PaintWhereParams {
+    /// UUID of the geometry node.
+    pub node: String,
+    /// Selection predicate (same shapes as `select_vertices_where`).
+    pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+    /// Linear RGBA `[r,g,b,a]` painted on every selected vertex.
+    pub color: [f32; 4],
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TransformWhereParams {
+    /// UUID of the geometry node.
+    pub node: String,
+    /// Selection predicate (same shapes as `select_vertices_where`).
+    pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+    /// World-space translation `[x,y,z]` applied to the selection.
+    pub translation: [f32; 3],
+    /// Smooth radial falloff radius (0 = rigid move of exactly the selection).
+    #[serde(default)]
+    pub falloff: f32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ExportBundleParams {
     /// Bundle name (publish dir / manifest label).
     pub name: String,
@@ -2080,6 +2103,37 @@ impl EditorMcp {
             mesh: parse_asset(&p.mesh)?,
             indices: p.indices,
             color: p.color,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "FUSED select-and-paint: pick the vertices of `node`'s resolved mesh matching `predicate` (same shapes as select_vertices_where) and paint them `color` (linear RGBA) in ONE call. Use this instead of select_vertices_where→paint_vertex_colors for full-resolution selections — a height-band/slope match on a real terrain can be tens of thousands of indices that overflow the tool-result token cap when round-tripped; here the index array stays server-side. Same collapse/re-bake/undo semantics + display caveat as paint_vertex_colors (needs a vertex-color-reading material). Verify with get_vertex_data or a screenshot."
+    )]
+    async fn paint_where(
+        &self,
+        Parameters(p): Parameters<PaintWhereParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::PaintVerticesWhere {
+            node: parse_node(&p.node)?,
+            predicate: p.predicate.0,
+            color: p.color,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "FUSED select-and-soft-transform: pick the vertices of `node`'s resolved mesh matching `predicate` and translate them by `translation` with a smooth radial `falloff` (0 = move exactly the selection), in ONE call (indices stay server-side — see paint_where). Same collapse/re-bake/undo semantics as soft_transform_vertices. Verify with get_mesh_stats / get_vertex_data / a screenshot."
+    )]
+    async fn transform_where(
+        &self,
+        Parameters(p): Parameters<TransformWhereParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::TransformVerticesWhere {
+            node: parse_node(&p.node)?,
+            predicate: p.predicate.0,
+            translation: p.translation,
+            falloff: p.falloff,
         })
         .await
     }

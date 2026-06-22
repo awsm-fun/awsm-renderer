@@ -557,6 +557,30 @@ for painting at real resolution.**
 3. Pagination / `count`-only mode on big queries; `get_children`/`get_subtree`
    (also §6) to avoid `get_snapshot` for local lookups.
 
+> ✅ **FIXED via fused verbs (2026-06-22) — fix (2), the cleanest generic slice.**
+> New `paint_where { node, predicate, color }` and `transform_where { node,
+> predicate, translation, falloff }`: select-and-act in ONE call so the (huge)
+> index array NEVER crosses the MCP boundary — the exact win the selection handle
+> bought, without the cross-verb lifecycle. They reuse the existing predicate
+> selector + paint/soft-transform internals (shared `select_vertices_by_predicate`
+> + `soft_transform_mesh`), so behavior matches `paint_vertex_colors` /
+> `soft_transform_vertices` (collapse-on-first-edit, undoable). **Verified live**:
+> on a 3,721-vert roughened terrain, `paint_where top_percent(axis Y, 0.3)` →
+> `ok` with no array returned; `get_vertex_data` confirmed in-band verts (Y≈0.35)
+> are `[1,0,0,1]` and out-of-band verts (Y<−0.2) are unpainted `[1,1,1,1]` — a
+> precise band, painted server-side. (The same `select_vertices_where` reading
+> 781 indices in that test is the very overflow these verbs avoid.) Roundtrip
+> tests + lint.
+>
+> **Deferred (noted, not silently dropped):** fix (1) a *reusable* cross-verb
+> selection handle (compose one selection across paint+sculpt+normals+positions)
+> would touch all four index-taking commands' wire types — a larger change whose
+> acute pain (paint/sculpt a predicate region at full res) the fused verbs
+> already cover; and fix (3) `count`-only / pagination on the *read* path
+> (`select_vertices_where`, `get_vertex_data`) for agents that still need the raw
+> indices. `get_snapshot` overflow is already mitigated by §6's
+> `get_children`/`get_subtree`. These remain open follow-ons on this row's intent.
+
 ## 11. 🔴 Built-in material is "specialize-only" → per-node texture overrides silently don't render
 
 To put a UV texture on the jetpack I `set_node_texture { slot: base_color }` on
@@ -817,7 +841,7 @@ or a naga quirk; either way an author hits it fast.
 | 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | DONE | `a52f4550` |
 | 7 | `set_frame_time` pins builtin texture `Flow` | DONE | `0d52f981` |
 | 8 | Per-model facing/orientation hint | DONE | `e2982c85` |
-| 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | DONE | `be1d90bc` |
+| 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | DONE | `ab9898ef` |
 | 10 | Selection handles + pagination + fused `paint_where` | TODO | |
 | 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | `8c7d2264` |
 | 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | TODO | |
