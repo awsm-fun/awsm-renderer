@@ -691,6 +691,14 @@ pub struct PatchKindParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct KindSchemaParams {
+    /// Which schema: `"node"` (default) for the full `NodeKind` config schema, or
+    /// `"modifier"` for the `ModifierStack` (mesh base + modifiers) schema.
+    #[serde(default)]
+    pub schema: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct NodeTextureTransformParams {
     /// Mesh node UUID (the slot must already have a texture bound).
     pub node: String,
@@ -2733,6 +2741,26 @@ impl EditorMcp {
             patch: p.patch,
         })
         .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "§3: the machine-readable JSON Schema for a node's `kind` config — the EXACT field shape + enum options of every NodeKind variant, so you can author a fresh kind via set_kind / patch_kind without guessing (the complement to get_node_details, which only shows an existing instance). Default (`schema: \"node\"`) returns the full `NodeKind` schema: every variant under `oneOf`, and every referenced sub-type (LightConfig, CameraConfig, MaterialInstance, ParticleEmitterDef, the KHR PBR extensions, …) fully expanded under `$defs`. `schema: \"modifier\"` returns the `ModifierStack` schema (mesh base + every modifier) for set_mesh_modifiers. Static metadata — no scene state. Returns a JSON Schema (draft 2020-12)."
+    )]
+    async fn get_kind_schema(
+        &self,
+        Parameters(p): Parameters<KindSchemaParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let json = match p.schema.as_deref() {
+            Some("modifier") | Some("modifier_stack") | Some("modifiers") => {
+                serde_json::to_string_pretty(&schemars::schema_for!(
+                    awsm_editor_protocol::ModifierStack
+                ))
+            }
+            _ => serde_json::to_string_pretty(&schemars::schema_for!(NodeKind)),
+        }
+        .map_err(|e| McpError::internal_error(format!("serialize schema: {e}"), None))?;
+        Ok(text(json))
     }
 
     #[tool(

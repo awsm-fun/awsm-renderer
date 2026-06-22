@@ -11,6 +11,7 @@ use super::primitive::TextureRef;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DecalConfig {
     /// Texture asset projected onto the geometry under the decal cube.
     /// `None` keeps the decal inert — useful while authoring before a
@@ -39,6 +40,7 @@ impl Default for DecalConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum DecalBlendMode {
     #[default]
     AlphaBlend,

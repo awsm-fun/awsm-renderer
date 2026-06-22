@@ -86,6 +86,7 @@ pub enum SizeOverLifeDef {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ParticleEmitterDef {
     pub spawn_rate: f32,
     pub burst_count: u32,

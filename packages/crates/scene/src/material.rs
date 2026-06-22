@@ -8,6 +8,7 @@ use super::primitive::TextureRef;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MaterialDef {
     /// Optional human-readable label. Shown in the editor's Assets
     /// panel pill list and the asset inspector header. Empty by
@@ -105,6 +106,7 @@ impl Default for MaterialDef {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum MaterialAlphaMode {
     #[default]
     Opaque,
@@ -117,6 +119,7 @@ pub enum MaterialAlphaMode {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Copy)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum MaterialShading {
     Pbr,
     Unlit,
@@ -164,6 +167,7 @@ pub enum MaterialShading {
 /// FlipBook wrap mode — mirrors the renderer's `FlipBookMode` 1:1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum FlipBookPlayMode {
     /// `frame % count` — wraps forever.
     #[default]
@@ -201,6 +205,7 @@ fn default_rim_power() -> f32 {
 /// projects (which have no `extensions` key) round-trip unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PbrExtensions {
     pub emissive_strength: Option<EmissiveStrengthExt>,
     pub ior: Option<IorExt>,
@@ -219,6 +224,7 @@ macro_rules! ext_struct {
     ($(#[$m:meta])* $name:ident { $($field:ident : $ty:ty = $def:expr),* $(,)? }) => {
         $(#[$m])*
         #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
         #[serde(rename_all = "snake_case")]
         pub struct $name { $(#[serde(default)] pub $field: $ty),* }
         impl Default for $name {

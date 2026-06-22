@@ -150,6 +150,7 @@ pub enum FieldType {
 /// instance overrides on [`MaterialInstance::uniform_overrides`].
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum UniformValue {
     /// `f32`
     F32(f32),
@@ -283,6 +284,7 @@ pub struct CustomMaterialRef {
 /// the missing-material sentinel.
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MaterialInstance {
     /// Stable id of the assigned material (built-in OR custom WGSL), an entry
     /// in the editor's custom-material list. Id-keyed (not name-keyed) so
@@ -315,6 +317,7 @@ pub struct MaterialInstance {
 /// texture-asset picker.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BufferRef {
     /// Project-relative path to a `.bin` file.
     pub path: PathBuf,

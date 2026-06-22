@@ -5,6 +5,7 @@ use super::primitive::TextureRef;
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Eq, Hash, Copy, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum BillboardMode {
     /// No billboarding — the quad sits in 3D space as authored.
     None,
@@ -18,6 +19,7 @@ pub enum BillboardMode {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Copy, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum SpriteAlphaMode {
     Opaque,
     Mask {
@@ -29,6 +31,7 @@ pub enum SpriteAlphaMode {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SpriteDef {
     pub texture: Option<TextureRef>,
     pub size: [f32; 2],
@@ -62,6 +65,7 @@ impl Default for SpriteDef {
 /// `awsm_materials::flipbook::FlipBookMaterial`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SpriteFlipBookDef {
     /// Atlas columns. Must be `>= 1`.
     pub cols: u32,
@@ -91,6 +95,7 @@ pub struct SpriteFlipBookDef {
 /// `awsm_materials::flipbook::FlipBookMode`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum FlipBookModeDef {
     /// Wrap on `frame_count`.
     #[default]

@@ -2,6 +2,7 @@
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct LinePoint {
     pub pos: [f32; 3],
     pub color: [f32; 4],
@@ -9,6 +10,7 @@ pub struct LinePoint {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct LineDef {
     pub points: Vec<LinePoint>,
     /// Line width in CSS pixels. Rendered by the screen-space fat-line

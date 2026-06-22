@@ -15,6 +15,7 @@ use glam::{Quat, Vec3};
 /// what physics sees rather than flattering it.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ColliderShape {
     Box {
         half_extents: [f32; 3],

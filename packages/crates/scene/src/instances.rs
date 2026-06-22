@@ -4,6 +4,7 @@ use super::tree::{MeshShadowConfig, NodeId};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InstancesAlongCurveDef {
     pub curve_node: NodeId,
     pub source_node: NodeId,
