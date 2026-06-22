@@ -57,6 +57,21 @@ node's `NodeKind`, `editor-protocol/src/merge_patch.rs`) + typed-tool JSON schem
 for the dedicated tools. `get_node_details` returns a node's serialized `NodeKind`
 so the agent can read the current shape and patch a delta.
 
+> ✅ **DONE (`7e36c2ad`) — the cascade did NOT balloon.** Added `get_kind_schema`
+> (read-only MCP tool): default returns the full `NodeKind` JSON Schema (every
+> variant under `oneOf` + every sub-type expanded under `$defs`);
+> `schema:"modifier"` returns the `ModifierStack` schema. Implementation: derived
+> `schemars::JsonSchema` across the ~50 types in the NodeKind closure behind the
+> existing off-by-default `schemars` feature (so wasm/non-schema builds pay
+> nothing) — iterated to fixpoint (12 → 13 → 10 → 14 → the `ext_struct!` macro for
+> the KHR PBR extensions), all mechanical. The MCP build already enabled
+> `awsm-scene/schemars`, so the tool just serializes `schema_for!(NodeKind)`.
+> **Verified:** native test asserts the schema lists real variant fields (incl.
+> the deep macro-generated `AnisotropyExt`); **live** over the MCP HTTP endpoint
+> the tool returns a valid 92 KB schema with **57 sub-type `$defs`**
+> (ParticleEmitterDef / CameraConfig / LightConfig / MaterialInstance /
+> AnisotropyExt all present) + a valid `modifier` stack schema.
+
 **Still owed.** There is **no machine-readable schema of the `NodeKind` variants
 themselves** — the agent can read an *instance* (`get_node_details`) but cannot
 discover the full field shape / enum options of a variant it hasn't seen an
@@ -305,7 +320,7 @@ becomes the skybox AND a metallic/low-roughness sphere reflects + is lit by it
 
 | # | Item | Status | Commit |
 |---|------|--------|--------|
-| 3 | Full per-variant JSONSchema for NodeKind / kind-config types | TODO | |
+| 3 | Full per-variant JSONSchema for NodeKind (get_kind_schema) | DONE | `7e36c2ad` |
 | 10 | Reusable vertex-selection handle + read-path pagination | DONE | `135cf797` |
 | 14 | True soft-gradient particle blend (transparent instancing) | DONE | `a0c70ee6` |
 | 16 | Displace-from-texture DONE; GPU WGSL stage BLOCKED (stretch) | DONE* | `7bbca00a` |
