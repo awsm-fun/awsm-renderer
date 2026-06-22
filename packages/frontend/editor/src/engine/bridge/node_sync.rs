@@ -1552,15 +1552,19 @@ async fn materialize_particle(
 ) {
     let parent_tk = entry.transform_key;
     let node_id = entry.node_id;
-    with_renderer_mut(move |r| {
+    // §14: the blend route compiles a transparent instancing pipeline, so the
+    // materialize is async — hold the renderer lock across it (like `commit_load`
+    // below) instead of the sync `with_renderer_mut` closure.
+    {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
         let world_pos = r
             .transforms
             .get_world(parent_tk)
             .map(|m| m.w_axis.truncate())
             .unwrap_or(Vec3::ZERO);
-        super::particles::materialize(r, node_id, parent_tk, world_pos, &def);
-    })
-    .await;
+        super::particles::materialize(&mut r, node_id, parent_tk, world_pos, &def).await;
+    }
     // The emitter inserts a PBR material (a feature-set variant) whose pipeline
     // must compile — route through the one compile path. Skipped under the bulk-load
     // join (which commits once at the end). render() no longer compiles reactively.
