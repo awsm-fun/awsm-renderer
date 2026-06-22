@@ -917,6 +917,26 @@ procedural sky the agent writes), and/or an equirect 2D texture it uploaded. The
 agent can author dusk, nebula, studio, overcast itself; it only needs a generic
 "set environment from agent-provided image/shader" path, not a fixed mood menu.
 
+> ✅ **DONE (2026-06-22) — agent-authored sky-gradient env (data hook, not a mood
+> menu).** `set_environment` now accepts `zenith` + `nadir` (`[r,g,b]` linear) — a
+> two-color sky gradient that sets BOTH the skybox and the IBL from the agent's
+> own colors. It reuses the EXACT generator the built-in default already uses
+> (`CubemapImage::new_sky_gradient` / `CubemapSkyGradient`), wired through new
+> `SkyboxConfig::SkyGradient` / `IblConfig::SkyGradient` scene variants +
+> `env_sync`. So the agent authors dusk (deep-blue zenith + warm nadir), overcast
+> (flat grays), night (near-black), studio (neutral) etc. from data — no preset
+> menu, no externally-hosted `.ktx2`. **Verified live**: `set_environment
+> zenith=[0.07,0.09,0.33] nadir=[0.75,0.33,0.12]` turned the skybox dusk AND a
+> metallic sphere now reflects/lit by it (deep-blue crown from the zenith, warm
+> base from the nadir) — chrome-devtools before/after screenshots. This directly
+> fixes the §14 "make it dusk so the additive fire pops" motivator. Lint clean.
+>
+> **Deferred (noted):** richer agent-supplied env DATA — a full agent-uploaded
+> **equirect / cubemap-from-`create_texture`-bytes** (arbitrary HDR panoramas, not
+> just a 2-color gradient; needs equirect→cubemap projection + IBL convolution at
+> runtime) and a **skybox WGSL** hook. The 2-color sky gradient covers the
+> documented mood-authoring pain; arbitrary-image envs are the power upgrade.
+
 ## 19. 🟡 Toon shading works via typed tools
 
 `add_builtin_material toon` + `set_builtin_param` (`base_color`, plus the
@@ -965,7 +985,7 @@ or a naga quirk; either way an author hits it fast.
 | 14 | Particle realism (sprite upload, alpha sampled→discs, doc `forces`; soft-gradient blend deferred-noted) | DONE | `327b8159` |
 | 15 | Vertex-color default footgun — doc + clear-to-0 option | DONE | `3c984ce3` |
 | 16 | Displace expr noise() primitive (GPU WGSL stage deferred-noted) | DONE | `9b307e8c` |
-| 17 | `ibl` include + light-list for custom materials | TODO | |
+| 17 | `ibl` include for custom materials (existed; discoverability fixed + verified) | DONE | `59743db5` |
 | 18 | Env-from-agent-data (raw cubemap bytes / skybox WGSL) | TODO | |
 | 19 | Toon shading — add regression test (positive, keep) | TODO | |
 | 20 | Custom WGSL leading-operator line continuations — fix or doc | TODO | |

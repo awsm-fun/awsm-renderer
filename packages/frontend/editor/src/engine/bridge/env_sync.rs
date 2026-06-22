@@ -105,10 +105,23 @@ pub fn start() {
     });
 }
 
+/// Build a `CubemapSkyGradient` from agent-supplied linear-RGB zenith/nadir (§18).
+fn sky_gradient(zenith: [f32; 3], nadir: [f32; 3]) -> CubemapSkyGradient {
+    use awsm_renderer_core::command::color::Color;
+    let c = |v: [f32; 3]| Color::new_values(v[0] as f64, v[1] as f64, v[2] as f64, 1.0);
+    CubemapSkyGradient::new(c(zenith), c(nadir))
+}
+
 async fn apply_skybox(cfg: &SkyboxConfig) -> anyhow::Result<()> {
     let image = match cfg {
         SkyboxConfig::BuiltInDefault => {
             CubemapImage::new_sky_gradient(CubemapSkyGradient::default(), 1024, 1024)
+                .await
+                .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))?
+        }
+        // §18: agent-authored sky gradient — same generator as BuiltInDefault.
+        SkyboxConfig::SkyGradient { zenith, nadir } => {
+            CubemapImage::new_sky_gradient(sky_gradient(*zenith, *nadir), 1024, 1024)
                 .await
                 .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))?
         }
@@ -121,15 +134,10 @@ async fn apply_skybox(cfg: &SkyboxConfig) -> anyhow::Result<()> {
 
 async fn apply_ibl(cfg: &IblConfig) -> anyhow::Result<()> {
     let (prefiltered, irradiance) = match cfg {
-        IblConfig::BuiltInDefault => {
-            let gradient = CubemapSkyGradient::default();
-            let p = CubemapImage::new_sky_gradient(gradient.clone(), 1024, 1024)
-                .await
-                .map_err(|e| anyhow::anyhow!("prefiltered: {e}"))?;
-            let i = CubemapImage::new_sky_gradient(gradient, 32, 32)
-                .await
-                .map_err(|e| anyhow::anyhow!("irradiance: {e}"))?;
-            (p, i)
+        IblConfig::BuiltInDefault => gradient_ibl(CubemapSkyGradient::default()).await?,
+        // §18: agent-authored sky-gradient IBL — same generator as BuiltInDefault.
+        IblConfig::SkyGradient { zenith, nadir } => {
+            gradient_ibl(sky_gradient(*zenith, *nadir)).await?
         }
         IblConfig::Ktx {
             prefiltered_asset_id,
@@ -143,6 +151,19 @@ async fn apply_ibl(cfg: &IblConfig) -> anyhow::Result<()> {
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
     set_ibl_on_renderer(&mut renderer, prefiltered, irradiance).await
+}
+
+/// Prefiltered (1024²) + irradiance (32²) env from a sky gradient.
+async fn gradient_ibl(
+    gradient: CubemapSkyGradient,
+) -> anyhow::Result<(CubemapImage, CubemapImage)> {
+    let p = CubemapImage::new_sky_gradient(gradient.clone(), 1024, 1024)
+        .await
+        .map_err(|e| anyhow::anyhow!("prefiltered: {e}"))?;
+    let i = CubemapImage::new_sky_gradient(gradient, 32, 32)
+        .await
+        .map_err(|e| anyhow::anyhow!("irradiance: {e}"))?;
+    Ok((p, i))
 }
 
 /// Resolve a KTX cubemap by `AssetId`: the scene asset table gives the source,

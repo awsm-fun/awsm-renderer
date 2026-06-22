@@ -229,7 +229,11 @@ every command/query, and each tool self-describes over the MCP schema.
 
 **Lighting / environment**
 - `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles`.
-- `set_environment { skybox?, ibl_prefiltered?, ibl_irradiance? }` (builtin or KTX).
+- `set_environment { skybox?, ibl_prefiltered?, ibl_irradiance?, zenith?, nadir? }`
+  — builtin, KTX cubemap (asset/.ktx2 URL), OR an **agent-authored sky gradient**:
+  pass `zenith` + `nadir` (`[r,g,b]` linear) and it sets both skybox + IBL to that
+  two-color gradient (author dusk/overcast/night/studio from your own colors, no
+  hosted `.ktx2`).
 
 **Textures**
 - `add_texture_asset { proc }` (checker/gradient/noise) and

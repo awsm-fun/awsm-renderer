@@ -818,6 +818,17 @@ pub struct EnvironmentParams {
     /// IBL irradiance KTX asset UUID (required when `ibl_prefiltered` is a UUID).
     #[serde(default)]
     pub ibl_irradiance: Option<String>,
+    /// Agent-authored SKY-GRADIENT environment (§18): linear-RGB `[r,g,b]` zenith
+    /// (sky) color. When `zenith`+`nadir` are both given they set BOTH the skybox
+    /// and the IBL to that two-color gradient (overriding skybox/ibl_* above) —
+    /// author dusk / overcast / night / studio from your own colors, no hosted
+    /// `.ktx2` needed.
+    #[serde(default)]
+    pub zenith: Option<[f32; 3]>,
+    /// Agent-authored sky-gradient nadir (ground) color, linear-RGB `[r,g,b]`.
+    /// Pairs with `zenith`.
+    #[serde(default)]
+    pub nadir: Option<[f32; 3]>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2936,12 +2947,24 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment (skybox + IBL). Each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default cubemap/lighting, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap (fetched + registered on the fly, like import_texture_from_url). IBL needs both ibl_prefiltered + ibl_irradiance. A fresh scene already seeds the built-in environment."
+        description = "Set the scene environment (skybox + IBL). AGENT-AUTHORED (no hosting): pass `zenith` + `nadir` ([r,g,b] linear) for a two-color SKY GRADIENT that sets both the skybox AND the IBL — author dusk (warm dim nadir, deep-blue zenith), overcast (flat grays), night (near-black), studio (neutral) from your own colors. Otherwise each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap (fetched on the fly). KTX IBL needs both ibl_prefiltered + ibl_irradiance. A fresh scene already seeds the built-in environment."
     )]
     async fn set_environment(
         &self,
         Parameters(p): Parameters<EnvironmentParams>,
     ) -> Result<CallToolResult, McpError> {
+        // §18: agent-authored sky-gradient short-circuit — zenith+nadir drive both
+        // the skybox and the IBL from the same two colors (no KTX2 needed).
+        if let (Some(zenith), Some(nadir)) = (p.zenith, p.nadir) {
+            return self
+                .dispatch(EditorCommand::SetEnvironment {
+                    env: EnvironmentConfig {
+                        skybox: SkyboxConfig::SkyGradient { zenith, nadir },
+                        ibl: IblConfig::SkyGradient { zenith, nadir },
+                    },
+                })
+                .await;
+        }
         let is_url = |s: &str| s.starts_with("http://") || s.starts_with("https://");
         // Resolve a cubemap arg → an existing KTX asset id, registering a
         // URL-sourced asset first when given a URL (the cubemap analogue of
