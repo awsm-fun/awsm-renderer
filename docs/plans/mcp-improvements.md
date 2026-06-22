@@ -95,6 +95,18 @@ known variant lists its real fields; `task lint` with all features.
 never crosses the MCP boundary. Helpers in `editor/src/controller/state.rs`:
 `select_vertices_by_predicate`, `node_editable_mesh`, `soft_transform_mesh`.
 
+> ✅ **DONE (`e9c5c6a8`).** Added a session-scoped selection store
+> (`VERTEX_SELECTIONS` thread_local in `state.rs`). `select_vertices_where`
+> gained `store` → returns `{ id, count }` (indices kept server-side), plus
+> `count_only` / `offset` / `limit`. The four index-taking commands +
+> `get_vertex_data` gained `selection: Option<u32>` (additive, `serde(default)` —
+> a handle wins over `indices`, dangling handle errors loudly); `get_vertex_data`
+> also gained `offset`/`limit`. **Verified live:** a 1717-vert height-band stored
+> as handle `1` (only `{id,count}` returned) drove `paint_vertex_colors` THEN
+> `soft_transform_vertices` THEN a paged `get_vertex_data` (`selected:1717,
+> returned:3`) — the read confirms the same verts are red AND lifted, and **no
+> index array ever crossed the wire**. `count_only` returns just `{count}`.
+
 **Still owed (two parts).**
 1. **Reusable server-side selection handle.** `select_vertices_where` should be
    able to return `{ id, count }` (indices kept server-side), and the
@@ -253,7 +265,7 @@ becomes the skybox AND a metallic/low-roughness sphere reflects + is lit by it
 | # | Item | Status | Commit |
 |---|------|--------|--------|
 | 3 | Full per-variant JSONSchema for NodeKind / kind-config types | TODO | |
-| 10 | Reusable vertex-selection handle + read-path pagination | TODO | |
+| 10 | Reusable vertex-selection handle + read-path pagination | DONE | `e9c5c6a8` |
 | 14 | True soft-gradient particle blend (transparent instancing) | TODO | |
 | 16 | Agent displacement data: displace-from-texture (+ WGSL stage stretch) | TODO | |
 | 18 | Agent panorama environment: equirect / cubemap → skybox + IBL | TODO | |

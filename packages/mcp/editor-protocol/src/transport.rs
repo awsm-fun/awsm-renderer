@@ -227,6 +227,15 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "paint_vertex_colors",
+                EditorCommand::PaintVertexColors {
+                    mesh: AssetId::new(),
+                    indices: Vec::new(),
+                    color: [1.0, 0.0, 0.0, 1.0],
+                    selection: Some(7),
+                },
+            ),
+            (
                 "set_builtin_alpha_mode",
                 EditorCommand::SetBuiltinAlphaMode {
                     node: NodeId::new(),

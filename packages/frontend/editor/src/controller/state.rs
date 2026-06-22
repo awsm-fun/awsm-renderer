@@ -1519,7 +1519,9 @@ impl EditorController {
                 mesh,
                 indices,
                 positions,
+                selection,
             } => {
+                let indices = resolve_vertex_selection_or(selection, indices)?;
                 // Migrated: write to the sparse `overrides.positions` layer
                 // (collapse-then-override) instead of mutating captured bytes —
                 // same observable result, now non-destructive + uniform.
@@ -1538,12 +1540,18 @@ impl EditorController {
                 indices,
                 translation,
                 falloff,
-            } => self.soft_transform_mesh(mesh, &indices, translation, falloff),
+                selection,
+            } => {
+                let indices = resolve_vertex_selection_or(selection, indices)?;
+                self.soft_transform_mesh(mesh, &indices, translation, falloff)
+            }
             EditorCommand::PaintVertexColors {
                 mesh,
                 indices,
                 color,
+                selection,
             } => {
+                let indices = resolve_vertex_selection_or(selection, indices)?;
                 let collapse = self.ensure_authorable(mesh)?;
                 let prior = self.apply_vertex_overrides(mesh, |ov| {
                     for &idx in &indices {
@@ -1602,7 +1610,9 @@ impl EditorController {
                 mesh,
                 indices,
                 normal,
+                selection,
             } => {
+                let indices = resolve_vertex_selection_or(selection, indices)?;
                 let collapse = self.ensure_authorable(mesh)?;
                 let prior = self.apply_vertex_overrides(mesh, |ov| {
                     for &idx in &indices {
@@ -4238,7 +4248,14 @@ impl EditorController {
                     entries,
                 })
             }
-            EditorQuery::SelectVerticesWhere { node, predicate } => {
+            EditorQuery::SelectVerticesWhere {
+                node,
+                predicate,
+                store,
+                count_only,
+                offset,
+                limit,
+            } => {
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
                     return QueryResult::Error {
@@ -4253,7 +4270,23 @@ impl EditorController {
                         let idx = select_vertices_by_predicate(&mesh, &predicate);
                         let mut entries = std::collections::BTreeMap::new();
                         entries.insert("count".to_string(), json!(idx.len()));
-                        entries.insert("indices".to_string(), json!(idx));
+                        if store {
+                            // §10: keep the indices server-side, hand back a reusable
+                            // handle — no array crosses the wire.
+                            entries.insert("id".to_string(), json!(store_vertex_selection(idx)));
+                        } else if !count_only {
+                            // Optional pagination so a big raw read can be windowed.
+                            let start = offset.unwrap_or(0) as usize;
+                            let page: Vec<u32> = match limit {
+                                Some(l) => {
+                                    idx.iter().skip(start).take(l as usize).copied().collect()
+                                }
+                                None => idx.iter().skip(start).copied().collect(),
+                            };
+                            entries.insert("offset".to_string(), json!(start));
+                            entries.insert("returned".to_string(), json!(page.len()));
+                            entries.insert("indices".to_string(), json!(page));
+                        }
                         QueryResult::Map(query::MapResult {
                             kind: "vertex_selection".to_string(),
                             entries,
@@ -4342,19 +4375,51 @@ impl EditorController {
                     Err(error) => QueryResult::Error { error },
                 }
             }
-            EditorQuery::GetVertexData { node, indices } => {
+            EditorQuery::GetVertexData {
+                node,
+                indices,
+                selection,
+                offset,
+                limit,
+            } => {
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
                     return QueryResult::Error {
                         error: skinned_edit_error(node),
                     };
                 }
+                // §10: a `selection` handle's indices win over an explicit list; a
+                // dangling handle errors loudly.
+                let target: Vec<u32> = match selection {
+                    Some(id) => match lookup_vertex_selection(id) {
+                        Some(v) => v,
+                        None => {
+                            return QueryResult::Error {
+                                error: format!("no vertex-selection handle {id}"),
+                            }
+                        }
+                    },
+                    None => indices,
+                };
                 let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
                     crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
                 });
                 match mesh {
                     Some(md) => {
-                        let verts: Vec<serde_json::Value> = indices
+                        // §10: window the (possibly large) selection so its per-vertex
+                        // data doesn't overflow the token cap.
+                        let start = offset.unwrap_or(0) as usize;
+                        let selected = target.len();
+                        let page: Vec<u32> = match limit {
+                            Some(l) => target
+                                .iter()
+                                .skip(start)
+                                .take(l as usize)
+                                .copied()
+                                .collect(),
+                            None => target.iter().skip(start).copied().collect(),
+                        };
+                        let verts: Vec<serde_json::Value> = page
                             .iter()
                             .map(|&i| {
                                 let idx = i as usize;
@@ -4369,6 +4434,9 @@ impl EditorController {
                             .collect();
                         let mut entries = std::collections::BTreeMap::new();
                         entries.insert("vertex_count".to_string(), json!(md.positions.len()));
+                        entries.insert("selected".to_string(), json!(selected));
+                        entries.insert("offset".to_string(), json!(start));
+                        entries.insert("returned".to_string(), json!(verts.len()));
                         entries.insert("vertices".to_string(), json!(verts));
                         QueryResult::Map(query::MapResult {
                             kind: "vertex_data".to_string(),
@@ -5932,6 +6000,50 @@ fn node_material_ref(
     }
 }
 
+thread_local! {
+    /// §10 session-scoped vertex-selection store. `select_vertices_where { store }`
+    /// puts a predicate's indices here under a fresh id and returns just
+    /// `{ id, count }`; the paint/sculpt commands resolve `selection: <id>` back to
+    /// the indices, so a full-resolution selection (tens of thousands of indices)
+    /// drives many ops without ever crossing the MCP boundary. Cleared on reload
+    /// (session-scoped, like the texture-key cache).
+    static VERTEX_SELECTIONS: RefCell<std::collections::HashMap<u32, Vec<u32>>> =
+        RefCell::new(std::collections::HashMap::new());
+    static NEXT_VERTEX_SELECTION_ID: Cell<u32> = const { Cell::new(1) };
+}
+
+/// Store an index list and return its handle id (§10).
+fn store_vertex_selection(indices: Vec<u32>) -> u32 {
+    let id = NEXT_VERTEX_SELECTION_ID.with(|c| {
+        let id = c.get();
+        c.set(id.wrapping_add(1).max(1));
+        id
+    });
+    VERTEX_SELECTIONS.with(|m| m.borrow_mut().insert(id, indices));
+    id
+}
+
+/// The indices a selection handle holds, if it exists (§10).
+fn lookup_vertex_selection(id: u32) -> Option<Vec<u32>> {
+    VERTEX_SELECTIONS.with(|m| m.borrow().get(&id).cloned())
+}
+
+/// Resolve a paint/sculpt command's target indices: a `selection` handle wins
+/// over an explicit `indices` list; a dangling handle errors loudly (§10).
+fn resolve_vertex_selection_or(
+    selection: Option<u32>,
+    indices: Vec<u32>,
+) -> EditorResult<Vec<u32>> {
+    match selection {
+        Some(id) => lookup_vertex_selection(id).ok_or_else(|| {
+            crate::error::EditorError::msg(format!(
+                "no vertex-selection handle {id} (create one with select_vertices_where {{ store: true }})"
+            ))
+        }),
+        None => Ok(indices),
+    }
+}
+
 /// `resolve_node_material` kind for a node carrying **no** material (§5):
 /// renderable geometry (Mesh / SkinnedMesh) is `"unassigned"` — it renders the
 /// flat **magenta** missing-material sentinel (a visible "you forgot to assign",
@@ -7481,6 +7593,7 @@ mod mesh_rebake_tests {
             indices: vec![0],
             translation: [0.0, 0.2, 0.0],
             falloff: 0.3,
+            selection: None,
         }))
         .unwrap();
         assert!(
@@ -7532,6 +7645,7 @@ mod mesh_rebake_tests {
             indices: vec![0],
             translation: [0.0, 5.0, 0.0],
             falloff: 0.2,
+            selection: None,
         }))
         .unwrap();
         let pulled_max_y = mesh_cache::get_captured(mesh)
@@ -7599,6 +7713,7 @@ mod mesh_rebake_tests {
             indices: vec![0],
             translation: [0.0, 3.0, 0.0],
             falloff: 0.25,
+            selection: None,
         }))
         .unwrap()
         .expect("sculpt records an inverse");
@@ -7665,6 +7780,7 @@ mod mesh_rebake_tests {
             indices: vec![0],
             translation: [0.0, 0.3, 0.0],
             falloff: 0.25,
+            selection: None,
         }))
         .unwrap();
         block_on(ctrl.apply(EditorCommand::AddModifier {

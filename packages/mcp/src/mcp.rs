@@ -145,6 +145,21 @@ pub struct SelectVerticesParams {
     pub node: String,
     /// Strongly-typed selection predicate (the schema lists every `kind`).
     pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+    /// §10: `true` ⇒ keep the indices SERVER-SIDE and return a reusable
+    /// `{ id, count }` handle (pass `selection: <id>` to the paint/sculpt verbs)
+    /// instead of the index array. Use this for full-res selections that would
+    /// overflow the tool-result token cap.
+    #[serde(default)]
+    pub store: bool,
+    /// Return just `{ count }` (no indices).
+    #[serde(default)]
+    pub count_only: bool,
+    /// Page the returned `indices` (when not storing): start index.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Page the returned `indices` (when not storing): max returned.
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -185,21 +200,32 @@ pub struct MeshIdParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetVertexPositionsParams {
     pub mesh: String,
-    /// Vertex indices to move.
+    /// Vertex indices to move (omit when using `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
-    /// New positions, aligned with `indices`.
+    /// New positions, aligned with `indices` (or with the `selection` handle's
+    /// stored order — read it back with `get_vertex_data { selection }`).
     pub positions: Vec<[f32; 3]>,
+    /// §10: a selection HANDLE id (from `select_vertices_where { store: true }`)
+    /// supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SoftTransformParams {
     pub mesh: String,
-    /// The selected vertex indices (the move's full-weight center).
+    /// The selected vertex indices (the move's full-weight center; omit when
+    /// using `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
     /// Translation applied at the selection, fading over the falloff radius.
     pub translation: [f32; 3],
     /// Falloff radius (world units); 0 = hard move of exactly the selection.
     pub falloff: f32,
+    /// §10: a selection HANDLE id supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -249,28 +275,48 @@ pub struct GetMeshModifiersParams {
 pub struct PaintVertexColorsParams {
     /// UUID of the editable mesh asset.
     pub mesh: String,
-    /// Vertex indices (into the resolved/baked topology) to paint.
+    /// Vertex indices (into the resolved/baked topology) to paint (omit when using
+    /// `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
     /// Linear RGBA color to set on each index.
     pub color: [f32; 4],
+    /// §10: a selection HANDLE id supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetVertexNormalsParams {
     /// UUID of the editable mesh asset.
     pub mesh: String,
-    /// Vertex indices to override the normal of.
+    /// Vertex indices to override the normal of (omit when using `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
     /// The normal vector to set on each index (should be unit-length).
     pub normal: [f32; 3],
+    /// §10: a selection HANDLE id supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetVertexDataParams {
     /// UUID of the node whose resolved mesh to read.
     pub node: String,
-    /// Vertex indices to read the final (post-eval + override) data of.
+    /// Vertex indices to read the final (post-eval + override) data of (omit when
+    /// using `selection`).
+    #[serde(default)]
     pub indices: Vec<u32>,
+    /// §10: read a stored selection HANDLE's vertices instead of sending indices.
+    #[serde(default)]
+    pub selection: Option<u32>,
+    /// Page the result (start index) — for a large selection.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Page the result (max returned).
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2071,6 +2117,7 @@ impl EditorMcp {
             mesh: parse_asset(&p.mesh)?,
             indices: p.indices,
             positions: p.positions,
+            selection: p.selection,
         })
         .await
     }
@@ -2087,6 +2134,7 @@ impl EditorMcp {
             indices: p.indices,
             translation: p.translation,
             falloff: p.falloff,
+            selection: p.selection,
         })
         .await
     }
@@ -2106,7 +2154,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON. For \"the top of the mesh\" pick the right notion: {\"kind\":\"top_count\",\"axis\":1,\"count\":40} = the 40 HIGHEST verts by count (use get_mesh_stats for the total to turn a fraction into a count); {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} = every vert in the top 20% of the axis EXTENT (a height band — the count it returns depends on tessellation, not 0.2). Others: {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection)."
+        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON. For \"the top of the mesh\" pick the right notion: {\"kind\":\"top_count\",\"axis\":1,\"count\":40} = the 40 HIGHEST verts by count (use get_mesh_stats for the total to turn a fraction into a count); {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} = every vert in the top 20% of the axis EXTENT (a height band — the count it returns depends on tessellation, not 0.2). Others: {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection). §10: pass `store:true` to keep the indices SERVER-SIDE and get back a reusable `{id,count}` HANDLE — then paint_vertex_colors / soft_transform_vertices / set_vertex_positions / set_vertex_normals / get_vertex_data accept `selection:<id>` so ONE selection drives many ops and a full-res band never crosses the token cap. `count_only:true` returns just the count; `offset`/`limit` page the raw indices. (The fused paint_where/transform_where are the one-shot alternative.)"
     )]
     async fn select_vertices_where(
         &self,
@@ -2115,6 +2163,10 @@ impl EditorMcp {
         self.query(EditorQuery::SelectVerticesWhere {
             node: parse_node(&p.node)?,
             predicate: p.predicate.0,
+            store: p.store,
+            count_only: p.count_only,
+            offset: p.offset,
+            limit: p.limit,
         })
         .await
     }
@@ -2130,6 +2182,7 @@ impl EditorMcp {
             mesh: parse_asset(&p.mesh)?,
             indices: p.indices,
             color: p.color,
+            selection: p.selection,
         })
         .await
     }
@@ -2176,6 +2229,7 @@ impl EditorMcp {
             mesh: parse_asset(&p.mesh)?,
             indices: p.indices,
             normal: p.normal,
+            selection: p.selection,
         })
         .await
     }
@@ -2198,6 +2252,9 @@ impl EditorMcp {
         self.query(EditorQuery::GetVertexData {
             node: parse_node(&p.node)?,
             indices: p.indices,
+            selection: p.selection,
+            offset: p.offset,
+            limit: p.limit,
         })
         .await
     }

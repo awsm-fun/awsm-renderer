@@ -565,17 +565,28 @@ pub enum EditorCommand {
     /// whole-mesh snapshot).
     SetVertexPositions {
         mesh: AssetId,
+        #[serde(default)]
         indices: Vec<u32>,
         positions: Vec<[f32; 3]>,
+        /// §10: when set, the target indices come from a stored selection HANDLE
+        /// (`select_vertices_where { store: true }`) instead of `indices` —
+        /// `positions[k]` aligns with the handle's stored order (read it back with
+        /// `get_vertex_data { selection }`).
+        #[serde(default)]
+        selection: Option<u32>,
     },
     /// Translate a vertex selection with a smooth radial falloff (server computes
     /// the per-vertex weights via `meshgen::edit::soft_transform_positions`).
     /// Inverse: a sparse `SetVertexPositions` of every vertex the move touched.
     SoftTransformVertices {
         mesh: AssetId,
+        #[serde(default)]
         indices: Vec<u32>,
         translation: [f32; 3],
         falloff: f32,
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
     },
     /// Bake an editable mesh's modifier stack into raw triangles and clear the
     /// recipe (the deliberate heavy snapshot). Inverse:
@@ -598,16 +609,24 @@ pub enum EditorCommand {
     /// possibly batched with a stack restore).
     PaintVertexColors {
         mesh: AssetId,
+        #[serde(default)]
         indices: Vec<u32>,
         color: [f32; 4],
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
     },
     /// Set the per-vertex **normal** override of `indices` to `normal`. An
     /// explicit normal override always wins over the eval/recompute. Inverse:
     /// restore the prior overrides.
     SetVertexNormals {
         mesh: AssetId,
+        #[serde(default)]
         indices: Vec<u32>,
         normal: [f32; 3],
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
     },
     /// Replace a mesh's entire sparse [`VertexOverrides`] map wholesale (the
     /// idempotent setter, used as the universal inverse of the authoring

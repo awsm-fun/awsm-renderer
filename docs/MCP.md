@@ -313,6 +313,14 @@ every command/query, and each tool self-describes over the MCP schema.
   overflows the tool-result token cap if returned. Painted colors still only
   DISPLAY under a vertex-color-reading material (built-in PBR with
   `vertex_colors_enabled`).
+- **Reusable selection HANDLE (§10 — when one selection drives *many* ops):**
+  `select_vertices_where { …, store: true }` keeps the indices server-side and
+  returns `{ id, count }`. Then `paint_vertex_colors`, `soft_transform_vertices`,
+  `set_vertex_positions`, `set_vertex_normals` and `get_vertex_data` all accept
+  `selection: <id>` instead of `indices` — so one full-res selection can be
+  painted, sculpted, then read back without the index array ever crossing the
+  wire. `count_only: true` returns just the count; `offset`/`limit` page the raw
+  `indices` (and `get_vertex_data`'s output) for a large selection.
   - ⚠️ **Splat-weight footgun:** unpainted vertex color is **`(1,1,1,1)` white**,
     not 0 — `mix(base, snow, vColor.r)` reads full weight everywhere until you
     paint. **Clear-to-0 first:** `paint_where { node, predicate:
