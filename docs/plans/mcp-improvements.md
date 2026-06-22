@@ -150,6 +150,18 @@ material and **alpha-TESTs** (Mask, cutoff 0.5) so the sprite alpha *masks* each
 particle into the sprite shape (hard-edged discs, not squares).
 `engine/bridge/particles.rs::build_runtime`.
 
+> ✅ **DONE (`a0c70ee6`).** `build_runtime` now honours `def.blend` (which was
+> already settable end-to-end but ignored by the bridge): blend → a **Blend** PBR
+> whose base-color/emissive sprite alpha + per-particle `color.a` drive a real
+> `src.a`/`1-src.a` blend. The build is now async and routes through
+> `enable_mesh_instancing` (compiles the transparent instancing pipeline for a
+> Blend material; early-returns just like the old `_opaque` path for Opaque/Mask,
+> so one call serves both). `materialize_particle` holds the renderer lock across
+> the async build (like `commit_load`). **Verified live:** a soft radial-alpha
+> sprite + `blend:true` renders a translucent, soft-edged, smoothly-fading plume
+> (grid visible through it); `blend:false` on the same emitter renders hard opaque
+> blocks (the Mask cutout) — decisive before/after screenshots.
+
 **Still owed.** True **soft-GRADIENT** edges (smooth alpha falloff, not a hard
 alpha-test cutout) + a clean rim. This needs the emitter to route through the
 **transparent-blend instancing** path when `def.blend` is set —
@@ -266,6 +278,6 @@ becomes the skybox AND a metallic/low-roughness sphere reflects + is lit by it
 |---|------|--------|--------|
 | 3 | Full per-variant JSONSchema for NodeKind / kind-config types | TODO | |
 | 10 | Reusable vertex-selection handle + read-path pagination | DONE | `135cf797` |
-| 14 | True soft-gradient particle blend (transparent instancing) | TODO | |
+| 14 | True soft-gradient particle blend (transparent instancing) | DONE | `a0c70ee6` |
 | 16 | Agent displacement data: displace-from-texture (+ WGSL stage stretch) | TODO | |
 | 18 | Agent panorama environment: equirect / cubemap → skybox + IBL | TODO | |
