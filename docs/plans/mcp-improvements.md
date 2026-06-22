@@ -243,6 +243,20 @@ sky-gradient that drives both skybox + IBL, reusing the built-in's
 `CubemapImage::new_sky_gradient` generator via `SkyboxConfig::SkyGradient` /
 `IblConfig::SkyGradient` (`scene/src/environment.rs`, `engine/bridge/env_sync.rs`).
 
+> ✅ **DONE (`ef39c1bb`).** `set_environment { equirect: <data:image/png> }` →
+> `SetEnvironmentEquirect` decodes the panorama, stashes it (session-scoped like
+> the KTX HDR stash), and `env_sync` projects it to a cubemap via the new
+> `CubemapImage::new_equirect` (pure-CPU per-face direction → equirect bilinear,
+> longitude-wrapping; unit-tested + `create_from_rgba` RGBA→ImageBitmap helper).
+> Skybox + specular env at 1024²/256² faces with mips; a 16² irradiance cubemap
+> approximates the diffuse convolution (heavy box-downsample — lights
+> consistently; a true cosine convolution is the noted follow-on). New
+> `SkyboxConfig`/`IblConfig::Equirect { asset_id }`. **Verified live:** a
+> hand-drawn equirect (sky gradient + sun + a green aurora band) becomes the
+> skybox AND a metallic/low-roughness sphere reflects it — the blue zenith, warm
+> horizon, and green aurora band all show in the reflection + the sphere is
+> IBL-lit.
+
 **Still owed.** Let the agent supply a **full arbitrary environment image** it
 authored — an **equirect 2D texture** (via `create_texture`) and/or **6 cubemap
 face textures** — turned into the skybox + IBL (so a custom panorama lights +
@@ -280,4 +294,4 @@ becomes the skybox AND a metallic/low-roughness sphere reflects + is lit by it
 | 10 | Reusable vertex-selection handle + read-path pagination | DONE | `135cf797` |
 | 14 | True soft-gradient particle blend (transparent instancing) | DONE | `a0c70ee6` |
 | 16 | Agent displacement data: displace-from-texture (+ WGSL stage stretch) | TODO | |
-| 18 | Agent panorama environment: equirect / cubemap → skybox + IBL | TODO | |
+| 18 | Agent panorama environment: equirect → skybox + IBL | DONE | `ef39c1bb` |
