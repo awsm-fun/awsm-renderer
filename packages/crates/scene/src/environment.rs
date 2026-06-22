@@ -28,6 +28,14 @@ pub enum SkyboxConfig {
         zenith: [f32; 3],
         nadir: [f32; 3],
     },
+    /// Agent-authored **panorama** skybox (§18): an equirectangular (lat/long)
+    /// RGBA image the agent uploaded, projected to a cubemap. `asset_id` keys the
+    /// decoded equirect pixels stashed by `SetEnvironmentEquirect` (session-scoped,
+    /// like the KTX HDR stash — on-disk persistence of the panorama is the
+    /// follow-on).
+    Equirect {
+        asset_id: AssetId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -45,4 +53,9 @@ pub enum IblConfig {
     /// prefiltered-env and irradiance from the same gradient the built-in default
     /// uses, so a custom sky also lights the scene consistently.
     SkyGradient { zenith: [f32; 3], nadir: [f32; 3] },
+    /// Agent-authored **panorama** IBL (§18): the same equirect the skybox uses,
+    /// projected to a specular-env cubemap (with mips) + a tiny irradiance cubemap
+    /// (a heavy box-downsample approximating diffuse convolution — see
+    /// `env_sync::gradient_ibl`'s equirect sibling). One `asset_id` drives both.
+    Equirect { asset_id: AssetId },
 }

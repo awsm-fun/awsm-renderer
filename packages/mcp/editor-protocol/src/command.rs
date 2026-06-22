@@ -426,6 +426,15 @@ pub enum EditorCommand {
     /// side effect. Inverse: restore the prior environment.
     SetEnvironment { env: EnvironmentConfig },
 
+    /// §18: upload an agent-authored **equirectangular panorama** and make it the
+    /// environment. `data` is a base64 / `data:` image string (decoded to RGBA in
+    /// the env bridge), stashed under `id`, and projected to a cubemap that drives
+    /// BOTH the skybox and the IBL (`skybox` + `ibl` set to `Equirect { id }`).
+    /// The composable alternative to the built-in / sky-gradient / hosted-KTX
+    /// environments — the agent supplies any panorama it can draw. Inverse:
+    /// restore the prior `EnvironmentConfig`.
+    SetEnvironmentEquirect { id: AssetId, data: String },
+
     /// Snap the viewport camera to a world axis (the nav-cube directions).
     /// **Transient** — camera/view state, not recorded in the undo log.
     SnapCameraToAxis { axis: CameraAxis },
@@ -1197,6 +1206,7 @@ impl EditorCommand {
             EditorCommand::SetMaterialTexture { .. } => "Bind texture",
             EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",
             EditorCommand::SetEnvironment { .. } => "Set environment",
+            EditorCommand::SetEnvironmentEquirect { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",

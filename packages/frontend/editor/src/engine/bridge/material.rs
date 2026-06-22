@@ -85,6 +85,25 @@ async fn decode_rgba_from_bytes(bytes: &[u8], mime: &str) -> Result<(Vec<u8>, u3
     bitmap_to_rgba(bitmap)
 }
 
+/// Decode an agent texture **payload string** (a `data:` URI or bare base64
+/// PNG/JPEG, or a raw-RGBA descriptor) to RGBA8 + dims (§18 equirect upload).
+/// Mirrors the `CreateTexture` decode but with no caller-supplied dims/format.
+pub(crate) async fn decode_rgba_from_payload(data: &str) -> Result<(Vec<u8>, u32, u32), String> {
+    use awsm_editor_protocol::TexturePayload;
+    let payload = awsm_editor_protocol::decode_texture_payload(data, None, None, None)
+        .map_err(|e| e.to_string())?;
+    match payload {
+        TexturePayload::RawRgba8 {
+            bytes,
+            width,
+            height,
+        } => Ok((bytes, width, height)),
+        TexturePayload::Encoded { bytes, mime } => {
+            decode_rgba_from_bytes(&bytes, mime.as_deref().unwrap_or("image/png")).await
+        }
+    }
+}
+
 /// Read an `ImageBitmap` back to RGBA8 bytes via a 2D canvas (shared by the
 /// URL-fetch + the encoded-bytes decode paths).
 fn bitmap_to_rgba(bitmap: web_sys::ImageBitmap) -> Result<(Vec<u8>, u32, u32), String> {

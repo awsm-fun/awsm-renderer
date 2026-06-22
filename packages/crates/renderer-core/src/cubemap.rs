@@ -146,6 +146,11 @@ impl CubemapImage {
             pub async fn new_sky_gradient(colors: CubemapSkyGradient, width: u32, height: u32) -> Result<Self> {
                 images::new_sky_gradient(colors, width, height).await
             }
+
+            /// Projects an equirectangular RGBA8 panorama into a cubemap (§18).
+            pub async fn new_equirect(rgba: &[u8], src_w: u32, src_h: u32, face_size: u32) -> Result<Self> {
+                images::new_equirect(rgba, src_w, src_h, face_size).await
+            }
         } else {
             /// Creates a GPU cubemap texture and view.
             pub async fn create_texture_and_view(
@@ -172,6 +177,11 @@ impl CubemapImage {
             /// Creates a cubemap from a simple sky gradient.
             pub async fn new_sky_gradient(colors: CubemapSkyGradient, width: u32, height: u32) -> Result<Self> {
                 images::new_sky_gradient(colors, width, height).await
+            }
+
+            /// Projects an equirectangular RGBA8 panorama into a cubemap (§18).
+            pub async fn new_equirect(rgba: &[u8], src_w: u32, src_h: u32, face_size: u32) -> Result<Self> {
+                images::new_equirect(rgba, src_w, src_h, face_size).await
             }
         }
     }

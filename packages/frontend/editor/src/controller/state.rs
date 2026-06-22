@@ -2409,6 +2409,24 @@ impl EditorController {
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
             }
+            EditorCommand::SetEnvironmentEquirect { id, data } => {
+                // §18: decode the agent's panorama to RGBA (loudly — a bad image is
+                // a rejected op), stash it for env_sync to project, then point both
+                // skybox + IBL at it. Inverse restores the prior environment.
+                let (rgba, w, h) = crate::engine::bridge::material::decode_rgba_from_payload(&data)
+                    .await
+                    .map_err(crate::error::EditorError::msg)?;
+                crate::engine::bridge::env_sync::stash_equirect(id, rgba, w, h);
+                let prev = self.scene.environment.get_cloned();
+                self.scene
+                    .environment
+                    .set(awsm_editor_protocol::EnvironmentConfig {
+                        skybox: awsm_editor_protocol::SkyboxConfig::Equirect { asset_id: id },
+                        ibl: awsm_editor_protocol::IblConfig::Equirect { asset_id: id },
+                    });
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetEnvironment { env: prev }))
+            }
             EditorCommand::SnapCameraToAxis { axis } => {
                 use std::f32::consts::PI;
                 // Just under ±90° for top/bottom to dodge the look-at gimbal.

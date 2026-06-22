@@ -236,6 +236,13 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "set_environment_equirect",
+                EditorCommand::SetEnvironmentEquirect {
+                    id: AssetId::new(),
+                    data: "data:image/png;base64,AAAA".to_string(),
+                },
+            ),
+            (
                 "set_builtin_alpha_mode",
                 EditorCommand::SetBuiltinAlphaMode {
                     node: NodeId::new(),

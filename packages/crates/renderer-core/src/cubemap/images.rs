@@ -188,6 +188,99 @@ pub async fn new_sky_gradient(
     })
 }
 
+/// Project an equirectangular (lat/long) RGBA8 panorama into a cubemap with
+/// `face_size`² faces (§18). For each face texel the cube direction is sampled
+/// from the equirect (bilinear, longitude wrapping). Pure-CPU, so an
+/// agent-authored panorama (from `create_texture`) becomes a skybox / IBL
+/// source. Call at a large `face_size` for the skybox + specular env, and a tiny
+/// one for a cheap diffuse-irradiance approximation (the heavy box-downsample
+/// stands in for a true cosine convolution).
+pub async fn new_equirect(
+    rgba: &[u8],
+    src_w: u32,
+    src_h: u32,
+    face_size: u32,
+) -> Result<CubemapImage> {
+    let faces = project_equirect_faces(rgba, src_w, src_h, face_size);
+    let mut bitmaps = Vec::with_capacity(6);
+    for face in &faces {
+        let bitmap =
+            crate::image::bitmap::create_from_rgba(face, face_size, face_size, None).await?;
+        bitmaps.push(ImageData::Bitmap {
+            image: bitmap,
+            options: None,
+        });
+    }
+    // `faces`/`bitmaps` are ordered +X, -X, +Y, -Y, +Z, -Z.
+    let mut it = bitmaps.into_iter();
+    Ok(CubemapImage::Images {
+        x_positive: it.next().unwrap(),
+        x_negative: it.next().unwrap(),
+        y_positive: it.next().unwrap(),
+        y_negative: it.next().unwrap(),
+        z_positive: it.next().unwrap(),
+        z_negative: it.next().unwrap(),
+        mipmaps: true,
+    })
+}
+
+/// Sample an RGBA8 image with bilinear filtering at normalized `(u, v)` (origin
+/// top-left). Longitude `u` wraps; latitude `v` clamps (poles).
+fn equirect_bilinear(rgba: &[u8], w: u32, h: u32, u: f32, v: f32) -> [u8; 4] {
+    let uw = u - u.floor(); // wrap into [0, 1)
+    let fx = uw * w as f32 - 0.5;
+    let fy = (v * h as f32 - 0.5).clamp(0.0, h as f32 - 1.0);
+    let x0 = fx.floor().rem_euclid(w as f32) as u32;
+    let x1 = (x0 + 1) % w;
+    let y0 = fy.floor() as u32;
+    let y1 = (y0 + 1).min(h - 1);
+    let tx = fx - fx.floor();
+    let ty = fy - fy.floor();
+    let px = |x: u32, y: u32| {
+        let o = ((y * w + x) * 4) as usize;
+        [rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]]
+    };
+    let lerp = |a: u8, b: u8, t: f32| (a as f32 * (1.0 - t) + b as f32 * t).round() as u8;
+    let (c00, c10, c01, c11) = (px(x0, y0), px(x1, y0), px(x0, y1), px(x1, y1));
+    let mut out = [0u8; 4];
+    for k in 0..4 {
+        out[k] = lerp(lerp(c00[k], c10[k], tx), lerp(c01[k], c11[k], tx), ty);
+    }
+    out
+}
+
+/// CPU equirect→cubemap face projection. Returns six `face_size`² RGBA8 buffers
+/// in the order +X, -X, +Y, -Y, +Z, -Z. Pure (no GPU/web) — unit-testable.
+fn project_equirect_faces(rgba: &[u8], src_w: u32, src_h: u32, n: u32) -> [Vec<u8>; 6] {
+    use std::f32::consts::PI;
+    std::array::from_fn(|face| {
+        let mut buf = vec![0u8; (n * n * 4) as usize];
+        for j in 0..n {
+            let t = 2.0 * (j as f32 + 0.5) / n as f32 - 1.0;
+            for i in 0..n {
+                let s = 2.0 * (i as f32 + 0.5) / n as f32 - 1.0;
+                // Standard GL cube-face → direction.
+                let d = match face {
+                    0 => [1.0, -t, -s],
+                    1 => [-1.0, -t, s],
+                    2 => [s, 1.0, t],
+                    3 => [s, -1.0, -t],
+                    4 => [s, -t, 1.0],
+                    _ => [-s, -t, -1.0],
+                };
+                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                let (x, y, z) = (d[0] / len, d[1] / len, d[2] / len);
+                let u = z.atan2(x) / (2.0 * PI) + 0.5;
+                let v = 0.5 - y.clamp(-1.0, 1.0).asin() / PI;
+                let px = equirect_bilinear(rgba, src_w, src_h, u, v);
+                let o = ((j * n + i) * 4) as usize;
+                buf[o..o + 4].copy_from_slice(&px);
+            }
+        }
+        buf
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Creates a cubemap texture from six images.
 pub async fn create_texture(
@@ -296,4 +389,38 @@ pub async fn create_texture(
     }
 
     Ok((texture, mipmap_levels))
+}
+
+#[cfg(test)]
+mod equirect_tests {
+    use super::project_equirect_faces;
+
+    // A 4x2 equirect split left=red / right=green; every cube face should sample
+    // only those source colors (projection stays in-gamut, hits real texels).
+    #[test]
+    fn faces_sample_source_colors() {
+        let (w, h) = (4u32, 2u32);
+        let mut img = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let o = ((y * w + x) * 4) as usize;
+                let c = if x < w / 2 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 255, 0, 255]
+                };
+                img[o..o + 4].copy_from_slice(&c);
+            }
+        }
+        let faces = project_equirect_faces(&img, w, h, 8);
+        assert_eq!(faces.len(), 6);
+        for face in &faces {
+            assert_eq!(face.len(), 8 * 8 * 4);
+            for px in face.chunks(4) {
+                // red or green channel present, blue always 0 — a real sample.
+                assert_eq!(px[2], 0, "blue leaked → sampled outside the source");
+                assert!(px[0] > 0 || px[1] > 0, "black → missed the source");
+            }
+        }
+    }
 }

@@ -875,6 +875,13 @@ pub struct EnvironmentParams {
     /// Pairs with `zenith`.
     #[serde(default)]
     pub nadir: Option<[f32; 3]>,
+    /// Agent-authored **panorama** environment (§18): an equirectangular
+    /// (lat/long, 2:1) image as a `data:image/png;base64,…` URI (or bare base64).
+    /// It's projected to a cubemap that drives BOTH the skybox and the IBL — so
+    /// any panorama you can draw (nebula, sunset, gradient sky) becomes a
+    /// reflecting + lighting environment. Overrides skybox/ibl_*/zenith/nadir.
+    #[serde(default)]
+    pub equirect: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -3004,12 +3011,22 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment (skybox + IBL). AGENT-AUTHORED (no hosting): pass `zenith` + `nadir` ([r,g,b] linear) for a two-color SKY GRADIENT that sets both the skybox AND the IBL — author dusk (warm dim nadir, deep-blue zenith), overcast (flat grays), night (near-black), studio (neutral) from your own colors. Otherwise each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap (fetched on the fly). KTX IBL needs both ibl_prefiltered + ibl_irradiance. A fresh scene already seeds the built-in environment."
+        description = "Set the scene environment (skybox + IBL). AGENT-AUTHORED (no hosting), three ways: (1) `equirect` = a data:image/png;base64 EQUIRECTANGULAR (2:1 lat/long) PANORAMA you drew — projected to a cubemap that drives BOTH skybox + IBL (any sky you can paint: nebula, sunset, gradient — reflects + lights the scene). (2) `zenith` + `nadir` ([r,g,b] linear) for a two-color SKY GRADIENT (skybox + IBL) — author dusk / overcast / night / studio from your own colors. (3) Otherwise each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap. KTX IBL needs both ibl_prefiltered + ibl_irradiance. Precedence: equirect > zenith/nadir > skybox/ibl_*. A fresh scene already seeds the built-in environment."
     )]
     async fn set_environment(
         &self,
         Parameters(p): Parameters<EnvironmentParams>,
     ) -> Result<CallToolResult, McpError> {
+        // §18: agent-authored panorama short-circuit — an equirect image becomes
+        // the skybox + IBL (projected to a cubemap in the env bridge).
+        if let Some(data) = p.equirect {
+            return self
+                .dispatch(EditorCommand::SetEnvironmentEquirect {
+                    id: AssetId::new(),
+                    data,
+                })
+                .await;
+        }
         // §18: agent-authored sky-gradient short-circuit — zenith+nadir drive both
         // the skybox and the IBL from the same two colors (no KTX2 needed).
         if let (Some(zenith), Some(nadir)) = (p.zenith, p.nadir) {
