@@ -243,6 +243,14 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "displace_from_texture",
+                EditorCommand::DisplaceFromTexture {
+                    node: NodeId::new(),
+                    data: "data:image/png;base64,AAAA".to_string(),
+                    strength: 0.5,
+                },
+            ),
+            (
                 "set_builtin_alpha_mode",
                 EditorCommand::SetBuiltinAlphaMode {
                     node: NodeId::new(),

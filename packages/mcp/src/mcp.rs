@@ -301,6 +301,18 @@ pub struct SetVertexNormalsParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DisplaceFromTextureParams {
+    /// UUID of the geometry node to displace.
+    pub node: String,
+    /// The heightmap as a `data:image/png;base64,…` URI (or bare base64). Decoded
+    /// to RGBA; per-vertex height = perceptual luminance (black = flat, white =
+    /// raised). Author ANY heightfield (eroded terrain, a logo, fbm) externally.
+    pub data: String,
+    /// Displacement distance (world units) at full white. Negative carves inward.
+    pub strength: f32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetVertexDataParams {
     /// UUID of the node whose resolved mesh to read.
     pub node: String,
@@ -2237,6 +2249,21 @@ impl EditorMcp {
             indices: p.indices,
             normal: p.normal,
             selection: p.selection,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Displace a node's mesh by an agent-authored HEIGHTMAP image (§16) — the generic 'supply your own heightfield' hook. `data` is a data:image/png;base64 heightmap; each vertex moves along its normal by luminance(heightmap @ its UV) * `strength` (black = flat, white = raised; negative strength carves in). Author ANY terrain externally (eroded ridges, a stamped logo, scanned relief, multi-octave fbm baked to a PNG) and feed it — composes with create_texture-style raw upload. Needs a UV-mapped, sufficiently TESSELLATED mesh (subdivide a plane via set_mesh_modifiers first — displacement only moves existing verts). Collapses to a frozen-topology override layer (like the sculpt verbs) and re-bakes; undoable. Verify with get_mesh_stats (bbox grows) or a screenshot."
+    )]
+    async fn displace_from_texture(
+        &self,
+        Parameters(p): Parameters<DisplaceFromTextureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::DisplaceFromTexture {
+            node: parse_node(&p.node)?,
+            data: p.data,
+            strength: p.strength,
         })
         .await
     }

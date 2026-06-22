@@ -1628,6 +1628,46 @@ impl EditorController {
                 })?;
                 Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
             }
+            EditorCommand::DisplaceFromTexture {
+                node,
+                data,
+                strength,
+            } => {
+                // §16: displace every vertex along its normal by the heightmap's
+                // luminance at the vertex UV — the generic "supply your own
+                // heightfield" hook. Decode (loudly) BEFORE collapsing.
+                let (mesh, md) = self
+                    .node_editable_mesh(node)
+                    .map_err(crate::error::EditorError::msg)?;
+                let (rgba, w, h) = crate::engine::bridge::material::decode_rgba_from_payload(&data)
+                    .await
+                    .map_err(crate::error::EditorError::msg)?;
+                let normals = md.normals.clone();
+                let uvs0 = md.uvs.first().cloned();
+                let positions = md.positions.clone();
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for (i, p) in positions.iter().enumerate() {
+                        let uv = uvs0
+                            .as_ref()
+                            .and_then(|u| u.get(i))
+                            .copied()
+                            .unwrap_or([0.0, 0.0]);
+                        let height = sample_heightmap_luminance(&rgba, w, h, uv[0], uv[1]);
+                        let n = normals
+                            .as_ref()
+                            .and_then(|nn| nn.get(i))
+                            .copied()
+                            .unwrap_or([0.0, 1.0, 0.0]);
+                        let d = height * strength;
+                        ov.positions.insert(
+                            i as u32,
+                            [p[0] + n[0] * d, p[1] + n[1] * d, p[2] + n[2] * d],
+                        );
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
             EditorCommand::BakeAll {} => {
                 // Project-wide finalize: collapse every Mesh asset's stack.
                 let mesh_ids: Vec<AssetId> = {
@@ -6044,6 +6084,19 @@ fn store_vertex_selection(indices: Vec<u32>) -> u32 {
 /// The indices a selection handle holds, if it exists (§10).
 fn lookup_vertex_selection(id: u32) -> Option<Vec<u32>> {
     VERTEX_SELECTIONS.with(|m| m.borrow().get(&id).cloned())
+}
+
+/// Sample an RGBA8 heightmap's perceptual luminance in `[0, 1]` at normalized
+/// `(u, v)` (nearest, UV wraps) — the §16 displace-from-texture height source.
+fn sample_heightmap_luminance(rgba: &[u8], w: u32, h: u32, u: f32, v: f32) -> f32 {
+    if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+        return 0.0;
+    }
+    let x = ((u.rem_euclid(1.0)) * w as f32).floor().min(w as f32 - 1.0) as u32;
+    let y = ((v.rem_euclid(1.0)) * h as f32).floor().min(h as f32 - 1.0) as u32;
+    let o = ((y * w + x) * 4) as usize;
+    let (r, g, b) = (rgba[o] as f32, rgba[o + 1] as f32, rgba[o + 2] as f32);
+    (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
 }
 
 /// Resolve a paint/sculpt command's target indices: a `selection` handle wins

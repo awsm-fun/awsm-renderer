@@ -637,6 +637,18 @@ pub enum EditorCommand {
         #[serde(default)]
         selection: Option<u32>,
     },
+    /// §16: displace a node's mesh by an agent-authored **heightmap image** — the
+    /// generic "supply your own heightfield" hook. `data` is a base64 / `data:`
+    /// image (decoded to RGBA in the bridge); each vertex is offset along its
+    /// normal by `luminance(heightmap @ vertex-UV) * strength` (black = flat,
+    /// white = raised). Collapses to a frozen-topology override layer first (like
+    /// the sculpt verbs) and re-bakes. Inverse: restore the prior overrides
+    /// (+ stack if the collapse fired).
+    DisplaceFromTexture {
+        node: NodeId,
+        data: String,
+        strength: f32,
+    },
     /// Replace a mesh's entire sparse [`VertexOverrides`] map wholesale (the
     /// idempotent setter, used as the universal inverse of the authoring
     /// commands and by `BakeAll` undo). Collapses-first, re-bakes. Inverse:
@@ -1189,6 +1201,7 @@ impl EditorCommand {
             EditorCommand::PaintVerticesWhere { .. } => "Paint vertices (where)",
             EditorCommand::TransformVerticesWhere { .. } => "Transform vertices (where)",
             EditorCommand::SetVertexNormals { .. } => "Set vertex normals",
+            EditorCommand::DisplaceFromTexture { .. } => "Displace from texture",
             EditorCommand::SetVertexOverrides { .. } => "Set vertex overrides",
             EditorCommand::BakeAll {} => "Bake all meshes",
             EditorCommand::SetBuiltinTexture { .. } => "Bind texture",
