@@ -42,6 +42,7 @@
 //! is what downstream GPU upload consumes (decision E: the arena emits the
 //! same `(offset, len)` ranges the existing uploader already takes).
 
+use std::cell::UnsafeCell;
 use std::sync::atomic::{fence, AtomicU32, Ordering};
 
 /// Outcome of a single seqlock read attempt.
@@ -174,8 +175,17 @@ impl DirtyBitmap {
 /// One fixed-size storage chunk: a contiguous value region plus one version
 /// cell per slot. Each chunk is its own heap allocation, so its address is
 /// stable for the arena's lifetime.
+///
+/// The value region is `UnsafeCell<u8>` — it is **shared mutable** memory: a
+/// foreign thread writes the bytes (raw-ptr `copy_nonoverlapping`) while the
+/// owner reads them, synchronised solely by the per-slot seqlock (torn reads
+/// are detected and discarded). `UnsafeCell` is the correct primitive for this
+/// — it gives a shared reference write provenance (SB `SharedReadWrite`), so
+/// raw-pointer writes derived from `&Chunk` are sound, unlike a plain
+/// `Box<[u8]>` (whose shared ref is read-only — writing through a ptr derived
+/// from it is undefined behaviour; miri flags it).
 struct Chunk {
-    values: Box<[u8]>,
+    values: Box<[UnsafeCell<u8>]>,
     versions: Box<[AtomicU32]>,
 }
 
@@ -322,7 +332,10 @@ impl SharedArena {
             "SharedArena exceeded max_chunks ({})",
             self.max_chunks
         );
-        let values = vec![0u8; self.chunk_slots * self.stride].into_boxed_slice();
+        let values = (0..self.chunk_slots * self.stride)
+            .map(|_| UnsafeCell::new(0u8))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         let versions = (0..self.chunk_slots)
             .map(|_| AtomicU32::new(0))
             .collect::<Vec<_>>()
@@ -405,11 +418,21 @@ impl SharedArena {
                 let version = &self.chunks[ci].versions[si];
                 let last = self.last_seen[slot];
                 // Copy into scratch first; commit to the mirror only on a
-                // clean (non-torn) read.
-                let src = &self.chunks[ci].values[si * self.stride..(si + 1) * self.stride];
+                // clean (non-torn) read. Read through a raw `*const u8` over the
+                // `UnsafeCell` region (never a `&[u8]`) — the value bytes may be
+                // written by a foreign thread concurrently; the seqlock around
+                // this copy detects and discards any torn result.
+                let stride = self.stride;
+                // SAFETY: `si * stride` is in-bounds of this chunk's value region.
+                let src_ptr =
+                    unsafe { self.chunks[ci].values.as_ptr().add(si * stride) } as *const u8;
                 let scratch = &mut self.scratch_slot;
                 let outcome = seqlock::read(version, last, || {
-                    scratch.copy_from_slice(src);
+                    // SAFETY: `src_ptr` covers `stride` bytes inside this chunk's
+                    // value allocation; `scratch` is exactly `stride` long.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(src_ptr, scratch.as_mut_ptr(), stride);
+                    }
                 });
                 match outcome {
                     SlotRead::Unchanged => {}
