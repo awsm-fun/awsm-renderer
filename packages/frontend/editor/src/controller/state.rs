@@ -911,6 +911,7 @@ impl EditorController {
                 color_over_life,
                 size_over_life,
                 blend,
+                texture,
             } => {
                 let prev = match mutate::find_by_id(&self.scene, node) {
                     Some(n) => n.kind.get_cloned(),
@@ -961,6 +962,17 @@ impl EditorController {
                 }
                 if let Some(v) = blend {
                     def.blend = v;
+                }
+                // §14: bind/clear the billboard sprite texture. Some(Some) binds,
+                // Some(None) clears, None leaves it untouched.
+                if let Some(tex) = texture {
+                    def.texture = tex.map(|asset| awsm_editor_protocol::TextureRef {
+                        asset,
+                        uv_index: 0,
+                        transform: None,
+                        sampler: None,
+                        flow: None,
+                    });
                 }
                 // Delegate to SetKind for identical re-materialize + inverse.
                 Box::pin(self.apply_inner(EditorCommand::SetKind {

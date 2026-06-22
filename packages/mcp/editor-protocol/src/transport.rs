@@ -289,6 +289,7 @@ mod wire_roundtrip_tests {
                     color_over_life: None,
                     size_over_life: None,
                     blend: Some(true),
+                    texture: Some(Some(AssetId::new())),
                 },
             ),
             (

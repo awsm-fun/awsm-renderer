@@ -613,6 +613,12 @@ pub struct ParticleEmitterParams {
     /// opaque-emissive path.
     #[serde(default)]
     pub blend: Option<bool>,
+    /// Billboard SPRITE texture asset id the particles sample — e.g. a soft
+    /// radial-alpha disc (author one with `create_texture`) for soft-edged
+    /// particles instead of hard squares. Pair with `blend: true` so the sprite
+    /// alpha fades the edges. Omit to leave unchanged.
+    #[serde(default)]
+    pub texture: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2628,7 +2634,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive). Errors if the node isn't a particle emitter. Bind a sprite via set_node_texture/patch_kind."
+        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive), texture (billboard SPRITE asset id — a soft radial-alpha disc from create_texture gives soft-edged particles; pair with blend:true so the alpha fades the edges). Errors if the node isn't a particle emitter."
     )]
     async fn set_particle_emitter(
         &self,
@@ -2649,6 +2655,7 @@ impl EditorMcp {
             color_over_life: p.color_over_life,
             size_over_life: p.size_over_life,
             blend: p.blend,
+            texture: p.texture.as_deref().map(parse_asset).transpose()?.map(Some),
         })
         .await
     }

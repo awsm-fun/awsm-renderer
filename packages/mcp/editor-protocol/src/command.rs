@@ -195,6 +195,12 @@ pub enum EditorCommand {
         /// soft glows) instead of the cheaper opaque-emissive path.
         #[serde(default)]
         blend: Option<bool>,
+        /// Bind a billboard SPRITE texture (asset id) the particles sample —
+        /// e.g. a soft radial-alpha disc (author one with `create_texture`) for
+        /// soft-edged particles instead of hard squares. Pair with `blend: true`
+        /// so the sprite's alpha actually fades the edges. `Some(None)` clears it.
+        #[serde(default)]
+        texture: Option<Option<AssetId>>,
     },
 
     /// Set a node's local transform (TRS). Inverse: restore the prior transform.

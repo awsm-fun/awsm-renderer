@@ -734,6 +734,34 @@ expose a **typed (or patch-style) emitter config** instead of whole-kind
 pixels + the documented knobs. (The additive-over-bright-background issue is the
 agent's to solve too, e.g. by authoring a darker environment — see §18.)
 
+> ✅ **DONE (2026-06-22), three of the four sub-asks shipped + the fourth's core
+> fixed.** (a) **Raw texture-data upload** — `create_texture` (the ★ primitive)
+> authors any sprite/gradient/smoke. (b) **Typed emitter config** —
+> `set_particle_emitter` (§4) patches any subset. (c) **`forces` shapes
+> documented** (§4). (d) **"Confirm the emitter samples the sprite's alpha" —
+> ROOT-CAUSED + FIXED.** The bridge (`engine/bridge/particles.rs`) built an
+> Opaque, emissive-only PBR material and **ignored `def.texture` entirely** — the
+> bound sprite never reached the GPU, so particles were hard squares regardless
+> of what you bound (the original "alpha didn't soften" report). Fix: (1) added a
+> typed `texture` field to `set_particle_emitter` (was set_kind-only); (2) the
+> bridge now resolves `def.texture` → the PBR `base_color_tex` + `emissive_tex`
+> and alpha-TESTs (`Mask`, cutoff 0.5) when a sprite is present, so the sprite's
+> alpha **masks each particle to the sprite's shape**. **Verified live**: a
+> soft radial-alpha disc authored via `create_texture` + bound via
+> `set_particle_emitter` renders the particles as **discs, not squares**
+> (chrome-devtools screenshot) — the emitter now samples the sprite alpha.
+> Roundtrip test + lint.
+>
+> **Deferred (noted):** true **soft-GRADIENT** edges (vs the hard alpha-test
+> cutout) + a clean rim need the **transparent-blend instancing path**
+> (`def.blend` → `enable_mesh_instancing` transparent), which the bridge's own
+> header comment already flags as the follow-on (`build_runtime` runs inside a
+> sync `with_renderer_mut` closure; the transparent path is `async`). The Mask
+> slice is the sync, opaque-instancing-compatible win that fixes the core
+> "sprite alpha isn't sampled" bug; the gradient softness is the remaining
+> render-quality follow-on. The additive-over-bright-IBL washout is the agent's
+> (author a darker env — §18).
+
 ## 15. 🟡 Vertex-color default is **(1,1,1,1)**, which inverts splat-weight logic
 
 Painting snow on peaks then `mix(base, snow, vColor.r)` turned the **whole
@@ -877,7 +905,7 @@ or a naga quirk; either way an author hits it fast.
 | 10 | Fused `paint_where`/`transform_where` (handle + pagination deferred, noted) | DONE | `db32251b` |
 | 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | `8c7d2264` |
 | 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | DONE | `a7b5adab` |
-| 13 | `set_builtin_alpha_mode` + base_color rgba | TODO | |
+| 13 | `set_builtin_alpha_mode` + base_color rgba | DONE | `edbbdd01` |
 | 14 | Particle realism (raw sprite upload, alpha sampled, doc `forces`) | TODO | |
 | 15 | Vertex-color default footgun — doc + clear-to-0 option | TODO | |
 | 16 | Programmable displacement WGSL stage | TODO | |

@@ -109,7 +109,30 @@ fn build_runtime(
         ColorOverLifeDef::Const(c) => *c,
         ColorOverLifeDef::Linear { start, .. } => *start,
     };
-    let mut pbr = PbrMaterial::new(MaterialAlphaMode::Opaque, true);
+    // §14: bind the emitter's billboard SPRITE (def.texture) so particles sample
+    // its alpha instead of rendering as hard squares. With a sprite present we
+    // alpha-TEST (Mask) so the sprite's transparent rim is discarded → the
+    // particle takes the sprite's shape (a soft radial disc reads as a disc, not
+    // a square). The sprite drives both base-color (mask alpha) and emissive (the
+    // glow keeps the sprite shape). NOTE: true soft-GRADIENT edges want the
+    // transparent-blend instancing path (def.blend) — still the follow-on; Mask
+    // is the sync, opaque-instancing-compatible slice.
+    let sprite = def.texture.as_ref().and_then(|tref| {
+        super::material::resolve_texture_binding(renderer, tref).map(|(key, sampler_key)| {
+            awsm_renderer::materials::MaterialTexture {
+                key,
+                sampler_key: Some(sampler_key),
+                uv_index: Some(0),
+                transform_key: None,
+            }
+        })
+    });
+    let alpha_mode = if sprite.is_some() {
+        MaterialAlphaMode::Mask { cutoff: 0.5 }
+    } else {
+        MaterialAlphaMode::Opaque
+    };
+    let mut pbr = PbrMaterial::new(alpha_mode, true);
     pbr.base_color_factor = [1.0, 1.0, 1.0, 1.0];
     pbr.metallic_factor = 0.0;
     pbr.roughness_factor = 1.0;
@@ -118,6 +141,11 @@ fn build_runtime(
         base_color[1] * 1.6,
         base_color[2] * 1.6,
     ];
+    // The sprite's ALPHA drives the mask cutout (→ the particle takes the
+    // sprite's shape); binding it to emissive too keeps the kept disc brightly
+    // glowing (emissive-only base reads washed-out against a bright IBL).
+    pbr.base_color_tex = sprite.clone();
+    pbr.emissive_tex = sprite;
     let material_key = renderer.materials.insert(
         Material::Pbr(Box::new(pbr)),
         &renderer.textures,

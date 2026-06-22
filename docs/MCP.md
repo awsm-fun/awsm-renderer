@@ -177,8 +177,11 @@ every command/query, and each tool self-describes over the MCP schema.
   "line" | "sprite" | "curve" | "sweep" | "instances", … } }`.
 - `set_particle_emitter { node, spawn_rate?, burst_count?, max_alive?, one_shot?,
   space?, shape?, initial_speed?, lifetime?, size?, forces?, color_over_life?,
-  size_over_life?, blend? }` — typed, **patch-style** emitter config (send any
-  subset; only those change). `shape` is `{point}`/`{sphere:{radius}}`/`{cone:{
+  size_over_life?, blend?, texture? }` — typed, **patch-style** emitter config
+  (send any subset; only those change). `texture` = a billboard SPRITE asset id:
+  author a soft radial-alpha disc with `create_texture` and bind it for
+  disc-shaped (alpha-masked) particles instead of hard squares. `shape` is
+  `{point}`/`{sphere:{radius}}`/`{cone:{
   angle_radians, direction}}` (cone `direction` is in the emitter's **local**
   space); `forces` is a list of `{gravity:{acceleration:[x,y,z]}}` /
   `{linear_drag:{coefficient_x1000}}`; `blend:true` routes through the
