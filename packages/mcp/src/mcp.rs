@@ -2109,7 +2109,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Paint per-vertex COLORS on an editable mesh. `mesh` is the mesh asset UUID; `indices` are vertex indices (into the resolved/baked topology — get them from select_vertices_where); `color` is a linear RGBA [r,g,b,a]. TERMINAL/COLLAPSE: the first per-vertex authoring op freezes the procedural stack to a Captured base (topology locks; modifier params bake in) — after this only the sparse override layer is editable. NOTE: painted colors only DISPLAY under a material that reads vertex colors — built-in PBR with `vertex_colors_enabled`, or a custom material that samples them (see the texture-splatting recipe in `awsm://docs/mesh-tools`). Re-bakes geometry; coalesces consecutive strokes on one mesh into one undo step. Verify with get_vertex_data."
+        description = "Paint per-vertex COLORS on an editable mesh. `mesh` is the mesh asset UUID; `indices` are vertex indices (into the resolved/baked topology — get them from select_vertices_where); `color` is a linear RGBA [r,g,b,a]. FOOTGUN: UNPAINTED vertices default to (1,1,1,1) WHITE, not 0 — a splat shader mix(base, snow, vColor.r) reads full weight everywhere until painted (whole mesh = snow). Clear-to-0 first: paint the whole mesh to [0,0,0,1] (use paint_where with a giant within_aabb predicate), THEN paint the band. TERMINAL/COLLAPSE: the first per-vertex authoring op freezes the procedural stack to a Captured base (topology locks; modifier params bake in) — after this only the sparse override layer is editable. NOTE: painted colors only DISPLAY under a material that reads vertex colors — built-in PBR with `vertex_colors_enabled`, or a custom material that samples them (see the texture-splatting recipe in `awsm://docs/mesh-tools`). Re-bakes geometry; coalesces consecutive strokes on one mesh into one undo step. Verify with get_vertex_data."
     )]
     async fn paint_vertex_colors(
         &self,
@@ -2124,7 +2124,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "FUSED select-and-paint: pick the vertices of `node`'s resolved mesh matching `predicate` (same shapes as select_vertices_where) and paint them `color` (linear RGBA) in ONE call. Use this instead of select_vertices_where→paint_vertex_colors for full-resolution selections — a height-band/slope match on a real terrain can be tens of thousands of indices that overflow the tool-result token cap when round-tripped; here the index array stays server-side. Same collapse/re-bake/undo semantics + display caveat as paint_vertex_colors (needs a vertex-color-reading material). Verify with get_vertex_data or a screenshot."
+        description = "FUSED select-and-paint: pick the vertices of `node`'s resolved mesh matching `predicate` (same shapes as select_vertices_where) and paint them `color` (linear RGBA) in ONE call. Use this instead of select_vertices_where→paint_vertex_colors for full-resolution selections — a height-band/slope match on a real terrain can be tens of thousands of indices that overflow the tool-result token cap when round-tripped; here the index array stays server-side. TIP: clear a splat mask to 0 in one call with predicate {\"kind\":\"within_aabb\",\"min\":[-1e9,-1e9,-1e9],\"max\":[1e9,1e9,1e9]} + color [0,0,0,1] BEFORE painting the band (unpainted verts default to (1,1,1,1) WHITE = full weight). Same collapse/re-bake/undo semantics + display caveat as paint_vertex_colors (needs a vertex-color-reading material). Verify with get_vertex_data or a screenshot."
     )]
     async fn paint_where(
         &self,

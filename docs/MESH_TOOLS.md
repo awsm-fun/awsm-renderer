@@ -209,9 +209,24 @@ modifiers) or already frozen (terminal authoring).
 Vertex colors are a cheap per-vertex **blend mask** for a multi-texture (splat)
 material — no UV painting needed:
 
+> ⚠️ **Footgun: unpainted vertex color is `(1,1,1,1)` WHITE, not 0.** So a splat
+> shader doing `mix(base, snow, vColor.r)` reads **full weight everywhere** until
+> you paint — the whole mesh comes out as `snow`, the *opposite* of intent. Two
+> fixes: **(a) clear-to-0 baseline** — before painting the splat, zero the whole
+> mesh: `paint_where { node, predicate: {"kind":"within_aabb","min":[-1e9,-1e9,-1e9],"max":[1e9,1e9,1e9]}, color:[0,0,0,1] }`
+> (the `within_aabb` covers every vertex; `paint_where` keeps the index array
+> server-side — see §10), *then* paint the splat band into the channel. **(b)**
+> Or author the shader so the *zeroed* channel means "blend in" (`mix(snow, base,
+> vColor.r)` with painted `r=0` patches). Always `get_vertex_data` to confirm the
+> baseline before the band paint.
+
+0. **Clear the blend mask to 0** (see footgun above): `paint_where` the whole
+   mesh to `[0,0,0,1]`, so unpainted = "no blend".
 1. Insert + shape the mesh (e.g. a ground `plane`, subdivided for resolution).
-2. Select the region to texture-A: `select_vertices_where {node, predicate}`
-   (e.g. `top_percent` along Y for peaks, or `within_radius` for a patch).
+2. Select+paint the region to texture-A in one call with **`paint_where {node,
+   predicate, color}`** (fused, scales to full-res — §10), or
+   `select_vertices_where {node, predicate}` → `paint_vertex_colors` (e.g.
+   `top_percent` along Y for peaks, or `within_radius` for a patch).
 3. `paint_vertex_colors {mesh, indices, color:[1,0,0,1]}` — store the blend
    weight in a channel (R = grass, G = rock, B = sand, A = …). Paint other
    regions into other channels. The first paint collapses the stack (terminal).

@@ -309,6 +309,11 @@ every command/query, and each tool self-describes over the MCP schema.
   overflows the tool-result token cap if returned. Painted colors still only
   DISPLAY under a vertex-color-reading material (built-in PBR with
   `vertex_colors_enabled`).
+  - ⚠️ **Splat-weight footgun:** unpainted vertex color is **`(1,1,1,1)` white**,
+    not 0 — `mix(base, snow, vColor.r)` reads full weight everywhere until you
+    paint. **Clear-to-0 first:** `paint_where { node, predicate:
+    {"kind":"within_aabb","min":[-1e9,-1e9,-1e9],"max":[1e9,1e9,1e9]},
+    color:[0,0,0,1] }` zeroes every vertex in one call, then paint the band.
 
 **Rig / skin**
 - `get_skin_data` (joints as node ids — see Discover), `get_skin_weights { node }`

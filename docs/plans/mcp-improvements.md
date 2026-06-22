@@ -771,6 +771,18 @@ read as full weight. Had to mark painted verts with a **zeroed channel**
 read default as `vec4(1)` — but for *splat weights* that's a footgun. Document it
 prominently in the splatting recipe, and/or offer a "paint clears to 0" baseline.
 
+> ✅ **DONE (2026-06-22) — doc-only; the "paint clears to 0" baseline is already
+> a one-call op via §10's `paint_where`.** Documented the `(1,1,1,1)`-white
+> footgun prominently in (1) the splatting recipe in `MESH_TOOLS.md` (the
+> `awsm://docs/mesh-tools` resource) as a ⚠️ callout + an explicit step-0
+> "clear the mask to 0", (2) `MCP.md`, and (3) the `paint_vertex_colors` +
+> `paint_where` tool descriptions. The clear-to-0 baseline needs no new tool:
+> `paint_where { node, predicate: within_aabb [-1e9..1e9], color: [0,0,0,1] }`
+> zeroes every vertex in ONE call (index array stays server-side). No code change
+> warranted — the generic primitive (`paint_where`) already composes the
+> baseline; a dedicated `clear_vertex_colors` would be a redundant narrow preset
+> against the Design Principle.
+
 ## 16. 🟡 `displace` has no `noise()` — heightmaps are hand-rolled summed sines
 
 The `displace` modifier's expr vocabulary is `sin/cos/tan/abs/sqrt/floor/sign`
@@ -906,7 +918,7 @@ or a naga quirk; either way an author hits it fast.
 | 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | `8c7d2264` |
 | 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | DONE | `a7b5adab` |
 | 13 | `set_builtin_alpha_mode` + base_color rgba | DONE | `edbbdd01` |
-| 14 | Particle realism (raw sprite upload, alpha sampled, doc `forces`) | TODO | |
+| 14 | Particle realism (sprite upload, alpha sampled→discs, doc `forces`; soft-gradient blend deferred-noted) | DONE | `327b8159` |
 | 15 | Vertex-color default footgun — doc + clear-to-0 option | TODO | |
 | 16 | Programmable displacement WGSL stage | TODO | |
 | 17 | `ibl` include + light-list for custom materials | TODO | |
