@@ -963,6 +963,22 @@ compiled. Small surface, but still in scope — and worth a note in the material
 natural to write — either it's a real limitation of the wrapper's preprocessor
 or a naga quirk; either way an author hits it fast.
 
+> ✅ **FIXED (2026-06-22) — it was the editor's pre-check, NOT naga.** Proved naga
+> (the WGSL front-end) accepts multi-line single statements (op-leading AND
+> op-trailing) and the full assembled kernel validates fine. The spurious
+> "expected ';'" came from the editor's *lightweight* syntax pre-check
+> `controller::custom_material::compile_wgsl` — a line-by-line heuristic that
+> flagged ANY `let`/`var`/`return` line not ending in `;`/`{`/`}`, so a single
+> statement split across lines false-rejected (it short-circuits BEFORE the real
+> naga validation, which is why §12/§17's multi-line *bodies* — each statement on
+> its own terminated line — worked but a split statement didn't). Made the check
+> continuation-aware: an unterminated `let`/`var`/`return` is only an error when
+> the statement does NOT continue — neither this line ending in a continuation
+> token (binary op / `(` / `,` / `.`) nor the next non-blank line beginning with
+> one. **Verified**: 3 native unit tests (continuations pass; a genuine missing
+> `;` still flags); live over MCP — `let c = 0.5\n + 0.3\n + 0.1;` now compiles
+> `ok`, while `let c = 0.5\nreturn …` (real dangling stmt) still rejects loudly.
+
 ## What worked well this batch
 - **Light tools** (`insert_light` / `set_rotation_euler` direction /
   `set_light_intensity` / `set_light_color`) — clean, typed, immediate.
@@ -998,7 +1014,7 @@ or a naga quirk; either way an author hits it fast.
 | 16 | Displace expr noise() primitive (GPU WGSL stage deferred-noted) | DONE | `9b307e8c` |
 | 17 | `ibl` include for custom materials (existed; discoverability fixed + verified) | DONE | `59743db5` |
 | 18 | Env-from-agent-data: sky-gradient (equirect/cubemap-bytes + skybox WGSL deferred-noted) | DONE | `19b80c21` |
-| 19 | Toon shading — add regression test (positive, keep) | TODO | |
+| 19 | Toon shading — cel-banding regression guard (positive, keep) | DONE | `a94617be` |
 | 20 | Custom WGSL leading-operator line continuations — fix or doc | TODO | |
 
 ---
