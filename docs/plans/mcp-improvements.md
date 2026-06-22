@@ -181,14 +181,32 @@ visual change and no feedback — the worst failure mode (looks like success).
 > tool (or `set_kind`) *does* re-pack the material. The original "silent no-op via
 > `set_kind`" predates that wiring (likely the multithreading merge added it).
 > Empty-slot edits are now **rejected loudly** (not stored-and-ignored).
-> **Blocker for the pixel screenshot:** §11 — a procedural/raster texture bound to
-> a *builtin* material renders **flat** (the texture itself doesn't sample), so a
-> UV transform on it can't be seen until §11 lands. §1's visual confirm + the
-> reject-loudly screenshot are bundled with §11's fix. Also: the **harness MCP
-> client caches its tool list across a server restart** — the new typed tool is
-> server-registered (confirmed via `tools/list`) but won't be callable through the
-> harness until a `/mcp` reconnect; its command is exercised via `dispatch_command`
-> meanwhile.
+> §11 (texture renders on builtin) is now **fixed** (`8c7d2264`) — so a bound
+> checker renders, and the inline `TextureRef`'s transform/flow reach
+> `resolve_texture`. The **harness MCP client caches its tool list across a server
+> restart** — the new typed tool is server-registered (confirmed via `tools/list`)
+> but isn't callable through the harness without a `/mcp` reconnect; its command is
+> exercised via `dispatch_command` meanwhile.
+>
+> ⏳ **REMAINING BLOCKER — texture-transform doesn't RENDER (deferred, deep
+> renderer/prep-pass bug; §1 stays WIP).** With §11 landed I verified the
+> transform path end-to-end with instrumentation: applying any transform
+> (`set_node_texture_transform scale:[4,4]`, or even **identity**) makes the
+> checker **vanish to flat** — the shader reads a **zero matrix** (UV→(0,0) →
+> uniform corner texel). PROVEN-CORRECT on the CPU/data side: `resolve_texture`
+> logs `transform_key offset=32 slot_index=1`; the transform buffer's CPU slot 1 =
+> `[4,0,0,4, 0,0]` (the scale matrix); the dirty-range flush uploads it; and even a
+> **synchronous full-buffer `gpu.write_buffer`** (bypassing the mapped uploader)
+> still renders flat. So the upload lands but the **shader reads `texture_transforms`
+> as zero for any slot ≥ 1** (slot 0 / identity works → §11). The UV transform for
+> interior pixels is applied in the **prep pass** (`render_passes/material_prep`,
+> the `{% if prep_present %}` branch in `material_opaque_wgsl/helpers/texture_uvs.wgsl`)
+> — strong lead: the prep pass binds a stale/separate texture-transforms buffer, or
+> its materialized-UV cache isn't invalidated when a transform changes live. Fix
+> there, then verify scale/offset tile+shift the checker and `flow` scrolls it.
+> **This same blocker gates §2** (the `texture_transform` keyframe channel needs
+> transforms to render). Diagnostics were reverted; the tool + reject-loudly + the
+> §11 unblock are committed (`3d0102c7`, `8c7d2264`).
 
 ---
 
@@ -671,7 +689,7 @@ or a naga quirk; either way an author hits it fast.
 | 8 | Per-model facing/orientation hint | TODO | |
 | 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | TODO | |
 | 10 | Selection handles + pagination + fused `paint_where` | TODO | |
-| 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | _pending_ |
+| 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | `8c7d2264` |
 | 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | TODO | |
 | 13 | `set_builtin_alpha_mode` + base_color rgba | TODO | |
 | 14 | Particle realism (raw sprite upload, alpha sampled, doc `forces`) | TODO | |
