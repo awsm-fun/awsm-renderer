@@ -1,6 +1,6 @@
 //! Chunked, stable-address arena with a per-slot seqlock and a coarse
 //! chunk dirty bitmap — the shared-memory sim-state primitive
-//! (`docs/plans/multithreading.md`, Layer 2, decisions B/C/D).
+//! (`docs/PLAYER-GUIDE.md §9`, Layer 2, decisions B/C/D).
 //!
 //! ## What problem this solves
 //!

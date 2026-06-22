@@ -208,7 +208,7 @@ impl Instances {
     /// Overwrite ALL of `key`'s instance transforms straight from a raw
     /// byte slice in GPU layout (`INSTANCE_TRANSFORM_BYTE_SIZE` per
     /// instance = one column-major `Mat4`). This is the shared-memory
-    /// sim-state path (`docs/plans/multithreading.md`, M4): a physics
+    /// sim-state path (`docs/PLAYER-GUIDE.md §9`, M4): a physics
     /// worker writes per-instance world `Mat4`s into a shared
     /// [`SharedArena`](crate::buffer::shared_arena::SharedArena); the render
     /// worker hands that arena's contiguous mirror straight here — no

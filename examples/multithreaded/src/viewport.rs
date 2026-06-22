@@ -1,5 +1,5 @@
 //! Shared canvas-sizing + resize-forwarding for the worker-hosted demos
-//! (`docs/plans/multithreading.md` H1).
+//! (`docs/PLAYER-GUIDE.md §9` H1).
 //!
 //! The renderer already re-creates its size-dependent render textures whenever
 //! the swap-chain `getCurrentTexture().getSize()` changes — and for an

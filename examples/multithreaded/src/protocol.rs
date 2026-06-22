@@ -1,4 +1,4 @@
-//! M5 — the Layer 1 remote-renderer protocol (`docs/plans/multithreading.md`,
+//! M5 — the Layer 1 remote-renderer protocol (`docs/PLAYER-GUIDE.md §9`,
 //! D4): a typed command/event channel so a main-thread DOM driver fully
 //! controls a worker-hosted renderer.
 //!

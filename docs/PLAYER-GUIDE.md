@@ -400,10 +400,13 @@ mt:dev` → <http://127.0.0.1:9090>); each milestone is a `?demo=` mode:
 | `smoke` | two workers share one `WebAssembly.Memory` (an `AtomicU32` crossing the boundary) |
 | `arena` | the seqlock arena under a high-rate foreign writer (torn-read safety) |
 | `render` | the renderer hosted in a worker over the shared **transform arena** |
-| `motion` | a physics worker moving node transforms via shared memory |
+| `motion` | a physics worker moving node transforms via shared memory (bounds/culling track the moved positions) |
 | `crowd` | instanced transforms **and** attributes driven by the physics worker |
-| `remote` | the Layer 1 `RenderCommand`/`RenderEvent` protocol (DOM driver loads a model, picks) |
-| `input` | full input forwarding + a main-thread responsiveness meter |
+| `churn` | live spawn/despawn topology as a bind→ack→free transaction (slot reuse, invariant-checked) |
+| `lights` | a physics worker animating a **light** via its bound transform (the lit spot sweeps a static surface) |
+| `skin` | a physics worker flexing a real rigged glTF (CesiumMan) by driving its **skin joints** through the arena |
+| `remote` | the Layer 1 `RenderCommand`/`RenderEvent` protocol — DOM driver loads a real **glTF** (DamagedHelmet), streams a progress bar, picks, queries bounds, recolours the material |
+| `input` | full input forwarding + a main-thread responsiveness meter (Long Tasks API) |
 
 ### 9.1 The threaded build profile
 
@@ -453,13 +456,30 @@ the same way (the glue URL is stashed on the worker global). Hand the
 A main-thread driver that doesn't run game logic inside the worker controls it
 over a typed channel (`examples/multithreaded/src/protocol.rs`):
 
-- **`RenderCommand`** (main → worker): `Load { models }`, `Pick { x, y }`, … —
-  `serde_wasm_bindgen` values. Geometry/texture payloads ride alongside as
-  **Transferable** `ArrayBuffer`s (zero-copy), referenced by index — never
-  serialize `web_sys` GPU handles.
+- **`RenderCommand`** (main → worker): `LoadGltf { url }` (the worker fetches a
+  **same-origin** `.glb` and runs the load transaction), `Load { models }`
+  (geometry as Transferable `ArrayBuffer`s, referenced by index — never
+  serialize `web_sys` GPU handles), `UpdateCamera`, `Bounds`,
+  `SetMeshMaterial { emissive }`, `Screenshot`, `Pick { x, y }`.
 - **`RenderEvent`** (worker → main): `Loading(LoadingStats)` per commit phase
   (drive a progress bar — the DOM paints each phase off-main, the
-  responsiveness win), `Ready`, `PickResult`, `Error`.
+  responsiveness win), `Ready`, `PickResult`, `BoundsResult`, `MaterialChanged`,
+  `ScreenshotBytes`, `Error`.
+
+Serialize request→reply commands that take an async renderer borrow (`Pick`,
+`LoadGltf`) one at a time — chain the next on the previous reply — so two
+`&mut`-borrowing futures never overlap (the render loop already yields via
+`try_borrow_mut`).
+
+Two real constraints surfaced here:
+- **Same-origin assets.** COEP `require-corp` blocks cross-origin fetches, and a
+  worker resolves relative URLs against its `blob:` base — so pass an **absolute**
+  same-origin URL (bundle the `.glb` with Trunk `copy-file`).
+- **`Screenshot` is platform-bounded.** `OffscreenCanvas.convertToBlob` is
+  rejected by Chrome (`NotReadableError`) on a WebGPU-configured canvas — the
+  swapchain image isn't host-readable after present. A robust capture needs an
+  in-renderer `copyTextureToBuffer`+`mapAsync` path; the command surfaces the
+  real `Error` rather than faking one.
 
 `SlotMap` handles (`MeshKey`/`TransformKey`/…) cross by value; `LoadingStats`
 /`PickResult` are already `Copy`.
@@ -502,13 +522,39 @@ worker hands the contiguous mirrors straight to
 round-trip). Instance **count** is topology (owner-side); per-instance values
 are foreign.
 
+**Lights and skins ride the transform arena for free.** A punctual light
+derives its world pose from a **bound transform** (`lights.bind_transform` +
+`update_from_transforms`), and skin **joints are themselves `TransformKey`s**
+(`meshes::update_world` → `skins.update_transforms` recomputes joint matrices
+from the same per-frame dirty set). So a physics worker animates a light, or
+flexes a skinned mesh, with **no new foreign-writable buffer** — it just moves
+the light's bound transform / the skin's joint transforms in the arena
+(`?demo=lights`, `?demo=skin`). Read a glTF's joint keys from
+`GltfPopulateContext.transform_is_joint` after `populate_gltf`.
+
+**Live spawn/despawn is a transaction, not a per-node poke.** Topology
+(`allocate`/`free`) is owner-only and must be quiescent while foreign threads
+write. The owner-side flow is bind → (foreign writes) → on retire, *unbind* the
+slot and wait for the sim worker's ack before *freeing* it (so the freed slot
+can be safely reused). `?demo=churn` exercises this with slot-reuse + an
+invariant check.
+
 ### 9.5 `queue.writeBuffer` from shared memory
 
-Settled by construction: the render-side descent packs the shared arena into
-the renderer's **regular** `Vec<u8>` mirror, and `queue.writeBuffer` uploads
-from that mirror — it never reads a shared-memory-backed view, so no
-copy-to-regular fallback is needed. The pack *is* the copy, and its cost is
-proportional to the dirty count.
+**Measured (Chrome, crossOriginIsolated):** `queue.writeBuffer` *accepts* a
+`SharedArrayBuffer`-backed `TypedArray`, and a mapped range can be written from
+one — corroborated by the fact that the threaded renderer already uploads from
+the (shared) wasm heap every frame and renders correctly. So the upload is **not
+forced off shared memory** by the platform.
+
+Given that, the render-side descent's per-frame "copy at the pack step" is not a
+removable redundant copy — it is **necessary computation**, already proportional
+to the dirty count. For each *moved* transform it (1) snapshots the 64 B model
+matrix out of shared memory torn-read-safe (seqlock), (2) **packs** to the 112 B
+GPU layout — which computes the inverse-transpose **normal matrix**, genuine
+derived data — into the renderer's regular `Vec<u8>` mirror, (3) uploads via the
+mapped ring. Each step earns its keep; none is a redundant memcpy. The mirror is
+the single source the single-threaded and threaded paths share.
 
 ### 9.6 Gotchas (threaded)
 
@@ -521,3 +567,19 @@ proportional to the dirty count.
   memory from the owning arena, and the owner must not be reallocating that
   slot's topology concurrently (it never is — topology is quiescent during the
   write loop).
+- **The arena's value region is `UnsafeCell<u8>`, not `u8`.** A foreign thread
+  writing a `&[u8]` you reached via `&mut` would be UB under Stacked Borrows
+  (`SharedReadOnly` provenance); backing the bytes with `UnsafeCell` gives the
+  `SharedReadWrite` provenance the cross-thread write needs. Verified with miri.
+- **Image decode needs a non-shared copy.** The browser's `Blob` constructor
+  rejects a `SharedArrayBuffer`-backed `ArrayBufferView` (*"must not be
+  shared"*), so decoding an embedded glTF image in a worker fails if you pass a
+  *view* over the (shared) wasm heap. `renderer-core`'s `image::bitmap::load_u8`
+  copies into a fresh non-shared `Uint8Array` first — correct on both builds.
+- **Resize / DPR.** The render worker owns an `OffscreenCanvas`; size it to the
+  display backing store (`devicePixelRatio`) and forward main-thread
+  `ResizeObserver` + `matchMedia` DPR changes to the worker as messages (see
+  `examples/multithreaded/src/viewport.rs`).
+- **Measure responsiveness honestly** with the Long Tasks API
+  (`PerformanceObserver('longtask')`), not rAF gaps — the main thread should log
+  *zero* long tasks while the worker compiles/loads (`?demo=input`).

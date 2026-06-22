@@ -1,8 +1,7 @@
 #![allow(clippy::type_complexity)]
 //! Standalone **multithreaded reference app** for `awsm-renderer`.
 //!
-//! This is the living artifact the multithreading plan
-//! (`docs/plans/multithreading.md`) extends milestone by milestone. It
+//! This is the copyable reference behind **`docs/PLAYER-GUIDE.md` §9**. It
 //! is built with the **nightly threaded profile** — real wasm threads
 //! over a shared `WebAssembly.Memory` (`+atomics,+bulk-memory` +
 //! `-Z build-std`) — and served with the COOP/COEP headers that enable
@@ -20,13 +19,9 @@
 //!   which initialises the wasm against the shared memory and then calls
 //!   a role-specific exported entry point.
 //!
-//! ### M0 — shared-memory smoke (this milestone)
-//!
-//! Two workers attach to one `WebAssembly.Memory`; worker **A**
-//! increments a native [`std::sync::atomic::AtomicU32`] in shared linear
-//! memory, worker **B** *only reads* it and observes A's increments
-//! crossing the thread boundary — proving real shared memory, no
-//! `postMessage` on the shared-state path. See [`crate::smoke`].
+//! Each capability is a selectable `?demo=` mode (see the per-module docs and
+//! the README); the shared-memory sim-state primitive itself lives in the
+//! renderer crate (`awsm_renderer::buffer::shared_arena`).
 
 pub mod arena_test;
 pub mod bootstrap;

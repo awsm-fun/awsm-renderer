@@ -237,7 +237,7 @@ pub struct Transforms {
     /// first write_gpu call; sized to mirror `gpu_buffer`.
     uploader: MappedUploader,
 
-    /// Shared sim-state mode (`docs/plans/multithreading.md`, M2). When
+    /// Shared sim-state mode (`docs/PLAYER-GUIDE.md §9`, M2). When
     /// `Some`, world matrices are stored as semantic 64-byte values in a
     /// shared-memory [`SharedArena`] (foreign-writable by a physics worker)
     /// and the 112-byte GPU layout is produced on the render-side dirty
@@ -357,7 +357,7 @@ impl Transforms {
     }
 
     /// Switch this transform store into **shared sim-state mode**
-    /// (`docs/plans/multithreading.md`, M2/M3): back world matrices with a
+    /// (`docs/PLAYER-GUIDE.md §9`, M2/M3): back world matrices with a
     /// shared-memory [`SharedArena`] of semantic 64-byte values, foreign-
     /// writable by a physics worker. Existing transforms are migrated into
     /// the arena (a slot allocated + current world matrix written) and all
