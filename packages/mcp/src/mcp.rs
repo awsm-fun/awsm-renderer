@@ -34,8 +34,8 @@ use awsm_editor_protocol::{
     ProceduralKind, QueryResult, Request, Response, SlotSpec, StepKind,
 };
 use awsm_scene::animation::{
-    BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TrackTarget, TrackValue,
-    TransformProp,
+    BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TexSlot, TexTransformProp,
+    TrackTarget, TrackValue, TransformProp,
 };
 use awsm_scene::{
     AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, MeshShadowConfig, NodeId,
@@ -842,14 +842,21 @@ pub struct ClipOptParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct TrackTargetArg {
-    /// Target kind: transform | morph | uniform | builtin_param | light | camera.
+    /// Target kind: transform | morph | uniform | builtin_param | light | camera |
+    /// texture_transform.
     pub kind: String,
-    /// Node UUID (transform / morph / builtin_param / light / camera).
+    /// Node UUID (transform / morph / builtin_param / light / camera /
+    /// texture_transform).
     #[serde(default)]
     pub node: Option<String>,
-    /// Transform property: translation | rotation | scale.
+    /// Property: for `transform` translation | rotation | scale; for
+    /// `texture_transform` offset (vec2) | scale (vec2) | rotation (scalar radians).
     #[serde(default)]
     pub prop: Option<String>,
+    /// Built-in texture slot for `texture_transform`: base_color |
+    /// metallic_roughness | normal | occlusion | emissive.
+    #[serde(default)]
+    pub slot: Option<String>,
     /// Morph target index.
     #[serde(default)]
     pub index: Option<u32>,
@@ -3104,7 +3111,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Add an animation track to a clip, bound to a target. target.kind = transform (node+prop) | morph (node+index) | uniform (material+name) | builtin_param/light/camera (node+param). Tracks append; the new index is the prior track count."
+        description = "Add an animation track to a clip, bound to a target. target.kind = transform (node+prop) | morph (node+index) | uniform (material+name) | builtin_param/light/camera (node+param) | texture_transform (node + slot[base_color|metallic_roughness|normal|occlusion|emissive] + prop[offset(vec2)|scale(vec2)|rotation(scalar)] — keyframe a built-in texture's UV offset/scale/rotation, e.g. a directional/reversible conveyor scroll). Tracks append; the new index is the prior track count."
     )]
     async fn add_track(
         &self,
@@ -3807,6 +3814,25 @@ fn build_track_target(a: &TrackTargetArg) -> Result<TrackTarget, McpError> {
             node: need_node()?,
             param: parse_enum(param_str(a)?, "camera param")?,
         },
+        "texture_transform" => {
+            let slot_s = a.slot.as_deref().ok_or_else(|| {
+                McpError::invalid_params(
+                    "texture_transform target requires `slot` (base_color | metallic_roughness | normal | occlusion | emissive)",
+                    None,
+                )
+            })?;
+            let prop_s = a.prop.as_deref().ok_or_else(|| {
+                McpError::invalid_params(
+                    "texture_transform target requires `prop` (offset | scale | rotation)",
+                    None,
+                )
+            })?;
+            TrackTarget::TextureTransform {
+                node: need_node()?,
+                slot: parse_enum::<TexSlot>(slot_s, "texture slot")?,
+                prop: parse_enum::<TexTransformProp>(prop_s, "texture transform prop")?,
+            }
+        }
         other => {
             return Err(McpError::invalid_params(
                 format!("unknown target kind {other:?}"),

@@ -251,7 +251,11 @@ every command/query, and each tool self-describes over the MCP schema.
   `set_clip_duration`, `set_clip_speed`, `set_clip_loop`, `set_current_clip`,
   `set_playhead { t }`, `set_playing { on }`.
 - Typed tracks/keys: `add_track { clip, target }`, `add_keyframe`, `set_keyframe`,
-  `delete_keyframe`, `delete_track { clip, index }`.
+  `delete_keyframe`, `delete_track { clip, index }`. `target.kind`: transform |
+  morph | uniform | builtin_param | light | camera | **texture_transform**
+  (`node` + `slot` [base_color|metallic_roughness|normal|occlusion|emissive] +
+  `prop` [offset(vec2) | scale(vec2) | rotation(scalar)] — keyframe a built-in
+  texture's UV transform, e.g. a directional/reversible conveyor scroll per clip).
 - Track flags + transport: `set_track_mute`, `set_track_solo` (any solo ⇒ only
   soloed tracks pose), `set_track_sampler { sampler: step|linear|cubic }`,
   `step_playhead { to: home|prev|next|end }`.

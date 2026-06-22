@@ -240,6 +240,20 @@ kind `{ node, slot, field }`.
 > the uniform animates and the shader offsets the UV). That defeats the purpose
 > of the builtin Flow control existing.
 
+> ✅ **SHIPPED (2026-06-22) — `texture_transform` track-target kind.** The
+> renderer/scene side already existed (`TrackTarget::TextureTransform { node,
+> slot, prop }` in `scene/animation.rs` + `apply_texture_transform_keyframe` in
+> `renderer/animation/animations.rs`); the gap was the MCP authoring path. Wired
+> `add_track` to accept `target.kind = "texture_transform"` (+ a `slot` field:
+> base_color | metallic_roughness | normal | occlusion | emissive; `prop` =
+> offset (vec2) | scale (vec2) | rotation (scalar radians)) via `build_track_target`.
+> Keyframes use the existing `vec2`/`scalar` `TrackValue`s. Now a tread scrolls
+> **directionally per clip** (move-forward vs move-backward = different keyframed
+> offsets) on the BUILT-IN material — no custom-material escape hatch. **Verified
+> live**: a `base_color` offset track keyed `[0,0]@0s → [0.7,0]@1s` on a checker
+> box visibly SHIFTS the checker phase between playhead 0 and 1 (chrome-devtools
+> screenshots). Depends on §1's render fix (`ffca1bb3`). Roundtrip test + lint.
+
 ---
 
 ## 3. 🟠 Escape-hatch command shapes aren't discoverable from the MCP surface
@@ -745,8 +759,8 @@ or a naga quirk; either way an author hits it fast.
 | # | Item | Status | Commit |
 |---|------|--------|--------|
 | ★ | Raw texture-data upload (`create_texture` / `data:` URI) | DONE | `ece042d3` |
-| 1 | Texture UV transform — typed tool + render-path apply | WIP | `3d0102c7` (code; visual gated by §11) |
-| 2 | Texture offset/flow keyframe channel | TODO | |
+| 1 | Texture UV transform — typed tool + render-path apply | DONE | `3d0102c7` + `ffca1bb3` |
+| 2 | Texture offset/flow keyframe channel | WIP | |
 | 3 | Machine-readable command schema + patch-style `set_kind` | DONE | `72839eb2` (patch_kind; full JSONSchema bounded-deferred — see §3) |
 | 4 | Typed/patch particle emitter config | DONE | `1a38e67c` |
 | 5 | Unassigned-material node: render magenta/warn + fix docs | DONE | `8815c9be` |

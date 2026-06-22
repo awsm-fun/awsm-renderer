@@ -221,6 +221,17 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "add_track",
+                EditorCommand::AddTrack {
+                    clip: AssetId::new(),
+                    target: awsm_scene::animation::TrackTarget::TextureTransform {
+                        node: NodeId::new(),
+                        slot: awsm_scene::animation::TexSlot::BaseColor,
+                        prop: awsm_scene::animation::TexTransformProp::Offset,
+                    },
+                },
+            ),
+            (
                 "set_particle_emitter",
                 EditorCommand::SetParticleEmitter {
                     node: NodeId::new(),
