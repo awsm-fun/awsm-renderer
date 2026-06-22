@@ -207,6 +207,13 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "patch_kind",
+                EditorCommand::PatchKind {
+                    id: NodeId::new(),
+                    patch: serde_json::json!({"mesh": {"shadow": {"cast": false}}}),
+                },
+            ),
+            (
                 "set_node_texture_transform",
                 EditorCommand::SetNodeTextureTransform {
                     node: NodeId::new(),

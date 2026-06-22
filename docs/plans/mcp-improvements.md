@@ -265,6 +265,28 @@ JSON shapes. So to use the escape hatch I had to:
    `set_kind`-style edits (e.g. a `patch_kind { id, json_merge_patch }`), so an
    agent isn't forced to faithfully resend every field.
 
+> ✅ **Fix #2 SHIPPED (2026-06-22) — `patch_kind`.** `EditorCommand::PatchKind {
+> id, patch }` + the `patch_kind` MCP tool apply an RFC 7386 JSON merge-patch over
+> the node's serialized `NodeKind` (`json_merge_patch`, 7 unit tests): only the
+> fields you send change, `null` removes a key, nested objects merge, arrays
+> replace. The result must deserialize back to a valid `NodeKind` — **rejected
+> loudly** otherwise. Paired with `get_node_details` (the exact shape + field
+> names), this **retires the §3 pain**: no more reconstructing-and-resending the
+> whole blob or guessing serde field names — read the shape, send the delta.
+> **Verified live**: a minimal `patch_kind` set `base_color` → the box rendered
+> red; patching `shadow.cast=false` preserved `receive` AND the red base color;
+> an invalid patch (`cast:"not_a_bool"`) returned a clear deserialize error.
+>
+> ⏳ **Fix #1 BOUNDED-DEFERRED (full per-variant JSONSchema).** Deriving
+> `schemars::JsonSchema` on `EditorCommand` cascades to ~100 types across the
+> **core** crates (awsm-scene `NodeKind`/`MaterialDef`/`EnvironmentConfig`/… +
+> their sub-types, meshgen `CapturedMesh`/recipe types) — a large mechanical
+> sprawl + an API/dependency decision for the scene crate, disproportionate to its
+> marginal value here. The discoverability need is substantially met by: the
+> rmcp-generated JSONSchemas of the **typed tools** (already machine-readable),
+> `get_node_details` (exact `NodeKind` JSON), and `patch_kind` (edit without
+> reconstruct). Revisit if the external tester/owner wants the full enum schema.
+
 ---
 
 ## 4. 🟠 Particle emitter has a typed *insert* but no typed *config*
@@ -681,7 +703,7 @@ or a naga quirk; either way an author hits it fast.
 | ★ | Raw texture-data upload (`create_texture` / `data:` URI) | DONE | `ece042d3` |
 | 1 | Texture UV transform — typed tool + render-path apply | WIP | `3d0102c7` (code; visual gated by §11) |
 | 2 | Texture offset/flow keyframe channel | TODO | |
-| 3 | Machine-readable command schema + patch-style `set_kind` | TODO | |
+| 3 | Machine-readable command schema + patch-style `set_kind` | WIP | |
 | 4 | Typed/patch particle emitter config | TODO | |
 | 5 | Unassigned-material node: render magenta/warn + fix docs | TODO | |
 | 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | TODO | |

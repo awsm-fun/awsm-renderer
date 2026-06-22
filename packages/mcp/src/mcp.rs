@@ -525,6 +525,17 @@ pub struct BuiltinTextureParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PatchKindParams {
+    /// Node UUID to patch.
+    pub node: String,
+    /// RFC 7386 JSON merge-patch over the node's `NodeKind`: only the fields you
+    /// include change; `null` removes a key; nested objects merge recursively;
+    /// arrays replace wholesale. Read `get_node_details` first to see the exact
+    /// shape + field names, then send just the delta.
+    pub patch: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct NodeTextureTransformParams {
     /// Mesh node UUID (the slot must already have a texture bound).
     pub node: String,
@@ -2403,6 +2414,20 @@ impl EditorMcp {
             node: parse_node(&p.node)?,
             slot: p.slot,
             texture: parse_asset_opt(&p.texture)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Patch a node's kind with a JSON merge-patch (RFC 7386) — edit only the fields you name instead of resending the whole NodeKind via dispatch_command SetKind. `node` is the node UUID; `patch` is a partial object merged over the node's current kind (fields present overwrite; null removes a key; nested objects merge recursively; arrays replace wholesale). Read get_node_details to see the exact shape + field names, then send just the delta. The result must still be a valid NodeKind (rejected loudly with the deserialize error otherwise). Ideal for escape-hatch edits with no typed tool: particle-emitter config, decal, sprite, collider, etc."
+    )]
+    async fn patch_kind(
+        &self,
+        Parameters(p): Parameters<PatchKindParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::PatchKind {
+            id: parse_node(&p.node)?,
+            patch: p.patch,
         })
         .await
     }

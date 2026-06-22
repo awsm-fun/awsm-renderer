@@ -796,6 +796,30 @@ impl EditorController {
                 }
                 None => Ok(None),
             },
+            EditorCommand::PatchKind { id, patch } => {
+                // RFC 7386 merge-patch over the node's serialized kind (§3). Reject
+                // loudly if the result isn't a valid NodeKind — never store-and-
+                // ignore. Delegate the actual swap to SetKind so the structure-rev
+                // / light-relower / re-materialize bookkeeping + inverse match a
+                // full kind replacement exactly.
+                let prev = match mutate::find_by_id(&self.scene, id) {
+                    Some(node) => node.kind.get_cloned(),
+                    None => return Ok(None),
+                };
+                let mut json = serde_json::to_value(&prev)
+                    .map_err(|e| crate::error::EditorError::msg(format!("serialize kind: {e}")))?;
+                awsm_editor_protocol::json_merge_patch(&mut json, &patch);
+                let next: NodeKind = serde_json::from_value(json).map_err(|e| {
+                    crate::error::EditorError::msg(format!(
+                        "patched kind is not a valid NodeKind: {e}"
+                    ))
+                })?;
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id,
+                    kind: Box::new(next),
+                }))
+                .await
+            }
             EditorCommand::SetTransform { id, transform } => {
                 match mutate::find_by_id(&self.scene, id) {
                     Some(node) => {

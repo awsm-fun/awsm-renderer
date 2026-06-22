@@ -139,6 +139,20 @@ pub enum EditorCommand {
     /// the largest payload). Inverse: restore the prior kind. Coalesces.
     SetKind { id: NodeId, kind: Box<NodeKind> },
 
+    /// **Patch** a node's kind with an [RFC 7386](https://datatracker.ietf.org/doc/html/rfc7386)
+    /// JSON merge-patch (§3) — the composable alternative to resending the entire
+    /// `NodeKind` via `SetKind`. The node's current kind is serialized to JSON, the
+    /// `patch` is merged in (fields present overwrite; `null` removes a key; nested
+    /// objects merge recursively; arrays replace wholesale), and the result is
+    /// deserialized back. The patched JSON **must still be a valid `NodeKind`** —
+    /// rejected loudly otherwise (never a silent no-op). Pairs with
+    /// `get_node_details` (read the exact shape + field names, then send just the
+    /// delta). Re-materializes like `SetKind`. Inverse: restore the prior kind.
+    PatchKind {
+        id: NodeId,
+        patch: serde_json::Value,
+    },
+
     /// Set a node's local transform (TRS). Inverse: restore the prior transform.
     /// Consecutive `SetTransform`s on the same node coalesce into one undo step
     /// (so a drag-scrub is a single undo).
@@ -1004,6 +1018,7 @@ impl EditorCommand {
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",
+            EditorCommand::PatchKind { .. } => "Patch properties",
             EditorCommand::SetTransform { .. } => "Transform",
             EditorCommand::Rename { .. } => "Rename",
             EditorCommand::SetVisible { .. } => "Toggle visibility",

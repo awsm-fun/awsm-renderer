@@ -274,6 +274,12 @@ every command/query, and each tool self-describes over the MCP schema.
   atomically as one undo step (one round-trip).
 - `dispatch_command { command }` — a single raw `EditorCommand` (tagged by `"cmd"`).
 - `run_query { query }` — a raw `EditorQuery` (tagged by `"query"`).
+- `patch_kind { node, patch }` — edit a node's kind with an **RFC 7386 JSON
+  merge-patch** instead of resending the whole `NodeKind` via `SetKind`. Only the
+  fields in `patch` change; `null` removes a key; nested objects merge; arrays
+  replace. The result must still be a valid `NodeKind` (rejected loudly). The
+  ergonomic pattern for escape-hatch edits without a typed tool: `get_node_details`
+  to see the exact shape + field names, then send just the delta.
 
 **Resources** (read-only docs): `awsm://docs/mcp`,
 `awsm://docs/material-contract-opaque`, `awsm://docs/material-contract-transparent`.
