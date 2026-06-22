@@ -33,6 +33,7 @@ pub mod bootstrap;
 pub mod churn_demo;
 pub mod crowd_demo;
 pub mod input_demo;
+pub mod lights_demo;
 pub mod motion_demo;
 pub mod protocol;
 pub mod remote_demo;
@@ -89,6 +90,7 @@ fn main_thread_boot() -> Result<(), JsValue> {
         "motion" => motion_demo::start_main(),
         "crowd" => crowd_demo::start_main(),
         "churn" => churn_demo::start_main(),
+        "lights" => lights_demo::start_main(),
         "remote" => remote_demo::start_main(),
         // Default: M6 input forwarding + main-thread responsiveness.
         _ => input_demo::start_main(),
