@@ -1015,7 +1015,7 @@ or a naga quirk; either way an author hits it fast.
 | 17 | `ibl` include for custom materials (existed; discoverability fixed + verified) | DONE | `59743db5` |
 | 18 | Env-from-agent-data: sky-gradient (equirect/cubemap-bytes + skybox WGSL deferred-noted) | DONE | `19b80c21` |
 | 19 | Toon shading — cel-banding regression guard (positive, keep) | DONE | `a94617be` |
-| 20 | Custom WGSL leading-operator line continuations — fix or doc | TODO | |
+| 20 | Custom WGSL multi-line statement continuations — FIXED (compile_wgsl pre-check) | DONE | `094af55e` |
 
 ---
 
