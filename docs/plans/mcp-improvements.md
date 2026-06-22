@@ -95,7 +95,7 @@ known variant lists its real fields; `task lint` with all features.
 never crosses the MCP boundary. Helpers in `editor/src/controller/state.rs`:
 `select_vertices_by_predicate`, `node_editable_mesh`, `soft_transform_mesh`.
 
-> ✅ **DONE (`e9c5c6a8`).** Added a session-scoped selection store
+> ✅ **DONE (`135cf797`).** Added a session-scoped selection store
 > (`VERTEX_SELECTIONS` thread_local in `state.rs`). `select_vertices_where`
 > gained `store` → returns `{ id, count }` (indices kept server-side), plus
 > `count_only` / `offset` / `limit`. The four index-taking commands +
@@ -265,7 +265,7 @@ becomes the skybox AND a metallic/low-roughness sphere reflects + is lit by it
 | # | Item | Status | Commit |
 |---|------|--------|--------|
 | 3 | Full per-variant JSONSchema for NodeKind / kind-config types | TODO | |
-| 10 | Reusable vertex-selection handle + read-path pagination | DONE | `e9c5c6a8` |
+| 10 | Reusable vertex-selection handle + read-path pagination | DONE | `135cf797` |
 | 14 | True soft-gradient particle blend (transparent instancing) | TODO | |
 | 16 | Agent displacement data: displace-from-texture (+ WGSL stage stretch) | TODO | |
 | 18 | Agent panorama environment: equirect / cubemap → skybox + IBL | TODO | |
