@@ -202,6 +202,18 @@ every command/query, and each tool self-describes over the MCP schema.
   — both return the new id; bind with `set_material_texture`, or
   `set_node_texture { node, slot, texture? }` for a mesh node's built-in (inline
   PBR) slot (base_color | metallic_roughness | normal | occlusion | emissive).
+- `create_texture { data, width?, height?, format?, linear? }` — the generic
+  "author **any** texture" primitive: the agent ships the pixels itself instead
+  of picking a procedural preset. Two modes: **raw pixels** — `format="rgba8"` +
+  `width` + `height`, `data` = base64 of `width*height*4` RGBA8 bytes (row-major,
+  top-left origin); or **encoded image** — `data` = a `data:` URI
+  (`data:image/png;base64,…`) or bare base64 of a PNG/JPEG/WebP (dims/format
+  derived). Set `linear=true` for data/normal/roughness/height maps (skips the
+  sRGB→linear conversion). Returns the new id; bind with `set_material_texture`.
+  Use it for soft particle sprites, fbm height/normal maps, gradients, cubemap
+  faces — no built-in generator required. (Session-local, like
+  `import_texture_from_url`.) Invalid payloads are **rejected loudly** (e.g. an
+  `rgba8` byte count that doesn't match `width*height*4`).
 
 **View / camera / time**
 - `switch_mode { mode }`, `snap_camera_to_axis { axis }`, `reset_camera`.

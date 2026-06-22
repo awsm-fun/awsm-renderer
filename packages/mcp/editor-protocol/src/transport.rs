@@ -195,6 +195,17 @@ mod wire_roundtrip_tests {
                     shading: MaterialShading::Pbr,
                 },
             ),
+            (
+                "create_texture",
+                EditorCommand::CreateTexture {
+                    id: AssetId::new(),
+                    data: "AAAA".to_string(),
+                    width: Some(1),
+                    height: Some(1),
+                    format: Some("rgba8".to_string()),
+                    linear: true,
+                },
+            ),
             // Track flags + transport (newly typed MCP tools — must round-trip).
             (
                 "delete_track",

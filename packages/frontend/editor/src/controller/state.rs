@@ -2318,6 +2318,49 @@ impl EditorController {
                     ))),
                 }
             }
+            EditorCommand::CreateTexture {
+                id,
+                data,
+                width,
+                height,
+                format,
+                linear,
+            } => {
+                // Idempotent: skip if this id already exists (cross-tab replay).
+                if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
+                    return Ok(None);
+                }
+                // Decode the wire payload (base64 / data: URI) loudly BEFORE any
+                // GPU work — a bad payload is a rejected op, not a silent `ok`.
+                let payload = awsm_editor_protocol::decode_texture_payload(
+                    &data,
+                    width,
+                    height,
+                    format.as_deref(),
+                )
+                .map_err(crate::error::EditorError::msg)?;
+                let _activity =
+                    crate::engine::activity::begin_activity("Creating texture — uploading to GPU…");
+                match crate::engine::bridge::material::create_texture(id, payload, linear).await {
+                    Ok(()) => {
+                        self.scene.assets.lock().unwrap().entries.insert(
+                            id,
+                            AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
+                                display_name: format!("created-{}", &id.to_string()[..8]),
+                            })),
+                        );
+                        self.scene.bump_revision();
+                        self.asset_selection.set(Some(id));
+                        self.dirty.set_neq(true);
+                        Toast::info("Created texture");
+                        Ok(Some(EditorCommand::DeleteAsset { id }))
+                    }
+                    // Fail loudly — surfaced as an MCP error, not a silent `ok`.
+                    Err(e) => Err(crate::error::EditorError::msg(format!(
+                        "create texture failed: {e}"
+                    ))),
+                }
+            }
             EditorCommand::ImportKtxEnvFromUrl { id, url } => {
                 // Idempotent (cross-tab replay): skip if this id already exists.
                 if self.scene.assets.lock().unwrap().entries.contains_key(&id) {

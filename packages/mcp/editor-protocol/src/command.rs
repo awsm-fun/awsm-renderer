@@ -260,6 +260,31 @@ pub enum EditorCommand {
     /// of the new id.
     AddTextureAsset { id: AssetId, proc: ProceduralKind },
 
+    /// Create a 2D texture from **agent-authored** image data — the generic
+    /// "author any texture" primitive (★ in `docs/plans/mcp-improvements.md`),
+    /// the GPU-side companion to the three procedural presets. Either:
+    /// - **raw pixels**: `format = "rgba8"` + `width`/`height`, `data` = base64
+    ///   of `width*height*4` RGBA8 bytes (row-major, top-left origin); or
+    /// - **encoded image**: `data` = a `data:` URI or bare base64 of a
+    ///   PNG/JPEG/WebP; dims/format derived (`format` omitted).
+    ///
+    /// `linear` uploads as linear data (normal/roughness/height maps) instead of
+    /// sRGB albedo. **Carries its `id`** (caller-minted, idempotent). The asset
+    /// is session-local (same as [`ImportTextureFromUrl`](Self::ImportTextureFromUrl)
+    /// — raw pixels carry no encoded bytes to persist). Inverse: `DeleteAsset`.
+    CreateTexture {
+        id: AssetId,
+        data: String,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+        #[serde(default)]
+        format: Option<String>,
+        #[serde(default)]
+        linear: bool,
+    },
+
     /// Remove an asset from the project asset table. Inverse: `RestoreAsset` with
     /// the captured entry (so undo round-trips the exact asset + id).
     DeleteAsset { id: AssetId },
@@ -963,6 +988,7 @@ impl EditorCommand {
             EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",
             EditorCommand::AddMaterialAsset { .. } => "Add material",
             EditorCommand::AddTextureAsset { .. } => "Add texture",
+            EditorCommand::CreateTexture { .. } => "Create texture",
             EditorCommand::DeleteAsset { .. } | EditorCommand::RestoreAsset { .. } => {
                 "Delete asset"
             }

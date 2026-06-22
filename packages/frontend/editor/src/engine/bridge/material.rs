@@ -144,6 +144,53 @@ pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), Str
     Ok(())
 }
 
+/// Create a texture from **agent-authored** data (the ★ raw-upload primitive):
+/// raw RGBA8 pixels, or an encoded PNG/JPEG/WebP the browser decodes — uploaded
+/// to the GPU texture pool + registered under `id` so it resolves for material
+/// binding + `screenshot_texture`. Mirrors [`import_texture_url`], but the bytes
+/// come from the agent (not a URL). `linear` uploads as linear data
+/// (normal/roughness/height maps) instead of sRGB albedo. The caller creates the
+/// `TextureDef::Raster` asset entry.
+pub(crate) async fn create_texture(
+    id: AssetId,
+    payload: awsm_editor_protocol::TexturePayload,
+    linear: bool,
+) -> Result<(), String> {
+    use awsm_editor_protocol::TexturePayload;
+    // Decode WITHOUT holding the renderer lock (the encoded path is async).
+    let (rgba, w, h) = match payload {
+        TexturePayload::RawRgba8 {
+            bytes,
+            width,
+            height,
+        } => (bytes, width, height),
+        TexturePayload::Encoded { bytes, mime } => {
+            decode_rgba_from_bytes(&bytes, mime.as_deref().unwrap_or("image/png")).await?
+        }
+    };
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    let sampler_key = sampler_for(&mut r, None).ok_or("sampler")?;
+    let color = TextureColorInfo {
+        mipmap_kind: MipmapTextureKind::Albedo,
+        // sRGB albedo by default; `linear` opts data/normal maps out of the
+        // sRGB→linear conversion so their values are sampled verbatim.
+        srgb_to_linear: !linear,
+        premultiplied_alpha: None,
+    };
+    let key = r
+        .textures
+        .add_image_rgba_raw(&rgba, w, h, sampler_key, color)
+        .map_err(|e| format!("upload: {e}"))?;
+    // Live texture add: a pool grow invalidates the texture-array-len-baked
+    // shaders, so route through `commit_load` (finalize pool + recompile once).
+    r.commit_load(crate::engine::activity::commit_phase_handler())
+        .await
+        .map_err(|e| format!("commit_load: {e}"))?;
+    register_texture_key(id, key);
+    Ok(())
+}
+
 /// Restore persisted raster textures on LOAD: decode each `(asset id, encoded
 /// bytes, mime)` and re-upload it to the GPU, registering the asset id against
 /// the new [`TextureKey`] so materials resolve their texture slots. This is a

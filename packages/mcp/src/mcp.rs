@@ -539,6 +539,29 @@ pub struct AddTextureParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateTextureParams {
+    /// Image data the AGENT authored. Either RAW PIXELS — base64 of
+    /// `width*height*4` RGBA8 bytes (row-major, top-left origin), with
+    /// `format="rgba8"` + `width` + `height`; or an ENCODED IMAGE — a `data:`
+    /// URI (`data:image/png;base64,…`) or bare base64 of a PNG/JPEG/WebP
+    /// (`width`/`height`/`format` derived).
+    pub data: String,
+    /// Pixel width. REQUIRED for raw `rgba8`; ignored/derived for encoded images.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Pixel height. REQUIRED for raw `rgba8`; ignored/derived for encoded images.
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Raw pixel format — only `"rgba8"` today. Omit for an encoded image.
+    #[serde(default)]
+    pub format: Option<String>,
+    /// Upload as LINEAR data (normal / roughness / height maps) instead of sRGB
+    /// albedo. Default false (sRGB).
+    #[serde(default)]
+    pub linear: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MaterialTextureParams {
     /// Mesh node UUID (must already have a custom material assigned).
     pub node: String,
@@ -2283,6 +2306,28 @@ impl EditorMcp {
         let id = AssetId::new();
         self.dispatch_echo_asset(EditorCommand::AddTextureAsset { id, proc }, id)
             .await
+    }
+
+    #[tool(
+        description = "Create a texture from AGENT-AUTHORED image data — the generic 'author any texture' primitive. Two modes: (1) RAW PIXELS — set format=\"rgba8\" + width + height, data = base64 of width*height*4 RGBA8 bytes (row-major, top-left origin); (2) ENCODED IMAGE — data = a data: URI (data:image/png;base64,…) or bare base64 of a PNG/JPEG/WebP, dims derived. Use this to upload soft particle sprites, fbm height/normal maps, gradients, cubemap faces, etc. — no procedural preset required. Set linear=true for data/normal/roughness maps (skips sRGB conversion). Returns the new texture id; bind with set_material_texture (or set_node_texture)."
+    )]
+    async fn create_texture(
+        &self,
+        Parameters(p): Parameters<CreateTextureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = AssetId::new();
+        self.dispatch_echo_asset(
+            EditorCommand::CreateTexture {
+                id,
+                data: p.data,
+                width: p.width,
+                height: p.height,
+                format: p.format,
+                linear: p.linear,
+            },
+            id,
+        )
+        .await
     }
 
     #[tool(
