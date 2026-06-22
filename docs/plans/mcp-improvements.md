@@ -407,6 +407,21 @@ Flow rendered, you couldn't deterministically screenshot a specific phase.
 (Related to §1; listed separately because it also affects any delta-integrated
 effect.)
 
+> ✅ **FIXED (2026-06-22).** Two problems, both fixed: (1) the editor's render
+> loop (`render_loop::render_one_frame`) ticks `update_transforms` directly and
+> never called `update_animations`, so texture `Flow` **never advanced in the
+> editor at all** (it only ran on the player/test-seam path). (2) Even where it
+> ran, it integrated real `dt`, so `set_frame_time` couldn't pin it. New
+> `AwsmRenderer::tick_texture_flows(dt)`: when the time source is PINNED
+> (`set_frame_time`) it sets each flow's `elapsed` to that absolute time
+> (`offset = base + velocity*t`, idempotent); else it integrates real `dt`. Called
+> from the editor render loop every frame (not gated on clip playback) AND from
+> `update_animations` (player path). A shared `flow_offset(base, vel, t)` helper
+> (unit-tested) keeps both flow paths in lockstep. **Verified live**: a checker
+> with `flow=[0.3,0]`, pinned `t=0` → base phase, `t=0.4167` (offset 0.125 = one
+> cell) → checker INVERTS, and re-capturing at the same `t` is byte-stable (no
+> drift). Depends on §1's transform render fix.
+
 ---
 
 ## 8. 🟡 No facing/orientation hint per model
@@ -760,12 +775,12 @@ or a naga quirk; either way an author hits it fast.
 |---|------|--------|--------|
 | ★ | Raw texture-data upload (`create_texture` / `data:` URI) | DONE | `ece042d3` |
 | 1 | Texture UV transform — typed tool + render-path apply | DONE | `3d0102c7` + `ffca1bb3` |
-| 2 | Texture offset/flow keyframe channel | WIP | |
+| 2 | Texture offset/flow keyframe channel | DONE | `da280049` |
 | 3 | Machine-readable command schema + patch-style `set_kind` | DONE | `72839eb2` (patch_kind; full JSONSchema bounded-deferred — see §3) |
 | 4 | Typed/patch particle emitter config | DONE | `1a38e67c` |
 | 5 | Unassigned-material node: render magenta/warn + fix docs | DONE | `8815c9be` |
 | 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | DONE | `a52f4550` |
-| 7 | `set_frame_time` pins builtin texture `Flow` | TODO | |
+| 7 | `set_frame_time` pins builtin texture `Flow` | WIP | |
 | 8 | Per-model facing/orientation hint | TODO | |
 | 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | TODO | |
 | 10 | Selection handles + pagination + fused `paint_where` | TODO | |

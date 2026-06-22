@@ -244,7 +244,9 @@ every command/query, and each tool self-describes over the MCP schema.
 - `set_camera_orbit { yaw, pitch, radius, look_at }`,
   `set_camera_projection { perspective, fov_y? }`, `frame_node { node, padding? }`.
 - `set_frame_time { seconds }` / `clear_frame_time` — pin `frame_globals.time` for
-  deterministic temporal-material screenshots.
+  deterministic temporal-material screenshots. Also pins texture **UV flow** scroll
+  (`set_node_texture_transform flow=`) to that absolute time (`offset =
+  base + velocity*t`), so a scrolling texture screenshots the same phase every call.
 
 **Animation**
 - `add_clip` (returns the new id), `delete_clip`, `duplicate_clip`, `rename_clip`,

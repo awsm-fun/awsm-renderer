@@ -277,9 +277,10 @@ impl AwsmRenderer {
     /// durations. `speed`/`scale` are pure dimensionless multipliers.
     pub fn update_animations(&mut self, global_time_delta_ms: f64) -> Result<()> {
         let dt_seconds = global_time_delta_ms / 1000.0;
-        // B3: advance any auto-scrolling texture UV flows by real elapsed time
-        // (independent of clip playback; a no-op when nothing flows).
-        self.textures.advance_texture_flows(dt_seconds as f32);
+        // B3 + §7: advance auto-scrolling texture UV flows (pinned-or-real-time —
+        // see `tick_texture_flows`). Independent of clip playback; no-op when
+        // nothing flows.
+        self.tick_texture_flows(dt_seconds as f32);
         for player in self.animations.players.values_mut() {
             player.update(dt_seconds)
         }

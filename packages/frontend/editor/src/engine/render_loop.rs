@@ -67,7 +67,7 @@ fn request_frame() {
         // `performance.now()` after render gives the in-frame CPU span. `dt_ms` is
         // the wall-clock frame period (vsync-capped ~16.6ms at 60fps); the CPU span
         // is the actionable "how heavy is our frame" number.
-        render_one_frame();
+        render_one_frame(dt_ms);
         let cpu_ms = now_ms().map(|end| (end - ts).max(0.0));
         record_frame_stats(dt_ms, cpu_ms);
         request_frame();
@@ -204,7 +204,7 @@ fn playhead_from_phase(
     }
 }
 
-fn render_one_frame() {
+fn render_one_frame(dt_ms: f64) {
     // Black-on-start backstop: drive the full surface re-sync once per
     // 0→nonzero canvas-size transition. Reads only the canvas client box (no
     // renderer lock); `sync_canvas_size` is `IN_FLIGHT`-coalesced + idempotent
@@ -276,6 +276,11 @@ fn render_one_frame() {
         super::curve_handles::per_frame_update(renderer);
         // Advance any particle emitters + push their live particles to the GPU.
         super::bridge::particles::tick_all(renderer);
+        // §7: tick auto-scrolling texture UV flows EVERY frame (the editor render
+        // loop doesn't call `update_animations`, so flows would never advance).
+        // `tick_texture_flows` pins to `set_frame_time` when active (deterministic
+        // temporal capture), else integrates real frame dt.
+        renderer.tick_texture_flows((dt_ms / 1000.0) as f32);
         // Pin the animation pose at the current playhead BEFORE world transforms
         // are derived (animation writes locals; `update_transforms` derives world)
         // — but only when the pose could have changed: while playing (the clock
