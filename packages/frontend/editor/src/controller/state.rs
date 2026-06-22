@@ -820,6 +820,79 @@ impl EditorController {
                 }))
                 .await
             }
+            EditorCommand::SetParticleEmitter {
+                node,
+                spawn_rate,
+                burst_count,
+                max_alive,
+                one_shot,
+                space,
+                shape,
+                initial_speed,
+                lifetime,
+                size,
+                forces,
+                color_over_life,
+                size_over_life,
+                blend,
+            } => {
+                let prev = match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => n.kind.get_cloned(),
+                    None => return Ok(None),
+                };
+                // Reject loudly if the node isn't an emitter (no silent no-op).
+                let NodeKind::ParticleEmitter(mut def) = prev.clone() else {
+                    return Err(crate::error::EditorError::msg(
+                        "node is not a particle emitter",
+                    ));
+                };
+                // Patch only the provided fields; the rest keep their values.
+                if let Some(v) = spawn_rate {
+                    def.spawn_rate = v;
+                }
+                if let Some(v) = burst_count {
+                    def.burst_count = v;
+                }
+                if let Some(v) = max_alive {
+                    def.max_alive = v;
+                }
+                if let Some(v) = one_shot {
+                    def.one_shot = v;
+                }
+                if let Some(v) = space {
+                    def.space = v;
+                }
+                if let Some(v) = shape {
+                    def.shape = v;
+                }
+                if let Some(v) = initial_speed {
+                    def.initial_speed = v;
+                }
+                if let Some(v) = lifetime {
+                    def.lifetime = v;
+                }
+                if let Some(v) = size {
+                    def.size = v;
+                }
+                if let Some(v) = forces {
+                    def.forces = v;
+                }
+                if let Some(v) = color_over_life {
+                    def.color_over_life = v;
+                }
+                if let Some(v) = size_over_life {
+                    def.size_over_life = v;
+                }
+                if let Some(v) = blend {
+                    def.blend = v;
+                }
+                // Delegate to SetKind for identical re-materialize + inverse.
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(NodeKind::ParticleEmitter(def)),
+                }))
+                .await
+            }
             EditorCommand::SetTransform { id, transform } => {
                 match mutate::find_by_id(&self.scene, id) {
                     Some(node) => {

@@ -306,6 +306,22 @@ initial_speed?, size?, color_start?, color_end?, shape?, direction?, … }`
 (patch-style; every field accepted, send any subset). Also: document that `shape.cone.direction` is in
 the emitter's **local** space.
 
+> ✅ **SHIPPED (2026-06-22) — `set_particle_emitter`.** Typed, patch-style
+> `EditorCommand::SetParticleEmitter` + MCP tool: every field optional, send any
+> subset, only those change (`spawn_rate`/`burst_count`/`max_alive`/`one_shot`/
+> `space`/`shape`/`initial_speed`/`lifetime`/`size`/`forces`/`color_over_life`/
+> `size_over_life`/`blend`). The enum fields carry their real typed shapes
+> (`SpawnShapeDef`/`ForceDef`/`ColorOverLifeDef`/`SizeOverLifeDef`/
+> `EmitterSpaceDef`) — I added `schemars::JsonSchema` to those 5 (cascade-free,
+> primitives only), so the tool's params schema is **self-documenting**. Errors
+> if the node isn't an emitter. **Documented** `shape.cone.direction` = emitter
+> LOCAL space (in the type + tool docs) and the **`forces` variant schema**
+> (`{gravity:{acceleration:[x,y,z]}}` / `{linear_drag:{coefficient_x1000}}`) — the
+> §14 ask. Verified live: configured an emitter (spawn_rate 200, red `const`
+> color, blend) → a red particle fountain rendered; untouched fields kept their
+> defaults; targeting a box errored. (For `texture`, use `set_node_texture` /
+> `patch_kind`.)
+
 ---
 
 ## 5. 🟠 Unassigned-material nodes render *invisible*, but the docs say *magenta*
@@ -703,8 +719,8 @@ or a naga quirk; either way an author hits it fast.
 | ★ | Raw texture-data upload (`create_texture` / `data:` URI) | DONE | `ece042d3` |
 | 1 | Texture UV transform — typed tool + render-path apply | WIP | `3d0102c7` (code; visual gated by §11) |
 | 2 | Texture offset/flow keyframe channel | TODO | |
-| 3 | Machine-readable command schema + patch-style `set_kind` | WIP | |
-| 4 | Typed/patch particle emitter config | TODO | |
+| 3 | Machine-readable command schema + patch-style `set_kind` | DONE | `72839eb2` (patch_kind; full JSONSchema bounded-deferred — see §3) |
+| 4 | Typed/patch particle emitter config | WIP | |
 | 5 | Unassigned-material node: render magenta/warn + fix docs | TODO | |
 | 6 | `duplicate_node` returns id(s) + `get_children`/`get_subtree` | TODO | |
 | 7 | `set_frame_time` pins builtin texture `Flow` | TODO | |

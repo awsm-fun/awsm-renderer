@@ -12,6 +12,9 @@ use awsm_scene::animation::{
     BuiltinParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc,
     LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
+use awsm_scene::particle::{
+    ColorOverLifeDef, EmitterSpaceDef, ForceDef, SizeOverLifeDef, SpawnShapeDef,
+};
 use awsm_scene::{AssetId, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind, Trs};
 
 use awsm_meshgen::recipe::{Modifier, ModifierStack};
@@ -151,6 +154,47 @@ pub enum EditorCommand {
     PatchKind {
         id: NodeId,
         patch: serde_json::Value,
+    },
+
+    /// Typed, **patch-style** config for a `ParticleEmitter` node (§4) — the
+    /// discoverable companion to `InsertParticle` (which only creates the node).
+    /// Every field is optional; send any subset and only those change (the rest
+    /// keep their current values). The node must be a `ParticleEmitter` (rejected
+    /// otherwise). Re-materializes like `SetKind`. Inverse: restore the prior kind.
+    /// (For anything not covered here — e.g. `texture` — use `PatchKind`.)
+    SetParticleEmitter {
+        node: NodeId,
+        #[serde(default)]
+        spawn_rate: Option<f32>,
+        #[serde(default)]
+        burst_count: Option<u32>,
+        #[serde(default)]
+        max_alive: Option<u32>,
+        #[serde(default)]
+        one_shot: Option<bool>,
+        #[serde(default)]
+        space: Option<EmitterSpaceDef>,
+        #[serde(default)]
+        shape: Option<SpawnShapeDef>,
+        /// `[min, max]` initial speed range (m/s).
+        #[serde(default)]
+        initial_speed: Option<[f32; 2]>,
+        /// `[min, max]` lifetime range (seconds).
+        #[serde(default)]
+        lifetime: Option<[f32; 2]>,
+        /// `[min, max]` spawn-size range.
+        #[serde(default)]
+        size: Option<[f32; 2]>,
+        #[serde(default)]
+        forces: Option<Vec<ForceDef>>,
+        #[serde(default)]
+        color_over_life: Option<ColorOverLifeDef>,
+        #[serde(default)]
+        size_over_life: Option<SizeOverLifeDef>,
+        /// Route through the transparent-blend pass (true alpha fades: smoke /
+        /// soft glows) instead of the cheaper opaque-emissive path.
+        #[serde(default)]
+        blend: Option<bool>,
     },
 
     /// Set a node's local transform (TRS). Inverse: restore the prior transform.
@@ -1019,6 +1063,7 @@ impl EditorCommand {
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",
             EditorCommand::PatchKind { .. } => "Patch properties",
+            EditorCommand::SetParticleEmitter { .. } => "Configure emitter",
             EditorCommand::SetTransform { .. } => "Transform",
             EditorCommand::Rename { .. } => "Rename",
             EditorCommand::SetVisible { .. } => "Toggle visibility",

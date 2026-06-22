@@ -214,6 +214,30 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "set_particle_emitter",
+                EditorCommand::SetParticleEmitter {
+                    node: NodeId::new(),
+                    spawn_rate: Some(120.0),
+                    burst_count: None,
+                    max_alive: Some(512),
+                    one_shot: Some(false),
+                    space: Some(awsm_scene::particle::EmitterSpaceDef::World),
+                    shape: Some(awsm_scene::particle::SpawnShapeDef::Cone {
+                        angle_radians: 0.5,
+                        direction: [0.0, 1.0, 0.0],
+                    }),
+                    initial_speed: Some([1.0, 3.0]),
+                    lifetime: None,
+                    size: None,
+                    forces: Some(vec![awsm_scene::particle::ForceDef::Gravity {
+                        acceleration: [0.0, -9.8, 0.0],
+                    }]),
+                    color_over_life: None,
+                    size_over_life: None,
+                    blend: Some(true),
+                },
+            ),
+            (
                 "set_node_texture_transform",
                 EditorCommand::SetNodeTextureTransform {
                     node: NodeId::new(),

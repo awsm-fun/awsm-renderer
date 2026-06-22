@@ -525,6 +525,57 @@ pub struct BuiltinTextureParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ParticleEmitterParams {
+    /// ParticleEmitter node UUID.
+    pub node: String,
+    /// Particles spawned per second.
+    #[serde(default)]
+    pub spawn_rate: Option<f32>,
+    /// One-shot burst count (with `one_shot`).
+    #[serde(default)]
+    pub burst_count: Option<u32>,
+    /// Max simultaneously-alive particles.
+    #[serde(default)]
+    pub max_alive: Option<u32>,
+    /// Emit one burst then stop (vs continuous).
+    #[serde(default)]
+    pub one_shot: Option<bool>,
+    /// Simulation space: `"world"` (particles persist) or `"local"` (follow the
+    /// emitter transform).
+    #[serde(default)]
+    pub space: Option<awsm_editor_protocol::EmitterSpaceDef>,
+    /// Spawn shape (externally-tagged): `{"point":{}}`, `{"sphere":{"radius":r}}`,
+    /// or `{"cone":{"angle_radians":a,"direction":[x,y,z]}}` (direction in the
+    /// emitter's LOCAL space).
+    #[serde(default)]
+    pub shape: Option<awsm_editor_protocol::SpawnShapeDef>,
+    /// `[min, max]` initial speed (m/s).
+    #[serde(default)]
+    pub initial_speed: Option<[f32; 2]>,
+    /// `[min, max]` lifetime (seconds).
+    #[serde(default)]
+    pub lifetime: Option<[f32; 2]>,
+    /// `[min, max]` spawn size.
+    #[serde(default)]
+    pub size: Option<[f32; 2]>,
+    /// Forces: list of `{"gravity":{"acceleration":[x,y,z]}}` /
+    /// `{"linear_drag":{"coefficient_x1000":n}}` (replaces the whole list).
+    #[serde(default)]
+    pub forces: Option<Vec<awsm_editor_protocol::ForceDef>>,
+    /// Color over life: `{"const":[r,g,b,a]}` or
+    /// `{"linear":{"start":[r,g,b,a],"end":[r,g,b,a]}}` (alpha = transparency).
+    #[serde(default)]
+    pub color_over_life: Option<awsm_editor_protocol::ColorOverLifeDef>,
+    /// Size over life: `{"const":s}` or `{"linear":{"start":s,"end":s}}`.
+    #[serde(default)]
+    pub size_over_life: Option<awsm_editor_protocol::SizeOverLifeDef>,
+    /// Route through the transparent-blend pass (true alpha fades) vs the cheaper
+    /// opaque-emissive path.
+    #[serde(default)]
+    pub blend: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PatchKindParams {
     /// Node UUID to patch.
     pub node: String,
@@ -1403,7 +1454,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Insert a CPU particle emitter node under an optional parent. Spawns short-lived sprites with configurable spawn rate, lifetime, initial velocity / forces, texture, and blend mode. Its full emitter config is edited via the kind (dispatch_command SetKind) for now."
+        description = "Insert a CPU particle emitter node under an optional parent. Spawns short-lived sprites with configurable spawn rate, lifetime, initial velocity / forces, texture, and blend mode. Tune its full config (patch-style) with set_particle_emitter; bind a sprite with set_node_texture."
     )]
     async fn insert_particle(
         &self,
@@ -2428,6 +2479,32 @@ impl EditorMcp {
         self.dispatch(EditorCommand::PatchKind {
             id: parse_node(&p.node)?,
             patch: p.patch,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive). Errors if the node isn't a particle emitter. Bind a sprite via set_node_texture/patch_kind."
+    )]
+    async fn set_particle_emitter(
+        &self,
+        Parameters(p): Parameters<ParticleEmitterParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetParticleEmitter {
+            node: parse_node(&p.node)?,
+            spawn_rate: p.spawn_rate,
+            burst_count: p.burst_count,
+            max_alive: p.max_alive,
+            one_shot: p.one_shot,
+            space: p.space,
+            shape: p.shape,
+            initial_speed: p.initial_speed,
+            lifetime: p.lifetime,
+            size: p.size,
+            forces: p.forces,
+            color_over_life: p.color_over_life,
+            size_over_life: p.size_over_life,
+            blend: p.blend,
         })
         .await
     }

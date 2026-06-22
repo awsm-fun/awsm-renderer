@@ -164,6 +164,15 @@ every command/query, and each tool self-describes over the MCP schema.
   — **return the new node id.** Other node kinds (Line, Sprite, Curve, Sweep,
   Instances) are created via `dispatch_command { command: { cmd: "insert", spec:
   "line" | "sprite" | "curve" | "sweep" | "instances", … } }`.
+- `set_particle_emitter { node, spawn_rate?, burst_count?, max_alive?, one_shot?,
+  space?, shape?, initial_speed?, lifetime?, size?, forces?, color_over_life?,
+  size_over_life?, blend? }` — typed, **patch-style** emitter config (send any
+  subset; only those change). `shape` is `{point}`/`{sphere:{radius}}`/`{cone:{
+  angle_radians, direction}}` (cone `direction` is in the emitter's **local**
+  space); `forces` is a list of `{gravity:{acceleration:[x,y,z]}}` /
+  `{linear_drag:{coefficient_x1000}}`; `blend:true` routes through the
+  transparent-blend pass for true alpha fades (smoke/glows). Errors if the node
+  isn't an emitter.
 - `set_mesh_shadow { node, cast, receive }` — toggle a Mesh / SkinnedMesh /
   InstancesAlongCurve node's shadow casting / receiving (read-modify-write of its
   `shadow` config via `SetKind`). `set_instance_colors { node, colors }` — set an
