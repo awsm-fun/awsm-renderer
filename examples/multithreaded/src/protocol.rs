@@ -17,6 +17,11 @@ pub enum RenderCommand {
     /// Load a model as a set of meshes. Each mesh's geometry bytes are in the
     /// transfer list; `ModelDesc` indexes into it.
     Load { models: Vec<ModelDesc> },
+    /// Load a real glTF/GLB from a same-origin URL (the worker fetches it,
+    /// parses, and runs the load transaction streaming `Loading` events).
+    LoadGltf { url: String },
+    /// Re-orient the orbit camera (radians + distance).
+    UpdateCamera { yaw: f32, pitch: f32, distance: f32 },
     /// Pick the mesh under a canvas pixel (request → `RenderEvent::PickResult`).
     Pick { x: i32, y: i32 },
 }

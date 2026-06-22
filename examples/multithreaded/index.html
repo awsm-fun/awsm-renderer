@@ -17,5 +17,12 @@
          version Trunk bundles can silently strip without the threads feature.
          Keeping it off preserves the shared-memory bootstrap. -->
     <link data-trunk rel="rust" data-wasm-opt="0" />
+    <!-- Bundle a few glTF sample assets SAME-ORIGIN (COEP: require-corp blocks
+         cross-origin fetches, so the worker must load them from our own origin).
+         The `remote` demo loads DamagedHelmet over the Layer-1 protocol; the
+         skin/morph demos load CesiumMan / AnimatedMorphCube. -->
+    <link data-trunk rel="copy-file" href="../../media/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb" />
+    <link data-trunk rel="copy-file" href="../../media/glTF-Sample-Assets/Models/CesiumMan/glTF-Binary/CesiumMan.glb" />
+    <link data-trunk rel="copy-file" href="../../media/glTF-Sample-Assets/Models/AnimatedMorphCube/glTF-Binary/AnimatedMorphCube.glb" />
 </body>
 </html>

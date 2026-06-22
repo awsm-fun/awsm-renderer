@@ -68,9 +68,15 @@ pub async fn load_u8<T: AsRef<[u8]>>(
     mime_type: &str,
     options: Option<ImageBitmapOptions>,
 ) -> Result<ImageBitmap> {
+    // `Uint8Array::from` COPIES into a fresh, non-shared `ArrayBuffer` (unlike
+    // `Uint8Array::view`, which aliases wasm linear memory). This matters on the
+    // threaded build: when wasm memory is shared (SharedArrayBuffer-backed), a
+    // *view* is shared too, and the `Blob` constructor rejects shared
+    // `ArrayBufferView`s ("must not be shared") — so embedded glTF images failed
+    // to decode in a worker. The copy is a one-time, per-image cost (the `Blob`
+    // copies the bytes regardless), and is harmless on the single-threaded build.
     load_js_value(
-        // should be fine, load_js_value is just getting a blob with a new url string
-        unsafe { &js_sys::Uint8Array::view(data.as_ref()).into() },
+        &js_sys::Uint8Array::from(data.as_ref()).into(),
         mime_type,
         options,
     )

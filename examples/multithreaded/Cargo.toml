@@ -19,8 +19,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 awsm-renderer = { workspace = true }
 awsm-renderer-core = { workspace = true }
+awsm-renderer-gltf = { workspace = true }
 awsm-materials = { workspace = true }
 awsm-meshgen = { workspace = true }
+gloo-net = { workspace = true }
 glam = { workspace = true }
 web-sys = { workspace = true }
 js-sys = { workspace = true }

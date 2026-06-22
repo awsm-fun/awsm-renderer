@@ -109,11 +109,28 @@ fn handle_event(e: &web_sys::MessageEvent, worker: &Rc<RefCell<Option<web_sys::W
 
     match event {
         RenderEvent::Initialized => {
-            tracing::info!("remote demo: worker Initialized — sending Load");
+            tracing::info!("remote demo: worker Initialized — sending LoadGltf");
             set_state("phase", &JsValue::from_str("loading"));
             if let Some(w) = worker.borrow().as_ref() {
-                if let Err(err) = send_load(w) {
-                    tracing::error!("remote demo: send_load failed: {err:?}");
+                // Load a real glTF over the protocol (the worker fetches the
+                // bundled, same-origin .glb). `?model=` selects which.
+                let win = web_sys::window();
+                let model = win
+                    .as_ref()
+                    .and_then(|w| w.location().search().ok())
+                    .and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok())
+                    .and_then(|p| p.get("model"))
+                    .unwrap_or_else(|| "DamagedHelmet.glb".to_string());
+                // Absolute URL — a worker resolves relative URLs against its
+                // blob: base, not the page origin, so pass the full origin.
+                let origin = win
+                    .and_then(|w| w.location().origin().ok())
+                    .unwrap_or_default();
+                let url = format!("{origin}/{model}");
+                if let Err(err) =
+                    send_command(w, &RenderCommand::LoadGltf { url }, &js_sys::Array::new())
+                {
+                    tracing::error!("remote demo: send LoadGltf failed: {err:?}");
                 }
             }
         }
@@ -208,7 +225,11 @@ fn handle_event(e: &web_sys::MessageEvent, worker: &Rc<RefCell<Option<web_sys::W
 }
 
 /// Build a small model on the main thread and ship it as a `Load` command with
-/// Transferable geometry buffers.
+/// Transferable geometry buffers. Retained as the reference for the
+/// Transferable-geometry path (the driver now sends `LoadGltf` for real assets,
+/// so this is no longer the default, but the `Load` command + `load_models`
+/// worker path it exercises remain live).
+#[allow(dead_code)]
 fn send_load(worker: &web_sys::Worker) -> Result<(), JsValue> {
     use awsm_meshgen::primitives::box_mesh;
     use glam::Vec3;
@@ -338,6 +359,15 @@ async fn run_worker(
     #[allow(clippy::arc_with_non_send_sync)]
     let cell = Rc::new(RefCell::new(renderer));
     let loading = Rc::new(Cell::new(false));
+    // Orbit camera shared by the render loop and the UpdateCamera command.
+    // Auto-spins until the driver issues an UpdateCamera.
+    let orbit = Rc::new(RefCell::new(Orbit {
+        yaw: 0.7,
+        pitch: 0.25,
+        distance: 5.0,
+        target: Vec3::new(0.0, 0.0, 0.0),
+        auto: true,
+    }));
 
     // Render loop — gated by `loading` so a command's async borrow (commit_load
     // / pick) never collides with the per-frame borrow.
@@ -349,15 +379,23 @@ async fn run_worker(
         let cell_loop = cell.clone();
         let loading_loop = loading.clone();
         let canvas_loop = canvas.clone();
+        let orbit_loop = orbit.clone();
         *raf_init.borrow_mut() = Some(Closure::new(move || {
             if !loading_loop.get() {
                 if let Ok(mut r) = cell_loop.try_borrow_mut() {
-                    let eye = Vec3::new(0.0, 0.0, 6.0);
-                    let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
+                    let eye = {
+                        let mut o = orbit_loop.borrow_mut();
+                        if o.auto {
+                            o.yaw += 0.006;
+                        }
+                        o.eye()
+                    };
+                    let target = orbit_loop.borrow().target;
+                    let view = Mat4::look_at_rh(eye, target, Vec3::Y);
                     let projection = Mat4::perspective_rh(
                         60.0_f32.to_radians(),
                         crate::viewport::aspect(&canvas_loop),
-                        0.1,
+                        0.05,
                         100.0,
                     );
                     let _ = r.update_camera(CameraMatrices {
@@ -387,12 +425,13 @@ async fn run_worker(
     let cell_cmd = cell.clone();
     let loading_cmd = loading.clone();
     let canvas_cmd = canvas.clone();
+    let orbit_cmd = orbit.clone();
     let on_cmd =
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
             if crate::viewport::try_apply_resize(&canvas_cmd, &e.data()).is_some() {
                 return;
             }
-            handle_command(e, &cell_cmd, &loading_cmd);
+            handle_command(e, &cell_cmd, &loading_cmd, &orbit_cmd);
         });
     worker_scope().set_onmessage(Some(on_cmd.as_ref().unchecked_ref()));
     on_cmd.forget();
@@ -400,6 +439,25 @@ async fn run_worker(
     post_event(&RenderEvent::Initialized);
     std::mem::forget(cell);
     Ok(())
+}
+
+/// Orbit camera state (worker-side).
+struct Orbit {
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+    target: glam::Vec3,
+    auto: bool,
+}
+impl Orbit {
+    fn eye(&self) -> glam::Vec3 {
+        self.target
+            + glam::Vec3::new(
+                self.distance * self.pitch.cos() * self.yaw.sin(),
+                self.distance * self.pitch.sin(),
+                self.distance * self.pitch.cos() * self.yaw.cos(),
+            )
+    }
 }
 
 // The command futures deliberately hold the renderer borrow across `.await`
@@ -411,6 +469,7 @@ fn handle_command(
     e: web_sys::MessageEvent,
     cell: &Rc<RefCell<awsm_renderer::AwsmRenderer>>,
     loading: &Rc<Cell<bool>>,
+    orbit: &Rc<RefCell<Orbit>>,
 ) {
     let data = e.data();
     if js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
@@ -454,6 +513,30 @@ fn handle_command(
                 loading.set(false);
             });
         }
+        RenderCommand::LoadGltf { url } => {
+            let cell = cell.clone();
+            let loading = loading.clone();
+            loading.set(true);
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Err(err) = load_gltf(&cell, &url).await {
+                    post_event(&RenderEvent::Error {
+                        message: format!("{err:?}"),
+                    });
+                }
+                loading.set(false);
+            });
+        }
+        RenderCommand::UpdateCamera {
+            yaw,
+            pitch,
+            distance,
+        } => {
+            let mut o = orbit.borrow_mut();
+            o.yaw = yaw;
+            o.pitch = pitch.clamp(-1.4, 1.4);
+            o.distance = distance.clamp(0.5, 50.0);
+            o.auto = false; // manual control takes over from the auto-spin
+        }
         RenderCommand::Pick { x, y } => {
             let cell = cell.clone();
             let loading = loading.clone();
@@ -472,6 +555,56 @@ fn handle_command(
             });
         }
     }
+}
+
+/// Fetch a same-origin glTF/GLB, parse it, and run the load transaction,
+/// streaming `Loading` events. Holds the renderer borrow across the awaits —
+/// safe because the render loop skips frames while `loading` is set.
+#[allow(clippy::await_holding_refcell_ref)]
+async fn load_gltf(
+    cell: &Rc<RefCell<awsm_renderer::AwsmRenderer>>,
+    url: &str,
+) -> Result<(), JsValue> {
+    use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfLoader};
+
+    let bytes = gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .map_err(|e| JsValue::from_str(&format!("fetch {url}: {e}")))?
+        .binary()
+        .await
+        .map_err(|e| JsValue::from_str(&format!("read {url}: {e}")))?;
+    let loader = GltfLoader::from_glb_bytes(&bytes)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("parse glb: {e}")))?;
+    let data = loader
+        .into_data(None)
+        .map_err(|e| JsValue::from_str(&format!("into_data: {e}")))?;
+
+    let mut r = cell.borrow_mut();
+    r.populate_gltf(data, None)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("populate_gltf: {e}")))?;
+    r.commit_load(|stats| {
+        let (phase, _) = phase_fraction(&stats);
+        post_event(&RenderEvent::Loading {
+            phase,
+            phase_label: stats
+                .phase_label()
+                .unwrap_or_else(|| "Finishing".to_string()),
+            geometry_uploaded: stats.geometry_uploaded,
+            geometry_total: stats.geometry_total,
+            textures_uploaded: stats.textures_uploaded,
+            textures_total: stats.textures_total,
+            pipelines_pending: stats.pipelines_pending,
+            pipelines_ready: stats.pipelines_ready,
+        });
+    })
+    .await
+    .map_err(|e| JsValue::from_str(&format!("commit_load: {e}")))?;
+
+    post_event(&RenderEvent::Ready);
+    Ok(())
 }
 
 /// Reconstruct each mesh from its Transferable buffers, add it, and run the
