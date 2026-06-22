@@ -100,9 +100,9 @@ deferred piece — the programmable GPU vertex stage — is **Part A** below.
 | B2 | Multithread: screenshot capture path (`renderer.capture_frame`) | DONE | 4c593c02 |
 | B1 | Multithread: device-loss + worker-crash recovery | TODO | |
 | T4 | Multithread: resilience VERIFICATION (after B1) | TODO | |
-| T3 | Multithread: perf at scale + soak (Chrome) | TODO | |
-| T5 | Multithread: allocation / GC validation (Chrome) | TODO | |
-| B3 | Multithread: arena growth policy (only if T3 shows unbounded growth) | TODO | |
+| T3 | Multithread: perf at scale + soak (Chrome) | DONE | (verification — see §Verification results) |
+| T5 | Multithread: allocation / GC validation (Chrome) | DONE | (verification — see §Verification results) |
+| B3 | Multithread: arena growth policy (only if T3 shows unbounded growth) | DONE (N/A) | not needed — T3 churn soak proved memory bounded |
 | B4 | Multithread: bundled scene fixture for `?demo=scene` (optional) | TODO | |
 
 **Suggested order:** CV1 → CV2 → CV3 → B2 → B1 → T4 → T3 → T5 → B3 (conditional)
@@ -115,6 +115,40 @@ Chrome-doable, so the target is a genuine 100%.
 > (recovery) are the two genuinely large items — attempt them phase by phase; if a
 > phase can't complete + verify in this run, BLOCK it with the specific reason
 > rather than half-shipping.
+
+## Verification results (overnight run 2026-06-22)
+
+Live-measured via the chrome-devtools MCP against `task mt:dev` (:9090).
+
+**T3 — perf at scale (motion demo, render worker, 120 Hz display):**
+
+| bodies N | movers | fps | frame time |
+|---|---|---|---|
+| 100 | 50 | 120 | 8.34 ms |
+| 1000 | 500 | 120 | 8.34 ms |
+| 2000 | 1000 | 120 | 8.34 ms |
+| 5000 | 2500 | 60 | **16.68 ms** ← 16.6 ms (60 fps) budget crossover |
+| 10000 | 5000 | 24 | 41.68 ms |
+
+8.34 ms is the 120 Hz RAF cap (true GPU frame time is lower); the render worker
+holds display refresh up to ~2000 movers and first misses the 16.6 ms / 60 fps
+budget at **~5000 bodies (2500 movers)**, degrading to ~24 fps at 10000.
+
+**T3 — memory soak (churn demo, ~59 min):** spawned 2447 / despawned 2435 /
+**reusedSlots 2431 (99.84 % of freed slots reused)**, `invariantOk` held the whole
+run (live == spawned − despawned). The arena reuses nearly every freed slot, so it
+never grows beyond the live peak → **shared-memory growth is flat/bounded**.
+
+**B3 — N/A:** T3's soak proved bounded growth, so no arena compaction/slab-reuse
+policy is needed (the conditional trigger did not fire).
+
+**T5 — allocation / GC:** the O(N) render hot path uses pooled scratch — transform
+descent/pack via `Transforms::arena_pack_scratch` (`std::mem::take` + `clear()` +
+restore in `descend_pack_arena`) and the cull path via `RenderFrameScratch`
+(`opaque_snapshots` + `occlusion_instance_bytes`, taken/restored across `render()`).
+No O(meshes) per-frame `Vec`/`Box` remains; the only residual per-frame `vec![]`
+are constant-size render-pass descriptors (O(passes)). Motion under load ran a
+clean 600 frames / 5.00 s with **zero dropped frames**, confirming no GC-pause jank.
 
 ---
 
