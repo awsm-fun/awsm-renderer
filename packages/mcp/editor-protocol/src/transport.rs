@@ -227,6 +227,13 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "set_builtin_alpha_mode",
+                EditorCommand::SetBuiltinAlphaMode {
+                    node: NodeId::new(),
+                    mode: crate::MaterialAlphaMode::Mask { cutoff: 0.4 },
+                },
+            ),
+            (
                 "paint_vertices_where",
                 EditorCommand::PaintVerticesWhere {
                     node: NodeId::new(),

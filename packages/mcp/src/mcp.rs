@@ -467,6 +467,16 @@ pub struct MaterialBoolParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BuiltinAlphaModeParams {
+    /// Mesh node UUID (its built-in/inline material).
+    pub node: String,
+    pub mode: AlphaModeArg,
+    /// Alpha cutoff for `mask` mode (default 0.5; ignored otherwise).
+    #[serde(default)]
+    pub cutoff: Option<f64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MaterialHexParams {
     pub material: String,
     /// Hex color `#rrggbb`.
@@ -2536,7 +2546,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a built-in material factor on a mesh node's inline material. param: base_color | emissive (value = 3 floats) | metallic | roughness | normal_scale | occlusion_strength (value = 1 float)."
+        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength (1 float)."
     )]
     async fn set_builtin_param(
         &self,
@@ -2563,6 +2573,27 @@ impl EditorMcp {
             node: parse_node(&p.node)?,
             param,
             value: p.value,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set a mesh node's BUILT-IN/inline material alpha mode: opaque | mask (with `cutoff`) | blend. The typed alternative to resending the whole NodeKind via set_kind. For glass: `blend` + set_builtin_param base_color with a 4th alpha float < 1. Re-materializes the node (pipeline-feature flip)."
+    )]
+    async fn set_builtin_alpha_mode(
+        &self,
+        Parameters(p): Parameters<BuiltinAlphaModeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mode = match p.mode {
+            AlphaModeArg::Opaque => awsm_editor_protocol::MaterialAlphaMode::Opaque,
+            AlphaModeArg::Mask => awsm_editor_protocol::MaterialAlphaMode::Mask {
+                cutoff: p.cutoff.unwrap_or(0.5) as f32,
+            },
+            AlphaModeArg::Blend => awsm_editor_protocol::MaterialAlphaMode::Blend,
+        };
+        self.dispatch(EditorCommand::SetBuiltinAlphaMode {
+            node: parse_node(&p.node)?,
+            mode,
         })
         .await
     }

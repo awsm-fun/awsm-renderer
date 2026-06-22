@@ -218,7 +218,11 @@ every command/query, and each tool self-describes over the MCP schema.
   `set_material_debug_color`, `set_material_layout { uniforms, textures, buffers }`,
   `set_material_includes { keys }`, `set_material_fragment_inputs { keys }`,
   `set_material_uniform { material, name, value }`, `set_material_texture
-  { node, slot, texture? }`, `set_builtin_param { node, param, value }`.
+  { node, slot, texture? }`, `set_builtin_param { node, param, value }`
+  (`base_color` accepts 3 floats RGB **or 4 = RGBA** with the 4th = alpha),
+  `set_builtin_alpha_mode { node, mode: opaque|mask|blend, cutoff? }` — typed
+  alpha mode for a built-in/inline material (glass = `blend` + base_color alpha<1),
+  no whole-`MaterialDef` resend.
 
 **Lighting / environment**
 - `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles`.

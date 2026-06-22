@@ -714,12 +714,22 @@ pub enum EditorCommand {
     },
     /// Set a built-in material factor on a mesh node's inline material (the
     /// writable counterpart of `ReadbackTarget::BuiltinParam`). `value` is 1
-    /// element for `Metallic`/`Roughness`, 3 for `BaseColor`/`Emissive`. Inverse:
+    /// element for `Metallic`/`Roughness`, 3 for `Emissive`, and 3-or-4 for
+    /// `BaseColor` (a 4th element is the base-color ALPHA, §13). Inverse:
     /// restore the node's prior kind.
     SetBuiltinParam {
         node: NodeId,
         param: BuiltinParamKind,
         value: Vec<f32>,
+    },
+    /// Set the alpha mode of a mesh node's **built-in/inline** material (§13) —
+    /// `Opaque | Mask { cutoff } | Blend`. A pipeline-feature flip (e.g. glass =
+    /// `Blend` + a sub-1 base-color alpha), so the node re-materializes. The typed
+    /// alternative to resending the whole `NodeKind` via `set_kind`. Inverse:
+    /// restore the node's prior kind.
+    SetBuiltinAlphaMode {
+        node: NodeId,
+        mode: crate::MaterialAlphaMode,
     },
     /// Set a light parameter on a light node (writable counterpart of
     /// `ReadbackTarget::LightParam`). `value` is 3 floats for `Color`, 1 for
@@ -1157,6 +1167,7 @@ impl EditorCommand {
             EditorCommand::SetCustomMaterialFragmentInputs { .. } => "Set fragment inputs",
             EditorCommand::SetMaterialUniform { .. } => "Set uniform",
             EditorCommand::SetBuiltinParam { .. } => "Set material param",
+            EditorCommand::SetBuiltinAlphaMode { .. } => "Set builtin alpha mode",
             EditorCommand::SetLightParam { .. } => "Set light param",
             EditorCommand::SetMaterialTexture { .. } => "Bind texture",
             EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",

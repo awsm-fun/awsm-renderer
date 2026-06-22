@@ -690,6 +690,18 @@ there's no `alpha_mode` tool for builtin materials. The only route was the full
 `set_builtin_alpha_mode { node, mode, cutoff? }` and let `base_color` accept 4
 floats.
 
+> ✅ **SHIPPED (2026-06-22) — both, as typed narrow setters.** (1) New
+> `set_builtin_alpha_mode { node, mode: opaque|mask|blend, cutoff? }` patches the
+> node's inline `MaterialDef.alpha_mode` + re-materializes (clone-kind → patch →
+> `kind.set` → inverse `SetKind`, the §1 family pattern). (2) `set_builtin_param
+> base_color` now accepts a **4th float = base-color ALPHA** (3 floats leaves
+> alpha unchanged). Together they retire the `set_kind` escape hatch for glass —
+> and a typed setter sidesteps the `update_builtin_material` `def`
+> string-encoding gotcha (§10). **Verified live**: a builtin PBR box set to
+> `base_color [0.35,0.65,1,0.3]` + `set_builtin_alpha_mode blend` renders
+> see-through — the grid floor + a red box behind it are visible through the
+> glass slab (chrome-devtools screenshot). Roundtrip test + lint.
+
 ## 14. 🟠 Particle realism is hard to reach via MCP
 
 Goal: "real fire." Blockers hit, in order:
@@ -864,7 +876,7 @@ or a naga quirk; either way an author hits it fast.
 | 9 | Papercuts (frame_node, screenshot msg, solve_ik root, clip-clear pose) | DONE | `ab9898ef` |
 | 10 | Fused `paint_where`/`transform_where` (handle + pagination deferred, noted) | DONE | `db32251b` |
 | 11 | Per-node texture override re-specializes variant (or rejects loudly) | DONE | `8c7d2264` |
-| 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | WIP | |
+| 12 | `alpha_mode` re-wraps custom shader; doc batch ordering | DONE | `a7b5adab` |
 | 13 | `set_builtin_alpha_mode` + base_color rgba | TODO | |
 | 14 | Particle realism (raw sprite upload, alpha sampled, doc `forces`) | TODO | |
 | 15 | Vertex-color default footgun — doc + clear-to-0 option | TODO | |

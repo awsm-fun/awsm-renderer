@@ -2124,6 +2124,24 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::SetBuiltinAlphaMode { node, mode } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.kind.get_cloned();
+                        let mut next = prev.clone();
+                        if !patch_builtin_alpha_mode(&mut next, mode) {
+                            return Ok(None);
+                        }
+                        n.kind.set(next);
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetKind {
+                            id: node,
+                            kind: Box::new(prev),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::SetBuiltinTexture {
                 node,
                 slot,
@@ -6027,6 +6045,11 @@ fn patch_builtin_param(
             inline.base_color[0] = value[0];
             inline.base_color[1] = value[1];
             inline.base_color[2] = value[2];
+            // §13: accept an optional 4th float as the base-color ALPHA (for a
+            // sub-1 alpha on a Blend material — glass). 3 floats leaves alpha as-is.
+            if let Some(&a) = value.get(3) {
+                inline.base_color[3] = a;
+            }
         }
         P::Emissive => {
             if value.len() < 3 {
@@ -6101,6 +6124,21 @@ fn patch_builtin_param(
             }
         }
     }
+    true
+}
+
+/// Set the alpha mode (Opaque | Mask { cutoff } | Blend) of a node's
+/// **built-in/inline** `MaterialDef` (§13). Changing the mode is a pipeline
+/// feature flip, so the node re-materializes (the kind observer). Returns false
+/// if the node has no inline material (unassigned / non-geometry).
+fn patch_builtin_alpha_mode(
+    kind: &mut NodeKind,
+    mode: awsm_editor_protocol::MaterialAlphaMode,
+) -> bool {
+    let Some(inst) = node_material_mut(kind) else {
+        return false;
+    };
+    inst.inline.alpha_mode = mode;
     true
 }
 
