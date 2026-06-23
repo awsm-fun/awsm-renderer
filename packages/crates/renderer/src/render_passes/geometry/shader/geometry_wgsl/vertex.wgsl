@@ -28,6 +28,7 @@ struct VertexInput {
     @location(8) instance_transform_row_2: vec4<f32>,
     @location(9) instance_transform_row_3: vec4<f32>,
     {% endif %}
+    {% if has_custom_vertex %} @location(10) uv0: vec2<f32>, {% endif %}
 };
 
 struct VertexOutput {
@@ -76,6 +77,20 @@ fn vert_main(
     let camera = camera_from_raw(camera_raw);
     let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
+    // Per-fragment instance_id. The shading compute pass reads this to look
+    // up per-instance attributes (color, size, alpha) from a small storage
+    // buffer. For non-instanced meshes the writer side stores `u32::MAX` in
+    // `geometry_mesh_meta.instance_attr_base`; we propagate that sentinel
+    // through so the read site can branch on a single value. Computed before
+    // `apply_vertex` so the custom-vertex hook can receive it.
+    let base = geometry_mesh_meta.instance_attr_base;
+    var instance_id: u32;
+    if (base == 0xFFFFFFFFu) {
+        instance_id = 0xFFFFFFFFu;
+    } else {
+        instance_id = base + instance_index;
+    }
+
     let applied = apply_vertex(ApplyVertexInput(
         input.original_vertex_index,
         input.position,
@@ -87,7 +102,7 @@ fn vert_main(
             input.instance_transform_row_2,
             input.instance_transform_row_3,
         {% endif %}
-    ), camera);
+    ), camera {% if has_custom_vertex %}, input.uv0, instance_id, frame_globals {% endif %});
 
     out.clip_position = applied.clip_position;
     out.world_normal = applied.world_normal;
@@ -97,17 +112,7 @@ fn vert_main(
     out.triangle_index = input.triangle_index;
     out.barycentric = input.barycentric;
 
-    // Per-fragment instance_id. The shading compute pass reads this to look
-    // up per-instance attributes (color, size, alpha) from a small storage
-    // buffer. For non-instanced meshes the writer side stores `u32::MAX` in
-    // `geometry_mesh_meta.instance_attr_base`; we propagate that sentinel
-    // through so the read site can branch on a single value.
-    let base = geometry_mesh_meta.instance_attr_base;
-    if (base == 0xFFFFFFFFu) {
-        out.instance_id = 0xFFFFFFFFu;
-    } else {
-        out.instance_id = base + instance_index;
-    }
+    out.instance_id = instance_id;
 
     // Forward the per-mesh material-meta byte
     // offset to the fragment stage so the fragment's

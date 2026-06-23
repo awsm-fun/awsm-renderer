@@ -20,6 +20,7 @@ struct ApplyVertexInput {
 {% if has_custom_vertex %}
 {{ dynamic_vertex_struct_decl|safe }}
 {{ dynamic_vertex_loader_decl|safe }}
+{% include "shared_wgsl/frame_globals.wgsl" %}
 {% include "shared_wgsl/vertex/custom_vertex.wgsl" %}
 {% endif %}
 
@@ -80,6 +81,7 @@ fn vert_main(
             vertex.position, vertex.normal, vertex.tangent, vec2<f32>(0.0, 0.0),
             vertex.vertex_index, 0u,
             material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+            frame_globals_from_raw(frame_globals_raw),
         ));
         vertex.position = _disp.position;
     }

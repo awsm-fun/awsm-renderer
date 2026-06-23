@@ -21,7 +21,7 @@ struct ApplyVertexOutput {
     world_position: vec3<f32>,   // Transformed world-space position
 }
 
-fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera) -> ApplyVertexOutput {
+fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera {% if has_custom_vertex %}, custom_uv: vec2<f32>, custom_instance_id: u32, custom_globals: FrameGlobals {% endif %}) -> ApplyVertexOutput {
     var out: ApplyVertexOutput;
 
     var vertex = vertex_orig;
@@ -40,9 +40,10 @@ fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera) -> ApplyVertexOut
     {% if has_custom_vertex %}
     {
         let _disp = custom_displace_vertex(VertexDisplaceInput(
-            vertex.position, normal, tangent, vec2<f32>(0.0, 0.0),
-            vertex.vertex_index, 0u,
+            vertex.position, normal, tangent, custom_uv,
+            vertex.vertex_index, custom_instance_id,
             material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+            custom_globals,
         ));
         vertex.position = _disp.position;
         normal = _disp.normal;

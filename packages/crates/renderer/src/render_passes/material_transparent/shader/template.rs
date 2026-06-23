@@ -228,6 +228,10 @@ pub struct ShaderTemplateTransparentMaterialVertex {
     pub in_color_set_start: u32,
     pub out_uv_set_start: u32,
     pub out_color_set_start: u32,
+    /// INERT scaffolding for the programmable vertex-displacement hook. Always
+    /// `false` here — gates the extra `apply_vertex` hook args in the vertex
+    /// entry, kept off so output stays byte-identical.
+    pub has_custom_vertex: bool,
 }
 
 impl ShaderTemplateTransparentMaterialVertex {
@@ -257,6 +261,7 @@ impl ShaderTemplateTransparentMaterialVertex {
             in_color_set_start,
             out_uv_set_start,
             out_color_set_start,
+            has_custom_vertex: false,
         }
     }
 }

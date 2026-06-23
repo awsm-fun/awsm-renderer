@@ -50,6 +50,19 @@ fn vert_main(
     let camera = camera_from_raw(camera_raw);
     let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
+    // Per-fragment instance_id derived from geometry_mesh_meta.instance_attr_base
+    // + the GPU's @builtin(instance_index). Non-instanced meshes carry the
+    // sentinel through unchanged so the fragment side branches identically
+    // to the opaque path's MSAA helper. Computed before `apply_vertex` so the
+    // custom-vertex hook can receive it.
+    let base = geometry_mesh_meta.instance_attr_base;
+    var instance_id: u32;
+    if (base == INSTANCE_ATTR_NONE) {
+        instance_id = INSTANCE_ATTR_NONE;
+    } else {
+        instance_id = base + instance_index;
+    }
+
     let applied = apply_vertex(ApplyVertexInput(
         input.vertex_index,
         input.position,
@@ -61,23 +74,14 @@ fn vert_main(
             input.instance_transform_row_2,
             input.instance_transform_row_3,
         {% endif %}
-    ), camera);
+    ), camera {% if has_custom_vertex %}, {% if uv_sets >= 1 %} input.uv_0 {% else %} vec2<f32>(0.0, 0.0) {% endif %}, instance_id, frame_globals {% endif %});
 
     out.clip_position = applied.clip_position;
     out.world_position = applied.world_position;
     out.world_normal = applied.world_normal;
     out.world_tangent = applied.world_tangent;
 
-    // Per-fragment instance_id derived from geometry_mesh_meta.instance_attr_base
-    // + the GPU's @builtin(instance_index). Non-instanced meshes carry the
-    // sentinel through unchanged so the fragment side branches identically
-    // to the opaque path's MSAA helper.
-    let base = geometry_mesh_meta.instance_attr_base;
-    if (base == INSTANCE_ATTR_NONE) {
-        out.instance_id = INSTANCE_ATTR_NONE;
-    } else {
-        out.instance_id = base + instance_index;
-    }
+    out.instance_id = instance_id;
 
     {% for i in 0..color_sets %}
         out.color_{{ i }} = input.color_{{ i }};
