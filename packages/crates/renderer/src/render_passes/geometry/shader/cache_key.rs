@@ -50,6 +50,12 @@ pub struct ShaderCacheKeyGeometry {
     /// uniform-with-dynamic-offset binding regardless of the toggle).
     pub meta_storage_array: bool,
     pub msaa_samples: Option<u32>,
+    /// `Some` → this is a per-material **custom-vertex** geometry pipeline: the
+    /// vertex shader compiles the material's `custom_displace_vertex` hook (and
+    /// the draw binds the material uniform/texture groups + a UV0 attribute).
+    /// `None` → the shared fast geometry pipeline (zero cost for every mesh
+    /// without a custom-vertex material). See [`DynamicVertexShaderInfo`].
+    pub dynamic_vertex_shader: Option<DynamicVertexShaderInfo>,
 }
 
 impl From<ShaderCacheKeyGeometry> for ShaderCacheKey {

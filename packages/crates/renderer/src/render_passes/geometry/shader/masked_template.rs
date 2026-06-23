@@ -70,6 +70,9 @@ impl TryFrom<&ShaderCacheKeyGeometryMasked> for ShaderTemplateGeometryMasked {
             instancing_transforms: false,
             meta_storage_array: false,
             msaa_samples: None,
+            // Masked geometry reuses the plain vertex; custom-vertex masked is a
+            // CV2 follow-on, so the vertex stays non-custom here.
+            dynamic_vertex_shader: None,
         };
 
         let (struct_decl, loader_decl, texture_helpers, alpha_wgsl) = match &value.dynamic_alpha {
