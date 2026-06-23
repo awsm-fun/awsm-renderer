@@ -94,7 +94,7 @@ deferred piece — the programmable GPU vertex stage — is **Part A** below.
 | id | item | status | commit |
 |----|------|--------|--------|
 | CV1 | Custom vertex: ABI + `apply_vertex` hook + geometry & shadow per-material pipelines + registration/cache-key + naga validation (Phase 1) | DONE | ab181114..a6d8466d |
-| CV2 | Custom vertex: transparent + geometry-masked + shadow-masked variants (Phase 2) | DONE* | 93f62a64, 8a25e94c (*Mask+custom-vertex combo: shaders built+naga-validated; live routing deferred = known limitation, displaced-solid never-worse) |
+| CV2 | Custom vertex: transparent + geometry-masked + shadow-masked variants (Phase 2) | DONE | 93f62a64, 8a25e94c, 02ebee03 (transparent + masked + shadow-masked custom-vertex all live; Mask+custom-vertex combo live-verified: displaced + alpha-cut) |
 | CV3 | Custom vertex: editor 3rd WGSL window + toggle + `set_material_vertex_wgsl` MCP + contract doc + starter body (Phase 3) | DONE | 46b88c17, fe7a8ec0 |
 | CV4 | Custom vertex: polish — normal-from-height helper, vertex texture-fetch example, skinned-mesh tests (Phase 4, optional) | DONE | 6e35b125, cf5fb12b (full multi-UV — geometry/shadow/transparent all read real per-vertex UVs, live-verified — + multi-texture + recompute_normal_from_height + naga tests) |
 | B2 | Multithread: screenshot capture path (`renderer.capture_frame`) | DONE | 4c593c02 |
