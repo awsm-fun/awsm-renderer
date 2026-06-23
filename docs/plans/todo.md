@@ -96,7 +96,7 @@ deferred piece — the programmable GPU vertex stage — is **Part A** below.
 | CV1 | Custom vertex: ABI + `apply_vertex` hook + geometry & shadow per-material pipelines + registration/cache-key + naga validation (Phase 1) | DONE | ab181114..a6d8466d |
 | CV2 | Custom vertex: transparent + geometry-masked + shadow-masked variants (Phase 2) | DONE* | 93f62a64, 8a25e94c (*Mask+custom-vertex combo: shaders built+naga-validated; live routing deferred = known limitation, displaced-solid never-worse) |
 | CV3 | Custom vertex: editor 3rd WGSL window + toggle + `set_material_vertex_wgsl` MCP + contract doc + starter body (Phase 3) | DONE | 46b88c17, fe7a8ec0 |
-| CV4 | Custom vertex: polish — normal-from-height helper, vertex texture-fetch example, skinned-mesh tests (Phase 4, optional) | DONE* | 6e35b125 (*multi-UV ABI + multi-texture + recompute_normal_from_height + naga tests; transparent gets real per-vertex UV; OPAQUE uv reconstruction = documented follow-on, see contract-vertex.md) |
+| CV4 | Custom vertex: polish — normal-from-height helper, vertex texture-fetch example, skinned-mesh tests (Phase 4, optional) | DONE | 6e35b125, cf5fb12b (full multi-UV — geometry/shadow/transparent all read real per-vertex UVs, live-verified — + multi-texture + recompute_normal_from_height + naga tests) |
 | B2 | Multithread: screenshot capture path (`renderer.capture_frame`) | DONE | 4c593c02 |
 | B1 | Multithread: device-loss + worker-crash recovery | BLOCKED | see §Blocked items |
 | T4 | Multithread: resilience VERIFICATION (after B1) | BLOCKED | depends on B1 |
