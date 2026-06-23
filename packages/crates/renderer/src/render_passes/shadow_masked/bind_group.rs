@@ -176,23 +176,17 @@ fn build_layout_key(
         visibility_fragment: false,
         visibility_compute: false,
     };
-    let storage_f = || BindGroupLayoutCacheKeyEntry {
-        resource: BindGroupLayoutResource::Buffer(
-            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
-        ),
-        visibility_vertex: false,
-        visibility_fragment: true,
-        visibility_compute: false,
-    };
     // Vertex+fragment storage. The CUSTOM-VERTEX shadow caster reuses THIS group
     // 0 (its `shadow_custom_vertex_wgsl/bind_groups.wgsl` declares the same
     // bindings) and its vertex stage runs `material_data_load` (reads `materials`)
-    // + `texture_pool_sample` (reads `texture_transforms` + the pool). Those
-    // bindings therefore need VERTEX visibility too. The masked-shadow path reads
-    // them fragment-only — extra visibility on a binding is inert for a stage that
-    // doesn't read it, so the masked path is byte-identical. The two bindings the
-    // custom-vertex vertex stage never touches (`material_mesh_metas`,
-    // `visibility_data`) stay fragment-only. Mirrors `GeometryMaskedBindGroup`.
+    // + `texture_pool_sample` (reads `texture_transforms` + the pool). Since CV4
+    // the custom-vertex VERTEX hook also reads `material_mesh_metas` (UV meta) and
+    // `visibility_data` (per-vertex UVs, via `_mask_uv_per_vertex`) to build the
+    // hook's `input.uv` array — so those need VERTEX visibility too, or the
+    // displaced SHADOW silhouette reads zero UVs and diverges from the geometry
+    // pass. The masked-shadow path reads them fragment-only — extra visibility on
+    // a binding is inert for a stage that doesn't read it, so the masked path is
+    // byte-identical. Mirrors `GeometryMaskedBindGroup`.
     let storage_vf = || BindGroupLayoutCacheKeyEntry {
         resource: BindGroupLayoutResource::Buffer(
             BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
@@ -216,8 +210,8 @@ fn build_layout_key(
     let mut entries = vec![
         shadow_view_v,    // shadow_view
         storage_vf(),     // materials (read by the custom-vertex vertex hook)
-        storage_f(),      // material_mesh_metas
-        storage_f(),      // visibility_data (merged pool)
+        storage_vf(),     // material_mesh_metas (read by the custom-vertex vertex hook for UV meta)
+        storage_vf(),     // visibility_data — per-vertex UVs read by the custom-vertex vertex hook
         storage_vf(),     // texture_transforms (read by the custom-vertex vertex hook)
         frame_globals_vf, // frame_globals (uniform, vertex+fragment)
     ];
