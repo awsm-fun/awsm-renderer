@@ -19,7 +19,13 @@ struct ApplyVertexInput {
 {% if has_custom_vertex %}
 {{ dynamic_vertex_struct_decl|safe }}
 {{ dynamic_vertex_loader_decl|safe }}
-{% include "shared_wgsl/frame_globals.wgsl" %}
+// `frame_globals` (struct + `frame_globals_from_raw`) comes from the masked-shadow
+// bind groups (`shadow_masked_wgsl/bind_groups.wgsl`), so it is NOT re-included
+// here — that would redefine it. The custom-vertex hook reads it for animated
+// displacement. The hook's `material_data_load` + `material_sample_<name>` /
+// `material_load_*` / `texture_pool_sample` come from the masked fragment's
+// `masked_alpha.wgsl` include (a combined masked + custom-vertex shadow module
+// always pairs this vertex with the masked fragment).
 {% include "shared_wgsl/vertex/custom_vertex.wgsl" %}
 {% endif %}
 

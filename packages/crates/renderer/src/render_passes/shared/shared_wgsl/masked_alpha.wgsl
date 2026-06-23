@@ -20,24 +20,13 @@
 {% include "shared_wgsl/material_mesh_meta.wgsl" %}
 {% include "shared_wgsl/textures.wgsl" %}
 
-// ── Minimal material-buffer load helpers (the masked variant deliberately
-// does NOT pull in shared_wgsl/material.wgsl, which would emit the full
-// `materials_wgsl` blob — including dynamic-material color fragments that
-// reference opaque-only contract types). ───────────────────────────────────
-fn material_load_u32(index: u32) -> u32 { return bitcast<u32>(materials[index]); }
-fn material_load_f32(index: u32) -> f32 { return bitcast<f32>(materials[index]); }
-fn material_load_texture_info_raw(index: u32) -> TextureInfoRaw {
-    return TextureInfoRaw(
-        material_load_u32(index + 0u),
-        material_load_u32(index + 1u),
-        material_load_u32(index + 2u),
-        material_load_u32(index + 3u),
-        material_load_u32(index + 4u),
-    );
-}
-fn material_load_texture_info(index: u32) -> TextureInfo {
-    return convert_texture_info(material_load_texture_info_raw(index));
-}
+// ── Minimal material-buffer load helpers + the LOD-0 `texture_pool_sample` —
+// shared with the custom-vertex bind groups so a COMBINED masked + custom-vertex
+// module can include both without redefining them. The masked variant
+// deliberately does NOT pull in shared_wgsl/material.wgsl (which would emit the
+// full `materials_wgsl` blob — including dynamic-material color fragments that
+// reference opaque-only contract types). ────────────────────────────────────
+{% include "shared_wgsl/material_load_helpers.wgsl" %}
 
 // ── UV reconstruction from the merged geometry pool (mirrors the opaque
 // pass's texture_uvs.wgsl) ──────────────────────────────────────────────────
@@ -54,46 +43,14 @@ fn mask_texture_uv(attribute_data_offset: u32, triangle_indices: vec3<u32>, bary
     return barycentric.x * uv0 + barycentric.y * uv1 + barycentric.z * uv2;
 }
 
-// ── LOD-0 texture-pool sampler (compute/raster has no auto-derivatives for the
-// visibility-pass discard; LOD 0 is the correct, cheap choice). ──────────────
-fn _mask_pool_sample_lod0(info: TextureInfo, uv: vec2<f32>, array_index: u32, sampler_index: u32) -> vec4<f32> {
-    var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    switch array_index {
-        {% for i in 0..texture_pool_arrays_len %}
-        case {{ i }}u: {
-            switch sampler_index {
-                {% for j in 0..texture_pool_samplers_len %}
-                case {{ j }}u: {
-                    color = textureSampleLevel(pool_tex_{{ i }}, pool_sampler_{{ j }}, uv, i32(info.layer_index), 0);
-                }
-                {% endfor %}
-                default: {}
-            }
-        }
-        {% endfor %}
-        default: {}
-    }
-    return color;
-}
-fn mask_texture_pool_sample(info: TextureInfo, attribute_uv: vec2<f32>) -> vec4<f32> {
-    let uv = texture_transform_uvs(attribute_uv, info);
-    return _mask_pool_sample_lod0(info, uv, info.array_index, info.sampler_index);
-}
-
 {% if base == ShadingBase::Custom %}
 // ── Dynamic (custom) material: the author's *alpha-only* fragment. ───────────
 // Auto-generated `MaterialData` struct + loader (same generators the opaque
 // pass uses) so the author reads per-instance uniforms, and the per-texture
-// `material_sample_<name>` helpers so a texture-based cutout can sample.
+// `material_sample_<name>` helpers so a texture-based cutout can sample. They
+// call `texture_pool_sample` (from material_load_helpers.wgsl above).
 {{ dynamic_struct_decl|safe }}
 {{ dynamic_loader_decl|safe }}
-// The generated `material_sample_<name>` helpers call `texture_pool_sample`;
-// alias it to the masked pass's LOD-0 sampler so they resolve (the opaque pass
-// emits its own `texture_pool_sample` from texture_uvs.wgsl, which the masked
-// variant deliberately does not include).
-fn texture_pool_sample(info: TextureInfo, attribute_uv: vec2<f32>) -> vec4<f32> {
-    return mask_texture_pool_sample(info, attribute_uv);
-}
 {{ dynamic_texture_helpers|safe }}
 
 // Input handed to the author's alpha-only fragment. `uv` is the interpolated
@@ -191,7 +148,7 @@ fn mask_alpha_at(
     if atlas_tex.exists {
         let in_uv = mask_texture_uv(attribute_data_offset, triangle_indices, bary, atlas_tex, vertex_attribute_stride, uv_sets_index);
         let cell_uv = flipbook_cell_uv(in_uv, frame_globals_raw.time, cols, rows, frame_count, fps, time_offset, mode, flip_y);
-        alpha = alpha * mask_texture_pool_sample(atlas_tex, cell_uv).a;
+        alpha = alpha * texture_pool_sample(atlas_tex, cell_uv).a;
     }
     return alpha;
 }
@@ -213,7 +170,7 @@ fn mask_alpha_at(
     var alpha = material_load_f32(base_index + 10u);
     if base_color_tex.exists {
         let uv = mask_texture_uv(attribute_data_offset, triangle_indices, bary, base_color_tex, vertex_attribute_stride, uv_sets_index);
-        alpha = alpha * mask_texture_pool_sample(base_color_tex, uv).a;
+        alpha = alpha * texture_pool_sample(base_color_tex, uv).a;
     }
     return alpha;
 }

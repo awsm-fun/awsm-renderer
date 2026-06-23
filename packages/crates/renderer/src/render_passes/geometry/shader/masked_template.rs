@@ -32,6 +32,18 @@ pub struct ShaderTemplateGeometryMaskedBindGroups {
     texture_pool_samplers_len: u32,
 }
 
+impl ShaderTemplateGeometryMaskedBindGroups {
+    /// Builds the masked bind-group template for the given texture-pool lengths.
+    /// Shared with the combined masked + custom-vertex template, which reuses the
+    /// identical (augmented group-0) layout verbatim.
+    pub fn new(texture_pool_arrays_len: u32, texture_pool_samplers_len: u32) -> Self {
+        Self {
+            texture_pool_arrays_len,
+            texture_pool_samplers_len,
+        }
+    }
+}
+
 /// Fragment template for the masked geometry variant.
 #[derive(Template, Debug)]
 #[template(path = "masked_wgsl/fragment.wgsl", whitespace = "minimize")]
@@ -57,6 +69,36 @@ pub struct ShaderTemplateGeometryMaskedFragment {
     /// `awsm_materials::flipbook::FLIPBOOK_CELL_WGSL`, injected so the masked
     /// cutout evaluates the SAME cell the shaded material shows.
     flipbook_cell_wgsl: String,
+}
+
+impl ShaderTemplateGeometryMaskedFragment {
+    /// Builds the masked fragment template. Shared with the combined masked +
+    /// custom-vertex template (which suppresses the Custom struct/loader so the
+    /// vertex hook's single copy is reused).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        texture_pool_arrays_len: u32,
+        texture_pool_samplers_len: u32,
+        msaa_sample_count: u32,
+        base: ShadingBase,
+        dynamic_struct_decl: String,
+        dynamic_loader_decl: String,
+        dynamic_texture_helpers: String,
+        dynamic_alpha_wgsl: String,
+        flipbook_cell_wgsl: String,
+    ) -> Self {
+        Self {
+            texture_pool_arrays_len,
+            texture_pool_samplers_len,
+            msaa_sample_count,
+            base,
+            dynamic_struct_decl,
+            dynamic_loader_decl,
+            dynamic_texture_helpers,
+            dynamic_alpha_wgsl,
+            flipbook_cell_wgsl,
+        }
+    }
 }
 
 impl TryFrom<&ShaderCacheKeyGeometryMasked> for ShaderTemplateGeometryMasked {
@@ -86,26 +128,26 @@ impl TryFrom<&ShaderCacheKeyGeometryMasked> for ShaderTemplateGeometryMasked {
         };
 
         Ok(Self {
-            bind_groups: ShaderTemplateGeometryMaskedBindGroups {
-                texture_pool_arrays_len: value.texture_pool_arrays_len,
-                texture_pool_samplers_len: value.texture_pool_samplers_len,
-            },
+            bind_groups: ShaderTemplateGeometryMaskedBindGroups::new(
+                value.texture_pool_arrays_len,
+                value.texture_pool_samplers_len,
+            ),
             vertex: ShaderTemplateGeometryVertex::new(&vertex_key),
-            fragment: ShaderTemplateGeometryMaskedFragment {
-                texture_pool_arrays_len: value.texture_pool_arrays_len,
-                texture_pool_samplers_len: value.texture_pool_samplers_len,
-                msaa_sample_count: value.msaa_samples.unwrap_or(0),
-                base: value.base,
-                dynamic_struct_decl: struct_decl,
-                dynamic_loader_decl: loader_decl,
-                dynamic_texture_helpers: texture_helpers,
-                dynamic_alpha_wgsl: alpha_wgsl,
-                flipbook_cell_wgsl: if value.base == ShadingBase::Flipbook {
+            fragment: ShaderTemplateGeometryMaskedFragment::new(
+                value.texture_pool_arrays_len,
+                value.texture_pool_samplers_len,
+                value.msaa_samples.unwrap_or(0),
+                value.base,
+                struct_decl,
+                loader_decl,
+                texture_helpers,
+                alpha_wgsl,
+                if value.base == ShadingBase::Flipbook {
                     awsm_materials::flipbook::FLIPBOOK_CELL_WGSL.to_string()
                 } else {
                     String::new()
                 },
-            },
+            ),
         })
     }
 }

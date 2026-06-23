@@ -74,45 +74,9 @@ var<private> geometry_mesh_meta: GeometryMeshMeta;
 @group(3) @binding(2) var<storage, read> skin_joint_matrices: array<mat4x4<f32>>;
 @group(3) @binding(3) var<storage, read> skin_joint_index_weights: array<f32>;
 
-// Minimal material-buffer load helpers (mirrors shared_wgsl/masked_alpha.wgsl +
-// the geometry custom-vertex bind_groups). The generated `material_data_load`
-// (loader_decl) references these; the plain shadow pass has no fragment to pull
-// `masked_alpha.wgsl` in, so declare them here for the VERTEX stage.
-fn material_load_u32(index: u32) -> u32 { return bitcast<u32>(materials[index]); }
-fn material_load_f32(index: u32) -> f32 { return bitcast<f32>(materials[index]); }
-fn material_load_texture_info_raw(index: u32) -> TextureInfoRaw {
-    return TextureInfoRaw(
-        material_load_u32(index + 0u),
-        material_load_u32(index + 1u),
-        material_load_u32(index + 2u),
-        material_load_u32(index + 3u),
-        material_load_u32(index + 4u),
-    );
-}
-fn material_load_texture_info(index: u32) -> TextureInfo {
-    return convert_texture_info(material_load_texture_info_raw(index));
-}
-
-// LOD-0 texture-pool sampler so the generated `material_sample_<name>` helpers
-// resolve. The vertex stage has no auto-derivatives, so LOD 0 is the correct,
-// cheap choice.
-fn texture_pool_sample(info: TextureInfo, attribute_uv: vec2<f32>) -> vec4<f32> {
-    let uv = texture_transform_uvs(attribute_uv, info);
-    var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    switch info.array_index {
-        {% for i in 0..texture_pool_arrays_len %}
-        case {{ i }}u: {
-            switch info.sampler_index {
-                {% for j in 0..texture_pool_samplers_len %}
-                case {{ j }}u: {
-                    color = textureSampleLevel(pool_tex_{{ i }}, pool_sampler_{{ j }}, uv, i32(info.layer_index), 0);
-                }
-                {% endfor %}
-                default: {}
-            }
-        }
-        {% endfor %}
-        default: {}
-    }
-    return color;
-}
+// Minimal material-buffer load helpers + the LOD-0 `texture_pool_sample`. The
+// generated `material_data_load` (loader_decl) + `material_sample_<name>`
+// reference these; the plain shadow pass has no fragment to pull
+// `masked_alpha.wgsl` in, so include them here for the VERTEX stage. Shared
+// verbatim with the masked fragment + geometry custom-vertex bind groups.
+{% include "shared_wgsl/material_load_helpers.wgsl" %}
