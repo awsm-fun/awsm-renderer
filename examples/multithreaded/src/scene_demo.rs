@@ -7,8 +7,11 @@
 //! render worker** — proving the threaded build can do what single-threaded
 //! does — then exercises the runtime control surface that makes it a game:
 //!
-//! - **Load** an exported scene (`test-lighting`, bundled same-origin) over the
-//!   player loader; its environment / shadows / lights / meshes all materialize.
+//! - **Load** a real editor-exported scene FILE (`scene_fixture/scene.toml`,
+//!   bundled same-origin) over the player loader — fetched in the worker,
+//!   deserialized with `scene_from_toml`; its environment / lights / meshes all
+//!   materialize. Falls back to an equivalent in-code `demo_scene()` if the
+//!   fetch fails (B4).
 //! - **Add a light at runtime** (`insert_light`) bound to a fresh transform.
 //! - **Hook it to physics** via the shared transform arena — a physics worker
 //!   sweeps the runtime light with zero `postMessage` on the hot path.
@@ -37,6 +40,10 @@ pub fn start_main() -> Result<(), JsValue> {
 
     let payload = js_sys::Object::new();
     set(&payload, "canvas", &offscreen);
+    // The render worker has a `blob:` base URL, so relative fetches can't
+    // resolve — pass the page origin so it can build the absolute scene.toml URL.
+    let origin = window.location().origin().unwrap_or_default();
+    set(&payload, "origin", &JsValue::from_str(&origin));
 
     let on_msg = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(|e: web_sys::MessageEvent| {
         let data = e.data();
@@ -71,12 +78,16 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
     let canvas: web_sys::OffscreenCanvas =
         js_sys::Reflect::get(&payload, &JsValue::from_str("canvas"))?.unchecked_into();
     let canvas_handle = canvas.clone();
+    let origin = js_sys::Reflect::get(&payload, &JsValue::from_str("origin"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
     let gpu = navigator_gpu().ok_or_else(|| JsValue::from_str("worker: no navigator.gpu"))?;
     let gpu_builder = AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_render(gpu_builder, canvas_handle).await {
+        if let Err(err) = run_render(gpu_builder, canvas_handle, origin).await {
             tracing::error!("scene demo render: {err:?}");
             let scope = js_sys::global().unchecked_into::<web_sys::DedicatedWorkerGlobalScope>();
             let msg = js_sys::Object::new();
@@ -87,9 +98,24 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Fetch a same-origin player-bundle `scene.toml` and deserialize it to a
+/// runtime [`Scene`](awsm_scene::Scene). Same-origin is required under
+/// COOP/COEP (`require-corp` blocks cross-origin fetches).
+async fn fetch_scene_file(url: &str) -> Result<awsm_scene::Scene, String> {
+    let text = gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch {url}: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("read {url}: {e}"))?;
+    awsm_scene::project_dir::scene_from_toml(&text).map_err(|e| format!("parse {url}: {e}"))
+}
+
 async fn run_render(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     canvas: web_sys::OffscreenCanvas,
+    origin: String,
 ) -> Result<(), JsValue> {
     use awsm_renderer::camera::CameraMatrices;
     use awsm_renderer::lights::Light;
@@ -105,15 +131,33 @@ async fn run_render(
     // them can then be foreign-driven by a physics worker.
     renderer.transforms.enable_shared_arena();
 
-    // ── Build a current-format Scene + load it via the PLAYER path ──────────
-    // The repo ships no current-format scene fixture to bundle, so we construct
-    // an equivalent runtime `Scene` in code and run the SAME
-    // `load_scene_for_player` a shipped game uses. The point is that the player
-    // loader runs IN THE WORKER (materials, primitive meshes, lights,
-    // environment, the commit transaction) — per-frame state then rides Layer 2
-    // (the arena) below. A scene with external assets would pass a same-origin
-    // async `SceneAssets` fetcher instead of the empty map.
-    let scene = demo_scene();
+    // ── Load a real editor-exported Scene FILE via the PLAYER path (B4) ──────
+    // The shipped flow: the editor's `export_player_bundle` emits `scene.toml`
+    // (a serialized runtime `awsm_scene::Scene` from `project_to_scene`); a game
+    // fetches it and runs `load_scene_for_player`. We do exactly that IN THE
+    // WORKER — fetch the bundled `scene.toml` same-origin, deserialize with
+    // `awsm_scene::project_dir::scene_from_toml`, and load it (materials,
+    // primitive meshes, lights, environment, the commit transaction). Per-frame
+    // state then rides Layer 2 (the arena) below. If the fetch/parse fails we
+    // fall back to the equivalent in-code `demo_scene()` so the demo still runs.
+    // (A scene with external assets would pass a same-origin async `SceneAssets`
+    // fetcher instead of the empty map; this primitives-only fixture needs none.)
+    let scene_url = format!("{}/scene.toml", origin.trim_end_matches('/'));
+    let scene = match fetch_scene_file(&scene_url).await {
+        Ok(s) => {
+            tracing::info!(
+                "scene demo: loaded bundled scene FILE {scene_url} ({} nodes)",
+                s.nodes.len()
+            );
+            s
+        }
+        Err(e) => {
+            tracing::warn!(
+                "scene demo: scene.toml fetch/parse failed ({e}); using in-code demo_scene()"
+            );
+            demo_scene()
+        }
+    };
     let assets: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
     let loaded = awsm_scene_loader::load_scene_for_player(&mut renderer, &scene, &assets, |_| {})
         .await

@@ -421,6 +421,14 @@ pub enum EditorCommand {
     /// Inverse: restore the prior source.
     SetCustomMaterialAlphaWgsl { id: AssetId, wgsl: String },
 
+    /// Replace a custom material's **third** (vertex-displacement) WGSL window —
+    /// the body wrapped into `custom_displace_vertex` and compiled into the
+    /// geometry/shadow raster so the material moves its own vertices in LOCAL
+    /// space (post-morph, pre-skin). Empty clears it (→ shared fast pipeline).
+    /// Sets the live `vertex_wgsl` field (auto-register observes + recompiles).
+    /// Inverse: restore the prior source.
+    SetCustomMaterialVertexWgsl { id: AssetId, wgsl: String },
+
     /// Set the scene environment (skybox + IBL). Stored in `scene.environment`
     /// (serialized to TOML); the `env_sync` bridge uploads the cubemaps as a
     /// side effect. Inverse: restore the prior environment.
@@ -1184,6 +1192,7 @@ impl EditorCommand {
             EditorCommand::RegisterMaterial { .. } => "Register material",
             EditorCommand::SetCustomMaterialWgsl { .. } => "Edit shader",
             EditorCommand::SetCustomMaterialAlphaWgsl { .. } => "Edit alpha shader",
+            EditorCommand::SetCustomMaterialVertexWgsl { .. } => "Edit vertex shader",
             EditorCommand::AssignMaterial { .. } => "Assign material",
             EditorCommand::UpdateBuiltinMaterial { .. } => "Edit material variant",
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",

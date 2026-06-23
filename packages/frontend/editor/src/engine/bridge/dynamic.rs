@@ -438,6 +438,7 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
 
     let main_wgsl = mat.wgsl.get_cloned();
     let alpha_body = mat.alpha_wgsl.get_cloned();
+    let vertex_body = mat.vertex_wgsl.get_cloned();
     let alpha_mode = convert_alpha(mat.alpha.get(), mat.cutoff.get() as f32);
     // The 2nd ("alpha-only") WGSL window — only meaningful for MASK materials.
     // Empty body → `None` (no masked variant built).
@@ -452,8 +453,15 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
     // — not just the main WGSL. Fold in the alpha mode/cutoff and the alpha-only
     // WGSL, else editing only the cutout (or toggling Mask) is treated as a no-op
     // and the masked variant never (re)builds.
+    // The 3rd ("vertex") WGSL window — empty body → `None` (shared fast
+    // pipeline; no custom-vertex variant built).
+    let vertex_wgsl = if vertex_body.trim().is_empty() {
+        None
+    } else {
+        Some(vertex_body.clone())
+    };
     let wgsl_hash = hash_str(&format!(
-        "{main_wgsl}\u{0}alpha_mode={alpha_mode:?}\u{0}alpha_wgsl={alpha_body}"
+        "{main_wgsl}\u{0}alpha_mode={alpha_mode:?}\u{0}alpha_wgsl={alpha_body}\u{0}vertex_wgsl={vertex_body}"
     ));
 
     MaterialRegistration {
@@ -472,6 +480,9 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
         shader_includes: includes_from_keys(&mat.shader_includes.get_cloned()),
         fragment_inputs: inputs_from_keys(&mat.fragment_inputs.get_cloned()),
         alpha_wgsl,
+        // The 3rd ("vertex") WGSL window — driven by the editor's vertex window
+        // + MCP. The body is folded into `wgsl_hash` above so an edit recompiles.
+        wgsl_vertex: vertex_wgsl,
     }
 }
 

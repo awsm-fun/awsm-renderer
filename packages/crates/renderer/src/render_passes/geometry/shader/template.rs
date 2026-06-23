@@ -50,16 +50,35 @@ pub struct ShaderTemplateGeometryVertex {
     /// uniform binding is already populated (set via dynamic offset
     /// by the CPU) and no shader-side load is needed.
     meta_storage_array: bool,
+    /// `true` for a per-material custom-vertex pipeline — renders the gated
+    /// `custom_displace_vertex` hook (the struct/loader/body fields below feed
+    /// it). Driven by the cache key's `dynamic_vertex_shader`; `false` (the
+    /// default for every shared-pipeline mesh) keeps the output byte-identical.
+    has_custom_vertex: bool,
+    /// The author's WGSL displacement body, wrapped into
+    /// `custom_displace_vertex` at render time. Empty unless `has_custom_vertex`.
+    dynamic_wgsl_vertex: String,
+    /// Auto-generated `struct MaterialData { ... }` decl for the hook.
+    /// Empty unless `has_custom_vertex`.
+    dynamic_vertex_struct_decl: String,
+    /// Auto-generated `material_data_load` accessor for the hook.
+    /// Empty unless `has_custom_vertex`.
+    dynamic_vertex_loader_decl: String,
 }
 
 impl ShaderTemplateGeometryVertex {
     /// Creates a vertex shader template from the cache key.
     pub fn new(cache_key: &ShaderCacheKeyGeometry) -> Self {
+        let dv = cache_key.dynamic_vertex_shader.as_ref();
         Self {
             max_morph_unroll: 2,
             max_skin_unroll: 2,
             instancing_transforms: cache_key.instancing_transforms,
             meta_storage_array: cache_key.meta_storage_array,
+            has_custom_vertex: dv.is_some(),
+            dynamic_wgsl_vertex: dv.map(|d| d.wgsl_vertex.clone()).unwrap_or_default(),
+            dynamic_vertex_struct_decl: dv.map(|d| d.struct_decl.clone()).unwrap_or_default(),
+            dynamic_vertex_loader_decl: dv.map(|d| d.loader_decl.clone()).unwrap_or_default(),
         }
     }
 }

@@ -356,6 +356,18 @@ impl ShaderIncludes {
             acc = next;
         }
     }
+
+    /// Mask `self` to the subset of modules a custom **vertex** hook may use:
+    /// `math` / `camera` / `textures` / `vertex_color`. The vertex stage has no
+    /// lighting / IBL / shadows / color-space / BRDF concerns — those are
+    /// fragment-only — so force every other module off, then resolve the
+    /// transitive closure of what remains (e.g. `textures` pulls in `math`).
+    /// Sibling of the fragment side's `ShaderIncludeFlags::for_custom`.
+    pub fn for_vertex(self) -> Self {
+        let allowed =
+            Self::BIT_MATH | Self::BIT_CAMERA | Self::BIT_TEXTURES | Self::BIT_VERTEX_COLOR;
+        Self(self.0 & allowed).resolve()
+    }
 }
 
 impl core::ops::BitOr for ShaderIncludes {
@@ -459,6 +471,27 @@ impl core::ops::BitOr for FragmentInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn for_vertex_masks_to_vertex_safe_modules() {
+        // Fragment-only modules are forced off; vertex-safe ones survive.
+        let v = ShaderIncludes::all().for_vertex();
+        assert!(!v.contains(ShaderIncludes::APPLY_LIGHTING));
+        assert!(!v.contains(ShaderIncludes::BRDF));
+        assert!(!v.contains(ShaderIncludes::SHADOWS));
+        assert!(!v.contains(ShaderIncludes::IBL));
+        assert!(!v.contains(ShaderIncludes::MATERIAL_COLOR_CALC));
+        // math/camera survive (camera resolves to include math via deps).
+        assert!(v.contains(ShaderIncludes::MATH));
+        assert!(v.contains(ShaderIncludes::CAMERA));
+        // textures requested → kept (and pulls in math through resolve()).
+        let tex = ShaderIncludes::TEXTURES.for_vertex();
+        assert!(tex.contains(ShaderIncludes::TEXTURES));
+        // a fragment-only request alone masks to (effectively) nothing extra.
+        assert!(!ShaderIncludes::IBL
+            .for_vertex()
+            .contains(ShaderIncludes::IBL));
+    }
 
     #[test]
     fn key_table_is_single_source_of_truth() {

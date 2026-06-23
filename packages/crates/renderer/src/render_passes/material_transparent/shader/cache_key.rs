@@ -5,6 +5,7 @@ use awsm_materials::MaterialShaderId;
 use crate::{
     dynamic_materials::ShadingBase,
     render_passes::{
+        geometry::shader::cache_key::DynamicVertexShaderInfo,
         material_opaque::shader::cache_key::DynamicShaderInfo,
         shader_cache_key::ShaderCacheKeyRenderPass,
         shared::material::cache_key::ShaderMaterialVertexAttributes,
@@ -58,6 +59,15 @@ pub struct ShaderCacheKeyMaterialTransparent {
     /// when `dynamic_shader_id.is_some()`. The fragment template
     /// renders it into a `custom_shade_transparent_dynamic` function.
     pub dynamic_shader: Option<DynamicShaderInfo>,
+    /// `Some` → this transparent mesh's material declared a
+    /// `custom_displace_vertex` hook (`wgsl_vertex`): the transparent vertex
+    /// shader compiles the displacement hook (the SAME auto-generated
+    /// `MaterialData` struct/loader + author body the geometry custom-vertex
+    /// path uses). `None` → the shared transparent vertex path (byte-identical
+    /// to today for every transparent mesh without a custom-vertex material).
+    /// Independent of `dynamic_shader` (the fragment hook): a material can carry
+    /// either, both, or neither. See [`DynamicVertexShaderInfo`].
+    pub dynamic_vertex_shader: Option<DynamicVertexShaderInfo>,
     /// GPU light-culling froxel slice count baked into the consumer
     /// shader (matches the cull pass's WGSL `SLICE_COUNT`). The
     /// shading-time froxel index calculation constant-folds this.

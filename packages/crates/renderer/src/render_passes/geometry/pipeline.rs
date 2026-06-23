@@ -193,6 +193,8 @@ impl GeometryPipelines {
                     instancing_transforms: instancing,
                     meta_storage_array,
                     msaa_samples,
+                    // The shared fast geometry pipelines — never custom-vertex.
+                    dynamic_vertex_shader: None,
                 }
                 .into(),
             );
@@ -279,6 +281,8 @@ impl GeometryPipelines {
                 instancing_transforms: instancing,
                 meta_storage_array,
                 msaa_samples,
+                // The shared fast geometry pipelines — never custom-vertex.
+                dynamic_vertex_shader: None,
             };
             let shader_key = ctx.shaders.get_key(ctx.gpu, shader_cache).await?;
             for &cull_mode in CULL_MODES {

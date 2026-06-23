@@ -250,6 +250,10 @@ fn registration_from_definition(
         // the masked visibility-raster variant so the player rebuilds the
         // cutout just like the editor.
         alpha_wgsl: alpha_wgsl.filter(|s| !s.trim().is_empty()),
+        // The player-side custom-vertex sidecar (a `material.vertex.wgsl`,
+        // parallel to `material.wgsl`) is wired once the editor export emits it
+        // (CV3). `None` until then → the material uses the shared fast pipeline.
+        wgsl_vertex: None,
     }
 }
 

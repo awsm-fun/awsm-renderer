@@ -106,6 +106,12 @@ pub struct CustomMaterial {
     /// transmission. Empty → no masked variant is built (the mesh renders solid
     /// through the opaque path). See `MaterialRegistration::alpha_wgsl`.
     pub alpha_wgsl: Mutable<String>,
+    /// The **third**, vertex-displacement WGSL window. The body is wrapped into
+    /// `custom_displace_vertex` and compiled into the geometry/shadow raster so
+    /// the material moves its own vertices in LOCAL space (post-morph,
+    /// pre-skin). Empty → no custom vertex (shared fast pipeline). See
+    /// `MaterialRegistration::wgsl_vertex`.
+    pub vertex_wgsl: Mutable<String>,
     pub alpha: Mutable<AlphaMode>,
     pub cutoff: Mutable<f64>,
     pub double_sided: Mutable<bool>,
@@ -190,6 +196,7 @@ impl CustomMaterial {
             builtin: Mutable::new(None),
             wgsl: Mutable::new(NEW_MATERIAL_WGSL.to_string()),
             alpha_wgsl: Mutable::new(String::new()),
+            vertex_wgsl: Mutable::new(String::new()),
             alpha: Mutable::new(AlphaMode::Opaque),
             cutoff: Mutable::new(0.5),
             double_sided: Mutable::new(false),

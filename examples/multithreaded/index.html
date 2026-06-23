@@ -24,5 +24,10 @@
     <link data-trunk rel="copy-file" href="../../media/glTF-Sample-Assets/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb" />
     <link data-trunk rel="copy-file" href="../../media/glTF-Sample-Assets/Models/CesiumMan/glTF-Binary/CesiumMan.glb" />
     <link data-trunk rel="copy-file" href="../../media/glTF-Sample-Assets/Models/AnimatedMorphCube/glTF-Binary/AnimatedMorphCube.glb" />
+    <!-- B4: a real editor-exported player bundle (scene.toml), bundled
+         same-origin so `?demo=scene` loads a runtime scene FILE through the
+         player loader (fetch -> scene_from_toml -> load_scene_for_player),
+         closer to the shipped path than building a Scene in code. -->
+    <link data-trunk rel="copy-file" href="scene_fixture/scene.toml" />
 </body>
 </html>

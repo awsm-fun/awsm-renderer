@@ -14,7 +14,9 @@ use crate::{
     render::RenderContext,
     render_passes::{
         geometry::{
-            bind_group::GeometryBindGroups, masked_bind_group::GeometryMaskedBindGroup,
+            bind_group::GeometryBindGroups, custom_vertex_pipeline::GeometryCustomVertexPipelines,
+            masked_bind_group::GeometryMaskedBindGroup,
+            masked_custom_vertex_pipeline::GeometryMaskedCustomVertexPipelines,
             masked_pipeline::GeometryMaskedPipelines, pipeline::GeometryPipelines,
         },
         RenderPassInitContext,
@@ -43,6 +45,18 @@ pub struct GeometryRenderPass {
     /// Populated by the texture-finalize flow (built-in) + the dynamic
     /// scheduler (custom); empty until a masked material needs one.
     pub masked_pipelines: GeometryMaskedPipelines,
+    /// Lazy per-`shader_id` pool of custom-vertex pipelines. Populated by the
+    /// texture-finalize flow for every registered material whose
+    /// `vertex_shader_info_for` is `Some`; empty until a custom-vertex material
+    /// needs one. Reuses `masked_bind_group` for group 0 (the custom-vertex
+    /// `bind_groups.wgsl` declares the same bindings).
+    pub custom_vertex_pipelines: GeometryCustomVertexPipelines,
+    /// Lazy per-`shader_id` pool of COMBINED masked + custom-vertex pipelines —
+    /// for a material that is BOTH glTF `MASK` AND carries a `wgsl_vertex` body.
+    /// Populated by the texture-finalize flow; empty until such a material needs
+    /// one. Reuses `masked_bind_group` for group 0 (alpha-test fragment +
+    /// displacement vertex). Routed with highest precedence in pass 4.
+    pub masked_custom_vertex_pipelines: GeometryMaskedCustomVertexPipelines,
 }
 
 impl GeometryRenderPass {
@@ -57,12 +71,18 @@ impl GeometryRenderPass {
         let pipelines = GeometryPipelines::new(ctx, &bind_groups, multisampled_geometry).await?;
         let masked_bind_group = GeometryMaskedBindGroup::new(ctx).await?;
         let masked_pipelines = GeometryMaskedPipelines::new(ctx, &masked_bind_group, &bind_groups)?;
+        let custom_vertex_pipelines =
+            GeometryCustomVertexPipelines::new(ctx, &masked_bind_group, &bind_groups)?;
+        let masked_custom_vertex_pipelines =
+            GeometryMaskedCustomVertexPipelines::new(ctx, &masked_bind_group, &bind_groups)?;
 
         Ok(Self {
             bind_groups,
             pipelines,
             masked_bind_group,
             masked_pipelines,
+            custom_vertex_pipelines,
+            masked_custom_vertex_pipelines,
         })
     }
 
@@ -160,10 +180,21 @@ impl GeometryRenderPass {
         render_pass.set_bind_group(3, self.bind_groups.animation.get_bind_group()?, None)?;
 
         // Pass 1 — non-masked meshes (group 0 = camera, bound above). A mesh
-        // with a compiled masked variant is skipped here and drawn in pass 2.
+        // with a compiled masked / custom-vertex / combined variant is skipped
+        // here and drawn in pass 2 / pass 3 / pass 4 respectively. (The combined
+        // key is mutually exclusive with the masked + custom-vertex keys — see
+        // `collect_renderables`' precedence — so a combined mesh has those two
+        // `None`, hence the explicit combined check here.)
         let mut last_render_pipeline_key = None;
         for renderable in renderables {
-            if renderable.geometry_masked_render_pipeline_key().is_some() {
+            if renderable.geometry_masked_render_pipeline_key().is_some()
+                || renderable
+                    .geometry_custom_vertex_render_pipeline_key()
+                    .is_some()
+                || renderable
+                    .geometry_masked_custom_vertex_render_pipeline_key()
+                    .is_some()
+            {
                 continue;
             }
             match renderable.geometry_render_pipeline_key() {
@@ -219,6 +250,79 @@ impl GeometryRenderPass {
                         &render_pass,
                         &self.bind_groups,
                         true,
+                    )?;
+                }
+            }
+        }
+
+        // Pass 3 — custom-vertex meshes. Same group-0 rebind as pass 2 (the
+        // custom-vertex pipeline reuses the masked/augmented group-0 layout, so
+        // the hook's `material_data_load` resolves the `materials` buffer +
+        // texture pool); select the per-material custom-vertex pipeline and bind
+        // the shared zero uv0 buffer at the uv0 slot. A mesh drawn here was
+        // skipped in pass 1 (above). When its variant hasn't compiled yet the
+        // key is `None`, so the mesh stays in pass 1 and renders un-displaced —
+        // never dropped.
+        let any_custom_vertex = renderables
+            .iter()
+            .any(|r| r.geometry_custom_vertex_render_pipeline_key().is_some());
+        if any_custom_vertex {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+                render_pass.set_bind_group(0, masked_group0, None)?;
+                let uv0_zero_buffer = self.custom_vertex_pipelines.uv0_zero_buffer();
+                let mut last_cv_key = None;
+                for renderable in renderables {
+                    let Some(cv_key) = renderable.geometry_custom_vertex_render_pipeline_key()
+                    else {
+                        continue;
+                    };
+                    if last_cv_key != Some(cv_key) {
+                        render_pass.set_pipeline(ctx.pipelines.render.get(cv_key)?);
+                        last_cv_key = Some(cv_key);
+                    }
+                    renderable.push_geometry_custom_vertex_pass_commands(
+                        ctx,
+                        &render_pass,
+                        &self.bind_groups,
+                        uv0_zero_buffer,
+                    )?;
+                }
+            }
+        }
+
+        // Pass 4 — COMBINED masked + custom-vertex meshes (a material that is
+        // BOTH Mask AND custom-vertex). Same group-0 rebind + zero-uv0 draw as
+        // pass 3, but with the combined pipeline (displaced silhouette AND alpha
+        // cutout). A mesh drawn here was skipped in passes 1/2/3 (its masked +
+        // custom-vertex keys are `None` by precedence). When the combined variant
+        // hasn't compiled yet the key is `None`, so the mesh falls back to the
+        // plain custom-vertex / masked / solid bucket per `collect_renderables`'
+        // precedence — never dropped.
+        let any_combined = renderables.iter().any(|r| {
+            r.geometry_masked_custom_vertex_render_pipeline_key()
+                .is_some()
+        });
+        if any_combined {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+                render_pass.set_bind_group(0, masked_group0, None)?;
+                let uv0_zero_buffer = self.masked_custom_vertex_pipelines.uv0_zero_buffer();
+                let mut last_key = None;
+                for renderable in renderables {
+                    let Some(key) = renderable.geometry_masked_custom_vertex_render_pipeline_key()
+                    else {
+                        continue;
+                    };
+                    if last_key != Some(key) {
+                        render_pass.set_pipeline(ctx.pipelines.render.get(key)?);
+                        last_key = Some(key);
+                    }
+                    // Same draw shape as the plain custom-vertex pass (zero uv0
+                    // buffer at slot 1, uniform-meta non-instanced indexed draw).
+                    renderable.push_geometry_custom_vertex_pass_commands(
+                        ctx,
+                        &render_pass,
+                        &self.bind_groups,
+                        uv0_zero_buffer,
                     )?;
                 }
             }

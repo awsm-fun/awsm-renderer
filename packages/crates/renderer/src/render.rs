@@ -110,6 +110,47 @@ impl AwsmRenderer {
         }
     }
 
+    /// Capture the just-rendered frame as PNG bytes.
+    ///
+    /// MUST be called immediately after [`Self::render`], before the browser
+    /// presents: a WebGPU swapchain texture is only valid + populated until the
+    /// next `getCurrentTexture` (the following frame returns a fresh, blank
+    /// one). This is the robust replacement for `OffscreenCanvas.convertToBlob`,
+    /// which Chrome rejects on a WebGPU canvas with `NotReadableError` — the
+    /// swapchain image isn't host-readable post-present. Here we GPU-copy the
+    /// current context texture via `copyTextureToBuffer` → `mapAsync` (256-byte
+    /// row-stride handled by the exporter) instead.
+    ///
+    /// Requires the canvas configured with `COPY_SRC` usage (see
+    /// `CanvasConfiguration::with_usage`). The single-threaded model-viewer /
+    /// editor and the worker remote path share this one entry point.
+    ///
+    /// The returned future captures the texture handle + a cloned GPU handle up
+    /// front, so the caller can drop its `&self`/`RefCell` borrow before
+    /// awaiting; the `copyTextureToBuffer` is encoded + submitted on first poll
+    /// (a microtask, still pre-present) and only the trailing `mapAsync` readback
+    /// actually suspends.
+    #[cfg(feature = "texture-export")]
+    pub fn capture_frame(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>>>> {
+        // Snapshot the swapchain SYNCHRONOUSLY here (the copyTextureToBuffer is
+        // encoded + submitted now, before this render callback yields and the
+        // canvas presents/expires the texture); only the mapAsync readback +
+        // PNG encode are deferred into the returned future.
+        let readback = (|| {
+            let texture = self.gpu.current_context_texture()?;
+            let (width, height) = self.gpu.current_context_texture_size()?;
+            let format = self.gpu.current_context_format();
+            self.gpu
+                .copy_texture_for_readback(&texture, width, height, 0, format)
+        })();
+        Box::pin(async move {
+            let bytes = readback?.finish_png_opaque().await?;
+            Ok::<Vec<u8>, AwsmError>(bytes)
+        })
+    }
+
     /// Clears the framebuffer to the clear-color and presents — the
     /// `scene_committed == false` render path. A model-tests/editor loading
     /// overlay (CSS / HUD) draws on top of this clean frame. Never compiles.
@@ -1711,6 +1752,8 @@ impl AwsmRenderer {
                 .then(|| self.materials.shader_id(mesh.material_key));
             let dynamic_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
+            let dynamic_vertex_shader =
+                dynamic_shader_id.and_then(|id| self.dynamic_materials.vertex_shader_info_for(id));
             requests.push(TransparentMeshPipelineRequest {
                 mesh,
                 mesh_key,
@@ -1720,6 +1763,7 @@ impl AwsmRenderer {
                 pbr_features,
                 dynamic_shader_id,
                 dynamic_shader,
+                dynamic_vertex_shader,
             });
         }
         if requests.is_empty() {

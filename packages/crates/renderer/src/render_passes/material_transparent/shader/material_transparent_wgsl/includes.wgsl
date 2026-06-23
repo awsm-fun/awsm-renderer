@@ -18,6 +18,27 @@
 {% include "shared_wgsl/vertex/transform.wgsl" %}
 /*************** END transform.wgsl ******************/
 
+{% if has_custom_vertex %}
+/*************** START custom_vertex.wgsl ******************/
+// The `custom_displace_vertex` wrapper is defined here (before its
+// `apply_vertex.wgsl` caller). `material.wgsl` (below) provides the
+// `material_load_*` helpers the loader calls + the texture pool — all already
+// VERTEX-visible on the transparent main bind group; WGSL module scope is
+// order-independent, so forward references resolve.
+//
+// A custom-vertex transparent material is `base == Custom`, so the FRAGMENT
+// template already emits the auto-generated `MaterialData` struct +
+// `material_data_load` accessor (the SAME byte layout both stages read).
+// Re-emitting them here would be a `redefinition of MaterialData`, so the vertex
+// block only emits them for a non-Custom base (which has no fragment-side decls).
+{% if base != ShadingBase::Custom %}
+{{ dynamic_vertex_struct_decl|safe }}
+{{ dynamic_vertex_loader_decl|safe }}
+{% endif %}
+{% include "shared_wgsl/vertex/custom_vertex.wgsl" %}
+/*************** END custom_vertex.wgsl ******************/
+{% endif %}
+
 /*************** START morph.wgsl ******************/
 {% include "shared_wgsl/vertex/morph.wgsl" %}
 /*************** END morph.wgsl ******************/

@@ -1900,6 +1900,25 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::SetCustomMaterialVertexWgsl { id, wgsl } => {
+                // Replace a material's 3rd vertex-displacement WGSL window.
+                // Setting the live `vertex_wgsl` field marks the material a draft
+                // + bumps the recompile rev (via mark_material_draft), so the
+                // auto-register observer recompiles the custom-vertex pipeline.
+                match find_material(&self.custom_materials, id) {
+                    Some(mat) => {
+                        let prev = mat.vertex_wgsl.get_cloned();
+                        mat.vertex_wgsl.set(wgsl);
+                        mark_material_draft(&mat);
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetCustomMaterialVertexWgsl {
+                            id,
+                            wgsl: prev,
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::AssignMaterial { node, material } => {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {

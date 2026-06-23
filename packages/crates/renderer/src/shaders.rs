@@ -18,7 +18,11 @@ use crate::{
         shader_template::ShaderTemplateRenderPass,
     },
     shadows::shader::{
-        cache_key::ShaderCacheKeyShadow, masked_cache_key::ShaderCacheKeyShadowMasked,
+        cache_key::ShaderCacheKeyShadow, custom_vertex_cache_key::ShaderCacheKeyShadowCustomVertex,
+        custom_vertex_template::ShaderTemplateShadowCustomVertex,
+        masked_cache_key::ShaderCacheKeyShadowMasked,
+        masked_custom_vertex_cache_key::ShaderCacheKeyShadowMaskedCustomVertex,
+        masked_custom_vertex_template::ShaderTemplateShadowMaskedCustomVertex,
         masked_template::ShaderTemplateShadowMasked, template::ShaderTemplateShadow,
     },
 };
@@ -348,6 +352,14 @@ pub enum ShaderCacheKey {
     /// Masked (alpha-tested) shadow caster — cutout / hole-shaped shadows.
     /// Per-`shader_id` specialized; see [`ShaderCacheKeyShadowMasked`].
     ShadowMasked(ShaderCacheKeyShadowMasked),
+    /// Custom-vertex shadow caster — displaced shadow that matches the lit
+    /// geometry (no detached shadow). Per-`shader_id` specialized; see
+    /// [`ShaderCacheKeyShadowCustomVertex`].
+    ShadowCustomVertex(ShaderCacheKeyShadowCustomVertex),
+    /// Combined masked + custom-vertex shadow caster — a displaced AND cutout
+    /// shadow. Per-`shader_id` specialized; see
+    /// [`ShaderCacheKeyShadowMaskedCustomVertex`].
+    ShadowMaskedCustomVertex(ShaderCacheKeyShadowMaskedCustomVertex),
     /// Fat-line shader (renderer-built editor / debug overlays).
     /// Hoisted out of `RenderPass` for the same reason as `Picker` —
     /// it's a top-level renderer concern, not a per-pass variant.
@@ -410,6 +422,8 @@ pub enum ShaderTemplate {
     Picker(ShaderTemplatePicker),
     Shadow(ShaderTemplateShadow),
     ShadowMasked(ShaderTemplateShadowMasked),
+    ShadowCustomVertex(ShaderTemplateShadowCustomVertex),
+    ShadowMaskedCustomVertex(ShaderTemplateShadowMaskedCustomVertex),
     Line(ShaderTemplateLine),
 }
 
@@ -426,6 +440,12 @@ impl TryFrom<&ShaderCacheKey> for ShaderTemplate {
             ShaderCacheKey::ShadowMasked(cache_key) => {
                 Ok(ShaderTemplate::ShadowMasked(cache_key.try_into()?))
             }
+            ShaderCacheKey::ShadowCustomVertex(cache_key) => {
+                Ok(ShaderTemplate::ShadowCustomVertex(cache_key.try_into()?))
+            }
+            ShaderCacheKey::ShadowMaskedCustomVertex(cache_key) => Ok(
+                ShaderTemplate::ShadowMaskedCustomVertex(cache_key.try_into()?),
+            ),
             ShaderCacheKey::Line(cache_key) => Ok(ShaderTemplate::Line(cache_key.try_into()?)),
         }
     }
@@ -453,6 +473,8 @@ impl ShaderTemplate {
             ShaderTemplate::Picker(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Shadow(tmpl) => tmpl.debug_label(),
             ShaderTemplate::ShadowMasked(tmpl) => tmpl.debug_label(),
+            ShaderTemplate::ShadowCustomVertex(tmpl) => tmpl.debug_label(),
+            ShaderTemplate::ShadowMaskedCustomVertex(tmpl) => tmpl.debug_label(),
             ShaderTemplate::Line(tmpl) => tmpl.debug_label(),
         }
     }
@@ -464,6 +486,8 @@ impl ShaderTemplate {
             ShaderTemplate::Picker(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Shadow(tmpl) => tmpl.into_source()?,
             ShaderTemplate::ShadowMasked(tmpl) => tmpl.into_source()?,
+            ShaderTemplate::ShadowCustomVertex(tmpl) => tmpl.into_source()?,
+            ShaderTemplate::ShadowMaskedCustomVertex(tmpl) => tmpl.into_source()?,
             ShaderTemplate::Line(tmpl) => tmpl.into_source()?,
         };
         //tracing::info!("{:#?}", tmpl);

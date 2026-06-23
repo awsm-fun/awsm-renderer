@@ -110,6 +110,9 @@ impl MaterialTransparentPipelines {
         dynamic_shader: Option<
             crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo,
         >,
+        dynamic_vertex_shader: Option<
+            crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo,
+        >,
     ) -> Result<RenderPipelineKey> {
         let keys = self
             .set_render_pipeline_keys_batched(
@@ -123,6 +126,7 @@ impl MaterialTransparentPipelines {
                     pbr_features: material_pbr_features,
                     dynamic_shader_id,
                     dynamic_shader,
+                    dynamic_vertex_shader,
                 }),
                 shaders,
                 pipelines,
@@ -188,6 +192,7 @@ impl MaterialTransparentPipelines {
                 dispatch_hash: 0,
                 dynamic_shader_id: req.dynamic_shader_id,
                 dynamic_shader: req.dynamic_shader.clone(),
+                dynamic_vertex_shader: req.dynamic_vertex_shader.clone(),
                 instancing_transforms: req.mesh.instanced,
                 // GPU light-culling consumer-side cache key field
                 // (froxel slice count baked into the z-slice math).
@@ -245,6 +250,7 @@ impl MaterialTransparentPipelines {
                 dispatch_hash: 0,
                 dynamic_shader_id: req.dynamic_shader_id,
                 dynamic_shader: req.dynamic_shader.clone(),
+                dynamic_vertex_shader: req.dynamic_vertex_shader.clone(),
                 instancing_transforms: req.mesh.instanced,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             };
@@ -335,6 +341,7 @@ impl MaterialTransparentPipelines {
                 dispatch_hash: 0,
                 dynamic_shader_id: req.dynamic_shader_id,
                 dynamic_shader: req.dynamic_shader.clone(),
+                dynamic_vertex_shader: req.dynamic_vertex_shader.clone(),
                 instancing_transforms: req.mesh.instanced,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             });
@@ -533,6 +540,14 @@ pub struct TransparentMeshPipelineRequest<'a> {
     /// WGSL "unresolved type". Build via `DynamicMaterials::shader_info_for`.
     pub dynamic_shader:
         Option<crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo>,
+    /// For a mesh whose material declared a `custom_displace_vertex` hook: the
+    /// auto-generated `MaterialData` struct decl + loader + author vertex body
+    /// (byte-identical to the fragment hook's). `None` for every transparent
+    /// mesh without a custom-vertex body → the shared fast vertex path. Build
+    /// via `DynamicMaterials::vertex_shader_info_for`. Independent of
+    /// `dynamic_shader` (the fragment hook).
+    pub dynamic_vertex_shader:
+        Option<crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo>,
 }
 
 fn vertex_buffer_layouts(mesh: &Mesh, buffer_info: &MeshBufferInfo) -> Vec<VertexBufferLayout> {

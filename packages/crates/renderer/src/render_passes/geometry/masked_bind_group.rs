@@ -169,11 +169,23 @@ fn build_layout_key(
         visibility_fragment: true,
         visibility_compute: false,
     };
-    let storage_f = || BindGroupLayoutCacheKeyEntry {
+    // Vertex+fragment storage. The CUSTOM-VERTEX geometry variant reuses THIS
+    // layout (its `bind_groups.wgsl` includes the masked decls verbatim) and its
+    // vertex stage runs `material_data_load` (reads `materials`) +
+    // `texture_pool_sample` (reads `texture_transforms` + the pool). Since CV4
+    // (full multi-UV ABI) the custom-vertex VERTEX hook also reads
+    // `material_mesh_metas` (for `uv_set_count` / `uv_sets_index` / stride) and
+    // `visibility_data` (the per-vertex UV bytes, via `_mask_uv_per_vertex`) to
+    // build the hook's `input.uv` array — so those two bindings need VERTEX
+    // visibility too, else the vertex stage reads zero and `uv_set_count`
+    // collapses to 0 (smooth, un-displaced; `input.uv == (0,0)`). The masked
+    // pipeline doesn't use the vertex access — extra visibility on a binding is
+    // inert for a stage that doesn't read it, so the masked path is unaffected.
+    let storage_vf = || BindGroupLayoutCacheKeyEntry {
         resource: BindGroupLayoutResource::Buffer(
             BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
         ),
-        visibility_vertex: false,
+        visibility_vertex: true,
         visibility_fragment: true,
         visibility_compute: false,
     };
@@ -181,10 +193,10 @@ fn build_layout_key(
     let mut entries = vec![
         uniform_vf(), // camera
         uniform_vf(), // frame_globals
-        storage_f(),  // materials
-        storage_f(),  // material_mesh_metas
-        storage_f(),  // visibility_data (merged pool)
-        storage_f(),  // texture_transforms
+        storage_vf(), // materials (read by the custom-vertex vertex hook)
+        storage_vf(), // material_mesh_metas (read by the custom-vertex vertex hook for UV meta)
+        storage_vf(), // visibility_data — per-vertex UVs read by the custom-vertex vertex hook
+        storage_vf(), // texture_transforms (read by the custom-vertex vertex hook)
     ];
     debug_assert_eq!(entries.len() as u32, MASKED_GROUP0_BUFFER_BINDINGS);
 
@@ -195,7 +207,8 @@ fn build_layout_key(
                     .with_view_dimension(TextureViewDimension::N2dArray)
                     .with_sample_type(TextureSampleType::Float),
             ),
-            visibility_vertex: false,
+            // Vertex+fragment: the custom-vertex vertex hook can sample the pool.
+            visibility_vertex: true,
             visibility_fragment: true,
             visibility_compute: false,
         });
@@ -205,7 +218,8 @@ fn build_layout_key(
             resource: BindGroupLayoutResource::Sampler(
                 SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
             ),
-            visibility_vertex: false,
+            // Vertex+fragment: paired with the vertex-visible pool textures above.
+            visibility_vertex: true,
             visibility_fragment: true,
             visibility_compute: false,
         });

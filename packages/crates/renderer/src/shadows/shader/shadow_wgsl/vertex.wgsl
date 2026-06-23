@@ -17,6 +17,13 @@ struct ApplyVertexInput {
     {% endif %}
 };
 
+{% if has_custom_vertex %}
+{{ dynamic_vertex_struct_decl|safe }}
+{{ dynamic_vertex_loader_decl|safe }}
+{% include "shared_wgsl/frame_globals.wgsl" %}
+{% include "shared_wgsl/vertex/custom_vertex.wgsl" %}
+{% endif %}
+
 {% include "shared_wgsl/vertex/morph.wgsl" %}
 {% include "shared_wgsl/vertex/skin.wgsl" %}
 
@@ -68,6 +75,23 @@ fn vert_main(
     if geometry_mesh_meta.morph_geometry_target_len != 0u {
         vertex = apply_position_morphs(vertex);
     }
+    {% if has_custom_vertex %}
+    {
+        // The plain shadow path never compiles the hook today (`has_custom_vertex`
+        // is hardwired off — custom-vertex casters use the dedicated
+        // `shadow_custom_vertex` / masked-shadow templates which bind
+        // `material_mesh_metas` + `visibility_data`). Pass a zero UV array so this
+        // stays compilable if ever flipped on.
+        var _cv_uv: array<vec2<f32>, 4>;
+        let _disp = custom_displace_vertex(VertexDisplaceInput(
+            vertex.position, vertex.normal, vertex.tangent, _cv_uv, 0u,
+            vertex.vertex_index, 0u,
+            material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+            frame_globals_from_raw(frame_globals_raw),
+        ));
+        vertex.position = _disp.position;
+    }
+    {% endif %}
     if geometry_mesh_meta.skin_sets_len != 0u {
         vertex = apply_position_skin(vertex);
     }

@@ -120,6 +120,7 @@ fn editor_material_library_roundtrips_through_toml() {
             builtin: None,
             wgsl: String::new(),
             alpha_wgsl: String::new(),
+            vertex_wgsl: String::new(),
             alpha: "opaque".to_string(),
             cutoff: 0.5,
             double_sided: false,

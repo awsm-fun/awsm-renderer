@@ -21,7 +21,7 @@ struct ApplyVertexOutput {
     world_position: vec3<f32>,   // Transformed world-space position
 }
 
-fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera) -> ApplyVertexOutput {
+fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera {% if has_custom_vertex %}, custom_uv: array<vec2<f32>, 4>, custom_uv_count: u32, custom_instance_id: u32, custom_globals: FrameGlobals {% endif %}) -> ApplyVertexOutput {
     var out: ApplyVertexOutput;
 
     var vertex = vertex_orig;
@@ -36,6 +36,20 @@ fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera) -> ApplyVertexOut
         normal = apply_normal_morphs(vertex_orig, normal);
         tangent = apply_tangent_morphs(vertex_orig, tangent);
     }
+
+    {% if has_custom_vertex %}
+    {
+        let _disp = custom_displace_vertex(VertexDisplaceInput(
+            vertex.position, normal, tangent, custom_uv, custom_uv_count,
+            vertex.vertex_index, custom_instance_id,
+            material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+            custom_globals,
+        ));
+        vertex.position = _disp.position;
+        normal = _disp.normal;
+        tangent = _disp.tangent;
+    }
+    {% endif %}
 
     // Apply skinning to position, normal, and tangent
     if geometry_mesh_meta.skin_sets_len != 0 {

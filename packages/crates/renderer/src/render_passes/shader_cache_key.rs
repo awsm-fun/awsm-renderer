@@ -5,7 +5,9 @@ use crate::render_passes::{
     display::shader::cache_key::ShaderCacheKeyDisplay,
     effects::shader::cache_key::ShaderCacheKeyEffects,
     geometry::shader::cache_key::ShaderCacheKeyGeometry,
+    geometry::shader::custom_vertex_cache_key::ShaderCacheKeyGeometryCustomVertex,
     geometry::shader::masked_cache_key::ShaderCacheKeyGeometryMasked,
+    geometry::shader::masked_custom_vertex_cache_key::ShaderCacheKeyGeometryMaskedCustomVertex,
     hzb::shader::cache_key::{ShaderCacheKeyHzbReduce, ShaderCacheKeyHzbSeed},
     light_culling::shader::cache_key::ShaderCacheKeyLightCulling,
     material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify,
@@ -28,6 +30,14 @@ pub enum ShaderCacheKeyRenderPass {
     /// Masked (alpha-tested) variant of the geometry raster — per-`shader_id`
     /// specialized; see [`ShaderCacheKeyGeometryMasked`].
     GeometryMasked(ShaderCacheKeyGeometryMasked),
+    /// Custom-vertex (programmable displacement) variant of the geometry
+    /// raster — per-`shader_id` specialized; see
+    /// [`ShaderCacheKeyGeometryCustomVertex`].
+    GeometryCustomVertex(ShaderCacheKeyGeometryCustomVertex),
+    /// Combined masked (alpha-tested) + custom-vertex (displacement) variant of
+    /// the geometry raster — per-`shader_id` specialized; see
+    /// [`ShaderCacheKeyGeometryMaskedCustomVertex`].
+    GeometryMaskedCustomVertex(ShaderCacheKeyGeometryMaskedCustomVertex),
     HzbSeed(ShaderCacheKeyHzbSeed),
     HzbReduce(ShaderCacheKeyHzbReduce),
     LightCulling(ShaderCacheKeyLightCulling),

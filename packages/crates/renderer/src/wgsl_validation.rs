@@ -694,6 +694,7 @@ fn transparent_first_party_key(
         dispatch_hash: 0,
         dynamic_shader_id: None,
         dynamic_shader: None,
+        dynamic_vertex_shader: None,
         froxel_slice_count: crate::render_passes::light_culling::buffers::DEFAULT_SLICE_COUNT,
     }
 }

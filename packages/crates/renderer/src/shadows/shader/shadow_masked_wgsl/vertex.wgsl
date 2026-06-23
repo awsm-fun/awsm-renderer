@@ -16,6 +16,19 @@ struct ApplyVertexInput {
     {% endif %}
 };
 
+{% if has_custom_vertex %}
+{{ dynamic_vertex_struct_decl|safe }}
+{{ dynamic_vertex_loader_decl|safe }}
+// `frame_globals` (struct + `frame_globals_from_raw`) comes from the masked-shadow
+// bind groups (`shadow_masked_wgsl/bind_groups.wgsl`), so it is NOT re-included
+// here — that would redefine it. The custom-vertex hook reads it for animated
+// displacement. The hook's `material_data_load` + `material_sample_<name>` /
+// `material_load_*` / `texture_pool_sample` come from the masked fragment's
+// `masked_alpha.wgsl` include (a combined masked + custom-vertex shadow module
+// always pairs this vertex with the masked fragment).
+{% include "shared_wgsl/vertex/custom_vertex.wgsl" %}
+{% endif %}
+
 {% include "shared_wgsl/vertex/morph.wgsl" %}
 {% include "shared_wgsl/vertex/skin.wgsl" %}
 
@@ -74,6 +87,34 @@ fn vert_main(
     if geometry_mesh_meta.morph_geometry_target_len != 0u {
         vertex = apply_position_morphs(vertex);
     }
+    {% if has_custom_vertex %}
+    {
+        // Build the per-vertex UV array IDENTICALLY to the geometry +
+        // custom-vertex-shadow passes — same `material_mesh_metas` indexing,
+        // same `_mask_uv_per_vertex` reader over `visibility_data` (provided by
+        // the masked fragment's `masked_alpha.wgsl` include) — so the displaced,
+        // cut-out silhouette matches the lit geometry's UVs.
+        let _mm = material_mesh_metas[geometry_mesh_meta.material_mesh_meta_offset / META_SIZE_IN_BYTES];
+        let _cv_stride = _mm.vertex_attribute_stride / 4u;
+        let _cv_data_offset = _mm.vertex_attribute_data_offset / 4u;
+        let _cv_uv_count = min(_mm.uv_set_count, 4u);
+        var _cv_uv: array<vec2<f32>, 4>;
+        for (var _i = 0u; _i < 4u; _i = _i + 1u) {
+            _cv_uv[_i] = select(
+                vec2<f32>(0.0, 0.0),
+                _mask_uv_per_vertex(_cv_data_offset, _i, input.original_vertex_index, _cv_stride, _mm.uv_sets_index),
+                _i < _cv_uv_count,
+            );
+        }
+        let _disp = custom_displace_vertex(VertexDisplaceInput(
+            vertex.position, vertex.normal, vertex.tangent, _cv_uv, _cv_uv_count,
+            vertex.vertex_index, 0u,
+            material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+            frame_globals_from_raw(frame_globals_raw),
+        ));
+        vertex.position = _disp.position;
+    }
+    {% endif %}
     if geometry_mesh_meta.skin_sets_len != 0u {
         vertex = apply_position_skin(vertex);
     }

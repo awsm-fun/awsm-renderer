@@ -744,6 +744,8 @@ impl AwsmRenderer {
                 .then(|| self.materials.shader_id(mesh.material_key));
             let dynamic_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
+            let dynamic_vertex_shader =
+                dynamic_shader_id.and_then(|id| self.dynamic_materials.vertex_shader_info_for(id));
             requests.push(
                 crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
                     mesh,
@@ -754,6 +756,7 @@ impl AwsmRenderer {
                     pbr_features,
                     dynamic_shader_id,
                     dynamic_shader,
+                    dynamic_vertex_shader,
                 },
             );
         }
@@ -2444,6 +2447,9 @@ impl AwsmRenderer {
                     dispatch_hash: 0,
                     dynamic_shader_id: Some(shader_id),
                     dynamic_shader: Some(info),
+                    // Fragment-hook validation only; the custom-vertex path has
+                    // its own validator (`validate_dynamic_vertex_transparent_wgsl`).
+                    dynamic_vertex_shader: None,
                     froxel_slice_count: DEFAULT_SLICE_COUNT,
                 };
                 let template = match ShaderTemplateMaterialTransparent::try_from(&key) {
@@ -2500,6 +2506,34 @@ impl AwsmRenderer {
                     }
                 }
             }
+        }
+    }
+
+    /// Synchronously validate a registered custom-**vertex** material's
+    /// ASSEMBLED geometry custom-vertex module with `naga`, returning the
+    /// compile error message(s) (empty = valid). The vertex-stage sibling of
+    /// [`Self::validate_dynamic_material_wgsl`]: it assembles the masked
+    /// geometry bind groups + the geometry vertex shader compiled with the
+    /// `custom_displace_vertex` hook + the plain geometry fragment, then runs
+    /// naga so the editor catches a broken `wgsl_vertex` body up-front.
+    ///
+    /// Validation-only (never gates rendering). No-op (always empty) unless the
+    /// `dynamic-material-validation` feature is on — the player pays nothing for
+    /// `naga`. Empty when the material isn't registered or declared no
+    /// `wgsl_vertex` (→ shared fast vertex pipeline; nothing to validate).
+    pub fn validate_dynamic_vertex_wgsl(
+        &self,
+        shader_id: awsm_materials::MaterialShaderId,
+    ) -> Vec<String> {
+        #[cfg(not(feature = "dynamic-material-validation"))]
+        {
+            let _ = shader_id;
+            Vec::new()
+        }
+        #[cfg(feature = "dynamic-material-validation")]
+        {
+            self.dynamic_materials
+                .validate_dynamic_vertex_wgsl(shader_id)
         }
     }
 

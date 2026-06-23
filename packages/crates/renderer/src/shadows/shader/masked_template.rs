@@ -30,6 +30,22 @@ pub struct ShaderTemplateShadowMaskedBindGroups {
     instancing_transforms: bool,
 }
 
+impl ShaderTemplateShadowMaskedBindGroups {
+    /// Builds the masked-shadow bind-group template. Shared with the combined
+    /// masked + custom-vertex shadow template (identical augmented group 0).
+    pub fn new(
+        texture_pool_arrays_len: u32,
+        texture_pool_samplers_len: u32,
+        instancing_transforms: bool,
+    ) -> Self {
+        Self {
+            texture_pool_arrays_len,
+            texture_pool_samplers_len,
+            instancing_transforms,
+        }
+    }
+}
+
 /// Vertex template for the masked shadow variant.
 #[derive(Template, Debug)]
 #[template(path = "shadow_masked_wgsl/vertex.wgsl", whitespace = "minimize")]
@@ -37,6 +53,44 @@ pub struct ShaderTemplateShadowMaskedVertex {
     instancing_transforms: bool,
     max_morph_unroll: u32,
     max_skin_unroll: u32,
+    /// INERT scaffolding for the programmable vertex-displacement hook
+    /// (mirrors the fragment `custom_shade_dynamic` machinery). Always
+    /// `false` here — the gated WGSL is never rendered yet, so output is
+    /// byte-identical to today.
+    has_custom_vertex: bool,
+    /// The author's WGSL displacement body, wrapped into
+    /// `custom_displace_vertex` at render time. Empty until wired up.
+    dynamic_wgsl_vertex: String,
+    /// Auto-generated `struct MaterialData { ... }` decl for the hook.
+    /// Empty until wired up.
+    dynamic_vertex_struct_decl: String,
+    /// Auto-generated `material_data_load` accessor for the hook.
+    /// Empty until wired up.
+    dynamic_vertex_loader_decl: String,
+}
+
+impl ShaderTemplateShadowMaskedVertex {
+    /// Builds the masked-shadow vertex template. With `has_custom_vertex = true`
+    /// (the combined masked + custom-vertex shadow variant) it renders the
+    /// `custom_displace_vertex` hook + the struct/loader the hook reads; with
+    /// `false` (plain masked shadow) the output is byte-identical to before.
+    pub fn new(
+        instancing_transforms: bool,
+        has_custom_vertex: bool,
+        dynamic_wgsl_vertex: String,
+        dynamic_vertex_struct_decl: String,
+        dynamic_vertex_loader_decl: String,
+    ) -> Self {
+        Self {
+            instancing_transforms,
+            max_morph_unroll: 2,
+            max_skin_unroll: 2,
+            has_custom_vertex,
+            dynamic_wgsl_vertex,
+            dynamic_vertex_struct_decl,
+            dynamic_vertex_loader_decl,
+        }
+    }
 }
 
 /// Fragment template for the masked shadow variant.
@@ -62,6 +116,33 @@ pub struct ShaderTemplateShadowMaskedFragment {
     flipbook_cell_wgsl: String,
 }
 
+impl ShaderTemplateShadowMaskedFragment {
+    /// Builds the masked-shadow fragment template. Shared with the combined
+    /// masked + custom-vertex shadow template (which suppresses the Custom
+    /// struct/loader so the vertex hook's single copy is reused).
+    pub fn new(
+        texture_pool_arrays_len: u32,
+        texture_pool_samplers_len: u32,
+        base: ShadingBase,
+        dynamic_struct_decl: String,
+        dynamic_loader_decl: String,
+        dynamic_texture_helpers: String,
+        dynamic_alpha_wgsl: String,
+        flipbook_cell_wgsl: String,
+    ) -> Self {
+        Self {
+            texture_pool_arrays_len,
+            texture_pool_samplers_len,
+            base,
+            dynamic_struct_decl,
+            dynamic_loader_decl,
+            dynamic_texture_helpers,
+            dynamic_alpha_wgsl,
+            flipbook_cell_wgsl,
+        }
+    }
+}
+
 impl TryFrom<&ShaderCacheKeyShadowMasked> for ShaderTemplateShadowMasked {
     type Error = AwsmShaderError;
 
@@ -77,30 +158,32 @@ impl TryFrom<&ShaderCacheKeyShadowMasked> for ShaderTemplateShadowMasked {
         };
 
         Ok(Self {
-            bind_groups: ShaderTemplateShadowMaskedBindGroups {
-                texture_pool_arrays_len: value.texture_pool_arrays_len,
-                texture_pool_samplers_len: value.texture_pool_samplers_len,
-                instancing_transforms: value.instancing_transforms,
-            },
-            vertex: ShaderTemplateShadowMaskedVertex {
-                instancing_transforms: value.instancing_transforms,
-                max_morph_unroll: 2,
-                max_skin_unroll: 2,
-            },
-            fragment: ShaderTemplateShadowMaskedFragment {
-                texture_pool_arrays_len: value.texture_pool_arrays_len,
-                texture_pool_samplers_len: value.texture_pool_samplers_len,
-                base: value.base,
-                dynamic_struct_decl: struct_decl,
-                dynamic_loader_decl: loader_decl,
-                dynamic_texture_helpers: texture_helpers,
-                dynamic_alpha_wgsl: alpha_wgsl,
-                flipbook_cell_wgsl: if value.base == ShadingBase::Flipbook {
+            bind_groups: ShaderTemplateShadowMaskedBindGroups::new(
+                value.texture_pool_arrays_len,
+                value.texture_pool_samplers_len,
+                value.instancing_transforms,
+            ),
+            vertex: ShaderTemplateShadowMaskedVertex::new(
+                value.instancing_transforms,
+                false,
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
+            fragment: ShaderTemplateShadowMaskedFragment::new(
+                value.texture_pool_arrays_len,
+                value.texture_pool_samplers_len,
+                value.base,
+                struct_decl,
+                loader_decl,
+                texture_helpers,
+                alpha_wgsl,
+                if value.base == ShadingBase::Flipbook {
                     awsm_materials::flipbook::FLIPBOOK_CELL_WGSL.to_string()
                 } else {
                     String::new()
                 },
-            },
+            ),
         })
     }
 }

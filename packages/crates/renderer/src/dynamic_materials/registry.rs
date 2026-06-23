@@ -610,6 +610,26 @@ pub struct DynamicMaterials {
     max_bucket_entries: usize,
 }
 
+/// Parse + validate an assembled WGSL module with `naga` (Capabilities::all).
+/// Returns the compile error message(s) — empty = valid. Shared by every
+/// `validate_dynamic_*_wgsl` accessor so they all surface errors identically.
+#[cfg(feature = "dynamic-material-validation")]
+fn naga_validate_module(src: &str) -> Vec<String> {
+    match naga::front::wgsl::parse_str(src) {
+        Err(e) => vec![e.emit_to_string(src)],
+        Ok(module) => {
+            let mut validator = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            );
+            match validator.validate(&module) {
+                Ok(_) => Vec::new(),
+                Err(e) => vec![e.emit_to_string(src)],
+            }
+        }
+    }
+}
+
 impl DynamicMaterials {
     /// Creates an empty registry. No dynamic materials are registered until
     /// [`AwsmRenderer::register_material`](crate::AwsmRenderer::register_material)
@@ -810,6 +830,53 @@ impl DynamicMaterials {
         )
     }
 
+    /// Cheap existence check: does this registered material declare a non-empty
+    /// custom-vertex body? Equivalent to `vertex_shader_info_for(..).is_some()`
+    /// but WITHOUT building the `DynamicVertexShaderInfo` (which allocates the
+    /// generated `MaterialData` struct/loader WGSL). `collect_renderables` runs
+    /// per-frame and only needs the bool to route a mesh to the custom-vertex
+    /// pipeline, so it must not allocate per frame (per the no-per-frame-alloc
+    /// standard). The full info is built once at pipeline-compile time.
+    pub fn has_vertex_shader(&self, shader_id: MaterialShaderId) -> bool {
+        self.registrations
+            .get(&shader_id)
+            .and_then(|reg| reg.wgsl_vertex.as_deref())
+            .is_some_and(|w| !w.trim().is_empty())
+    }
+
+    /// Returns the [`DynamicVertexShaderInfo`] (the `MaterialData` struct decl +
+    /// loader + author vertex body) for a registered custom-vertex material, or
+    /// `None` when the material declared no `wgsl_vertex` (→ shared fast vertex
+    /// pipeline). The struct/loader are byte-identical to the fragment hook's,
+    /// so both stages read the same uniform buffer. Sibling of
+    /// [`Self::shader_info_for`] / [`Self::alpha_info_for`]. NOTE: this
+    /// allocates — for a per-frame existence check use [`Self::has_vertex_shader`].
+    pub fn vertex_shader_info_for(
+        &self,
+        shader_id: MaterialShaderId,
+    ) -> Option<crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo> {
+        let reg = self.registrations.get(&shader_id)?;
+        let wgsl_vertex = reg.wgsl_vertex.as_ref()?.clone();
+        if wgsl_vertex.trim().is_empty() {
+            return None;
+        }
+        Some(
+            crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo {
+                shader_includes: reg.shader_includes.resolve(),
+                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                    "MaterialData",
+                    &reg.layout,
+                ),
+                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                    "MaterialData",
+                    "material_data_load",
+                    &reg.layout,
+                ),
+                wgsl_vertex,
+            },
+        )
+    }
+
     /// Returns the **alpha-only** dynamic-shader info for a registered MASK
     /// custom material — the generated `MaterialData` struct + loader + texture
     /// helpers, plus the author's alpha-only WGSL fragment — so the masked
@@ -847,6 +914,251 @@ impl DynamicMaterials {
                 alpha_wgsl,
             },
         )
+    }
+
+    /// Synchronously validate a registered custom-vertex material's ASSEMBLED
+    /// **geometry custom-vertex** module with `naga` — the vertex-stage sibling
+    /// of [`crate::AwsmRenderer::validate_dynamic_material_wgsl`]. Returns the
+    /// compile error message(s) (empty = valid).
+    ///
+    /// Assembles the same WGSL the live custom-vertex geometry pipeline would
+    /// compile: the masked geometry bind groups (they declare `materials` + the
+    /// texture pool the hook's `material_data_load` / `material_sample_<name>`
+    /// read) + the geometry vertex shader built with the `custom_displace_vertex`
+    /// hook + the plain geometry fragment. Representative pool/AA config (lens
+    /// 1/1, single-sampled, non-instanced, uniform meta) — validation depends
+    /// only on the dynamic struct/loader/body, not the array lengths.
+    ///
+    /// `None` registration / no `wgsl_vertex` → empty (nothing to validate).
+    /// naga line numbers index the assembled module (not the author's snippet),
+    /// so callers surface the error message without a per-snippet line.
+    #[cfg(feature = "dynamic-material-validation")]
+    pub fn validate_dynamic_vertex_wgsl(&self, shader_id: MaterialShaderId) -> Vec<String> {
+        use crate::render_passes::geometry::shader::custom_vertex_cache_key::ShaderCacheKeyGeometryCustomVertex;
+        use crate::render_passes::geometry::shader::custom_vertex_template::ShaderTemplateGeometryCustomVertex;
+
+        let Some(dynamic_vertex) = self.vertex_shader_info_for(shader_id) else {
+            return Vec::new();
+        };
+        let key = ShaderCacheKeyGeometryCustomVertex {
+            shader_id,
+            dynamic_vertex,
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            msaa_samples: None,
+            instancing_transforms: false,
+            meta_storage_array: false,
+        };
+        let template = match ShaderTemplateGeometryCustomVertex::try_from(&key) {
+            Ok(t) => t,
+            Err(e) => return vec![format!("shader template build failed: {e:?}")],
+        };
+        let src = match template.into_source() {
+            Ok(s) => s,
+            Err(e) => return vec![format!("shader render failed: {e:?}")],
+        };
+        naga_validate_module(&src)
+    }
+
+    /// Synchronously validate a registered custom-vertex material's ASSEMBLED
+    /// **custom-vertex SHADOW** module with `naga` — the shadow-pass sibling of
+    /// [`Self::validate_dynamic_vertex_wgsl`]. Returns the compile error
+    /// message(s) (empty = valid).
+    ///
+    /// Assembles the same WGSL the live custom-vertex shadow pipeline compiles:
+    /// the augmented custom-vertex shadow bind groups (shadow_view + materials +
+    /// frame_globals + texture pool + the minimal material-load helpers) + the
+    /// depth-only shadow vertex shader built with the `custom_displace_vertex`
+    /// hook (no fragment). Representative pool config (1/1, non-instanced).
+    /// Catches a custom-vertex body that the geometry pass accepts but the shadow
+    /// assembly would reject (different surrounding bindings / helper set), so the
+    /// displaced shadow can never silently fail to compile.
+    ///
+    /// `None` registration / no `wgsl_vertex` → empty (nothing to validate).
+    #[cfg(feature = "dynamic-material-validation")]
+    pub fn validate_dynamic_vertex_shadow_wgsl(&self, shader_id: MaterialShaderId) -> Vec<String> {
+        use crate::shadows::shader::custom_vertex_cache_key::ShaderCacheKeyShadowCustomVertex;
+        use crate::shadows::shader::custom_vertex_template::ShaderTemplateShadowCustomVertex;
+
+        let Some(dynamic_vertex) = self.vertex_shader_info_for(shader_id) else {
+            return Vec::new();
+        };
+        let key = ShaderCacheKeyShadowCustomVertex {
+            shader_id,
+            dynamic_vertex,
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            instancing_transforms: false,
+        };
+        let template = match ShaderTemplateShadowCustomVertex::try_from(&key) {
+            Ok(t) => t,
+            Err(e) => return vec![format!("shader template build failed: {e:?}")],
+        };
+        let src = match template.into_source() {
+            Ok(s) => s,
+            Err(e) => return vec![format!("shader render failed: {e:?}")],
+        };
+        naga_validate_module(&src)
+    }
+
+    /// Synchronously validate a registered custom-vertex material's ASSEMBLED
+    /// **transparent custom-vertex** module with `naga` — the transparent-pass
+    /// sibling of [`Self::validate_dynamic_vertex_wgsl`]. Returns the compile
+    /// error message(s) (empty = valid).
+    ///
+    /// Assembles the same WGSL the live transparent custom-vertex pipeline would
+    /// compile: the per-material transparent template (`base == Custom`, the
+    /// fragment hook + the `custom_displace_vertex` vertex hook) — same
+    /// `MaterialData` struct/loader the geometry path uses, but paired with the
+    /// transparent bind groups (which already declare `materials` + the texture
+    /// pool VERTEX-visible). Catches a custom-vertex body the geometry pass
+    /// accepts but the transparent assembly would reject (different surrounding
+    /// bindings / fragment contract), so the displaced transparent can never
+    /// silently fail to compile. Representative pool/AA config (1/1, single-
+    /// sampled, non-instanced).
+    ///
+    /// `None` registration / no `wgsl_vertex` → empty (nothing to validate).
+    /// naga line numbers index the assembled module (not the author's snippet).
+    #[cfg(feature = "dynamic-material-validation")]
+    pub fn validate_dynamic_vertex_transparent_wgsl(
+        &self,
+        shader_id: MaterialShaderId,
+    ) -> Vec<String> {
+        use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
+        use crate::render_passes::material_transparent::shader::template::ShaderTemplateMaterialTransparent;
+        use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;
+
+        let Some(dynamic_vertex) = self.vertex_shader_info_for(shader_id) else {
+            return Vec::new();
+        };
+        // A custom transparent material is `base == Custom`; the fragment
+        // template references `MaterialData` inside the `base == Custom` wrapper,
+        // so the fragment hook (struct/loader + author fragment) must be present.
+        let Some(dynamic_shader) = self.shader_info_for(shader_id) else {
+            return vec![
+                "custom-vertex transparent validation requires a fragment hook \
+                 (shader_info_for returned None)"
+                    .to_string(),
+            ];
+        };
+        let key = ShaderCacheKeyMaterialTransparent {
+            instancing_transforms: false,
+            attributes: ShaderMaterialVertexAttributes {
+                normals: true,
+                tangents: true,
+                color_sets: None,
+                uv_sets: Some(1),
+            },
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            msaa_sample_count: None,
+            mipmaps: true,
+            base: crate::dynamic_materials::ShadingBase::Custom,
+            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            dispatch_hash: 1,
+            dynamic_shader_id: Some(shader_id),
+            dynamic_shader: Some(dynamic_shader),
+            dynamic_vertex_shader: Some(dynamic_vertex),
+            froxel_slice_count: crate::render_passes::light_culling::buffers::DEFAULT_SLICE_COUNT,
+        };
+        let template = match ShaderTemplateMaterialTransparent::try_from(&key) {
+            Ok(t) => t,
+            Err(e) => return vec![format!("shader template build failed: {e:?}")],
+        };
+        let src = match template.into_source() {
+            Ok(s) => s,
+            Err(e) => return vec![format!("shader render failed: {e:?}")],
+        };
+        naga_validate_module(&src)
+    }
+
+    /// Synchronously validate a registered material's ASSEMBLED **combined
+    /// masked + custom-vertex GEOMETRY** module with `naga` — the union of
+    /// [`Self::validate_dynamic_vertex_wgsl`] (displacement) +
+    /// [`crate::AwsmRenderer::validate_dynamic_material_wgsl`] (alpha cutout).
+    /// Returns the compile error message(s) (empty = valid).
+    ///
+    /// Assembles the same WGSL the live combined pipeline compiles: the masked
+    /// geometry bind groups + the geometry vertex built with the
+    /// `custom_displace_vertex` hook + the masked fragment (alpha test). The
+    /// shared `material_load_*` / `texture_pool_sample` helpers come from the
+    /// fragment's `masked_alpha.wgsl` (single copy); the vertex hook's generated
+    /// `material_data_load` resolves against it — proving the combine is
+    /// redefinition-free. For a Custom material the fragment's struct/loader are
+    /// suppressed (the vertex emits them).
+    ///
+    /// `None` registration / no `wgsl_vertex` → empty. A material with no
+    /// `alpha_wgsl` (built-in MASK base) validates the base-color alpha path.
+    #[cfg(feature = "dynamic-material-validation")]
+    pub fn validate_dynamic_masked_vertex_wgsl(&self, shader_id: MaterialShaderId) -> Vec<String> {
+        use crate::render_passes::geometry::shader::masked_custom_vertex_cache_key::ShaderCacheKeyGeometryMaskedCustomVertex;
+        use crate::render_passes::geometry::shader::masked_custom_vertex_template::ShaderTemplateGeometryMaskedCustomVertex;
+
+        let Some(dynamic_vertex) = self.vertex_shader_info_for(shader_id) else {
+            return Vec::new();
+        };
+        // A registered material with a `wgsl_vertex` body is a dynamic (Custom)
+        // material; its MASK cutout takes the Custom alpha path.
+        let key = ShaderCacheKeyGeometryMaskedCustomVertex {
+            shader_id,
+            base: crate::dynamic_materials::ShadingBase::Custom,
+            dynamic_vertex,
+            dynamic_alpha: self.alpha_info_for(shader_id),
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            msaa_samples: None,
+        };
+        let template = match ShaderTemplateGeometryMaskedCustomVertex::try_from(&key) {
+            Ok(t) => t,
+            Err(e) => return vec![format!("shader template build failed: {e:?}")],
+        };
+        let src = match template.into_source() {
+            Ok(s) => s,
+            Err(e) => return vec![format!("shader render failed: {e:?}")],
+        };
+        naga_validate_module(&src)
+    }
+
+    /// Synchronously validate a registered material's ASSEMBLED **combined
+    /// masked + custom-vertex SHADOW** module with `naga` — the shadow sibling of
+    /// [`Self::validate_dynamic_masked_vertex_wgsl`]. Returns the compile error
+    /// message(s) (empty = valid).
+    ///
+    /// Assembles the same WGSL the live combined shadow pipeline compiles: the
+    /// masked-shadow WGSL with `has_custom_vertex` on (depth-only displaced
+    /// vertex + alpha-test fragment). Catches a body the geometry combine accepts
+    /// but the shadow combine would reject (different surrounding bindings), so the
+    /// displaced cutout shadow can never silently fail to compile.
+    ///
+    /// `None` registration / no `wgsl_vertex` → empty.
+    #[cfg(feature = "dynamic-material-validation")]
+    pub fn validate_dynamic_masked_vertex_shadow_wgsl(
+        &self,
+        shader_id: MaterialShaderId,
+    ) -> Vec<String> {
+        use crate::shadows::shader::masked_custom_vertex_cache_key::ShaderCacheKeyShadowMaskedCustomVertex;
+        use crate::shadows::shader::masked_custom_vertex_template::ShaderTemplateShadowMaskedCustomVertex;
+
+        let Some(dynamic_vertex) = self.vertex_shader_info_for(shader_id) else {
+            return Vec::new();
+        };
+        let key = ShaderCacheKeyShadowMaskedCustomVertex {
+            shader_id,
+            base: crate::dynamic_materials::ShadingBase::Custom,
+            dynamic_vertex,
+            dynamic_alpha: self.alpha_info_for(shader_id),
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+        };
+        let template = match ShaderTemplateShadowMaskedCustomVertex::try_from(&key) {
+            Ok(t) => t,
+            Err(e) => return vec![format!("shader template build failed: {e:?}")],
+        };
+        let src = match template.into_source() {
+            Ok(s) => s,
+            Err(e) => return vec![format!("shader render failed: {e:?}")],
+        };
+        naga_validate_module(&src)
     }
 
     /// Returns the count of currently-registered dynamic materials.
@@ -1105,6 +1417,15 @@ pub struct MaterialRegistration {
     /// for Mask materials (a procedural cutout can be tiny; a textured one
     /// samples via the generated `material_sample_<name>` helpers).
     pub alpha_wgsl: Option<String>,
+    /// The **third** ("vertex") WGSL window — the programmable vertex-
+    /// displacement body. Wrapped into `fn custom_displace_vertex(input:
+    /// VertexDisplaceInput) -> VertexDisplaceOutput` and compiled into the
+    /// rasterizing passes' custom-vertex pipeline variants (geometry / shadow /
+    /// transparent / masked), so the material controls its vertices the same way
+    /// `wgsl_fragment` controls its shading. `None` → the material uses the
+    /// shared fast vertex pipeline (zero cost). Folded into [`Self::wgsl_hash`]
+    /// by the consumer so an edit recompiles. See `DynamicVertexShaderInfo`.
+    pub wgsl_vertex: Option<String>,
 }
 
 impl crate::AwsmRenderer {
@@ -1646,11 +1967,260 @@ mod tests {
             shader_includes: awsm_materials::ShaderIncludes::all(),
             fragment_inputs: awsm_materials::FragmentInputs::all(),
             alpha_wgsl: None,
+            wgsl_vertex: None,
         }
     }
 
     fn first_party_len() -> usize {
         first_party_bucket_entries().len()
+    }
+
+    /// Assembles the geometry custom-vertex shader for a representative
+    /// custom-vertex material (one uniform → non-degenerate `MaterialData`; a
+    /// non-trivial animated displacement body that reads `input.position`,
+    /// `input.normal`, `input.tangent` + `input.globals.time`) and asserts naga
+    /// reports NO errors on the assembled module. This is the first point the
+    /// custom-vertex WGSL is actually rendered + validated (no GPU needed).
+    #[cfg(feature = "dynamic-material-validation")]
+    #[test]
+    fn custom_vertex_geometry_assembles_and_naga_validates() {
+        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+
+        let mut dm = DynamicMaterials::new();
+        let mut r = reg("displacer", 1, 1);
+        // A real uniform so the generated `MaterialData` isn't degenerate.
+        r.layout.uniforms.push(UniformFieldRuntime {
+            name: "amplitude".to_string(),
+            ty: FieldType::F32,
+        });
+        // Non-trivial animated displacement: reads position/normal/tangent +
+        // globals.time, returns the hook's `VertexDisplaceOutput(pos, n, t)`.
+        r.wgsl_vertex = Some(
+            "return VertexDisplaceOutput(\
+                 input.position + input.normal * (0.1 * input.material.amplitude) \
+                 * sin(input.globals.time + input.position.x * 4.0), \
+                 input.normal, input.tangent);"
+                .to_string(),
+        );
+        let id = dm.insert(r).unwrap();
+
+        let errors = dm.validate_dynamic_vertex_wgsl(id);
+        assert!(
+            errors.is_empty(),
+            "custom-vertex geometry shader failed naga validation:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// MULTI-UV + MULTI-TEXTURE in the VERTEX stage: registers a custom-vertex
+    /// material whose displacement body reads a SECOND UV set (`input.uv[1]`)
+    /// AND samples a declared texture with it
+    /// (`material_sample_albedo(input.material, input.uv[1])`), proving the
+    /// hook exposes ALL of the mesh's UV sets (not just uv0) and that the
+    /// generated per-texture `material_sample_<name>` helper resolves in the
+    /// vertex assemble — full parity with the fragment side. A green naga
+    /// result guarantees the multi-uv array + multi-texture sampling compile.
+    #[cfg(feature = "dynamic-material-validation")]
+    #[test]
+    fn custom_vertex_geometry_multi_uv_and_texture_naga_validates() {
+        use awsm_materials::dynamic_layout::{FieldType, TextureSlotRuntime, UniformFieldRuntime};
+
+        let mut dm = DynamicMaterials::new();
+        let mut r = reg("displacer_multi_uv", 1, 1);
+        r.layout.uniforms.push(UniformFieldRuntime {
+            name: "amplitude".to_string(),
+            ty: FieldType::F32,
+        });
+        // A declared texture → generates `material_sample_albedo`.
+        r.layout.textures.push(TextureSlotRuntime {
+            name: "albedo".to_string(),
+        });
+        // Displace along the normal by a height sampled from `albedo` using the
+        // SECOND UV set, then recompute the normal from neighbouring heights via
+        // the shared `recompute_normal_from_height` helper — exercising multi-uv,
+        // multi-texture, AND the normal-from-height helper in one body.
+        r.wgsl_vertex = Some(
+            "let h = material_sample_albedo(input.material, input.uv[1]).r; \
+             let h_du = material_sample_albedo(input.material, input.uv[1] + vec2<f32>(0.01, 0.0)).r; \
+             let h_dv = material_sample_albedo(input.material, input.uv[1] + vec2<f32>(0.0, 0.01)).r; \
+             let n = recompute_normal_from_height(input.normal, input.tangent, h, h_du, h_dv, 0.01, input.material.amplitude); \
+             return VertexDisplaceOutput(\
+                 input.position + input.normal * (h * input.material.amplitude), \
+                 n, input.tangent);"
+                .to_string(),
+        );
+        let id = dm.insert(r).unwrap();
+
+        let errors = dm.validate_dynamic_vertex_wgsl(id);
+        assert!(
+            errors.is_empty(),
+            "multi-uv + multi-texture custom-vertex geometry shader failed naga validation:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// Companion to `custom_vertex_geometry_assembles_and_naga_validates` for the
+    /// SHADOW pass: registers the same animated custom-vertex material and asserts
+    /// the assembled custom-vertex SHADOW module (depth-only, augmented shadow
+    /// bind groups + the displacement hook) naga-validates. This is the point the
+    /// shadow custom-vertex WGSL is actually rendered + validated (no GPU). A green
+    /// result here guarantees the displaced shadow compiles — same body, same hook
+    /// inputs as the geometry pass, so the silhouette matches.
+    #[cfg(feature = "dynamic-material-validation")]
+    #[test]
+    fn custom_vertex_shadow_assembles_and_naga_validates() {
+        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+
+        let mut dm = DynamicMaterials::new();
+        let mut r = reg("displacer_shadow", 1, 1);
+        r.layout.uniforms.push(UniformFieldRuntime {
+            name: "amplitude".to_string(),
+            ty: FieldType::F32,
+        });
+        // The SAME displacement body the geometry test uses — so the geometry and
+        // shadow passes run byte-identical displacement.
+        r.wgsl_vertex = Some(
+            "return VertexDisplaceOutput(\
+                 input.position + input.normal * (0.1 * input.material.amplitude) \
+                 * sin(input.globals.time + input.position.x * 4.0), \
+                 input.normal, input.tangent);"
+                .to_string(),
+        );
+        let id = dm.insert(r).unwrap();
+
+        let errors = dm.validate_dynamic_vertex_shadow_wgsl(id);
+        assert!(
+            errors.is_empty(),
+            "custom-vertex shadow shader failed naga validation:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// Companion to `custom_vertex_geometry_assembles_and_naga_validates` for the
+    /// TRANSPARENT pass: registers an alpha-blend custom material that displaces
+    /// its vertices via the same `custom_displace_vertex` hook (referencing
+    /// `input.uv`, `input.material.<field>`, `input.globals.time`) AND carries a
+    /// transparent fragment body, then asserts the assembled transparent
+    /// custom-vertex module (the per-material `base == Custom` template + the
+    /// displacement hook) naga-validates. A green result guarantees a transparent
+    /// material with a vertex body compiles its hook against the transparent
+    /// contract (real per-mesh uv0; `materials` + texture pool VERTEX-visible).
+    #[cfg(feature = "dynamic-material-validation")]
+    #[test]
+    fn transparent_custom_vertex_assembles_and_naga_validates() {
+        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+
+        let mut dm = DynamicMaterials::new();
+        let mut r = reg("displacer_transparent", 1, 1);
+        // Alpha-blend so this is a genuine transparent-pass material.
+        r.alpha_mode = MaterialAlphaMode::Blend;
+        // A real uniform so the generated `MaterialData` isn't degenerate.
+        r.layout.uniforms.push(UniformFieldRuntime {
+            name: "amplitude".to_string(),
+            ty: FieldType::F32,
+        });
+        // The SAME displacement body the geometry test uses, plus a read of the
+        // transparent-only `input.uv[0]` (real per-mesh uv0 on this pass) — so
+        // the geometry and transparent passes run the identical hook.
+        r.wgsl_vertex = Some(
+            "return VertexDisplaceOutput(\
+                 input.position + input.normal * (0.1 * input.material.amplitude) \
+                 * sin(input.globals.time + input.position.x * 4.0 + input.uv[0].x), \
+                 input.normal, input.tangent);"
+                .to_string(),
+        );
+        // A transparent material is `base == Custom`; the fragment template
+        // references `MaterialData` inside the `base == Custom` wrapper, so a
+        // non-empty fragment body is required (empty → missing return).
+        r.wgsl_fragment =
+            "return TransparentShadingOutput(vec4<f32>(input.world_normal * 0.5 + 0.5, 0.5));"
+                .to_string();
+        let id = dm.insert(r).unwrap();
+
+        let errors = dm.validate_dynamic_vertex_transparent_wgsl(id);
+        assert!(
+            errors.is_empty(),
+            "transparent custom-vertex shader failed naga validation:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// Combined masked + custom-vertex GEOMETRY: a material that is BOTH
+    /// `alphaMode = MASK` (with a custom alpha-only cutout body) AND carries a
+    /// `wgsl_vertex` displacement body must assemble a single module where the
+    /// displaced silhouette is also alpha-tested. The shared `material_load_*` /
+    /// `texture_pool_sample` helpers come from the fragment's masked_alpha; the
+    /// vertex hook's `material_data_load` + the fragment alpha path resolve
+    /// against that single copy — so the previously-conflicting masked + custom-
+    /// vertex helper definitions no longer collide. A green naga result proves the
+    /// combine is redefinition-free AND the assembled module is valid.
+    #[cfg(feature = "dynamic-material-validation")]
+    #[test]
+    fn masked_custom_vertex_geometry_assembles_and_naga_validates() {
+        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+
+        let mut dm = DynamicMaterials::new();
+        let mut r = reg("displacer_masked", 1, 1);
+        // MASK with a custom alpha-only cutout body → the combined Custom alpha
+        // path (the fragment reuses the vertex hook's MaterialData struct/loader).
+        r.alpha_mode = MaterialAlphaMode::Mask { cutoff: 0.5 };
+        r.alpha_wgsl = Some("return input.material.amplitude;".to_string());
+        r.layout.uniforms.push(UniformFieldRuntime {
+            name: "amplitude".to_string(),
+            ty: FieldType::F32,
+        });
+        // The SAME animated displacement body the geometry custom-vertex test uses.
+        r.wgsl_vertex = Some(
+            "return VertexDisplaceOutput(\
+                 input.position + input.normal * (0.1 * input.material.amplitude) \
+                 * sin(input.globals.time + input.position.x * 4.0), \
+                 input.normal, input.tangent);"
+                .to_string(),
+        );
+        let id = dm.insert(r).unwrap();
+
+        let errors = dm.validate_dynamic_masked_vertex_wgsl(id);
+        assert!(
+            errors.is_empty(),
+            "combined masked + custom-vertex geometry shader failed naga validation:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// Combined masked + custom-vertex SHADOW: companion to
+    /// `masked_custom_vertex_geometry_assembles_and_naga_validates` for the shadow
+    /// pass — the displaced silhouette is ALSO cut out (depth-only alpha-test). A
+    /// green naga result guarantees a Mask + custom-vertex caster compiles its
+    /// combined shadow module (displaced AND hole-shaped), the shadow analog of
+    /// the geometry combine.
+    #[cfg(feature = "dynamic-material-validation")]
+    #[test]
+    fn masked_custom_vertex_shadow_assembles_and_naga_validates() {
+        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+
+        let mut dm = DynamicMaterials::new();
+        let mut r = reg("displacer_masked_shadow", 1, 1);
+        r.alpha_mode = MaterialAlphaMode::Mask { cutoff: 0.5 };
+        r.alpha_wgsl = Some("return input.material.amplitude;".to_string());
+        r.layout.uniforms.push(UniformFieldRuntime {
+            name: "amplitude".to_string(),
+            ty: FieldType::F32,
+        });
+        r.wgsl_vertex = Some(
+            "return VertexDisplaceOutput(\
+                 input.position + input.normal * (0.1 * input.material.amplitude) \
+                 * sin(input.globals.time + input.position.x * 4.0), \
+                 input.normal, input.tangent);"
+                .to_string(),
+        );
+        let id = dm.insert(r).unwrap();
+
+        let errors = dm.validate_dynamic_masked_vertex_shadow_wgsl(id);
+        assert!(
+            errors.is_empty(),
+            "combined masked + custom-vertex shadow shader failed naga validation:\n{}",
+            errors.join("\n")
+        );
     }
 
     #[test]

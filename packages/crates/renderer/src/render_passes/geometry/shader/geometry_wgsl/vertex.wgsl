@@ -2,6 +2,11 @@
 {% include "shared_wgsl/camera.wgsl" %}
 {% include "shared_wgsl/frame_globals.wgsl" %}
 {% include "shared_wgsl/vertex/transform.wgsl" %}
+{% if has_custom_vertex %}
+{{ dynamic_vertex_struct_decl|safe }}
+{{ dynamic_vertex_loader_decl|safe }}
+{% include "shared_wgsl/vertex/custom_vertex.wgsl" %}
+{% endif %}
 {% include "shared_wgsl/vertex/morph.wgsl" %}
 {% include "shared_wgsl/vertex/skin.wgsl" %}
 {% include "shared_wgsl/vertex/apply_vertex.wgsl" %}
@@ -23,6 +28,7 @@ struct VertexInput {
     @location(8) instance_transform_row_2: vec4<f32>,
     @location(9) instance_transform_row_3: vec4<f32>,
     {% endif %}
+    {% if has_custom_vertex %} @location(10) uv0: vec2<f32>, {% endif %}
 };
 
 struct VertexOutput {
@@ -71,6 +77,43 @@ fn vert_main(
     let camera = camera_from_raw(camera_raw);
     let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
+    // Per-fragment instance_id. The shading compute pass reads this to look
+    // up per-instance attributes (color, size, alpha) from a small storage
+    // buffer. For non-instanced meshes the writer side stores `u32::MAX` in
+    // `geometry_mesh_meta.instance_attr_base`; we propagate that sentinel
+    // through so the read site can branch on a single value. Computed before
+    // `apply_vertex` so the custom-vertex hook can receive it.
+    let base = geometry_mesh_meta.instance_attr_base;
+    var instance_id: u32;
+    if (base == 0xFFFFFFFFu) {
+        instance_id = 0xFFFFFFFFu;
+    } else {
+        instance_id = base + instance_index;
+    }
+
+    {% if has_custom_vertex %}
+    // Build the per-vertex UV array (ALL of the mesh's UV sets) for the
+    // custom-vertex hook — parity with the fragment side's multi-UV access.
+    // Mirror the masked fragment's `material_mesh_metas` indexing EXACTLY
+    // (`material_mesh_meta_offset / META_SIZE_IN_BYTES`; byte→float /4u on the
+    // stride + data offset; `uv_sets_index` is already a float offset). Reuses
+    // the shared `_mask_uv_per_vertex` reader over `visibility_data` — no new
+    // vertex buffers / uploads. The shadow pass builds this IDENTICALLY so the
+    // displaced silhouette matches.
+    let _mm = material_mesh_metas[geometry_mesh_meta.material_mesh_meta_offset / META_SIZE_IN_BYTES];
+    let _cv_stride = _mm.vertex_attribute_stride / 4u;
+    let _cv_data_offset = _mm.vertex_attribute_data_offset / 4u;
+    let _cv_uv_count = min(_mm.uv_set_count, 4u);
+    var _cv_uv: array<vec2<f32>, 4>;
+    for (var _i = 0u; _i < 4u; _i = _i + 1u) {
+        _cv_uv[_i] = select(
+            vec2<f32>(0.0, 0.0),
+            _mask_uv_per_vertex(_cv_data_offset, _i, input.original_vertex_index, _cv_stride, _mm.uv_sets_index),
+            _i < _cv_uv_count,
+        );
+    }
+    {% endif %}
+
     let applied = apply_vertex(ApplyVertexInput(
         input.original_vertex_index,
         input.position,
@@ -82,7 +125,7 @@ fn vert_main(
             input.instance_transform_row_2,
             input.instance_transform_row_3,
         {% endif %}
-    ), camera);
+    ), camera {% if has_custom_vertex %}, _cv_uv, _cv_uv_count, instance_id, frame_globals {% endif %});
 
     out.clip_position = applied.clip_position;
     out.world_normal = applied.world_normal;
@@ -92,17 +135,7 @@ fn vert_main(
     out.triangle_index = input.triangle_index;
     out.barycentric = input.barycentric;
 
-    // Per-fragment instance_id. The shading compute pass reads this to look
-    // up per-instance attributes (color, size, alpha) from a small storage
-    // buffer. For non-instanced meshes the writer side stores `u32::MAX` in
-    // `geometry_mesh_meta.instance_attr_base`; we propagate that sentinel
-    // through so the read site can branch on a single value.
-    let base = geometry_mesh_meta.instance_attr_base;
-    if (base == 0xFFFFFFFFu) {
-        out.instance_id = 0xFFFFFFFFu;
-    } else {
-        out.instance_id = base + instance_index;
-    }
+    out.instance_id = instance_id;
 
     // Forward the per-mesh material-meta byte
     // offset to the fragment stage so the fragment's

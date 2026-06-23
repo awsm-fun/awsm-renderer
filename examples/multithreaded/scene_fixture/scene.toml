@@ -1,0 +1,247 @@
+name = "untitled.awsm"
+animations = []
+
+[environment.skybox.sky_gradient]
+zenith = [
+    0.25,
+    0.44999998807907104,
+    0.8500000238418579,
+]
+nadir = [
+    0.10000000149011612,
+    0.07999999821186066,
+    0.05999999865889549,
+]
+
+[environment.ibl.sky_gradient]
+zenith = [
+    0.25,
+    0.44999998807907104,
+    0.8500000238418579,
+]
+nadir = [
+    0.10000000149011612,
+    0.07999999821186066,
+    0.05999999865889549,
+]
+
+[shadows]
+sscs_enabled = false
+sscs_step_count = 16
+atlas_size = 4096
+evsm_atlas_size = 2048
+evsm_exponent = 10.0
+evsm_blur_radius = 6
+max_point_shadows = 8
+point_shadow_resolution = 1024
+debug_cascade_colors = false
+
+[assets.518f3e41-6013-41de-9359-bb81c9739ef4]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.518f3e41-6013-41de-9359-bb81c9739ef4.source.mesh.primitive.sphere]
+radius = 0.5
+segments_long = 32
+segments_lat = 16
+
+[assets.3dd4a223-6f58-4534-b01c-86936d7ca41b]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.3dd4a223-6f58-4534-b01c-86936d7ca41b.source.mesh.primitive.box]
+dims = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[custom_materials]]
+id = "594b58f8-3810-4388-9ece-704d0a37524d"
+name = "PBR Material 1"
+folder = "assets/materials/pbr-material-1-594b58f8-3810-4388-9ece-704d0a37524d"
+
+[mixer]
+layers = []
+
+[[nodes]]
+id = "3dd4a223-6f58-4534-b01c-86936d7ca41b"
+name = "Box"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "3dd4a223-6f58-4534-b01c-86936d7ca41b"
+
+[nodes.kind.mesh.material]
+asset = "594b58f8-3810-4388-9ece-704d0a37524d"
+
+[nodes.kind.mesh.material.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material.inline.extensions]
+
+[nodes.kind.mesh.material.uniform_overrides]
+
+[nodes.kind.mesh.material.texture_overrides]
+
+[nodes.kind.mesh.material.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[[nodes]]
+id = "518f3e41-6013-41de-9359-bb81c9739ef4"
+name = "Sphere"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "518f3e41-6013-41de-9359-bb81c9739ef4"
+
+[nodes.kind.mesh.material]
+asset = "594b58f8-3810-4388-9ece-704d0a37524d"
+
+[nodes.kind.mesh.material.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material.inline.extensions]
+
+[nodes.kind.mesh.material.uniform_overrides]
+
+[nodes.kind.mesh.material.texture_overrides]
+
+[nodes.kind.mesh.material.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[[nodes]]
+id = "9073a044-7004-4748-8195-521a7470f9cf"
+name = "Directional Light"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    -0.4226182699203491,
+    0.0,
+    0.0,
+    0.9063077569007874,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.light.directional]
+color = [
+    1.0,
+    1.0,
+    1.0,
+]
+intensity = 4.0
+
+[nodes.kind.light.directional.shadow]
+cast = true
+depth_bias = 0.0005000000237487257
+normal_bias = 0.05000000074505806
+resolution = 2048
+hardness = "soft"
+pcss_penumbra_scale = 1.0
+max_distance = 0.0
+cascade_count = 4
+cascade_split_lambda = 0.5
+evsm_cutoff = "last_cascade"
+far_cascade_update_rate = "every4_frames"
+cube_face_update_rate = "every_frame"
