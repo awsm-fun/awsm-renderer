@@ -30,6 +30,10 @@ enum Group0Variant {
     Plain,
     Masked,
     CustomVertex,
+    /// COMBINED masked + custom-vertex caster — DISPLACED *and* cutout shadow.
+    /// Highest precedence. Shares the SAME augmented group 0 as `Masked` /
+    /// `CustomVertex`, and the SAME zero-uv0 slot-1 binding as `CustomVertex`.
+    MaskedCustomVertex,
 }
 
 /// Records every shadow-generation render pass for the current frame.
@@ -77,6 +81,16 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
     let custom_vertex_uv0_buffer = ctx
         .render_passes
         .shadow_custom_vertex
+        .pipelines
+        .uv0_zero_buffer()
+        .clone();
+    // Combined (masked + custom-vertex) caster pool's shared zero uv0 buffer.
+    // Bound at vertex slot 1 just like the plain custom-vertex path (the
+    // combined pipeline declares the same `@location(10) uv0`). Empty pool until
+    // a material that is BOTH Mask AND custom-vertex compiles.
+    let masked_custom_vertex_uv0_buffer = ctx
+        .render_passes
+        .shadow_masked_custom_vertex
         .pipelines
         .uv0_zero_buffer()
         .clone();
@@ -233,15 +247,37 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     continue;
                 }
 
+                // COMBINED masked + custom-vertex caster → DISPLACED *and* cutout
+                // shadow. Highest precedence: when a material is BOTH glTF MASK
+                // (`alpha_cutoff` present) AND custom-vertex, and its combined
+                // variant is compiled, route here so the shadow is displaced AND
+                // alpha-cut. Non-instanced only. Reuses the augmented group-0.
+                let combined_key = if !mesh.instanced && masked_group0.is_some() {
+                    let shader_id = ctx.materials.canonical_shader_id(mesh.material_key);
+                    if ctx
+                        .dynamic_materials
+                        .vertex_shader_info_for(shader_id)
+                        .is_some()
+                        && ctx.materials.alpha_cutoff(mesh.material_key).is_some()
+                    {
+                        ctx.render_passes.shadow_masked_custom_vertex.pipelines.get(
+                            shader_id,
+                            is_cube,
+                            mesh.double_sided,
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 // Custom-vertex caster → DISPLACED shadow (silhouette matches the
                 // lit geometry) when a custom-vertex variant is compiled for this
-                // material. Non-instanced only (the pool compiles only that shape
-                // today, matching collect_renderables' geometry routing). Takes
-                // PRECEDENCE over the masked cutout: a correct displaced silhouette
-                // matters more than a hole, and the masked-custom-vertex variant
-                // (displaced AND cut out) is a deferred follow-on. Reuses the same
-                // augmented group-0 as the masked path.
-                let custom_vertex_key = if !mesh.instanced && masked_group0.is_some() {
+                // material. Skipped when the combined variant already claimed it.
+                let custom_vertex_key = if combined_key.is_some() {
+                    None
+                } else if !mesh.instanced && masked_group0.is_some() {
                     let shader_id = ctx.materials.canonical_shader_id(mesh.material_key);
                     if ctx
                         .dynamic_materials
@@ -266,8 +302,9 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 // routing — a Mask+refractive material is transparent-routed but
                 // must still cast a cutout shadow. Falls back to the solid
                 // pipeline (rectangular shadow) when no masked variant exists.
-                // Skipped when the custom-vertex variant already claimed this mesh.
-                let masked_key = if custom_vertex_key.is_some() {
+                // Skipped when the combined or custom-vertex variant already
+                // claimed this mesh.
+                let masked_key = if combined_key.is_some() || custom_vertex_key.is_some() {
                     None
                 } else {
                     masked_group0.and_then(|_| {
@@ -285,25 +322,34 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     })
                 };
 
-                // Variant precedence: custom-vertex (displaced) > masked (cutout) >
-                // plain solid. The custom-vertex + masked draws both bind the
-                // augmented group 0; the plain draw binds the slim shadow_view
-                // group. The pipelines-compiled guard at the top of `record`
-                // ensures the solid Option is Some here — defensive `else`
-                // skips the draw if the invariant is broken.
-                let (pipeline_key, group0_variant) = match (custom_vertex_key, masked_key) {
-                    (Some(key), _) => (key, Group0Variant::CustomVertex),
-                    (None, Some(key)) => (key, Group0Variant::Masked),
-                    (None, None) => match shadows.shadow_pipeline_key(
-                        mesh.instanced,
-                        is_cube,
-                        mesh.double_sided,
-                    ) {
-                        Some(key) => (key, Group0Variant::Plain),
-                        None => continue,
-                    },
-                };
-                let use_custom_vertex = group0_variant == Group0Variant::CustomVertex;
+                // Variant precedence: combined (displaced + cutout) >
+                // custom-vertex (displaced) > masked (cutout) > plain solid. The
+                // combined / custom-vertex / masked draws all bind the augmented
+                // group 0; the plain draw binds the slim shadow_view group. The
+                // pipelines-compiled guard at the top of `record` ensures the
+                // solid Option is Some here — defensive `else` skips the draw if
+                // the invariant is broken. (combined_key suppresses both
+                // custom_vertex_key and masked_key above, so at most one Some.)
+                let (pipeline_key, group0_variant) =
+                    match (combined_key, custom_vertex_key, masked_key) {
+                        (Some(key), _, _) => (key, Group0Variant::MaskedCustomVertex),
+                        (None, Some(key), _) => (key, Group0Variant::CustomVertex),
+                        (None, None, Some(key)) => (key, Group0Variant::Masked),
+                        (None, None, None) => match shadows.shadow_pipeline_key(
+                            mesh.instanced,
+                            is_cube,
+                            mesh.double_sided,
+                        ) {
+                            Some(key) => (key, Group0Variant::Plain),
+                            None => continue,
+                        },
+                    };
+                // Both the combined and plain custom-vertex variants bind the
+                // zero-uv0 buffer at slot 1.
+                let use_custom_vertex = matches!(
+                    group0_variant,
+                    Group0Variant::CustomVertex | Group0Variant::MaskedCustomVertex
+                );
                 let needs_augmented_group0 = group0_variant != Group0Variant::Plain;
 
                 // Swap group 0 between the plain shadow_view group and the
@@ -360,8 +406,14 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     // `array_stride: 0` → every vertex reads `vec2(0.0)`). This is
                     // the SAME zero uv0 the geometry custom-vertex draw binds, so
                     // the hook's `uv` input matches → identical displacement.
-                    // Non-instanced only, so slot 1 is free for it.
-                    render_pass.set_vertex_buffer(1, &custom_vertex_uv0_buffer, None, None);
+                    // Non-instanced only, so slot 1 is free for it. The combined
+                    // variant uses its own pool's (identical) zero buffer.
+                    let uv0 = if group0_variant == Group0Variant::MaskedCustomVertex {
+                        &masked_custom_vertex_uv0_buffer
+                    } else {
+                        &custom_vertex_uv0_buffer
+                    };
+                    render_pass.set_vertex_buffer(1, uv0, None, None);
                 }
 
                 let buffer_info = ctx.meshes.buffer_info(mesh_key)?;

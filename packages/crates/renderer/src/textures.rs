@@ -495,6 +495,35 @@ impl AwsmRenderer {
                 })
                 .collect();
 
+            // Collect the COMBINED materials — those that are BOTH glTF MASK
+            // (carry an alpha-only WGSL window) AND custom-vertex (carry a
+            // `wgsl_vertex` body). Each gets one combined geometry + one combined
+            // shadow variant so a Mask + custom-vertex material renders DISPLACED
+            // AND alpha-cut (and casts a matching displaced + cutout shadow). A
+            // material missing either body never enters this list (non-regression
+            // — the plain masked / custom-vertex / solid paths are untouched).
+            #[allow(clippy::type_complexity)]
+            let custom_masked_vertex: Vec<(
+                awsm_materials::MaterialShaderId,
+                crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo,
+                crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo,
+            )> = self
+                .dynamic_materials
+                .iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|id| {
+                    match (
+                        self.dynamic_materials.vertex_shader_info_for(id),
+                        self.dynamic_materials.alpha_info_for(id),
+                    ) {
+                        (Some(v), Some(a)) => Some((id, v, a)),
+                        _ => None,
+                    }
+                })
+                .collect();
+
             let new_masked_bg = {
                 let mut ctx = RenderPassInitContext {
                     gpu: &mut self.gpu,
@@ -635,6 +664,46 @@ impl AwsmRenderer {
             }
 
             // -------------------------------------------------------------
+            // COMBINED masked + custom-vertex geometry — so a material that is
+            // BOTH Mask AND custom-vertex renders DISPLACED *and* alpha-cut.
+            // Reuses the masked group-0 bind group (same as the plain masked +
+            // custom-vertex pools), so its layout also changes on a pool grow.
+            // Relayout the pool, then compile one combined variant per registered
+            // Mask + custom-vertex material (non-instanced shape). The render path
+            // falls back via precedence to the plain custom-vertex / masked /
+            // solid pipeline until these land, so the mesh always draws.
+            // -------------------------------------------------------------
+            self.render_passes
+                .geometry
+                .masked_custom_vertex_pipelines
+                .relayout(
+                    &mut ctx,
+                    &self.render_passes.geometry.masked_bind_group,
+                    &self.render_passes.geometry.bind_groups,
+                )?;
+            for (shader_id, vertex_info, alpha_info) in &custom_masked_vertex {
+                let variant =
+                    crate::render_passes::geometry::masked_custom_vertex_pipeline::MaskedCustomVertexVariant {
+                        shader_id: *shader_id,
+                        // A registered material with both a `wgsl_vertex` body and
+                        // an alpha body is a dynamic (Custom) material; its MASK
+                        // cutout takes the Custom alpha path.
+                        base: crate::dynamic_materials::ShadingBase::Custom,
+                        dynamic_vertex: vertex_info.clone(),
+                        dynamic_alpha: Some(alpha_info.clone()),
+                    };
+                self.render_passes
+                    .geometry
+                    .masked_custom_vertex_pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.geometry.masked_bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
+
+            // -------------------------------------------------------------
             // Masked (alpha-tested) SHADOW casters — same per-shader-id pool,
             // for hole-shaped (cutout) shadows (B2). The masked-shadow group-0
             // carries the texture pool too, so relayout it against the new pool,
@@ -733,6 +802,45 @@ impl AwsmRenderer {
                     };
                 self.render_passes
                     .shadow_custom_vertex
+                    .pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.shadow_masked.bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
+
+            // -------------------------------------------------------------
+            // COMBINED masked + custom-vertex SHADOW casters — so a material
+            // that is BOTH Mask AND custom-vertex casts a DISPLACED *and* cutout
+            // shadow. Same per-shader-id lazy pool as the masked-shadow +
+            // custom-vertex-shadow passes; reuses the (vertex-augmented)
+            // masked-shadow group-0 bind group, so its layout also changes on a
+            // pool grow. Relayout the pool against the just-rebuilt masked-shadow
+            // bind group, then compile one combined variant per registered Mask +
+            // custom-vertex material (non-instanced shape). The shadow render path
+            // falls back via precedence until these land, so a combined caster
+            // always casts *some* shadow.
+            // -------------------------------------------------------------
+            self.render_passes
+                .shadow_masked_custom_vertex
+                .pipelines
+                .relayout(
+                    &mut ctx,
+                    &self.render_passes.shadow_masked.bind_group,
+                    &self.render_passes.geometry.bind_groups,
+                )?;
+            for (shader_id, vertex_info, alpha_info) in &custom_masked_vertex {
+                let variant =
+                    crate::render_passes::shadow_masked_custom_vertex::pipeline::ShadowMaskedCustomVertexVariant {
+                        shader_id: *shader_id,
+                        base: crate::dynamic_materials::ShadingBase::Custom,
+                        dynamic_vertex: vertex_info.clone(),
+                        dynamic_alpha: Some(alpha_info.clone()),
+                    };
+                self.render_passes
+                    .shadow_masked_custom_vertex
                     .pipelines
                     .ensure_variant(
                         &mut ctx,

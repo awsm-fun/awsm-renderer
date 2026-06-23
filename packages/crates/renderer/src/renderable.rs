@@ -172,6 +172,86 @@ impl AwsmRenderer {
                 CullMode::Back
             };
 
+            // -----------------------------------------------------------------
+            // Geometry variant precedence (drawn EXACTLY ONCE):
+            //   combined (masked + custom-vertex) > plain masked
+            //     > plain custom-vertex > solid.
+            // A material that is BOTH glTF `MASK` (`alpha_cutoff` present) AND
+            // custom-vertex (`vertex_shader_info_for` is `Some`) routes to the
+            // COMBINED key when its combined variant is compiled — and in that
+            // case the plain masked + plain custom-vertex keys are forced `None`
+            // so the mesh isn't ALSO drawn in pass 2 / pass 3 (no double-draw).
+            // If the combined variant hasn't compiled yet, the combined key is
+            // `None` and the mesh falls back to its plain masked / custom-vertex
+            // bucket (displaced OR cut, never dropped). Non-instanced only
+            // (matches the compiled shape of every variant pool).
+            // -----------------------------------------------------------------
+            let canonical_shader_id = self.materials.canonical_shader_id(routing_material);
+            let msaa = match self.anti_aliasing.msaa_sample_count {
+                Some(4) => Some(4u32),
+                _ => None,
+            };
+            let is_masked =
+                !mesh.instanced && self.materials.alpha_cutoff(routing_material).is_some();
+            let is_custom_vertex = !mesh.instanced
+                && self
+                    .dynamic_materials
+                    .vertex_shader_info_for(canonical_shader_id)
+                    .is_some();
+
+            // Combined key — only when the material is BOTH masked AND
+            // custom-vertex AND the combined variant is compiled.
+            let geometry_masked_custom_vertex_render_pipeline_key = if is_masked && is_custom_vertex
+            {
+                self.render_passes
+                    .geometry
+                    .masked_custom_vertex_pipelines
+                    .get(msaa, canonical_shader_id, cull_mode)
+            } else {
+                None
+            };
+            // When the combined key claimed this mesh, suppress the plain masked
+            // + plain custom-vertex keys (so pass 4 draws it once). Otherwise the
+            // plain keys apply per their own gating.
+            let combined_claimed = geometry_masked_custom_vertex_render_pipeline_key.is_some();
+
+            // Plain custom-vertex variant: strictly additive + opt-in (a material
+            // with `wgsl_vertex == None` always leaves this `None`). NOT set when
+            // the combined key claimed this mesh.
+            let geometry_custom_vertex_render_pipeline_key =
+                if !combined_claimed && is_custom_vertex {
+                    self.render_passes.geometry.custom_vertex_pipelines.get(
+                        msaa,
+                        canonical_shader_id,
+                        cull_mode,
+                    )
+                } else {
+                    None
+                };
+
+            // Plain masked (alpha-tested) variant: only for non-instanced glTF
+            // MASK meshes whose per-shader-id masked pipeline is compiled, and
+            // NOT already claimed by the combined key. When a mesh is BOTH Mask
+            // AND custom-vertex but the COMBINED variant hasn't compiled yet (so
+            // it fell back), the plain custom-vertex key above took it — suppress
+            // the masked key here too so it's drawn EXACTLY ONCE (custom-vertex
+            // precedence > masked, matching the shadow path). A correct displaced
+            // silhouette matters more than a hole until the combined lands.
+            let geometry_masked_render_pipeline_key = if !combined_claimed
+                && is_masked
+                && geometry_custom_vertex_render_pipeline_key.is_none()
+            {
+                // Key on the CANONICAL id — the masked fragment is
+                // variant-independent.
+                self.render_passes.geometry.masked_pipelines.get(
+                    msaa,
+                    canonical_shader_id,
+                    cull_mode,
+                )
+            } else {
+                None
+            };
+
             let renderable = Renderable {
                 key: mesh_key,
                 world_aabb: mesh.world_aabb.clone(),
@@ -207,59 +287,9 @@ impl AwsmRenderer {
                         );
                     })
                     .ok(),
-                // Masked (alpha-tested) variant: only for non-instanced glTF
-                // MASK meshes whose per-shader-id masked pipeline is compiled.
-                // `None` → falls back to the plain (solid) geometry pipeline.
-                geometry_masked_render_pipeline_key: if !mesh.instanced
-                    && self.materials.alpha_cutoff(routing_material).is_some()
-                {
-                    let msaa = match self.anti_aliasing.msaa_sample_count {
-                        Some(4) => Some(4u32),
-                        _ => None,
-                    };
-                    // Key on the CANONICAL id (not the resolved variant id) —
-                    // the masked fragment is variant-independent.
-                    let masked_shader_id = self.materials.canonical_shader_id(routing_material);
-                    self.render_passes.geometry.masked_pipelines.get(
-                        msaa,
-                        masked_shader_id,
-                        cull_mode,
-                    )
-                } else {
-                    None
-                },
-                // Custom-vertex variant: strictly additive + opt-in. Only for a
-                // material whose registration carries a non-empty `wgsl_vertex`
-                // (`vertex_shader_info_for` → `Some`) AND whose custom-vertex
-                // pipeline is compiled. A material with `wgsl_vertex == None`
-                // leaves this `None`, so it takes the existing shared geometry
-                // path unchanged (non-regression). Keyed on the CANONICAL id
-                // (the custom material's own dynamic id, which is what the
-                // registry + the compile trigger key on). Restricted to
-                // non-instanced meshes — the texture-finalize flow compiles only
-                // the non-instanced custom-vertex shape today (mirroring the
-                // masked path); instanced custom-vertex is a follow-on.
-                geometry_custom_vertex_render_pipeline_key: if !mesh.instanced
-                    && self
-                        .dynamic_materials
-                        .vertex_shader_info_for(
-                            self.materials.canonical_shader_id(routing_material),
-                        )
-                        .is_some()
-                {
-                    let msaa = match self.anti_aliasing.msaa_sample_count {
-                        Some(4) => Some(4u32),
-                        _ => None,
-                    };
-                    let cv_shader_id = self.materials.canonical_shader_id(routing_material);
-                    self.render_passes.geometry.custom_vertex_pipelines.get(
-                        msaa,
-                        cv_shader_id,
-                        cull_mode,
-                    )
-                } else {
-                    None
-                },
+                geometry_masked_render_pipeline_key,
+                geometry_custom_vertex_render_pipeline_key,
+                geometry_masked_custom_vertex_render_pipeline_key,
                 material_opaque_compute_pipeline_key: self
                     .render_passes
                     .material_opaque
@@ -424,6 +454,16 @@ pub struct Renderable {
     /// (renders un-displaced). Strictly additive + opt-in — a material with
     /// `wgsl_vertex == None` always leaves this `None`.
     pub geometry_custom_vertex_render_pipeline_key: Option<RenderPipelineKey>,
+    /// Set for a mesh whose material is BOTH glTF `MASK` AND **custom-vertex**
+    /// (its registration carries both an alpha body and a `wgsl_vertex` body) and
+    /// whose COMBINED variant has been compiled. When `Some`, the geometry pass
+    /// draws this mesh with the combined pipeline (displaced silhouette AND alpha
+    /// cutout) in pass 4. Takes PRECEDENCE over the plain masked + plain
+    /// custom-vertex keys: when this is `Some`, both of those are forced `None`
+    /// (set in `collect_renderables`) so the mesh is drawn EXACTLY ONCE. When
+    /// `None` (variant not compiled yet), the mesh falls back to the plain
+    /// custom-vertex / masked / solid bucket.
+    pub geometry_masked_custom_vertex_render_pipeline_key: Option<RenderPipelineKey>,
     pub material_opaque_compute_pipeline_key: Option<ComputePipelineKey>,
     pub material_transparent_render_pipeline_key: Option<RenderPipelineKey>,
 }
@@ -479,6 +519,13 @@ impl Renderable {
     /// has been compiled.
     pub fn geometry_custom_vertex_render_pipeline_key(&self) -> Option<RenderPipelineKey> {
         self.geometry_custom_vertex_render_pipeline_key
+    }
+
+    /// Returns the COMBINED masked + custom-vertex geometry pipeline key, if this
+    /// mesh's material is BOTH glTF `MASK` AND custom-vertex and its combined
+    /// variant has been compiled.
+    pub fn geometry_masked_custom_vertex_render_pipeline_key(&self) -> Option<RenderPipelineKey> {
+        self.geometry_masked_custom_vertex_render_pipeline_key
     }
 
     /// Pushes the custom-vertex geometry draw for this renderable: binds the

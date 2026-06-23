@@ -17,6 +17,7 @@ pub mod shader_cache_key;
 pub mod shader_template;
 pub mod shadow_custom_vertex;
 pub mod shadow_masked;
+pub mod shadow_masked_custom_vertex;
 pub mod shared;
 
 use std::ops::Range;
@@ -63,6 +64,14 @@ pub struct RenderPasses {
     /// pipeline → un-displaced shadow) until a custom-vertex material's variant is
     /// compiled. Reuses `shadow_masked.bind_group` for group 0 (vertex-augmented).
     pub shadow_custom_vertex: shadow_custom_vertex::ShadowCustomVertexRenderPass,
+    /// COMBINED masked + custom-vertex shadow caster resources — lazy pipeline
+    /// pool + shared zero uv0 buffer for shadows that are BOTH displaced AND
+    /// cutout (a material that is Mask AND custom-vertex). Always present; the
+    /// pool stays empty (routing falls back via precedence) until such a
+    /// material's variant is compiled. Reuses `shadow_masked.bind_group` for
+    /// group 0 (vertex-augmented).
+    pub shadow_masked_custom_vertex:
+        shadow_masked_custom_vertex::ShadowMaskedCustomVertexRenderPass,
     /// GPU mesh-pixel-coverage producer. `None` when
     /// `features.coverage_lod == false`. Consumers read the resulting
     /// `MeshCoverage` table via `is_below_threshold`; with the
@@ -131,6 +140,10 @@ struct RenderPassesBindings {
     shadow_masked_bg: shadow_masked::bind_group::ShadowMaskedBindGroup,
     shadow_masked_pipelines: shadow_masked::pipeline::ShadowMaskedPipelines,
     shadow_custom_vertex_pipelines: shadow_custom_vertex::pipeline::ShadowCustomVertexPipelines,
+    shadow_masked_custom_vertex_pipelines:
+        shadow_masked_custom_vertex::pipeline::ShadowMaskedCustomVertexPipelines,
+    geometry_masked_custom_vertex_pipelines:
+        geometry::masked_custom_vertex_pipeline::GeometryMaskedCustomVertexPipelines,
     coverage_bg_single: Option<coverage::bind_group::CoverageBindGroups>,
     coverage_bg_msaa: Option<coverage::bind_group::CoverageBindGroups>,
     hzb_bg: Option<hzb::bind_group::HzbBindGroups>,
@@ -343,6 +356,26 @@ impl RenderPasses {
                 &shadow_masked_bg,
                 &geometry_bg,
             )?;
+        // Combined masked + custom-vertex geometry variant: reuses the masked
+        // group-0 bind group + an empty lazy pipeline pool. Pipelines compile
+        // later in the texture-finalize flow (parallel to the masked + plain
+        // custom-vertex pools).
+        let geometry_masked_custom_vertex_pipelines =
+            geometry::masked_custom_vertex_pipeline::GeometryMaskedCustomVertexPipelines::new(
+                ctx,
+                &geometry_masked_bg,
+                &geometry_bg,
+            )?;
+        // Combined masked + custom-vertex shadow caster: reuses the
+        // (vertex-augmented) masked-shadow group-0 bind group + an empty lazy
+        // pipeline pool + a shared zero uv0 buffer. Pipelines compile later in
+        // the texture-finalize flow.
+        let shadow_masked_custom_vertex_pipelines =
+            shadow_masked_custom_vertex::pipeline::ShadowMaskedCustomVertexPipelines::new(
+                ctx,
+                &shadow_masked_bg,
+                &geometry_bg,
+            )?;
         let (coverage_bg_single, coverage_bg_msaa) = if features.coverage_lod {
             (
                 Some(coverage::bind_group::CoverageBindGroups::new(ctx, false).await?),
@@ -458,6 +491,8 @@ impl RenderPasses {
                 shadow_masked_bg,
                 shadow_masked_pipelines,
                 shadow_custom_vertex_pipelines,
+                shadow_masked_custom_vertex_pipelines,
+                geometry_masked_custom_vertex_pipelines,
                 coverage_bg_single,
                 coverage_bg_msaa,
                 hzb_bg,
@@ -693,6 +728,8 @@ impl RenderPasses {
             shadow_masked_bg,
             shadow_masked_pipelines,
             shadow_custom_vertex_pipelines,
+            shadow_masked_custom_vertex_pipelines,
+            geometry_masked_custom_vertex_pipelines,
             coverage_bg_single,
             coverage_bg_msaa,
             hzb_bg,
@@ -722,6 +759,7 @@ impl RenderPasses {
             masked_bind_group: geometry_masked_bg,
             masked_pipelines: geometry_masked_pipelines,
             custom_vertex_pipelines: geometry_custom_vertex_pipelines,
+            masked_custom_vertex_pipelines: geometry_masked_custom_vertex_pipelines,
         };
 
         let shadow_masked = shadow_masked::ShadowMaskedRenderPass {
@@ -732,6 +770,11 @@ impl RenderPasses {
         let shadow_custom_vertex = shadow_custom_vertex::ShadowCustomVertexRenderPass {
             pipelines: shadow_custom_vertex_pipelines,
         };
+
+        let shadow_masked_custom_vertex =
+            shadow_masked_custom_vertex::ShadowMaskedCustomVertexRenderPass {
+                pipelines: shadow_masked_custom_vertex_pipelines,
+            };
 
         let coverage = match (
             coverage_bg_single,
@@ -856,6 +899,7 @@ impl RenderPasses {
             geometry,
             shadow_masked,
             shadow_custom_vertex,
+            shadow_masked_custom_vertex,
             coverage,
             hzb,
             occlusion,
