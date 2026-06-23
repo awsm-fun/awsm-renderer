@@ -93,9 +93,9 @@ deferred piece — the programmable GPU vertex stage — is **Part A** below.
 
 | id | item | status | commit |
 |----|------|--------|--------|
-| CV1 | Custom vertex: ABI + `apply_vertex` hook + geometry & shadow per-material pipelines + registration/cache-key + naga validation (Phase 1) | BLOCKED | see §Blocked items |
-| CV2 | Custom vertex: transparent + geometry-masked + shadow-masked variants (Phase 2) | BLOCKED | depends on CV1 |
-| CV3 | Custom vertex: editor 3rd WGSL window + toggle + `set_material_vertex_wgsl` MCP + contract doc + starter body (Phase 3) | BLOCKED | depends on CV1 |
+| CV1 | Custom vertex: ABI + `apply_vertex` hook + geometry & shadow per-material pipelines + registration/cache-key + naga validation (Phase 1) | DONE | ab181114..a6d8466d |
+| CV2 | Custom vertex: transparent + geometry-masked + shadow-masked variants (Phase 2) | WIP | depends on CV1 |
+| CV3 | Custom vertex: editor 3rd WGSL window + toggle + `set_material_vertex_wgsl` MCP + contract doc + starter body (Phase 3) | WIP (setter+window done @ 46b88c17) | contract doc + get_material_contract vertex mode + starter body remain |
 | CV4 | Custom vertex: polish — normal-from-height helper, vertex texture-fetch example, skinned-mesh tests (Phase 4, optional) | BLOCKED | depends on CV1–CV3 |
 | B2 | Multithread: screenshot capture path (`renderer.capture_frame`) | DONE | 4c593c02 |
 | B1 | Multithread: device-loss + worker-crash recovery | BLOCKED | see §Blocked items |
@@ -118,11 +118,22 @@ Chrome-doable, so the target is a genuine 100%.
 
 ## Blocked items (overnight run 2026-06-22)
 
-Both are the two genuinely-large items the tracker flagged; each is multi-day with
+> **UPDATE 2026-06-23:** CV1 is now **DONE + live-verified** (commits
+> `ab181114..a6d8466d`) — the geometry & shadow per-material custom-vertex
+> pipelines render a displaced mesh whose shadow matches the displaced
+> silhouette (driven via the `set_material_vertex_wgsl` MCP setter). The
+> original block analysis below is kept for history. B1/T4 remain blocked.
+> Known follow-ons carried into CV2/CV4: per-vertex UV is currently a zero
+> buffer (needs the visibility geometry vertex format to carry UV — CV4), and a
+> material that is both custom-vertex AND alpha-masked casts a displaced *solid*
+> shadow (not yet alpha-cut — CV2).
+
+Both were the two genuinely-large items the tracker flagged; each is multi-day with
 unresolved design questions, so per the execution rules they are BLOCKED (not
 half-shipped) with the specific reason rather than a silent slice.
 
-- **CV1 (→ blocks CV2/CV3/CV4).** The custom-vertex feature's *full* Phase-1 scope
+- **CV1 (→ blocks CV2/CV3/CV4) — RESOLVED, see update above.** The original
+  concern was that the custom-vertex feature's *full* Phase-1 scope
   can't be completed + **live-verified** in one run:
   1. **ABI not threaded.** `apply_vertex()` (`shared_wgsl/vertex/apply_vertex.wgsl`)
      and its five callers only carry `position/normal/tangent/vertex_index` (+
