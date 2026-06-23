@@ -472,6 +472,10 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
         shader_includes: includes_from_keys(&mat.shader_includes.get_cloned()),
         fragment_inputs: inputs_from_keys(&mat.fragment_inputs.get_cloned()),
         alpha_wgsl,
+        // The 3rd ("vertex") WGSL window — wired to the editor's custom-vertex
+        // toggle + window in CV3. Until then no material declares one; when it
+        // does, fold the body into `wgsl_hash` above so an edit recompiles.
+        wgsl_vertex: None,
     }
 }
 

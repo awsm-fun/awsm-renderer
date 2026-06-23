@@ -810,6 +810,38 @@ impl DynamicMaterials {
         )
     }
 
+    /// Returns the [`DynamicVertexShaderInfo`] (the `MaterialData` struct decl +
+    /// loader + author vertex body) for a registered custom-vertex material, or
+    /// `None` when the material declared no `wgsl_vertex` (→ shared fast vertex
+    /// pipeline). The struct/loader are byte-identical to the fragment hook's,
+    /// so both stages read the same uniform buffer. Sibling of
+    /// [`Self::shader_info_for`] / [`Self::alpha_info_for`].
+    pub fn vertex_shader_info_for(
+        &self,
+        shader_id: MaterialShaderId,
+    ) -> Option<crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo> {
+        let reg = self.registrations.get(&shader_id)?;
+        let wgsl_vertex = reg.wgsl_vertex.as_ref()?.clone();
+        if wgsl_vertex.trim().is_empty() {
+            return None;
+        }
+        Some(
+            crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo {
+                shader_includes: reg.shader_includes.resolve(),
+                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                    "MaterialData",
+                    &reg.layout,
+                ),
+                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                    "MaterialData",
+                    "material_data_load",
+                    &reg.layout,
+                ),
+                wgsl_vertex,
+            },
+        )
+    }
+
     /// Returns the **alpha-only** dynamic-shader info for a registered MASK
     /// custom material — the generated `MaterialData` struct + loader + texture
     /// helpers, plus the author's alpha-only WGSL fragment — so the masked
@@ -1105,6 +1137,15 @@ pub struct MaterialRegistration {
     /// for Mask materials (a procedural cutout can be tiny; a textured one
     /// samples via the generated `material_sample_<name>` helpers).
     pub alpha_wgsl: Option<String>,
+    /// The **third** ("vertex") WGSL window — the programmable vertex-
+    /// displacement body. Wrapped into `fn custom_displace_vertex(input:
+    /// VertexDisplaceInput) -> VertexDisplaceOutput` and compiled into the
+    /// rasterizing passes' custom-vertex pipeline variants (geometry / shadow /
+    /// transparent / masked), so the material controls its vertices the same way
+    /// `wgsl_fragment` controls its shading. `None` → the material uses the
+    /// shared fast vertex pipeline (zero cost). Folded into [`Self::wgsl_hash`]
+    /// by the consumer so an edit recompiles. See `DynamicVertexShaderInfo`.
+    pub wgsl_vertex: Option<String>,
 }
 
 impl crate::AwsmRenderer {
@@ -1646,6 +1687,7 @@ mod tests {
             shader_includes: awsm_materials::ShaderIncludes::all(),
             fragment_inputs: awsm_materials::FragmentInputs::all(),
             alpha_wgsl: None,
+            wgsl_vertex: None,
         }
     }
 
