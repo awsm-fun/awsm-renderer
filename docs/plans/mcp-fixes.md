@@ -1,5 +1,13 @@
 # awsm-scene MCP — fixes from the acceptance run
 
+> **✅ COMPLETE (2026-06-24).** All of F1–F4 landed (F1/F2 with code + verify,
+> F3/F4 doc/contract) and V1–V8 re-verified foregrounded. Every row in
+> `mcp-implementation-test.md`'s results checklist is now ✅ (20/20 + Meta).
+> **No second 🔴**: V1 (T8 world matrix) was confirmed a backgrounded-tab
+> artifact, not a bug. Meta-check held — no feature-presets added. Commits on
+> `testing-mcp`: F1 `a108c84f`, F2 `ea8ecba4`, F3+F4 `25546e35`, fmt/finalize
+> `e865d9b5`.
+
 Companion follow-up to `mcp-implementation-test.md` and `more-mcp-improvements.md`
 (the test suite + the issues found running it). The acceptance run completed
 **16 of 20 rows**; this plan closes the gaps. Two buckets:
