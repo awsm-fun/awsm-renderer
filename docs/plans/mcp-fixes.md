@@ -129,7 +129,18 @@ inverts cleanly under a UV offset (same assertion that already passes for PBR).
 
 ---
 
-### F3 (🟡 doc/contract) — `new_project` seeds a Directional Light; docs say "empty / IBL-only"
+### F3 (🟡 doc/contract) — `new_project` seeds a Directional Light; docs say "empty / IBL-only" — ✅ DONE
+
+**DONE (commit on this branch).** Kept the seeded key light (friendlier default).
+Updated `new_project` tool description (mcp.rs) to state it seeds default env+IBL
+**and a key Directional light** (not empty) + how to get the IBL-only baseline
+(delete the seeded light). Updated `mcp-implementation-test.md`: the "How to run"
+preamble + T17 now say to delete the seeded Directional light for the punctual-
+light-free baseline, and note T5/T15/T18 start from it. Clean deletion of the
+seeded light is exercised in V7. (Description change needs a server restart to
+surface; behavior unaffected.)
+
+### ~~F3 (🟡 doc/contract) — `new_project` seeds a Directional Light~~
 
 **Test:** A3. The test doc states `new_project` re-seeds "empty scene" and T17
 assumes "IBL-only, no punctual lights," but `NewProject` seeds a Directional Light
@@ -153,7 +164,16 @@ can't be cleanly deleted — then make delete work.)
 
 ---
 
-### F4 (🟢 doc nit) — stale "evaluation is a follow-on" note on `Modifier::displace`
+### F4 (🟢 doc nit) — stale "evaluation is a follow-on" note on `Modifier::displace` — ✅ DONE
+
+**DONE (commit on this branch).** Deleted the stale "(Evaluation is a follow-on;
+carried in the schema now so stacks round-trip.)" parenthetical in `recipe.rs`
+(displace IS evaluated, per A4). Replaced with a factual note: expr is evaluated
+by the generic math evaluator, + pointers to the vertex-WGSL hook (GPU) and
+`displace_from_texture` (data-driven). Did **not** add any `noise()`/`fbm()`
+feature-preset (Meta-check held).
+
+### ~~F4 (🟢 doc nit) — stale "evaluation is a follow-on" note~~
 
 **Test:** A4. The `Modifier::Displace { expr }` doc says *"(Evaluation is a
 follow-on; carried in the schema now so stacks round-trip.)"* — but it **is**

@@ -154,8 +154,9 @@ pub enum Modifier {
     /// previous (a linear array).
     Array { count: u32, offset: [f32; 3] },
     /// Formula displacement along the normal: `expr` is evaluated per vertex over
-    /// `(x, y, z, nx, ny, nz, u, v, i)`. (Evaluation is a follow-on; carried in
-    /// the schema now so stacks round-trip.)
+    /// `(x, y, z, nx, ny, nz, u, v, i)` by the generic math evaluator. (For
+    /// GPU-side displacement use the custom vertex-WGSL hook; for data-driven
+    /// height use `displace_from_texture`.)
     Displace { expr: String },
 }
 
