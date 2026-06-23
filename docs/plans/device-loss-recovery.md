@@ -13,6 +13,22 @@
 > "server listening" log + a trunk "success". `task mt:dev` is the threaded
 > build (see § Notes below). Lint gate: `task lint`.
 
+## Getting started (cold session, after a restart)
+1. `cd` to the repo, `git checkout more-mcp` (custom-vertex + multithread items
+   already landed here; this is the only open item).
+2. Ensure the **chrome-devtools MCP is connected** (it drives the browser for
+   verification). If a `list_pages` call fails, reconnect it / `/mcp`.
+3. Start the demo server: free `:9090` then `task mt:dev` with
+   `run_in_background: true` (it's a slow first build — threaded + build-std);
+   wait for HTTP 200 on `http://localhost:9090/` + a trunk "success" in the log.
+4. Open a demo to sanity-check it renders: `http://localhost:9090/?demo=motion`
+   (boxes move) — that's your live target for T4.
+5. You do NOT need the awsm-scene editor MCP for B1/T4 — these demos are driven
+   directly through chrome-devtools (`evaluate_script`, `device.destroy()`, etc.).
+6. Background context (auto-loaded memories, point-in-time): `overnight-run-todo-2026-06-23`
+   (what shipped + that this is the last item), `mcp-improvements-loop-mechanics`,
+   `mcp-direct-http-client` (only if you need the awsm-scene MCP).
+
 Production sessions must survive a lost GPU device and a dead render worker. The
 shared-memory **arena + the renderer's CPU mirrors are already the source of
 truth**, so recovery is largely "rebuild the GPU side from data we still hold" —
