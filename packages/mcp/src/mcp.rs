@@ -688,10 +688,12 @@ pub struct ParticleEmitterParams {
 pub struct PatchKindParams {
     /// Node UUID to patch.
     pub node: String,
-    /// RFC 7386 JSON merge-patch over the node's `NodeKind`: only the fields you
-    /// include change; `null` removes a key; nested objects merge recursively;
-    /// arrays replace wholesale. Read `get_node_details` first to see the exact
-    /// shape + field names, then send just the delta.
+    /// RFC 7386 JSON merge-patch over the node's `NodeKind`, sent as a JSON
+    /// **object** (not a stringified object): only the fields you include change;
+    /// `null` removes a key; nested objects merge recursively; arrays replace
+    /// wholesale. Read `get_node_details` first to see the exact shape + field
+    /// names, then send just the delta.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub patch: serde_json::Value,
 }
 
@@ -2790,7 +2792,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Patch a node's kind with a JSON merge-patch (RFC 7386) — edit only the fields you name instead of resending the whole NodeKind via dispatch_command SetKind. `node` is the node UUID; `patch` is a partial object merged over the node's current kind (fields present overwrite; null removes a key; nested objects merge recursively; arrays replace wholesale). Read get_node_details to see the exact shape + field names, then send just the delta. The result must still be a valid NodeKind (rejected loudly with the deserialize error otherwise). Ideal for escape-hatch edits with no typed tool: particle-emitter config, decal, sprite, collider, etc."
+        description = "Patch a node's kind with a JSON merge-patch (RFC 7386) — edit only the fields you name instead of resending the whole NodeKind via dispatch_command SetKind. `node` is the node UUID; `patch` is a partial JSON **object** (send it as an object, not a stringified object) merged over the node's current kind (fields present overwrite; null removes a key; nested objects merge recursively; arrays replace wholesale). Read get_node_details to see the exact shape + field names, then send just the delta. The result must still be a valid NodeKind (rejected loudly with the deserialize error otherwise). Ideal for escape-hatch edits with no typed tool: particle-emitter config, decal, sprite, collider, etc."
     )]
     async fn patch_kind(
         &self,
