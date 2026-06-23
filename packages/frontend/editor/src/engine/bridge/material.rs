@@ -323,7 +323,24 @@ pub fn insert_material_vc(
             }
             material
         }
-        // Unlit / Toon don't carry texture slots in the editor yet.
+        MaterialShading::Unlit => {
+            // Unlit samples base-color + emissive at runtime (gated by the
+            // TextureInfo `exists` flag — see compute_unlit_material_color); the
+            // renderer `UnlitMaterial` carries both slots. Resolve + bind them here
+            // so a per-node texture (set_node_texture) actually renders instead of
+            // storing the binding and showing flat (F2). Mirrors the PBR path.
+            let mut material = material_to_renderer(def);
+            if let Material::Unlit(m) = &mut material {
+                if let Some(t) = &def.base_color_texture {
+                    m.base_color_tex = resolve_texture(renderer, t, true, MipmapTextureKind::Albedo);
+                }
+                if let Some(t) = &def.emissive_texture {
+                    m.emissive_tex = resolve_texture(renderer, t, true, MipmapTextureKind::Emissive);
+                }
+            }
+            material
+        }
+        // Toon doesn't carry texture slots in the editor yet.
         _ => material_to_renderer(def),
     };
     renderer.materials.insert(

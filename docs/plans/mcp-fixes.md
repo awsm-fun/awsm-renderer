@@ -79,7 +79,24 @@ that string, and `from_value::<NodeKind>(string)` fails with the observed
 
 ---
 
-### F2 (🟡) — opaque **unlit** material silently ignores `base_color_texture`
+### F2 (🟡) — opaque **unlit** material silently ignores `base_color_texture` — ✅ DONE
+
+**DONE (commit on this branch).** Real root cause was *not* the shader — the opaque
+unlit shader (`compute_unlit_material_color`) already samples `base_color_tex_info`
+when its runtime `exists` flag is set (no compile-time feature gate; unlit is pure
+runtime). The gap was the **editor lowering**: `insert_material_vc`
+(`bridge/material.rs`) had `MaterialShading::Unlit` fall through to the texture-less
+`material_to_renderer` path (comment: "Unlit / Toon don't carry texture slots in the
+editor yet"), so `UnlitMaterial.base_color_tex` stayed `None` → `exists=false` →
+flat. Added an explicit Unlit branch that `resolve_texture`s base-color (Albedo,
+sRGB) + emissive (Emissive, sRGB) onto the `UnlitMaterial`, mirroring the PBR/
+FlipBook branches. No shader change, no new feature bucket (unlit gates on runtime
+`exists`, not a feature bit). **Live (foregrounded):** unlit box, region
+`canvas_stats` min_luma 216 (no tex) → **0.0** (checker bound — pure-black tiles
+render, correct for unlit's raw-color output). The player path (`scene-loader`)
+binds unlit textures via its own post-lower step; this fix is the editor bridge.
+
+### ~~F2 (🟡) — opaque **unlit** material silently ignores `base_color_texture`~~
 
 **Test:** A2 (found building the T★ fixture). Binding a texture to an **unlit**
 builtin material round-trips in `get_node_details` but renders **flat white**; the
@@ -156,7 +173,21 @@ answer and already work.)
 Run each with the editor tab **visible**. Most are expected to pass at the visual
 level (tool/compile halves already ✅). Promote to a fix only on a real failure.
 
-### V1 (possible 🔴) — T8 facing hint / world matrix
+### V1 (possible 🔴) — T8 facing hint / world matrix — ✅ DONE (not a bug; was a backgrounded-tab artifact)
+
+**Re-verified foregrounded — NOT a real 🔴.** With the tab visible:
+`insert_primitive box` → `set_rotation_euler [0,π/2,0]` → `set_translation
+{value:[3,0,0]}`. `get_node_transforms.world` for the box is the **correct**
+90°-Y rotation (column-major `[~0,0,-1, 0,1,0, 1,0,~0]`), *not* identity.
+`get_node_bounds`: `forward=[-1,0,~0]` (default -Z forward rotated +90° about Y →
+-X ✓), `right=[~0,0,-1]`, `up=[0,1,0]`, and bounds X = `2.5..3.5` (the +3
+translation applied). The §B identity-world / unrotated-forward was the paused
+render-tick artifact, exactly as suspected. No code change. (Note: `set_translation`
+takes `value`, not `translation`.)
+
+(original note below)
+
+### ~~V1 (possible 🔴) — T8 facing hint / world matrix~~
 
 After `set_rotation_euler [0,π/2,0]` + `set_translation [3,0,0]` on a box,
 `get_node_transforms.world` returned **identity** and `forward = [0,0,-1]`
@@ -175,7 +206,16 @@ could be a real 🔴 — verify first.**
 - `frame_node { padding:0 }` tightly fills the viewport.
 - (screenshot-error-text papercut already ✅.)
 
-### V3 (critical) — T11 per-node texture override on **PBR**
+### V3 (critical) — T11 per-node texture override on **PBR** — ✅ DONE (renders; no fix)
+
+**Verified foregrounded — PBR re-specializes and renders, no silent drop.**
+`add_builtin_material pbr` (no texture) → box → `set_node_texture base_color
+<checker>`: region `canvas_stats` min_luma 216 → **75.5** with the texture
+(unbind restores 216, rebind drops again — fully reversible). The PBR per-node
+override re-specializes and samples correctly (consistent with §11). No code
+change needed.
+
+### ~~V3 (critical) — T11 per-node texture override on **PBR**~~
 
 Confirm `set_node_texture` on a PBR node with a **texture-less** variant either
 re-specializes and **renders** the checker, or returns a clear error — not a silent
