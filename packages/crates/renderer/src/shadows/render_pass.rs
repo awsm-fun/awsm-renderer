@@ -254,10 +254,7 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 // alpha-cut. Non-instanced only. Reuses the augmented group-0.
                 let combined_key = if !mesh.instanced && masked_group0.is_some() {
                     let shader_id = ctx.materials.canonical_shader_id(mesh.material_key);
-                    if ctx
-                        .dynamic_materials
-                        .vertex_shader_info_for(shader_id)
-                        .is_some()
+                    if ctx.dynamic_materials.has_vertex_shader(shader_id)
                         && ctx.materials.alpha_cutoff(mesh.material_key).is_some()
                     {
                         ctx.render_passes.shadow_masked_custom_vertex.pipelines.get(
@@ -279,11 +276,7 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     None
                 } else if !mesh.instanced && masked_group0.is_some() {
                     let shader_id = ctx.materials.canonical_shader_id(mesh.material_key);
-                    if ctx
-                        .dynamic_materials
-                        .vertex_shader_info_for(shader_id)
-                        .is_some()
-                    {
+                    if ctx.dynamic_materials.has_vertex_shader(shader_id) {
                         ctx.render_passes.shadow_custom_vertex.pipelines.get(
                             shader_id,
                             is_cube,

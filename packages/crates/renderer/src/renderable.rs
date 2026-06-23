@@ -193,11 +193,12 @@ impl AwsmRenderer {
             };
             let is_masked =
                 !mesh.instanced && self.materials.alpha_cutoff(routing_material).is_some();
+            // Cheap per-frame existence check (no DynamicVertexShaderInfo build /
+            // no WGSL-string alloc — collect_renderables runs every frame).
             let is_custom_vertex = !mesh.instanced
                 && self
                     .dynamic_materials
-                    .vertex_shader_info_for(canonical_shader_id)
-                    .is_some();
+                    .has_vertex_shader(canonical_shader_id);
 
             // Combined key — only when the material is BOTH masked AND
             // custom-vertex AND the combined variant is compiled.

@@ -830,12 +830,27 @@ impl DynamicMaterials {
         )
     }
 
+    /// Cheap existence check: does this registered material declare a non-empty
+    /// custom-vertex body? Equivalent to `vertex_shader_info_for(..).is_some()`
+    /// but WITHOUT building the `DynamicVertexShaderInfo` (which allocates the
+    /// generated `MaterialData` struct/loader WGSL). `collect_renderables` runs
+    /// per-frame and only needs the bool to route a mesh to the custom-vertex
+    /// pipeline, so it must not allocate per frame (per the no-per-frame-alloc
+    /// standard). The full info is built once at pipeline-compile time.
+    pub fn has_vertex_shader(&self, shader_id: MaterialShaderId) -> bool {
+        self.registrations
+            .get(&shader_id)
+            .and_then(|reg| reg.wgsl_vertex.as_deref())
+            .is_some_and(|w| !w.trim().is_empty())
+    }
+
     /// Returns the [`DynamicVertexShaderInfo`] (the `MaterialData` struct decl +
     /// loader + author vertex body) for a registered custom-vertex material, or
     /// `None` when the material declared no `wgsl_vertex` (→ shared fast vertex
     /// pipeline). The struct/loader are byte-identical to the fragment hook's,
     /// so both stages read the same uniform buffer. Sibling of
-    /// [`Self::shader_info_for`] / [`Self::alpha_info_for`].
+    /// [`Self::shader_info_for`] / [`Self::alpha_info_for`]. NOTE: this
+    /// allocates — for a per-frame existence check use [`Self::has_vertex_shader`].
     pub fn vertex_shader_info_for(
         &self,
         shader_id: MaterialShaderId,
