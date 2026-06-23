@@ -104,7 +104,7 @@ Page-based cluster residency, analogous to virtual texturing:
 ## Cross-cutting
 
 - **Feature gate**: add `virtual_geometry` (or `nanite`) to `features.rs`, **default off**, mirroring `gpu_culling`. Zero-risk to existing consumers; the whole pipeline only activates when on.
-- **Sequencing**: land after §D uber-shader (`docs/plans/todo.md`) to avoid colliding with in-flight dispatch-grouping work.
+- **Sequencing**: land after the uber-shader / dispatch-grouping work to avoid colliding with it.
 - **Skinned/morph meshes**: explicitly excluded — they keep today's per-mesh visibility path. Cluster and non-cluster geometry coexist in the same vis buffer. (Rigid per-object transforms are *not* excluded — see scope note and Phase 2.)
 
 ## Critical files

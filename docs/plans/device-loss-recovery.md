@@ -1,13 +1,17 @@
 # Device-loss + worker-crash recovery (B1) + verification (T4)
 
-> **Status: NOT STARTED — standalone pickup doc.** This is the one remaining item
-> from `docs/plans/todo.md` (everything else shipped in PR #138). It was
-> deliberately deferred to its own focused session: it's greenfield error-recovery
-> code with two real design forks, and a half-implementation is worse than none.
+> **Status: NOT STARTED — standalone pickup doc.** This is the one remaining
+> renderer-feature item; the custom-vertex feature + the self-contained
+> multithread items shipped in PR #138. It was deliberately deferred to its own
+> focused session: it's greenfield error-recovery code with two real design
+> forks, and a half-implementation is worse than none.
 >
 > Branch: `more-mcp` (or a fresh branch off it). Target: Chrome desktop. Verify
-> via the chrome-devtools MCP against `task mt:dev` (`:9090`) — see
-> `docs/plans/todo.md` § Dev environment for the build/restart cycle.
+> via the chrome-devtools MCP against `task mt:dev` (`:9090`). Build/restart
+> cycle: free `:9090` (`lsof -ti tcp:9090 | xargs kill`) before relaunch; start
+> with `run_in_background: true` (NOT inline `&`); wait for HTTP 200 + the
+> "server listening" log + a trunk "success". `task mt:dev` is the threaded
+> build (see § Notes below). Lint gate: `task lint`.
 
 Production sessions must survive a lost GPU device and a dead render worker. The
 shared-memory **arena + the renderer's CPU mirrors are already the source of

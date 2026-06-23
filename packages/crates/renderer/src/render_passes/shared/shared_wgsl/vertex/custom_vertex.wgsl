@@ -2,7 +2,8 @@
 // fragment `custom_shade_dynamic` machinery: the agent's WGSL body is wrapped
 // into `custom_displace_vertex`, which runs in the post-morph LOCAL frame
 // (before skin) so skinned + rigid meshes deform consistently. The hook owns
-// the returned surface frame (normal/tangent) — see docs/plans/todo.md §6.
+// the returned surface frame (normal/tangent) — see
+// docs/dynamic-materials/contract-vertex.md (normal ownership).
 struct VertexDisplaceInput {
     position: vec3<f32>,    // post-morph LOCAL position
     normal: vec3<f32>,      // post-morph LOCAL normal
