@@ -503,9 +503,14 @@ pub enum AlphaModeArg {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ContractParams {
-    /// Which contract: false (default) = opaque/mask, true = transparent/blend.
+    /// Which fragment contract: false (default) = opaque/mask, true =
+    /// transparent/blend. Ignored when `vertex` is true.
     #[serde(default)]
     pub transparent: bool,
+    /// When true, return the VERTEX-displacement contract (the third, vertex
+    /// WGSL window's ABI) instead of the fragment contract.
+    #[serde(default)]
+    pub vertex: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1327,12 +1332,18 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "The dynamic-material WGSL authoring contract (the shader ABI): input.* fields, return type, time/camera access, legal shader_include + fragment_input keys. Pass transparent:true for the blend contract. Read this before authoring a custom material."
+        description = "The dynamic-material WGSL authoring contract (the shader ABI): input.* fields, return type, time/camera access, legal shader_include + fragment_input keys. Pass transparent:true for the blend contract. Pass vertex:true for the VERTEX-displacement contract (the third, vertex WGSL window). Read this before authoring a custom material."
     )]
     async fn get_material_contract(
         &self,
         Parameters(p): Parameters<ContractParams>,
     ) -> Result<CallToolResult, McpError> {
+        if p.vertex {
+            // The vertex hook owns its own (narrower) include set; the
+            // fragment-only key list does not apply, so return the vertex
+            // contract verbatim.
+            return Ok(text(CONTRACT_VERTEX.to_string()));
+        }
         let body = if p.transparent {
             CONTRACT_TRANSPARENT
         } else {
@@ -2470,7 +2481,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a custom material's THIRD, vertex-displacement WGSL window — the body is wrapped into `fn custom_displace_vertex(input: VertexDisplaceInput) -> VertexDisplaceOutput` and compiled into the geometry/shadow raster so the material moves its own vertices. Return VertexDisplaceOutput(position, normal, tangent) in LOCAL space (post-morph, pre-skin). Inputs: input.position/normal/tangent (local), input.uv (currently 0), input.vertex_index, input.instance_id, input.material.<field>, input.globals.time. Empty clears it (→ shared fast pipeline). Recompiles + reports diagnostics like set_material_wgsl."
+        description = "Set a custom material's THIRD, vertex-displacement WGSL window — the body is wrapped into `fn custom_displace_vertex(input: VertexDisplaceInput) -> VertexDisplaceOutput` and compiled into the geometry/shadow raster so the material moves its own vertices. Return VertexDisplaceOutput(position, normal, tangent) in LOCAL space (post-morph, pre-skin). Inputs: input.position/normal/tangent (local), input.uv (real uv0 for TRANSPARENT materials; a zero placeholder for opaque — opaque uv is a follow-on), input.vertex_index, input.instance_id (u32::MAX non-instanced), input.material.<field>, input.globals.time. The hook OWNS the normal (the renderer does NOT recompute it — pass input.normal through if unchanged). Read get_material_contract { vertex: true } first. Gentle sine-ripple starter: `var o: VertexDisplaceOutput; let off = sin(input.position.x * 6.0 + input.globals.time * 2.0) * 0.05; o.position = input.position + input.normal * off; o.normal = input.normal; o.tangent = input.tangent; return o;`. Empty clears it (→ shared fast pipeline, zero cost). Recompiles + reports diagnostics like set_material_wgsl."
     )]
     async fn set_material_vertex_wgsl(
         &self,
@@ -3909,6 +3920,12 @@ impl ServerHandler for EditorMcp {
                 "Transparent material contract",
                 "The WGSL ABI for blend (transparent) dynamic materials.",
             ),
+            res(
+                "awsm://docs/material-contract-vertex",
+                "Vertex-displacement material contract",
+                "The WGSL ABI for the vertex-displacement hook (the third, \
+                 vertex WGSL window) — input.*, return type, normal ownership.",
+            ),
         ]))
     }
 
@@ -3925,6 +3942,7 @@ impl ServerHandler for EditorMcp {
             "awsm://docs/mesh-tools" => MESH_TOOLS_DOC,
             "awsm://docs/material-contract-opaque" => CONTRACT_OPAQUE,
             "awsm://docs/material-contract-transparent" => CONTRACT_TRANSPARENT,
+            "awsm://docs/material-contract-vertex" => CONTRACT_VERTEX,
             other => {
                 return Err(McpError::resource_not_found(
                     format!("unknown resource {other}"),
@@ -4215,6 +4233,7 @@ fn parse_interp(s: &str) -> Result<Interp, McpError> {
 const CONTRACT_OPAQUE: &str = include_str!("../../../docs/dynamic-materials/contract-opaque.md");
 const CONTRACT_TRANSPARENT: &str =
     include_str!("../../../docs/dynamic-materials/contract-transparent.md");
+const CONTRACT_VERTEX: &str = include_str!("../../../docs/dynamic-materials/contract-vertex.md");
 const MCP_DOC: &str = include_str!("../../../docs/MCP.md");
 const AGENT_GUIDE: &str = include_str!("../../../docs/AGENT_GUIDE.md");
 const MATERIAL_RECIPES: &str = include_str!("../../../docs/dynamic-materials/recipes.md");

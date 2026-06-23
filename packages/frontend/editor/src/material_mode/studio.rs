@@ -6,6 +6,16 @@ use crate::controller::{AlphaMode, CustomMaterial, Slot};
 use crate::engine::scene::AssetId;
 use crate::prelude::*;
 
+/// Starter / example shown in the "Vertex (displacement)" window hint: a gentle
+/// animated sine ripple along the normal (example (a) in
+/// `docs/dynamic-materials/contract-vertex.md`). Passes the normal/tangent
+/// through unchanged (§6 — the hook owns the frame). This is a PLACEHOLDER only;
+/// the default value stays empty (no custom vertex → shared fast pipeline).
+const VERTEX_STARTER: &str = "e.g. var o: VertexDisplaceOutput; \
+let off = sin(input.position.x * 6.0 + input.globals.time * 2.0) * 0.05; \
+o.position = input.position + input.normal * off; \
+o.normal = input.normal; o.tangent = input.tangent; return o;";
+
 const UNIFORM_TYPES: &[&str] = &[
     "f32",
     "i32",
@@ -1420,7 +1430,10 @@ fn vertex_code_editor(mat: &Arc<CustomMaterial>) -> Dom {
             }))
             .child(html!("span", {
                 .style("font-size", "11px").style("color", "var(--text-3)")
-                .text("e.g. var o: VertexDisplaceOutput; o.position = input.position; o.normal = input.normal; o.tangent = input.tangent; return o;")
+                // Gentle animated sine-ripple starter (example (a) in
+                // docs/dynamic-materials/contract-vertex.md). Empty stays the
+                // default (no custom vertex → shared fast pipeline, zero cost).
+                .text(VERTEX_STARTER)
             }))
         }))
         .child(html!("textarea" => web_sys::HtmlTextAreaElement, {
