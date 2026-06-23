@@ -1326,6 +1326,11 @@ fn code_pane(mat: &Arc<CustomMaterial>, help: Mutable<bool>) -> Dom {
             (a == crate::controller::custom_material::AlphaMode::Mask)
                 .then(|| alpha_code_editor(&mat))
         })))
+        // Third, vertex-displacement WGSL window — always visible (an empty body
+        // means no custom vertex → the shared fast pipeline). Returns a
+        // `VertexDisplaceOutput` in LOCAL space; compiled into the
+        // geometry/shadow raster so the material moves its own vertices.
+        .child(vertex_code_editor(mat))
         // Problems strip.
         .child(html!("div", {
             .style("flex", "0 0 auto").style("border-top", "1px solid var(--line-soft)").style("background", "var(--bg-2)").style("max-height", "120px").style("overflow-y", "auto")
@@ -1389,6 +1394,44 @@ fn alpha_code_editor(mat: &Arc<CustomMaterial>) -> Dom {
             .style("color", "var(--text-0)").style("font-size", "12.5px").style("line-height", "19px").style("white-space", "pre").style("tab-size", "4")
             .with_node!(ta => {
                 .event(clone!(ta, mat => move |_: events::Input| dispatch(EditorCommand::SetCustomMaterialAlphaWgsl { id: mat.id, wgsl: ta.value() })))
+            })
+        }))
+    })
+}
+
+/// The third, vertex-displacement WGSL editor. Dispatches
+/// `SetCustomMaterialVertexWgsl`; the body is wrapped into
+/// `custom_displace_vertex(input: VertexDisplaceInput) -> VertexDisplaceOutput`
+/// and returns position/normal/tangent in LOCAL space (post-morph, pre-skin).
+/// Empty body → no custom vertex (shared fast pipeline).
+fn vertex_code_editor(mat: &Arc<CustomMaterial>) -> Dom {
+    let mat = mat.clone();
+    let initial = mat.vertex_wgsl.get_cloned();
+    html!("div", {
+        .style("flex", "0 0 auto").style("display", "flex").style("flex-direction", "column")
+        .style("border-top", "1px solid var(--line-soft)").style("height", "150px")
+        .child(html!("div", {
+            .style("flex", "0 0 auto").style("padding", "5px 12px").style("background", "var(--bg-2)")
+            .style("display", "flex").style("align-items", "center").style("gap", "8px")
+            .child(html!("span", {
+                .class("kicker").style("font-size", "10px").style("color", "var(--text-3)")
+                .style("text-transform", "uppercase").style("letter-spacing", ".06em")
+                .text("Vertex (displacement)")
+            }))
+            .child(html!("span", {
+                .style("font-size", "11px").style("color", "var(--text-3)")
+                .text("e.g. var o: VertexDisplaceOutput; o.position = input.position; o.normal = input.normal; o.tangent = input.tangent; return o;")
+            }))
+        }))
+        .child(html!("textarea" => web_sys::HtmlTextAreaElement, {
+            .class("mono")
+            .attr("spellcheck", "false").attr("wrap", "off")
+            .prop("value", &initial)
+            .style("flex", "1").style("min-width", "0").style("margin", "0").style("padding", "12px 14px")
+            .style("background", "var(--bg-3)").style("border-style", "none").style("outline-style", "none").style("resize", "none")
+            .style("color", "var(--text-0)").style("font-size", "12.5px").style("line-height", "19px").style("white-space", "pre").style("tab-size", "4")
+            .with_node!(ta => {
+                .event(clone!(ta, mat => move |_: events::Input| dispatch(EditorCommand::SetCustomMaterialVertexWgsl { id: mat.id, wgsl: ta.value() })))
             })
         }))
     })

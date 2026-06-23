@@ -39,6 +39,12 @@ pub struct StoredMaterial {
     /// round-trip.
     #[serde(default)]
     pub alpha_wgsl: String,
+    /// The third, vertex-displacement WGSL window — wrapped into
+    /// `custom_displace_vertex` and compiled into the geometry/shadow raster so
+    /// the material moves its own vertices. Empty / absent → no custom vertex
+    /// (shared fast pipeline). `#[serde(default)]` so older projects round-trip.
+    #[serde(default)]
+    pub vertex_wgsl: String,
     /// "opaque" / "mask" / "blend".
     #[serde(default)]
     pub alpha: String,

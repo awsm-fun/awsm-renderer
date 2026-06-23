@@ -2470,6 +2470,55 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Set a custom material's THIRD, vertex-displacement WGSL window — the body is wrapped into `fn custom_displace_vertex(input: VertexDisplaceInput) -> VertexDisplaceOutput` and compiled into the geometry/shadow raster so the material moves its own vertices. Return VertexDisplaceOutput(position, normal, tangent) in LOCAL space (post-morph, pre-skin). Inputs: input.position/normal/tangent (local), input.uv (currently 0), input.vertex_index, input.instance_id, input.material.<field>, input.globals.time. Empty clears it (→ shared fast pipeline). Recompiles + reports diagnostics like set_material_wgsl."
+    )]
+    async fn set_material_vertex_wgsl(
+        &self,
+        Parameters(p): Parameters<SetWgslParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = parse_asset(&p.material)?;
+        if let Response::Err(e) = self
+            .req(Request::Dispatch(
+                EditorCommand::SetCustomMaterialVertexWgsl { id, wgsl: p.wgsl },
+            ))
+            .await?
+        {
+            return Err(McpError::internal_error(e, None));
+        }
+        // Synchronous re-register so the custom-vertex pipeline recompiles +
+        // diagnostics are recorded on the material.
+        if let Response::Err(e) = self
+            .req(Request::Dispatch(EditorCommand::RegisterMaterial { id }))
+            .await?
+        {
+            return Err(McpError::internal_error(e, None));
+        }
+        match self
+            .req(Request::Query(EditorQuery::MaterialDiagnostics {
+                material: id,
+            }))
+            .await?
+        {
+            Response::Query(qr) => match *qr {
+                QueryResult::Diagnostics(d) if d.ok => Ok(text("ok")),
+                QueryResult::Diagnostics(d) => Err(McpError::internal_error(
+                    format!(
+                        "vertex WGSL compile failed:\n{}",
+                        fmt_diag_errors(&d.errors)
+                    ),
+                    None,
+                )),
+                QueryResult::Error { error } => Err(McpError::internal_error(error, None)),
+                other => Ok(text(
+                    serde_json::to_string_pretty(&other).unwrap_or_default(),
+                )),
+            },
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
         description = "Set a custom material's alpha mode: opaque | mask (with `cutoff`) | blend."
     )]
     async fn set_material_alpha_mode(
