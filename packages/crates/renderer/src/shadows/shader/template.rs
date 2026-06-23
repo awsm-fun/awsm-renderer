@@ -19,6 +19,20 @@ pub struct ShaderTemplateShadow {
     pub instancing_transforms: bool,
     pub max_morph_unroll: u32,
     pub max_skin_unroll: u32,
+    /// INERT scaffolding for the programmable vertex-displacement hook
+    /// (mirrors the fragment `custom_shade_dynamic` machinery). Always
+    /// `false` here — the gated WGSL is never rendered yet, so output is
+    /// byte-identical to today.
+    pub has_custom_vertex: bool,
+    /// The author's WGSL displacement body, wrapped into
+    /// `custom_displace_vertex` at render time. Empty until wired up.
+    pub dynamic_wgsl_vertex: String,
+    /// Auto-generated `struct MaterialData { ... }` decl for the hook.
+    /// Empty until wired up.
+    pub dynamic_vertex_struct_decl: String,
+    /// Auto-generated `material_data_load` accessor for the hook.
+    /// Empty until wired up.
+    pub dynamic_vertex_loader_decl: String,
 }
 
 impl TryFrom<&ShaderCacheKeyShadow> for ShaderTemplateShadow {
@@ -29,6 +43,10 @@ impl TryFrom<&ShaderCacheKeyShadow> for ShaderTemplateShadow {
             instancing_transforms: value.instancing_transforms,
             max_morph_unroll: 2,
             max_skin_unroll: 2,
+            has_custom_vertex: false,
+            dynamic_wgsl_vertex: String::new(),
+            dynamic_vertex_struct_decl: String::new(),
+            dynamic_vertex_loader_decl: String::new(),
         })
     }
 }

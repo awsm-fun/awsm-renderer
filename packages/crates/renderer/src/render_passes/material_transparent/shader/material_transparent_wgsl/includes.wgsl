@@ -18,6 +18,14 @@
 {% include "shared_wgsl/vertex/transform.wgsl" %}
 /*************** END transform.wgsl ******************/
 
+{% if has_custom_vertex %}
+/*************** START custom_vertex.wgsl ******************/
+{{ dynamic_vertex_struct_decl|safe }}
+{{ dynamic_vertex_loader_decl|safe }}
+{% include "shared_wgsl/vertex/custom_vertex.wgsl" %}
+/*************** END custom_vertex.wgsl ******************/
+{% endif %}
+
 /*************** START morph.wgsl ******************/
 {% include "shared_wgsl/vertex/morph.wgsl" %}
 /*************** END morph.wgsl ******************/

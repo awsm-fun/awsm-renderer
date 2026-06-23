@@ -37,6 +37,19 @@ fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera) -> ApplyVertexOut
         tangent = apply_tangent_morphs(vertex_orig, tangent);
     }
 
+    {% if has_custom_vertex %}
+    {
+        let _disp = custom_displace_vertex(VertexDisplaceInput(
+            vertex.position, normal, tangent, vec2<f32>(0.0, 0.0),
+            vertex.vertex_index, 0u,
+            material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+        ));
+        vertex.position = _disp.position;
+        normal = _disp.normal;
+        tangent = _disp.tangent;
+    }
+    {% endif %}
+
     // Apply skinning to position, normal, and tangent
     if geometry_mesh_meta.skin_sets_len != 0 {
         vertex = apply_position_skin(vertex);

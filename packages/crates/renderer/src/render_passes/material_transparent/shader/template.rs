@@ -79,6 +79,20 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// `prep_edge_shadow` read on it; the field must exist for askama type-check
     /// even though the enclosing `{% if prep_present %}` is always false here.
     pub multisampled_geometry: bool,
+    /// INERT scaffolding for the programmable vertex-displacement hook
+    /// (mirrors the fragment `custom_shade_dynamic` machinery). Always
+    /// `false` here — the gated WGSL is never rendered yet, so output is
+    /// byte-identical to today.
+    pub has_custom_vertex: bool,
+    /// The author's WGSL displacement body, wrapped into
+    /// `custom_displace_vertex` at render time. Empty until wired up.
+    pub dynamic_wgsl_vertex: String,
+    /// Auto-generated `struct MaterialData { ... }` decl for the hook.
+    /// Empty until wired up.
+    pub dynamic_vertex_struct_decl: String,
+    /// Auto-generated `material_data_load` accessor for the hook.
+    /// Empty until wired up.
+    pub dynamic_vertex_loader_decl: String,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -128,6 +142,10 @@ impl ShaderTemplateTransparentMaterialIncludes {
             // Transparent is a forward pass with no edge buffer; inert (the EDGE
             // branch lives under the always-false `prep_present` gate).
             multisampled_geometry: false,
+            has_custom_vertex: false,
+            dynamic_wgsl_vertex: String::new(),
+            dynamic_vertex_struct_decl: String::new(),
+            dynamic_vertex_loader_decl: String::new(),
         }
     }
 

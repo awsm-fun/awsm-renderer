@@ -2,6 +2,11 @@
 {% include "shared_wgsl/camera.wgsl" %}
 {% include "shared_wgsl/frame_globals.wgsl" %}
 {% include "shared_wgsl/vertex/transform.wgsl" %}
+{% if has_custom_vertex %}
+{{ dynamic_vertex_struct_decl|safe }}
+{{ dynamic_vertex_loader_decl|safe }}
+{% include "shared_wgsl/vertex/custom_vertex.wgsl" %}
+{% endif %}
 {% include "shared_wgsl/vertex/morph.wgsl" %}
 {% include "shared_wgsl/vertex/skin.wgsl" %}
 {% include "shared_wgsl/vertex/apply_vertex.wgsl" %}

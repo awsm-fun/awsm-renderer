@@ -17,6 +17,12 @@ struct ApplyVertexInput {
     {% endif %}
 };
 
+{% if has_custom_vertex %}
+{{ dynamic_vertex_struct_decl|safe }}
+{{ dynamic_vertex_loader_decl|safe }}
+{% include "shared_wgsl/vertex/custom_vertex.wgsl" %}
+{% endif %}
+
 {% include "shared_wgsl/vertex/morph.wgsl" %}
 {% include "shared_wgsl/vertex/skin.wgsl" %}
 
@@ -68,6 +74,16 @@ fn vert_main(
     if geometry_mesh_meta.morph_geometry_target_len != 0u {
         vertex = apply_position_morphs(vertex);
     }
+    {% if has_custom_vertex %}
+    {
+        let _disp = custom_displace_vertex(VertexDisplaceInput(
+            vertex.position, vertex.normal, vertex.tangent, vec2<f32>(0.0, 0.0),
+            vertex.vertex_index, 0u,
+            material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+        ));
+        vertex.position = _disp.position;
+    }
+    {% endif %}
     if geometry_mesh_meta.skin_sets_len != 0u {
         vertex = apply_position_skin(vertex);
     }

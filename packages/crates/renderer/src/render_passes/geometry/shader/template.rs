@@ -50,6 +50,20 @@ pub struct ShaderTemplateGeometryVertex {
     /// uniform binding is already populated (set via dynamic offset
     /// by the CPU) and no shader-side load is needed.
     meta_storage_array: bool,
+    /// INERT scaffolding for the programmable vertex-displacement hook
+    /// (mirrors the fragment `custom_shade_dynamic` machinery). Always
+    /// `false` here — the gated WGSL is never rendered yet, so output is
+    /// byte-identical to today.
+    has_custom_vertex: bool,
+    /// The author's WGSL displacement body, wrapped into
+    /// `custom_displace_vertex` at render time. Empty until wired up.
+    dynamic_wgsl_vertex: String,
+    /// Auto-generated `struct MaterialData { ... }` decl for the hook.
+    /// Empty until wired up.
+    dynamic_vertex_struct_decl: String,
+    /// Auto-generated `material_data_load` accessor for the hook.
+    /// Empty until wired up.
+    dynamic_vertex_loader_decl: String,
 }
 
 impl ShaderTemplateGeometryVertex {
@@ -60,6 +74,10 @@ impl ShaderTemplateGeometryVertex {
             max_skin_unroll: 2,
             instancing_transforms: cache_key.instancing_transforms,
             meta_storage_array: cache_key.meta_storage_array,
+            has_custom_vertex: false,
+            dynamic_wgsl_vertex: String::new(),
+            dynamic_vertex_struct_decl: String::new(),
+            dynamic_vertex_loader_decl: String::new(),
         }
     }
 }
