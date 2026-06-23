@@ -744,6 +744,8 @@ impl AwsmRenderer {
                 .then(|| self.materials.shader_id(mesh.material_key));
             let dynamic_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
+            let dynamic_vertex_shader =
+                dynamic_shader_id.and_then(|id| self.dynamic_materials.vertex_shader_info_for(id));
             requests.push(
                 crate::render_passes::material_transparent::pipeline::TransparentMeshPipelineRequest {
                     mesh,
@@ -754,6 +756,7 @@ impl AwsmRenderer {
                     pbr_features,
                     dynamic_shader_id,
                     dynamic_shader,
+                    dynamic_vertex_shader,
                 },
             );
         }
@@ -2444,6 +2447,9 @@ impl AwsmRenderer {
                     dispatch_hash: 0,
                     dynamic_shader_id: Some(shader_id),
                     dynamic_shader: Some(info),
+                    // Fragment-hook validation only; the custom-vertex path has
+                    // its own validator (`validate_dynamic_vertex_transparent_wgsl`).
+                    dynamic_vertex_shader: None,
                     froxel_slice_count: DEFAULT_SLICE_COUNT,
                 };
                 let template = match ShaderTemplateMaterialTransparent::try_from(&key) {

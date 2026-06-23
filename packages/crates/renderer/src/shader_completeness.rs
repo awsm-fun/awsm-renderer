@@ -168,6 +168,7 @@ fn transparent_defines_every_called_loader_per_base() {
             dispatch_hash: 0,
             dynamic_shader_id: None,
             dynamic_shader: None,
+            dynamic_vertex_shader: None,
             froxel_slice_count: DEFAULT_SLICE_COUNT,
         };
         let src = ShaderTemplateMaterialTransparent::try_from(&key)

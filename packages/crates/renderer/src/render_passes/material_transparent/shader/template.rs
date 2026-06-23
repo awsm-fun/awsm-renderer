@@ -79,19 +79,22 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// `prep_edge_shadow` read on it; the field must exist for askama type-check
     /// even though the enclosing `{% if prep_present %}` is always false here.
     pub multisampled_geometry: bool,
-    /// INERT scaffolding for the programmable vertex-displacement hook
-    /// (mirrors the fragment `custom_shade_dynamic` machinery). Always
-    /// `false` here — the gated WGSL is never rendered yet, so output is
-    /// byte-identical to today.
+    /// `true` when this transparent mesh's material declared a
+    /// `custom_displace_vertex` body — emits the gated hook wrapper +
+    /// `apply_vertex` call. Driven by the cache key's `dynamic_vertex_shader`;
+    /// `false` (every transparent mesh without a vertex body) keeps the output
+    /// byte-identical to the pre-feature build.
     pub has_custom_vertex: bool,
     /// The author's WGSL displacement body, wrapped into
-    /// `custom_displace_vertex` at render time. Empty until wired up.
+    /// `custom_displace_vertex` at render time. Empty unless `has_custom_vertex`.
     pub dynamic_wgsl_vertex: String,
-    /// Auto-generated `struct MaterialData { ... }` decl for the hook.
-    /// Empty until wired up.
+    /// Auto-generated `struct MaterialData { ... }` decl for the hook — emitted
+    /// only for a non-`Custom` base (a `Custom` transparent material's FRAGMENT
+    /// template already declares it; re-emitting would redefine the type). Empty
+    /// unless `has_custom_vertex`.
     pub dynamic_vertex_struct_decl: String,
-    /// Auto-generated `material_data_load` accessor for the hook.
-    /// Empty until wired up.
+    /// Auto-generated `material_data_load` accessor for the hook (same non-Custom
+    /// gating as the struct decl). Empty unless `has_custom_vertex`.
     pub dynamic_vertex_loader_decl: String,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
@@ -142,10 +145,25 @@ impl ShaderTemplateTransparentMaterialIncludes {
             // Transparent is a forward pass with no edge buffer; inert (the EDGE
             // branch lives under the always-false `prep_present` gate).
             multisampled_geometry: false,
-            has_custom_vertex: false,
-            dynamic_wgsl_vertex: String::new(),
-            dynamic_vertex_struct_decl: String::new(),
-            dynamic_vertex_loader_decl: String::new(),
+            // Custom-vertex hook (opt-in): only emitted when the mesh's material
+            // declared a `wgsl_vertex` body. `None` keeps the gated WGSL out, so
+            // a transparent mesh without a vertex body is byte-identical to today.
+            has_custom_vertex: cache_key.dynamic_vertex_shader.is_some(),
+            dynamic_wgsl_vertex: cache_key
+                .dynamic_vertex_shader
+                .as_ref()
+                .map(|d| d.wgsl_vertex.clone())
+                .unwrap_or_default(),
+            dynamic_vertex_struct_decl: cache_key
+                .dynamic_vertex_shader
+                .as_ref()
+                .map(|d| d.struct_decl.clone())
+                .unwrap_or_default(),
+            dynamic_vertex_loader_decl: cache_key
+                .dynamic_vertex_shader
+                .as_ref()
+                .map(|d| d.loader_decl.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -228,9 +246,10 @@ pub struct ShaderTemplateTransparentMaterialVertex {
     pub in_color_set_start: u32,
     pub out_uv_set_start: u32,
     pub out_color_set_start: u32,
-    /// INERT scaffolding for the programmable vertex-displacement hook. Always
-    /// `false` here — gates the extra `apply_vertex` hook args in the vertex
-    /// entry, kept off so output stays byte-identical.
+    /// Gates the extra `apply_vertex` hook args (real per-mesh uv0 /
+    /// instance_id / frame_globals) in the vertex entry. `true` only when this
+    /// mesh's material declared a `custom_displace_vertex` body; `false` keeps
+    /// the vertex entry byte-identical to the pre-feature build.
     pub has_custom_vertex: bool,
 }
 
@@ -261,7 +280,10 @@ impl ShaderTemplateTransparentMaterialVertex {
             in_color_set_start,
             out_uv_set_start,
             out_color_set_start,
-            has_custom_vertex: false,
+            // Gates the extra `apply_vertex` hook args (uv0 / instance_id /
+            // frame_globals) in the vertex entry; on only when this mesh's
+            // material declared a `custom_displace_vertex` body.
+            has_custom_vertex: cache_key.dynamic_vertex_shader.is_some(),
         }
     }
 }

@@ -912,6 +912,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             dispatch_hash: 0,
             dynamic_shader_id: Some(dyn_id),
             dynamic_shader: Some(dyn_info),
+            dynamic_vertex_shader: None,
             froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
         };
 
@@ -969,6 +970,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             dispatch_hash: 0,
             dynamic_shader_id: None,
             dynamic_shader: None,
+            dynamic_vertex_shader: None,
             froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
         };
 
