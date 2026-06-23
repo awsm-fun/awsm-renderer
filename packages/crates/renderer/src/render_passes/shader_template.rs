@@ -5,6 +5,7 @@ use crate::{
         coverage::shader::template::ShaderTemplateCoverage,
         display::shader::template::ShaderTemplateDisplay,
         effects::shader::template::ShaderTemplateEffects,
+        geometry::shader::custom_vertex_template::ShaderTemplateGeometryCustomVertex,
         geometry::shader::masked_template::ShaderTemplateGeometryMasked,
         geometry::shader::template::ShaderTemplateGeometry,
         hzb::shader::template::{ShaderTemplateHzbReduce, ShaderTemplateHzbSeed},
@@ -29,6 +30,7 @@ pub enum ShaderTemplateRenderPass {
     Coverage(ShaderTemplateCoverage),
     Geometry(ShaderTemplateGeometry),
     GeometryMasked(ShaderTemplateGeometryMasked),
+    GeometryCustomVertex(ShaderTemplateGeometryCustomVertex),
     HzbSeed(ShaderTemplateHzbSeed),
     HzbReduce(ShaderTemplateHzbReduce),
     LightCulling(ShaderTemplateLightCulling),
@@ -58,6 +60,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             }
             ShaderCacheKeyRenderPass::GeometryMasked(cache_key) => Ok(
                 ShaderTemplateRenderPass::GeometryMasked(cache_key.try_into()?),
+            ),
+            ShaderCacheKeyRenderPass::GeometryCustomVertex(cache_key) => Ok(
+                ShaderTemplateRenderPass::GeometryCustomVertex(cache_key.try_into()?),
             ),
             ShaderCacheKeyRenderPass::HzbSeed(cache_key) => {
                 Ok(ShaderTemplateRenderPass::HzbSeed(cache_key.try_into()?))
@@ -112,6 +117,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::Coverage(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Geometry(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::GeometryMasked(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::GeometryCustomVertex(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::HzbSeed(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.into_source(),
@@ -137,6 +143,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::Coverage(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Geometry(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::GeometryMasked(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::GeometryCustomVertex(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::HzbSeed(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.debug_label(),

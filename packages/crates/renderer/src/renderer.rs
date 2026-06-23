@@ -2503,6 +2503,34 @@ impl AwsmRenderer {
         }
     }
 
+    /// Synchronously validate a registered custom-**vertex** material's
+    /// ASSEMBLED geometry custom-vertex module with `naga`, returning the
+    /// compile error message(s) (empty = valid). The vertex-stage sibling of
+    /// [`Self::validate_dynamic_material_wgsl`]: it assembles the masked
+    /// geometry bind groups + the geometry vertex shader compiled with the
+    /// `custom_displace_vertex` hook + the plain geometry fragment, then runs
+    /// naga so the editor catches a broken `wgsl_vertex` body up-front.
+    ///
+    /// Validation-only (never gates rendering). No-op (always empty) unless the
+    /// `dynamic-material-validation` feature is on — the player pays nothing for
+    /// `naga`. Empty when the material isn't registered or declared no
+    /// `wgsl_vertex` (→ shared fast vertex pipeline; nothing to validate).
+    pub fn validate_dynamic_vertex_wgsl(
+        &self,
+        shader_id: awsm_materials::MaterialShaderId,
+    ) -> Vec<String> {
+        #[cfg(not(feature = "dynamic-material-validation"))]
+        {
+            let _ = shader_id;
+            Vec::new()
+        }
+        #[cfg(feature = "dynamic-material-validation")]
+        {
+            self.dynamic_materials
+                .validate_dynamic_vertex_wgsl(shader_id)
+        }
+    }
+
     /// Drop a material group. No-op if the id isn't in the scheduler.
     pub fn drop_material_group(&mut self, id: crate::pipeline_scheduler::MaterialId) {
         self.pipeline_scheduler.drop_material_group(id);

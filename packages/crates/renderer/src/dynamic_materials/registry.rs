@@ -881,6 +881,62 @@ impl DynamicMaterials {
         )
     }
 
+    /// Synchronously validate a registered custom-vertex material's ASSEMBLED
+    /// **geometry custom-vertex** module with `naga` — the vertex-stage sibling
+    /// of [`crate::AwsmRenderer::validate_dynamic_material_wgsl`]. Returns the
+    /// compile error message(s) (empty = valid).
+    ///
+    /// Assembles the same WGSL the live custom-vertex geometry pipeline would
+    /// compile: the masked geometry bind groups (they declare `materials` + the
+    /// texture pool the hook's `material_data_load` / `material_sample_<name>`
+    /// read) + the geometry vertex shader built with the `custom_displace_vertex`
+    /// hook + the plain geometry fragment. Representative pool/AA config (lens
+    /// 1/1, single-sampled, non-instanced, uniform meta) — validation depends
+    /// only on the dynamic struct/loader/body, not the array lengths.
+    ///
+    /// `None` registration / no `wgsl_vertex` → empty (nothing to validate).
+    /// naga line numbers index the assembled module (not the author's snippet),
+    /// so callers surface the error message without a per-snippet line.
+    #[cfg(feature = "dynamic-material-validation")]
+    pub fn validate_dynamic_vertex_wgsl(&self, shader_id: MaterialShaderId) -> Vec<String> {
+        use crate::render_passes::geometry::shader::custom_vertex_cache_key::ShaderCacheKeyGeometryCustomVertex;
+        use crate::render_passes::geometry::shader::custom_vertex_template::ShaderTemplateGeometryCustomVertex;
+
+        let Some(dynamic_vertex) = self.vertex_shader_info_for(shader_id) else {
+            return Vec::new();
+        };
+        let key = ShaderCacheKeyGeometryCustomVertex {
+            shader_id,
+            dynamic_vertex,
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            msaa_samples: None,
+            instancing_transforms: false,
+            meta_storage_array: false,
+        };
+        let template = match ShaderTemplateGeometryCustomVertex::try_from(&key) {
+            Ok(t) => t,
+            Err(e) => return vec![format!("shader template build failed: {e:?}")],
+        };
+        let src = match template.into_source() {
+            Ok(s) => s,
+            Err(e) => return vec![format!("shader render failed: {e:?}")],
+        };
+        match naga::front::wgsl::parse_str(&src) {
+            Err(e) => vec![e.emit_to_string(&src)],
+            Ok(module) => {
+                let mut validator = naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::all(),
+                );
+                match validator.validate(&module) {
+                    Ok(_) => Vec::new(),
+                    Err(e) => vec![e.emit_to_string(&src)],
+                }
+            }
+        }
+    }
+
     /// Returns the count of currently-registered dynamic materials.
     /// Returns `true` if inserting `registration` would NOT grow the
     /// registry (i.e., it'd be idempotent on an existing
@@ -1693,6 +1749,43 @@ mod tests {
 
     fn first_party_len() -> usize {
         first_party_bucket_entries().len()
+    }
+
+    /// Assembles the geometry custom-vertex shader for a representative
+    /// custom-vertex material (one uniform → non-degenerate `MaterialData`; a
+    /// non-trivial animated displacement body that reads `input.position`,
+    /// `input.normal`, `input.tangent` + `input.globals.time`) and asserts naga
+    /// reports NO errors on the assembled module. This is the first point the
+    /// custom-vertex WGSL is actually rendered + validated (no GPU needed).
+    #[cfg(feature = "dynamic-material-validation")]
+    #[test]
+    fn custom_vertex_geometry_assembles_and_naga_validates() {
+        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+
+        let mut dm = DynamicMaterials::new();
+        let mut r = reg("displacer", 1, 1);
+        // A real uniform so the generated `MaterialData` isn't degenerate.
+        r.layout.uniforms.push(UniformFieldRuntime {
+            name: "amplitude".to_string(),
+            ty: FieldType::F32,
+        });
+        // Non-trivial animated displacement: reads position/normal/tangent +
+        // globals.time, returns the hook's `VertexDisplaceOutput(pos, n, t)`.
+        r.wgsl_vertex = Some(
+            "return VertexDisplaceOutput(\
+                 input.position + input.normal * (0.1 * input.material.amplitude) \
+                 * sin(input.globals.time + input.position.x * 4.0), \
+                 input.normal, input.tangent);"
+                .to_string(),
+        );
+        let id = dm.insert(r).unwrap();
+
+        let errors = dm.validate_dynamic_vertex_wgsl(id);
+        assert!(
+            errors.is_empty(),
+            "custom-vertex geometry shader failed naga validation:\n{}",
+            errors.join("\n")
+        );
     }
 
     #[test]
