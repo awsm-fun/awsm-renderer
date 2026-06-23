@@ -937,6 +937,59 @@ impl DynamicMaterials {
         }
     }
 
+    /// Synchronously validate a registered custom-vertex material's ASSEMBLED
+    /// **custom-vertex SHADOW** module with `naga` — the shadow-pass sibling of
+    /// [`Self::validate_dynamic_vertex_wgsl`]. Returns the compile error
+    /// message(s) (empty = valid).
+    ///
+    /// Assembles the same WGSL the live custom-vertex shadow pipeline compiles:
+    /// the augmented custom-vertex shadow bind groups (shadow_view + materials +
+    /// frame_globals + texture pool + the minimal material-load helpers) + the
+    /// depth-only shadow vertex shader built with the `custom_displace_vertex`
+    /// hook (no fragment). Representative pool config (1/1, non-instanced).
+    /// Catches a custom-vertex body that the geometry pass accepts but the shadow
+    /// assembly would reject (different surrounding bindings / helper set), so the
+    /// displaced shadow can never silently fail to compile.
+    ///
+    /// `None` registration / no `wgsl_vertex` → empty (nothing to validate).
+    #[cfg(feature = "dynamic-material-validation")]
+    pub fn validate_dynamic_vertex_shadow_wgsl(&self, shader_id: MaterialShaderId) -> Vec<String> {
+        use crate::shadows::shader::custom_vertex_cache_key::ShaderCacheKeyShadowCustomVertex;
+        use crate::shadows::shader::custom_vertex_template::ShaderTemplateShadowCustomVertex;
+
+        let Some(dynamic_vertex) = self.vertex_shader_info_for(shader_id) else {
+            return Vec::new();
+        };
+        let key = ShaderCacheKeyShadowCustomVertex {
+            shader_id,
+            dynamic_vertex,
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            instancing_transforms: false,
+        };
+        let template = match ShaderTemplateShadowCustomVertex::try_from(&key) {
+            Ok(t) => t,
+            Err(e) => return vec![format!("shader template build failed: {e:?}")],
+        };
+        let src = match template.into_source() {
+            Ok(s) => s,
+            Err(e) => return vec![format!("shader render failed: {e:?}")],
+        };
+        match naga::front::wgsl::parse_str(&src) {
+            Err(e) => vec![e.emit_to_string(&src)],
+            Ok(module) => {
+                let mut validator = naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::all(),
+                );
+                match validator.validate(&module) {
+                    Ok(_) => Vec::new(),
+                    Err(e) => vec![e.emit_to_string(&src)],
+                }
+            }
+        }
+    }
+
     /// Returns the count of currently-registered dynamic materials.
     /// Returns `true` if inserting `registration` would NOT grow the
     /// registry (i.e., it'd be idempotent on an existing
@@ -1784,6 +1837,43 @@ mod tests {
         assert!(
             errors.is_empty(),
             "custom-vertex geometry shader failed naga validation:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// Companion to `custom_vertex_geometry_assembles_and_naga_validates` for the
+    /// SHADOW pass: registers the same animated custom-vertex material and asserts
+    /// the assembled custom-vertex SHADOW module (depth-only, augmented shadow
+    /// bind groups + the displacement hook) naga-validates. This is the point the
+    /// shadow custom-vertex WGSL is actually rendered + validated (no GPU). A green
+    /// result here guarantees the displaced shadow compiles — same body, same hook
+    /// inputs as the geometry pass, so the silhouette matches.
+    #[cfg(feature = "dynamic-material-validation")]
+    #[test]
+    fn custom_vertex_shadow_assembles_and_naga_validates() {
+        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+
+        let mut dm = DynamicMaterials::new();
+        let mut r = reg("displacer_shadow", 1, 1);
+        r.layout.uniforms.push(UniformFieldRuntime {
+            name: "amplitude".to_string(),
+            ty: FieldType::F32,
+        });
+        // The SAME displacement body the geometry test uses — so the geometry and
+        // shadow passes run byte-identical displacement.
+        r.wgsl_vertex = Some(
+            "return VertexDisplaceOutput(\
+                 input.position + input.normal * (0.1 * input.material.amplitude) \
+                 * sin(input.globals.time + input.position.x * 4.0), \
+                 input.normal, input.tangent);"
+                .to_string(),
+        );
+        let id = dm.insert(r).unwrap();
+
+        let errors = dm.validate_dynamic_vertex_shadow_wgsl(id);
+        assert!(
+            errors.is_empty(),
+            "custom-vertex shadow shader failed naga validation:\n{}",
             errors.join("\n")
         );
     }

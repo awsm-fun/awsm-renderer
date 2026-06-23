@@ -184,22 +184,42 @@ fn build_layout_key(
         visibility_fragment: true,
         visibility_compute: false,
     };
-    let frame_globals_f = BindGroupLayoutCacheKeyEntry {
+    // Vertex+fragment storage. The CUSTOM-VERTEX shadow caster reuses THIS group
+    // 0 (its `shadow_custom_vertex_wgsl/bind_groups.wgsl` declares the same
+    // bindings) and its vertex stage runs `material_data_load` (reads `materials`)
+    // + `texture_pool_sample` (reads `texture_transforms` + the pool). Those
+    // bindings therefore need VERTEX visibility too. The masked-shadow path reads
+    // them fragment-only — extra visibility on a binding is inert for a stage that
+    // doesn't read it, so the masked path is byte-identical. The two bindings the
+    // custom-vertex vertex stage never touches (`material_mesh_metas`,
+    // `visibility_data`) stay fragment-only. Mirrors `GeometryMaskedBindGroup`.
+    let storage_vf = || BindGroupLayoutCacheKeyEntry {
+        resource: BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+        ),
+        visibility_vertex: true,
+        visibility_fragment: true,
+        visibility_compute: false,
+    };
+    let frame_globals_vf = BindGroupLayoutCacheKeyEntry {
         resource: BindGroupLayoutResource::Buffer(
             BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
         ),
-        visibility_vertex: false,
+        // Vertex+fragment: the custom-vertex vertex hook reads `time` for animated
+        // displacement; the masked cutout reads it fragment-side. Inert for the
+        // stage that doesn't read it.
+        visibility_vertex: true,
         visibility_fragment: true,
         visibility_compute: false,
     };
 
     let mut entries = vec![
-        shadow_view_v,   // shadow_view
-        storage_f(),     // materials
-        storage_f(),     // material_mesh_metas
-        storage_f(),     // visibility_data (merged pool)
-        storage_f(),     // texture_transforms
-        frame_globals_f, // frame_globals (uniform, fragment)
+        shadow_view_v,    // shadow_view
+        storage_vf(),     // materials (read by the custom-vertex vertex hook)
+        storage_f(),      // material_mesh_metas
+        storage_f(),      // visibility_data (merged pool)
+        storage_vf(),     // texture_transforms (read by the custom-vertex vertex hook)
+        frame_globals_vf, // frame_globals (uniform, vertex+fragment)
     ];
     debug_assert_eq!(entries.len() as u32, MASKED_SHADOW_GROUP0_BUFFER_BINDINGS);
 
@@ -210,7 +230,8 @@ fn build_layout_key(
                     .with_view_dimension(TextureViewDimension::N2dArray)
                     .with_sample_type(TextureSampleType::Float),
             ),
-            visibility_vertex: false,
+            // Vertex+fragment: the custom-vertex vertex hook can sample the pool.
+            visibility_vertex: true,
             visibility_fragment: true,
             visibility_compute: false,
         });
@@ -220,7 +241,8 @@ fn build_layout_key(
             resource: BindGroupLayoutResource::Sampler(
                 SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
             ),
-            visibility_vertex: false,
+            // Vertex+fragment: paired with the vertex-visible pool textures above.
+            visibility_vertex: true,
             visibility_fragment: true,
             visibility_compute: false,
         });

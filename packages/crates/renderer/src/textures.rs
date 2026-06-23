@@ -700,6 +700,44 @@ impl AwsmRenderer {
                     )
                     .await?;
             }
+
+            // -------------------------------------------------------------
+            // Custom-vertex SHADOW casters — so a custom-vertex material's
+            // shadow is DISPLACED identically to its geometry (no detached /
+            // smooth shadow). Same per-shader-id lazy pool as the masked-shadow
+            // pass; reuses the (vertex-augmented) masked-shadow group-0 bind group
+            // (its hook's `material_data_load` reads `materials` + samples the
+            // pool the masked-shadow group declares — with VERTEX visibility), so
+            // its layout also changes when the pool grows. Relayout the pool
+            // against the just-rebuilt masked-shadow bind group, then compile one
+            // variant per registered custom-vertex material (non-instanced shape;
+            // instanced is a follow-on). The shadow render path falls back to the
+            // solid pipeline until these land, so a custom-vertex caster always
+            // casts *some* shadow (un-displaced). Strictly additive + opt-in: a
+            // material with no `wgsl_vertex` never enters `custom_vertex`, so
+            // shadows are byte-identical for everyone else (non-regression).
+            // -------------------------------------------------------------
+            self.render_passes.shadow_custom_vertex.pipelines.relayout(
+                &mut ctx,
+                &self.render_passes.shadow_masked.bind_group,
+                &self.render_passes.geometry.bind_groups,
+            )?;
+            for (shader_id, info) in &custom_vertex {
+                let variant =
+                    crate::render_passes::shadow_custom_vertex::pipeline::ShadowCustomVertexVariant {
+                        shader_id: *shader_id,
+                        dynamic_vertex: info.clone(),
+                    };
+                self.render_passes
+                    .shadow_custom_vertex
+                    .pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.shadow_masked.bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
         }
 
         // Re-launch the compile for every currently-registered

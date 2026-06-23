@@ -22,6 +22,16 @@ use crate::render::RenderContext;
 use crate::scene_spatial::NodeFilter;
 use crate::shadows::Shadows;
 
+/// Which group-0 bind group a caster draw needs. The masked (cutout) and
+/// custom-vertex (displaced) variants share the SAME augmented group 0; the plain
+/// solid caster uses the slim `shadow_view` group.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Group0Variant {
+    Plain,
+    Masked,
+    CustomVertex,
+}
+
 /// Records every shadow-generation render pass for the current frame.
 ///
 /// Called between the geometry pass and light culling. Skipped
@@ -49,12 +59,27 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
     // Masked (alpha-tested) caster group-0 — present once a masked material's
     // variant has been compiled (texture-finalize flow). `None` → no masked
     // casters yet, so every caster takes the plain solid-shadow path.
+    //
+    // This SAME augmented group-0 is reused by the custom-vertex caster path: its
+    // layout was augmented with VERTEX visibility on `materials` / `frame_globals`
+    // / the texture pool (see `ShadowMaskedBindGroup`), so the displacement hook
+    // in the custom-vertex shadow vertex shader resolves those bindings. Both the
+    // masked and custom-vertex draws bind this group at slot 0.
     let masked_group0 = ctx
         .render_passes
         .shadow_masked
         .bind_group
         .get_bind_group()
         .ok();
+    // Custom-vertex caster pool + its shared zero uv0 buffer (bound at vertex slot
+    // 1 so the pipeline's `@location(10) uv0` attribute is satisfied). The pool is
+    // empty until a custom-vertex material's variant compiles.
+    let custom_vertex_uv0_buffer = ctx
+        .render_passes
+        .shadow_custom_vertex
+        .pipelines
+        .uv0_zero_buffer()
+        .clone();
 
     for (_light_key, record) in shadows.records() {
         for view in &record.views {
@@ -208,52 +233,92 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     continue;
                 }
 
-                // Masked (alpha-tested) caster → hole-shaped shadow when a
-                // masked variant is compiled for this material. Gate on
-                // `alpha_cutoff` present REGARDLESS of opaque/transparent
-                // routing — a Mask+refractive material is transparent-routed but
-                // must still cast a cutout shadow. Falls back to the solid
-                // pipeline (rectangular shadow) when no masked variant exists.
-                let masked_key = masked_group0.and_then(|_| {
-                    if ctx.materials.alpha_cutoff(mesh.material_key).is_some() {
-                        let shader_id = ctx.materials.canonical_shader_id(mesh.material_key);
-                        ctx.render_passes.shadow_masked.pipelines.get(
+                // Custom-vertex caster → DISPLACED shadow (silhouette matches the
+                // lit geometry) when a custom-vertex variant is compiled for this
+                // material. Non-instanced only (the pool compiles only that shape
+                // today, matching collect_renderables' geometry routing). Takes
+                // PRECEDENCE over the masked cutout: a correct displaced silhouette
+                // matters more than a hole, and the masked-custom-vertex variant
+                // (displaced AND cut out) is a deferred follow-on. Reuses the same
+                // augmented group-0 as the masked path.
+                let custom_vertex_key = if !mesh.instanced && masked_group0.is_some() {
+                    let shader_id = ctx.materials.canonical_shader_id(mesh.material_key);
+                    if ctx
+                        .dynamic_materials
+                        .vertex_shader_info_for(shader_id)
+                        .is_some()
+                    {
+                        ctx.render_passes.shadow_custom_vertex.pipelines.get(
                             shader_id,
-                            mesh.instanced,
                             is_cube,
                             mesh.double_sided,
                         )
                     } else {
                         None
                     }
-                });
+                } else {
+                    None
+                };
 
-                // Pipelines-compiled guard at the top of `record`
-                // ensures the solid Option is Some here. Defensive
-                // `else` skips the draw if the invariant is broken.
-                let (pipeline_key, use_masked) = match masked_key {
-                    Some(key) => (key, true),
-                    None => match shadows.shadow_pipeline_key(
+                // Masked (alpha-tested) caster → hole-shaped shadow when a
+                // masked variant is compiled for this material. Gate on
+                // `alpha_cutoff` present REGARDLESS of opaque/transparent
+                // routing — a Mask+refractive material is transparent-routed but
+                // must still cast a cutout shadow. Falls back to the solid
+                // pipeline (rectangular shadow) when no masked variant exists.
+                // Skipped when the custom-vertex variant already claimed this mesh.
+                let masked_key = if custom_vertex_key.is_some() {
+                    None
+                } else {
+                    masked_group0.and_then(|_| {
+                        if ctx.materials.alpha_cutoff(mesh.material_key).is_some() {
+                            let shader_id = ctx.materials.canonical_shader_id(mesh.material_key);
+                            ctx.render_passes.shadow_masked.pipelines.get(
+                                shader_id,
+                                mesh.instanced,
+                                is_cube,
+                                mesh.double_sided,
+                            )
+                        } else {
+                            None
+                        }
+                    })
+                };
+
+                // Variant precedence: custom-vertex (displaced) > masked (cutout) >
+                // plain solid. The custom-vertex + masked draws both bind the
+                // augmented group 0; the plain draw binds the slim shadow_view
+                // group. The pipelines-compiled guard at the top of `record`
+                // ensures the solid Option is Some here — defensive `else`
+                // skips the draw if the invariant is broken.
+                let (pipeline_key, group0_variant) = match (custom_vertex_key, masked_key) {
+                    (Some(key), _) => (key, Group0Variant::CustomVertex),
+                    (None, Some(key)) => (key, Group0Variant::Masked),
+                    (None, None) => match shadows.shadow_pipeline_key(
                         mesh.instanced,
                         is_cube,
                         mesh.double_sided,
                     ) {
-                        Some(key) => (key, false),
+                        Some(key) => (key, Group0Variant::Plain),
                         None => continue,
                     },
                 };
+                let use_custom_vertex = group0_variant == Group0Variant::CustomVertex;
+                let needs_augmented_group0 = group0_variant != Group0Variant::Plain;
 
                 // Swap group 0 between the plain shadow_view group and the
                 // augmented masked group only on a transition; the per-view
-                // dynamic offset is the same for both.
-                if last_group0_masked != Some(use_masked) {
-                    let group0 = if use_masked {
-                        masked_group0.expect("masked_group0 present when use_masked")
+                // dynamic offset is the same for both. Both the masked and
+                // custom-vertex variants use the SAME augmented group, so only a
+                // plain↔augmented boundary triggers a rebind.
+                if last_group0_masked != Some(needs_augmented_group0) {
+                    let group0 = if needs_augmented_group0 {
+                        masked_group0.expect("masked_group0 present when augmented group needed")
                     } else {
                         shadows.shadow_view_bind_group()
                     };
                     render_pass.set_bind_group(0, group0, Some(&[view_offset]))?;
-                    last_group0_masked = Some(use_masked);
+                    last_group0_masked = Some(needs_augmented_group0);
                 }
                 if last_pipeline_key != Some(pipeline_key) {
                     render_pass.set_pipeline(ctx.pipelines.render.get(pipeline_key)?);
@@ -290,6 +355,13 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                         Some(offset as u64),
                         None,
                     );
+                } else if use_custom_vertex {
+                    // Slot 1: the shared zero uv0 buffer (location 10,
+                    // `array_stride: 0` → every vertex reads `vec2(0.0)`). This is
+                    // the SAME zero uv0 the geometry custom-vertex draw binds, so
+                    // the hook's `uv` input matches → identical displacement.
+                    // Non-instanced only, so slot 1 is free for it.
+                    render_pass.set_vertex_buffer(1, &custom_vertex_uv0_buffer, None, None);
                 }
 
                 let buffer_info = ctx.meshes.buffer_info(mesh_key)?;
