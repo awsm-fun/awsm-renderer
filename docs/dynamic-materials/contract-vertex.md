@@ -59,14 +59,15 @@ item declarations at module scope.
 
 ```wgsl
 struct VertexDisplaceInput {
-    position: vec3<f32>,    // post-morph LOCAL position
-    normal: vec3<f32>,      // post-morph LOCAL normal
-    tangent: vec4<f32>,     // LOCAL tangent (w = handedness)
-    uv: vec2<f32>,          // uv0 (TEXCOORD_0) — see the UV caveat below
-    vertex_index: u32,      // index of this vertex in the mesh
-    instance_id: u32,       // u32::MAX (INSTANCE_ATTR_NONE) when non-instanced
-    material: MaterialData, // the SAME auto-generated struct as the fragment hook
-    globals: FrameGlobals,  // use input.globals.time for animation
+    position: vec3<f32>,      // post-morph LOCAL position
+    normal: vec3<f32>,        // post-morph LOCAL normal
+    tangent: vec4<f32>,       // LOCAL tangent (w = handedness)
+    uv: array<vec2<f32>, 4>,  // ALL of the mesh's UV sets, read per-vertex
+    uv_count: u32,            // number of valid UV sets in `uv` (0..=4)
+    vertex_index: u32,        // index of this vertex in the mesh
+    instance_id: u32,         // u32::MAX (INSTANCE_ATTR_NONE) when non-instanced
+    material: MaterialData,   // the SAME auto-generated struct as the fragment hook
+    globals: FrameGlobals,    // use input.globals.time for animation
 }
 ```
 
@@ -75,12 +76,17 @@ Field order mirrors the emitted struct exactly (see
 
 - **`position` / `normal` / `tangent`** are the post-morph LOCAL surface frame.
   Displace them and return the new frame (see Output below).
-- **`uv`** is uv0 (TEXCOORD_0). **Caveat:** today real per-vertex uv0 is wired
-  for **TRANSPARENT** (blend) materials; for **opaque/geometry** materials
-  `input.uv` is currently a **zero placeholder** `(0.0, 0.0)`. A height-field
-  or any UV-driven displacement therefore needs a transparent material today;
-  opaque per-vertex uv0 is a documented follow-on. (Procedural,
-  position/normal/time-driven displacement works on every alpha mode now.)
+- **`uv`** is a 4-element array of **ALL** the mesh's UV sets, read per-vertex —
+  full parity with the fragment hook's multi-UV access. `input.uv[0]` is the
+  classic TEXCOORD_0; `input.uv[1]` is TEXCOORD_1, etc. Sets the mesh doesn't
+  have are `(0.0, 0.0)`. **`uv_count`** is the number of valid sets (`0..=4`) —
+  index defensively if your material may bind to meshes with fewer sets. The
+  same real per-vertex UVs are read in the **geometry, shadow, and transparent**
+  passes (geometry/shadow reconstruct them from the merged geometry pool;
+  transparent reads its real per-mesh UV attributes), so a UV-driven height
+  field displaces + casts shadows consistently on **every** alpha mode. Sample a
+  declared texture with any set via
+  `material_sample_<name>(input.material, input.uv[i])`.
 - **`vertex_index`** — the mesh vertex index, useful for per-vertex hashes.
 - **`instance_id`** — the per-instance id, or `u32::MAX` when the mesh is not
   instanced (compare with `INSTANCE_ATTR_NONE`).
@@ -214,18 +220,38 @@ return o;
 
 ## Example (b) — height-field displacement that recomputes the normal
 
-Sample a displacement/height texture at the vertex UV, push along the normal by
-it, **and** recompute the analytic normal by sampling the height at two
-epsilon-offset UVs and crossing the resulting tangent-space slopes. This is the
-correct way to keep lighting matching a non-trivial displacement.
+Sample a displacement/height texture at a vertex UV set, push along the normal
+by it, **and** recompute the analytic normal from neighbouring height samples.
+This is the correct way to keep lighting matching a non-trivial displacement.
+Works on **every** alpha mode (opaque, mask, blend) — the geometry, shadow, and
+transparent passes all read real per-vertex UVs (see the `uv` field above).
 
-> **Needs a transparent (blend) material today**, or the opaque-uv follow-on —
-> because `input.uv` is a zero placeholder for opaque/geometry materials (see
-> the UV caveat above). On an opaque material this samples at `(0,0)` and the
-> surface displaces uniformly with no detail.
+This example uses the **second** UV set (`input.uv[1]`) for the height lookup —
+e.g. a dedicated displacement UV channel distinct from the albedo UVs — to show
+multi-UV access; `input.uv[0]` works identically for the common single-set case.
+
+### The `recompute_normal_from_height` helper
+
+The renderer provides a shared helper (in scope inside every vertex hook):
 
 ```wgsl
-// Vertex window for a height-field displacement (transparent material).
+fn recompute_normal_from_height(
+    n: vec3<f32>,     // incoming LOCAL normal
+    t: vec4<f32>,     // incoming LOCAL tangent (w = handedness)
+    h_center: f32,    // height at the vertex UV
+    h_du: f32,        // height one `eps` step along the tangent (u)
+    h_dv: f32,        // height one `eps` step along the bitangent (v)
+    eps: f32,         // the UV step used for the two neighbour samples
+    strength: f32,    // perturbation scale (0 = unchanged normal)
+) -> vec3<f32>        // returns a normalized perturbed normal
+```
+
+It builds the bitangent (`cross(n, t.xyz) * t.w`), forms the height slopes
+`(h_du - h_center)/eps` and `(h_dv - h_center)/eps`, and tilts the normal away
+from the rising direction: `normalize(n - (t.xyz*ddu + bitangent*ddv)*strength)`.
+
+```wgsl
+// Vertex window for a height-field displacement (any alpha mode).
 //
 // Layout (material.json):
 //   uniforms: [height_scale: F32 = 0.2]
@@ -236,27 +262,21 @@ var o: VertexDisplaceOutput;
 let scale = input.material.height_scale;
 let eps = 0.01;
 
-// Build a local tangent frame from the incoming normal/tangent so we can step
-// "across the surface" in two directions to estimate the new slope.
-let n = normalize(input.normal);
-let t = normalize(input.tangent.xyz);
-let b = cross(n, t) * input.tangent.w;  // bitangent (handedness from tangent.w)
-
-// Sample the height at the vertex UV and at two epsilon-offset UVs.
-let h  = material_sample_height(input.material, input.uv).r;
-let hu = material_sample_height(input.material, input.uv + vec2<f32>(eps, 0.0)).r;
-let hv = material_sample_height(input.material, input.uv + vec2<f32>(0.0, eps)).r;
+// Read the displacement UV set (TEXCOORD_1 here) + two epsilon-offset neighbours.
+let uv = input.uv[1];
+let h  = material_sample_height(input.material, uv).r;
+let hu = material_sample_height(input.material, uv + vec2<f32>(eps, 0.0)).r;
+let hv = material_sample_height(input.material, uv + vec2<f32>(0.0, eps)).r;
 
 // Displace this vertex along its normal by the sampled height.
-o.position = input.position + n * (h * scale);
+o.position = input.position + normalize(input.normal) * (h * scale);
 
-// Recompute the normal: the displaced surface point as a function of (u,v) has
-// partial derivatives along the tangent/bitangent that pick up the height
-// slope. Cross the two tangent deltas to get the perturbed normal.
-let du = t + n * ((hu - h) * scale / eps);
-let dv = b + n * ((hv - h) * scale / eps);
-o.normal = normalize(cross(du, dv));
-o.tangent = vec4<f32>(normalize(t), input.tangent.w);
+// Recompute the normal from the neighbouring heights via the shared helper —
+// `strength = scale` ties the normal tilt to the displacement magnitude.
+o.normal = recompute_normal_from_height(
+    input.normal, input.tangent, h, hu, hv, eps, scale,
+);
+o.tangent = input.tangent;
 return o;
 ```
 

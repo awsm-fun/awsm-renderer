@@ -91,6 +91,29 @@ fn vert_main(
         instance_id = base + instance_index;
     }
 
+    {% if has_custom_vertex %}
+    // Build the per-vertex UV array (ALL of the mesh's UV sets) for the
+    // custom-vertex hook — parity with the fragment side's multi-UV access.
+    // Mirror the masked fragment's `material_mesh_metas` indexing EXACTLY
+    // (`material_mesh_meta_offset / META_SIZE_IN_BYTES`; byte→float /4u on the
+    // stride + data offset; `uv_sets_index` is already a float offset). Reuses
+    // the shared `_mask_uv_per_vertex` reader over `visibility_data` — no new
+    // vertex buffers / uploads. The shadow pass builds this IDENTICALLY so the
+    // displaced silhouette matches.
+    let _mm = material_mesh_metas[geometry_mesh_meta.material_mesh_meta_offset / META_SIZE_IN_BYTES];
+    let _cv_stride = _mm.vertex_attribute_stride / 4u;
+    let _cv_data_offset = _mm.vertex_attribute_data_offset / 4u;
+    let _cv_uv_count = min(_mm.uv_set_count, 4u);
+    var _cv_uv: array<vec2<f32>, 4>;
+    for (var _i = 0u; _i < 4u; _i = _i + 1u) {
+        _cv_uv[_i] = select(
+            vec2<f32>(0.0, 0.0),
+            _mask_uv_per_vertex(_cv_data_offset, _i, input.original_vertex_index, _cv_stride, _mm.uv_sets_index),
+            _i < _cv_uv_count,
+        );
+    }
+    {% endif %}
+
     let applied = apply_vertex(ApplyVertexInput(
         input.original_vertex_index,
         input.position,
@@ -102,7 +125,7 @@ fn vert_main(
             input.instance_transform_row_2,
             input.instance_transform_row_3,
         {% endif %}
-    ), camera {% if has_custom_vertex %}, input.uv0, instance_id, frame_globals {% endif %});
+    ), camera {% if has_custom_vertex %}, _cv_uv, _cv_uv_count, instance_id, frame_globals {% endif %});
 
     out.clip_position = applied.clip_position;
     out.world_normal = applied.world_normal;

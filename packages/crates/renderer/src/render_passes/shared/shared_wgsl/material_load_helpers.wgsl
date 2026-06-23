@@ -22,6 +22,21 @@
 // The including template MUST also define these context fields (for the pool
 // switch below): texture_pool_arrays_len, texture_pool_samplers_len: u32.
 
+// Read one UV set for a single vertex from the merged geometry pool
+// (`visibility_data`). Shared by the masked fragment (per-vertex UV for the
+// barycentric reconstruction) AND the custom-vertex VERTEX hooks (geometry +
+// shadow), which build the per-vertex `input.uv` array from it. The including
+// template MUST declare the `visibility_data: array<f32>` storage binding
+// (VERTEX-visible for the vertex hooks). `attribute_data_offset`,
+// `vertex_attribute_stride`, `uv_sets_index` are in FLOATS (the callers convert
+// the byte values from `MaterialMeshMeta` by /4u where needed).
+fn _mask_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_index: u32, vertex_attribute_stride: u32, uv_sets_index: u32) -> vec2<f32> {
+    let vertex_start = attribute_data_offset + (vertex_index * vertex_attribute_stride);
+    let uv_offset = uv_sets_index + (set_index * 2u);
+    let index = vertex_start + uv_offset;
+    return vec2<f32>(visibility_data[index], visibility_data[index + 1u]);
+}
+
 fn material_load_u32(index: u32) -> u32 { return bitcast<u32>(materials[index]); }
 fn material_load_f32(index: u32) -> f32 { return bitcast<f32>(materials[index]); }
 fn material_load_texture_info_raw(index: u32) -> TextureInfoRaw {

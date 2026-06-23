@@ -102,14 +102,30 @@ fn vert_main(
     if geometry_mesh_meta.morph_geometry_target_len != 0u {
         vertex = apply_position_morphs(vertex);
     }
+    // Build the per-vertex UV array IDENTICALLY to the geometry custom-vertex
+    // pass — same `material_mesh_metas` indexing, same `_mask_uv_per_vertex`
+    // reader over `visibility_data` — so the displaced shadow silhouette uses
+    // the exact same UVs the lit geometry does (no detached shadow).
+    let _mm = material_mesh_metas[geometry_mesh_meta.material_mesh_meta_offset / META_SIZE_IN_BYTES];
+    let _cv_stride = _mm.vertex_attribute_stride / 4u;
+    let _cv_data_offset = _mm.vertex_attribute_data_offset / 4u;
+    let _cv_uv_count = min(_mm.uv_set_count, 4u);
+    var _cv_uv: array<vec2<f32>, 4>;
+    for (var _i = 0u; _i < 4u; _i = _i + 1u) {
+        _cv_uv[_i] = select(
+            vec2<f32>(0.0, 0.0),
+            _mask_uv_per_vertex(_cv_data_offset, _i, input.original_vertex_index, _cv_stride, _mm.uv_sets_index),
+            _i < _cv_uv_count,
+        );
+    }
     // Custom displacement — IDENTICAL to the geometry custom-vertex pass: same
-    // hook, same post-morph LOCAL position/normal/tangent, same uv0 (the shared
-    // zero buffer → vec2(0.0)), same material_data_load offset, same instance_id,
-    // same frame_globals. This is what keeps the shadow silhouette glued to the
+    // hook, same post-morph LOCAL position/normal/tangent, same per-vertex UV
+    // array, same material_data_load offset, same instance_id, same
+    // frame_globals. This is what keeps the shadow silhouette glued to the
     // lit geometry.
     {
         let _disp = custom_displace_vertex(VertexDisplaceInput(
-            vertex.position, vertex.normal, vertex.tangent, input.uv0,
+            vertex.position, vertex.normal, vertex.tangent, _cv_uv, _cv_uv_count,
             vertex.vertex_index, instance_id,
             material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
             frame_globals_from_raw(frame_globals_raw),

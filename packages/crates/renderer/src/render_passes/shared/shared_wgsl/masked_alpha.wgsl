@@ -29,13 +29,9 @@
 {% include "shared_wgsl/material_load_helpers.wgsl" %}
 
 // ── UV reconstruction from the merged geometry pool (mirrors the opaque
-// pass's texture_uvs.wgsl) ──────────────────────────────────────────────────
-fn _mask_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_index: u32, vertex_attribute_stride: u32, uv_sets_index: u32) -> vec2<f32> {
-    let vertex_start = attribute_data_offset + (vertex_index * vertex_attribute_stride);
-    let uv_offset = uv_sets_index + (set_index * 2u);
-    let index = vertex_start + uv_offset;
-    return vec2<f32>(visibility_data[index], visibility_data[index + 1u]);
-}
+// pass's texture_uvs.wgsl). `_mask_uv_per_vertex` is shared with the
+// custom-vertex VERTEX hooks — it now lives in `material_load_helpers.wgsl`
+// (included above). ─────────────────────────────────────────────────────────
 fn mask_texture_uv(attribute_data_offset: u32, triangle_indices: vec3<u32>, barycentric: vec3<f32>, tex_info: TextureInfo, vertex_attribute_stride: u32, uv_sets_index: u32) -> vec2<f32> {
     let uv0 = _mask_uv_per_vertex(attribute_data_offset, tex_info.uv_set_index, triangle_indices.x, vertex_attribute_stride, uv_sets_index);
     let uv1 = _mask_uv_per_vertex(attribute_data_offset, tex_info.uv_set_index, triangle_indices.y, vertex_attribute_stride, uv_sets_index);

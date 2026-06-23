@@ -89,8 +89,25 @@ fn vert_main(
     }
     {% if has_custom_vertex %}
     {
+        // Build the per-vertex UV array IDENTICALLY to the geometry +
+        // custom-vertex-shadow passes — same `material_mesh_metas` indexing,
+        // same `_mask_uv_per_vertex` reader over `visibility_data` (provided by
+        // the masked fragment's `masked_alpha.wgsl` include) — so the displaced,
+        // cut-out silhouette matches the lit geometry's UVs.
+        let _mm = material_mesh_metas[geometry_mesh_meta.material_mesh_meta_offset / META_SIZE_IN_BYTES];
+        let _cv_stride = _mm.vertex_attribute_stride / 4u;
+        let _cv_data_offset = _mm.vertex_attribute_data_offset / 4u;
+        let _cv_uv_count = min(_mm.uv_set_count, 4u);
+        var _cv_uv: array<vec2<f32>, 4>;
+        for (var _i = 0u; _i < 4u; _i = _i + 1u) {
+            _cv_uv[_i] = select(
+                vec2<f32>(0.0, 0.0),
+                _mask_uv_per_vertex(_cv_data_offset, _i, input.original_vertex_index, _cv_stride, _mm.uv_sets_index),
+                _i < _cv_uv_count,
+            );
+        }
         let _disp = custom_displace_vertex(VertexDisplaceInput(
-            vertex.position, vertex.normal, vertex.tangent, vec2<f32>(0.0, 0.0),
+            vertex.position, vertex.normal, vertex.tangent, _cv_uv, _cv_uv_count,
             vertex.vertex_index, 0u,
             material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
             frame_globals_from_raw(frame_globals_raw),

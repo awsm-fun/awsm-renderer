@@ -77,8 +77,14 @@ fn vert_main(
     }
     {% if has_custom_vertex %}
     {
+        // The plain shadow path never compiles the hook today (`has_custom_vertex`
+        // is hardwired off — custom-vertex casters use the dedicated
+        // `shadow_custom_vertex` / masked-shadow templates which bind
+        // `material_mesh_metas` + `visibility_data`). Pass a zero UV array so this
+        // stays compilable if ever flipped on.
+        var _cv_uv: array<vec2<f32>, 4>;
         let _disp = custom_displace_vertex(VertexDisplaceInput(
-            vertex.position, vertex.normal, vertex.tangent, vec2<f32>(0.0, 0.0),
+            vertex.position, vertex.normal, vertex.tangent, _cv_uv, 0u,
             vertex.vertex_index, 0u,
             material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
             frame_globals_from_raw(frame_globals_raw),

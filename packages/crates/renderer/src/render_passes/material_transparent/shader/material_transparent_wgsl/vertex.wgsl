@@ -63,6 +63,22 @@ fn vert_main(
         instance_id = base + instance_index;
     }
 
+    {% if has_custom_vertex %}
+    // Build the per-vertex UV array from this pass's REAL per-mesh uv
+    // attributes (the transparent pass has them directly — no
+    // `_mask_uv_per_vertex` reconstruction needed). Sets beyond `uv_sets` are
+    // (0,0); `uv_count = uv_sets`.
+    var _cv_uv: array<vec2<f32>, 4>;
+    {% for i in 0..4 %}
+        {% if i < uv_sets %}
+            _cv_uv[{{ i }}] = input.uv_{{ i }};
+        {% else %}
+            _cv_uv[{{ i }}] = vec2<f32>(0.0, 0.0);
+        {% endif %}
+    {% endfor %}
+    let _cv_uv_count = {{ uv_sets }}u;
+    {% endif %}
+
     let applied = apply_vertex(ApplyVertexInput(
         input.vertex_index,
         input.position,
@@ -74,7 +90,7 @@ fn vert_main(
             input.instance_transform_row_2,
             input.instance_transform_row_3,
         {% endif %}
-    ), camera {% if has_custom_vertex %}, {% if uv_sets >= 1 %} input.uv_0 {% else %} vec2<f32>(0.0, 0.0) {% endif %}, instance_id, frame_globals {% endif %});
+    ), camera {% if has_custom_vertex %}, _cv_uv, _cv_uv_count, instance_id, frame_globals {% endif %});
 
     out.clip_position = applied.clip_position;
     out.world_position = applied.world_position;

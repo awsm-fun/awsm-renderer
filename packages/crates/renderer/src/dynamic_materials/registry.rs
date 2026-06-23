@@ -1997,6 +1997,53 @@ mod tests {
         );
     }
 
+    /// MULTI-UV + MULTI-TEXTURE in the VERTEX stage: registers a custom-vertex
+    /// material whose displacement body reads a SECOND UV set (`input.uv[1]`)
+    /// AND samples a declared texture with it
+    /// (`material_sample_albedo(input.material, input.uv[1])`), proving the
+    /// hook exposes ALL of the mesh's UV sets (not just uv0) and that the
+    /// generated per-texture `material_sample_<name>` helper resolves in the
+    /// vertex assemble — full parity with the fragment side. A green naga
+    /// result guarantees the multi-uv array + multi-texture sampling compile.
+    #[cfg(feature = "dynamic-material-validation")]
+    #[test]
+    fn custom_vertex_geometry_multi_uv_and_texture_naga_validates() {
+        use awsm_materials::dynamic_layout::{FieldType, TextureSlotRuntime, UniformFieldRuntime};
+
+        let mut dm = DynamicMaterials::new();
+        let mut r = reg("displacer_multi_uv", 1, 1);
+        r.layout.uniforms.push(UniformFieldRuntime {
+            name: "amplitude".to_string(),
+            ty: FieldType::F32,
+        });
+        // A declared texture → generates `material_sample_albedo`.
+        r.layout.textures.push(TextureSlotRuntime {
+            name: "albedo".to_string(),
+        });
+        // Displace along the normal by a height sampled from `albedo` using the
+        // SECOND UV set, then recompute the normal from neighbouring heights via
+        // the shared `recompute_normal_from_height` helper — exercising multi-uv,
+        // multi-texture, AND the normal-from-height helper in one body.
+        r.wgsl_vertex = Some(
+            "let h = material_sample_albedo(input.material, input.uv[1]).r; \
+             let h_du = material_sample_albedo(input.material, input.uv[1] + vec2<f32>(0.01, 0.0)).r; \
+             let h_dv = material_sample_albedo(input.material, input.uv[1] + vec2<f32>(0.0, 0.01)).r; \
+             let n = recompute_normal_from_height(input.normal, input.tangent, h, h_du, h_dv, 0.01, input.material.amplitude); \
+             return VertexDisplaceOutput(\
+                 input.position + input.normal * (h * input.material.amplitude), \
+                 n, input.tangent);"
+                .to_string(),
+        );
+        let id = dm.insert(r).unwrap();
+
+        let errors = dm.validate_dynamic_vertex_wgsl(id);
+        assert!(
+            errors.is_empty(),
+            "multi-uv + multi-texture custom-vertex geometry shader failed naga validation:\n{}",
+            errors.join("\n")
+        );
+    }
+
     /// Companion to `custom_vertex_geometry_assembles_and_naga_validates` for the
     /// SHADOW pass: registers the same animated custom-vertex material and asserts
     /// the assembled custom-vertex SHADOW module (depth-only, augmented shadow
@@ -2058,12 +2105,12 @@ mod tests {
             ty: FieldType::F32,
         });
         // The SAME displacement body the geometry test uses, plus a read of the
-        // transparent-only `input.uv` (real per-mesh uv0 on this pass) — so the
-        // geometry and transparent passes run the identical hook.
+        // transparent-only `input.uv[0]` (real per-mesh uv0 on this pass) — so
+        // the geometry and transparent passes run the identical hook.
         r.wgsl_vertex = Some(
             "return VertexDisplaceOutput(\
                  input.position + input.normal * (0.1 * input.material.amplitude) \
-                 * sin(input.globals.time + input.position.x * 4.0 + input.uv.x), \
+                 * sin(input.globals.time + input.position.x * 4.0 + input.uv[0].x), \
                  input.normal, input.tangent);"
                 .to_string(),
         );
