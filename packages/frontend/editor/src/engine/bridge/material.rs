@@ -332,10 +332,12 @@ pub fn insert_material_vc(
             let mut material = material_to_renderer(def);
             if let Material::Unlit(m) = &mut material {
                 if let Some(t) = &def.base_color_texture {
-                    m.base_color_tex = resolve_texture(renderer, t, true, MipmapTextureKind::Albedo);
+                    m.base_color_tex =
+                        resolve_texture(renderer, t, true, MipmapTextureKind::Albedo);
                 }
                 if let Some(t) = &def.emissive_texture {
-                    m.emissive_tex = resolve_texture(renderer, t, true, MipmapTextureKind::Emissive);
+                    m.emissive_tex =
+                        resolve_texture(renderer, t, true, MipmapTextureKind::Emissive);
                 }
             }
             material

@@ -8,13 +8,6 @@
 
 use serde_json::Value;
 
-/// Apply an [RFC 7386](https://datatracker.ietf.org/doc/html/rfc7386) JSON Merge
-/// Patch to `target` in place:
-/// - a `null` in `patch` **removes** that key from `target`;
-/// - an object value merges **recursively**;
-/// - any other value (scalar, array) **replaces** wholesale (arrays are not
-///   element-merged — that is the RFC's defined behavior).
-///
 /// Coerce a merge-patch payload that arrived as a JSON **string** back into
 /// structured JSON.
 ///
@@ -32,13 +25,19 @@ use serde_json::Value;
 /// through unchanged.
 pub fn coerce_patch(patch: Value) -> Result<Value, String> {
     match patch {
-        Value::String(s) => serde_json::from_str(&s).map_err(|e| {
-            format!("patch arrived as a JSON string but did not parse as JSON: {e}")
-        }),
+        Value::String(s) => serde_json::from_str(&s)
+            .map_err(|e| format!("patch arrived as a JSON string but did not parse as JSON: {e}")),
         other => Ok(other),
     }
 }
 
+/// Apply an [RFC 7386](https://datatracker.ietf.org/doc/html/rfc7386) JSON Merge
+/// Patch to `target` in place:
+/// - a `null` in `patch` **removes** that key from `target`;
+/// - an object value merges **recursively**;
+/// - any other value (scalar, array) **replaces** wholesale (arrays are not
+///   element-merged — that is the RFC's defined behavior).
+///
 /// If `patch` is not an object, it replaces `target` entirely.
 pub fn json_merge_patch(target: &mut Value, patch: &Value) {
     let Value::Object(patch_map) = patch else {

@@ -218,7 +218,23 @@ tab visible → the §8 facing hint genuinely doesn't read the world matrix; fix
 world-transform readback so it reflects orientation. **This is the one §B row that
 could be a real 🔴 — verify first.**
 
-### V2 — T9 papercuts (3 of 4 pending)
+### V2 — T9 papercuts — ✅ DONE (all 4)
+
+**Verified foregrounded with RiggedSimple.glb (2-bone chain Armature→Bone→Bone.001).**
+- **solve_ik chain:** `solve_ik {end_node:Bone.001, root_node:Armature,
+  target:[3,5,0]}` → tip reaches **exactly** [3,5,0] (`reach:1.0`); result names
+  `mid_node:Bone` + the passed `root_node:Armature` — targets the named chain, not
+  a parent-walk into wrong joints.
+- **clip-clear / reset_pose:** added a clip with a rotation track on Bone (90° about
+  Z); previewing it bends the cylinder horizontal; `set_current_clip {}` leaves the
+  pose **baked in the viewport**; `reset_pose {Armature}` restores the base
+  (cylinder back to vertical = base screenshot). (`get_node_transforms` reads scene
+  base, not the clip preview — verified via screenshots, the renderer-mirror state
+  reset_pose operates on.)
+- **frame_node {padding:0}:** box tightly fills the viewport (vs the padded default).
+- **screenshot error text:** already ✅.
+
+### ~~V2 — T9 papercuts (3 of 4 pending)~~
 
 - `solve_ik` explicit `root_node`/mid-joint chain (schema supports it — needs a
   rig). Confirm you can target a named 2-bone chain, not walk parents into fingers.
@@ -242,31 +258,80 @@ re-specializes and **renders** the checker, or returns a clear error — not a s
 store-and-drop. (Related to F2, which is the unlit case; if the PBR path silently
 drops, fix it the same way as F2.)
 
-### V4 — T13 visual transparency
+### V4 — T13 visual transparency — ✅ DONE
+
+**Verified foregrounded.** Red PBR box behind, blue PBR sphere in front,
+`set_builtin_alpha_mode blend` + `base_color [0,0,1,0.4]`. Screenshot: the sphere
+is clearly see-through — the red box reads as **magenta** where the sphere
+overlaps it (red+blue blend), and the grid floor is visible through the lower
+hemisphere. No fix needed.
+
+### ~~V4 — T13 visual transparency~~
 
 Tool/param level ✅. Confirm a blend-mode builtin with `base_color` alpha 0.4 in
 front of another object actually renders see-through.
 
-### V5 — T14 particle sprite alpha + forces
+### V5 — T14 particle sprite alpha + forces — ✅ DONE
+
+**Verified foregrounded.** PASS-a: emitter with an agent-uploaded soft radial
+sprite (white→transparent falloff, `create_texture`) + `blend:true` → particles
+render as **soft round cloud-puffs with gradient edges**, not hard squares (the
+emitter samples the sprite alpha). PASS-b: adding `forces:[{gravity:{acceleration:
+[6,0,0]}}]` is accepted + round-trips in `get_node_details`, and the particle
+stream is visibly **blown to +X** (motion changed) vs the symmetric no-force
+cloud. No fix needed.
+
+### ~~V5 — T14 particle sprite alpha + forces~~
 
 Primitives present (`set_particle_emitter` has `texture`/`blend`/typed `forces`).
 Confirm soft radial sprite → soft round blobs (not hard squares), and a turbulence/
 force changes motion.
 
-### V6 — T16 vertex-hook visual
+### V6 — T16 vertex-hook visual — ✅ DONE
+
+**Verified foregrounded.** 80×80-segment plane (CPU bbox stays flat, y=0) + a
+custom material whose `set_material_vertex_wgsl` hook displaces
+`position.y += sin(x*3)*cos(z*3)*0.5` (returns VertexDisplaceOutput in local
+space). Screenshot shows a clear sinusoidal egg-carton wave surface — the GPU
+vertex displacement is unmistakably visible on screen even though `get_mesh_stats`
+is unchanged (GPU-only, as expected). `get_material_diagnostics ok:true`. No fix
+needed.
+
+### ~~V6 — T16 vertex-hook visual~~
 
 Readback ✅ (fbm vertex-WGSL compiles; `displace_from_texture` grew the bbox).
 Confirm the GPU vertex displacement is visible on screen (it doesn't change CPU
 `get_mesh_stats`, so this needs pixels).
 
-### V7 — T17 custom material IBL + lights
+### V7 — T17 custom material IBL + lights — ✅ DONE
+
+**Verified foregrounded (after deleting the seeded light — F3 caveat confirmed:
+deletes cleanly, tree empties).** PASS-a: custom material with `ibl` include
+(`sample_ibl(albedo, world_normal, surface_to_camera, roughness, metallic)`),
+IBL-only baseline → sphere renders **pink/non-black** with a sky-to-floor
+gradient, purely from IBL. PASS-b: second material with `light_access` include
+(Lambert loop over `get_lights_info().n_lights` × `light_sample`) + an inserted
+directional light → sphere goes from near-black at `set_light_intensity 0` to
+bright white at intensity 10. Both `get_material_diagnostics ok:true`. No fix
+needed.
+
+### ~~V7 — T17 custom material IBL + lights~~
 
 Compile path ✅ (`ibl`/`sample_ibl`, `light_access`/`light_sample`). Delete the
 seeded directional light (F3) for the IBL-only baseline, then confirm: (a) IBL-only
 custom-material sphere is **non-black**; (b) a second `light_access` material
 brightens with `set_light_intensity`.
 
-### V8 — T18 environment from agent data
+### V8 — T18 environment from agent data — ✅ DONE
+
+**Verified foregrounded, both agent-data paths.** (a) `set_environment
+{zenith:[0,0.8,0.1], nadir:[0.4,0,0.6]}` → sky turns green at top, floor picks up
+the purple nadir tint (skybox + IBL both change from the neutral default). (b)
+`set_environment {equirect: <agent-drawn 64×32 PNG with orange/cyan/magenta
+bands>}` → horizon skybox shows the cyan mid-band, floor reflects the magenta
+bottom-band via IBL. Sky/IBL visibly become the agent's content. No fix needed.
+
+### ~~V8 — T18 environment from agent data~~
 
 Primitives present (`set_environment` `equirect`/`zenith`/`nadir`). Confirm the
 sky/IBL visibly changes to agent-supplied content.

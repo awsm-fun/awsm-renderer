@@ -1943,7 +1943,9 @@ impl EditorMcp {
 
     // ── project / import / history ──────────────────────────────────────────
 
-    #[tool(description = "Start a fresh project (clears undo history). Re-seeds the default environment + IBL and a single key Directional light — NOT a fully empty scene. For an IBL-only / punctual-light-free baseline (e.g. to test custom-material IBL), delete the seeded Directional light first (get_snapshot to find it, then delete_node).")]
+    #[tool(
+        description = "Start a fresh project (clears undo history). Re-seeds the default environment + IBL and a single key Directional light — NOT a fully empty scene. For an IBL-only / punctual-light-free baseline (e.g. to test custom-material IBL), delete the seeded Directional light first (get_snapshot to find it, then delete_node)."
+    )]
     async fn new_project(&self) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::NewProject).await
     }
