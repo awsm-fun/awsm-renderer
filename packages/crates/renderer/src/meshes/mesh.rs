@@ -383,6 +383,69 @@ impl Mesh {
         Ok(())
     }
 
+    /// Pushes the **custom-vertex** geometry draw for this mesh. Same shape as
+    /// the masked draw path (portable non-instanced uniform-with-dynamic-offset
+    /// meta + plain indexed draw — the custom-vertex pipeline is compiled only
+    /// for that shape today), plus it binds the shared zero uv0 buffer at the
+    /// uv0 slot (slot 1) so the pipeline's `@location(10) uv0` attribute is
+    /// satisfied.
+    ///
+    /// The vertex shader's `custom_displace_vertex` hook reads `uv0` (constant
+    /// `vec2(0.0)` from the zero buffer) + position/normal/material data; the
+    /// fragment is the plain visibility-writer. Restricted to non-instanced
+    /// meshes — the caller (`collect_renderables`) only sets the custom-vertex
+    /// key for `!instanced` meshes, so we don't bind the instancing buffer here.
+    pub fn push_geometry_custom_vertex_pass_commands(
+        &self,
+        ctx: &RenderContext,
+        mesh_key: MeshKey,
+        render_pass: &RenderPassEncoder,
+        bind_groups: &GeometryBindGroups,
+        uv0_zero_buffer: &web_sys::GpuBuffer,
+    ) -> Result<()> {
+        let meta_offset = ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
+
+        // Uniform-with-dynamic-offset meta (the shape the custom-vertex pipeline
+        // is compiled against), pointed at this mesh's slot.
+        render_pass.set_bind_group(
+            2,
+            bind_groups.meta.get_uniform_bind_group()?,
+            Some(&[meta_offset]),
+        )?;
+
+        // Slot 0: visibility geometry (locations 0-5).
+        render_pass.set_vertex_buffer(
+            0,
+            ctx.meshes.visibility_geometry_data_gpu_buffer(),
+            Some(
+                ctx.meshes
+                    .visibility_geometry_data_buffer_offset(mesh_key)? as u64,
+            ),
+            None,
+        );
+
+        // Slot 1: the shared zero uv0 buffer (location 10, `array_stride: 0` so
+        // every vertex reads `vec2(0.0)`).
+        render_pass.set_vertex_buffer(1, uv0_zero_buffer, None, None);
+
+        let buffer_info = ctx.meshes.buffer_info(mesh_key)?;
+
+        render_pass.set_index_buffer(
+            ctx.meshes.visibility_geometry_index_gpu_buffer(),
+            IndexFormat::Uint32,
+            Some(
+                ctx.meshes
+                    .visibility_geometry_index_buffer_offset(mesh_key)? as u64,
+            ),
+            None,
+        );
+
+        let index_count = buffer_info.triangles.vertex_attribute_indices.count as u32;
+        render_pass.draw_indexed_with_instance_count(index_count, 1);
+
+        Ok(())
+    }
+
     /// Pushes transparent material pass commands for this mesh.
     pub fn push_material_transparent_pass_commands(
         &self,

@@ -471,6 +471,27 @@ impl AwsmRenderer {
                 })
                 .collect();
 
+            // Collect the registered CUSTOM-VERTEX materials (those whose
+            // registration carries a non-empty `wgsl_vertex`). Each gets one
+            // custom-vertex geometry variant — strictly additive + opt-in: a
+            // material with no `wgsl_vertex` never enters this list, so the
+            // shared geometry path is byte-identical for everyone else.
+            let custom_vertex: Vec<(
+                awsm_materials::MaterialShaderId,
+                crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo,
+            )> = self
+                .dynamic_materials
+                .iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|id| {
+                    self.dynamic_materials
+                        .vertex_shader_info_for(id)
+                        .map(|info| (id, info))
+                })
+                .collect();
+
             let new_masked_bg = {
                 let mut ctx = RenderPassInitContext {
                     gpu: &mut self.gpu,
@@ -565,6 +586,43 @@ impl AwsmRenderer {
                 self.render_passes
                     .geometry
                     .masked_pipelines
+                    .ensure_variant(
+                        &mut ctx,
+                        &self.render_passes.geometry.masked_bind_group,
+                        &variant,
+                    )
+                    .await?;
+            }
+
+            // -------------------------------------------------------------
+            // Custom-vertex geometry — rebuild against the new pool. The
+            // custom-vertex variant reuses the masked group-0 bind group (its
+            // `material_data_load` reads the `materials` buffer + samples the
+            // texture pool the masked group declares), so its pipeline layout
+            // also changes when the pool grows. Relayout the pool, then compile
+            // one variant per registered custom-vertex material (non-instanced
+            // shape; instanced custom-vertex is a follow-on). Mirrors the
+            // masked-custom build above. The render path falls back to the plain
+            // geometry pipeline until these land, so the mesh always draws.
+            // -------------------------------------------------------------
+            self.render_passes
+                .geometry
+                .custom_vertex_pipelines
+                .relayout(
+                    &mut ctx,
+                    &self.render_passes.geometry.masked_bind_group,
+                    &self.render_passes.geometry.bind_groups,
+                )?;
+            for (shader_id, info) in &custom_vertex {
+                let variant =
+                    crate::render_passes::geometry::custom_vertex_pipeline::CustomVertexVariant {
+                        shader_id: *shader_id,
+                        dynamic_vertex: info.clone(),
+                        instancing_transforms: false,
+                    };
+                self.render_passes
+                    .geometry
+                    .custom_vertex_pipelines
                     .ensure_variant(
                         &mut ctx,
                         &self.render_passes.geometry.masked_bind_group,

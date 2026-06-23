@@ -228,6 +228,38 @@ impl AwsmRenderer {
                 } else {
                     None
                 },
+                // Custom-vertex variant: strictly additive + opt-in. Only for a
+                // material whose registration carries a non-empty `wgsl_vertex`
+                // (`vertex_shader_info_for` → `Some`) AND whose custom-vertex
+                // pipeline is compiled. A material with `wgsl_vertex == None`
+                // leaves this `None`, so it takes the existing shared geometry
+                // path unchanged (non-regression). Keyed on the CANONICAL id
+                // (the custom material's own dynamic id, which is what the
+                // registry + the compile trigger key on). Restricted to
+                // non-instanced meshes — the texture-finalize flow compiles only
+                // the non-instanced custom-vertex shape today (mirroring the
+                // masked path); instanced custom-vertex is a follow-on.
+                geometry_custom_vertex_render_pipeline_key: if !mesh.instanced
+                    && self
+                        .dynamic_materials
+                        .vertex_shader_info_for(
+                            self.materials.canonical_shader_id(routing_material),
+                        )
+                        .is_some()
+                {
+                    let msaa = match self.anti_aliasing.msaa_sample_count {
+                        Some(4) => Some(4u32),
+                        _ => None,
+                    };
+                    let cv_shader_id = self.materials.canonical_shader_id(routing_material);
+                    self.render_passes.geometry.custom_vertex_pipelines.get(
+                        msaa,
+                        cv_shader_id,
+                        cull_mode,
+                    )
+                } else {
+                    None
+                },
                 material_opaque_compute_pipeline_key: self
                     .render_passes
                     .material_opaque
@@ -384,6 +416,14 @@ pub struct Renderable {
     /// pipeline + augmented group-0 (cutoff `discard`); when `None` the mesh
     /// falls back to `geometry_render_pipeline_key` (renders solid).
     pub geometry_masked_render_pipeline_key: Option<RenderPipelineKey>,
+    /// Set for a mesh whose material is **custom-vertex** (its registration
+    /// carries a non-empty `wgsl_vertex`) and whose custom-vertex variant has
+    /// been compiled. When `Some`, the geometry pass draws this mesh with the
+    /// custom-vertex pipeline + augmented group-0 (displacement hook) in pass 3;
+    /// when `None` the mesh falls back to `geometry_render_pipeline_key`
+    /// (renders un-displaced). Strictly additive + opt-in — a material with
+    /// `wgsl_vertex == None` always leaves this `None`.
+    pub geometry_custom_vertex_render_pipeline_key: Option<RenderPipelineKey>,
     pub material_opaque_compute_pipeline_key: Option<ComputePipelineKey>,
     pub material_transparent_render_pipeline_key: Option<RenderPipelineKey>,
 }
@@ -432,6 +472,33 @@ impl Renderable {
     /// material is glTF `MASK` and its masked variant has been compiled.
     pub fn geometry_masked_render_pipeline_key(&self) -> Option<RenderPipelineKey> {
         self.geometry_masked_render_pipeline_key
+    }
+
+    /// Returns the custom-vertex geometry pipeline key, if this mesh's material
+    /// declared a `wgsl_vertex` displacement body and its custom-vertex variant
+    /// has been compiled.
+    pub fn geometry_custom_vertex_render_pipeline_key(&self) -> Option<RenderPipelineKey> {
+        self.geometry_custom_vertex_render_pipeline_key
+    }
+
+    /// Pushes the custom-vertex geometry draw for this renderable: binds the
+    /// shared zero uv0 buffer at the uv0 slot, then records the standard
+    /// geometry draw. Mirrors [`Self::push_geometry_pass_commands`].
+    pub fn push_geometry_custom_vertex_pass_commands(
+        &self,
+        ctx: &RenderContext,
+        render_pass: &RenderPassEncoder,
+        geometry_bind_groups: &GeometryBindGroups,
+        uv0_zero_buffer: &web_sys::GpuBuffer,
+    ) -> Result<()> {
+        let mesh = ctx.meshes.get(self.key)?;
+        mesh.push_geometry_custom_vertex_pass_commands(
+            ctx,
+            self.key,
+            render_pass,
+            geometry_bind_groups,
+            uv0_zero_buffer,
+        )
     }
 
     /// Pushes transparent material pass commands for this renderable.

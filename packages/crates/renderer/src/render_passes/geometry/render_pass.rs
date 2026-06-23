@@ -14,8 +14,9 @@ use crate::{
     render::RenderContext,
     render_passes::{
         geometry::{
-            bind_group::GeometryBindGroups, masked_bind_group::GeometryMaskedBindGroup,
-            masked_pipeline::GeometryMaskedPipelines, pipeline::GeometryPipelines,
+            bind_group::GeometryBindGroups, custom_vertex_pipeline::GeometryCustomVertexPipelines,
+            masked_bind_group::GeometryMaskedBindGroup, masked_pipeline::GeometryMaskedPipelines,
+            pipeline::GeometryPipelines,
         },
         RenderPassInitContext,
     },
@@ -43,6 +44,12 @@ pub struct GeometryRenderPass {
     /// Populated by the texture-finalize flow (built-in) + the dynamic
     /// scheduler (custom); empty until a masked material needs one.
     pub masked_pipelines: GeometryMaskedPipelines,
+    /// Lazy per-`shader_id` pool of custom-vertex pipelines. Populated by the
+    /// texture-finalize flow for every registered material whose
+    /// `vertex_shader_info_for` is `Some`; empty until a custom-vertex material
+    /// needs one. Reuses `masked_bind_group` for group 0 (the custom-vertex
+    /// `bind_groups.wgsl` declares the same bindings).
+    pub custom_vertex_pipelines: GeometryCustomVertexPipelines,
 }
 
 impl GeometryRenderPass {
@@ -57,12 +64,15 @@ impl GeometryRenderPass {
         let pipelines = GeometryPipelines::new(ctx, &bind_groups, multisampled_geometry).await?;
         let masked_bind_group = GeometryMaskedBindGroup::new(ctx).await?;
         let masked_pipelines = GeometryMaskedPipelines::new(ctx, &masked_bind_group, &bind_groups)?;
+        let custom_vertex_pipelines =
+            GeometryCustomVertexPipelines::new(ctx, &masked_bind_group, &bind_groups)?;
 
         Ok(Self {
             bind_groups,
             pipelines,
             masked_bind_group,
             masked_pipelines,
+            custom_vertex_pipelines,
         })
     }
 
@@ -160,10 +170,15 @@ impl GeometryRenderPass {
         render_pass.set_bind_group(3, self.bind_groups.animation.get_bind_group()?, None)?;
 
         // Pass 1 — non-masked meshes (group 0 = camera, bound above). A mesh
-        // with a compiled masked variant is skipped here and drawn in pass 2.
+        // with a compiled masked OR custom-vertex variant is skipped here and
+        // drawn in pass 2 / pass 3 respectively.
         let mut last_render_pipeline_key = None;
         for renderable in renderables {
-            if renderable.geometry_masked_render_pipeline_key().is_some() {
+            if renderable.geometry_masked_render_pipeline_key().is_some()
+                || renderable
+                    .geometry_custom_vertex_render_pipeline_key()
+                    .is_some()
+            {
                 continue;
             }
             match renderable.geometry_render_pipeline_key() {
@@ -219,6 +234,41 @@ impl GeometryRenderPass {
                         &render_pass,
                         &self.bind_groups,
                         true,
+                    )?;
+                }
+            }
+        }
+
+        // Pass 3 — custom-vertex meshes. Same group-0 rebind as pass 2 (the
+        // custom-vertex pipeline reuses the masked/augmented group-0 layout, so
+        // the hook's `material_data_load` resolves the `materials` buffer +
+        // texture pool); select the per-material custom-vertex pipeline and bind
+        // the shared zero uv0 buffer at the uv0 slot. A mesh drawn here was
+        // skipped in pass 1 (above). When its variant hasn't compiled yet the
+        // key is `None`, so the mesh stays in pass 1 and renders un-displaced —
+        // never dropped.
+        let any_custom_vertex = renderables
+            .iter()
+            .any(|r| r.geometry_custom_vertex_render_pipeline_key().is_some());
+        if any_custom_vertex {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+                render_pass.set_bind_group(0, masked_group0, None)?;
+                let uv0_zero_buffer = self.custom_vertex_pipelines.uv0_zero_buffer();
+                let mut last_cv_key = None;
+                for renderable in renderables {
+                    let Some(cv_key) = renderable.geometry_custom_vertex_render_pipeline_key()
+                    else {
+                        continue;
+                    };
+                    if last_cv_key != Some(cv_key) {
+                        render_pass.set_pipeline(ctx.pipelines.render.get(cv_key)?);
+                        last_cv_key = Some(cv_key);
+                    }
+                    renderable.push_geometry_custom_vertex_pass_commands(
+                        ctx,
+                        &render_pass,
+                        &self.bind_groups,
+                        uv0_zero_buffer,
                     )?;
                 }
             }

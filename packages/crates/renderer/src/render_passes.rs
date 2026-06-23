@@ -119,6 +119,8 @@ struct RenderPassesBindings {
     geometry_bg: geometry::bind_group::GeometryBindGroups,
     geometry_masked_bg: geometry::masked_bind_group::GeometryMaskedBindGroup,
     geometry_masked_pipelines: geometry::masked_pipeline::GeometryMaskedPipelines,
+    geometry_custom_vertex_pipelines:
+        geometry::custom_vertex_pipeline::GeometryCustomVertexPipelines,
     shadow_masked_bg: shadow_masked::bind_group::ShadowMaskedBindGroup,
     shadow_masked_pipelines: shadow_masked::pipeline::ShadowMaskedPipelines,
     coverage_bg_single: Option<coverage::bind_group::CoverageBindGroups>,
@@ -305,6 +307,15 @@ impl RenderPasses {
             &geometry_masked_bg,
             &geometry_bg,
         )?;
+        // Custom-vertex geometry variant: reuses the masked group-0 bind group +
+        // an empty lazy pipeline pool. Pipelines compile later in the
+        // texture-finalize flow (parallel to the geometry masked pool).
+        let geometry_custom_vertex_pipelines =
+            geometry::custom_vertex_pipeline::GeometryCustomVertexPipelines::new(
+                ctx,
+                &geometry_masked_bg,
+                &geometry_bg,
+            )?;
         // Masked (alpha-tested) shadow caster: augmented group-0 bind group +
         // an empty lazy pipeline pool. Pipelines compile later in the
         // texture-finalize flow (parallel to the geometry masked pool).
@@ -425,6 +436,7 @@ impl RenderPasses {
                 geometry_bg,
                 geometry_masked_bg,
                 geometry_masked_pipelines,
+                geometry_custom_vertex_pipelines,
                 shadow_masked_bg,
                 shadow_masked_pipelines,
                 coverage_bg_single,
@@ -658,6 +670,7 @@ impl RenderPasses {
             geometry_bg,
             geometry_masked_bg,
             geometry_masked_pipelines,
+            geometry_custom_vertex_pipelines,
             shadow_masked_bg,
             shadow_masked_pipelines,
             coverage_bg_single,
@@ -688,6 +701,7 @@ impl RenderPasses {
             )?,
             masked_bind_group: geometry_masked_bg,
             masked_pipelines: geometry_masked_pipelines,
+            custom_vertex_pipelines: geometry_custom_vertex_pipelines,
         };
 
         let shadow_masked = shadow_masked::ShadowMaskedRenderPass {
