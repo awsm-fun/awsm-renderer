@@ -76,17 +76,25 @@ Field order mirrors the emitted struct exactly (see
 
 - **`position` / `normal` / `tangent`** are the post-morph LOCAL surface frame.
   Displace them and return the new frame (see Output below).
-- **`uv`** is a 4-element array of **ALL** the mesh's UV sets, read per-vertex —
-  full parity with the fragment hook's multi-UV access. `input.uv[0]` is the
-  classic TEXCOORD_0; `input.uv[1]` is TEXCOORD_1, etc. Sets the mesh doesn't
-  have are `(0.0, 0.0)`. **`uv_count`** is the number of valid sets (`0..=4`) —
-  index defensively if your material may bind to meshes with fewer sets. The
-  same real per-vertex UVs are read in the **geometry, shadow, and transparent**
-  passes (geometry/shadow reconstruct them from the merged geometry pool;
-  transparent reads its real per-mesh UV attributes), so a UV-driven height
-  field displaces + casts shadows consistently on **every** alpha mode. Sample a
-  declared texture with any set via
+- **`uv`** is a 4-element array of the mesh's UV sets — `input.uv[0]` is the
+  classic TEXCOORD_0, `input.uv[1]` is TEXCOORD_1, etc.; unused sets are
+  `(0.0, 0.0)`. **`uv_count`** is the number of valid sets (`0..=4`) — index
+  defensively. Sample a declared texture with any set via
   `material_sample_<name>(input.material, input.uv[i])`.
+  - **TRANSPARENT (Blend) materials get real per-vertex UVs** (read from the
+    mesh's per-mesh UV vertex attributes) — UV-driven displacement works fully.
+  - **OPAQUE / Mask materials: `uv` is currently `(0,0)` / `uv_count == 0`**
+    (a documented follow-on). The geometry/shadow passes would reconstruct UVs
+    from the merged geometry pool by the per-vertex attribute index, but that
+    needs (a) the renderer to upload the mesh's UV attribute data for a
+    vertex-only material (today it's only uploaded when the *fragment* needs it)
+    and (b) the correct attribute-vertex index in the vertex stage (it is **not**
+    `vertex_index`/`original_vertex_index` — the fragment uses the triangle's
+    stored attribute indices). Until then, opaque custom-vertex displacement is
+    **position / normal / instance_id / globals.time / material-uniform driven**
+    (all fully working); UV-/heightmap-driven displacement should use a
+    transparent material. The ABI, the reader, and the `material_sample_*`
+    helpers are in place so this lights up once the upload + index land.
 - **`vertex_index`** — the mesh vertex index, useful for per-vertex hashes.
 - **`instance_id`** — the per-instance id, or `u32::MAX` when the mesh is not
   instanced (compare with `INSTANCE_ATTR_NONE`).
