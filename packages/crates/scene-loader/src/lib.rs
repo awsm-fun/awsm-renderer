@@ -1974,7 +1974,10 @@ async fn load_cluster_lod(
     // overflowing the GPU pool. Off ⇒ budget = MAX ⇒ every cluster resident with
     // `cm.indices` verbatim, byte-identical to the non-streaming path.
     let budget = if renderer.features().cluster_streaming {
-        CLUSTER_STREAMING_BUDGET_TRIS
+        renderer
+            .features()
+            .cluster_streaming_budget
+            .unwrap_or(CLUSTER_STREAMING_BUDGET_TRIS)
     } else {
         usize::MAX
     };
@@ -2682,9 +2685,9 @@ mod cluster_streaming_tests {
             colors: vec![],
             indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
             clusters: vec![
-                page(0.0, 5.0, 0, 3),         // C0 leaf
-                page(0.0, 5.0, 3, 3),         // C1 leaf
-                page(5.0, f32::MAX, 6, 3),    // C2 root
+                page(0.0, 5.0, 0, 3),      // C0 leaf
+                page(0.0, 5.0, 3, 3),      // C1 leaf
+                page(5.0, f32::MAX, 6, 3), // C2 root
             ],
         }
     }
@@ -2725,7 +2728,7 @@ mod cluster_streaming_tests {
         let (pages, m_indices) = select_resident_clusters(&cm, 2);
         assert_eq!(pages.len(), 2);
         assert_eq!(m_indices.len(), 6); // 2 tris, budget honoured
-        // Pages are emitted in cluster order (C0 then C2), remapped contiguously.
+                                        // Pages are emitted in cluster order (C0 then C2), remapped contiguously.
         assert_eq!(m_indices, vec![0, 1, 2, 6, 7, 8]);
         assert_eq!(pages[0].first_index, 0);
         assert_eq!(pages[0].lod_error, 0.0); // C0 leaf

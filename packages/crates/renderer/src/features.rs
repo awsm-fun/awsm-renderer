@@ -143,6 +143,14 @@ pub struct RendererFeatures {
     /// follow-up — see `docs/plans/nanite-software-rasterize.md` Phase 5.
     pub cluster_streaming: bool,
 
+    /// Optional override for the cluster-streaming triangle budget (Phase 5). When
+    /// `None` (the default), the loader uses its built-in default; `Some(n)` caps
+    /// the cluster render mesh `M` to `n` triangles. Only consulted when
+    /// [`Self::cluster_streaming`] is on. Exposed so a host (e.g. the editor's
+    /// `?streambudget=N` URL flag) can tune the cap without a rebuild — handy for
+    /// forcing the cap on a small asset to exercise the path.
+    pub cluster_streaming_budget: Option<usize>,
+
     /// Whether to use the WebGPU `indirect-first-instance` feature for
     /// the non-instanced geometry pass's drawIndirect path.
     ///
