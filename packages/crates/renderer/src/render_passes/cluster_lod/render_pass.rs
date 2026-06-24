@@ -51,19 +51,26 @@ impl ClusterLodRenderPass {
         gpu: &AwsmRendererWebGpu,
         layouts: &BindGroupLayouts,
         pages: &[ClusterPage],
+        indices: &[u32],
     ) -> Result<()> {
         let count = pages.len() as u32;
+        let index_count = indices.len() as u32;
         let buffers = match self.buffers.as_mut() {
             Some(b) => {
-                b.ensure_capacity(gpu, count)?;
+                b.ensure_capacity(gpu, count, index_count)?;
                 b
             }
             None => {
-                self.buffers = Some(ClusterLodBuffers::with_capacity(gpu, count.max(1))?);
+                self.buffers = Some(ClusterLodBuffers::with_capacity(
+                    gpu,
+                    count.max(1),
+                    index_count.max(3),
+                )?);
                 self.buffers.as_mut().unwrap()
             }
         };
         buffers.write_pages(gpu, pages)?;
+        buffers.write_source_indices(gpu, indices)?;
         self.cluster_count = count;
         let buffers = self.buffers.as_ref().unwrap();
         self.bind_groups.recreate(gpu, layouts, buffers)?;

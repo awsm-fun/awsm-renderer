@@ -2338,9 +2338,10 @@ impl AwsmRenderer {
     pub fn upload_cluster_pages(
         &mut self,
         pages: &[crate::cluster_lod::ClusterPage],
+        indices: &[u32],
     ) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.upload_pages(&self.gpu, &self.bind_group_layouts, pages)?;
+            pass.upload_pages(&self.gpu, &self.bind_group_layouts, pages, indices)?;
         }
         Ok(())
     }

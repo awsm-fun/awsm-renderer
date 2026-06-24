@@ -23,6 +23,10 @@ use crate::cluster_lod::{
 };
 use glam::{Mat4, Vec3};
 
+/// `drawIndexedIndirect` args: 5 × u32 (index_count, instance_count, first_index,
+/// base_vertex, first_instance).
+pub const CLUSTER_DRAW_ARGS_SIZE: usize = 20;
+
 pub struct ClusterLodBuffers {
     /// `array<ClusterPage>` — the cut shader reads (storage, RO).
     pub pages_buffer: web_sys::GpuBuffer,
@@ -32,8 +36,19 @@ pub struct ClusterLodBuffers {
     pub params_buffer: web_sys::GpuBuffer,
     /// CPU-mappable mirror of `selected` for readback verification.
     pub readback_buffer: web_sys::GpuBuffer,
+    /// The mesh's full concatenated cluster index pages (`array<u32>`); the
+    /// compaction reads selected clusters' slices out of this (storage, RO).
+    pub source_indices_buffer: web_sys::GpuBuffer,
+    /// Compaction output: the selected clusters' indices packed contiguously
+    /// (storage RW for the compaction + INDEX for the draw).
+    pub compacted_indices_buffer: web_sys::GpuBuffer,
+    /// `drawIndexedIndirect` args the compaction fills (storage RW for the
+    /// atomic index_count + INDIRECT for the draw + COPY_DST/SRC for clear/read).
+    pub draw_args_buffer: web_sys::GpuBuffer,
     /// Cluster slots both page/selected buffers hold without resizing.
     pub capacity: u32,
+    /// Index slots the source/compacted index buffers hold without resizing.
+    pub index_capacity: u32,
     /// Reused page-serialisation scratch (no per-upload allocation).
     staging: Vec<u8>,
 }
@@ -42,10 +57,13 @@ impl ClusterLodBuffers {
     pub fn with_capacity(
         gpu: &AwsmRendererWebGpu,
         capacity: u32,
+        index_capacity: u32,
     ) -> Result<Self, AwsmCoreError> {
         let capacity = capacity.max(1);
+        let index_capacity = index_capacity.max(3);
         let pages_bytes = capacity as usize * CLUSTER_PAGE_GPU_STRIDE;
         let selected_bytes = capacity as usize * 4;
+        let index_bytes = index_capacity as usize * 4;
         let pages_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
                 Some("ClusterLodPages"),
@@ -81,29 +99,84 @@ impl ClusterLodBuffers {
             )
             .into(),
         )?;
+        let source_indices_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("ClusterLodSourceIndices"),
+                index_bytes,
+                BufferUsage::new().with_storage().with_copy_dst(),
+            )
+            .into(),
+        )?;
+        let compacted_indices_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("ClusterLodCompactedIndices"),
+                index_bytes,
+                BufferUsage::new().with_storage().with_index().with_copy_src(),
+            )
+            .into(),
+        )?;
+        let draw_args_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("ClusterLodDrawArgs"),
+                CLUSTER_DRAW_ARGS_SIZE,
+                BufferUsage::new()
+                    .with_storage()
+                    .with_indirect()
+                    .with_copy_dst()
+                    .with_copy_src(),
+            )
+            .into(),
+        )?;
         Ok(Self {
             pages_buffer,
             selected_buffer,
             params_buffer,
             readback_buffer,
+            source_indices_buffer,
+            compacted_indices_buffer,
+            draw_args_buffer,
             capacity,
+            index_capacity,
             staging: vec![0u8; pages_bytes],
         })
     }
 
-    /// Grows to hold `needed` clusters (2× headroom). Returns `true` when a
-    /// resize happened, so the caller rebuilds the bind group.
+    /// Grows to hold `needed` clusters / `needed_indices` indices (2× headroom).
+    /// Returns `true` when a resize happened, so the caller rebuilds the bind
+    /// group.
     pub fn ensure_capacity(
         &mut self,
         gpu: &AwsmRendererWebGpu,
         needed: u32,
+        needed_indices: u32,
     ) -> Result<bool, AwsmCoreError> {
-        if needed <= self.capacity {
+        if needed <= self.capacity && needed_indices <= self.index_capacity {
             return Ok(false);
         }
-        let new_capacity = needed.saturating_mul(2).max(needed);
-        *self = Self::with_capacity(gpu, new_capacity)?;
+        let new_capacity = needed.saturating_mul(2).max(needed).max(self.capacity);
+        let new_index_capacity = needed_indices
+            .saturating_mul(2)
+            .max(needed_indices)
+            .max(self.index_capacity);
+        *self = Self::with_capacity(gpu, new_capacity, new_index_capacity)?;
         Ok(true)
+    }
+
+    /// Upload the mesh's full concatenated cluster index pages (once, at load).
+    pub fn write_source_indices(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        indices: &[u32],
+    ) -> Result<(), AwsmCoreError> {
+        if indices.is_empty() {
+            return Ok(());
+        }
+        // One-shot at load (not per-frame); a single staging Vec is fine.
+        let mut bytes = Vec::with_capacity(indices.len() * 4);
+        for &i in indices {
+            bytes.extend_from_slice(&i.to_le_bytes());
+        }
+        gpu.write_buffer(&self.source_indices_buffer, None, bytes.as_slice(), None, None)
     }
 
     /// Upload the cluster pages (once, at mesh load). Serialises into the reused

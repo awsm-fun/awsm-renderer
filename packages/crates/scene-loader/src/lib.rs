@@ -1885,7 +1885,7 @@ async fn load_cluster_lod(
             index_count: c.index_count,
         })
         .collect();
-    renderer.upload_cluster_pages(&gpu_pages)?;
+    renderer.upload_cluster_pages(&gpu_pages, &cm.indices)?;
 
     // Cut thresholds = the DAG's distinct cluster errors, ascending. Each gives a
     // watertight uniform cut; rising threshold ⇒ coarser. We register the finest
