@@ -96,6 +96,13 @@ build a WebGPU app on. Publishing the whole graph lets a downstream user write
 `awsm-renderer = "…"` and pull the rest from crates.io (the crates reference each
 other by version, kept in lockstep by `task bump`).
 
+> **Crate rename (since 0.3.3).** The library crates moved from the bare `awsm-*`
+> prefix to `awsm-renderer-*` — e.g. `awsm-meshgen` → `awsm-renderer-meshgen`,
+> `awsm-materials` → `awsm-renderer-materials`, `awsm-scene` → `awsm-renderer-scene`
+> (`awsm-renderer` itself is unchanged). The old names are yanked on crates.io;
+> new projects must depend on the `awsm-renderer-*` names. There are no
+> compatibility shims and no API changes — only the package names moved.
+
 Everything **outside** `packages/crates/` is `publish = false`: the two frontends,
 the `awsm-renderer-web-shared` glue, the render-worker example, the `awsm-renderer-debugging`
 binaries, the `awsm-renderer-scene-mcp` server (ships as a binary via cargo-dist), and
