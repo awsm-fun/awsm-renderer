@@ -159,6 +159,54 @@ All under `#[cfg(any(debug_assertions, feature = "harden-diag"))]`.
 
 ---
 
+## ⚠️ BLOCKER (P2/P3) — the LOCKED "rebuild from CPU mirrors" premise is false
+
+**Surfaced during P2 implementation (2026-06-24).** The LOCKED design for B1a/B1b
+assumes the renderer retains CPU mirrors of **all** scene resources — the plan
+text lists "transforms buffer, instance arenas, materials, **mesh geometry**" as
+recoverable from CPU. Two of those are **not** retained, by deliberate design:
+
+- **Mesh geometry is upload-then-drop.** `meshes.rs:961 resolve_one` `remove`s the
+  `GeometrySource`, uploads it, and **drops it** — "the source is dropped at the
+  end of this scope … The only retained CPU state is the GPU offsets + layout"
+  (the *source-freed invariant §7*). There is **no CPU copy of vertex/index data**
+  to re-upload after a device loss.
+- **Texture pixel data is upload-then-drop** too (same pattern in `textures.rs`).
+- Retained CPU mirrors: **transforms** (`shared_arena`), **instances** (arena),
+  **materials** (`Material` defs). Geometry + texture pixels are **gone**.
+
+So `renderer.rebuild_gpu()` **cannot** reconstruct geometry/textures "from CPU
+mirrors" — those mirrors don't exist. The only ways to seamless-recover are:
+
+- **(a) Retain every mesh's geometry + every texture's pixels CPU-side forever** —
+  a large, permanent RAM cost that **directly fights this plan's own
+  memory-hardening goal** (P1 just *bounded* retained memory; this would
+  *re-add* unbounded retention). Rejected.
+- **(b) Reload/reconstruct from the retained source-of-truth** (editor:
+  `EditorProject`; player: the scene bundle / glTF bytes). This is **robust and
+  is what production WebGPU apps actually do on device loss** — but it is the
+  "reload" the LOCKED decision forbade. **The no-reload lock was premised on CPU
+  mirrors existing; since they don't, that fork must be re-opened.**
+
+**Recommended (needs David's call):** re-open the B1a fork and choose **(b)
+reload-from-source-of-truth** — fast and seamless *from the user's view* because
+the authoritative description is retained, without permanently re-bloating RAM.
+B1b (worker respawn) then re-runs the same source-of-truth load in the fresh
+worker rather than re-handing GPU handles that died with it.
+
+**Second, independent blocker (tooling):** the live repro the plan specifies —
+`evaluate_script("…device.destroy()…")` — isn't directly runnable: the
+`GpuDevice` is owned inside Rust renderer state and is **not exposed to JS** in
+either harness (and in `?demo=motion` it lives in the *render worker* scope, not
+the page). Forcing a loss needs a small test seam (a `#[wasm_bindgen]` export
+that calls `device.destroy()`), which is itself gated work.
+
+What **did** land: P0's `install_device_lost_hook` (un-gated detection) means a
+loss is **logged, never silent** — the foundation either recovery strategy builds
+on. The recovery *action* is blocked on the design decision above.
+
+---
+
 ## Phase 2 — GPU device-loss recovery (B1a): `rebuild_gpu()` from CPU mirrors
 
 Best-in-class, seamless (no reload). The scene/arena/CPU mirrors (transforms buffer,
@@ -239,10 +287,10 @@ it's independent of B1.
 | P1 | Undo/redo byte-budget cap (drop-oldest) + estimator unit test | editor | ✅ | `BoundedHistory` (256 MB budget, drop-oldest) wired into `state.rs` undo/redo. 6 host tests pass (`cargo test -p awsm-editor-protocol history`). Live churn (1200 alt. ~512 KB renames, no new_project): `undo_len` plateaus **511** (drop-oldest), `undo_bytes` plateaus **268,036,874 ≤ 256 MB**, `wasm_heap` plateaus 646 MB (stops ramping). |
 | P1b | Audit + bound other unbounded containers | editor | ✅ | Audited editor+renderer. Undo log was the sole unbounded-and-suspect (now fixed). Leak-panel counters **flat** across the 1200-cmd churn (render_pipelines 16, compute_pipelines 21, shaders 31, samplers 1, pool_textures 0, dynamic_materials 0 — identical before/after). CONSOLE_LOG already capped (200); renderable pools cleared/frame; compute-pipeline+shader caches have removal APIs. Noted: `RenderPipelines.cache` lacks a symmetric removal API (bounded by finite pipeline-variant domain; not the crash cause; flagged for future if dynamic-variant churn ever shows growth). |
 | P1c | (opt-in) oversized-allocation debug guard | editor | ✅ | Gated guard in `renderer-core methods.rs create_buffer` (the central GPU-buffer chokepoint): a single buffer > `OVERSIZED_ALLOC_BYTES` (512 MB) logs `awsm_renderer_core::oversized_alloc` + `debug_assert!`s at our call site instead of trapping in PartitionAlloc. Gated `debug_assertions`/`harden-diag`; clippy `--all-features` clean. |
-| P2 | `rebuild_gpu()` from CPU mirrors + GPUDevice.lost action | mt:dev | ☐ | |
-| P3 | Render-worker respawn + topology-in-shared-memory | mt:dev | ☐ | |
+| P2 | `rebuild_gpu()` from CPU mirrors + GPUDevice.lost action | mt:dev | 🚫 BLOCKED | **LOCKED premise false** — mesh geometry + texture pixels are upload-then-drop (`meshes.rs:961` source-freed invariant §7; `textures.rs`), so there are **no CPU mirrors to rebuild from**. Seamless recovery needs either permanent geometry/texture CPU retention (re-bloats RAM — fights this plan's goal) or reload-from-source-of-truth (the forbidden "reload"). The no-reload lock must be **re-opened** (see ⚠️ BLOCKER section). 2nd blocker: `GpuDevice` isn't JS-exposed, so `device.destroy()` mid-session isn't drivable without a test seam. Detection (P0 hook) landed; action needs David's design call. |
+| P3 | Render-worker respawn + topology-in-shared-memory | mt:dev | 🚫 BLOCKED | Depends on P2's recovery model. The render worker owns the GPU device + all GPU handles; on its death they're gone, and a respawn must **reconstruct** them — same no-CPU-mirror blocker as P2. The topology-persist piece is independently implementable, but "movers resume, no reload" can't pass until the P2 reload-vs-retain fork is resolved. Also needs a fresh `OffscreenCanvas` (the transferred one dies with the worker) + a worker-kill test seam. |
 | P4 | Asset-fetch-failure → clean Error, no hang | mt:dev | ✅ | Live (`?demo=remote&model=nonexistent-bad-asset.glb`): a bad asset URL surfaces a clean `RenderEvent::Error` ("parse glb: …") **immediately** (t=0, no hang), `loading` clears, page stays responsive, `ready:false` (no false success). Existing `if let Err(err) = load_gltf(...)` wrapper already routes any fetch/parse failure to one Error event + `loading=false` — no code change needed; gate verified. |
-| Meta | No per-frame cost; release default unchanged | both | ☐ | |
+| Meta | No per-frame cost; release default unchanged | both | ✅ | Landed phases add **zero per-frame cost**: undo cap runs only on edits (push/pop), diagnostics are gated `debug_assertions`/`harden-diag` + cold-path (MCP query / `.lost` / `create_buffer`), device-lost hook is one-shot at device creation. Proof: 1200-cmd churn left all render-stats leak counters flat (render_pipelines/shaders/samplers/pool_textures unchanged); `frame_dt_ms` 16.69 steady. Release default unchanged (behavioural fixes un-gated = correctness; all diagnostics gated). `clippy --all --all-features --tests -D warnings` clean. |
 
 ## Done criteria
 
