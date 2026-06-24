@@ -1862,8 +1862,6 @@ async fn load_cluster_lod(
         return Ok(None);
     }
 
-    let bounds_radius = awsm_renderer_lod_bake::bounding_sphere_radius(&cm.positions);
-
     // Phase B GPU cut (B.2): hand the cluster pages to the GPU cut pass. No-op
     // unless `virtual_geometry` built the pass; coexists with the per-instance
     // discrete cut below (which the GPU per-cluster dispatch will eventually
@@ -1894,142 +1892,35 @@ async fn load_cluster_lod(
     let identity_indices: Vec<u32> = (0..cm.indices.len() as u32).collect();
     renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
 
-    // Cluster render mesh M = the FULL cluster geometry as an ordinary mesh (its
-    // exploded vertex buffer is in cm.indices triangle order, vertex_attribute_
-    // indices = cm.indices). The compacted indirect stream draws into M's buffer;
-    // M's own draw is hidden. No-op unless virtual_geometry built the pass.
-    if renderer.features().virtual_geometry {
-        let m_raw = RawMeshData {
-            positions: cm.positions.clone(),
-            normals: (!cm.normals.is_empty()).then(|| cm.normals.clone()),
-            uv_sets: if cm.uvs.is_empty() {
-                vec![]
-            } else {
-                vec![cm.uvs.clone()]
-            },
-            colors: (!cm.colors.is_empty()).then(|| cm.colors.clone()),
-            indices: cm.indices.clone(),
-            skin: None,
-            morph: None,
-        };
-        let m_key = renderer.add_raw_mesh(m_raw, tk, mat)?;
-        renderer.set_cluster_render_mesh(m_key);
-        let _ = renderer.set_mesh_hidden(m_key, true);
-    }
-
-    // Cut thresholds = the DAG's distinct cluster errors, ascending. Each gives a
-    // watertight uniform cut; rising threshold ⇒ coarser. We register the finest
-    // cut as the base and the coarser cuts as hidden levels in the SAME
-    // `LodRegistry` the discrete chain uses, so the verified per-frame
-    // `update_lod_selection` picks one by screen error and visibility-swaps —
-    // distance-adaptive cluster LOD with zero new runtime. (The GPU per-cluster
-    // cut, B.2 proper, replaces these per-instance uniform cuts with one indirect
-    // draw whose detail varies *within* a mesh.)
-    let mut thresholds: Vec<f32> = cm.clusters.iter().map(|c| c.lod_error).collect();
-    thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    thresholds.dedup();
-
-    // The triangle index list of the watertight cut at uniform error `t`.
-    let cut_indices = |t: f32| -> Vec<u32> {
-        let mut idx = Vec::new();
-        for p in &cm.clusters {
-            if p.lod_error <= t && t < p.parent_error {
-                let s = p.first_index as usize;
-                let e = s + p.index_count as usize;
-                if e <= cm.indices.len() {
-                    idx.extend_from_slice(&cm.indices[s..e]);
-                }
-            }
-        }
-        idx
+    // Cluster render mesh M = the FULL cluster geometry as an ordinary mesh, so
+    // its exploded vertex buffer is in cm.indices triangle order with
+    // vertex_attribute_indices = cm.indices (the normal material path). M is the
+    // node's visible mesh; the GPU per-cluster cut's compacted indirect stream
+    // draws into M's buffer (the geometry-pass override in mesh.rs keys on
+    // `cluster_lod.render_mesh == mesh_key`), so detail varies WITHIN the mesh by
+    // per-cluster distance. (load_cluster_lod is only reached when
+    // virtual_geometry is on.)
+    let m_raw = RawMeshData {
+        positions: cm.positions.clone(),
+        normals: (!cm.normals.is_empty()).then(|| cm.normals.clone()),
+        uv_sets: if cm.uvs.is_empty() {
+            vec![]
+        } else {
+            vec![cm.uvs.clone()]
+        },
+        colors: (!cm.colors.is_empty()).then(|| cm.colors.clone()),
+        indices: cm.indices.clone(),
+        skin: None,
+        morph: None,
     };
-    // Compact a cut to the vertices it actually uses, so a coarse cut uploads a
-    // small buffer — a full-vertex-buffer copy per level overflows the geometry
-    // pool.
-    let make_raw = |indices: &[u32]| -> RawMeshData {
-        let has_n = !cm.normals.is_empty();
-        let has_uv = !cm.uvs.is_empty();
-        let has_c = !cm.colors.is_empty();
-        let mut remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        let mut pos = Vec::new();
-        let mut nrm = Vec::new();
-        let mut uv = Vec::new();
-        let mut col = Vec::new();
-        let mut local: Vec<u32> = Vec::with_capacity(indices.len());
-        for &v in indices {
-            let l = *remap.entry(v).or_insert_with(|| {
-                pos.push(cm.positions[v as usize]);
-                if has_n {
-                    nrm.push(cm.normals[v as usize]);
-                }
-                if has_uv {
-                    uv.push(cm.uvs[v as usize]);
-                }
-                if has_c {
-                    col.push(cm.colors[v as usize]);
-                }
-                (pos.len() - 1) as u32
-            });
-            local.push(l);
-        }
-        RawMeshData {
-            positions: pos,
-            normals: has_n.then_some(nrm),
-            uv_sets: if has_uv { vec![uv] } else { vec![] },
-            colors: has_c.then_some(col),
-            indices: local,
-            skin: None,
-            morph: None,
-        }
-    };
-
-    // Base = finest cut (threshold 0).
-    let base_indices = cut_indices(thresholds[0]);
-    if base_indices.is_empty() {
-        return Ok(None);
-    }
-    let mut prev_tris = base_indices.len() / 3;
-    let base_key = renderer.add_raw_mesh(make_raw(&base_indices), tk, mat)?;
-
-    // Coarser cuts → up to MAX hidden LOD levels, taking a threshold only when it
-    // gives a meaningful (≥40%) triangle drop, so the chain is a few geometric
-    // steps rather than one mesh per DAG level (which blows the vertex budget).
-    const MAX_CLUSTER_CUT_LEVELS: usize = 3;
-    let mut levels = Vec::new();
-    for &t in thresholds.iter().skip(1) {
-        if levels.len() >= MAX_CLUSTER_CUT_LEVELS {
-            break;
-        }
-        let idx = cut_indices(t);
-        let tris = idx.len() / 3;
-        if tris == 0 || tris as f32 > prev_tris as f32 * 0.6 {
-            continue; // not a meaningful reduction yet
-        }
-        prev_tris = tris;
-        let key = renderer.add_raw_mesh(make_raw(&idx), tk, mat)?;
-        let _ = renderer.set_mesh_hidden(key, true);
-        levels.push(awsm_renderer::lod::LodLevel {
-            mesh_key: key,
-            error: t,
-        });
-    }
-    let level_count = levels.len();
-    if !levels.is_empty() {
-        renderer.lod.register(
-            base_key,
-            awsm_renderer::lod::LodChain {
-                levels,
-                bounds_radius,
-                ..Default::default()
-            },
-        );
-    }
+    let m_key = renderer.add_raw_mesh(m_raw, tk, mat)?;
+    renderer.set_cluster_render_mesh(m_key);
     tracing::info!(
-        "cluster LOD: {asset_id} {} clusters → {} cut levels (base + {level_count})",
+        "cluster LOD (GPU): {asset_id} {} clusters, render mesh M = {} tris, per-cluster cut drives draw",
         cm.cluster_count(),
-        level_count + 1
+        cm.indices.len() / 3
     );
-    Ok(Some(base_key))
+    Ok(Some(m_key))
 }
 
 /// Whether a node opts in to LOD (its per-mesh `MeshLodConfig.enabled`). The

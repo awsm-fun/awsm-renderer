@@ -851,6 +851,65 @@ impl AwsmRenderer {
             }
         }
 
+        // Cluster-LOD per-cluster cut (Phase B GPU; B.2) — MUST run before the
+        // geometry pass: the cut compute writes `selected`, the compaction packs
+        // the compacted index stream + `drawIndexedIndirect` args, and the
+        // geometry pass's cluster draw override (mesh.rs) reads them THIS frame.
+        // Gated by `virtual_geometry` + a loaded cluster mesh; independent of
+        // `gpu_occlusion`.
+        let mut cluster_cut_kick: Option<(web_sys::GpuBuffer, u32)> = None;
+        if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
+            if cluster_pass.cluster_count > 0 {
+                if let Some(cam) = self.camera.last_matrices.as_ref() {
+                    let proj_yy = cam.projection.y_axis.y.abs();
+                    if proj_yy > 1e-6 {
+                        if let Ok((_, vh)) = self.gpu.current_context_texture_size() {
+                            cluster_pass.dispatch(
+                                &ctx,
+                                cam.position_world,
+                                1.0 / proj_yy,
+                                vh as f32,
+                                Self::LOD_ERROR_THRESHOLD_PX,
+                            )?;
+                            // first_instance = the render mesh M's meta slot, so the
+                            // indirect draw's vertex shader resolves M's material
+                            // meta (geometry_mesh_metas[instance_index]).
+                            let first_instance = cluster_pass
+                                .render_mesh
+                                .and_then(|m| ctx.meshes.meta.geometry_buffer_offset(m).ok())
+                                .map(|off| {
+                                    off as u32
+                                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
+                                            as u32
+                                })
+                                .unwrap_or(0);
+                            cluster_pass.dispatch_compaction(&ctx, first_instance)?;
+                            // One-shot readback verification of draw_args.index_count.
+                            let want = {
+                                let st = self.cluster_cut_readback.lock().unwrap();
+                                !st.inflight && !st.logged
+                            };
+                            if want {
+                                if let Some(buffers) = cluster_pass.buffers.as_ref() {
+                                    ctx.command_encoder.copy_buffer_to_buffer(
+                                        &buffers.draw_args_buffer,
+                                        0,
+                                        &buffers.readback_buffer,
+                                        0,
+                                        4,
+                                    )?;
+                                    cluster_cut_kick = Some((
+                                        buffers.readback_buffer.clone(),
+                                        cluster_pass.cluster_count,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         {
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Geometry RenderPass").entered())
@@ -1241,67 +1300,8 @@ impl AwsmRenderer {
         // flipped `args_ready` so the geometry pass routes through the
         // CPU branch — and the cull/compaction passes are simply
         // skipped, saving the compute dispatches on small scenes.
-        // Cluster-LOD per-cluster cut (Phase B GPU; B.2). Gated by
-        // `virtual_geometry` + a loaded cluster mesh. Runs the cut compute into
-        // `selected`; the readback verification + compaction/indirect-draw
-        // consumers follow. Independent of `gpu_occlusion`.
-        let mut cluster_cut_kick: Option<(web_sys::GpuBuffer, u32)> = None;
-        if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
-            if cluster_pass.cluster_count > 0 {
-                if let Some(cam) = self.camera.last_matrices.as_ref() {
-                    let proj_yy = cam.projection.y_axis.y.abs();
-                    if proj_yy > 1e-6 {
-                        if let Ok((_, vh)) = self.gpu.current_context_texture_size() {
-                            cluster_pass.dispatch(
-                                &ctx,
-                                cam.position_world,
-                                1.0 / proj_yy,
-                                vh as f32,
-                                Self::LOD_ERROR_THRESHOLD_PX,
-                            )?;
-                            // Pack the selected clusters into one compacted index
-                            // stream + drawIndexedIndirect args (reads `selected`).
-                            // first_instance = the render mesh M's meta slot, so
-                            // the indirect draw's vertex shader resolves M's
-                            // material meta (geometry_mesh_metas[instance_index]).
-                            let first_instance = cluster_pass
-                                .render_mesh
-                                .and_then(|m| ctx.meshes.meta.geometry_buffer_offset(m).ok())
-                                .map(|off| {
-                                    off as u32
-                                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
-                                            as u32
-                                })
-                                .unwrap_or(0);
-                            cluster_pass.dispatch_compaction(&ctx, first_instance)?;
-                            // One-shot readback verification: copy the indirect
-                            // args' `index_count` (the compacted triangle stream
-                            // length) to the MAP_READ mirror; the post-submit
-                            // spawn_local logs it.
-                            let want = {
-                                let st = self.cluster_cut_readback.lock().unwrap();
-                                !st.inflight && !st.logged
-                            };
-                            if want {
-                                if let Some(buffers) = cluster_pass.buffers.as_ref() {
-                                    ctx.command_encoder.copy_buffer_to_buffer(
-                                        &buffers.draw_args_buffer,
-                                        0,
-                                        &buffers.readback_buffer,
-                                        0,
-                                        4,
-                                    )?;
-                                    cluster_cut_kick = Some((
-                                        buffers.readback_buffer.clone(),
-                                        cluster_pass.cluster_count,
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // (Cluster-LOD cut/compaction dispatch moved to BEFORE the geometry pass
+        // so the indirect draw reads this frame's compacted stream — see above.)
 
         if frame_opts.gpu_occlusion {
             if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
