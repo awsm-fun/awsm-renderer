@@ -5,6 +5,29 @@
 > [`nanite-software-rasterize.md`](nanite-software-rasterize.md) — a separate,
 > test-gated future bet that this plan does **not** depend on.
 
+> **STATUS: FUNCTIONALLY COMPLETE — both phases render end-to-end on the GPU
+> (verified on-device).**
+> - **Phase A — discrete LOD** (static/skinned/morph): per-mesh toggle + MCP tool
+>   + inspector UI; boundary-locked QEM bake (pure-Rust, wasm-safe) with skin/morph
+>   carry-through; per-instance screen-error selection. Acceptance-verified (56–67%
+>   reduction, single-vis-buffer coexistence, no per-frame allocs, byte-identical
+>   when off).
+> - **Phase B — Nanite-style cluster GPU virtual geometry** (static rigid): cluster
+>   DAG bake (clustering → grouping → boundary-locked LOD DAG → group bounds) →
+>   per-cluster cut compute (group-sphere-projected, crack-free) → compaction (one
+>   compacted indirect stream) → `drawIndexedIndirect` into the shared visibility
+>   buffer (reuses the normal material path; no `cluster_id` re-budget needed). The
+>   per-cluster cut drives rendering on-device (verified: DamagedHelmet renders the
+>   compacted cut, distance-adaptive, crack-free, coexisting with skinned discrete
+>   LOD, 60fps). All gated behind `virtual_geometry` (off ⇒ byte-identical).
+> - **Remaining (polish / out-of-scope-limited):** multi-million-tri stress is
+>   bounded by the **HW-raster** approach uploading `M`'s full cluster geometry
+>   (the exploded buffer for millions of tris exceeds the GPU pool) — the fix is
+>   the **streaming + SW-rasterizer** bet in `nanite-software-rasterize.md`, which
+>   is explicitly out of this plan's scope. GPU-picker vis-buffer cross-check + the
+>   full static×skinned×morph toggle matrix are nice-to-haves. See per-section
+>   `Status — landed` notes below for the commit-by-commit detail.
+
 ## Goal
 
 Built-in LOD is essential for real-world game playing. We want it to be:
