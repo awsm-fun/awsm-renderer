@@ -127,6 +127,22 @@ pub struct RendererFeatures {
     /// [`Self::gpu_culling`] / [`Self::lod`] as an opt-in GPU-pipeline gate.
     pub virtual_geometry: bool,
 
+    /// Enable cluster-LOD **streaming residency** (Phase 5): cap the cluster
+    /// render mesh `M`'s uploaded geometry to a triangle budget so a
+    /// multi-million-triangle asset loads without overflowing the GPU pool
+    /// (today's ceiling — `M` uploads the FULL exploded cluster geometry). The
+    /// loader keeps the coarse clusters plus as many fine clusters as fit the
+    /// budget, clamps the resident-leaf `lod_error` to 0 so close-up stays
+    /// watertight, and remaps each resident cluster's `first_index` into the
+    /// compacted `M`. The per-cluster GPU cut is unchanged (it just sees fewer
+    /// pages). When `false` (the default), `M` uploads every cluster — identical
+    /// to the `virtual_geometry` path today; the cap only bites for assets above
+    /// the budget (which currently fail to fit), so flag-off is byte-identical.
+    /// Requires [`Self::virtual_geometry`]. This is the **intermediate** residency
+    /// win; true per-frame paging (stream finer clusters on demand) is the
+    /// follow-up — see `docs/plans/nanite-software-rasterize.md` Phase 5.
+    pub cluster_streaming: bool,
+
     /// Whether to use the WebGPU `indirect-first-instance` feature for
     /// the non-instanced geometry pass's drawIndirect path.
     ///

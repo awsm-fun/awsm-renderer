@@ -1834,6 +1834,108 @@ fn warn_decal_feature_off() {
 /// This validates the bake→emit→load→render path end-to-end. The GPU per-cluster
 /// LOD cut + compaction (B.2 proper) will replace the static finest cut with a
 /// per-frame on-device selection over the same pages.
+/// Cluster-streaming residency budget (Phase 5): cap the cluster render mesh `M`
+/// to this many triangles when `cluster_streaming` is on, so a multi-million-tri
+/// asset loads instead of overflowing the GPU pool (the exploded vertex buffer is
+/// `M`'s dominant cost at 56 B / index). Tunable.
+const CLUSTER_STREAMING_BUDGET_TRIS: usize = 1_000_000;
+
+/// Select the resident cluster set for capped streaming (Phase 5).
+///
+/// Keeps the **coarsest** clusters (largest `lod_error`) up to `budget_tris`,
+/// then clamps each resident **leaf** (a resident cluster with no resident DAG
+/// child) `lod_error` to 0 so the per-cluster cut still covers all budgets below
+/// the residency frontier — i.e. close-up stays watertight at the capped detail —
+/// and remaps each resident cluster's `first_index` into the compacted output
+/// `m_indices`. Returns `(gpu_pages, m_indices)` ready to upload. When the mesh
+/// already fits the budget (the common case — `budget_tris == usize::MAX` with the
+/// flag off, or a small mesh), returns every cluster with `cm.indices` verbatim,
+/// so the result is byte-identical to the non-streaming path.
+///
+/// A child cluster `x` records `x.parent_error == parent.lod_error` (the DAG's
+/// tiling invariant), so "cluster `c` has a resident child" ⇔ `c.lod_error` is
+/// some resident cluster's `parent_error`. Residency is an `lod_error` frontier,
+/// so it follows the cut's own error ordering; any seam at the frontier between
+/// differing resident levels is the documented residual gap that true per-frame
+/// paging (stream finer clusters on demand) closes.
+fn select_resident_clusters(
+    cm: &awsm_renderer_lod_bake::ClusterMesh,
+    budget_tris: usize,
+) -> (Vec<awsm_renderer::cluster_lod::ClusterPage>, Vec<u32>) {
+    let to_page = |c: &awsm_renderer_lod_bake::ClusterPage, first_index: u32, lod_error: f32| {
+        awsm_renderer::cluster_lod::ClusterPage {
+            center: c.center,
+            radius: c.radius,
+            lod_error,
+            parent_error: c.parent_error,
+            lod_bounds_center: c.lod_bounds_center,
+            lod_bounds_radius: c.lod_bounds_radius,
+            parent_bounds_center: c.parent_bounds_center,
+            parent_bounds_radius: c.parent_bounds_radius,
+            first_index,
+            index_count: c.index_count,
+        }
+    };
+    if cm.indices.len() / 3 <= budget_tris {
+        let pages = cm
+            .clusters
+            .iter()
+            .map(|c| to_page(c, c.first_index, c.lod_error))
+            .collect();
+        return (pages, cm.indices.clone());
+    }
+    // Accumulate the resident set coarsest-first (largest lod_error) until the
+    // triangle budget — a HARD cap (not an `lod_error >= E_min` threshold, which
+    // would re-include the whole frontier level and bust the budget). Coarse
+    // levels are tiny so they all fit; the budget cuts off partway through the
+    // finest included level, so only that frontier level is partial. Always keep
+    // at least the single coarsest cluster.
+    let mut by_err: Vec<usize> = (0..cm.clusters.len()).collect();
+    by_err.sort_by(|&a, &b| {
+        cm.clusters[b]
+            .lod_error
+            .partial_cmp(&cm.clusters[a].lod_error)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let budget_idx = budget_tris * 3;
+    let mut resident = vec![false; cm.clusters.len()];
+    let mut acc = 0usize;
+    for &i in &by_err {
+        let ic = cm.clusters[i].index_count as usize;
+        if acc > 0 && acc + ic > budget_idx {
+            break;
+        }
+        resident[i] = true;
+        acc += ic;
+    }
+    // A resident cluster is a LEAF (no resident DAG child) iff its `lod_error` is
+    // not some resident cluster's `parent_error`. Leaves clamp to 0 so the cut
+    // covers all budgets below them (watertight close-up at the capped detail).
+    // (Seams where the partial frontier level borders coarser-only regions are the
+    // documented residual gap that per-frame paging closes.)
+    let resident_parent_errors: std::collections::HashSet<u32> = cm
+        .clusters
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| resident[*i])
+        .map(|(_, c)| c.parent_error.to_bits())
+        .collect();
+    let mut m_indices: Vec<u32> = Vec::with_capacity(acc);
+    let mut pages = Vec::new();
+    for (i, c) in cm.clusters.iter().enumerate() {
+        if !resident[i] {
+            continue;
+        }
+        let first_index = m_indices.len() as u32;
+        let s = c.first_index as usize;
+        m_indices.extend_from_slice(&cm.indices[s..s + c.index_count as usize]);
+        let is_leaf = !resident_parent_errors.contains(&c.lod_error.to_bits());
+        let lod_error = if is_leaf { 0.0 } else { c.lod_error };
+        pages.push(to_page(c, first_index, lod_error));
+    }
+    (pages, m_indices)
+}
+
 async fn load_cluster_lod(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -1867,34 +1969,31 @@ async fn load_cluster_lod(
     // discrete cut below (which the GPU per-cluster dispatch will eventually
     // replace). The lod-bake `ROOT_PARENT_ERROR` (f32::MAX) rides through as a
     // huge value, so roots always pass the cut's upper bound on-device.
-    let gpu_pages: Vec<awsm_renderer::cluster_lod::ClusterPage> = cm
-        .clusters
-        .iter()
-        .map(|c| awsm_renderer::cluster_lod::ClusterPage {
-            center: c.center,
-            radius: c.radius,
-            lod_error: c.lod_error,
-            parent_error: c.parent_error,
-            lod_bounds_center: c.lod_bounds_center,
-            lod_bounds_radius: c.lod_bounds_radius,
-            parent_bounds_center: c.parent_bounds_center,
-            parent_bounds_radius: c.parent_bounds_radius,
-            first_index: c.first_index,
-            index_count: c.index_count,
-        })
-        .collect();
+    // Phase 5 streaming residency: cap M's geometry to a triangle budget when
+    // `cluster_streaming` is on, so a multi-million-tri asset loads instead of
+    // overflowing the GPU pool. Off ⇒ budget = MAX ⇒ every cluster resident with
+    // `cm.indices` verbatim, byte-identical to the non-streaming path.
+    let budget = if renderer.features().cluster_streaming {
+        CLUSTER_STREAMING_BUDGET_TRIS
+    } else {
+        usize::MAX
+    };
+    let (gpu_pages, m_indices) = select_resident_clusters(&cm, budget);
+    let resident_tris = m_indices.len() / 3;
+    let capped = m_indices.len() < cm.indices.len();
     // The compaction's `source_indices` is the EXPLODED raster index space, not
     // `cm.indices`: the renderer explodes geometry (pack_visibility_bytes) so
     // triangle t's corners are exploded vertices [3t,3t+1,3t+2]. Cluster pages are
-    // triangle-aligned, so the raster indices for a page [F,C) are exactly the
-    // identity range [F,F+C) — feed identity and the unchanged compaction emits a
-    // drawable stream into the (future) cluster render mesh's exploded buffer.
-    let identity_indices: Vec<u32> = (0..cm.indices.len() as u32).collect();
+    // triangle-aligned (and remapped contiguously into m_indices above), so the
+    // raster indices for a page [F,C) are exactly the identity range [F,F+C) —
+    // feed identity and the unchanged compaction emits a drawable stream into M's
+    // exploded buffer.
+    let identity_indices: Vec<u32> = (0..m_indices.len() as u32).collect();
     renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
 
-    // Cluster render mesh M = the FULL cluster geometry as an ordinary mesh, so
-    // its exploded vertex buffer is in cm.indices triangle order with
-    // vertex_attribute_indices = cm.indices (the normal material path). M is the
+    // Cluster render mesh M = the (resident) cluster geometry as an ordinary mesh,
+    // so its exploded vertex buffer is in m_indices triangle order with
+    // vertex_attribute_indices = m_indices (the normal material path). M is the
     // node's visible mesh; the GPU per-cluster cut's compacted indirect stream
     // draws into M's buffer (the geometry-pass override in mesh.rs keys on
     // `cluster_lod.render_mesh == mesh_key`), so detail varies WITHIN the mesh by
@@ -1909,16 +2008,26 @@ async fn load_cluster_lod(
             vec![cm.uvs.clone()]
         },
         colors: (!cm.colors.is_empty()).then(|| cm.colors.clone()),
-        indices: cm.indices.clone(),
+        indices: m_indices,
         skin: None,
         morph: None,
     };
     let m_key = renderer.add_raw_mesh(m_raw, tk, mat)?;
     renderer.set_cluster_render_mesh(m_key);
     tracing::info!(
-        "cluster LOD (GPU): {asset_id} {} clusters, render mesh M = {} tris, per-cluster cut drives draw",
+        "cluster LOD (GPU): {asset_id} {} clusters ({} resident), render mesh M = {} tris{}, per-cluster cut drives draw",
         cm.cluster_count(),
-        cm.indices.len() / 3
+        gpu_pages.len(),
+        resident_tris,
+        if capped {
+            format!(
+                " (CAPPED from {} — streaming residency budget {})",
+                cm.indices.len() / 3,
+                CLUSTER_STREAMING_BUDGET_TRIS
+            )
+        } else {
+            String::new()
+        }
     );
     Ok(Some(m_key))
 }
@@ -2536,5 +2645,91 @@ mod prefab_tests {
         assert_eq!(nested_step.parent, Some(root));
         // The root is never itself a nested boundary.
         assert!(!layout[0].nested_prefab);
+    }
+}
+
+#[cfg(test)]
+mod cluster_streaming_tests {
+    //! Phase 5 capped-residency selection ([`select_resident_clusters`]) — the
+    //! pure CPU core that bounds the cluster render mesh `M` to a triangle budget.
+    //! The GPU upload/draw around it needs a device (browser round-trip), but the
+    //! resident-set choice + `first_index` remap + leaf clamp are device-free.
+    use super::select_resident_clusters;
+    use awsm_renderer_lod_bake::{ClusterMesh, ClusterPage};
+
+    fn page(lod_error: f32, parent_error: f32, first_index: u32, index_count: u32) -> ClusterPage {
+        ClusterPage {
+            center: [0.0; 3],
+            radius: 1.0,
+            lod_error,
+            parent_error,
+            lod_bounds_center: [0.0; 3],
+            lod_bounds_radius: 1.0,
+            parent_bounds_center: [0.0; 3],
+            parent_bounds_radius: 1.0,
+            first_index,
+            index_count,
+        }
+    }
+
+    /// A 2-level DAG: two finest clusters (error 0) simplify into one root
+    /// (error 5). indices are slice markers so the remap is checkable.
+    fn fixture() -> ClusterMesh {
+        ClusterMesh {
+            positions: vec![[0.0; 3]; 9],
+            normals: vec![],
+            uvs: vec![],
+            colors: vec![],
+            indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
+            clusters: vec![
+                page(0.0, 5.0, 0, 3),         // C0 leaf
+                page(0.0, 5.0, 3, 3),         // C1 leaf
+                page(5.0, f32::MAX, 6, 3),    // C2 root
+            ],
+        }
+    }
+
+    #[test]
+    fn under_budget_is_verbatim_passthrough() {
+        let cm = fixture();
+        let (pages, m_indices) = select_resident_clusters(&cm, 100);
+        // Every cluster, indices verbatim, nothing remapped or clamped — must be
+        // byte-identical to the non-streaming path.
+        assert_eq!(m_indices, cm.indices);
+        assert_eq!(pages.len(), 3);
+        for (p, c) in pages.iter().zip(cm.clusters.iter()) {
+            assert_eq!(p.first_index, c.first_index);
+            assert_eq!(p.lod_error, c.lod_error);
+        }
+    }
+
+    #[test]
+    fn cap_to_one_tri_keeps_root_and_clamps_it() {
+        let cm = fixture();
+        // Budget 1 tri: coarsest-first keeps only the root C2; with no resident
+        // child its lod_error clamps to 0 so close-up stays covered.
+        let (pages, m_indices) = select_resident_clusters(&cm, 1);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(m_indices, vec![6, 7, 8]); // C2's slice, remapped to front
+        assert_eq!(pages[0].first_index, 0);
+        assert_eq!(pages[0].lod_error, 0.0); // leaf clamp
+        assert_eq!(pages[0].parent_error, f32::MAX);
+    }
+
+    #[test]
+    fn cap_to_two_tris_partial_finest_level_remaps_and_clamps_leaves() {
+        let cm = fixture();
+        // Budget 2 tris: root C2 + one finest leaf C0. C2 now HAS a resident child
+        // (C0), so it is not clamped; C0 is a leaf (error already 0). Hard cap is
+        // honoured (2 resident tris, C1 dropped).
+        let (pages, m_indices) = select_resident_clusters(&cm, 2);
+        assert_eq!(pages.len(), 2);
+        assert_eq!(m_indices.len(), 6); // 2 tris, budget honoured
+        // Pages are emitted in cluster order (C0 then C2), remapped contiguously.
+        assert_eq!(m_indices, vec![0, 1, 2, 6, 7, 8]);
+        assert_eq!(pages[0].first_index, 0);
+        assert_eq!(pages[0].lod_error, 0.0); // C0 leaf
+        assert_eq!(pages[1].first_index, 3);
+        assert_eq!(pages[1].lod_error, 5.0); // C2 NOT clamped (has resident child C0)
     }
 }

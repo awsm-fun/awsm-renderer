@@ -217,6 +217,10 @@ fn editor_features() -> RendererFeatures {
         lod: url_has_flag("lod"),
         // Cluster LOD (Phase B) — player-bundle path, exercised via `?vg`.
         virtual_geometry: url_has_flag("vg"),
+        // Cluster-LOD streaming residency (Phase 5) — cap M's geometry to a
+        // triangle budget so multi-million-tri assets load. Opt in with `?stream`
+        // (default off ⇒ byte-identical; only bites above the budget).
+        cluster_streaming: url_has_flag("stream"),
         indirect_first_instance: FeatureToggle::Auto,
     }
 }

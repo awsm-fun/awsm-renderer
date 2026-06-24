@@ -262,6 +262,7 @@ pub(super) async fn build_renderer(
             picking: false,
             lod: false,
             virtual_geometry: false,
+            cluster_streaming: false,
             indirect_first_instance: FeatureToggle::Auto,
         })
         .build()
