@@ -37,6 +37,7 @@ use crate::{
     pipelines::Pipelines,
     render_passes::{
         coverage::render_pass::CoverageRenderPass, display::render_pass::DisplayRenderPass,
+        cluster_lod::render_pass::ClusterLodRenderPass,
         geometry::render_pass::GeometryRenderPass, hzb::render_pass::HzbRenderPass,
         light_culling::render_pass::LightCullingRenderPass,
         material_classify::render_pass::MaterialClassifyRenderPass,
@@ -88,6 +89,11 @@ pub struct RenderPasses {
     /// Compaction `IndirectDrawArgs` pass. `None` when
     /// `features.gpu_culling == false`.
     pub occlusion_compaction: Option<CompactionRenderPass>,
+    /// Cluster-LOD per-cluster cut compute pass (Phase B, B.2). `None` when
+    /// `features.virtual_geometry == false`. Built eagerly; holds the cut
+    /// pipeline + bind-group layout (creating it validates `cluster_cut.wgsl`
+    /// on-device). Inert until a cluster mesh loads its buffers.
+    pub cluster_lod: Option<ClusterLodRenderPass>,
     pub light_culling: LightCullingRenderPass,
     pub material_classify: MaterialClassifyRenderPass,
     /// Shared material-prep compute pass (Plan B). Always built (prep is
@@ -151,6 +157,9 @@ struct RenderPassesBindings {
     occlusion_bg: Option<occlusion::bind_group::OcclusionBindGroups>,
     compaction_bg: Option<occlusion::compaction::CompactionBindGroups>,
     light_culling: LightCullingRenderPass,
+    /// Built eagerly + gated by `virtual_geometry`; passed straight through to
+    /// `from_resolved`.
+    cluster_lod: Option<ClusterLodRenderPass>,
     /// Built eagerly (like `light_culling`) and passed straight through to
     /// `from_resolved`. Always `Some` (prep is unconditional).
     material_prep: Option<MaterialPrepRenderPass>,
@@ -401,6 +410,14 @@ impl RenderPasses {
             None
         };
         let light_culling = LightCullingRenderPass::new(ctx).await?;
+        // Cluster-LOD cut pass (Phase B). Eager + gated; creating its pipeline
+        // validates `cluster_cut.wgsl` on-device. Buffers/bind-group instance
+        // come when a cluster mesh loads.
+        let cluster_lod = if features.virtual_geometry {
+            Some(ClusterLodRenderPass::new(ctx).await?)
+        } else {
+            None
+        };
         // Shared material-prep compute pass (Plan B). The shared prep pass is
         // unconditional now — always built (both MSAA variants). Kept as an
         // `Option` (always-`Some`) so the `if let Some(prep)` dispatch sites
@@ -500,6 +517,7 @@ impl RenderPasses {
                 occlusion_bg,
                 compaction_bg,
                 light_culling,
+                cluster_lod,
                 material_prep,
                 classify_bg,
                 decal_bg,
@@ -737,6 +755,7 @@ impl RenderPasses {
             occlusion_bg,
             compaction_bg,
             light_culling,
+            cluster_lod,
             material_prep,
             classify_bg,
             decal_bg,
@@ -905,6 +924,7 @@ impl RenderPasses {
             hzb,
             occlusion,
             occlusion_compaction,
+            cluster_lod,
             light_culling,
             material_classify,
             material_prep,
