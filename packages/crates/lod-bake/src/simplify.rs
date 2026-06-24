@@ -167,14 +167,25 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
         }
     }
 
-    // A vertex is locked iff it touches a boundary edge (used by one triangle).
-    let mut locked = vec![false; vert_count];
+    // Classify vertices by their relation to mesh boundary / attribute-seam
+    // edges (edges used by exactly one triangle). The class decides how a vertex
+    // may move:
+    //   - Interior: free to collapse onto any neighbour.
+    //   - Boundary: a smooth point along a seam — may collapse only onto another
+    //     *non-interior* vertex (slides along the seam; never pulled inward), so
+    //     seams thin out but stay put.
+    //   - Corner: a seam junction (≠2 boundary edges) or a sharp boundary turn —
+    //     locked, so silhouette/seam corners are preserved exactly.
+    // This replaces the old "lock every boundary vertex" rule, which over-locked
+    // seam-heavy meshes (they plateaued ~65% of base instead of reaching target).
+    let mut boundary_nbrs: Vec<Vec<u32>> = vec![Vec::new(); vert_count];
     for ((a, b), &count) in &edge_tris {
         if count == 1 {
-            locked[*a as usize] = true;
-            locked[*b as usize] = true;
+            boundary_nbrs[*a as usize].push(*b);
+            boundary_nbrs[*b as usize].push(*a);
         }
     }
+    let class = classify_vertices(&boundary_nbrs, &pos);
 
     // Union-find over vertices: parent[v] == v while alive; otherwise points at
     // the vertex it was collapsed into.
@@ -187,7 +198,7 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
     // Seed the heap with every undirected edge's best collapse direction.
     let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
     for &(a, b) in edge_tris.keys() {
-        if let Some(c) = candidate(a, b, &pos, &quad, &locked, &version) {
+        if let Some(c) = candidate(a, b, &pos, &quad, &class, &version) {
             heap.push(c);
         }
     }
@@ -203,8 +214,8 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
         if version[from as usize] != cand.from_ver || version[to as usize] != cand.to_ver {
             continue;
         }
-        if locked[from as usize] {
-            continue; // never remove a locked vertex
+        if class[from as usize] == VertClass::Corner {
+            continue; // never remove a corner
         }
 
         // Flip guard: collapsing `from` onto `to` rewrites every triangle that
@@ -249,7 +260,7 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
         version[to as usize] += 1;
         let neighbours = one_ring(to, &tris, &tri_dead, &vert_tris);
         for w in neighbours {
-            if let Some(c) = candidate(to, w, &pos, &quad, &locked, &version) {
+            if let Some(c) = candidate(to, w, &pos, &quad, &class, &version) {
                 heap.push(c);
             }
         }
@@ -286,21 +297,73 @@ fn undirected(a: u32, b: u32) -> (u32, u32) {
     }
 }
 
-/// Best collapse for undirected edge `(a, b)`: pick the removable endpoint
-/// (the non-locked one; the cheaper of the two if neither is locked). Returns
-/// `None` if both endpoints are locked.
+/// How a vertex is allowed to move during collapse.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum VertClass {
+    /// Off any boundary — free to collapse onto any neighbour.
+    Interior,
+    /// A smooth point along a boundary/seam — may only collapse onto another
+    /// non-interior vertex (slides along the seam, never inward).
+    Boundary,
+    /// A seam junction or sharp boundary turn — locked.
+    Corner,
+}
+
+/// Classify each vertex from its boundary-edge neighbours. A vertex with no
+/// boundary edge is `Interior`; with exactly two collinear-ish boundary edges
+/// it's `Boundary` (a smooth seam point); otherwise (a junction with ≠2
+/// boundary edges, or a sharp turn) it's a `Corner`.
+fn classify_vertices(boundary_nbrs: &[Vec<u32>], pos: &[DVec3]) -> Vec<VertClass> {
+    // A boundary turning by more than ~45° is treated as a corner. For a smooth
+    // seam the two edge directions are nearly opposite (dot ≈ -1); the turn
+    // exceeds 45° once dot(d1, d2) ≥ -cos(45°).
+    const STRAIGHT_DOT: f64 = -0.7071067811865476;
+    boundary_nbrs
+        .iter()
+        .enumerate()
+        .map(|(v, nb)| {
+            if nb.is_empty() {
+                VertClass::Interior
+            } else if nb.len() != 2 {
+                VertClass::Corner
+            } else {
+                let d1 = (pos[nb[0] as usize] - pos[v]).normalize_or_zero();
+                let d2 = (pos[nb[1] as usize] - pos[v]).normalize_or_zero();
+                if d1.dot(d2) >= STRAIGHT_DOT {
+                    VertClass::Corner
+                } else {
+                    VertClass::Boundary
+                }
+            }
+        })
+        .collect()
+}
+
+/// Best collapse for undirected edge `(a, b)`: pick a valid removable endpoint
+/// (the cheaper one if both directions are valid). A `Corner` is never removed;
+/// a `Boundary` vertex may only be removed when the kept vertex is also
+/// non-interior (so the seam slides along itself, never inward). Returns `None`
+/// if neither direction is allowed.
 fn candidate(
     a: u32,
     b: u32,
     pos: &[DVec3],
     quad: &[Quadric],
-    locked: &[bool],
+    class: &[VertClass],
     version: &[u64],
 ) -> Option<Candidate> {
-    let (la, lb) = (locked[a as usize], locked[b as usize]);
-    if la && lb {
+    // Can we remove `x` while keeping `y`?
+    let removable = |x: u32, y: u32| match class[x as usize] {
+        VertClass::Corner => false,
+        VertClass::Interior => true,
+        VertClass::Boundary => class[y as usize] != VertClass::Interior,
+    };
+    let ra_ok = removable(a, b); // remove a, keep b
+    let rb_ok = removable(b, a); // remove b, keep a
+    if !ra_ok && !rb_ok {
         return None;
     }
+
     let mut combined = quad[a as usize];
     combined.add_assign(&quad[b as usize]);
 
@@ -313,17 +376,17 @@ fn candidate(
         to_ver: version[to as usize],
     };
 
-    Some(if la {
-        make(b, a) // a locked → remove b
-    } else if lb {
-        make(a, b) // b locked → remove a
-    } else {
-        let rb = make(b, a);
-        let ra = make(a, b);
-        if ra.cost <= rb.cost {
-            ra
-        } else {
-            rb
+    Some(match (ra_ok, rb_ok) {
+        (true, false) => make(a, b),
+        (false, true) => make(b, a),
+        _ => {
+            let ra = make(a, b);
+            let rb = make(b, a);
+            if ra.cost <= rb.cost {
+                ra
+            } else {
+                rb
+            }
         }
     })
 }

@@ -200,15 +200,14 @@ a geometry-hash session cache. Per-node toggle governs per-asset bake (an asset
 bakes if any referencing node is LOD-enabled). End-to-end verified via MCP
 export on DamagedHelmet (15452 → 10074 tris, manifest error 0.164, no panic).
 
-**Known follow-up before the acceptance test — simplifier aggressiveness.** The
-current rule *hard-locks every boundary/seam vertex*, which on seam-heavy meshes
-(e.g. DamagedHelmet) locks so much that the chain plateaus (~65% of base, only
-one level survives) instead of reaching the requested 0.5/0.25/0.125. Fix:
-allow a boundary/seam vertex to **slide along its boundary** (collapse onto
-another boundary vertex sharing a boundary edge) instead of locking it outright
-— standard boundary-preserving QEM. Discrete LOD swaps whole meshes, so this
-doesn't risk cross-mesh cracks. Do this next, then A.2c (skinned/morph) + A.3
-(runtime selection).
+**Status — resolved (simplifier aggressiveness).** The simplifier now classifies
+vertices Interior / Boundary / Corner instead of hard-locking every seam vertex:
+a Boundary (smooth-seam) vertex may slide along the seam (collapse only onto
+another non-interior vertex, never inward); Corners (seam junctions / >45° turns)
+stay locked. This fixed the plateau — DamagedHelmet now bakes the full chain at
+the exact target ratios: 15452 → 7726 (0.5, err 7e-5) → 3862 (0.25, err 7e-4) →
+1931 (0.125, err 4e-3), vs. the old single 10074-tri level. Verified via MCP
+export. **Next:** A.2c (skinned/morph carry-through) + A.3 (runtime selection).
 
 **Critical files:**
 - Runtime selection: `render_passes/occlusion/shader/occlusion_wgsl/cull.wgsl`,

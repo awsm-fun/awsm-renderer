@@ -73,19 +73,41 @@ mod tests {
     }
 
     #[test]
-    fn boundary_vertices_survive() {
-        // Every outer-ring vertex is on a boundary edge and must survive, so the
-        // simplified mesh still spans the full extent.
-        let (pos, indices) = grid(6, 6);
-        let m = simplify(&pos, &indices, SimplifyOptions::with_target(1));
-        let survives = |p: [f32; 3]| {
-            m.surviving
-                .iter()
-                .any(|&s| pos[s as usize] == p)
-        };
+    fn boundary_corners_survive_and_extent_is_preserved() {
+        // The four grid corners are boundary *corners* (the boundary turns 90°)
+        // and stay locked, so a moderately simplified mesh still spans the full
+        // extent — even though smooth edge-midpoints may now slide away.
+        let (pos, indices) = grid(8, 8); // 128 tris
+        let base = indices.len() / 3;
+        let m = simplify(&pos, &indices, SimplifyOptions::with_target(base * 3 / 4));
+        let survives = |p: [f32; 3]| m.surviving.iter().any(|&s| pos[s as usize] == p);
         assert!(survives([0.0, 0.0, 0.0]), "corner must survive");
-        assert!(survives([6.0, 6.0, 0.0]), "far corner must survive");
-        assert!(survives([3.0, 0.0, 0.0]), "edge-midpoint (boundary) must survive");
+        assert!(survives([8.0, 0.0, 0.0]), "corner must survive");
+        assert!(survives([0.0, 8.0, 0.0]), "corner must survive");
+        assert!(survives([8.0, 8.0, 0.0]), "far corner must survive");
+        // Extent: the surviving vertices still cover the full [0,8]² bounds.
+        let xs: Vec<f32> = m.surviving.iter().map(|&s| pos[s as usize][0]).collect();
+        let ys: Vec<f32> = m.surviving.iter().map(|&s| pos[s as usize][1]).collect();
+        assert_eq!(xs.iter().cloned().fold(f32::MAX, f32::min), 0.0);
+        assert_eq!(xs.iter().cloned().fold(f32::MIN, f32::max), 8.0);
+        assert_eq!(ys.iter().cloned().fold(f32::MAX, f32::min), 0.0);
+        assert_eq!(ys.iter().cloned().fold(f32::MIN, f32::max), 8.0);
+    }
+
+    #[test]
+    fn smooth_boundary_simplifies_below_old_lock_floor() {
+        // Regression for the over-locking that plateaued seam-heavy meshes: a
+        // grid's straight edges are smooth boundary (not corners), so the mesh
+        // must now collapse far below the "every boundary vertex locked" floor.
+        // Old rule kept the entire 24-vertex boundary ring; the new rule slides
+        // it down to ~the 4 corners.
+        let (pos, indices) = grid(6, 6); // 72 tris, 24 boundary-ring verts
+        let m = simplify(&pos, &indices, SimplifyOptions::with_target(2));
+        assert!(
+            m.surviving.len() < 12,
+            "expected aggressive reduction, kept {} verts",
+            m.surviving.len()
+        );
     }
 
     #[test]
