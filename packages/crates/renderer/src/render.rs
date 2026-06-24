@@ -1241,6 +1241,29 @@ impl AwsmRenderer {
         // flipped `args_ready` so the geometry pass routes through the
         // CPU branch — and the cull/compaction passes are simply
         // skipped, saving the compute dispatches on small scenes.
+        // Cluster-LOD per-cluster cut (Phase B GPU; B.2). Gated by
+        // `virtual_geometry` + a loaded cluster mesh. Runs the cut compute into
+        // `selected`; the readback verification + compaction/indirect-draw
+        // consumers follow. Independent of `gpu_occlusion`.
+        if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
+            if cluster_pass.cluster_count > 0 {
+                if let Some(cam) = self.camera.last_matrices.as_ref() {
+                    let proj_yy = cam.projection.y_axis.y.abs();
+                    if proj_yy > 1e-6 {
+                        if let Ok((_, vh)) = self.gpu.current_context_texture_size() {
+                            cluster_pass.dispatch(
+                                &ctx,
+                                cam.position_world,
+                                1.0 / proj_yy,
+                                vh as f32,
+                                Self::LOD_ERROR_THRESHOLD_PX,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+
         if frame_opts.gpu_occlusion {
             if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
                 self.occlusion_buffers.as_ref(),
