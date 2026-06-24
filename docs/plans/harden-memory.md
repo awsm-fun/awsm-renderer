@@ -318,18 +318,48 @@ not the recovery mechanism.
    **only when topology changes** (load / add / remove) — never per frame. Only
    worth it if profiling shows the re-hand is a real respawn-latency cost.
 
-**Test seam (gated):** a hook to terminate the render worker (`worker.terminate()`
-from the host, or a gated self-`close()`), so the kill is drivable.
+**Test seam:** the render worker is killed with `worker.terminate()` from the page
+(via the gated `__mt_motion_worker` handle) — no Rust seam needed.
 
 **Verify (Multithreaded harness — T4.2):** `?demo=motion`, kill the render worker
-mid-session via the gated seam; **PASS:** the host respawns it, re-hands a fresh
-`OffscreenCanvas`, re-runs the load, and the **movers resume** (scene intact), no
-*page* reload, steady-state memory matches pre-crash.
+mid-session. **Functional PASS (verified):** the watchdog detects the stale
+heartbeat (~3 s), respawns the worker against a **fresh `<canvas>`**, re-runs the
+source-of-truth load, the orphaned physics worker self-reaps via the shared
+epoch, and the **movers resume** (frame counter restarts 60→…, `lastUpdated`→12),
+no *page* reload.
 
-**Verify (Multithreaded harness — T4.2):** `?demo=motion`, kill the render worker
-mid-session via chrome-devtools; **PASS:** the host respawns it, re-hands the
-`OffscreenCanvas`, re-establishes arena bindings from the persisted topology, and the
-**movers resume** (scene intact), no reload.
+### ⚠️ FLAGGED (P3) — unbounded per-crash memory leak (David's call needed)
+
+**Recovery works, but it does NOT meet the no-memory-growth constraint.** Measured
+on the live repro: each render-worker respawn leaks **~215 MB** of shared WASM
+linear memory, **linearly and unbounded** — 435 → 650 → 866 → 1082 MB across 3
+respawns. Root cause is a **fundamental wasm-threads limitation, not a bug in the
+recovery code**: a `terminate()`d (or crashed — `panic=abort`) worker thread
+**cannot run destructors**, and the single shared global allocator can never
+reclaim its never-freed blocks, so the dead render worker's entire wasm-heap
+footprint (staging rings, readback buffers, instance arenas, CPU scratch) is
+orphaned in the shared memory every crash. (Contrast P2 device-loss, which keeps
+the *same* worker and `drop`s the old renderer → **plateaus**, no leak.)
+
+Per the LOCKED hard constraint (*"no steady-state memory growth … STOP and flag it
+— do not ship it"*) this is **flagged, not shipped clean.** Mitigations need
+David's call:
+- **(i) Isolated per-render-group `WebAssembly.Memory`** — give each render+physics
+  pair its *own* shared memory (separate from the main thread's). On crash,
+  `terminate()` both and drop the memory → the whole 215 MB is freed by the GC.
+  Clean fix, but a non-trivial change to the worker bootstrap (per-group memory)
+  that touches every demo. **Recommended if worker-crash recovery must be
+  leak-free.**
+- **(ii) Accept the bounded-per-crash leak** — a render-worker *process* death is
+  catastrophic + rare (device loss, the common case, is handled in-place by P2
+  with no leak). One ~215 MB leak per genuine worker crash may be acceptable for a
+  player; only *repeated* crashes accumulate. Cheapest; ships the current code.
+- **(iii) Page-reload fallback** on worker death (the player reloads from its
+  bundle URL) — zero leak, but a visible reload (the very thing (b) avoided).
+
+The recovery mechanism (watchdog + fresh-canvas respawn + epoch-based orphan
+reaping) is landed and correct; it's the foundation for (i)/(ii)/(iii). Only the
+leak-elimination strategy is open.
 
 ---
 
@@ -361,7 +391,7 @@ it's independent of B1.
 | P1b | Audit + bound other unbounded containers | editor | ✅ | Audited editor+renderer. Undo log was the sole unbounded-and-suspect (now fixed). Leak-panel counters **flat** across the 1200-cmd churn (render_pipelines 16, compute_pipelines 21, shaders 31, samplers 1, pool_textures 0, dynamic_materials 0 — identical before/after). CONSOLE_LOG already capped (200); renderable pools cleared/frame; compute-pipeline+shader caches have removal APIs. Noted: `RenderPipelines.cache` lacks a symmetric removal API (bounded by finite pipeline-variant domain; not the crash cause; flagged for future if dynamic-variant churn ever shows growth). |
 | P1c | (opt-in) oversized-allocation debug guard | editor | ✅ | Gated guard in `renderer-core methods.rs create_buffer` (the central GPU-buffer chokepoint): a single buffer > `OVERSIZED_ALLOC_BYTES` (512 MB) logs `awsm_renderer_core::oversized_alloc` + `debug_assert!`s at our call site instead of trapping in PartitionAlloc. Gated `debug_assertions`/`harden-diag`; clippy `--all-features` clean. |
 | P2 | Device-loss recovery: reacquire device + replay source-of-truth | mt:dev | ✅ | **Live on the player harness** (`?demo=motion`, gated `device.destroy()` test seam, ×5 losses): each loss logs `device lost (destroyed)` (P0 hook) → `arm_recovery` (event-driven, **no per-frame poll**) rebuilds the renderer on a fresh device + replays the source-of-truth (boxes) + re-hands the physics worker fresh arena bindings. **Movers resume every time** (`lastUpdated`→0 during the ~1s rebuild, back to 12), frame counter continuous (**no page reload**), logs show loss+recovery. **Memory plateaus at 498 MB flat across repeated recoveries** (no per-recovery leak; one-time high-water from the brief rebuild overlap — wasm linear memory never shrinks but is reused). Per-frame cost = **one `Cell<bool>` read** (`recovering`, false in steady state) — the `recovering` flag also serves as the in-flight-submit guard. Renderer-core seam: `AwsmRendererWebGpu::on_device_lost`. `task lint` clean. |
-| P3 | Render-worker respawn + re-run source-of-truth load | mt:dev | ☐ (design re-locked) | **Unblocked 2026-06-24** — respawn worker + re-transfer fresh `OffscreenCanvas` + re-run the B1a source-of-truth load on the new device (topology-persist demoted to optional optimization). Impl pending; needs worker-watch + a gated worker-kill seam. See rewritten Phase 3. |
+| P3 | Render-worker respawn + re-run source-of-truth load | mt:dev | ⚠️ FUNCTIONAL / FLAGGED | **Recovery works** (live `?demo=motion`, `worker.terminate()`): heartbeat watchdog (3 s) → respawn on a **fresh `<canvas>`** → re-run source-of-truth load → orphaned physics worker **self-reaps via a shared-memory `RENDER_EPOCH`** → movers resume (frame restarts, `lastUpdated`→12), no page reload. **BUT** it leaks **~215 MB/respawn, unbounded** (435→650→866→1082 MB over 3 respawns) — a killed worker thread can't run destructors and the shared allocator can't reclaim its blocks (fundamental wasm-threads limit, not our bug). Per the no-memory-growth constraint: **FLAGGED — needs David's call** (isolated per-group memory / accept bounded leak / page-reload fallback). See ⚠️ FLAGGED section. |
 | P4 | Asset-fetch-failure → clean Error, no hang | mt:dev | ✅ | Live (`?demo=remote&model=nonexistent-bad-asset.glb`): a bad asset URL surfaces a clean `RenderEvent::Error` ("parse glb: …") **immediately** (t=0, no hang), `loading` clears, page stays responsive, `ready:false` (no false success). Existing `if let Err(err) = load_gltf(...)` wrapper already routes any fetch/parse failure to one Error event + `loading=false` — no code change needed; gate verified. |
 | Meta | No per-frame cost; release default unchanged | both | ✅ | Landed phases add **zero per-frame cost**: undo cap runs only on edits (push/pop), diagnostics are gated `debug_assertions`/`harden-diag` + cold-path (MCP query / `.lost` / `create_buffer`), device-lost hook is one-shot at device creation. Proof: 1200-cmd churn left all render-stats leak counters flat (render_pipelines/shaders/samplers/pool_textures unchanged); `frame_dt_ms` 16.69 steady. Release default unchanged (behavioural fixes un-gated = correctness; all diagnostics gated). `clippy --all --all-features --tests -D warnings` clean. |
 
@@ -373,14 +403,16 @@ fixed and live-verified** (undo log plateaus under a 256 MB byte budget;
 `wasm_heap` stops ramping). `task lint` clean. Committed per phase on
 `doc-aw-snap`.
 
-**Pending impl (2/8): P2, P3** — device-loss / worker-crash *recovery* (primarily
-for the **runtime/player**, verified on the `mt:dev` player harness; the editor is
-a second consumer). Design **was** blocked (the old "rebuild from CPU mirrors"
-lock rested on a false premise — geometry/texture are upload-then-drop), now
-**re-locked to (b) reload-from-retained-source-of-truth** (David, 2026-06-24),
-under a hard *no-new-memory / no-perf-regression* constraint. Detection (P0 hook)
-landed; reacquire-device + replay-source + the gated test seams are the remaining
-implementation (see rewritten Phases 2–3). Ready for a fresh `/loop`.
+**Device-loss recovery (P2) ✅ done** under (b) reload-from-source — live on the
+player harness, movers resume, memory **plateaus** (no leak), one `Cell` read of
+per-frame cost. **Worker-crash recovery (P3) ⚠️ functional but FLAGGED:** the
+respawn + fresh-canvas + epoch-orphan-reaping works and movers resume, but it
+leaks **~215 MB per crash, unbounded** — a fundamental wasm-threads limit (a
+killed thread can't free its shared-memory allocations). Per the no-memory-growth
+constraint it's flagged, not shipped clean — **needs David's call** between
+isolated per-group memory (clean fix, bigger change), accepting the bounded
+per-crash leak (worker death is rare; P2 device-loss is the common case and is
+leak-free), or a page-reload fallback. See the ⚠️ FLAGGED (P3) section.
 
 ## Done criteria
 
