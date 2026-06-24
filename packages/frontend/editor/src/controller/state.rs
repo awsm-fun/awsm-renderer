@@ -7683,6 +7683,7 @@ mod unassigned_material_tests {
             mesh: MeshRef(AssetId::new()),
             material: None,
             shadow: Default::default(),
+            lod: Default::default(),
         };
         assert_eq!(unassigned_material_kind(&mesh), "unassigned");
     }

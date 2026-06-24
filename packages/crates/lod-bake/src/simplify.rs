@@ -330,7 +330,7 @@ fn classify_vertices(boundary_nbrs: &[Vec<u32>], pos: &[DVec3]) -> Vec<VertClass
     // A boundary turning by more than ~45° is treated as a corner. For a smooth
     // seam the two edge directions are nearly opposite (dot ≈ -1); the turn
     // exceeds 45° once dot(d1, d2) ≥ -cos(45°).
-    const STRAIGHT_DOT: f64 = -0.7071067811865476;
+    const STRAIGHT_DOT: f64 = -std::f64::consts::FRAC_1_SQRT_2;
     boundary_nbrs
         .iter()
         .enumerate()
@@ -428,10 +428,8 @@ fn would_flip(
         let after_tri = tri.map(|v| if v == from { to } else { v });
         let after = face_normal(after_tri, pos);
         match (before, after) {
-            (Some(b), Some(a)) => {
-                if b.dot(a) < threshold {
-                    return true;
-                }
+            (Some(b), Some(a)) if b.dot(a) < threshold => {
+                return true;
             }
             // A triangle that was valid but becomes degenerate (zero area) is a
             // sliver — treat as a flip and reject.

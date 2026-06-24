@@ -172,8 +172,8 @@ mod tests {
     }
 
     /// The bundle serialises this with JSON (the codec shared by the editor bake
-    /// + the scene-loader runtime). The root sentinel is finite, so it round-trips
-    /// cleanly (infinity would break JSON).
+    /// and the scene-loader runtime). The root sentinel is finite, so it
+    /// round-trips cleanly (infinity would break JSON).
     #[cfg(feature = "serde")]
     #[test]
     fn json_round_trip() {
