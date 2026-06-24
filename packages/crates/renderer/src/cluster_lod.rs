@@ -23,8 +23,16 @@ pub struct ClusterPage {
     pub radius: f32,
     /// Error introduced creating this cluster (`0` at the finest level).
     pub lod_error: f32,
-    /// Error of the group that simplifies this cluster away (`+∞` for roots).
+    /// Error of the group that simplifies this cluster away (root sentinel for
+    /// roots).
     pub parent_error: f32,
+    /// Group sphere (centre+radius) to project `lod_error` against. Group-shared,
+    /// so all clusters of a group flip at the same camera threshold ⇒ crack-free.
+    pub lod_bounds_center: [f32; 3],
+    pub lod_bounds_radius: f32,
+    /// Group sphere to project `parent_error` against.
+    pub parent_bounds_center: [f32; 3],
+    pub parent_bounds_radius: f32,
     /// First index of this cluster's triangles in the shared index buffer.
     pub first_index: u32,
     /// Index count (triangle count × 3).
@@ -39,6 +47,50 @@ pub fn select_cut(pages: &[ClusterPage], threshold: f32, out: &mut Vec<u32>) {
     out.clear();
     for (i, p) in pages.iter().enumerate() {
         if p.lod_error <= threshold && threshold < p.parent_error {
+            out.push(i as u32);
+        }
+    }
+}
+
+/// **Per-cluster** LOD cut — the GPU cut's CPU reference. Selects each cluster
+/// whose own projected error fits the `pixel_budget` but whose parent's doesn't,
+/// projecting `lod_error` against its `lod_bounds` sphere and `parent_error`
+/// against its `parent_bounds` sphere (both group-shared, so adjacent clusters of
+/// a group flip together ⇒ crack-free). Because each cluster uses *its own*
+/// distance, detail varies WITHIN one mesh: near clusters stay fine while far
+/// clusters coarsen. Reuses `out` (no per-frame allocation). This is exactly what
+/// the B.2 compute pass will evaluate per cluster on-device.
+pub fn select_cut_per_cluster(
+    pages: &[ClusterPage],
+    instance_world: &Mat4,
+    camera_pos: Vec3,
+    tan_half_fov_y: f32,
+    viewport_h: f32,
+    pixel_budget: f32,
+    out: &mut Vec<u32>,
+) {
+    out.clear();
+    let scale = max_axis_scale(instance_world);
+    for (i, p) in pages.iter().enumerate() {
+        let lod_world = instance_world.transform_point3(Vec3::from(p.lod_bounds_center));
+        let parent_world = instance_world.transform_point3(Vec3::from(p.parent_bounds_center));
+        let proj_lod = cluster_projected_error(
+            p.lod_error,
+            lod_world,
+            camera_pos,
+            tan_half_fov_y,
+            viewport_h,
+            scale,
+        );
+        let proj_parent = cluster_projected_error(
+            p.parent_error,
+            parent_world,
+            camera_pos,
+            tan_half_fov_y,
+            viewport_h,
+            scale,
+        );
+        if proj_lod <= pixel_budget && pixel_budget < proj_parent {
             out.push(i as u32);
         }
     }
@@ -107,6 +159,10 @@ mod tests {
             radius: 1.0,
             lod_error: lod,
             parent_error: parent,
+            lod_bounds_center: [0.0, 0.0, 0.0],
+            lod_bounds_radius: 1.0,
+            parent_bounds_center: [0.0, 0.0, 0.0],
+            parent_bounds_radius: 1.0,
             first_index: 0,
             index_count: tris * 3,
         };
@@ -183,5 +239,47 @@ mod tests {
         select_cut(&p, far, &mut out);
         let far_tris: u32 = out.iter().map(|&i| p[i as usize].index_count / 3).sum();
         assert!(far_tris <= near_tris);
+    }
+
+    #[test]
+    fn per_cluster_cut_varies_detail_by_distance() {
+        // The headline property of the GPU cut: detail varies WITHIN a mesh.
+        // Two regions — A at the origin (near the camera), B far down +X — each
+        // with a fine cluster (lod 0, small parent error) and a coarse cluster
+        // (lod 0.1, root). With one budget, region A should keep its FINE cluster
+        // while region B drops to its COARSE one.
+        let page = |cx: f32, lod: f32, parent: f32, tris: u32| ClusterPage {
+            center: [cx, 0.0, 0.0],
+            radius: 1.0,
+            lod_error: lod,
+            parent_error: parent,
+            lod_bounds_center: [cx, 0.0, 0.0],
+            lod_bounds_radius: 1.0,
+            parent_bounds_center: [cx, 0.0, 0.0],
+            parent_bounds_radius: 1.0,
+            first_index: 0,
+            index_count: tris * 3,
+        };
+        let pages = vec![
+            page(0.0, 0.0, 0.1, 100),            // 0: A fine
+            page(0.0, 0.1, f32::INFINITY, 30),   // 1: A coarse
+            page(100.0, 0.0, 0.1, 100),          // 2: B fine
+            page(100.0, 0.1, f32::INFINITY, 30), // 3: B coarse
+        ];
+        let mut out = Vec::new();
+        select_cut_per_cluster(
+            &pages,
+            &Mat4::IDENTITY,
+            Vec3::new(0.0, 0.0, 3.0), // near A, far from B
+            0.5,
+            1080.0,
+            2.0, // pixel budget
+            &mut out,
+        );
+        out.sort_unstable();
+        assert!(out.contains(&0), "near region keeps its FINE cluster");
+        assert!(out.contains(&3), "far region drops to its COARSE cluster");
+        assert!(!out.contains(&1), "near region must not pick its coarse cluster");
+        assert!(!out.contains(&2), "far region must not pick its fine cluster");
     }
 }
