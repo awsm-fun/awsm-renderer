@@ -1894,6 +1894,29 @@ async fn load_cluster_lod(
     let identity_indices: Vec<u32> = (0..cm.indices.len() as u32).collect();
     renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
 
+    // Cluster render mesh M = the FULL cluster geometry as an ordinary mesh (its
+    // exploded vertex buffer is in cm.indices triangle order, vertex_attribute_
+    // indices = cm.indices). The compacted indirect stream draws into M's buffer;
+    // M's own draw is hidden. No-op unless virtual_geometry built the pass.
+    if renderer.features().virtual_geometry {
+        let m_raw = RawMeshData {
+            positions: cm.positions.clone(),
+            normals: (!cm.normals.is_empty()).then(|| cm.normals.clone()),
+            uv_sets: if cm.uvs.is_empty() {
+                vec![]
+            } else {
+                vec![cm.uvs.clone()]
+            },
+            colors: (!cm.colors.is_empty()).then(|| cm.colors.clone()),
+            indices: cm.indices.clone(),
+            skin: None,
+            morph: None,
+        };
+        let m_key = renderer.add_raw_mesh(m_raw, tk, mat)?;
+        renderer.set_cluster_render_mesh(m_key);
+        let _ = renderer.set_mesh_hidden(m_key, true);
+    }
+
     // Cut thresholds = the DAG's distinct cluster errors, ascending. Each gives a
     // watertight uniform cut; rising threshold ⇒ coarser. We register the finest
     // cut as the base and the coarser cuts as hidden levels in the SAME

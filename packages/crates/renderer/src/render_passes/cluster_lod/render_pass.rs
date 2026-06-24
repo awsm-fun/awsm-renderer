@@ -12,6 +12,7 @@ use glam::{Mat4, Vec3};
 use crate::bind_group_layout::BindGroupLayouts;
 use crate::cluster_lod::ClusterPage;
 use crate::error::Result;
+use crate::meshes::MeshKey;
 use crate::render::RenderContext;
 use crate::render_passes::cluster_lod::{
     bind_group::{ClusterCompactionBindGroups, ClusterCutBindGroups},
@@ -29,6 +30,10 @@ pub struct ClusterLodRenderPass {
     pub buffers: Option<ClusterLodBuffers>,
     /// Number of cluster pages uploaded (the cut dispatch bound).
     pub cluster_count: u32,
+    /// The cluster render mesh `M` (`add_raw_mesh(cm.positions, cm.indices)`) — an
+    /// ordinary mesh whose exploded vertex buffer the compacted indirect stream
+    /// draws into (its own draw is hidden). `None` until a cluster mesh loads.
+    pub render_mesh: Option<MeshKey>,
 }
 
 impl ClusterLodRenderPass {
@@ -45,6 +50,7 @@ impl ClusterLodRenderPass {
             pipelines,
             buffers: None,
             cluster_count: 0,
+            render_mesh: None,
         })
     }
 

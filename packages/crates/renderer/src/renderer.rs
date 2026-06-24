@@ -2346,6 +2346,15 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Register the cluster render mesh `M` (the full cluster geometry) whose
+    /// exploded vertex buffer the compacted indirect stream draws into. No-op
+    /// unless `virtual_geometry` built the pass.
+    pub fn set_cluster_render_mesh(&mut self, mesh_key: crate::meshes::MeshKey) {
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.render_mesh = Some(mesh_key);
+        }
+    }
+
     /// Submit a batch of pipeline groups for compile. Returns ids
     /// immediately in `Pending` state; transitions to `Ready` /
     /// `Failed` surface via [`Self::drain_pipeline_status_events`] or
