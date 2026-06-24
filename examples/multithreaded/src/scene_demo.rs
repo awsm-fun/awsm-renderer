@@ -368,7 +368,8 @@ fn set(obj: &js_sys::Object, key: &str, value: &JsValue) {
 fn demo_scene() -> awsm_renderer_scene::Scene {
     use awsm_renderer_scene::{
         AssetEntry, AssetId, AssetSource, EditorNode, EnvironmentConfig, LightConfig, MaterialDef,
-        MaterialInstance, MeshRef, MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, RuntimeMesh,
+        MaterialInstance, MeshLodConfig, MeshRef, MeshShadowConfig, NodeId, NodeKind,
+        PrimitiveShape, RuntimeMesh,
         Scene, Trs,
     };
 
@@ -416,6 +417,7 @@ fn demo_scene() -> awsm_renderer_scene::Scene {
                 ..Default::default()
             }),
             shadow: MeshShadowConfig::default(),
+            lod: MeshLodConfig::default(),
         },
         locked: false,
         visible: true,

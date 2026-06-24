@@ -115,6 +115,16 @@ LOD is opt-**out**, per mesh, default ON.
   params (target ratios, level count, error threshold).
 - Pair with a **global default** (LOD on) + per-mesh override.
 
+**Status — landed (A.1):** `MeshLodConfig { enabled: bool }` (default on) is a
+sibling of `MeshShadowConfig` on the `Mesh` / `SkinnedMesh` variants and
+`InstancesAlongCurveDef` (`scene/src/tree.rs`, `scene/src/instances.rs`), with
+`NodeKind::mesh_lod()` / `mesh_lod_mut()` accessors. It persists in
+`project.toml` automatically (serde, `#[serde(default)]` ⇒ legacy projects load
+as enabled — round-trip test in `tree.rs`). Reachable from the editor inspector
+("LOD" section, `mesh_lod_editor` in `scene_mode/inspector.rs`) and the
+`set_mesh_lod` MCP tool (mirrors `set_mesh_shadow`, `mcp/src/mcp.rs`). Consumed
+by the export bake (A.2), not at import/runtime.
+
 ---
 
 ## Phase A — Discrete LOD chain (ship first)

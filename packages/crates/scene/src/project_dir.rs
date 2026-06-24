@@ -87,8 +87,8 @@ pub fn write_bundle_dir(dir: &std::path::Path, files: &[BundleFile]) -> std::io:
 mod tests {
     use super::*;
     use crate::{
-        AssetEntry, AssetId, AssetSource, EditorNode, EnvironmentConfig, MaterialDef, MeshRef,
-        MeshShadowConfig, NodeId, NodeKind, RuntimeMesh,
+        AssetEntry, AssetId, AssetSource, EditorNode, EnvironmentConfig, MaterialDef, MeshLodConfig,
+        MeshRef, MeshShadowConfig, NodeId, NodeKind, RuntimeMesh,
     };
 
     fn sample_scene() -> Scene {
@@ -125,6 +125,7 @@ mod tests {
                 mesh: MeshRef(glb_mesh),
                 material: None,
                 shadow: MeshShadowConfig::default(),
+                lod: MeshLodConfig::default(),
             },
             locked: false,
             visible: true,

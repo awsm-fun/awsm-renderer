@@ -16,7 +16,8 @@ use crate::prelude::*;
 use awsm_renderer_editor_protocol::{
     AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, EvsmCutoff,
     FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, MaterialAlphaMode,
-    MaterialDef, MaterialShading, MeshShadowConfig, ParticleEmitterDef, PrimitiveShape,
+    MaterialDef, MaterialShading, MeshLodConfig, MeshShadowConfig, ParticleEmitterDef,
+    PrimitiveShape,
     ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef,
 };
 
@@ -203,17 +204,22 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
             mesh,
             material,
             shadow,
+            lod,
         } => html!("div", {
             .child(mesh_geometry_section(mesh.0))
             .child(material_editor(node, &inline_of(&material), material.is_some()))
             .child(mesh_shadow_editor(node, shadow))
+            .child(mesh_lod_editor(node, lod))
         }),
         // A skinned glTF import: not editable geometry (its per-vertex skin
         // weights can't survive topology edits). Shows the material + shadow
         // surface plus a "Drop Skinning" action that bakes the bind pose into a
         // static editable Mesh (terminal).
         NodeKind::SkinnedMesh {
-            material, shadow, ..
+            material,
+            shadow,
+            lod,
+            ..
         } => {
             let node_id = node.id;
             html!("div", {
@@ -226,6 +232,7 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
                 ))
                 .child(material_editor(node, &inline_of(&material), material.is_some()))
                 .child(mesh_shadow_editor(node, shadow))
+                .child(mesh_lod_editor(node, lod))
                 .child(html!("div", {
                     .style("margin", "8px 0")
                     .child(Btn::new()
@@ -3179,23 +3186,29 @@ fn set_node_material(
     inst: awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
 ) {
     match node.kind.get_cloned() {
-        NodeKind::Mesh { mesh, shadow, .. } => {
+        NodeKind::Mesh {
+            mesh, shadow, lod, ..
+        } => {
             dispatch_kind(
                 node.id,
                 NodeKind::Mesh {
                     mesh,
                     material: Some(inst),
                     shadow,
+                    lod,
                 },
             );
         }
-        NodeKind::SkinnedMesh { skin, shadow, .. } => {
+        NodeKind::SkinnedMesh {
+            skin, shadow, lod, ..
+        } => {
             dispatch_kind(
                 node.id,
                 NodeKind::SkinnedMesh {
                     skin,
                     material: Some(inst),
                     shadow,
+                    lod,
                 },
             );
         }
@@ -3330,28 +3343,98 @@ fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
 /// Replace a Mesh / SkinnedMesh's `shadow`, preserving the rest of the kind.
 fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
     match node.kind.get_cloned() {
-        NodeKind::Mesh { mesh, material, .. } => {
+        NodeKind::Mesh {
+            mesh, material, lod, ..
+        } => {
             dispatch_kind(
                 node.id,
                 NodeKind::Mesh {
                     mesh,
                     material,
                     shadow,
+                    lod,
                 },
             );
         }
-        NodeKind::SkinnedMesh { skin, material, .. } => {
+        NodeKind::SkinnedMesh {
+            skin, material, lod, ..
+        } => {
             dispatch_kind(
                 node.id,
                 NodeKind::SkinnedMesh {
                     skin,
                     material,
                     shadow,
+                    lod,
                 },
             );
         }
         _ => {}
     }
+}
+
+// ── LOD (per-mesh export bake opt-out) ────────────────────────────────────────
+
+/// Replace a Mesh / SkinnedMesh's `lod`, preserving the rest of the kind.
+fn set_mesh_lod(node: &Arc<Node>, lod: MeshLodConfig) {
+    match node.kind.get_cloned() {
+        NodeKind::Mesh {
+            mesh,
+            material,
+            shadow,
+            ..
+        } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::Mesh {
+                    mesh,
+                    material,
+                    shadow,
+                    lod,
+                },
+            );
+        }
+        NodeKind::SkinnedMesh {
+            skin,
+            material,
+            shadow,
+            ..
+        } => {
+            dispatch_kind(
+                node.id,
+                NodeKind::SkinnedMesh {
+                    skin,
+                    material,
+                    shadow,
+                    lod,
+                },
+            );
+        }
+        _ => {}
+    }
+}
+
+fn mesh_lod_editor(node: &Arc<Node>, lod: MeshLodConfig) -> Dom {
+    let enabled = Mutable::new(lod.enabled);
+    spawn_local(clone!(enabled, node => async move {
+        let mut first = true;
+        enabled.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if !fire { return; }
+                if let Some(lod) = node.kind.get_cloned().mesh_lod().copied() {
+                    if lod.enabled != on {
+                        set_mesh_lod(&node, MeshLodConfig { enabled: on });
+                    }
+                }
+            })
+        }).await;
+    }));
+
+    Section::new("LOD")
+        .child(row("Enabled", toggle(enabled)))
+        .render()
 }
 
 fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {

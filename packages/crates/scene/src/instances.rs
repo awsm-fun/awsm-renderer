@@ -1,6 +1,6 @@
 //! Instance-along-curve schema: place copies of a source node along a curve.
 
-use super::tree::{MeshShadowConfig, NodeId};
+use super::tree::{MeshLodConfig, MeshShadowConfig, NodeId};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,6 +18,9 @@ pub struct InstancesAlongCurveDef {
     /// placed instance.
     #[serde(default)]
     pub shadow: MeshShadowConfig,
+    /// Per-instance LOD opt-out. Applies to every placed instance.
+    #[serde(default)]
+    pub lod: MeshLodConfig,
 }
 
 impl Default for InstancesAlongCurveDef {
@@ -30,6 +33,7 @@ impl Default for InstancesAlongCurveDef {
             orient_to_tangent: true,
             per_instance_colors: vec![],
             shadow: MeshShadowConfig::default(),
+            lod: MeshLodConfig::default(),
         }
     }
 }
