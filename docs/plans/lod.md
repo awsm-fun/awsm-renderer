@@ -463,16 +463,62 @@ plan's "single visibility-buffer coexistence" holds for the shipped per-instance
 runtime.
 
 **Remaining scope (precise).** The only unshipped plan item is the *per-cluster*
-GPU cut + its vis-buffer integration: (1) upload cluster vertex/index pages +
-per-cluster meta (incl. the group bounds above) to GPU storage; (2) a compute
-pass — two-level cull (instance frustum/HZB, then per-cluster cut via the group-
-sphere-projected `[lod_error, parent_error)`) — writing one compacted index
-stream + `IndirectDrawArgs`; (3) `drawIndexedIndirect` it into the vis-buffer with
-a `cluster_id` payload; (4) re-point `material_prep`/`material_opaque` attribute
-fetch at the cluster index pages. This is HW-raster GPU-compute work (no unit
-tests; live-GPU verification only) and is the deep, higher-risk frontier; the
-shipped per-instance cluster cut + discrete LOD already deliver distance-adaptive,
+GPU cut + its vis-buffer integration. This is HW-raster GPU-compute work (no unit
+tests; live-GPU verification only) and the deep, higher-risk frontier; the shipped
+per-instance cluster cut + discrete LOD already deliver distance-adaptive,
 crack-free, coexisting LOD for all mesh classes.
+
+**Status — landed (B.2-GPU foundation, all modules built + tested off-device).**
+Everything up to the compute *dispatch* is built, gated behind `virtual_geometry`,
+and verified to the extent possible without a GPU:
+- **Algorithm**: `cluster_lod::select_cut_per_cluster` — the per-cluster cut (CPU
+  reference, the GPU shader's spec); tested incl. a "detail varies within a mesh"
+  case (near region fine, far region coarse) using the group spheres.
+- **Shader**: `render_passes/cluster_lod/shader/cluster_lod_wgsl/cluster_cut.wgsl`
+  — the on-device cut; registered through the askama cache system (additive
+  `ShaderCacheKeyClusterCut` / `ShaderTemplateClusterCut` + central-enum arms),
+  build-rendered (render test).
+- **Data contracts** (both offset-tested at `cargo test`):
+  `write_cluster_page_gpu` → 64-B std430 page (`CLUSTER_PAGE_GPU_STRIDE`);
+  `write_cluster_cut_params` → 96-B `ClusterCutParams` uniform.
+- **GPU resources**: `render_passes/cluster_lod/buffers.rs` `ClusterLodBuffers`
+  (pages RO / selected RW+COPY_SRC / params uniform / readback MAP_READ +
+  `ensure_capacity` + `dispatch_groups`); `bind_group.rs` `ClusterCutBindGroups`
+  (self-contained recreate from its own buffers); `pipeline.rs`
+  `ClusterLodPipelines` (occlusion-pattern compute pipeline).
+
+**Remaining integration (precise, traced — the actionable handoff).** All of this
+is gated by `virtual_geometry` (default-off ⇒ compile-checked, byte-identical):
+1. **Pass wiring** into the 3-phase build (`render_passes.rs`): add
+   `cluster_lod: Option<ClusterLodRenderPass>` to `RenderPasses` +
+   `cluster_lod_bg` to `RenderPassesBindings`; in `describe_shaders` construct the
+   bind group + extend `shader_cache_keys` with `ClusterLodPipelines::
+   shader_cache_keys()` (gate on `features.virtual_geometry`); add a range in
+   `RenderPassesRanges` + `describe_pipelines`; build the pass in `from_resolved`
+   — mirror the `occlusion` arms exactly (refactor `ClusterLodPipelines` to the
+   `build_descriptors`/`from_resolved` shape, *or* construct eagerly in a small
+   async post-step). **Creating the pipeline here validates `cluster_cut.wgsl`
+   on-device** — first GPU checkpoint (load editor with `?vg`, expect no init
+   error). Hold the per-mesh `ClusterLodBuffers` on `AwsmRenderer` (Option, like
+   `occlusion_buffers`).
+2. **Page upload**: in `scene-loader load_cluster_lod`, when `virtual_geometry` is
+   on, also hand the loaded `ClusterMesh`'s pages to the renderer (a cluster
+   registry keyed by MeshKey) → `ClusterLodBuffers::write_pages` once.
+3. **Dispatch**: per cluster-mesh instance per frame, `write_params` (camera +
+   instance world + screen-error budget) → dispatch `cut` over
+   `dispatch_groups(cluster_count)`. Slot after `update_lod_selection`, near the
+   occlusion/compaction passes in `render.rs`.
+4. **Readback verification** (de-risks the shader before any draw change): copy
+   `selected` → `readback`, `mapAsync`, compare to `select_cut_per_cluster` for
+   the same params (coverage-pass readback state machine is the template). Expect
+   exact agreement.
+5. **Compaction → indirect draw**: a second compute pass atomic-appends the
+   selected clusters' index pages into one compacted index buffer +
+   `IndirectDrawArgs`; `drawIndexedIndirect` it into the vis-buffer. The compacted
+   indices reference the shared vertex buffer, so (unlike the plan's original B.3)
+   the geometry/material passes may not need a `cluster_id` payload — confirm on
+   device; only re-budget `visibility_data` if attribute fetch can't be satisfied
+   from the compacted index stream directly.
 
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds
