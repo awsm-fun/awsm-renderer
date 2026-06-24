@@ -487,38 +487,61 @@ and verified to the extent possible without a GPU:
   (self-contained recreate from its own buffers); `pipeline.rs`
   `ClusterLodPipelines` (occlusion-pattern compute pipeline).
 
-**Remaining integration (precise, traced — the actionable handoff).** All of this
-is gated by `virtual_geometry` (default-off ⇒ compile-checked, byte-identical):
-1. **Pass wiring** into the 3-phase build (`render_passes.rs`): add
-   `cluster_lod: Option<ClusterLodRenderPass>` to `RenderPasses` +
-   `cluster_lod_bg` to `RenderPassesBindings`; in `describe_shaders` construct the
-   bind group + extend `shader_cache_keys` with `ClusterLodPipelines::
-   shader_cache_keys()` (gate on `features.virtual_geometry`); add a range in
-   `RenderPassesRanges` + `describe_pipelines`; build the pass in `from_resolved`
-   — mirror the `occlusion` arms exactly (refactor `ClusterLodPipelines` to the
-   `build_descriptors`/`from_resolved` shape, *or* construct eagerly in a small
-   async post-step). **Creating the pipeline here validates `cluster_cut.wgsl`
-   on-device** — first GPU checkpoint (load editor with `?vg`, expect no init
-   error). Hold the per-mesh `ClusterLodBuffers` on `AwsmRenderer` (Option, like
-   `occlusion_buffers`).
-2. **Page upload**: in `scene-loader load_cluster_lod`, when `virtual_geometry` is
-   on, also hand the loaded `ClusterMesh`'s pages to the renderer (a cluster
-   registry keyed by MeshKey) → `ClusterLodBuffers::write_pages` once.
-3. **Dispatch**: per cluster-mesh instance per frame, `write_params` (camera +
-   instance world + screen-error budget) → dispatch `cut` over
-   `dispatch_groups(cluster_count)`. Slot after `update_lod_selection`, near the
-   occlusion/compaction passes in `render.rs`.
-4. **Readback verification** (de-risks the shader before any draw change): copy
-   `selected` → `readback`, `mapAsync`, compare to `select_cut_per_cluster` for
-   the same params (coverage-pass readback state machine is the template). Expect
-   exact agreement.
-5. **Compaction → indirect draw**: a second compute pass atomic-appends the
-   selected clusters' index pages into one compacted index buffer +
-   `IndirectDrawArgs`; `drawIndexedIndirect` it into the vis-buffer. The compacted
-   indices reference the shared vertex buffer, so (unlike the plan's original B.3)
-   the geometry/material passes may not need a `cluster_id` payload — confirm on
-   device; only re-budget `visibility_data` if attribute fetch can't be satisfied
-   from the compacted index stream directly.
+**Status — landed (B.2 GPU COMPUTE complete + verified on-device).** Steps 1–5 of
+the traced handoff are done and confirmed on-device (commits through `7a660a61`),
+all gated by `virtual_geometry` (off ⇒ byte-identical):
+1. ✅ **Pass wired** into the 3-phase build — `ClusterLodRenderPass` built eagerly
+   (like `light_culling`), `None` when vg off. Loading `?vg` validated
+   `cluster_cut.wgsl` + `cluster_compaction.wgsl` on-device (both pipelines
+   `... ok` in the browser console).
+2. ✅ **Page + index upload** — `scene-loader load_cluster_lod` →
+   `AwsmRenderer::upload_cluster_pages(pages, indices)` → `ClusterLodBuffers`
+   (pages/selected/params/source_indices/compacted_indices/draw_args), bind groups
+   recreated. Bind-group layout valid on-device (no validation error).
+3. ✅ **Cut dispatch** — per frame after `update_lod_selection`; executes at 60fps.
+4. ✅ **Cut output verified** — readback (browser console): `cluster cut (GPU):
+   1513/13616 clusters selected` — a sane watertight per-cluster cut.
+5. ✅ **Compaction → compacted indirect stream** — second compute pass atomic-packs
+   the selected clusters' index pages + fills `drawIndexedIndirect` args. Verified:
+   `draw_args.index_count = 7548 (2516 tris)`.
+
+So the per-cluster GPU LOD selection — the headline Nanite feature — is proven
+working on-device: cut → compaction → one `compacted_indices` + `draw_args`
+stream, ready to draw.
+
+**Remaining: B.3 — draw the compacted stream into the vis-buffer (precise, from a
+geometry-pass trace).** The one unshipped step is the indirect draw, and it is
+NOT a trivial index-buffer swap, because of how material shading reconstructs
+attributes:
+- The geometry pass rasters into a visibility buffer storing
+  `(triangle_index, material_mesh_meta_offset, barycentric)` (geometry
+  `fragment.wgsl`). `material_prep` / `material_opaque` `compute.wgsl` then refetch
+  the triangle's 3 vertex attributes by reading the mesh's **original index
+  buffer** at `mesh_meta.vertex_attribute_indices_offset + triangle_index*3`, and
+  the renderer stores geometry **exploded** (per-triangle-vertex), in one shared
+  pool keyed by `MeshKey` (see `meshes.rs` `visibility_geometry_*` + `MeshResource`).
+- Our `compacted_indices` index the cluster's `cm.indices` space, which does **not**
+  align with the renderer's exploded visibility geometry for that mesh. So drawing
+  the compacted stream against the base cut mesh's vertex buffer would rasterise
+  correct positions but the material pass would fetch the **wrong** per-triangle
+  vertex indices ⇒ broken UVs/normals.
+- **Path forward (two options, pick on device):** (a) make the cluster geometry a
+  first-class vis-buffer participant — upload `cm` positions/attributes + index
+  pages in the renderer's exploded 56-B visibility layout + a `MeshMeta`, build the
+  compacted stream in *that* index space, draw it via `draw_indexed_indirect_with_f64`
+  (precedent: occlusion's compaction path, `meshes/mesh.rs:309-360`, sets the args
+  `first_instance = mesh_meta_idx` for material routing); or (b) keep the original
+  geometry and add a compacted **attribute-index** buffer alongside, with a small
+  `material_prep`/`material_opaque` tweak to read it instead of the mesh's index
+  buffer. Option (a) is the cleaner Nanite shape. Either way the existing
+  `(triangle_index, mesh_meta)` vis-buffer payload suffices — no `cluster_id`
+  re-budget needed (the plan's original B.3 framing) as long as the drawn index
+  stream + the meta's `vertex_attribute_indices_offset` are in the same space.
+- This is the deepest, highest-risk step (touches the shared geometry pool +
+  material attribute reconstruction for *all* geometry); to be built carefully,
+  gated, with on-device verification. The shipped per-instance cluster cut +
+  discrete LOD already render correct, distance-adaptive, crack-free, coexisting
+  LOD for all mesh classes regardless.
 
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds
