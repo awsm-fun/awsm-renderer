@@ -273,8 +273,27 @@ shows **4 meshes** (base + 3 levels) for the single-mesh model — the chain loa
 level visible); `frame_dt 16.7ms`, `render_cpu 2.11ms`, no errors. The precise
 triangle-throughput before/after numbers are the acceptance test's job (frame
 timing via `?trace`/`?stress` with the mixed scene). **Phase A static runtime LOD
-works end-to-end.** Remaining for Phase A: skinned-runtime selection (shared
-skeleton) + the full mixed-scene acceptance test.
+works end-to-end.**
+
+**Status — landed (A.3d, skinned/morph runtime selection).** Solved the
+shared-skeleton problem without reworking the bake: `load_skinned_lod_chain`
+(scene-loader) loads each level rig glb, but instead of `load_glb_under` (which
+would make a second, undriven skeleton) it **extracts each level mesh node's
+geometry + skin + morph** (`glb_export::extract_node_mesh`) and rebuilds it with
+`add_raw_mesh`, **rebinding** `RawSkin.joints` to the BASE rig's joint transforms
+via the base load's `node_index_transforms` (valid — every level shares the
+base's joint node indices). `packed_index_weights()` / `packed_values()` match
+`RawSkin.index_weights` / `RawMorph.values` byte-for-byte, so skin + morph
+re-bind exactly; level meshes are hidden and the chain registers on `base_key`.
+The same `update_lod_selection` visibility-swap then drives them. Scoped to the
+common single-mesh-node skinned case (multi-mesh skinned LOD is a follow-up).
+**Verified** via the editor round-trip (`?lod`) on CesiumMan (skinned, walk
+clip): `get_memory_stats` shows **4 meshes** (base + 3 levels), and with the walk
+animation posed and frozen the figure renders in the **correct deformed pose at
+both near and far** — i.e. the simplified level deforms with the base's animated
+skeleton (the rebind works), not a frozen bind pose. **Phase A runtime LOD now
+works for static + skinned + morph.** Remaining for Phase A: the full mixed-scene
+acceptance test (perf numbers).
 
 **Critical files:**
 - Runtime selection: `render_passes/occlusion/shader/occlusion_wgsl/cull.wgsl`,

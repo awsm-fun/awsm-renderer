@@ -1019,6 +1019,21 @@ async fn materialize(
                     maps.skin_joints.insert(j.node, tk);
                 }
             }
+            // Discrete LOD (skinned/morph): load each level's mesh REBOUND to the
+            // base rig's animated joint transforms (so a level deforms with the
+            // base), hidden, and register the chain. No-op unless `lod` is on and a
+            // manifest exists.
+            if let Some(&base_key) = keys.first() {
+                load_skinned_lod_chain(
+                    renderer,
+                    assets,
+                    &skin.source.to_string(),
+                    base_key,
+                    &node_index_transforms,
+                    mat,
+                )
+                .await?;
+            }
             loaded.meshes.extend(keys);
             *uploaded += 1;
             on_phase(LoadPhase::UploadingMeshes {
@@ -1849,6 +1864,162 @@ async fn load_static_lod_chain(
             mesh_key: level_key,
             error: lvl.error,
         });
+    }
+    if !levels.is_empty() {
+        renderer.lod.register(
+            base_key,
+            LodChain {
+                levels,
+                bounds_radius: manifest.bounds_radius,
+                ..Default::default()
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Load + register the discrete-LOD level chain for a **skinned / morph** mesh.
+///
+/// Each level rig glb (`<source>.lod{N}.glb`) carries its own skeleton, but the
+/// animation clips only drive the *base* rig's joints. So instead of loading the
+/// level glb wholesale (which would make a second, undriven skeleton), this
+/// extracts each level mesh node's geometry + skin + morph and rebuilds it with
+/// `add_raw_mesh`, **rebinding** its skin to the BASE rig's joint transforms
+/// (mapped through `node_index_transforms` — valid because every level shares the
+/// base's joint node indices, both coming from `reexport_clean_scene` of the same
+/// source). The level meshes thus deform with the base; they're set hidden and
+/// the chain is registered keyed by `base_key`.
+///
+/// No-op when `lod` is off / no manifest. Scoped to the common single-mesh-node
+/// skinned case: the chain is keyed on `base_key` and tracks each level's first
+/// mesh node (multi-mesh skinned LOD is a follow-up).
+async fn load_skinned_lod_chain(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    source_id: &str,
+    base_key: MeshKey,
+    node_index_transforms: &HashMap<usize, TransformKey>,
+    mat: MaterialKey,
+) -> Result<()> {
+    use awsm_renderer::meshes::buffer_info::MeshBufferGeometryMorphInfo;
+    use awsm_renderer::raw_mesh::{RawMorph, RawMeshData, RawSkin};
+
+    if !renderer.features().lod {
+        return Ok(());
+    }
+    let manifest_path = format!(
+        "{ASSETS_DIR}/{}",
+        awsm_renderer_lod_bake::lod_manifest_filename(source_id)
+    );
+    let Ok(bytes) = assets.fetch(&manifest_path).await else {
+        return Ok(());
+    };
+    let manifest: awsm_renderer_lod_bake::MeshLodManifest = match std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| toml::from_str(s).ok())
+    {
+        Some(m) => m,
+        None => {
+            tracing::warn!("lod: ignoring unreadable skinned manifest `{manifest_path}`");
+            return Ok(());
+        }
+    };
+
+    let root = renderer.transforms.root_node;
+    let mut levels = Vec::with_capacity(manifest.levels.len());
+    for lvl in &manifest.levels {
+        let leaf = awsm_renderer_lod_bake::lod_level_filename(source_id, lvl.index);
+        let key = format!("{ASSETS_DIR}/{leaf}");
+        let Ok(glb) = assets.fetch(&key).await else {
+            continue;
+        };
+        // Parse once; rebuild every mesh node bound to the base's transforms.
+        let data = GltfLoader::from_glb_bytes(&glb).await?.into_data(None)?;
+        let mut level_first: Option<MeshKey> = None;
+        let node_indices: Vec<usize> = data
+            .doc
+            .nodes()
+            .filter(|n| n.mesh().is_some())
+            .map(|n| n.index())
+            .collect();
+        for node_index in node_indices {
+            let Some(extracted) = awsm_renderer_glb_export::extract_node_mesh(
+                &data.doc,
+                &data.buffers.raw,
+                node_index as u32,
+                None,
+            ) else {
+                continue;
+            };
+            // Rebind skin joints (rig node index → base transform).
+            let raw_skin = match extracted.skin.as_ref() {
+                Some(s) => {
+                    let mut joints = Vec::with_capacity(s.joint_node_indices.len());
+                    let mut ok = true;
+                    for rig_idx in &s.joint_node_indices {
+                        match node_index_transforms.get(rig_idx) {
+                            Some(&tk) => joints.push(tk),
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !ok {
+                        None
+                    } else {
+                        Some(RawSkin {
+                            joints,
+                            inverse_bind_matrices: s
+                                .inverse_bind_matrices
+                                .iter()
+                                .map(glam::Mat4::from_cols_array)
+                                .collect(),
+                            set_count: 1,
+                            index_weights: s.packed_index_weights(),
+                        })
+                    }
+                }
+                None => None,
+            };
+            let vertex_count = extracted.mesh.positions.len();
+            let raw_morph = extracted.morph.as_ref().map(|m| {
+                let values = m.packed_values(vertex_count);
+                RawMorph {
+                    info: MeshBufferGeometryMorphInfo {
+                        targets_len: m.targets_len(),
+                        vertex_stride_size: m.vertex_stride_size(),
+                        values_size: values.len(),
+                    },
+                    weights: m.weights_bytes(),
+                    values,
+                }
+            });
+            let raw = RawMeshData {
+                positions: extracted.mesh.positions,
+                normals: extracted.mesh.normals,
+                uv_sets: extracted.mesh.uvs,
+                colors: extracted.mesh.colors,
+                indices: extracted.mesh.indices,
+                skin: raw_skin,
+                morph: raw_morph,
+            };
+            // Self-placing under the renderer root, exactly like the base rig.
+            let tk = renderer.transforms.insert(Transform::default(), Some(root));
+            let Ok(mk) = renderer.add_raw_mesh(raw, tk, mat) else {
+                continue;
+            };
+            let _ = renderer.set_mesh_hidden(mk, true);
+            if level_first.is_none() {
+                level_first = Some(mk);
+            }
+        }
+        if let Some(mesh_key) = level_first {
+            levels.push(LodLevel {
+                mesh_key,
+                error: lvl.error,
+            });
+        }
     }
     if !levels.is_empty() {
         renderer.lod.register(

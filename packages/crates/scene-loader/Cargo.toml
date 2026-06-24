@@ -29,6 +29,8 @@ awsm-renderer-particles = { workspace = true }
 awsm-renderer-scene = { workspace = true }
 # Discrete-LOD manifest (`MeshLodManifest`) parsed from each bundle's `.lod.toml`.
 awsm-renderer-lod-bake = { workspace = true, features = ["serde"] }
+# Extract per-node skin/morph from a level rig glb (skinned LOD rebind).
+awsm-renderer-glb-export = { workspace = true }
 glam = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }

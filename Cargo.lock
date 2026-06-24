@@ -527,6 +527,7 @@ dependencies = [
  "awsm-renderer",
  "awsm-renderer-core",
  "awsm-renderer-curves",
+ "awsm-renderer-glb-export",
  "awsm-renderer-gltf",
  "awsm-renderer-lod-bake",
  "awsm-renderer-materials",
