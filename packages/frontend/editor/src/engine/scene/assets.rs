@@ -2,4 +2,4 @@
 //! editor never owns a separate copy — `Scene::assets` is the live form
 //! of the same type that ends up in `EditorProject`.
 
-pub use awsm_editor_protocol::{AssetId, AssetSource, AssetTable};
+pub use awsm_renderer_editor_protocol::{AssetId, AssetSource, AssetTable};

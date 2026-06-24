@@ -1,4 +1,4 @@
-use awsm_web_shared::viewport3d::transform_controller::GizmoSpace;
+use awsm_renderer_web_shared::viewport3d::transform_controller::GizmoSpace;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::{

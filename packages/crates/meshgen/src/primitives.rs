@@ -2,7 +2,7 @@
 
 use std::f32::consts::TAU;
 
-use awsm_scene::PrimitiveShape;
+use awsm_renderer_scene::PrimitiveShape;
 use glam::Vec3;
 
 use crate::mesh_data::MeshData;

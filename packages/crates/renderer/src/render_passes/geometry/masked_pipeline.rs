@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 use awsm_renderer_core::compare::CompareFunction;
 use awsm_renderer_core::pipeline::depth_stencil::DepthStencilState;
 use awsm_renderer_core::pipeline::fragment::ColorTargetState;

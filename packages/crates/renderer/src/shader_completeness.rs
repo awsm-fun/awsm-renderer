@@ -28,7 +28,7 @@
 
 #![cfg(test)]
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::dynamic_materials::{BucketEntry, ShadingBase};
 

@@ -2,7 +2,7 @@
 //! PNG/JPEG), keyed by the texture's [`AssetId`].
 //!
 //! The renderer keeps only DECODED pixels, so the originals are grabbed off the
-//! glTF document at import (`awsm_glb_export::extract_texture_images`) and stashed
+//! glTF document at import (`awsm_renderer_glb_export::extract_texture_images`) and stashed
 //! here. Persistence (`controller::persistence`) writes each entry to the
 //! project's `assets/<content_hash>.<ext>` side file on Save (via [`get`]) so
 //! imported textures survive Save → reload; on Load the bytes come back from the
@@ -12,8 +12,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use awsm_editor_protocol::AssetId;
-use awsm_glb_export::ImageMime;
+use awsm_renderer_editor_protocol::AssetId;
+use awsm_renderer_glb_export::ImageMime;
 
 thread_local! {
     static TEXTURE_BYTES: RefCell<HashMap<AssetId, (Vec<u8>, ImageMime)>> =

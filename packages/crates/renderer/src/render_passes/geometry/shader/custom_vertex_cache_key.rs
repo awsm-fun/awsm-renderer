@@ -14,7 +14,7 @@
 //! module embeds the material's auto-generated `MaterialData` struct/loader +
 //! the author's vertex body — an edit recompiles only the affected pipeline.
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::{
     render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo,

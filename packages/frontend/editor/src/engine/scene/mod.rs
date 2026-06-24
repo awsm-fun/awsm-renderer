@@ -17,7 +17,7 @@ pub mod types;
 // allow the not-yet-consumed names now.
 #[allow(unused_imports)]
 pub use assets::{AssetId, AssetSource, AssetTable};
-pub use awsm_editor_protocol::ShadowsConfig;
+pub use awsm_renderer_editor_protocol::ShadowsConfig;
 #[allow(unused_imports)]
 pub use model::{Scene, SceneStats};
 pub use node::{Node, NodeId};

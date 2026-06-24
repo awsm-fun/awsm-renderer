@@ -29,7 +29,7 @@ use tower_http::cors::{Any, CorsLayer};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
-use awsm_editor_protocol::Request;
+use awsm_renderer_editor_protocol::Request;
 
 use crate::link::EditorLink;
 use crate::mcp::EditorMcp;

@@ -1,10 +1,10 @@
 //! The **authoring** mesh: `MeshDef` (a modifier-stack recipe + sparse per-vertex
 //! overrides) and its provenance. The editor's bake step lowers this to the
-//! runtime `awsm_scene::RuntimeMesh` / `MeshBlob`. Moved out of the old
+//! runtime `awsm_renderer_scene::RuntimeMesh` / `MeshBlob`. Moved out of the old
 //! scene-schema so the runtime crate stays free of authoring types.
 
-use awsm_meshgen::recipe::{ModifierStack, SweepAlongCurveDef};
-use awsm_scene::{AssetId, PrimitiveShape};
+use awsm_renderer_meshgen::recipe::{ModifierStack, SweepAlongCurveDef};
+use awsm_renderer_scene::{AssetId, PrimitiveShape};
 
 /// `source` records the kind the mesh was captured from. The editor's
 /// Mesh inspector renders editable copies of those params; mutating
@@ -98,7 +98,7 @@ pub enum CapturedSource {
 
 /// Captured procedural-mesh geometry, bitcode-serialized into the
 /// project's `assets/<asset-id>.mesh.bin` side file. Mirrors the
-/// in-memory shape of `awsm_meshgen::MeshData` so the materializer can
+/// in-memory shape of `awsm_renderer_meshgen::MeshData` so the materializer can
 /// hand the data straight to the renderer without massaging.
 ///
 /// The consuming crates own conversion helpers (editor bake → runtime MeshBlob).

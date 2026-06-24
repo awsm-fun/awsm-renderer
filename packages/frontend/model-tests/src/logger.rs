@@ -6,7 +6,7 @@ use tracing_web::{performance_layer, MakeWebConsoleWriter};
 use wasm_bindgen::prelude::*;
 
 /// Default subscriber-level filter when no `?log=` URL override
-/// is present. Mirrors the policy in `awsm-web-shared::logger`.
+/// is present. Mirrors the policy in `awsm-renderer-web-shared::logger`.
 const DEFAULT_LEVEL: LevelFilter = LevelFilter::INFO;
 
 pub fn init_logger() {

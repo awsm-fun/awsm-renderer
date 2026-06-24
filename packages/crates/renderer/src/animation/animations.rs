@@ -251,8 +251,8 @@ fn data_to_vec4(value: &AnimationData) -> Result<[f32; 4]> {
 /// `WrongKind` error.
 fn data_to_uniform_value(
     value: &AnimationData,
-) -> Result<awsm_materials::dynamic_layout::UniformValue> {
-    use awsm_materials::dynamic_layout::UniformValue;
+) -> Result<awsm_renderer_materials::dynamic_layout::UniformValue> {
+    use awsm_renderer_materials::dynamic_layout::UniformValue;
     match value {
         AnimationData::F32(v) => Ok(UniformValue::F32(*v)),
         AnimationData::F64(v) => Ok(UniformValue::F32(*v as f32)),
@@ -590,7 +590,7 @@ impl AwsmRenderer {
                 ))
             }
             AnimationTarget::Uniform { material, slot } => {
-                use awsm_materials::dynamic_layout::UniformValue;
+                use awsm_renderer_materials::dynamic_layout::UniformValue;
                 let m = self.materials.get(material).ok()?;
                 let crate::materials::Material::Custom(dynamic) = m else {
                     return None;
@@ -1035,7 +1035,7 @@ impl AwsmRenderer {
 fn material_slot_tex(
     m: &crate::materials::Material,
     slot: crate::animation::TexSlot,
-) -> Option<&awsm_materials::MaterialTexture> {
+) -> Option<&awsm_renderer_materials::MaterialTexture> {
     use crate::animation::TexSlot;
     use crate::materials::Material;
     match (m, slot) {
@@ -1056,7 +1056,7 @@ fn material_slot_tex(
 fn material_slot_tex_mut(
     m: &mut crate::materials::Material,
     slot: crate::animation::TexSlot,
-) -> Option<&mut awsm_materials::MaterialTexture> {
+) -> Option<&mut awsm_renderer_materials::MaterialTexture> {
     use crate::animation::TexSlot;
     use crate::materials::Material;
     match (m, slot) {
@@ -1161,7 +1161,7 @@ fn apply_camera_param(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awsm_materials::dynamic_layout::UniformValue;
+    use awsm_renderer_materials::dynamic_layout::UniformValue;
     use glam::{Quat, Vec3};
 
     #[test]

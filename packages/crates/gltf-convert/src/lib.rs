@@ -35,7 +35,7 @@ pub use materials::{
     MaterialExtensions, MaterialSpec, Sheen, TexRef, Volume,
 };
 
-use awsm_glb_export::{reexport_clean_scene, write_glb};
+use awsm_renderer_glb_export::{reexport_clean_scene, write_glb};
 
 /// Document-level glTF extension stamped onto a canonical AWSM glb. Its presence
 /// means "this glb was produced by our exporter / converter and is already in
@@ -193,11 +193,11 @@ pub fn awsm_format_version(doc: &gltf::Document) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awsm_glb_export::{write_glb as export_glb, ExportNode, GlbScene};
-    use awsm_meshgen::box_mesh;
+    use awsm_renderer_glb_export::{write_glb as export_glb, ExportNode, GlbScene};
+    use awsm_renderer_meshgen::box_mesh;
     use glam::Vec3;
 
-    fn cube_glb() -> (awsm_meshgen::MeshData, Vec<u8>) {
+    fn cube_glb() -> (awsm_renderer_meshgen::MeshData, Vec<u8>) {
         let src = box_mesh(Vec3::splat(2.0));
         let glb = export_glb(&GlbScene {
             nodes: vec![ExportNode::new("Cube").with_mesh(src.clone())],
@@ -220,7 +220,7 @@ mod tests {
         assert!(!out.glb.is_empty());
 
         // The canonical glb re-reads with the same vertex/index counts...
-        let mesh = awsm_glb_export::extract_node_mesh_from_bytes(&out.glb, 0, None)
+        let mesh = awsm_renderer_glb_export::extract_node_mesh_from_bytes(&out.glb, 0, None)
             .expect("canonical glb yields geometry");
         assert_eq!(mesh.positions.len(), src.positions.len());
         assert_eq!(mesh.indices.len(), src.indices.len());
@@ -235,7 +235,7 @@ mod tests {
     /// alpha + double-sided) while the canonical glb stays geometry-only.
     #[test]
     fn extracts_source_material_factors() {
-        use awsm_glb_export::{AlphaMode as ExAlpha, ExportMaterial, PbrMaterial};
+        use awsm_renderer_glb_export::{AlphaMode as ExAlpha, ExportMaterial, PbrMaterial};
         let (_src, _) = cube_glb();
         let mut node = ExportNode::new("Cube").with_mesh(box_mesh(Vec3::splat(2.0)));
         node.material = Some(ExportMaterial::Pbr(PbrMaterial {
@@ -288,7 +288,7 @@ mod tests {
     /// while the canonical glb is animation-free.
     #[test]
     fn extracts_source_animation() {
-        use awsm_glb_export::{AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation};
+        use awsm_renderer_glb_export::{AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation};
         let node = ExportNode::new("Cube").with_mesh(box_mesh(Vec3::ONE));
         let anim = ExportAnimation {
             name: "spin".into(),
@@ -338,7 +338,7 @@ mod tests {
     /// texture slot points at the right image index).
     #[test]
     fn extracts_image_bytes() {
-        use awsm_glb_export::{
+        use awsm_renderer_glb_export::{
             ExportImage, ExportMaterial, ImageMime, PbrMaterial, TexRef as ExTexRef,
         };
         let mut node = ExportNode::new("Cube").with_mesh(box_mesh(Vec3::ONE));

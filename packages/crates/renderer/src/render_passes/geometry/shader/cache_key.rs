@@ -20,7 +20,7 @@ pub struct DynamicVertexShaderInfo {
     /// Author-declared shared-module set (already transitively resolved). The
     /// vertex stage wants a narrower set than the fragment (no lighting / IBL /
     /// shadows) — see `ShaderIncludes::for_vertex` (added with the pipelines).
-    pub shader_includes: awsm_materials::ShaderIncludes,
+    pub shader_includes: awsm_renderer_materials::ShaderIncludes,
     /// Auto-generated `struct MaterialData` decl (output of
     /// `dynamic_layout::generate_wgsl_struct`) — identical to the fragment hook's.
     pub struct_decl: String,

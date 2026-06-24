@@ -1,5 +1,5 @@
-use awsm_scene::animation::{CustomAnimationRef, MixerDoc, StoredAnimation};
-use awsm_scene::{
+use awsm_renderer_scene::animation::{CustomAnimationRef, MixerDoc, StoredAnimation};
+use awsm_renderer_scene::{
     AssetId, CustomMaterialRef, EditorNode, EnvironmentConfig, MaterialDef, ShadowsConfig,
 };
 

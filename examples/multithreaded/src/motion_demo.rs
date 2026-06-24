@@ -151,9 +151,9 @@ async fn build_renderer_and_scene(
     ),
     JsValue,
 > {
-    use awsm_materials::pbr::PbrMaterial;
-    use awsm_materials::MaterialAlphaMode;
-    use awsm_meshgen::primitives::box_mesh;
+    use awsm_renderer_materials::pbr::PbrMaterial;
+    use awsm_renderer_materials::MaterialAlphaMode;
+    use awsm_renderer_meshgen::primitives::box_mesh;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
     use awsm_renderer::transforms::Transform;

@@ -1,5 +1,5 @@
 //! The Help modal — a small tabbed guide. The "Using the MCP" tab is the
-//! important one: how to install / run the `awsm-scene-mcp` server, attach this
+//! important one: how to install / run the `awsm-renderer-scene-mcp` server, attach this
 //! editor, and point an agent at it. Opened from the top-bar Help button, and
 //! (deep-linked to the MCP tab) from the MCP connect modal's Help button.
 
@@ -216,11 +216,11 @@ fn mcp_section() -> Dom {
         p("Prebuilt binaries — no toolchain needed:"),
         command("macOS / Linux", "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.sh | sh"),
         command("Windows (PowerShell)", "powershell -ExecutionPolicy Bypass -c \"irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.ps1 | iex\""),
-        command("From source (needs Rust)", "cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-scene-mcp"),
+        command("From source (needs Rust)", "cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-renderer-scene-mcp"),
 
         h("2 · Run it in a terminal"),
         p("Start the server and leave it running (it defaults to port 9086):"),
-        code("awsm-scene-mcp"),
+        code("awsm-renderer-scene-mcp"),
         p("It listens on http://127.0.0.1:9086 — /mcp for agents, plus a WebSocket this \
            editor dials out to. Pass --port to change it."),
 
@@ -241,8 +241,8 @@ fn mcp_section() -> Dom {
         code("http://127.0.0.1:9086/mcp"),
         p("A ready-to-use .mcp.json sits in the repo root. Register the server the way \
            your agent does — for example:"),
-        command("Claude Code", "claude mcp add --transport http awsm-scene http://127.0.0.1:9086/mcp"),
-        command(".mcp.json (Claude Code / Cursor / others)", "{ \"mcpServers\": { \"awsm-scene\": { \"type\": \"http\", \"url\": \"http://127.0.0.1:9086/mcp\" } } }"),
+        command("Claude Code", "claude mcp add --transport http awsm-renderer-scene http://127.0.0.1:9086/mcp"),
+        command(".mcp.json (Claude Code / Cursor / others)", "{ \"mcpServers\": { \"awsm-renderer-scene\": { \"type\": \"http\", \"url\": \"http://127.0.0.1:9086/mcp\" } } }"),
         p("Then just ask: “add a tessellated sphere with a brushed-metal material”, or \
            “rough up that mesh and screenshot it”. The agent discovers every node and \
            command from the server's typed schema — no guesswork. If it reports “no \

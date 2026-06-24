@@ -7,10 +7,10 @@
 //! `write_glb`, and everything downstream (layout + manifest + dir write) is what
 //! the player consumes.
 
-use awsm_glb_export::{
+use awsm_renderer_glb_export::{
     assemble_bundle, write_glb, BundleInputs, ExportMaterial, ExportNode, GlbScene, PbrMaterial,
 };
-use awsm_meshgen::box_mesh;
+use awsm_renderer_meshgen::box_mesh;
 use glam::Vec3;
 
 /// A real one-mesh `scene.glb` (the geometry+material half the GPU exporter would

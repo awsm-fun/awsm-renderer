@@ -1,4 +1,4 @@
-//! Particle-emitter preview. Builds an `awsm_particles::Simulator` + an
+//! Particle-emitter preview. Builds an `awsm_renderer_particles::Simulator` + an
 //! instanced billboard quad per `NodeKind::ParticleEmitter`, ticked each frame
 //! by the render loop. Ported (opaque/emissive path, auto-playing) from the
 //! archived editor's per-node particle sync; the transparent-blend path + the
@@ -7,11 +7,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use awsm_editor_protocol::{
+use awsm_renderer_editor_protocol::{
     ColorOverLifeDef, EmitterSpaceDef, ForceDef, NodeId, ParticleEmitterDef, SizeOverLifeDef,
     SpawnShapeDef,
 };
-use awsm_particles::{Emitter, EmitterSpace, Force, Simulator, SpawnShape};
+use awsm_renderer_particles::{Emitter, EmitterSpace, Force, Simulator, SpawnShape};
 use awsm_renderer::instances::InstanceAttr;
 use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
@@ -75,18 +75,18 @@ fn def_to_emitter(def: &ParticleEmitterDef) -> Emitter {
             })
             .collect(),
         color_over_life: match &def.color_over_life {
-            ColorOverLifeDef::Const(c) => awsm_particles::emitter::ColorOverLife::Const(*c),
+            ColorOverLifeDef::Const(c) => awsm_renderer_particles::emitter::ColorOverLife::Const(*c),
             ColorOverLifeDef::Linear { start, end } => {
-                awsm_particles::emitter::ColorOverLife::Linear {
+                awsm_renderer_particles::emitter::ColorOverLife::Linear {
                     start: *start,
                     end: *end,
                 }
             }
         },
         size_over_life: match def.size_over_life {
-            SizeOverLifeDef::Const(c) => awsm_particles::emitter::SizeOverLife::Const(c),
+            SizeOverLifeDef::Const(c) => awsm_renderer_particles::emitter::SizeOverLife::Const(c),
             SizeOverLifeDef::Linear { start, end } => {
-                awsm_particles::emitter::SizeOverLife::Linear { start, end }
+                awsm_renderer_particles::emitter::SizeOverLife::Linear { start, end }
             }
         },
     }
@@ -159,7 +159,7 @@ async fn build_runtime(
         &renderer.extras_pool,
     );
 
-    let m = awsm_meshgen::sprite_quad(PARTICLE_QUAD_SIZE, PARTICLE_QUAD_SIZE);
+    let m = awsm_renderer_meshgen::sprite_quad(PARTICLE_QUAD_SIZE, PARTICLE_QUAD_SIZE);
     let raw = RawMeshData {
         positions: m.positions,
         normals: m.normals,

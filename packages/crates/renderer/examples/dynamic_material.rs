@@ -12,8 +12,8 @@
 //! ```
 //!
 //! This file deliberately depends ONLY on `awsm-renderer` +
-//! `awsm-materials` + `awsm-renderer-core`. No `awsm-scene`, no
-//! `awsm-web-shared`, no editor crates. A game runtime can reproduce
+//! `awsm-renderer-materials` + `awsm-renderer-core`. No `awsm-renderer-scene`, no
+//! `awsm-renderer-web-shared`, no editor crates. A game runtime can reproduce
 //! this recipe verbatim.
 //!
 //! Note: the example doesn't actually drive a render loop — that
@@ -21,7 +21,7 @@
 //! the public-API surface (registration, layout types, default value
 //! construction) in a way that the compiler enforces.
 
-use awsm_materials::{
+use awsm_renderer_materials::{
     dynamic_layout::{
         BufferSlotRuntime, FieldType, MaterialLayout, TextureSlotRuntime, UniformFieldRuntime,
     },
@@ -100,8 +100,8 @@ return OpaqueShadingOutput(overlay + vec3<f32>(0.5), 1.0);
         uniform_defaults: Vec::new(),
         // Conservative default: this author fragment may reference any shared
         // module / fragment input (the pre-skinny behaviour).
-        shader_includes: awsm_materials::ShaderIncludes::all(),
-        fragment_inputs: awsm_materials::FragmentInputs::all(),
+        shader_includes: awsm_renderer_materials::ShaderIncludes::all(),
+        fragment_inputs: awsm_renderer_materials::FragmentInputs::all(),
         // Opaque example material — no alpha-test cutout.
         alpha_wgsl: None,
         // No custom vertex displacement — uses the shared fast pipeline.

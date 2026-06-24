@@ -39,7 +39,7 @@ serde = ["awsm-renderer-core/serde"]
 mega-texture = ["awsm-renderer-core/mega-texture"]
 exr = ["awsm-renderer-core/exr"]
 texture-export = ["awsm-renderer-core/texture-export"]
-# Pulls in `awsm-scene` and compiles the `From<awsm_scene::*>`
+# Pulls in `awsm-renderer-scene` and compiles the `From<awsm_renderer_scene::*>`
 # bridges that convert the on-disk authoring format into the renderer's
 # runtime types (`ShadowsConfig`, `LightShadowParams`, `MeshShadowFlags`,
 # etc.). Off by default so the renderer stays scene-schema-free for
@@ -49,7 +49,7 @@ texture-export = ["awsm-renderer-core/texture-export"]
 # This is an extension point: new bridges go in feature-gated
 # `schema_convert` modules next to each subsystem's runtime structs.
 # See the crate-root docs and `shadows::schema_convert` for the pattern.
-scene-schema = ["dep:awsm-scene"]
+scene-schema = ["dep:awsm-renderer-scene"]
 # Compiles synchronous `naga` WGSL validation of custom (dynamic-WGSL) materials
 # at register time, so the editor reports a TRUE compile error in material
 # diagnostics instead of a silent `ok` (the deferred GPU compile of the shared
@@ -64,8 +64,8 @@ dynamic-material-validation = ["dep:naga"]
 # so the existing tests run on a plain `cargo test`.
 naga = { version = "28.0.0", features = ["wgsl-in"], optional = true }
 awsm-renderer-core = { workspace = true, features = ["texture-pool"] }
-awsm-materials = { workspace = true }
-awsm-scene = { workspace = true, optional = true }
+awsm-renderer-materials = { workspace = true }
+awsm-renderer-scene = { workspace = true, optional = true }
 web-sys = {workspace = true}
 wasm-bindgen = {workspace = true}
 wasm-bindgen-futures = {workspace = true}
@@ -79,7 +79,7 @@ strum = {workspace = true}
 ordered-float = {workspace = true}
 indexmap = { workspace = true}
 # MikkTSpace tangent generation (shared crate) for the raw-mesh upload path.
-awsm-tangents = { workspace = true }
+awsm-renderer-tangents = { workspace = true }
 rstar = "0.12"
 # Required unconditionally by the `workers/` module (Phase 4.3a) — job
 # Input/Output must be serializable. The legacy optional `serde`

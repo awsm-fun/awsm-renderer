@@ -1,10 +1,10 @@
 //! The **bake**: lower the authoring [`EditorProject`] to a runtime
-//! [`awsm_scene::Scene`]. This is the structural half — pure data, native-tested.
+//! [`awsm_renderer_scene::Scene`]. This is the structural half — pure data, native-tested.
 //!
 //! The editor pairs it with the byte-producing half (build a **geometry-only** glb
-//! per [`RuntimeMesh::Glb`] mesh via `awsm-glb-export`, gather textures + custom-
+//! per [`RuntimeMesh::Glb`] mesh via `awsm-renderer-glb-export`, gather textures + custom-
 //! material folders) and writes the `scene.toml` + `assets/` directory. (Skinned/
-//! morph meshes' glb re-export from source — `awsm_glb_export::reexport_clean`,
+//! morph meshes' glb re-export from source — `awsm_renderer_glb_export::reexport_clean`,
 //! which preserves the rig — is the remaining follow-on; static geometry for now.)
 //!
 //! What's dropped vs the authoring project: the modifier-stack recipes + per-vertex
@@ -12,7 +12,7 @@
 //! snapshots (`editor_materials`, `custom_animations` refs) don't travel — only
 //! what the player needs.
 
-use awsm_scene::{
+use awsm_renderer_scene::{
     AssetEntry as RtEntry, AssetSource as RtSource, AssetTable as RtTable, RuntimeMesh, Scene,
 };
 
@@ -75,7 +75,7 @@ fn lower_source(src: &AuthSource) -> RtSource {
 mod tests {
     use super::*;
     use crate::{AssetEntry, AssetSource, Axis, MeshDef, Modifier, ModifierStack, VertexOverrides};
-    use awsm_scene::{
+    use awsm_renderer_scene::{
         scene_from_toml, scene_to_toml, AssetId, EditorNode, MeshRef, MeshShadowConfig, NodeId,
         NodeKind, PrimitiveShape,
     };
@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(scene.nodes.len(), 1);
         // The bare-primitive mesh lowered to a procedural primitive (no glb needed).
         match &scene.assets.entries[&mesh_id].source {
-            awsm_scene::AssetSource::Mesh(RuntimeMesh::Primitive(_)) => {}
+            awsm_renderer_scene::AssetSource::Mesh(RuntimeMesh::Primitive(_)) => {}
             other => panic!("expected procedural primitive, got {other:?}"),
         }
         // The runtime Scene serializes to scene.toml + round-trips.

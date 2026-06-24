@@ -1,14 +1,14 @@
 //! Material storage + GPU upload management.
 //!
 //! Material **shading models** (PBR / Unlit / Toon, the `MaterialShader`
-//! trait, the WGSL fragments) live in the sibling `awsm-materials` crate and
+//! trait, the WGSL fragments) live in the sibling `awsm-renderer-materials` crate and
 //! are re-exported here for back-compat. This module owns the renderer-side
 //! `Materials` slotmap manager, the per-material `MaterialKey`, the GPU
 //! storage buffer, and the `Material` sum type the slotmap stores.
 
 use std::sync::LazyLock;
 
-use awsm_materials::MaterialShader;
+use awsm_renderer_materials::MaterialShader;
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
     error::AwsmCoreError,
@@ -24,40 +24,40 @@ use crate::{
     AwsmRenderer, AwsmRendererLogging,
 };
 
-// Re-export the material types from `awsm-materials` so consumers can keep
+// Re-export the material types from `awsm-renderer-materials` so consumers can keep
 // using `crate::materials::*` paths.
-pub use awsm_materials::{MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext};
+pub use awsm_renderer_materials::{MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext};
 
-/// PBR material parameters — re-exported from `awsm-materials`.
+/// PBR material parameters — re-exported from `awsm-renderer-materials`.
 pub mod pbr {
-    pub use awsm_materials::pbr::*;
+    pub use awsm_renderer_materials::pbr::*;
 }
 
-/// Unlit material parameters — re-exported from `awsm-materials`.
+/// Unlit material parameters — re-exported from `awsm-renderer-materials`.
 pub mod unlit {
-    pub use awsm_materials::unlit::*;
+    pub use awsm_renderer_materials::unlit::*;
 }
 
-/// Toon material parameters — re-exported from `awsm-materials`.
+/// Toon material parameters — re-exported from `awsm-renderer-materials`.
 pub mod toon {
-    pub use awsm_materials::toon::*;
+    pub use awsm_renderer_materials::toon::*;
 }
 
 /// FlipBook (sprite-sheet) material parameters — re-exported from
-/// `awsm-materials`. The upstream module is itself gated by the
-/// `flipbook` Cargo feature on `awsm-materials` (default-on); since
-/// this crate depends on `awsm-materials` with default features, the
+/// `awsm-renderer-materials`. The upstream module is itself gated by the
+/// `flipbook` Cargo feature on `awsm-renderer-materials` (default-on); since
+/// this crate depends on `awsm-renderer-materials` with default features, the
 /// re-export is always available here.
 pub mod flipbook {
-    pub use awsm_materials::flipbook::*;
+    pub use awsm_renderer_materials::flipbook::*;
 }
 
-/// Storage-buffer writer helpers — re-exported from `awsm-materials`.
+/// Storage-buffer writer helpers — re-exported from `awsm-renderer-materials`.
 pub mod writer {
-    pub use awsm_materials::writer::*;
+    pub use awsm_renderer_materials::writer::*;
 }
 
-use awsm_materials::{
+use awsm_renderer_materials::{
     dynamic::{DynamicMaterial, DynamicTextureBinding},
     flipbook::FlipBookMaterial,
     pbr::PbrMaterial,
@@ -155,7 +155,7 @@ pub enum Material {
     Pbr(Box<PbrMaterial>),
     Unlit(UnlitMaterial),
     Toon(Box<ToonMaterial>),
-    /// Sprite-sheet flipbook. See [`awsm_materials::flipbook`] for
+    /// Sprite-sheet flipbook. See [`awsm_renderer_materials::flipbook`] for
     /// authoring + WGSL semantics.
     FlipBook(Box<FlipBookMaterial>),
     /// Runtime-registered custom material. Backed by the generic
@@ -274,7 +274,7 @@ impl Material {
             // cutouts in the masked visibility raster. Only BLEND routes to the
             // forward transparent pass.
             Material::Custom(m) => {
-                matches!(m.alpha_mode, awsm_materials::MaterialAlphaMode::Blend)
+                matches!(m.alpha_mode, awsm_renderer_materials::MaterialAlphaMode::Blend)
             }
         }
     }
@@ -287,7 +287,7 @@ impl Material {
             Material::Toon(m) => m.alpha_cutoff(),
             Material::FlipBook(m) => m.alpha_cutoff(),
             Material::Custom(m) => match m.alpha_mode {
-                awsm_materials::MaterialAlphaMode::Mask { cutoff } => Some(cutoff),
+                awsm_renderer_materials::MaterialAlphaMode::Mask { cutoff } => Some(cutoff),
                 _ => None,
             },
         }
@@ -340,7 +340,7 @@ impl Material {
     pub fn uniform_buffer_data(
         &self,
         ctx: &dyn TextureContext,
-        dynamic_ctx: &dyn awsm_materials::dynamic::DynamicMaterialContext,
+        dynamic_ctx: &dyn awsm_renderer_materials::dynamic::DynamicMaterialContext,
     ) -> Vec<u8> {
         let mut data = Vec::with_capacity(256);
         match self {
@@ -733,7 +733,7 @@ impl Materials {
         match self.lookup.get(key) {
             Some(Material::Pbr(m)) => (
                 ShadingBase::Pbr,
-                awsm_materials::pbr::PbrFeatures::from_material(m).bits(),
+                awsm_renderer_materials::pbr::PbrFeatures::from_material(m).bits(),
             ),
             Some(Material::Toon(_)) => (ShadingBase::Toon, 0),
             Some(Material::Unlit(_)) => (ShadingBase::Unlit, 0),

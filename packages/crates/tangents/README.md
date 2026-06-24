@@ -1,4 +1,4 @@
-# awsm-tangents
+# awsm-renderer-tangents
 
 MikkTSpace tangent generation over plain geometry arrays. Pure CPU — no GPU, no
 `web-sys`. A tiny, dependency-light crate so the wasm-only renderer can reuse the
@@ -22,13 +22,13 @@ UV charts.
 One implementation shared by every caller that bakes tangents:
 
 - the renderer's raw-mesh upload path (`awsm-renderer`'s `raw_mesh`), and
-- the glb exporter/converter (`awsm-glb-export`'s `write_glb`, via
-  `awsm-gltf-convert`).
+- the glb exporter/converter (`awsm-renderer-glb-export`'s `write_glb`, via
+  `awsm-renderer-gltf-convert`).
 
 (The `awsm-renderer-gltf` populate path still has its own byte-buffer variant
 tuned to its attribute-map representation; folding it in here is a follow-on.)
 
 ## Companion crates
 
-- `awsm-glb-export` — bakes `TANGENT` accessors using this crate.
-- `awsm-meshgen` — produces the plain `MeshData` arrays this consumes.
+- `awsm-renderer-glb-export` — bakes `TANGENT` accessors using this crate.
+- `awsm-renderer-meshgen` — produces the plain `MeshData` arrays this consumes.

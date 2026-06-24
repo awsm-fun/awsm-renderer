@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::dynamic_materials::ShadingBase;
 use crate::error::Result;

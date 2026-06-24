@@ -11,7 +11,7 @@
 //! (`transform_controller`) — no axis constraints, no rotation, no scale.
 //! Authors grab the handle and drag in the camera plane.
 
-use awsm_meshgen::sphere_mesh;
+use awsm_renderer_meshgen::sphere_mesh;
 use awsm_renderer::{
     camera::CameraMatrices,
     materials::{unlit::UnlitMaterial, Material, MaterialAlphaMode, MaterialKey},

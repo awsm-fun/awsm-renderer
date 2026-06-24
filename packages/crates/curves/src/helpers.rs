@@ -1,4 +1,4 @@
-//! Curve-aware geometry helpers. Live here, not in `awsm-geometry`, because their
+//! Curve-aware geometry helpers. Live here, not in `awsm-renderer-geometry`, because their
 //! primary input is a curve.
 
 use glam::Vec3;

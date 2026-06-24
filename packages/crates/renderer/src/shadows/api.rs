@@ -55,7 +55,7 @@ impl AwsmRenderer {
 
     /// Replaces the renderer-wide shadow config. Player / runtime
     /// equivalent of the editor's "shadows" inspector — load the
-    /// `ShadowsConfig` from disk (via `awsm_scene` → `into()`
+    /// `ShadowsConfig` from disk (via `awsm_renderer_scene` → `into()`
     /// or a custom build pipeline) and push it in at startup.
     ///
     /// Resource-shaped fields (`atlas_size`, `max_point_shadows`,

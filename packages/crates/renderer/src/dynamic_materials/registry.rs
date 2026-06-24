@@ -6,11 +6,11 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use awsm_materials::{MaterialAlphaMode, MaterialShaderId};
+use awsm_renderer_materials::{MaterialAlphaMode, MaterialShaderId};
 
-use awsm_materials::dynamic::{DynamicMaterialContext, DynamicTextureBinding};
-use awsm_materials::dynamic_layout::MaterialLayout;
-use awsm_materials::TextureContext;
+use awsm_renderer_materials::dynamic::{DynamicMaterialContext, DynamicTextureBinding};
+use awsm_renderer_materials::dynamic_layout::MaterialLayout;
+use awsm_renderer_materials::TextureContext;
 
 /// Adapter that implements [`DynamicMaterialContext`] over the
 /// renderer's [`DynamicMaterials`] registry.
@@ -74,7 +74,7 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
         self.materials.get(shader_id).map(|r| &r.layout)
     }
 
-    fn alpha_mode(&self, shader_id: MaterialShaderId) -> Option<awsm_materials::MaterialAlphaMode> {
+    fn alpha_mode(&self, shader_id: MaterialShaderId) -> Option<awsm_renderer_materials::MaterialAlphaMode> {
         self.materials.get(shader_id).map(|r| r.alpha_mode)
     }
 
@@ -254,11 +254,11 @@ impl ShadingBase {
 /// First-party bases map to their
 /// declared set; `Custom` (dynamic materials) conservatively gets the full set
 /// since author WGSL may reference anything.
-pub fn resolved_includes_for_base(base: ShadingBase) -> awsm_materials::ShaderIncludes {
+pub fn resolved_includes_for_base(base: ShadingBase) -> awsm_renderer_materials::ShaderIncludes {
     base.canonical_shader_id()
-        .and_then(awsm_materials::registry::declarations_for_shader_id)
+        .and_then(awsm_renderer_materials::registry::declarations_for_shader_id)
         .map(|(inc, _)| inc)
-        .unwrap_or_else(awsm_materials::ShaderIncludes::all)
+        .unwrap_or_else(awsm_renderer_materials::ShaderIncludes::all)
         .resolve()
 }
 
@@ -331,11 +331,11 @@ impl ShaderIncludeFlags {
 
     /// Build the gate flags from an explicit (resolved or unresolved) include
     /// set. Used for `Custom`-base dynamic materials, which carry their own
-    /// author-declared [`awsm_materials::ShaderIncludes`] per registration
+    /// author-declared [`awsm_renderer_materials::ShaderIncludes`] per registration
     /// rather than sharing the base's canonical set.
-    pub fn from_includes(includes: awsm_materials::ShaderIncludes) -> Self {
+    pub fn from_includes(includes: awsm_renderer_materials::ShaderIncludes) -> Self {
         let i = includes.resolve();
-        use awsm_materials::ShaderIncludes as S;
+        use awsm_renderer_materials::ShaderIncludes as S;
         Self {
             brdf: i.contains(S::BRDF),
             apply_lighting: i.contains(S::APPLY_LIGHTING),
@@ -359,7 +359,7 @@ impl ShaderIncludeFlags {
     /// registration is ignored on the custom path. A custom material that wants
     /// PBR-like shading supplies its own WGSL (optionally built on the generic
     /// `brdf_primitives` Tier-A helpers).
-    pub fn for_custom(includes: awsm_materials::ShaderIncludes) -> Self {
+    pub fn for_custom(includes: awsm_renderer_materials::ShaderIncludes) -> Self {
         let mut f = Self::from_includes(includes);
         f.brdf = false;
         f.apply_lighting = false;
@@ -418,7 +418,7 @@ pub struct BucketEntry {
     /// dynamic-range) `shader_id`.
     pub base: ShadingBase,
     /// PBR (or Toon) feature mask this bucket is specialized for
-    /// ([`awsm_materials::pbr::PbrFeatures::bits`]). Distinguishes two
+    /// ([`awsm_renderer_materials::pbr::PbrFeatures::bits`]). Distinguishes two
     /// PBR variants that differ only by feature-set. `all().bits()` for
     /// the canonical all-features config and inert for
     /// `Unlit`/`Flipbook`/`Custom`.
@@ -481,7 +481,7 @@ pub fn bucket_entries(dynamic: &DynamicMaterials) -> Vec<BucketEntry> {
         entries.push(BucketEntry {
             shader_id,
             base: ShadingBase::Custom,
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(), // inert for Custom (own WGSL); never the uber set
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(), // inert for Custom (own WGSL); never the uber set
             name: sanitize_wgsl_name(&reg.name),
         });
     }
@@ -517,12 +517,12 @@ pub fn first_party_bucket_entries() -> Vec<BucketEntry> {
     let skybox = BucketEntry {
         shader_id: MaterialShaderId::SKYBOX,
         base: ShadingBase::Pbr,
-        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
         name: "skybox".to_string(),
     };
     std::iter::once(skybox)
         .chain(
-            awsm_materials::registry::enabled_materials()
+            awsm_renderer_materials::registry::enabled_materials()
                 .iter()
                 .map(|e| {
                     BucketEntry {
@@ -534,7 +534,7 @@ pub fn first_party_bucket_entries() -> Vec<BucketEntry> {
                         // set compiles the minimal shader (never an "uber" all-features
                         // one). Inert anyway for Unlit/Flipbook (their bodies don't read
                         // `pbr_features`).
-                        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                        pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
                         name: e.name.to_string(),
                     }
                 }),
@@ -571,7 +571,7 @@ pub fn sanitize_wgsl_name(name: &str) -> String {
 pub struct DynamicMaterials {
     registrations: HashMap<MaterialShaderId, MaterialRegistration>,
     /// First-party feature-set variants (the specialize-only design).
-    /// A PBR/Toon material derives its [`awsm_materials::pbr::PbrFeatures`]
+    /// A PBR/Toon material derives its [`awsm_renderer_materials::pbr::PbrFeatures`]
     /// mask and resolves it here to a per-feature-set bucket `shader_id`,
     /// deduped by `(base, features)`: the same family+feature-set always
     /// maps to the same id within a build. These ids share the
@@ -780,7 +780,7 @@ impl DynamicMaterials {
             entries.push(BucketEntry {
                 shader_id: *shader_id,
                 base: ShadingBase::Custom,
-                pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(), // inert for Custom (own WGSL); never the uber set
+                pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(), // inert for Custom (own WGSL); never the uber set
                 name: sanitize_wgsl_name(&reg.name),
             });
         }
@@ -816,11 +816,11 @@ impl DynamicMaterials {
         Some(
             crate::render_passes::material_opaque::shader::cache_key::DynamicShaderInfo {
                 shader_includes: reg.shader_includes.resolve(),
-                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                struct_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_struct(
                     "MaterialData",
                     &reg.layout,
                 ),
-                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                loader_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_loader(
                     "MaterialData",
                     "material_data_load",
                     &reg.layout,
@@ -863,11 +863,11 @@ impl DynamicMaterials {
         Some(
             crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo {
                 shader_includes: reg.shader_includes.resolve(),
-                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                struct_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_struct(
                     "MaterialData",
                     &reg.layout,
                 ),
-                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                loader_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_loader(
                     "MaterialData",
                     "material_data_load",
                     &reg.layout,
@@ -898,16 +898,16 @@ impl DynamicMaterials {
         }
         Some(
             crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo {
-                struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                struct_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_struct(
                     "MaterialData",
                     &reg.layout,
                 ),
-                loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                loader_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_loader(
                     "MaterialData",
                     "material_data_load",
                     &reg.layout,
                 ),
-                texture_helpers: awsm_materials::dynamic_layout::generate_wgsl_texture_helpers(
+                texture_helpers: awsm_renderer_materials::dynamic_layout::generate_wgsl_texture_helpers(
                     "MaterialData",
                     &reg.layout,
                 ),
@@ -1054,7 +1054,7 @@ impl DynamicMaterials {
             msaa_sample_count: None,
             mipmaps: true,
             base: crate::dynamic_materials::ShadingBase::Custom,
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 1,
             dynamic_shader_id: Some(shader_id),
             dynamic_shader: Some(dynamic_shader),
@@ -1346,12 +1346,12 @@ impl DynamicMaterials {
 
 /// Runtime registration payload for a custom material.
 ///
-/// The renderer's counterpart to `awsm_scene::MaterialDefinition` +
+/// The renderer's counterpart to `awsm_renderer_scene::MaterialDefinition` +
 /// the loaded WGSL fragment. Consumers (`scene-editor`, `material-editor`,
 /// game runtimes) convert their on-disk format into a
 /// [`MaterialRegistration`] before calling
 /// [`AwsmRenderer::register_material`](crate::AwsmRenderer::register_material);
-/// the renderer never depends on `awsm-scene`.
+/// the renderer never depends on `awsm-renderer-scene`.
 #[derive(Clone, Debug)]
 pub struct MaterialRegistration {
     /// Author-facing name. Must be unique across registered materials.
@@ -1392,20 +1392,20 @@ pub struct MaterialRegistration {
     /// type". When `len()` doesn't match `layout.uniforms.len()`,
     /// the consumer falls back to the zero default for any
     /// missing entry.
-    pub uniform_defaults: Vec<awsm_materials::dynamic_layout::UniformValue>,
+    pub uniform_defaults: Vec<awsm_renderer_materials::dynamic_layout::UniformValue>,
     /// Author-declared optional shared shader modules this material's WGSL
-    /// uses ("skinny materials" — see [`awsm_materials::ShaderIncludes`]).
+    /// uses ("skinny materials" — see [`awsm_renderer_materials::ShaderIncludes`]).
     /// The renderer compiles the transitive closure and gates the shared
     /// shading modules (BRDF / apply_lighting / material_color_calc) on it,
     /// so a custom material that declares less gets a leaner Custom host
     /// shader. Defaults to [`ShaderIncludes::all`] — i.e. the pre-skinny
     /// "may reference anything" behaviour — until the author narrows it via
     /// the material editor's Pass Dependencies UI.
-    pub shader_includes: awsm_materials::ShaderIncludes,
+    pub shader_includes: awsm_renderer_materials::ShaderIncludes,
     /// Author-declared pre-shade fragment inputs this material consumes
-    /// ([`awsm_materials::FragmentInputs`]). Carried for the cache key +
+    /// ([`awsm_renderer_materials::FragmentInputs`]). Carried for the cache key +
     /// future scaffolding gating; defaults to `all()`.
-    pub fragment_inputs: awsm_materials::FragmentInputs,
+    pub fragment_inputs: awsm_renderer_materials::FragmentInputs,
     /// The **second** ("alpha-only") WGSL fragment, present only when
     /// `alpha_mode` is [`MaterialAlphaMode::Mask`]. Wrapped into
     /// `fn custom_alpha_dynamic(input: MaskAlphaInput) -> f32` and compiled into
@@ -1656,7 +1656,7 @@ impl crate::AwsmRenderer {
         if !self.materials.take_variants_dirty() {
             return Ok(());
         }
-        use awsm_materials::pbr::PbrFeatures;
+        use awsm_renderer_materials::pbr::PbrFeatures;
 
         // ── PBR feature-set variant resolution. Only PBR specializes
         //    per feature-set; a custom-only / unlit-only scene has no
@@ -1717,7 +1717,7 @@ impl crate::AwsmRenderer {
     /// `register_material` and `submit_dynamic_material`.
     pub(crate) fn submit_to_scheduler_for_shader_id(
         &mut self,
-        shader_id: awsm_materials::MaterialShaderId,
+        shader_id: awsm_renderer_materials::MaterialShaderId,
     ) -> Result<(), crate::error::AwsmError> {
         use crate::pipeline_scheduler::{
             MaterialDef, MaterialDefKind, PipelineConfigSnapshot, PipelineGroupDef,
@@ -1964,8 +1964,8 @@ mod tests {
             wgsl_fragment: String::new(),
             buffer_defaults: Vec::new(),
             uniform_defaults: Vec::new(),
-            shader_includes: awsm_materials::ShaderIncludes::all(),
-            fragment_inputs: awsm_materials::FragmentInputs::all(),
+            shader_includes: awsm_renderer_materials::ShaderIncludes::all(),
+            fragment_inputs: awsm_renderer_materials::FragmentInputs::all(),
             alpha_wgsl: None,
             wgsl_vertex: None,
         }
@@ -1984,7 +1984,7 @@ mod tests {
     #[cfg(feature = "dynamic-material-validation")]
     #[test]
     fn custom_vertex_geometry_assembles_and_naga_validates() {
-        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+        use awsm_renderer_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
 
         let mut dm = DynamicMaterials::new();
         let mut r = reg("displacer", 1, 1);
@@ -2023,7 +2023,7 @@ mod tests {
     #[cfg(feature = "dynamic-material-validation")]
     #[test]
     fn custom_vertex_geometry_multi_uv_and_texture_naga_validates() {
-        use awsm_materials::dynamic_layout::{FieldType, TextureSlotRuntime, UniformFieldRuntime};
+        use awsm_renderer_materials::dynamic_layout::{FieldType, TextureSlotRuntime, UniformFieldRuntime};
 
         let mut dm = DynamicMaterials::new();
         let mut r = reg("displacer_multi_uv", 1, 1);
@@ -2069,7 +2069,7 @@ mod tests {
     #[cfg(feature = "dynamic-material-validation")]
     #[test]
     fn custom_vertex_shadow_assembles_and_naga_validates() {
-        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+        use awsm_renderer_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
 
         let mut dm = DynamicMaterials::new();
         let mut r = reg("displacer_shadow", 1, 1);
@@ -2108,7 +2108,7 @@ mod tests {
     #[cfg(feature = "dynamic-material-validation")]
     #[test]
     fn transparent_custom_vertex_assembles_and_naga_validates() {
-        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+        use awsm_renderer_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
 
         let mut dm = DynamicMaterials::new();
         let mut r = reg("displacer_transparent", 1, 1);
@@ -2157,7 +2157,7 @@ mod tests {
     #[cfg(feature = "dynamic-material-validation")]
     #[test]
     fn masked_custom_vertex_geometry_assembles_and_naga_validates() {
-        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+        use awsm_renderer_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
 
         let mut dm = DynamicMaterials::new();
         let mut r = reg("displacer_masked", 1, 1);
@@ -2196,7 +2196,7 @@ mod tests {
     #[cfg(feature = "dynamic-material-validation")]
     #[test]
     fn masked_custom_vertex_shadow_assembles_and_naga_validates() {
-        use awsm_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
+        use awsm_renderer_materials::dynamic_layout::{FieldType, UniformFieldRuntime};
 
         let mut dm = DynamicMaterials::new();
         let mut r = reg("displacer_masked_shadow", 1, 1);
@@ -2257,7 +2257,7 @@ mod tests {
 
     #[test]
     fn shader_include_flags_from_declared_set() {
-        use awsm_materials::ShaderIncludes as S;
+        use awsm_renderer_materials::ShaderIncludes as S;
         // A textures-only custom material pulls in none of the PBR shading
         // modules — a genuinely skinnier Custom host shader.
         let f = ShaderIncludeFlags::from_includes(S::TEXTURES);
@@ -2286,12 +2286,12 @@ mod tests {
         // material's Pass Dependencies re-keys (re-specializes) its pipeline.
         let mut full = DynamicMaterials::new();
         let mut r1 = reg("a", 1, 1);
-        r1.shader_includes = awsm_materials::ShaderIncludes::all();
+        r1.shader_includes = awsm_renderer_materials::ShaderIncludes::all();
         full.insert(r1).unwrap();
 
         let mut skinny = DynamicMaterials::new();
         let mut r2 = reg("a", 1, 1);
-        r2.shader_includes = awsm_materials::ShaderIncludes::TEXTURES;
+        r2.shader_includes = awsm_renderer_materials::ShaderIncludes::TEXTURES;
         skinny.insert(r2).unwrap();
 
         assert_ne!(

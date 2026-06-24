@@ -33,7 +33,7 @@ pub use custom_material::{compile_wgsl, AlphaMode, CustomMaterial, Slot};
 // InsertSpec is dispatched by the ribbon; NodeQuery is the snapshot
 // projection. `build_insert` / `spec_from_node` / `node_from_spec` are the
 // editor-side reactive materialization (data types live in
-// `awsm_editor_protocol`).
+// `awsm_renderer_editor_protocol`).
 #[allow(unused_imports)]
 pub use node_spec::{
     build_insert, node_from_spec, spec_from_node, InsertSpec, NodeQuery, NodeSpec,

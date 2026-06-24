@@ -8,7 +8,7 @@ use awsm_renderer::materials::MaterialKey;
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::transforms::TransformKey;
-use awsm_web_shared::prelude::AsyncLoader;
+use awsm_renderer_web_shared::prelude::AsyncLoader;
 
 use super::asset_template::AssetTemplate;
 use super::{animation_sync, env_sync, mesh_sync, node_sync};

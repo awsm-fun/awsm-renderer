@@ -125,7 +125,7 @@ pub fn build_shader_id_consts() -> String {
         // `MaterialRegistry::build_shader_id_consts`).
         let const_name = entry.shader_id.wgsl_const_name().unwrap_or_else(|| {
             panic!(
-                "[awsm-materials] first-party material {} (id {}) is missing a canonical WGSL const name",
+                "[awsm-renderer-materials] first-party material {} (id {}) is missing a canonical WGSL const name",
                 entry.name,
                 entry.shader_id.as_u32(),
             )

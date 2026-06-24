@@ -18,7 +18,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use awsm_web_shared::prelude::{Mutable, Toast};
+use awsm_renderer_web_shared::prelude::{Mutable, Toast};
 use base64::Engine;
 use futures::channel::mpsc;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -26,7 +26,7 @@ use gloo_net::websocket::futures::WebSocket;
 use gloo_net::websocket::Message;
 use wasm_bindgen_futures::spawn_local;
 
-use awsm_editor_protocol::{EditorEvent, PngHandle, Request, Response, WsClientMsg, WsServerMsg};
+use awsm_renderer_editor_protocol::{EditorEvent, PngHandle, Request, Response, WsClientMsg, WsServerMsg};
 
 use crate::controller::controller;
 
@@ -406,7 +406,7 @@ async fn serve_one(id: u64, req: Request) {
 /// animation edit while looking at the Scene tab). No-op for mode-agnostic
 /// commands (`None`) or when already there. Gated by the same activity toggle, so
 /// a user who finds the switching distracting turns it off with the feed.
-fn follow_agent_mode(mode: Option<awsm_editor_protocol::EditorMode>) {
+fn follow_agent_mode(mode: Option<awsm_renderer_editor_protocol::EditorMode>) {
     let Some(m) = mode else {
         return;
     };

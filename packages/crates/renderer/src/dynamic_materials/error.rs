@@ -1,6 +1,6 @@
 //! Error types for the dynamic-material registry.
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 use awsm_renderer_core::error::AwsmCoreError;
 use thiserror::Error;
 

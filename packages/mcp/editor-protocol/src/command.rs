@@ -8,16 +8,16 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene::animation::{
+use awsm_renderer_scene::animation::{
     BuiltinParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc, LayerModeDoc,
     LightParamKind, SamplerKind, StoredTrack, StripDoc, TrackTarget, TrackValue,
 };
-use awsm_scene::particle::{
+use awsm_renderer_scene::particle::{
     ColorOverLifeDef, EmitterSpaceDef, ForceDef, SizeOverLifeDef, SpawnShapeDef,
 };
-use awsm_scene::{AssetId, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind, Trs};
+use awsm_renderer_scene::{AssetId, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind, Trs};
 
-use awsm_meshgen::recipe::{Modifier, ModifierStack};
+use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
 
 use crate::assets::AssetEntry;
 use crate::mesh_def::{CapturedMesh, VertexOverrides};
@@ -245,7 +245,7 @@ pub enum EditorCommand {
 
     /// Round-trip self-test: bake the CURRENT project to an in-memory player
     /// bundle (`scene.toml` + `assets/`), reset to an empty project, then load
-    /// that bundle back through `awsm_scene_loader::populate_awsm_scene` — the
+    /// that bundle back through `awsm_renderer_scene_loader::populate_awsm_scene` — the
     /// player/runtime path. Destructive (replaces the open project with the
     /// reloaded bundle); not undoable. Lets an agent screenshot-compare the
     /// editor's authored render against the runtime reload over MCP.
@@ -724,9 +724,9 @@ pub enum EditorCommand {
         #[serde(default)]
         flow: Option<[f32; 2]>,
         #[serde(default)]
-        wrap_u: Option<awsm_scene::primitive::TextureWrap>,
+        wrap_u: Option<awsm_renderer_scene::primitive::TextureWrap>,
         #[serde(default)]
-        wrap_v: Option<awsm_scene::primitive::TextureWrap>,
+        wrap_v: Option<awsm_renderer_scene::primitive::TextureWrap>,
         #[serde(default)]
         uv_set: Option<u32>,
     },

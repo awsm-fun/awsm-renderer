@@ -15,7 +15,7 @@ use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::toon::ToonMaterial;
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode};
-use awsm_scene::{MaterialDef, MaterialShading, PbrExtensions};
+use awsm_renderer_scene::{MaterialDef, MaterialShading, PbrExtensions};
 
 /// Wrap an authored [`MaterialDef`] into the renderer's `Material` enum,
 /// dispatching on the shading model so a built-in material's *variant* (its
@@ -66,10 +66,10 @@ pub fn material_to_renderer(def: &MaterialDef) -> Material {
             m.fps = fps;
             m.time_offset = time_offset;
             m.mode = match mode {
-                awsm_scene::FlipBookPlayMode::Loop => FlipBookMode::Loop,
-                awsm_scene::FlipBookPlayMode::PingPong => FlipBookMode::PingPong,
-                awsm_scene::FlipBookPlayMode::Clamp => FlipBookMode::Clamp,
-                awsm_scene::FlipBookPlayMode::Once => FlipBookMode::Once,
+                awsm_renderer_scene::FlipBookPlayMode::Loop => FlipBookMode::Loop,
+                awsm_renderer_scene::FlipBookPlayMode::PingPong => FlipBookMode::PingPong,
+                awsm_renderer_scene::FlipBookPlayMode::Clamp => FlipBookMode::Clamp,
+                awsm_renderer_scene::FlipBookPlayMode::Once => FlipBookMode::Once,
             };
             m.flip_y = flip_y;
             // The atlas rides the BASE-COLOR texture slot; binding happens at
@@ -110,15 +110,15 @@ pub fn material_to_pbr(
 /// used for inline procedural materials.
 pub fn alpha_mode_of(def: &MaterialDef) -> MaterialAlphaMode {
     match def.alpha_mode {
-        awsm_scene::MaterialAlphaMode::Opaque => {
+        awsm_renderer_scene::MaterialAlphaMode::Opaque => {
             if def.base_color[3] < 0.999 {
                 MaterialAlphaMode::Blend
             } else {
                 MaterialAlphaMode::Opaque
             }
         }
-        awsm_scene::MaterialAlphaMode::Mask { cutoff } => MaterialAlphaMode::Mask { cutoff },
-        awsm_scene::MaterialAlphaMode::Blend => MaterialAlphaMode::Blend,
+        awsm_renderer_scene::MaterialAlphaMode::Mask { cutoff } => MaterialAlphaMode::Mask { cutoff },
+        awsm_renderer_scene::MaterialAlphaMode::Blend => MaterialAlphaMode::Blend,
     }
 }
 
@@ -211,7 +211,7 @@ fn apply_extensions(pbr: &mut PbrMaterial, ext: &PbrExtensions) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awsm_scene::{DispersionExt, EmissiveStrengthExt, FlipBookPlayMode, IorExt};
+    use awsm_renderer_scene::{DispersionExt, EmissiveStrengthExt, FlipBookPlayMode, IorExt};
 
     fn def() -> MaterialDef {
         MaterialDef::default()
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn alpha_opaque_with_translucent_base_becomes_blend() {
         let mut d = def();
-        d.alpha_mode = awsm_scene::MaterialAlphaMode::Opaque;
+        d.alpha_mode = awsm_renderer_scene::MaterialAlphaMode::Opaque;
         d.base_color = [1.0, 1.0, 1.0, 0.5];
         assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Blend);
     }
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn alpha_opaque_with_solid_base_stays_opaque() {
         let mut d = def();
-        d.alpha_mode = awsm_scene::MaterialAlphaMode::Opaque;
+        d.alpha_mode = awsm_renderer_scene::MaterialAlphaMode::Opaque;
         d.base_color = [1.0, 1.0, 1.0, 1.0];
         assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Opaque);
     }
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn alpha_opaque_heuristic_threshold_is_0_999() {
         let mut d = def();
-        d.alpha_mode = awsm_scene::MaterialAlphaMode::Opaque;
+        d.alpha_mode = awsm_renderer_scene::MaterialAlphaMode::Opaque;
         // 0.999 is NOT < 0.999 → opaque; just under it → blend.
         d.base_color[3] = 0.999;
         assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Opaque);
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn alpha_mask_cutoff_preserved() {
         let mut d = def();
-        d.alpha_mode = awsm_scene::MaterialAlphaMode::Mask { cutoff: 0.3 };
+        d.alpha_mode = awsm_renderer_scene::MaterialAlphaMode::Mask { cutoff: 0.3 };
         // Even a translucent base must NOT override an explicit Mask.
         d.base_color[3] = 0.4;
         assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Mask { cutoff: 0.3 });
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn alpha_blend_passthrough() {
         let mut d = def();
-        d.alpha_mode = awsm_scene::MaterialAlphaMode::Blend;
+        d.alpha_mode = awsm_renderer_scene::MaterialAlphaMode::Blend;
         d.base_color[3] = 1.0;
         assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Blend);
     }

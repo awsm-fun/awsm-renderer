@@ -1036,7 +1036,7 @@ pub fn extract_texture_images_from_bytes(
 mod tests {
     use super::*;
     use crate::{write_glb, ExportNode, GlbScene, Trs};
-    use awsm_meshgen::box_mesh;
+    use awsm_renderer_meshgen::box_mesh;
     use glam::Vec3;
 
     /// Round-trip: write a 2-node GLB (a parent transform + a child cube mesh),
@@ -1231,7 +1231,7 @@ mod tests {
     }
 
     /// `reexport_clean` PRESERVES each node's local transform (it does not bake
-    /// or strip them). This is the invariant `awsm-scene-loader` relies on: a
+    /// or strip them). This is the invariant `awsm-renderer-scene-loader` relies on: a
     /// skinned rig glb carries the original glTF's root basis-conversion node
     /// (e.g. RiggedSimple's `Z_UP`), so the rig glb is self-placing and the
     /// loader roots it at the renderer root rather than re-applying a scene

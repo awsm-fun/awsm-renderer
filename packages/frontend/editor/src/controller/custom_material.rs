@@ -9,9 +9,9 @@
 //! TOML serializer snapshots these fields into `material-<id>.{toml,wgsl}`.
 
 use crate::engine::scene::AssetId;
-use awsm_editor_protocol::CompileError;
-use awsm_editor_protocol::{MaterialDef, MaterialShading};
-use awsm_web_shared::prelude::{Mutable, MutableVec};
+use awsm_renderer_editor_protocol::CompileError;
+use awsm_renderer_editor_protocol::{MaterialDef, MaterialShading};
+use awsm_renderer_web_shared::prelude::{Mutable, MutableVec};
 use std::sync::Arc;
 
 /// Alpha/surface mode a custom material compiles for (drives the return-type
@@ -132,7 +132,7 @@ pub struct CustomMaterial {
     pub last_diagnostics: Mutable<Vec<CompileError>>,
     /// Declared **pass dependencies** (the v1 "skinny materials" win): which
     /// `ShaderIncludes` this material's WGSL needs. Stored as the include keys;
-    /// mapped to `awsm_materials::ShaderIncludes` bits at registration. The
+    /// mapped to `awsm_renderer_materials::ShaderIncludes` bits at registration. The
     /// default is **none** (opt in only what the WGSL uses, for the leanest,
     /// fastest-compiling bucket) — the Definition rail's select-all adds them.
     pub shader_includes: Mutable<Vec<String>>,
@@ -147,7 +147,7 @@ pub struct CustomMaterial {
 
 /// The custom-material-facing `ShaderIncludes` menu — the **Tier-A generic
 /// helpers** a custom material may opt into (display order). Derived from the
-/// single source of truth, `awsm_materials::ShaderIncludes::tier_a_catalog()`,
+/// single source of truth, `awsm_renderer_materials::ShaderIncludes::tier_a_catalog()`,
 /// so it can't drift from the engine's actual gate set. The Tier-B PBR-internal
 /// modules (`apply_lighting`/`brdf`/`material_color_calc`) are excluded there:
 /// `ShaderIncludeFlags::for_custom` masks them, so offering them would do
@@ -155,7 +155,7 @@ pub struct CustomMaterial {
 /// (building on `light_access` + the generic `brdf_primitives` helpers).
 pub static SHADER_INCLUDE_KEYS: std::sync::LazyLock<Vec<&'static str>> =
     std::sync::LazyLock::new(|| {
-        awsm_materials::ShaderIncludes::tier_a_catalog()
+        awsm_renderer_materials::ShaderIncludes::tier_a_catalog()
             .map(|(key, _desc)| key)
             .collect()
     });

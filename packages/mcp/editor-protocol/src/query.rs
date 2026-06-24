@@ -5,8 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene::animation::{BuiltinParamKind, CameraParamKind, LightParamKind};
-use awsm_scene::{AssetId, NodeId};
+use awsm_renderer_scene::animation::{BuiltinParamKind, CameraParamKind, LightParamKind};
+use awsm_renderer_scene::{AssetId, NodeId};
 
 use crate::command::EditorMode;
 use crate::node_spec::NodeQuery;

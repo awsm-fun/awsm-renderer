@@ -5,7 +5,7 @@
 //! has always used.
 
 use awsm_renderer::cameras::{CameraParams, CameraProjectionParams};
-use awsm_scene::{CameraConfig, CameraProjection};
+use awsm_renderer_scene::{CameraConfig, CameraProjection};
 
 /// Schema camera config → renderer camera params (projection kind + clip planes).
 pub fn camera_params_from_config(cfg: &CameraConfig) -> CameraParams {

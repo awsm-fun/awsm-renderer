@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use awsm_editor_protocol::PrimitiveShape;
+use awsm_renderer_editor_protocol::PrimitiveShape;
 
 use std::cell::RefCell;
 
@@ -231,7 +231,7 @@ fn add_menu(close: Close) -> Vec<Dom> {
                 spawn_local(async move {
                     let _ = controller()
                         .dispatch(EditorCommand::Insert {
-                            id: awsm_editor_protocol::NodeId::new(),
+                            id: awsm_renderer_editor_protocol::NodeId::new(),
                             spec,
                             parent: None,
                         })
@@ -260,13 +260,13 @@ fn add_menu(close: Close) -> Vec<Dom> {
         item(
             "Light · Directional",
             "light",
-            InsertSpec::Light(awsm_editor_protocol::LightKind::Directional),
+            InsertSpec::Light(awsm_renderer_editor_protocol::LightKind::Directional),
             close.clone(),
         ),
         item(
             "Light · Point",
             "light",
-            InsertSpec::Light(awsm_editor_protocol::LightKind::Point),
+            InsertSpec::Light(awsm_renderer_editor_protocol::LightKind::Point),
             close,
         ),
     ]
@@ -539,7 +539,7 @@ fn empty_state() -> Dom {
         .child(Btn::new().label("Add a Sphere").icon("sphere").variant(BtnVariant::Primary).size(BtnSize::Sm)
             .on_click(|| spawn_local(async {
                 let _ = controller().dispatch(EditorCommand::Insert {
-                    id: awsm_editor_protocol::NodeId::new(),
+                    id: awsm_renderer_editor_protocol::NodeId::new(),
                     spec: InsertSpec::Primitive(PrimitiveShape::default_sphere()),
                     parent: None,
                 }).await;

@@ -36,7 +36,7 @@
 //! lands, the material flips Pending → Ready and frontends subscribed to
 //! the status stream observe the transition.
 
-use awsm_materials::{MaterialAlphaMode, MaterialShaderId};
+use awsm_renderer_materials::{MaterialAlphaMode, MaterialShaderId};
 use wasm_bindgen::JsValue;
 
 use crate::pipeline_scheduler::{
@@ -433,11 +433,11 @@ impl crate::AwsmRenderer {
         let reg = self.dynamic_materials.get(shader_id).cloned();
         let dynamic_shader = reg.as_ref().map(|reg| DynamicShaderInfo {
             shader_includes: reg.shader_includes.resolve(),
-            struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+            struct_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_struct(
                 "MaterialData",
                 &reg.layout,
             ),
-            loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+            loader_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_loader(
                 "MaterialData",
                 "material_data_load",
                 &reg.layout,
@@ -1111,7 +1111,7 @@ fn opaque_variant_params(
     // compile + run the uber path.
     let pbr_features = entry
         .map(|e| e.pbr_features)
-        .unwrap_or_else(|| awsm_materials::pbr::PbrFeatures::default().bits());
+        .unwrap_or_else(|| awsm_renderer_materials::pbr::PbrFeatures::default().bits());
     let owns_skybox = shader_id == MaterialShaderId::SKYBOX;
     (base, pbr_features, owns_skybox)
 }

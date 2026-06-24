@@ -23,7 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::anti_alias::AntiAliasing;
 use crate::dynamic_materials::{BucketEntry, DynamicMaterials};
@@ -346,18 +346,18 @@ impl MaterialEdgePipelines {
                         Some(reg)
                             if !matches!(
                                 reg.alpha_mode,
-                                awsm_materials::MaterialAlphaMode::Opaque
+                                awsm_renderer_materials::MaterialAlphaMode::Opaque
                             ) =>
                         {
                             continue
                         }
                         Some(reg) => Some(DynamicShaderInfo {
                             shader_includes: reg.shader_includes.resolve(),
-                            struct_decl: awsm_materials::dynamic_layout::generate_wgsl_struct(
+                            struct_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_struct(
                                 "MaterialData",
                                 &reg.layout,
                             ),
-                            loader_decl: awsm_materials::dynamic_layout::generate_wgsl_loader(
+                            loader_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_loader(
                                 "MaterialData",
                                 "material_data_load",
                                 &reg.layout,

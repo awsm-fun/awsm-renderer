@@ -20,7 +20,7 @@ default = []
 [dependencies]
 awsm-renderer = { workspace = true }
 awsm-renderer-core = { workspace = true, features = ["texture-pool", "image"] }
-awsm-materials = { workspace = true }
+awsm-renderer-materials = { workspace = true }
 gltf = { workspace = true }
 gloo-net = { workspace = true }
 web-sys = { workspace = true }
@@ -34,10 +34,10 @@ glam = { workspace = true }
 strum = { workspace = true }
 ordered-float = { workspace = true }
 indexmap = { workspace = true }
-# Tangent generation is delegated to the shared awsm-tangents crate; the
+# Tangent generation is delegated to the shared awsm-renderer-tangents crate; the
 # byte-buffer reference impl (test-only byte-identity guard) still needs
 # bevy_mikktspace, so it moved to dev-dependencies.
-awsm-tangents = { workspace = true }
+awsm-renderer-tangents = { workspace = true }
 serde = { workspace = true }
 # `serde_bytes` opts `Vec<u8>` fields into serde's `serialize_bytes`
 # path — serde_wasm_bindgen turns those into `Uint8Array`s in one

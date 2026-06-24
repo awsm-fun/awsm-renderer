@@ -11,12 +11,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use awsm_editor_protocol::animation::CustomAnimationRef;
-use awsm_editor_protocol::{
+use awsm_renderer_editor_protocol::animation::CustomAnimationRef;
+use awsm_renderer_editor_protocol::{
     asset_filename, mesh_asset_filename, AssetId, AssetSource, CapturedMesh, CustomMaterialRef,
     EditorProject, StoredMaterial, StoredSlot, TextureDef,
 };
-use awsm_web_shared::prelude::Mutable;
+use awsm_renderer_web_shared::prelude::Mutable;
 
 use super::animation::{stored_from_live, stored_to_live};
 use super::custom_material::{AlphaMode, CustomMaterial, Slot};
@@ -206,7 +206,7 @@ pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
 /// persistence gap: captured/editable meshes now survive Save → reload.
 pub fn mesh_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
     use crate::engine::bridge::mesh_cache;
-    use awsm_editor_protocol::{MeshBase, MeshRef};
+    use awsm_renderer_editor_protocol::{MeshBase, MeshRef};
     let mesh_bin = |id: AssetId| -> Option<(String, Vec<u8>)> {
         let captured = mesh_cache::get_captured(id)?;
         let bytes = bitcode::serialize(&captured).ok()?;
@@ -271,7 +271,7 @@ where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
-    use awsm_glb_export::ImageMime;
+    use awsm_renderer_glb_export::ImageMime;
     let mut items: Vec<(AssetId, Vec<u8>, String)> = Vec::new();
     for (id, entry) in project.assets.entries.iter() {
         let AssetSource::Texture(TextureDef::Raster { display_name }) = &entry.source else {
@@ -304,7 +304,7 @@ where
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
     use crate::engine::bridge::mesh_cache;
-    use awsm_editor_protocol::{MeshBase, MeshRef};
+    use awsm_renderer_editor_protocol::{MeshBase, MeshRef};
     for (id, entry) in project.assets.entries.iter() {
         let AssetSource::Mesh(def) = &entry.source else {
             continue;
@@ -364,7 +364,7 @@ fn skinned_sources(ctrl: &EditorController) -> std::collections::HashSet<AssetId
 /// [`skinned_sources`] but over the serialized `EditorNode` tree.
 fn skinned_sources_from_project(project: &EditorProject) -> std::collections::HashSet<AssetId> {
     use crate::engine::scene::NodeKind;
-    fn walk(node: &awsm_editor_protocol::EditorNode, out: &mut std::collections::HashSet<AssetId>) {
+    fn walk(node: &awsm_renderer_editor_protocol::EditorNode, out: &mut std::collections::HashSet<AssetId>) {
         if let NodeKind::SkinnedMesh { skin, .. } = &node.kind {
             out.insert(skin.source);
         }
@@ -597,7 +597,7 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     // path where `restore_mesh_bytes` loaded the saved bytes).
     {
         use crate::engine::bridge::mesh_cache;
-        let defs: Vec<(AssetId, awsm_editor_protocol::MeshDef)> = {
+        let defs: Vec<(AssetId, awsm_renderer_editor_protocol::MeshDef)> = {
             let assets = ctrl.scene.assets.lock().unwrap();
             assets
                 .entries

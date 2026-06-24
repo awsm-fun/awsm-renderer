@@ -2,7 +2,7 @@
 //! per-frame scene→GPU sync (lights / decals / gizmo / particles / colliders)
 //! is layered in via the renderer bridge.
 
-use awsm_editor_protocol::{CameraProjection, NodeKind};
+use awsm_renderer_editor_protocol::{CameraProjection, NodeKind};
 use awsm_renderer::camera::CameraMatrices;
 use awsm_renderer::cameras::CameraProjectionParams;
 use awsm_renderer::AwsmRenderer;

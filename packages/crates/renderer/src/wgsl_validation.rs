@@ -16,7 +16,7 @@
 
 #![cfg(test)]
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::dynamic_materials::{BucketEntry, ShadingBase};
 use crate::render_passes::material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal;
@@ -78,7 +78,7 @@ fn first_party_key_prep(
         shader_id,
         base,
         owns_skybox,
-        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
         dispatch_hash: 0,
         dynamic_shader: None,
         bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
@@ -86,7 +86,7 @@ fn first_party_key_prep(
 }
 
 fn custom_key(
-    includes: awsm_materials::ShaderIncludes,
+    includes: awsm_renderer_materials::ShaderIncludes,
     msaa: Option<u32>,
     mipmaps: bool,
 ) -> ShaderCacheKeyMaterialOpaque {
@@ -95,7 +95,7 @@ fn custom_key(
     bucket_entries.push(BucketEntry {
         shader_id: dyn_id,
         base: ShadingBase::Custom,
-        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
         name: "noise".to_string(),
     });
     ShaderCacheKeyMaterialOpaque {
@@ -107,7 +107,7 @@ fn custom_key(
         shader_id: dyn_id,
         base: ShadingBase::Custom,
         owns_skybox: false,
-        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
         dispatch_hash: 1,
         dynamic_shader: Some(DynamicShaderInfo {
             shader_includes: includes,
@@ -274,7 +274,7 @@ fn unified_shade_opaque_shaders_validate() {
     // Custom (dynamic) base under MSAA + unified — exercises the cs_shade
     // dynamic-wrapper arm (custom_shade_dynamic from both interior + edge).
     for mips in [false, true] {
-        let key = custom_key(awsm_materials::ShaderIncludes::all(), Some(4), mips);
+        let key = custom_key(awsm_renderer_materials::ShaderIncludes::all(), Some(4), mips);
         let label = format!("opaque-unified/custom msaa=4 mips={mips}");
         let src = render(&key, &label);
         naga_validate(&src, &label);
@@ -291,7 +291,7 @@ fn custom_material_ibl_include_validates() {
     // `sample_ibl(...)` and the assembled Custom kernel must validate (the helper
     // references the always-bound IBL cubemaps/LUT + `get_lights_info`). Without
     // the include the symbol is undefined → this guards the wiring.
-    use awsm_materials::ShaderIncludes;
+    use awsm_renderer_materials::ShaderIncludes;
     for (msaa, mips) in CONFIGS {
         let mut key = custom_key(ShaderIncludes::IBL, msaa, mips);
         key.dynamic_shader.as_mut().unwrap().wgsl_fragment =
@@ -315,7 +315,7 @@ fn custom_material_normal_map_include_validates() {
     // world_tangent/world_bitangent/world_normal fields, and the assembled Custom
     // kernel must validate. Without the include the symbols are undefined → guards
     // both the include wiring AND that the OpaqueShadingInput tangent fields exist.
-    use awsm_materials::ShaderIncludes;
+    use awsm_renderer_materials::ShaderIncludes;
     for (msaa, mips) in CONFIGS {
         let mut key = custom_key(ShaderIncludes::NORMAL_MAP, msaa, mips);
         key.dynamic_shader.as_mut().unwrap().wgsl_fragment =
@@ -595,7 +595,7 @@ fn material_prep_shader_validates() {
 
 #[test]
 fn custom_opaque_shaders_validate() {
-    use awsm_materials::ShaderIncludes as S;
+    use awsm_renderer_materials::ShaderIncludes as S;
     // empty (leanest), all (Tier-A), and an explicit Tier-B declaration (must
     // still validate — Tier-B is masked off on the Custom path).
     let tier_b = S::BRDF
@@ -620,13 +620,13 @@ fn custom_froxel_lights_accessors_validate() {
     // (which wrap the froxel_walk SSOT). Assert it validates AND that froxel_walk
     // got pulled into the Custom kernel (custom never has APPLY_LIGHTING, so the
     // `light_access && !apply_lighting` include path must supply it).
-    use awsm_materials::ShaderIncludes as S;
+    use awsm_renderer_materials::ShaderIncludes as S;
     let dyn_id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
     let mut bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
     bucket_entries.push(BucketEntry {
         shader_id: dyn_id,
         base: ShadingBase::Custom,
-        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
         name: "froxel_lit".to_string(),
     });
     let fragment = "var c = vec3<f32>(0.0);\n\
@@ -647,7 +647,7 @@ fn custom_froxel_lights_accessors_validate() {
             shader_id: dyn_id,
             base: ShadingBase::Custom,
             owns_skybox: false,
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 1,
             dynamic_shader: Some(DynamicShaderInfo {
                 shader_includes: S::LIGHT_ACCESS,
@@ -690,7 +690,7 @@ fn transparent_first_party_key(
         msaa_sample_count: msaa,
         mipmaps: true,
         base,
-        pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+        pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
         dispatch_hash: 0,
         dynamic_shader_id: None,
         dynamic_shader: None,
@@ -721,7 +721,7 @@ fn first_party_transparent_shaders_validate() {
 
 #[test]
 fn custom_transparent_shaders_validate() {
-    use awsm_materials::ShaderIncludes as S;
+    use awsm_renderer_materials::ShaderIncludes as S;
     let dyn_id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
     let tier_b = S::BRDF
         .union(S::APPLY_LIGHTING)

@@ -1,9 +1,9 @@
-# awsm-meshgen
+# awsm-renderer-meshgen
 
 Pure-CPU mesh + texture-pixel generators. No `awsm-renderer` dep.
 
 Feature-gated: `primitives` + `mesh_data` (glam-only) always compile, so a plain
-`awsm-meshgen` dep is the player-lean build. Recipe **types** opt in via `recipes`;
+`awsm-renderer-meshgen` dep is the player-lean build. Recipe **types** opt in via `recipes`;
 the modifier/SDF/sweep/edit/texture **execution** + heavy deps opt in via `authoring`.
 
 ## What's here
@@ -17,11 +17,11 @@ the modifier/SDF/sweep/edit/texture **execution** + heavy deps opt in via `autho
 
 ## What's not here
 
-- Materials. The runtime material schema (`MaterialDef`) lives in `awsm-scene`; authoring/recipe wiring is in `awsm-editor-protocol`. This crate has no material type.
+- Materials. The runtime material schema (`MaterialDef`) lives in `awsm-renderer-scene`; authoring/recipe wiring is in `awsm-renderer-editor-protocol`. This crate has no material type.
 - GPU buffer types. `MeshData` is plain `Vec`s only.
 
 ## Companion crates
 
-- `awsm-curves` — `sweep_along_curve` takes a `Curve3`. (`authoring`-only dep)
-- `awsm-geometry` — bounds computation. (`authoring`-only dep)
-- `awsm-scene` — `PrimitiveShape` input to `primitive_mesh`.
+- `awsm-renderer-curves` — `sweep_along_curve` takes a `Curve3`. (`authoring`-only dep)
+- `awsm-renderer-geometry` — bounds computation. (`authoring`-only dep)
+- `awsm-renderer-scene` — `PrimitiveShape` input to `primitive_mesh`.

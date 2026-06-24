@@ -1,7 +1,7 @@
 //! Procedural primitive shapes — the [`MeshBase::Primitive`] base of a mesh
 //! [`ModifierStack`]. Every procedural-geometry node is a `NodeKind::Mesh` backed
 //! by a `MeshDef` stack; a box/sphere/… is just a stack whose base is one of
-//! these shapes, evaluated to triangles via `awsm-meshgen`'s primitive
+//! these shapes, evaluated to triangles via `awsm-renderer-meshgen`'s primitive
 //! generators.
 //!
 //! [`MeshBase::Primitive`]: super::modifier::MeshBase::Primitive

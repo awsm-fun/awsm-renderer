@@ -1,4 +1,4 @@
-# awsm-materials
+# awsm-renderer-materials
 
 Pluggable material shaders for the `awsm-renderer` visibility-buffer pipeline.
 
@@ -144,10 +144,10 @@ iterates a registry"; only the mechanism differs.
 
 ## Dependencies
 
-`awsm-materials` depends on `awsm-renderer-core` only. It does **not**
+`awsm-renderer-materials` depends on `awsm-renderer-core` only. It does **not**
 depend on `awsm-renderer`. The opaque slotmap key types
 (`TextureKey` / `SamplerKey` / `TextureTransformKey`) live in
 `awsm-renderer-core::keys` so this crate can reference textures + samplers
 without dragging in the GPU device or scene graph.
 
-`awsm-renderer` depends on `awsm-materials`. No circularity.
+`awsm-renderer` depends on `awsm-renderer-materials`. No circularity.

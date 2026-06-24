@@ -883,7 +883,7 @@ fn open_mcp_modal() {
                 .style("font-size", "12.5px")
                 .style("color", "var(--text-2)")
                 .style("line-height", "1.5")
-                .text("Run awsm-scene-mcp locally, then connect — the editor dials out to \
+                .text("Run awsm-renderer-scene-mcp locally, then connect — the editor dials out to \
                        this address. An MCP agent (Claude, Codex, \u{2026}) drives the editor \
                        through that same server.")
             }))

@@ -97,9 +97,9 @@ build a WebGPU app on. Publishing the whole graph lets a downstream user write
 other by version, kept in lockstep by `task bump`).
 
 Everything **outside** `packages/crates/` is `publish = false`: the two frontends,
-the `awsm-web-shared` glue, the render-worker example, the `awsm-debugging`
-binaries, the `awsm-scene-mcp` server (ships as a binary via cargo-dist), and
-`awsm-editor-protocol` (the internal editor↔server wire types, kept under
+the `awsm-renderer-web-shared` glue, the render-worker example, the `awsm-renderer-debugging`
+binaries, the `awsm-renderer-scene-mcp` server (ships as a binary via cargo-dist), and
+`awsm-renderer-editor-protocol` (the internal editor↔server wire types, kept under
 `packages/mcp/`).
 
 Crates publish bottom-up (`→` = depends on; cargo orders the release so a crate is
@@ -109,29 +109,29 @@ on crates.io before anything that needs it).
 
 | Crate | Depends on | What it is |
 |---|---|---|
-| **awsm-curves** | — | Pure-CPU curve math (3D paths + 1D parameter curves) |
-| **awsm-geometry** | — | Pure-CPU geometry utils (AABB, ray/triangle, frustum) |
-| **awsm-tangents** | — | MikkTSpace tangent generation over plain geometry arrays (no GPU) |
-| **awsm-scene** | — | The lean canonical runtime scene schema (`scene.toml` + `assets/`) |
+| **awsm-renderer-curves** | — | Pure-CPU curve math (3D paths + 1D parameter curves) |
+| **awsm-renderer-geometry** | — | Pure-CPU geometry utils (AABB, ray/triangle, frustum) |
+| **awsm-renderer-tangents** | — | MikkTSpace tangent generation over plain geometry arrays (no GPU) |
+| **awsm-renderer-scene** | — | The lean canonical runtime scene schema (`scene.toml` + `assets/`) |
 | **awsm-renderer-core** | — | The WebGPU renderer's core layer (a nicer Rust API over WebGPU) |
 
 ### Built on the foundations
 
 | Crate | Depends on | What it is |
 |---|---|---|
-| **awsm-materials** | renderer-core | Pluggable material shaders behind a `MaterialShader` trait |
-| **awsm-particles** | curves, geometry | Pure-CPU particle simulator (struct-of-arrays, GPU-shape-compatible) |
-| **awsm-meshgen** | scene, curves, geometry | Pure-CPU mesh generators (primitives + sweep + procedural textures) |
+| **awsm-renderer-materials** | renderer-core | Pluggable material shaders behind a `MaterialShader` trait |
+| **awsm-renderer-particles** | curves, geometry | Pure-CPU particle simulator (struct-of-arrays, GPU-shape-compatible) |
+| **awsm-renderer-meshgen** | scene, curves, geometry | Pure-CPU mesh generators (primitives + sweep + procedural textures) |
 
 ### Renderer + IO
 
 | Crate | Depends on | What it is |
 |---|---|---|
 | **awsm-renderer** | renderer-core, materials, scene, tangents | The WebGPU renderer engine |
-| **awsm-glb-export** | meshgen, tangents | Scene-complete glTF/GLB export IR + writer (no GPU) |
-| **awsm-gltf-convert** | glb-export, meshgen | Pure-data glTF → canonical-format normalizer (the shared import path) |
+| **awsm-renderer-glb-export** | meshgen, tangents | Scene-complete glTF/GLB export IR + writer (no GPU) |
+| **awsm-renderer-gltf-convert** | glb-export, meshgen | Pure-data glTF → canonical-format normalizer (the shared import path) |
 | **awsm-renderer-gltf** | renderer, renderer-core, materials, tangents | glTF ingestion into the live renderer |
-| **awsm-scene-loader** | renderer, renderer-core, renderer-gltf, materials, meshgen, scene | Loads an awsm-scene bundle into the renderer (the player path) |
+| **awsm-renderer-scene-loader** | renderer, renderer-core, renderer-gltf, materials, meshgen, scene | Loads an awsm-renderer-scene bundle into the renderer (the player path) |
 
 # DEVELOPMENT
 
@@ -158,11 +158,11 @@ screenshots**. Useful for agent-in-the-loop scene authoring and visual checks.
 ## How it works
 
 ```
-agent (MCP client) ──HTTP /mcp──▶ awsm-scene-mcp ──WebSocket /editor──▶ editor (browser tab)
+agent (MCP client) ──HTTP /mcp──▶ awsm-renderer-scene-mcp ──WebSocket /editor──▶ editor (browser tab)
                                   (packages/mcp)      editor dials out    → EditorController
 ```
 
-A native server ([`packages/mcp`](packages/mcp), `awsm-scene-mcp`) exposes MCP
+A native server ([`packages/mcp`](packages/mcp), `awsm-renderer-scene-mcp`) exposes MCP
 tools over streamable-HTTP and relays each one to a running editor tab over a
 WebSocket the **editor dials out to** (a browser tab can't be a server). Every
 mutation flows through the editor's single command/query authority, so the agent
@@ -170,7 +170,7 @@ and a human watching the same tab stay in sync.
 
 ## Install the MCP server
 
-Prebuilt `awsm-scene-mcp` binaries are published on GitHub Releases for macOS
+Prebuilt `awsm-renderer-scene-mcp` binaries are published on GitHub Releases for macOS
 (arm64 + x86_64), Linux (x86_64), and Windows (x86_64):
 
 ```bash
@@ -183,7 +183,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.ps1 | iex"
 ```
 
-From source (needs Rust): `cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-scene-mcp`, or `task mcp:install` from a local clone. Then run it — bare `awsm-scene-mcp` listens on `http://127.0.0.1:9086`.
+From source (needs Rust): `cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-renderer-scene-mcp`, or `task mcp:install` from a local clone. Then run it — bare `awsm-renderer-scene-mcp` listens on `http://127.0.0.1:9086`.
 
 ## Quick start
 
@@ -216,7 +216,7 @@ From source (needs Rust): `cargo install --git https://github.com/awsm-fun/awsm-
    ```json
    {
      "mcpServers": {
-       "awsm-scene": { "type": "http", "url": "http://127.0.0.1:9086/mcp" }
+       "awsm-renderer-scene": { "type": "http", "url": "http://127.0.0.1:9086/mcp" }
      }
    }
    ```

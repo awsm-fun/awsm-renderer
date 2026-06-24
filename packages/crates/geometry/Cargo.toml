@@ -1,5 +1,5 @@
 [package]
-name = "awsm-geometry"
+name = "awsm-renderer-geometry"
 description = "Pure CPU non-curve geometry utilities (AABB, ray/triangle, frustum)"
 edition.workspace = true
 version.workspace = true

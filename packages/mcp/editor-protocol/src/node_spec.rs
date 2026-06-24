@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene::{EditorNode, LightKind, NodeId, NodeKind, PrimitiveShape, Trs};
+use awsm_renderer_scene::{EditorNode, LightKind, NodeId, NodeKind, PrimitiveShape, Trs};
 
 /// A fresh node to insert (one per ribbon Insert action). The editor's
 /// `build_insert` turns this into a reactive `Node`.

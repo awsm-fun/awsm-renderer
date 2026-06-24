@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
     error::AwsmCoreError,

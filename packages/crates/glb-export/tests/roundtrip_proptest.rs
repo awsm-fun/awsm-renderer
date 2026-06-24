@@ -18,7 +18,7 @@
 //! round-trips as tangent-less, which is "correct" data yet still needs tangents
 //! generated at render time).
 
-use awsm_glb_export::{
+use awsm_renderer_glb_export::{
     extract_node_mesh_from_bytes, reexport_clean, write_glb, ExportNode, ExportSkin, GlbScene,
     MeshData, MorphTarget,
 };

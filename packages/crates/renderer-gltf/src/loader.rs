@@ -144,7 +144,7 @@ impl GltfLoader {
     /// For self-contained GLB only: external-URI buffers or images would need a
     /// base path to resolve against, and none is available here. The runtime
     /// bundle's per-mesh glbs are geometry-only single-BIN files, so this is the
-    /// path `awsm-scene-loader` uses to feed them through `populate_gltf`.
+    /// path `awsm-renderer-scene-loader` uses to feed them through `populate_gltf`.
     pub async fn from_glb_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
         let Gltf {
             document: doc,

@@ -1,9 +1,9 @@
 //! Tangent baking for the glb writer. The MikkTSpace generation lives in the
-//! shared `awsm-tangents` crate (also used by the renderer's raw-mesh path);
+//! shared `awsm-renderer-tangents` crate (also used by the renderer's raw-mesh path);
 //! `write_glb` calls it to emit a `TANGENT` accessor from normals+uvs so the
 //! exported/canonical glb is self-contained and population is a dumb upload.
 
-pub(crate) use awsm_tangents::generate_tangents;
+pub(crate) use awsm_renderer_tangents::generate_tangents;
 
 #[cfg(test)]
 mod tests {

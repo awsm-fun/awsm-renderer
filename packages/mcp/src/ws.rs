@@ -6,7 +6,7 @@ use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
-use awsm_editor_protocol::{WsClientMsg, WsServerMsg};
+use awsm_renderer_editor_protocol::{WsClientMsg, WsServerMsg};
 
 use crate::link::EditorLink;
 

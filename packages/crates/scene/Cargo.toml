@@ -1,6 +1,6 @@
 [package]
-name = "awsm-scene"
-description = "Lean canonical runtime scene schema (scene.toml + assets/) for the awsm-renderer player. Authoring types live in awsm-editor-protocol."
+name = "awsm-renderer-scene"
+description = "Lean canonical runtime scene schema (scene.toml + assets/) for the awsm-renderer player. Authoring types live in awsm-renderer-editor-protocol."
 edition.workspace = true
 version.workspace = true
 license.workspace = true

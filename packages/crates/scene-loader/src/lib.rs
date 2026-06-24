@@ -1,8 +1,8 @@
-//! `populate_awsm_scene` — load an [`awsm_scene::Scene`] (the runtime bundle's
+//! `populate_awsm_scene` — load an [`awsm_renderer_scene::Scene`] (the runtime bundle's
 //! `scene.toml`) into the renderer. The parallel to
 //! `awsm_renderer_gltf::populate_gltf`: that loads *foreign* glTF, this loads
 //! *our* format. They share the same renderer core — glb meshes in a bundle go
-//! through `populate_gltf`'s machinery, primitives regenerate via `awsm-meshgen`,
+//! through `populate_gltf`'s machinery, primitives regenerate via `awsm-renderer-meshgen`,
 //! and our materials / clips bind on top.
 //!
 //! The headline use is the **round-trip test**: in the MCP-controlled browser
@@ -33,7 +33,7 @@
 //! `LoadPlayerBundle` round-trip + driven `update_animations`.
 //!
 //! Beyond meshes/lights/cameras the loader also materializes the remaining
-//! authored [`NodeKind`](awsm_scene::NodeKind)s: **lines** (fat-line strips,
+//! authored [`NodeKind`](awsm_renderer_scene::NodeKind)s: **lines** (fat-line strips,
 //! world-baked), **sprites** (unlit / flipbook textured quads, optionally
 //! billboarded), **decals** (oriented-cube projections, skipped with a one-time
 //! warn when the renderer's `decals` feature is off), and **instances-along-curve**
@@ -44,7 +44,7 @@
 //! (**Design A: loader sets up, game ticks**): the loader builds the emissive quad and
 //! GPU instancing at `max_alive` capacity and returns an
 //! [`EmitterHandle`](particles::EmitterHandle) in [`NodeHandles::emitter`]; it does
-//! NOT simulate. The game ticks an [`awsm_particles::Simulator`] each frame and
+//! NOT simulate. The game ticks an [`awsm_renderer_particles::Simulator`] each frame and
 //! pushes the live particles via [`drive_emitter`](particles::drive_emitter) — the
 //! same "loads, doesn't drive" boundary as animation. See [`particles`].
 //!
@@ -55,9 +55,9 @@
 //! [`AwsmRenderer`]; written `no_run` so it still type-checks.)
 //!
 //! ```rust,no_run
-//! use awsm_scene_loader::{load_scene_for_player, set_node_visible};
+//! use awsm_renderer_scene_loader::{load_scene_for_player, set_node_visible};
 //! use awsm_renderer::{AwsmRenderer, transforms::Transform};
-//! use awsm_scene::{Scene, NodeId, Trs};
+//! use awsm_renderer_scene::{Scene, NodeId, Trs};
 //!
 //! async fn run(
 //!     renderer: &mut AwsmRenderer,
@@ -121,7 +121,7 @@ use awsm_renderer::{AwsmRenderer, LoadPhase};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOpts};
-use awsm_scene::{
+use awsm_renderer_scene::{
     mesh_glb_filename, AssetId, AssetSource, CameraConfig, CurveDef, DecalConfig, EditorNode,
     InstancesAlongCurveDef, LightConfig, LineDef, MaterialInstance, MaterialShading, NodeId,
     NodeKind, ParticleEmitterDef, RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
@@ -931,7 +931,7 @@ async fn materialize(
             if let Some(entry) = scene.assets.get(mesh.0) {
                 match &entry.source {
                     AssetSource::Mesh(RuntimeMesh::Primitive(shape)) => {
-                        let md = awsm_meshgen::primitive_mesh(shape);
+                        let md = awsm_renderer_meshgen::primitive_mesh(shape);
                         let key = renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
                         maps.meshes.entry(node.id).or_insert(key);
                         maps.node_meshes.entry(node.id).or_default().push(key);
@@ -1077,7 +1077,7 @@ async fn materialize(
         NodeKind::Curve(_) => {}
         // A.1 (Design A): the loader builds the emitter's instanced billboard
         // (ready to drive) and hands back an `EmitterHandle`; it does NOT simulate.
-        // The game ticks an `awsm_particles::Simulator` each frame and pushes the
+        // The game ticks an `awsm_renderer_particles::Simulator` each frame and pushes the
         // result via `drive_emitter` — the same "loads, doesn't drive" contract as
         // animation. Skip a hidden emitter (no per-mesh hide toggle would help once
         // the game drives it; cleanest is to not build it).
@@ -1326,7 +1326,7 @@ async fn build_node_meshes(
             if let Some(entry) = scene.assets.get(mesh.0) {
                 match &entry.source {
                     AssetSource::Mesh(RuntimeMesh::Primitive(shape)) => {
-                        let md = awsm_meshgen::primitive_mesh(shape);
+                        let md = awsm_renderer_meshgen::primitive_mesh(shape);
                         let key = renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
                         keys.push(key);
                     }
@@ -1376,7 +1376,7 @@ async fn build_node_meshes(
 /// The screen-space fat-line API ([`AwsmRenderer::add_line_strip`]) takes
 /// world-space points with no transform of its own, so we bake the node's world
 /// transform (`node_world`, accumulated through the materialize recursion) into
-/// each authored [`LinePoint::pos`](awsm_scene::LinePoint) before handing them
+/// each authored [`LinePoint::pos`](awsm_renderer_scene::LinePoint) before handing them
 /// over. Colours pass through verbatim. Records the [`LineKey`] into
 /// `maps.lines` so the `NodeHandles` assembly can wire `NodeHandles.line`.
 ///
@@ -1418,7 +1418,7 @@ async fn materialize_line(
 /// Materialize a [`NodeKind::Sprite`] into a textured quad rooted under the node's
 /// transform `tk`.
 ///
-/// Geometry is `awsm_meshgen::sprite_quad` (a unit XY quad facing +Z) scaled by
+/// Geometry is `awsm_renderer_meshgen::sprite_quad` (a unit XY quad facing +Z) scaled by
 /// `def.size`. The material is **Unlit** (tint + optional texture) when
 /// `def.flipbook` is `None`, or a **FlipBook** material sampling `def.texture` as
 /// an N×M atlas when `Some` — both bind the texture into their base-color /
@@ -1461,7 +1461,7 @@ async fn build_sprite_mesh(
     use awsm_renderer::materials::unlit::UnlitMaterial;
     use awsm_renderer::meshes::mesh::BillboardMode as RBillboard;
     use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
-    use awsm_scene::{BillboardMode, FlipBookModeDef, SpriteAlphaMode};
+    use awsm_renderer_scene::{BillboardMode, FlipBookModeDef, SpriteAlphaMode};
 
     let alpha = match def.alpha_mode {
         SpriteAlphaMode::Opaque => MaterialAlphaMode::Opaque,
@@ -1512,7 +1512,7 @@ async fn build_sprite_mesh(
         &renderer.extras_pool,
     );
 
-    let md = awsm_meshgen::sprite_quad(def.size[0], def.size[1]);
+    let md = awsm_renderer_meshgen::sprite_quad(def.size[0], def.size[1]);
     let key = renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
 
     let rbillboard = match def.billboard {
@@ -1706,7 +1706,7 @@ fn find_curve(nodes: &[EditorNode], id: NodeId) -> Option<&CurveDef> {
 /// spacing copies `def.spacing` apart, offsetting `def.side_offset` along the
 /// frame normal, and (when `def.orient_to_tangent`) orienting +Z to the tangent.
 fn curve_instance_transforms(curve: &CurveDef, def: &InstancesAlongCurveDef) -> Vec<Transform> {
-    use awsm_curves::{Curve3, FrameSequence};
+    use awsm_renderer_curves::{Curve3, FrameSequence};
 
     let points: Vec<Vec3> = curve
         .control_points
@@ -1716,7 +1716,7 @@ fn curve_instance_transforms(curve: &CurveDef, def: &InstancesAlongCurveDef) -> 
     if points.len() < 2 {
         return Vec::new();
     }
-    let mut crom = awsm_curves::CatmullRomCurve::new(points, curve.closed);
+    let mut crom = awsm_renderer_curves::CatmullRomCurve::new(points, curve.closed);
     crom.tension = curve.tension;
 
     let sample_count = curve.sample_count.max(2) as usize;
@@ -1874,12 +1874,12 @@ fn trs_to_transform(trs: &Trs) -> Transform {
     }
 }
 
-/// Convert an [`awsm_meshgen::MeshData`] (the procedural/primitive mesh builder's
+/// Convert an [`awsm_renderer_meshgen::MeshData`] (the procedural/primitive mesh builder's
 /// output) into the renderer's [`RawMeshData`] upload struct — positions, normals,
 /// colors, indices, and ALL UV sets pass through (both carry N TEXCOORD sets now).
 /// Public (R4) so a host can feed a meshgen primitive into `renderer.add_raw_mesh`
 /// with the same conversion the loader uses.
-pub fn mesh_data_to_raw(md: awsm_meshgen::MeshData) -> RawMeshData {
+pub fn mesh_data_to_raw(md: awsm_renderer_meshgen::MeshData) -> RawMeshData {
     RawMeshData {
         positions: md.positions,
         normals: md.normals,
@@ -1905,7 +1905,7 @@ async fn resolve_material(
     instance: Option<&MaterialInstance>,
     placeholder: MaterialKey,
     assets: &impl SceneAssets,
-    custom: &HashMap<AssetId, awsm_materials::MaterialShaderId>,
+    custom: &HashMap<AssetId, awsm_renderer_materials::MaterialShaderId>,
 ) -> MaterialKey {
     let Some(inst) = instance else {
         return placeholder;
@@ -1978,7 +1978,7 @@ async fn resolve_material(
 async fn bind_extension_textures(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
-    def: &awsm_scene::MaterialDef,
+    def: &awsm_renderer_scene::MaterialDef,
     pbr: &mut awsm_renderer::materials::pbr::PbrMaterial,
 ) {
     use MipmapTextureKind as K;
@@ -2075,7 +2075,7 @@ mod prefab_tests {
     //! harness instead; unit-testing it here would block on an un-unit-testable GPU
     //! dependency, so we test the part we can pin down without a device.
     use super::{expand_instance_colors, prefab_subtree_layout};
-    use awsm_scene::{EditorNode, NodeId, NodeKind};
+    use awsm_renderer_scene::{EditorNode, NodeId, NodeKind};
 
     #[test]
     fn instance_colors_repeat_last_when_short_and_truncate_when_long() {

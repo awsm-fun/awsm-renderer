@@ -459,7 +459,7 @@ impl AwsmRenderer {
             // Collect the registered MASK customs first (releases the
             // dynamic_materials borrow before the RenderPassInitContext below).
             let custom_masked: Vec<(
-                awsm_materials::MaterialShaderId,
+                awsm_renderer_materials::MaterialShaderId,
                 crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo,
             )> = self
                 .dynamic_materials
@@ -480,7 +480,7 @@ impl AwsmRenderer {
             // material with no `wgsl_vertex` never enters this list, so the
             // shared geometry path is byte-identical for everyone else.
             let custom_vertex: Vec<(
-                awsm_materials::MaterialShaderId,
+                awsm_renderer_materials::MaterialShaderId,
                 crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo,
             )> = self
                 .dynamic_materials
@@ -504,7 +504,7 @@ impl AwsmRenderer {
             // — the plain masked / custom-vertex / solid paths are untouched).
             #[allow(clippy::type_complexity)]
             let custom_masked_vertex: Vec<(
-                awsm_materials::MaterialShaderId,
+                awsm_renderer_materials::MaterialShaderId,
                 crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo,
                 crate::render_passes::geometry::shader::masked_cache_key::DynamicAlphaShaderInfo,
             )> = self
@@ -574,19 +574,19 @@ impl AwsmRenderer {
             // evaluated by the shared cell math the shaded material also runs).
             for (shader_id, base) in [
                 (
-                    awsm_materials::MaterialShaderId::PBR,
+                    awsm_renderer_materials::MaterialShaderId::PBR,
                     crate::dynamic_materials::ShadingBase::Pbr,
                 ),
                 (
-                    awsm_materials::MaterialShaderId::UNLIT,
+                    awsm_renderer_materials::MaterialShaderId::UNLIT,
                     crate::dynamic_materials::ShadingBase::Unlit,
                 ),
                 (
-                    awsm_materials::MaterialShaderId::TOON,
+                    awsm_renderer_materials::MaterialShaderId::TOON,
                     crate::dynamic_materials::ShadingBase::Toon,
                 ),
                 (
-                    awsm_materials::MaterialShaderId::FLIPBOOK,
+                    awsm_renderer_materials::MaterialShaderId::FLIPBOOK,
                     crate::dynamic_materials::ShadingBase::Flipbook,
                 ),
             ] {
@@ -725,19 +725,19 @@ impl AwsmRenderer {
             )?;
             for (shader_id, base) in [
                 (
-                    awsm_materials::MaterialShaderId::PBR,
+                    awsm_renderer_materials::MaterialShaderId::PBR,
                     crate::dynamic_materials::ShadingBase::Pbr,
                 ),
                 (
-                    awsm_materials::MaterialShaderId::UNLIT,
+                    awsm_renderer_materials::MaterialShaderId::UNLIT,
                     crate::dynamic_materials::ShadingBase::Unlit,
                 ),
                 (
-                    awsm_materials::MaterialShaderId::TOON,
+                    awsm_renderer_materials::MaterialShaderId::TOON,
                     crate::dynamic_materials::ShadingBase::Toon,
                 ),
                 (
-                    awsm_materials::MaterialShaderId::FLIPBOOK,
+                    awsm_renderer_materials::MaterialShaderId::FLIPBOOK,
                     crate::dynamic_materials::ShadingBase::Flipbook,
                 ),
             ] {
@@ -1661,12 +1661,12 @@ fn create_sampler_key(
 }
 
 // `TextureKey`, `TextureTransformKey`, `SamplerKey` moved to
-// `awsm-renderer-core::keys` so the `awsm-materials` crate can reference
+// `awsm-renderer-core::keys` so the `awsm-renderer-materials` crate can reference
 // them without depending on `awsm-renderer`. Re-exported here for backward
 // compat with existing callers that import via `awsm_renderer`.
 pub use awsm_renderer_core::keys::{SamplerKey, TextureKey, TextureTransformKey};
 
-impl awsm_materials::TextureContext for Textures {
+impl awsm_renderer_materials::TextureContext for Textures {
     fn pool_array_by_index(
         &self,
         index: usize,

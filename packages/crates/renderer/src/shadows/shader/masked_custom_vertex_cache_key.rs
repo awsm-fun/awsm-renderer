@@ -13,7 +13,7 @@
 //! single-sampled (no MSAA). Non-instanced today (matching the masked +
 //! custom-vertex shadow parents).
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::{
     dynamic_materials::ShadingBase,

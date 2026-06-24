@@ -2,15 +2,15 @@
 //!
 //! # The `scene-schema` feature (optional schema → runtime bridge)
 //!
-//! [`awsm-scene`](https://docs.rs/awsm-scene) is the pure-data,
+//! [`awsm-renderer-scene`](https://docs.rs/awsm-renderer-scene) is the pure-data,
 //! on-disk authoring format (`EditorProject`, saved as `project.json`). The
 //! renderer holds the *runtime* equivalents of those types. Enabling the
-//! `scene-schema` feature pulls in `awsm-scene` (an optional dep) and
-//! compiles a set of `From<awsm_scene::*>` impls so a consumer can convert
+//! `scene-schema` feature pulls in `awsm-renderer-scene` (an optional dep) and
+//! compiles a set of `From<awsm_renderer_scene::*>` impls so a consumer can convert
 //! authored data into renderer config with a single `.into()`:
 //!
 //! ```ignore
-//! let project: awsm_scene::EditorProject = serde_json::from_str(&text)?;
+//! let project: awsm_renderer_scene::EditorProject = serde_json::from_str(&text)?;
 //! renderer.set_shadows_config(project.shadows.into());
 //! ```
 //!

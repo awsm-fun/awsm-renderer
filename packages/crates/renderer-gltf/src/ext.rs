@@ -28,7 +28,7 @@ pub trait AwsmRendererGltfExt {
 
     /// Like [`populate_gltf`](Self::populate_gltf), but roots the document's
     /// scene nodes under `parent_transform` instead of at the renderer root.
-    /// Used by `awsm-scene-loader` to drop a runtime-bundle's per-mesh glb
+    /// Used by `awsm-renderer-scene-loader` to drop a runtime-bundle's per-mesh glb
     /// (a single identity node holding geometry) beneath the scene node that
     /// carries its real TRS.
     #[allow(async_fn_in_trait)]

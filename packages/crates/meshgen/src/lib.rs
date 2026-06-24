@@ -3,7 +3,7 @@
 //! Feature-gated so the player carries only what it runs: `primitives` +
 //! `mesh_data` are always compiled (glam-only); the recipe **types** (`recipes`)
 //! and the modifier/SDF/sweep **execution** + its heavy deps (`authoring`) are
-//! opt-in. A plain `awsm-meshgen` dependency is the player-lean build.
+//! opt-in. A plain `awsm-renderer-meshgen` dependency is the player-lean build.
 
 pub mod mesh_data;
 pub mod primitives;

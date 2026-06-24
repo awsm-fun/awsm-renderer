@@ -141,7 +141,7 @@ impl BoundedHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awsm_scene::NodeId;
+    use awsm_renderer_scene::NodeId;
 
     /// A small, near-constant-size inverse (a transform restore).
     fn small_cmd() -> EditorCommand {

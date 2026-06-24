@@ -5,10 +5,10 @@
 //! triangles + materials and handed here as a [`GlbScene`], which [`write_glb`]
 //! serializes to a self-contained `.glb` byte vector.
 //!
-//! It has **no GPU / editor / wasm dependencies** — only `awsm-meshgen` (for the
+//! It has **no GPU / editor / wasm dependencies** — only `awsm-renderer-meshgen` (for the
 //! plain-data [`MeshData`]) and `gltf-json` (the JSON model used to *build* a
 //! glTF). That keeps the whole writer natively unit-testable (`cargo test -p
-//! awsm-glb-export`).
+//! awsm-renderer-glb-export`).
 //!
 //! ## Scene-complete by design
 //!
@@ -36,7 +36,7 @@ mod extract;
 mod tangents;
 mod write;
 
-pub use awsm_meshgen::MeshData;
+pub use awsm_renderer_meshgen::MeshData;
 pub use bundle::{assemble_bundle, BundleFile, BundleInputs, PlayerBundle};
 pub use extract::{
     extract_node_mesh, extract_node_mesh_from_bytes, extract_node_mesh_with_skin_from_bytes,
@@ -53,7 +53,7 @@ pub use write::write_glb;
 pub const AWSM_MATERIALS_NONE: &str = "AWSM_materials_none";
 
 /// A translate / rotate (xyzw quaternion) / scale local transform. Mirrors
-/// `awsm_scene::Trs` but kept local so this crate stays decoupled from the
+/// `awsm_renderer_scene::Trs` but kept local so this crate stays decoupled from the
 /// project schema.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trs {

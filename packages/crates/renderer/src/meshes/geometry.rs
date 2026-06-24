@@ -168,7 +168,7 @@ impl GeometryReps {
 mod tests {
     use super::{geometry_kind, GeometryKind};
     use crate::materials::Material;
-    use awsm_materials::{pbr::PbrMaterial, MaterialAlphaMode};
+    use awsm_renderer_materials::{pbr::PbrMaterial, MaterialAlphaMode};
 
     fn pbr(alpha: MaterialAlphaMode) -> Material {
         Material::Pbr(Box::new(PbrMaterial::new(alpha, false)))

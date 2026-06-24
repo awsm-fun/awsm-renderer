@@ -185,16 +185,16 @@ mod tests {
     #[test]
     fn union_is_min_subtract_carves() {
         let a = N::Transform {
-            trs: awsm_scene::Trs {
+            trs: awsm_renderer_scene::Trs {
                 translation: [-0.5, 0.0, 0.0],
-                ..awsm_scene::Trs::IDENTITY
+                ..awsm_renderer_scene::Trs::IDENTITY
             },
             child: Box::new(sphere(1.0)),
         };
         let b = N::Transform {
-            trs: awsm_scene::Trs {
+            trs: awsm_renderer_scene::Trs {
                 translation: [0.5, 0.0, 0.0],
-                ..awsm_scene::Trs::IDENTITY
+                ..awsm_renderer_scene::Trs::IDENTITY
             },
             child: Box::new(sphere(1.0)),
         };
@@ -218,9 +218,9 @@ mod tests {
         // Near the seam, the smooth union dips below the hard min (rounded fillet).
         let a = sphere(1.0);
         let b = N::Transform {
-            trs: awsm_scene::Trs {
+            trs: awsm_renderer_scene::Trs {
                 translation: [1.5, 0.0, 0.0],
-                ..awsm_scene::Trs::IDENTITY
+                ..awsm_renderer_scene::Trs::IDENTITY
             },
             child: Box::new(sphere(1.0)),
         };
@@ -237,9 +237,9 @@ mod tests {
             children: vec![
                 sphere(1.0),
                 N::Transform {
-                    trs: awsm_scene::Trs {
+                    trs: awsm_renderer_scene::Trs {
                         translation: [3.0, 0.0, 0.0],
-                        ..awsm_scene::Trs::IDENTITY
+                        ..awsm_renderer_scene::Trs::IDENTITY
                     },
                     child: Box::new(sphere(1.0)),
                 },

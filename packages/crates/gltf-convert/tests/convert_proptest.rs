@@ -11,8 +11,8 @@
 //! `proptest` sweeps the matrix (vertex count, channel presence, index topology,
 //! material factors, animation paths/interpolation) rather than hand-enumerating.
 
-use awsm_glb_export::{extract_node_mesh_from_bytes, write_glb, ExportNode, GlbScene, MeshData};
-use awsm_gltf_convert::{
+use awsm_renderer_glb_export::{extract_node_mesh_from_bytes, write_glb, ExportNode, GlbScene, MeshData};
+use awsm_renderer_gltf_convert::{
     awsm_format_version, convert, is_canonical, AlphaMode, AWSM_FORMAT_VERSION,
 };
 use proptest::prelude::*;
@@ -56,8 +56,8 @@ fn glb_of(md: &MeshData) -> Vec<u8> {
     })
 }
 
-fn pbr_material_strategy() -> impl Strategy<Value = awsm_glb_export::PbrMaterial> {
-    use awsm_glb_export::{AlphaMode as GlbAlpha, PbrMaterial};
+fn pbr_material_strategy() -> impl Strategy<Value = awsm_renderer_glb_export::PbrMaterial> {
+    use awsm_renderer_glb_export::{AlphaMode as GlbAlpha, PbrMaterial};
     (
         prop::array::uniform4(0.0f32..1.0),
         0.0f32..1.0,
@@ -84,8 +84,8 @@ fn pbr_material_strategy() -> impl Strategy<Value = awsm_glb_export::PbrMaterial
         )
 }
 
-fn anim_channel_strategy() -> impl Strategy<Value = awsm_glb_export::ExportAnimChannel> {
-    use awsm_glb_export::{AnimInterp, AnimPath, ExportAnimChannel};
+fn anim_channel_strategy() -> impl Strategy<Value = awsm_renderer_glb_export::ExportAnimChannel> {
+    use awsm_renderer_glb_export::{AnimInterp, AnimPath, ExportAnimChannel};
     let path = prop_oneof![
         Just((AnimPath::Translation, 3usize)),
         Just((AnimPath::Rotation, 4usize)),
@@ -136,8 +136,8 @@ proptest! {
     /// Base-PBR material factors + alpha mode + double-sided survive convert.
     #[test]
     fn material_factors_round_trip(pbr in pbr_material_strategy()) {
-        use awsm_glb_export::{AlphaMode as GlbAlpha, ExportMaterial};
-        let mut node = ExportNode::new("m").with_mesh(awsm_meshgen::box_mesh(glam::Vec3::ONE));
+        use awsm_renderer_glb_export::{AlphaMode as GlbAlpha, ExportMaterial};
+        let mut node = ExportNode::new("m").with_mesh(awsm_renderer_meshgen::box_mesh(glam::Vec3::ONE));
         node.material = Some(ExportMaterial::Pbr(pbr.clone()));
         let glb = write_glb(&GlbScene { nodes: vec![node], ..Default::default() });
 
@@ -160,8 +160,8 @@ proptest! {
     /// An animation channel's sampler (times + flattened values) survives convert.
     #[test]
     fn animation_sampler_round_trips(ch in anim_channel_strategy()) {
-        use awsm_glb_export::ExportAnimation;
-        let node = ExportNode::new("m").with_mesh(awsm_meshgen::box_mesh(glam::Vec3::ONE));
+        use awsm_renderer_glb_export::ExportAnimation;
+        let node = ExportNode::new("m").with_mesh(awsm_renderer_meshgen::box_mesh(glam::Vec3::ONE));
         let glb = write_glb(&GlbScene {
             nodes: vec![node],
             animations: vec![ExportAnimation { name: "a".into(), channels: vec![ch.clone()] }],

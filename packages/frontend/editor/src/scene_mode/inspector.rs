@@ -13,7 +13,7 @@ use crate::engine::scene::{
     Trs,
 };
 use crate::prelude::*;
-use awsm_editor_protocol::{
+use awsm_renderer_editor_protocol::{
     AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, EvsmCutoff,
     FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, MaterialAlphaMode,
     MaterialDef, MaterialShading, MeshShadowConfig, ParticleEmitterDef, PrimitiveShape,
@@ -257,8 +257,8 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
 /// bridge re-materializes referencing nodes. Non-primitive bases (lathe /
 /// superquadric / sweep / SDF / captured) + the modifier stack stay MCP-authored,
 /// so those show a read-only summary. Falls back to a "missing asset" note.
-fn mesh_geometry_section(mesh: awsm_editor_protocol::AssetId) -> Dom {
-    use awsm_editor_protocol::MeshBase;
+fn mesh_geometry_section(mesh: awsm_renderer_editor_protocol::AssetId) -> Dom {
+    use awsm_renderer_editor_protocol::MeshBase;
 
     let (prim, base_name, mod_count) = {
         let ctrl = controller();
@@ -312,8 +312,8 @@ fn mesh_geometry_section(mesh: awsm_editor_protocol::AssetId) -> Dom {
 
 /// Replace the mesh's stack base with `shape` (preserving its modifiers) and
 /// dispatch `SetMeshModifiers` so the geometry re-bakes live.
-fn apply_primitive(mesh: awsm_editor_protocol::AssetId, shape: PrimitiveShape) {
-    use awsm_editor_protocol::MeshBase;
+fn apply_primitive(mesh: awsm_renderer_editor_protocol::AssetId, shape: PrimitiveShape) {
+    use awsm_renderer_editor_protocol::MeshBase;
     let stack = {
         let ctrl = controller();
         let assets = ctrl.scene.assets.lock().unwrap();
@@ -338,7 +338,7 @@ fn apply_primitive(mesh: awsm_editor_protocol::AssetId, shape: PrimitiveShape) {
 /// floored to their topological minimum.
 fn primitive_fields(
     sec: Section,
-    mesh: awsm_editor_protocol::AssetId,
+    mesh: awsm_renderer_editor_protocol::AssetId,
     shape: &PrimitiveShape,
 ) -> Section {
     use PrimitiveShape as P;
@@ -1687,15 +1687,15 @@ pub(crate) fn collect_texture_assets() -> Vec<(AssetId, String)> {
         .entries
         .iter()
         .filter_map(|(id, e)| match &e.source {
-            awsm_editor_protocol::AssetSource::Texture(def) => {
+            awsm_renderer_editor_protocol::AssetSource::Texture(def) => {
                 let label = match def {
-                    awsm_editor_protocol::TextureDef::Procedural(p) => match p {
-                        awsm_editor_protocol::ProceduralTextureDef::Checker { .. } => "Checker",
-                        awsm_editor_protocol::ProceduralTextureDef::Gradient { .. } => "Gradient",
-                        awsm_editor_protocol::ProceduralTextureDef::Noise { .. } => "Noise",
+                    awsm_renderer_editor_protocol::TextureDef::Procedural(p) => match p {
+                        awsm_renderer_editor_protocol::ProceduralTextureDef::Checker { .. } => "Checker",
+                        awsm_renderer_editor_protocol::ProceduralTextureDef::Gradient { .. } => "Gradient",
+                        awsm_renderer_editor_protocol::ProceduralTextureDef::Noise { .. } => "Noise",
                     }
                     .to_string(),
-                    awsm_editor_protocol::TextureDef::Raster { display_name } => {
+                    awsm_renderer_editor_protocol::TextureDef::Raster { display_name } => {
                         display_name.clone()
                     }
                 };
@@ -1928,7 +1928,7 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         let core: [(
             &'static str,
             &'static str,
-            Option<awsm_editor_protocol::TextureRef>,
+            Option<awsm_renderer_editor_protocol::TextureRef>,
         ); 5] = [
             ("base_color_texture", "Base color", def.base_color_texture),
             (
@@ -1960,7 +1960,7 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         let mut entries: Vec<(
             &'static str,
             &'static str,
-            Option<awsm_editor_protocol::TextureRef>,
+            Option<awsm_renderer_editor_protocol::TextureRef>,
             bool,
         )> = Vec::new();
         for (slot, label, d) in core {
@@ -2023,7 +2023,7 @@ fn ext_num_row(
     min: f64,
     max: f64,
     step: f64,
-    apply: impl Fn(&mut awsm_editor_protocol::material::PbrExtensions, f32) + 'static,
+    apply: impl Fn(&mut awsm_renderer_editor_protocol::material::PbrExtensions, f32) + 'static,
 ) -> Dom {
     let node = node.clone();
     row(
@@ -2047,7 +2047,7 @@ fn ext_color_row(
     node: &Arc<Node>,
     label: &str,
     current: [f32; 3],
-    apply: impl Fn(&mut awsm_editor_protocol::material::PbrExtensions, [f32; 3]) + 'static,
+    apply: impl Fn(&mut awsm_renderer_editor_protocol::material::PbrExtensions, [f32; 3]) + 'static,
 ) -> Dom {
     let m = Mutable::new(rgb_to_hex(current));
     let apply = std::rc::Rc::new(apply);
@@ -2524,7 +2524,7 @@ fn builtin_uniform_extras(
 /// buffer slot overrides are a follow-on; uniforms are the common case the user
 /// hit (declared uniforms weren't exposed on the mesh at all).
 fn dynamic_overrides(node: &Arc<Node>) -> Dom {
-    use awsm_editor_protocol::dynamic_material::UniformValue as UV;
+    use awsm_renderer_editor_protocol::dynamic_material::UniformValue as UV;
 
     let Some(inst) = node_material_instance(node) else {
         return html!("div", {});
@@ -2692,7 +2692,7 @@ fn pick_buffer_bin(node: &Arc<Node>, name: &str) {
             set_buffer_override(
                 &node,
                 &name,
-                Some(awsm_editor_protocol::dynamic_material::BufferRef { path: path.into() }),
+                Some(awsm_renderer_editor_protocol::dynamic_material::BufferRef { path: path.into() }),
             );
         });
     });
@@ -2705,7 +2705,7 @@ fn pick_buffer_bin(node: &Arc<Node>, name: &str) {
 fn set_buffer_override(
     node: &Arc<Node>,
     name: &str,
-    value: Option<awsm_editor_protocol::dynamic_material::BufferRef>,
+    value: Option<awsm_renderer_editor_protocol::dynamic_material::BufferRef>,
 ) {
     if let Some(mut inst) = node_material_instance(node) {
         match value {
@@ -2760,7 +2760,7 @@ fn texture_override_picker(
                             set_texture_override(
                                 &node,
                                 &name,
-                                Some(awsm_editor_protocol::TextureRef::new(id)),
+                                Some(awsm_renderer_editor_protocol::TextureRef::new(id)),
                             );
                             (close.borrow_mut())();
                         }
@@ -2782,7 +2782,7 @@ fn texture_override_picker(
 fn set_texture_override(
     node: &Arc<Node>,
     name: &str,
-    value: Option<awsm_editor_protocol::TextureRef>,
+    value: Option<awsm_renderer_editor_protocol::TextureRef>,
 ) {
     if let Some(mut inst) = node_material_instance(node) {
         match value {
@@ -2809,7 +2809,7 @@ fn read_slot(
     node: &Arc<Node>,
     slot: &str,
     is_ext: bool,
-) -> Option<awsm_editor_protocol::TextureRef> {
+) -> Option<awsm_renderer_editor_protocol::TextureRef> {
     if is_ext {
         current_primitive_material(node)
             .and_then(|m| crate::controller::get_ext_texture(&m.extensions, slot))
@@ -2823,7 +2823,7 @@ fn write_slot(
     node: &Arc<Node>,
     slot: &str,
     is_ext: bool,
-    tref: Option<awsm_editor_protocol::TextureRef>,
+    tref: Option<awsm_renderer_editor_protocol::TextureRef>,
 ) {
     if is_ext {
         if let Some(mut m) = current_primitive_material(node) {
@@ -2842,8 +2842,8 @@ fn edit_slot(
     node: &Arc<Node>,
     slot: &str,
     is_ext: bool,
-    default_ref: Option<awsm_editor_protocol::TextureRef>,
-    f: impl FnOnce(&mut awsm_editor_protocol::TextureRef),
+    default_ref: Option<awsm_renderer_editor_protocol::TextureRef>,
+    f: impl FnOnce(&mut awsm_renderer_editor_protocol::TextureRef),
 ) {
     if let Some(mut tr) = read_slot(node, slot, is_ext).or(default_ref) {
         f(&mut tr);
@@ -2871,32 +2871,32 @@ fn enum_select_row(
     row(label, select(sel, options))
 }
 
-fn wrap_str(w: awsm_editor_protocol::TextureWrap) -> &'static str {
-    use awsm_editor_protocol::TextureWrap as W;
+fn wrap_str(w: awsm_renderer_editor_protocol::TextureWrap) -> &'static str {
+    use awsm_renderer_editor_protocol::TextureWrap as W;
     match w {
         W::Repeat => "repeat",
         W::ClampToEdge => "clamp_to_edge",
         W::MirroredRepeat => "mirrored_repeat",
     }
 }
-fn wrap_from(s: &str) -> awsm_editor_protocol::TextureWrap {
-    use awsm_editor_protocol::TextureWrap as W;
+fn wrap_from(s: &str) -> awsm_renderer_editor_protocol::TextureWrap {
+    use awsm_renderer_editor_protocol::TextureWrap as W;
     match s {
         "clamp_to_edge" => W::ClampToEdge,
         "mirrored_repeat" => W::MirroredRepeat,
         _ => W::Repeat,
     }
 }
-fn filt_str(f: awsm_editor_protocol::TextureFilter) -> &'static str {
+fn filt_str(f: awsm_renderer_editor_protocol::TextureFilter) -> &'static str {
     match f {
-        awsm_editor_protocol::TextureFilter::Nearest => "nearest",
-        awsm_editor_protocol::TextureFilter::Linear => "linear",
+        awsm_renderer_editor_protocol::TextureFilter::Nearest => "nearest",
+        awsm_renderer_editor_protocol::TextureFilter::Linear => "linear",
     }
 }
-fn filt_from(s: &str) -> awsm_editor_protocol::TextureFilter {
+fn filt_from(s: &str) -> awsm_renderer_editor_protocol::TextureFilter {
     match s {
-        "nearest" => awsm_editor_protocol::TextureFilter::Nearest,
-        _ => awsm_editor_protocol::TextureFilter::Linear,
+        "nearest" => awsm_renderer_editor_protocol::TextureFilter::Nearest,
+        _ => awsm_renderer_editor_protocol::TextureFilter::Linear,
     }
 }
 fn wrap_opts() -> Vec<(String, String)> {
@@ -2918,11 +2918,11 @@ fn texture_slot_rows(
     node: &Arc<Node>,
     label: &str,
     slot: &'static str,
-    default_ref: Option<awsm_editor_protocol::TextureRef>,
+    default_ref: Option<awsm_renderer_editor_protocol::TextureRef>,
     is_ext: bool,
     assets: &[(AssetId, String)],
 ) -> Vec<Dom> {
-    use awsm_editor_protocol::TextureTransform;
+    use awsm_renderer_editor_protocol::TextureTransform;
     // Effective binding = this mesh's override, else the material's imported
     // default (which carries the UV set / transform / sampler read from glTF).
     let cur = read_slot(node, slot, is_ext).or(default_ref);
@@ -3097,7 +3097,7 @@ fn texture_slot_rows(
         let smp = cur.and_then(|t| t.sampler).unwrap_or_default();
         // Set one sampler field, preserving the rest (seeds a sampler if absent).
         let set_smp = move |node: &Arc<Node>,
-                            g: fn(&mut awsm_editor_protocol::TextureSampler, &str),
+                            g: fn(&mut awsm_renderer_editor_protocol::TextureSampler, &str),
                             v: String| {
             edit_slot(node, slot, is_ext, default_ref, move |t| {
                 let mut s = t.sampler.unwrap_or_default();
@@ -3157,7 +3157,7 @@ fn texture_slot_rows(
 /// The single per-mesh `MaterialInstance` on a geometry node, if assigned.
 fn node_material_instance(
     node: &Arc<Node>,
-) -> Option<awsm_editor_protocol::dynamic_material::MaterialInstance> {
+) -> Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> {
     match node.kind.get_cloned() {
         NodeKind::Mesh { material, .. } => material,
         NodeKind::SkinnedMesh { material, .. } => material,
@@ -3168,7 +3168,7 @@ fn node_material_instance(
 /// Replace the node's `material` instance, preserving the rest of the kind.
 fn set_node_material(
     node: &Arc<Node>,
-    inst: awsm_editor_protocol::dynamic_material::MaterialInstance,
+    inst: awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
 ) {
     match node.kind.get_cloned() {
         NodeKind::Mesh { mesh, shadow, .. } => {
@@ -3199,7 +3199,7 @@ fn set_node_material(
 /// built-in's per-mesh values, or a default for an unassigned node. Used as the
 /// `material_editor`'s read-only `MaterialDef` view.
 fn inline_of(
-    material: &Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+    material: &Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
 ) -> MaterialDef {
     material
         .as_ref()
@@ -3211,7 +3211,7 @@ fn inline_of(
 fn set_uniform_override(
     node: &Arc<Node>,
     name: &str,
-    value: awsm_editor_protocol::dynamic_material::UniformValue,
+    value: awsm_renderer_editor_protocol::dynamic_material::UniformValue,
 ) {
     if let Some(mut inst) = node_material_instance(node) {
         inst.uniform_overrides.insert(name.to_string(), value);
@@ -3225,7 +3225,7 @@ fn uniform_num(
     name: &str,
     value: f64,
     step: f64,
-    to_val: impl Fn(f64) -> awsm_editor_protocol::dynamic_material::UniformValue + 'static,
+    to_val: impl Fn(f64) -> awsm_renderer_editor_protocol::dynamic_material::UniformValue + 'static,
 ) -> Dom {
     let node = node.clone();
     let name = name.to_string();
@@ -3241,7 +3241,7 @@ fn uniform_vec(
     node: &Arc<Node>,
     name: &str,
     comps: &[f32],
-    build: impl Fn(&[f32]) -> awsm_editor_protocol::dynamic_material::UniformValue + 'static,
+    build: impl Fn(&[f32]) -> awsm_renderer_editor_protocol::dynamic_material::UniformValue + 'static,
 ) -> Dom {
     let state = std::rc::Rc::new(std::cell::RefCell::new(comps.to_vec()));
     let build = std::rc::Rc::new(build);
@@ -3273,7 +3273,7 @@ fn uniform_vec(
 
 /// A color (color3 / color4) override as an RGB swatch; color4 keeps its alpha.
 fn uniform_color(node: &Arc<Node>, name: &str, rgb: [f32; 3], alpha: Option<f32>) -> Dom {
-    use awsm_editor_protocol::dynamic_material::UniformValue as UV;
+    use awsm_renderer_editor_protocol::dynamic_material::UniformValue as UV;
     let hexm = Mutable::new(rgb_to_hex(rgb));
     let node = node.clone();
     let name = name.to_string();
@@ -3299,7 +3299,7 @@ fn uniform_color(node: &Arc<Node>, name: &str, rgb: [f32; 3], alpha: Option<f32>
 
 /// A boolean override toggle.
 fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
-    use awsm_editor_protocol::dynamic_material::UniformValue as UV;
+    use awsm_renderer_editor_protocol::dynamic_material::UniformValue as UV;
     let m = Mutable::new(value);
     let node = node.clone();
     let name = name.to_string();

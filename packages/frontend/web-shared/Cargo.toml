@@ -1,5 +1,5 @@
 [package]
-name = "awsm-web-shared"
+name = "awsm-renderer-web-shared"
 publish = false  # frontend-only glue crate, not released to crates.io
 description = "Web-frontend primitives (widgets, theme, utilities) shared across awsm-renderer's frontends."
 edition.workspace = true
@@ -12,7 +12,7 @@ rust-version.workspace = true
 awsm-renderer = { workspace = true }
 # Folded-in viewport3d gizmo/grid helpers (formerly the awsm-renderer-editor crate).
 awsm-renderer-gltf = { workspace = true }
-awsm-meshgen = { workspace = true }
+awsm-renderer-meshgen = { workspace = true }
 
 anyhow = { workspace = true }
 futures = { workspace = true }

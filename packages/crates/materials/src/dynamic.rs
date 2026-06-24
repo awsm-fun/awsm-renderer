@@ -125,7 +125,7 @@ impl DynamicMaterial {
 /// extras-pool slice assignments (so the buffer-slot tail can be written).
 ///
 /// Implemented by the renderer's `DynamicMaterials` facade so
-/// `awsm-materials` stays decoupled from the renderer crate.
+/// `awsm-renderer-materials` stays decoupled from the renderer crate.
 pub trait DynamicMaterialContext {
     /// Returns the layout for a registered dynamic material. Returns
     /// `None` if the id is unknown — the packer treats that as a

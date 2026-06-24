@@ -24,7 +24,7 @@ use awsm_renderer::materials::Material;
 use awsm_renderer::picker::PickResult;
 use awsm_renderer::AwsmRenderer;
 use awsm_web::dom::resize::ResizeObserver;
-use awsm_web_shared::viewport3d::transform_controller::{
+use awsm_renderer_web_shared::viewport3d::transform_controller::{
     GizmoSpace, TransformController, TransformObject,
 };
 use camera::{Camera, CameraId};
@@ -79,13 +79,13 @@ fn our_format_enabled() -> bool {
 async fn import_to_our_format(data: &GltfData) -> anyhow::Result<GltfData> {
     // Pass the loader's retained ENCODED image bytes so EXTERNAL-file textures
     // (the glTF/ sample variant) re-embed into the clean glb.
-    let clean = awsm_glb_export::reexport_clean_scene_with_images(
+    let clean = awsm_renderer_glb_export::reexport_clean_scene_with_images(
         &data.doc,
         &data.buffers.raw,
         &data.encoded_images,
     )
     .ok_or_else(|| anyhow::anyhow!("reexport_clean produced no scene"))?;
-    let glb = awsm_glb_export::write_glb(&clean);
+    let glb = awsm_renderer_glb_export::write_glb(&clean);
     let loader = GltfLoader::from_glb_bytes(&glb).await?;
     loader.into_data(None).map_err(|e| anyhow::anyhow!("{e}"))
 }
@@ -114,7 +114,7 @@ fn load_remapped_animations(
         }
     };
     // original glTF node index → clean glb node index (DFS flatten == write order).
-    let flat_of = awsm_glb_export::scene_node_flat_indices(&original.doc);
+    let flat_of = awsm_renderer_glb_export::scene_node_flat_indices(&original.doc);
     // clean glb node index → renderer TransformKey (from the clean populate).
     let node_to_tk = ctx
         .key_lookups

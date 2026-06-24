@@ -11,8 +11,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use awsm_editor_protocol::{AssetId, CapturedMesh};
-use awsm_meshgen::MeshData;
+use awsm_renderer_editor_protocol::{AssetId, CapturedMesh};
+use awsm_renderer_meshgen::MeshData;
 use awsm_renderer::raw_mesh::RawMeshData;
 
 thread_local! {

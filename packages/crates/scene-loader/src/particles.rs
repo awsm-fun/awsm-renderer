@@ -3,11 +3,11 @@
 //!
 //! The loader is a one-shot pass and never advances a clock (the same boundary as
 //! animation: it loads clips, the consumer drives the playhead). A
-//! [`NodeKind::ParticleEmitter`](awsm_scene::NodeKind::ParticleEmitter) therefore
+//! [`NodeKind::ParticleEmitter`](awsm_renderer_scene::NodeKind::ParticleEmitter) therefore
 //! materializes into a **ready-to-drive** instanced billboard — an emissive quad
 //! with GPU instancing pre-enabled at `max_alive` capacity — and the loader hands
 //! back an [`EmitterHandle`]. The game runs the CPU simulation
-//! ([`awsm_particles::Simulator`]) each frame and pushes the live particles to the
+//! ([`awsm_renderer_particles::Simulator`]) each frame and pushes the live particles to the
 //! handle via [`drive_emitter`]; the loader itself never simulates.
 //!
 //! The build mirrors the editor's proven live-preview bridge
@@ -24,7 +24,7 @@
 //! whole emitter.
 
 use anyhow::Result;
-use awsm_particles::{Emitter, EmitterSpace, Force, Simulator, SpawnShape};
+use awsm_renderer_particles::{Emitter, EmitterSpace, Force, Simulator, SpawnShape};
 use awsm_renderer::instances::InstanceAttr;
 use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode};
@@ -33,7 +33,7 @@ use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::shadows::MeshShadowFlags;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::AwsmRenderer;
-use awsm_scene::{
+use awsm_renderer_scene::{
     ColorOverLifeDef, EmitterSpaceDef, ForceDef, ParticleEmitterDef, SizeOverLifeDef, SpawnShapeDef,
 };
 use glam::{Mat4, Quat, Vec3};
@@ -53,10 +53,10 @@ const PARTICLE_QUAD_SIZE: f32 = 1.0;
 /// 2. pushes the result with [`drive_emitter`].
 ///
 /// ```no_run
-/// # use awsm_scene_loader::{EmitterHandle, drive_emitter};
+/// # use awsm_renderer_scene_loader::{EmitterHandle, drive_emitter};
 /// # use awsm_renderer::AwsmRenderer;
 /// # fn tick(renderer: &mut AwsmRenderer, handle: &EmitterHandle,
-/// #         sim: &mut awsm_particles::Simulator, dt: f32) -> anyhow::Result<()> {
+/// #         sim: &mut awsm_renderer_particles::Simulator, dt: f32) -> anyhow::Result<()> {
 /// let emitter = handle.to_emitter();
 /// let origin = handle.spawn_origin(renderer);
 /// sim.tick(dt, &emitter, origin);
@@ -87,7 +87,7 @@ pub struct EmitterHandle {
 }
 
 impl EmitterHandle {
-    /// Lower the authored [`ParticleEmitterDef`] into an [`awsm_particles::Emitter`]
+    /// Lower the authored [`ParticleEmitterDef`] into an [`awsm_renderer_particles::Emitter`]
     /// the consumer feeds to [`Simulator::tick`]. Mirrors the editor bridge's
     /// `def_to_emitter` so the player and the editor simulate identically.
     pub fn to_emitter(&self) -> Emitter {
@@ -111,7 +111,7 @@ impl EmitterHandle {
     }
 }
 
-/// Lower an authored [`ParticleEmitterDef`] into an [`awsm_particles::Emitter`].
+/// Lower an authored [`ParticleEmitterDef`] into an [`awsm_renderer_particles::Emitter`].
 /// Mirrors the editor bridge's `def_to_emitter` exactly.
 pub(crate) fn def_to_emitter(def: &ParticleEmitterDef) -> Emitter {
     Emitter {
@@ -148,18 +148,18 @@ pub(crate) fn def_to_emitter(def: &ParticleEmitterDef) -> Emitter {
             })
             .collect(),
         color_over_life: match &def.color_over_life {
-            ColorOverLifeDef::Const(c) => awsm_particles::emitter::ColorOverLife::Const(*c),
+            ColorOverLifeDef::Const(c) => awsm_renderer_particles::emitter::ColorOverLife::Const(*c),
             ColorOverLifeDef::Linear { start, end } => {
-                awsm_particles::emitter::ColorOverLife::Linear {
+                awsm_renderer_particles::emitter::ColorOverLife::Linear {
                     start: *start,
                     end: *end,
                 }
             }
         },
         size_over_life: match def.size_over_life {
-            SizeOverLifeDef::Const(c) => awsm_particles::emitter::SizeOverLife::Const(c),
+            SizeOverLifeDef::Const(c) => awsm_renderer_particles::emitter::SizeOverLife::Const(c),
             SizeOverLifeDef::Linear { start, end } => {
-                awsm_particles::emitter::SizeOverLife::Linear { start, end }
+                awsm_renderer_particles::emitter::SizeOverLife::Linear { start, end }
             }
         },
     }
@@ -212,7 +212,7 @@ pub(crate) fn build_emitter(
         &renderer.extras_pool,
     );
 
-    let md = awsm_meshgen::sprite_quad(PARTICLE_QUAD_SIZE, PARTICLE_QUAD_SIZE);
+    let md = awsm_renderer_meshgen::sprite_quad(PARTICLE_QUAD_SIZE, PARTICLE_QUAD_SIZE);
     let instance_transform = renderer
         .transforms
         .insert(Transform::IDENTITY, Some(instance_parent));

@@ -9,7 +9,7 @@
 //! JOINTS/WEIGHTS, which IS the bind pose.
 //!
 //! Keyed by `(source file AssetId, glTF node_index, primitive_index)` — the same
-//! triple a [`SkinnedMeshRef`](awsm_editor_protocol::SkinnedMeshRef) carries — so a
+//! triple a [`SkinnedMeshRef`](awsm_renderer_editor_protocol::SkinnedMeshRef) carries — so a
 //! `drop_skinning` on any skinned node resolves its bake directly.
 //!
 //! TODO(cross-reload persistence): like the old `model_source_cache`, this is
@@ -22,8 +22,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use awsm_editor_protocol::AssetId;
-use awsm_glb_export::{ExtractedNodeMesh, MeshData};
+use awsm_renderer_editor_protocol::AssetId;
+use awsm_renderer_glb_export::{ExtractedNodeMesh, MeshData};
 
 /// Cache key: `(source file AssetId, glTF node_index, primitive_index)` — the
 /// triple a `SkinnedMeshRef` carries.
@@ -72,7 +72,7 @@ pub fn get_rig_node_decode(
         return Some(hit);
     }
     let bytes = get_rig_glb(source)?;
-    let decoded = awsm_glb_export::extract_node_mesh_with_skin_from_bytes(
+    let decoded = awsm_renderer_glb_export::extract_node_mesh_with_skin_from_bytes(
         &bytes,
         rig_node_index,
         primitive_index,

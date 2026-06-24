@@ -210,7 +210,7 @@ impl GltfMeshExt for AwsmRenderer {
                 Some(key) => key,
                 None => {
                     // `AWSM_materials_none` (primitive-level, plural — emitted by
-                    // awsm-glb-export for custom-WGSL / Toon materials): the GLB
+                    // awsm-renderer-glb-export for custom-WGSL / Toon materials): the GLB
                     // carries NO embedded glTF material. Render geometry-only
                     // (Unlit) here rather than fabricating a PBR default; the
                     // editor/player re-binds the real material via scene-level

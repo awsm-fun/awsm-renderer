@@ -13,9 +13,9 @@
 
 use std::cell::Cell;
 
-use awsm_editor_protocol::{EditorCommand, EditorMode, InsertSpec};
-use awsm_editor_protocol::{LightKind, Modifier, PrimitiveShape};
-use awsm_web_shared::prelude::{Mutable, MutableVec};
+use awsm_renderer_editor_protocol::{EditorCommand, EditorMode, InsertSpec};
+use awsm_renderer_editor_protocol::{LightKind, Modifier, PrimitiveShape};
+use awsm_renderer_web_shared::prelude::{Mutable, MutableVec};
 use wasm_bindgen_futures::spawn_local;
 
 /// Cap on the retained feed — older entries fall off the front. Keeps the strip
@@ -546,7 +546,7 @@ fn modifier_label(m: &Modifier) -> &'static str {
 #[cfg(test)]
 mod mode_tests {
     use super::*;
-    use awsm_editor_protocol::{AssetId, NodeId};
+    use awsm_renderer_editor_protocol::{AssetId, NodeId};
 
     #[test]
     fn command_mode_follows_the_workspace() {

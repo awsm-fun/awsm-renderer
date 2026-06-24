@@ -1,5 +1,5 @@
 [package]
-name = "awsm-render-worker-example"
+name = "awsm-renderer-render-worker-example"
 publish = false  # example consumer, not released to crates.io
 description = "Phase 4.4 OffscreenCanvas-in-worker reference consumer for awsm-renderer."
 edition.workspace = true
@@ -19,8 +19,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 awsm-renderer = { workspace = true }
 awsm-renderer-core = { workspace = true }
-awsm-materials = { workspace = true }
-awsm-meshgen = { workspace = true }
+awsm-renderer-materials = { workspace = true }
+awsm-renderer-meshgen = { workspace = true }
 web-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }

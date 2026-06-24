@@ -27,7 +27,7 @@ resolver = "2"
 [workspace.package]
 description = "awsm renderer"
 edition = "2021"
-version = "0.3.2"
+version = "0.3.3"
 license = "MIT OR Apache-2.0"
 authors = ["David Komer"]
 # 1.85 floor: rmcp 1.x (the MCP server SDK) is edition-2024, which requires
@@ -38,7 +38,7 @@ repository = "https://github.com/awsm-fun/awsm-renderer"
 
 ### Distribution
 
-# The `awsm-scene-mcp` binary ships as prebuilt GitHub Releases artifacts via
+# The `awsm-renderer-scene-mcp` binary ships as prebuilt GitHub Releases artifacts via
 # cargo-dist (the `dist` CLI). Pushing a `v<version>` tag builds every platform +
 # the curl/PowerShell installers. See docs/RELEASING.md. Regenerate the CI
 # workflow after editing this block: `dist generate`.
@@ -53,7 +53,7 @@ installers = ["shell", "powershell"]
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Which actions to run on pull requests.
 pr-run-mode = "plan"
-# Build only the `awsm-scene-mcp` package (with `-p`), not the whole workspace —
+# Build only the `awsm-renderer-scene-mcp` package (with `-p`), not the whole workspace —
 # the workspace also holds wasm-only crates (the editor) that can't host-compile.
 precise-builds = true
 # Path that installers should place binaries in.
@@ -100,10 +100,10 @@ opt-level = 1
 [profile.dev.package."awsm-renderer-core"]
 opt-level = 1
 
-[profile.dev.package."awsm-model-tests"]
+[profile.dev.package."awsm-renderer-model-tests"]
 opt-level = 1
 
-[profile.dev.package."awsm-editor"]
+[profile.dev.package."awsm-renderer-editor"]
 opt-level = 1
 
 ### Dependencies
@@ -114,22 +114,22 @@ opt-level = 1
 # `workspace.package.version` so the published crates carry concrete
 # version requirements on each other (crates.io rejects path-only deps).
 # Bump this block together with the version above on every release.
-awsm-curves = { path = "packages/crates/curves", version = "0.3.2" }
-awsm-geometry = { path = "packages/crates/geometry", version = "0.3.2" }
-awsm-scene = { path = "packages/crates/scene", version = "0.3.2" }
-awsm-scene-loader = { path = "packages/crates/scene-loader", version = "0.3.2" }
-awsm-editor-protocol = { path = "packages/mcp/editor-protocol", version = "0.3.2" }
-awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.3.2" }
-awsm-meshgen = { path = "packages/crates/meshgen", version = "0.3.2" }
-awsm-glb-export = { path = "packages/crates/glb-export", version = "0.3.2" }
-awsm-gltf-convert = { path = "packages/crates/gltf-convert", version = "0.3.2" }
-awsm-tangents = { path = "packages/crates/tangents", version = "0.3.2" }
-awsm-particles = { path = "packages/crates/particles", version = "0.3.2" }
-awsm-materials = { path = "packages/crates/materials", version = "0.3.2" }
-awsm-renderer = { path = "packages/crates/renderer", version = "0.3.2" }
-awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.3.2" }
+awsm-renderer-curves = { path = "packages/crates/curves", version = "0.3.3" }
+awsm-renderer-geometry = { path = "packages/crates/geometry", version = "0.3.3" }
+awsm-renderer-scene = { path = "packages/crates/scene", version = "0.3.3" }
+awsm-renderer-scene-loader = { path = "packages/crates/scene-loader", version = "0.3.3" }
+awsm-renderer-editor-protocol = { path = "packages/mcp/editor-protocol", version = "0.3.3" }
+awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.3.3" }
+awsm-renderer-meshgen = { path = "packages/crates/meshgen", version = "0.3.3" }
+awsm-renderer-glb-export = { path = "packages/crates/glb-export", version = "0.3.3" }
+awsm-renderer-gltf-convert = { path = "packages/crates/gltf-convert", version = "0.3.3" }
+awsm-renderer-tangents = { path = "packages/crates/tangents", version = "0.3.3" }
+awsm-renderer-particles = { path = "packages/crates/particles", version = "0.3.3" }
+awsm-renderer-materials = { path = "packages/crates/materials", version = "0.3.3" }
+awsm-renderer = { path = "packages/crates/renderer", version = "0.3.3" }
+awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.3.3" }
 # Frontend-only (not published); workspace dep keeps consumers path-agnostic.
-awsm-web-shared = { path = "packages/frontend/web-shared", version = "0.3.2" }
+awsm-renderer-web-shared = { path = "packages/frontend/web-shared", version = "0.3.3" }
 
 # Misc
 cfg-if = "1.0.4"

@@ -1,7 +1,7 @@
 //! Shader templates for the opaque material pass.
 
 use askama::Template;
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::dynamic_materials::ShadingBase;
 use crate::{
@@ -89,10 +89,10 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// `apply_lighting_per_froxel*` helpers contain.
     pub froxel_slice_count: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
-    /// `awsm_materials::registry::build_materials_wgsl`.
+    /// `awsm_renderer_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
     /// Generated `const SHADER_ID_X: u32 = N;` lines — see
-    /// `awsm_materials::registry::build_shader_id_consts`.
+    /// `awsm_renderer_materials::registry::build_shader_id_consts`.
     pub shader_id_consts: String,
     /// Which material shader_id this specialized pipeline handles.
     /// The compute.wgsl template renders only the matching material's
@@ -122,7 +122,7 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// The empty set for non-PBR ids and the SKYBOX bucket — inert for the
     /// former (their body doesn't read it) and the minimal skybox-only shader
     /// for the latter. Never the full "uber" set.
-    pub pbr_features: awsm_materials::pbr::PbrFeatures,
+    pub pbr_features: awsm_renderer_materials::pbr::PbrFeatures,
     /// For dynamic shader ids: the auto-generated `struct
     /// MaterialData { ... }` declaration emitted above the author's
     /// WGSL fragment. Empty string for first-party ids.
@@ -244,7 +244,7 @@ pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
     pub base: crate::dynamic_materials::ShadingBase,
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     pub owns_skybox: bool,
-    pub pbr_features: awsm_materials::pbr::PbrFeatures,
+    pub pbr_features: awsm_renderer_materials::pbr::PbrFeatures,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,
     pub dynamic_wgsl_fragment: String,
@@ -449,11 +449,11 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 {
                     String::new()
                 } else {
-                    awsm_materials::registry::build_materials_wgsl_filtered(
+                    awsm_renderer_materials::registry::build_materials_wgsl_filtered(
                         value.base.canonical_shader_id(),
                     )
                 },
-                shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
+                shader_id_consts: awsm_renderer_materials::registry::build_shader_id_consts(),
                 shader_id: value.shader_id,
                 base: value.base,
                 // Custom (dynamic) materials carry their own author-declared
@@ -461,7 +461,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // once as `inc` above and shared with the bind-group template).
                 inc,
                 owns_skybox: value.owns_skybox,
-                pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
+                pbr_features: awsm_renderer_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()
@@ -639,7 +639,7 @@ impl ShaderTemplateMaterialOpaque {
 mod empty_registry_tests {
     use super::*;
     use crate::render_passes::material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque;
-    use awsm_materials::MaterialShaderId;
+    use awsm_renderer_materials::MaterialShaderId;
 
     // Custom author accessors must exist in the opaque-compute kernel includes.
     // Since the opaque-shade + edge-resolve kernels were unified into one shader
@@ -703,7 +703,7 @@ mod empty_registry_tests {
             owns_skybox: shader_id == MaterialShaderId::SKYBOX,
             // Canonical first-party buckets carry the empty feature-set
             // (the minimal shader, never the uber `all()`).
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
             dynamic_shader: None,
             bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
@@ -837,10 +837,10 @@ mod transparent_dynamic_tests {
     use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
     use crate::render_passes::material_transparent::shader::template::ShaderTemplateMaterialTransparent;
     use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;
-    use awsm_materials::dynamic_layout::{
+    use awsm_renderer_materials::dynamic_layout::{
         FieldType, MaterialLayout, TextureSlotRuntime, UniformFieldRuntime,
     };
-    use awsm_materials::MaterialShaderId;
+    use awsm_renderer_materials::MaterialShaderId;
 
     /// Verifies the transparent fragment template + the dynamic-
     /// material wrapper compose into valid WGSL. Uses a soft-glass-
@@ -864,8 +864,8 @@ mod transparent_dynamic_tests {
             buffers: Vec::new(),
         };
         let struct_decl =
-            awsm_materials::dynamic_layout::generate_wgsl_struct("MaterialData", &layout);
-        let loader_decl = awsm_materials::dynamic_layout::generate_wgsl_loader(
+            awsm_renderer_materials::dynamic_layout::generate_wgsl_struct("MaterialData", &layout);
+        let loader_decl = awsm_renderer_materials::dynamic_layout::generate_wgsl_loader(
             "MaterialData",
             "material_data_load",
             &layout,
@@ -888,7 +888,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
         .to_string();
 
         let dyn_info = DynamicShaderInfo {
-            shader_includes: awsm_materials::ShaderIncludes::all(),
+            shader_includes: awsm_renderer_materials::ShaderIncludes::all(),
             struct_decl,
             loader_decl,
             wgsl_fragment,
@@ -908,7 +908,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             msaa_sample_count: None,
             mipmaps: true,
             base: crate::dynamic_materials::ShadingBase::Custom,
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
             dynamic_shader_id: Some(dyn_id),
             dynamic_shader: Some(dyn_info),
@@ -966,7 +966,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             msaa_sample_count: None,
             mipmaps: true,
             base: crate::dynamic_materials::ShadingBase::Pbr,
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
             dynamic_shader_id: None,
             dynamic_shader: None,
@@ -1007,10 +1007,10 @@ mod size_regression {
     use crate::render_passes::material_opaque::shader::cache_key::{
         DynamicShaderInfo, ShaderCacheKeyMaterialOpaque,
     };
-    use awsm_materials::MaterialShaderId;
+    use awsm_renderer_materials::MaterialShaderId;
 
     fn render_custom(
-        includes: awsm_materials::ShaderIncludes,
+        includes: awsm_renderer_materials::ShaderIncludes,
         msaa: Option<u32>,
         mipmaps: bool,
     ) -> String {
@@ -1019,7 +1019,7 @@ mod size_regression {
         bucket_entries.push(crate::dynamic_materials::BucketEntry {
             shader_id: dyn_id,
             base: crate::dynamic_materials::ShadingBase::Custom,
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             name: "noise".to_string(),
         });
         let key = ShaderCacheKeyMaterialOpaque {
@@ -1031,7 +1031,7 @@ mod size_regression {
             shader_id: dyn_id,
             base: crate::dynamic_materials::ShadingBase::Custom,
             owns_skybox: false,
-            pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 1,
             dynamic_shader: Some(DynamicShaderInfo {
                 shader_includes: includes,
@@ -1109,8 +1109,8 @@ mod size_regression {
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {
-        let empty = render_custom(awsm_materials::ShaderIncludes::empty(), Some(4), true);
-        let all = render_custom(awsm_materials::ShaderIncludes::all(), Some(4), true);
+        let empty = render_custom(awsm_renderer_materials::ShaderIncludes::empty(), Some(4), true);
+        let all = render_custom(awsm_renderer_materials::ShaderIncludes::all(), Some(4), true);
         eprintln!(
             "[size_regression] Custom msaa4+mips — empty: {} B, all: {} B (delta {})",
             empty.len(),
@@ -1151,7 +1151,7 @@ mod size_regression {
     // phase-end browser run GPU-compiles the empty-includes Custom shader.
     #[test]
     fn custom_path_never_leaks_first_party_shading() {
-        use awsm_materials::ShaderIncludes as S;
+        use awsm_renderer_materials::ShaderIncludes as S;
         // Tier-B forced declaration — must still be stripped on the Custom path.
         let tier_b = S::BRDF
             .union(S::APPLY_LIGHTING)
@@ -1216,7 +1216,7 @@ mod size_regression {
 #[cfg(test)]
 mod brdf_gate_tests {
     use askama::Template;
-    use awsm_materials::pbr::PbrFeatures;
+    use awsm_renderer_materials::pbr::PbrFeatures;
 
     #[derive(Template)]
     #[template(path = "shared_wgsl/lighting/brdf.wgsl")]

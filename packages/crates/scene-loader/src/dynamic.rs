@@ -19,19 +19,19 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use awsm_materials::dynamic::{DynamicMaterial, DynamicTextureBinding};
-use awsm_materials::dynamic_layout::{
+use awsm_renderer_materials::dynamic::{DynamicMaterial, DynamicTextureBinding};
+use awsm_renderer_materials::dynamic_layout::{
     BufferSlotRuntime, FieldType, MaterialLayout, TextureSlotRuntime, UniformFieldRuntime,
     UniformValue,
 };
-use awsm_materials::{
+use awsm_renderer_materials::{
     FragmentInputs, MaterialAlphaMode as RAlphaMode, MaterialShaderId, ShaderIncludes,
 };
 use awsm_renderer::dynamic_materials::MaterialRegistration;
 use awsm_renderer::materials::Material;
 use awsm_renderer::AwsmRenderer;
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
-use awsm_scene::{
+use awsm_renderer_scene::{
     AssetId, FieldType as SFieldType, MaterialAlphaMode as SAlphaMode, MaterialDefinition,
     MaterialInstance, Scene, UniformValue as SUniformValue,
 };
@@ -323,7 +323,7 @@ fn default_value_for(ty: FieldType) -> UniformValue {
 fn includes_from_keys(keys: &[String]) -> ShaderIncludes {
     let mut s = ShaderIncludes::empty();
     for k in keys {
-        // Single source of truth: awsm_materials::ShaderIncludes::KEY_TABLE.
+        // Single source of truth: awsm_renderer_materials::ShaderIncludes::KEY_TABLE.
         // Unknown keys are dropped; Tier-B keys still parse for back-compat but
         // are masked off for custom materials by ShaderIncludeFlags::for_custom.
         s = s.union(ShaderIncludes::from_key(k).unwrap_or_else(ShaderIncludes::empty));
@@ -429,8 +429,8 @@ mod tests {
     // boundary, so an authored uniform-value tweak stays a cheap no-recompile
     // update while a real layout change forces a distinct registration.
 
-    fn uni(name: &str, ty: SFieldType, default: SUniformValue) -> awsm_scene::UniformField {
-        awsm_scene::UniformField {
+    fn uni(name: &str, ty: SFieldType, default: SUniformValue) -> awsm_renderer_scene::UniformField {
+        awsm_renderer_scene::UniformField {
             name: name.into(),
             ty,
             default,
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn layout_hash_tracks_textures_and_buffers() {
-        use awsm_scene::{BufferSlot, TextureSlot};
+        use awsm_renderer_scene::{BufferSlot, TextureSlot};
 
         let mut with_tex = minimal_def();
         with_tex.textures = vec![TextureSlot {

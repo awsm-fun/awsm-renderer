@@ -95,9 +95,9 @@ mod tests {
                             height: 2.0,
                         }),
                         N::Transform {
-                            trs: awsm_scene::Trs {
+                            trs: awsm_renderer_scene::Trs {
                                 translation: [0.0, 0.3, 0.0],
-                                ..awsm_scene::Trs::IDENTITY
+                                ..awsm_renderer_scene::Trs::IDENTITY
                             },
                             child: Box::new(N::Primitive(P::Cylinder {
                                 radius: 0.8,
@@ -107,9 +107,9 @@ mod tests {
                     ],
                 },
                 N::Transform {
-                    trs: awsm_scene::Trs {
+                    trs: awsm_renderer_scene::Trs {
                         translation: [1.2, 0.0, 0.0],
-                        ..awsm_scene::Trs::IDENTITY
+                        ..awsm_renderer_scene::Trs::IDENTITY
                     },
                     child: Box::new(N::Primitive(P::Torus {
                         major: 0.5,

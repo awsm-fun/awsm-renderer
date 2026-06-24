@@ -22,7 +22,7 @@
 
 use std::cell::RefCell;
 
-use awsm_meshgen::{cone_mesh, cylinder_mesh, sphere_mesh, MeshData};
+use awsm_renderer_meshgen::{cone_mesh, cylinder_mesh, sphere_mesh, MeshData};
 use awsm_renderer::camera::CameraMatrices;
 use awsm_renderer::materials::{unlit::UnlitMaterial, Material, MaterialAlphaMode, MaterialKey};
 use awsm_renderer::meshes::MeshKey;

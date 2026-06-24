@@ -1,8 +1,8 @@
-# awsm-gltf-convert
+# awsm-renderer-gltf-convert
 
 Pure-data glTF → canonical AWSM-format normalizer. No GPU, no browser, no
 renderer — it runs entirely on bytes, so it's exhaustively property-testable
-(`cargo test -p awsm-gltf-convert`). This is the single import/convert path
+(`cargo test -p awsm-renderer-gltf-convert`). This is the single import/convert path
 shared by the editor and the player.
 
 ## What's here
@@ -36,7 +36,7 @@ never depends on an image decoder accepting them — and it skips the decode cos
 
 ## Companion crates
 
-- `awsm-glb-export` — supplies `reexport_clean_scene` / `write_glb`, the
+- `awsm-renderer-glb-export` — supplies `reexport_clean_scene` / `write_glb`, the
   geometry re-export this crate wraps.
 - `awsm-renderer-gltf` — the GPU-side ingestion path that loads a (canonical) glb
   into the renderer.

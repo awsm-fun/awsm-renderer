@@ -1,9 +1,9 @@
-# awsm-glb-export
+# awsm-renderer-glb-export
 
 Scene-complete glTF/GLB **export** IR + writer for `awsm-renderer`. No GPU,
-editor, or wasm dependencies — only `awsm-meshgen` (for the plain-data
+editor, or wasm dependencies — only `awsm-renderer-meshgen` (for the plain-data
 `MeshData`) and `gltf-json` (the model used to *build* a glTF). That keeps the
-whole writer natively unit-testable (`cargo test -p awsm-glb-export`).
+whole writer natively unit-testable (`cargo test -p awsm-renderer-glb-export`).
 
 ## What's here
 
@@ -17,7 +17,7 @@ whole writer natively unit-testable (`cargo test -p awsm-glb-export`).
   `ExportCamera` / `ExportAnimation` / `ExportSkin` — the IR types, with builder
   helpers on `ExportNode`.
 - `extract_*` / `reexport_clean*` — pull baked geometry back out of glb bytes and
-  re-export a cleaned, geometry-only glb (the basis for `awsm-gltf-convert`).
+  re-export a cleaned, geometry-only glb (the basis for `awsm-renderer-gltf-convert`).
 - `assemble_bundle` — assembles a player bundle from export inputs.
 
 ## Scene-complete by design
@@ -44,7 +44,7 @@ mesh-only.
 
 ## Companion crates
 
-- `awsm-meshgen` — supplies the plain-data `MeshData` this crate re-exports.
-- `awsm-tangents` — used to bake `TANGENT` attributes during write.
-- `awsm-gltf-convert` — builds on the `reexport_clean*` path to normalize foreign
+- `awsm-renderer-meshgen` — supplies the plain-data `MeshData` this crate re-exports.
+- `awsm-renderer-tangents` — used to bake `TANGENT` attributes during write.
+- `awsm-renderer-gltf-convert` — builds on the `reexport_clean*` path to normalize foreign
   glTF into the canonical AWSM form.

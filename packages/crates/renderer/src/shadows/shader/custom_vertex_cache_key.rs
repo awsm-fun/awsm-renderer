@@ -18,7 +18,7 @@
 //! affected pipeline. The shadow atlas is single-sampled, so there is no MSAA /
 //! sample_mask field.
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::{
     render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo, shaders::ShaderCacheKey,

@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use crate::mesh_def::MeshDef;
-use awsm_scene::{mesh_asset_filename, AssetId, MaterialDef, TextureDef};
+use awsm_renderer_scene::{mesh_asset_filename, AssetId, MaterialDef, TextureDef};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

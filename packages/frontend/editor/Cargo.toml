@@ -1,5 +1,5 @@
 [package]
-name = "awsm-editor"
+name = "awsm-renderer-editor"
 publish = false  # frontend app, not released to crates.io
 description = "Unified scene + material authoring tool for awsm-renderer (v2 rebuild)."
 edition.workspace = true
@@ -17,17 +17,17 @@ default = []
 harden-diag = []
 
 [dependencies]
-awsm-curves = { workspace = true, features = ["serde"] }
-awsm-meshgen = { workspace = true, features = ["authoring"] }
-awsm-glb-export = { workspace = true }
-awsm-materials = { workspace = true }
-awsm-particles = { workspace = true, features = ["serde"] }
+awsm-renderer-curves = { workspace = true, features = ["serde"] }
+awsm-renderer-meshgen = { workspace = true, features = ["authoring"] }
+awsm-renderer-glb-export = { workspace = true }
+awsm-renderer-materials = { workspace = true }
+awsm-renderer-particles = { workspace = true, features = ["serde"] }
 awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export", "debug-views", "dynamic-material-validation"] }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
-awsm-scene-loader = { workspace = true }
-awsm-editor-protocol = { workspace = true }
-awsm-web-shared = { workspace = true }
+awsm-renderer-scene-loader = { workspace = true }
+awsm-renderer-editor-protocol = { workspace = true }
+awsm-renderer-web-shared = { workspace = true }
 
 anyhow = { workspace = true }
 glam = { workspace = true, features = ["serde"] }

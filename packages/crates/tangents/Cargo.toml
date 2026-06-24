@@ -1,5 +1,5 @@
 [package]
-name = "awsm-tangents"
+name = "awsm-renderer-tangents"
 description = "MikkTSpace tangent generation over plain geometry arrays (pure, no GPU) — shared by the renderer raw-mesh path and the glb exporter/converter"
 edition.workspace = true
 version.workspace = true

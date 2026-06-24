@@ -3,7 +3,7 @@
 //!
 //! The typical player flow is NOT glTF-direct (that's for the editor /
 //! model-viewer): the editor exports a `Scene`, and the game loads it with
-//! `awsm_scene_loader::load_scene_for_player`. This demo does that **inside the
+//! `awsm_renderer_scene_loader::load_scene_for_player`. This demo does that **inside the
 //! render worker** — proving the threaded build can do what single-threaded
 //! does — then exercises the runtime control surface that makes it a game:
 //!
@@ -99,9 +99,9 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
 }
 
 /// Fetch a same-origin player-bundle `scene.toml` and deserialize it to a
-/// runtime [`Scene`](awsm_scene::Scene). Same-origin is required under
+/// runtime [`Scene`](awsm_renderer_scene::Scene). Same-origin is required under
 /// COOP/COEP (`require-corp` blocks cross-origin fetches).
-async fn fetch_scene_file(url: &str) -> Result<awsm_scene::Scene, String> {
+async fn fetch_scene_file(url: &str) -> Result<awsm_renderer_scene::Scene, String> {
     let text = gloo_net::http::Request::get(url)
         .send()
         .await
@@ -109,7 +109,7 @@ async fn fetch_scene_file(url: &str) -> Result<awsm_scene::Scene, String> {
         .text()
         .await
         .map_err(|e| format!("read {url}: {e}"))?;
-    awsm_scene::project_dir::scene_from_toml(&text).map_err(|e| format!("parse {url}: {e}"))
+    awsm_renderer_scene::project_dir::scene_from_toml(&text).map_err(|e| format!("parse {url}: {e}"))
 }
 
 async fn run_render(
@@ -133,10 +133,10 @@ async fn run_render(
 
     // ── Load a real editor-exported Scene FILE via the PLAYER path (B4) ──────
     // The shipped flow: the editor's `export_player_bundle` emits `scene.toml`
-    // (a serialized runtime `awsm_scene::Scene` from `project_to_scene`); a game
+    // (a serialized runtime `awsm_renderer_scene::Scene` from `project_to_scene`); a game
     // fetches it and runs `load_scene_for_player`. We do exactly that IN THE
     // WORKER — fetch the bundled `scene.toml` same-origin, deserialize with
-    // `awsm_scene::project_dir::scene_from_toml`, and load it (materials,
+    // `awsm_renderer_scene::project_dir::scene_from_toml`, and load it (materials,
     // primitive meshes, lights, environment, the commit transaction). Per-frame
     // state then rides Layer 2 (the arena) below. If the fetch/parse fails we
     // fall back to the equivalent in-code `demo_scene()` so the demo still runs.
@@ -159,7 +159,7 @@ async fn run_render(
         }
     };
     let assets: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
-    let loaded = awsm_scene_loader::load_scene_for_player(&mut renderer, &scene, &assets, |_| {})
+    let loaded = awsm_renderer_scene_loader::load_scene_for_player(&mut renderer, &scene, &assets, |_| {})
         .await
         .map_err(|e| JsValue::from_str(&format!("load_scene_for_player: {e}")))?;
     let node_count = loaded.nodes.len();
@@ -358,13 +358,13 @@ fn set(obj: &js_sys::Object, key: &str, value: &JsValue) {
     let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), value);
 }
 
-/// A minimal **current-format** runtime [`Scene`](awsm_scene::Scene) — a floor,
+/// A minimal **current-format** runtime [`Scene`](awsm_renderer_scene::Scene) — a floor,
 /// a box, and a point light, all assigned a default material — equivalent to a
 /// tiny editor export. Built in code because the repo's bundled scene fixtures
 /// are a stale pre-refactor format; the value is that the player loader runs it
 /// in the worker unchanged.
-fn demo_scene() -> awsm_scene::Scene {
-    use awsm_scene::{
+fn demo_scene() -> awsm_renderer_scene::Scene {
+    use awsm_renderer_scene::{
         AssetEntry, AssetId, AssetSource, EditorNode, EnvironmentConfig, LightConfig, MaterialDef,
         MaterialInstance, MeshRef, MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, RuntimeMesh,
         Scene, Trs,

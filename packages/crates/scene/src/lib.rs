@@ -1,10 +1,10 @@
-//! `awsm-scene` — the lean, canonical **runtime** scene schema for the
+//! `awsm-renderer-scene` — the lean, canonical **runtime** scene schema for the
 //! awsm-renderer player: a [`Scene`] (`scene.toml`) + an `assets/` directory,
 //! all by-id. The player and renderer touch only this crate.
 //!
 //! Authoring lives elsewhere: the modifier stack + per-vertex overrides + the
-//! editor's `Mesh = base + edits` are in `awsm-meshgen` (recipe types) and
-//! `awsm-editor-protocol` (the `EditorProject` document + `EditorCommand`/
+//! editor's `Mesh = base + edits` are in `awsm-renderer-meshgen` (recipe types) and
+//! `awsm-renderer-editor-protocol` (the `EditorProject` document + `EditorCommand`/
 //! `EditorQuery`), which depend on this crate and reuse its core types. The
 //! editor's bake step lowers authoring → runtime (`MeshDef` → [`mesh::MeshBlob`]).
 //!

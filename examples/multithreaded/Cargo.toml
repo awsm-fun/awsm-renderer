@@ -1,5 +1,5 @@
 [package]
-name = "awsm-multithreaded-example"
+name = "awsm-renderer-multithreaded-example"
 publish = false # reference consumer, not released to crates.io
 description = "Standalone multithreaded reference app for awsm-renderer (render worker + physics worker + shared-memory sim state). Built with the nightly threaded profile (+atomics,+bulk-memory + build-std)."
 edition.workspace = true
@@ -30,10 +30,10 @@ harden-diag = []
 awsm-renderer = { workspace = true, features = ["texture-export"] }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
-awsm-scene = { workspace = true }
-awsm-scene-loader = { workspace = true }
-awsm-materials = { workspace = true }
-awsm-meshgen = { workspace = true }
+awsm-renderer-scene = { workspace = true }
+awsm-renderer-scene-loader = { workspace = true }
+awsm-renderer-materials = { workspace = true }
+awsm-renderer-meshgen = { workspace = true }
 gloo-net = { workspace = true }
 glam = { workspace = true }
 web-sys = { workspace = true }
