@@ -404,10 +404,24 @@ backbone is reused, not rebuilt:
   layout at upload. Added the **`virtual_geometry`** feature flag (default off ⇒
   byte-identical; gate-hygiene test; `?vg` URL toggle in the editor).
 
-**Next:** B.2 (GPU two-level cull + per-cluster LOD-cut compute → one compacted
-indirect stream) and B.3 (cluster_id in the vis-buffer + material fetch from
-cluster pages). These are the large GPU-runtime investment; bundle emission of
-`ClusterMesh` lands with the runtime that consumes it.
+**Status — landed (B.2a, runtime cut core).** Renderer `cluster_lod` module:
+`ClusterPage` (runtime mirror of the bake page) + `select_cut(pages, threshold,
+&mut out)` — the watertight LOD cut `{ c : lod_error <= t < parent_error }`,
+reusing an out-buffer (no per-frame alloc). Plus `instance_error_threshold`
+(pixel budget → object-space error at the instance's distance, so the cut
+coarsens with distance) and `cluster_projected_error` (the per-cluster
+projection the GPU pass will use). 5 unit tests (finest@0, mid/root cuts,
+triangle-count monotone in threshold, every cluster selected at its lower bound,
+distance coarsening). This is the **reference spec** for the B.2 GPU compute pass.
+
+**Next:** B.2 proper — upload the cluster pages + vertex/index buffers, run the
+two-level cull + per-cluster cut as a compute pass writing one compacted index
+stream + a single `drawIndexedIndirect`; then B.3 (cluster_id in the vis-buffer +
+material fetch from cluster pages). These are the large GPU-runtime investment;
+bundle emission + load of `ClusterMesh` lands with that consumer. _Note for
+crack-free per-cluster (vs per-instance) cuts: project each group's error with a
+group-consistent bounding sphere so all clusters in a group flip together — a
+B.2 refinement; the per-instance uniform cut is already watertight._
 
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds
