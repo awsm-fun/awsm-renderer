@@ -10,11 +10,13 @@
 //! Phase A (discrete LOD chain) uses [`build_lod_chain`]; Phase B (cluster LOD
 //! DAG) will reuse the same collapse with locked group boundaries.
 
+pub mod cluster;
 pub mod manifest;
 pub mod plan;
 pub mod quadric;
 pub mod simplify;
 
+pub use cluster::{build_clusters, Meshlet};
 pub use manifest::{
     bounding_sphere_radius, lod_level_filename, lod_manifest_filename, MeshLodLevel, MeshLodManifest,
 };

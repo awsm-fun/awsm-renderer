@@ -375,6 +375,15 @@ backbone is reused, not rebuilt:
   parent/child links, LOD error, material id). Retain the 56-byte exploded
   visibility vertex layout per-cluster.
 
+> **Wasm-forced implementation note (same lesson as the Phase A simplifier).**
+> `meshopt_buildMeshlets` and `metis` are C libraries; the bake runs in the
+> `wasm32-unknown-unknown` editor where Apple clang has no wasm target, so both
+> are **pure-Rust** in `awsm-renderer-lod-bake`: a greedy edge-adjacency meshlet
+> builder (B.1a) and a greedy cluster-graph grouping (B.1b, the `metis` stand-in),
+> feeding the existing boundary-locked QEM collapse for the group simplify (B.1c).
+> Sub-steps: **B.1a** clusters + bounds → **B.1b** cluster adjacency + grouping →
+> **B.1c** the LOD DAG (group→simplify→regroup, monotonic error) + page emit.
+
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds
   (generalizes today's `OcclusionInstance` array), then per-cluster LOD cut only
