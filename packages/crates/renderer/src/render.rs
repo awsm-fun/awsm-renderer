@@ -1259,22 +1259,25 @@ impl AwsmRenderer {
                                 vh as f32,
                                 Self::LOD_ERROR_THRESHOLD_PX,
                             )?;
-                            // One-shot readback verification: copy `selected` to
-                            // its MAP_READ mirror (recorded after the dispatch);
-                            // the post-submit spawn_local logs the selected count.
+                            // Pack the selected clusters into one compacted index
+                            // stream + drawIndexedIndirect args (reads `selected`).
+                            cluster_pass.dispatch_compaction(&ctx)?;
+                            // One-shot readback verification: copy the indirect
+                            // args' `index_count` (the compacted triangle stream
+                            // length) to the MAP_READ mirror; the post-submit
+                            // spawn_local logs it.
                             let want = {
                                 let st = self.cluster_cut_readback.lock().unwrap();
                                 !st.inflight && !st.logged
                             };
                             if want {
                                 if let Some(buffers) = cluster_pass.buffers.as_ref() {
-                                    let bytes = cluster_pass.cluster_count.saturating_mul(4);
                                     ctx.command_encoder.copy_buffer_to_buffer(
-                                        &buffers.selected_buffer,
+                                        &buffers.draw_args_buffer,
                                         0,
                                         &buffers.readback_buffer,
                                         0,
-                                        bytes,
+                                        4,
                                     )?;
                                     cluster_cut_kick = Some((
                                         buffers.readback_buffer.clone(),
@@ -1646,23 +1649,25 @@ impl AwsmRenderer {
         if let Some((readback_buffer, total)) = cluster_cut_kick {
             let state = std::sync::Arc::clone(&self.cluster_cut_readback);
             state.lock().unwrap().inflight = true;
-            let size = total.saturating_mul(4);
             wasm_bindgen_futures::spawn_local(async move {
-                match crate::core::buffers::extract_buffer_vec(&readback_buffer, Some(size)).await {
-                    Ok(bytes) => {
-                        let selected = bytes
-                            .chunks_exact(4)
-                            .filter(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) != 0)
-                            .count();
+                match crate::core::buffers::extract_buffer_vec(&readback_buffer, Some(4)).await {
+                    Ok(bytes) if bytes.len() >= 4 => {
+                        let index_count =
+                            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                         tracing::info!(
-                            "cluster cut (GPU): {selected}/{total} clusters selected by cluster_cut.wgsl"
+                            "cluster compaction (GPU): draw_args.index_count = {index_count} \
+                             ({} tris) over {total} clusters",
+                            index_count / 3
                         );
                         let mut s = state.lock().unwrap();
                         s.logged = true;
                         s.inflight = false;
                     }
+                    Ok(_) => {
+                        state.lock().unwrap().inflight = false;
+                    }
                     Err(err) => {
-                        tracing::warn!("cluster cut readback mapAsync failed: {err:?}");
+                        tracing::warn!("cluster compaction readback mapAsync failed: {err:?}");
                         state.lock().unwrap().inflight = false;
                     }
                 }

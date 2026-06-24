@@ -223,6 +223,16 @@ impl ClusterLodBuffers {
         gpu.write_buffer(&self.params_buffer, None, bytes.as_slice(), None, None)
     }
 
+    /// Initialise the indirect draw args to `{index_count:0, instance_count:1,
+    /// first_index:0, base_vertex:0, first_instance:0}` (once, at load). The
+    /// compaction zeroes only `index_count` per frame and atomic-bumps it; the
+    /// static fields stay valid for `drawIndexedIndirect`.
+    pub fn init_draw_args(&self, gpu: &AwsmRendererWebGpu) -> Result<(), AwsmCoreError> {
+        let mut bytes = [0u8; CLUSTER_DRAW_ARGS_SIZE];
+        bytes[4..8].copy_from_slice(&1u32.to_le_bytes()); // instance_count = 1
+        gpu.write_buffer(&self.draw_args_buffer, None, bytes.as_slice(), None, None)
+    }
+
     /// Workgroups to dispatch for `cluster_count` pages at `@workgroup_size(64)`.
     pub fn dispatch_groups(cluster_count: u32) -> u32 {
         cluster_count.div_ceil(64)

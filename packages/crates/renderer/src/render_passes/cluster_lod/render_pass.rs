@@ -125,4 +125,32 @@ impl ClusterLodRenderPass {
         cp.end();
         Ok(())
     }
+
+    /// Dispatch the compaction: reset the indirect args (index_count→0,
+    /// instance_count→1), then pack the selected clusters' index pages into
+    /// `compacted_indices` + bump `draw_args.index_count`. Run after [`dispatch`]
+    /// (it reads `selected`). After this, `draw_args` drives one
+    /// `drawIndexedIndirect(compacted_indices)`.
+    pub fn dispatch_compaction(&self, ctx: &RenderContext) -> Result<()> {
+        let Some(buffers) = self.buffers.as_ref() else {
+            return Ok(());
+        };
+        if self.cluster_count == 0 {
+            return Ok(());
+        }
+        // queue.writeBuffer is ordered before the submitted compute pass.
+        buffers.init_draw_args(ctx.gpu)?;
+        let cp = ctx.command_encoder.begin_compute_pass(Some(
+            &ComputePassDescriptor::new(Some("Cluster Compaction")).into(),
+        ));
+        cp.set_pipeline(ctx.pipelines.compute.get(self.pipelines.compaction)?);
+        cp.set_bind_group(0, self.compaction_bind_groups.get_bind_group()?, None)?;
+        cp.dispatch_workgroups(
+            ClusterLodBuffers::dispatch_groups(self.cluster_count),
+            Some(1),
+            Some(1),
+        );
+        cp.end();
+        Ok(())
+    }
 }
