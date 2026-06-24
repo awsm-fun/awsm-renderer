@@ -219,6 +219,19 @@ that LOD shipping does not require.
 >   **watertight with full materials** at 60 fps. Budget passthrough (helmet under
 >   the default 1.0M budget) logs `13616 resident` and is byte-identical to `?vg`.
 >   Flag off ⇒ verbatim passthrough. 3 unit tests pin the cap/remap/leaf-clamp.
+ - **Dense-asset scaling check:** a subdivided-sphere asset (1 024-tri sphere +
+>   Subdivide×4 = 262 144 tris, baked to a **550 856-tri cluster DAG / 17 951
+>   clusters**) loaded under `?vg&streambudget=8000`: capped to **7 970 tris (776
+>   resident clusters)**, the GPU cut ran (drew 1 060 tris) at 60 fps — confirming
+>   the cap/load path scales to a large mesh (69× reduction) without overflow.
+> - **Caveat found (NOT a streaming regression):** that subdivided sphere renders
+>   with **cluster-cut holes at FULL detail too** (no cap), i.e. the holes are a
+>   **pre-existing Phase B cut/bake issue on this `watertight:false` synthetic mesh**
+>   (midpoint-subdivision topology), independent of capping — the cap just selects
+>   fewer clusters, it does not introduce the holes. Real glTF assets (the
+>   DamagedHelmet) cluster + cut + cap **watertight**; the synthetic non-watertight
+>   sphere does not. Follow-up (Phase B / a separate issue, out of this branch's
+>   scope): make the cluster bake/cut robust to non-watertight + subdivided input.
 > - **Residual gap (→ Step 2):** the cap is *static* (chosen at load); `M`'s detail
 >   is bounded by the budget regardless of camera, and seams can appear where the
 >   partial frontier level borders coarser-only regions. Positions aren't capped

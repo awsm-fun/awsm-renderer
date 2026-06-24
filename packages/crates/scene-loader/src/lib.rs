@@ -2023,10 +2023,12 @@ async fn load_cluster_lod(
         gpu_pages.len(),
         resident_tris,
         if capped {
+            // Print the EFFECTIVE budget actually applied (URL override or the
+            // default), not the const — they differ when `?streambudget=N` is set.
             format!(
                 " (CAPPED from {} — streaming residency budget {})",
                 cm.indices.len() / 3,
-                CLUSTER_STREAMING_BUDGET_TRIS
+                budget
             )
         } else {
             String::new()
