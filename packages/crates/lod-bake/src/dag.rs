@@ -425,6 +425,35 @@ mod tests {
             .any(|c| c.lod_error > 0.0 && c.lod_bounds_radius > 0.0));
     }
 
+    /// Scale smoke test: the bake must stay roughly linear, not blow up, on a
+    /// large mesh (the plan's multi-million-tri requirement, proxied here by a
+    /// dense grid that keeps the unit test fast). A super-linear regression in
+    /// clustering / grouping / per-group simplify would time this out.
+    #[test]
+    fn large_mesh_builds_a_valid_dag() {
+        let (pos, indices) = grid(200); // 200×200×2 = 80,000 triangles
+        let total = indices.len() / 3;
+        assert_eq!(total, 80_000);
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+
+        // Level-0 clusters partition the source triangles exactly.
+        let l0: usize = dag
+            .clusters
+            .iter()
+            .filter(|c| c.lod_error == 0.0)
+            .map(|c| c.triangles.len())
+            .sum();
+        assert_eq!(l0, total, "level 0 must cover every source triangle");
+        // The DAG reduced to coarser levels and a root exists.
+        assert!(dag.clusters.iter().any(|c| c.lod_error > 0.0), "built coarser levels");
+        assert!(dag.clusters.iter().any(|c| c.parent_error >= ROOT_PARENT_ERROR), "has a root");
+        // Monotonic errors + valid bounds everywhere.
+        for c in &dag.clusters {
+            assert!(c.parent_error >= c.lod_error);
+            assert!(c.radius > 0.0 && c.radius.is_finite());
+        }
+    }
+
     #[test]
     fn tiny_mesh_terminates() {
         let (pos, indices) = grid(2); // 8 tris → one cluster, no further levels
