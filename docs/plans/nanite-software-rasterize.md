@@ -57,6 +57,19 @@ Other WebGPU constraints relevant here:
 
 ## Phase 0 — SW-rasterizer atomic-emulation spike (GO/NO-GO)
 
+> **In progress (nanite-streaming).** Pragmatic harness: the spike runs as a
+> self-contained WebGPU bench via chrome-devtools `evaluate_script` (its own
+> GPUDevice, no editor interference) rather than a Trunk wasm crate — the
+> deliverable is the GO/NO-GO *measurement*, and if GO the production SW rasterizer
+> is Rust (Phase 3). Bench code: `nanite-sw-raster-bench.js` (next to this doc).
+> - **Step 1 (done) — harness sanity + atomic-throughput baseline:** on the dev
+>   Apple GPU, **~5.75 G `atomicMax` ops/sec** (16.7M atomics / 2.92 ms per iter).
+>   Confirms the bench path works on target; gives the raw atomic ceiling the
+>   raster encodings are bounded by.
+> - **Step 2 (next) — HW baseline vs Encoding A** (the critical gate), swept over
+>   triangle pixel-size + overdraw. If A can't beat HW at small sizes ⇒ NO-GO.
+> - **Step 3 — Encoding B** correctness (payload error-rate vs HW) + perf.
+
 De-risk before building anything. In isolation, implement and benchmark a
 compute software rasterizer that emulates the 64-bit depth+payload atomic.
 
