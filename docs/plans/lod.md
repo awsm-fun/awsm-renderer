@@ -185,8 +185,30 @@ half-edge QEM collapse (see "Simplifier implementation" above); builds for
 survive, curved surface → nonzero error, attribute gather, monotone chain).
 `SimplifiedMesh { surviving, indices, error }` + `gather<T>(attr)` give the
 caller the subset remap to carry positions/normals/uvs/colors/skin/morph through
-a level. **Next:** wire into `bake_player_bundle` (emit levels + descriptor,
-honour `MeshLodConfig` + min-tris, content-hash cache) then runtime selection.
+a level.
+
+**Status — landed (A.2b, static wiring):** `bake_player_bundle` now bakes the
+discrete chain for LOD-enabled, above-floor (≥512 tri) **static** Glb meshes.
+Format (additive — no `scene.toml`/`RuntimeMesh` change, so flag-off bundles are
+byte-identical in everything the renderer reads): per mesh asset `<id>` it emits
+`<id>.lod{N}.glb` per simplified level + an `<id>.lod.toml` manifest
+(`MeshLodManifest`: bounds radius, base tri count, per-level index/error/tris).
+The level-planning policy (floor, drop non-reducing levels, numbering, manifest)
+lives in `lod-bake::plan` (native-tested); the editor side
+(`controller/lod_bake.rs`) is only attribute-gather + glb-encode + filename +
+a geometry-hash session cache. Per-node toggle governs per-asset bake (an asset
+bakes if any referencing node is LOD-enabled). End-to-end verified via MCP
+export on DamagedHelmet (15452 → 10074 tris, manifest error 0.164, no panic).
+
+**Known follow-up before the acceptance test — simplifier aggressiveness.** The
+current rule *hard-locks every boundary/seam vertex*, which on seam-heavy meshes
+(e.g. DamagedHelmet) locks so much that the chain plateaus (~65% of base, only
+one level survives) instead of reaching the requested 0.5/0.25/0.125. Fix:
+allow a boundary/seam vertex to **slide along its boundary** (collapse onto
+another boundary vertex sharing a boundary edge) instead of locking it outright
+— standard boundary-preserving QEM. Discrete LOD swaps whole meshes, so this
+doesn't risk cross-mesh cracks. Do this next, then A.2c (skinned/morph) + A.3
+(runtime selection).
 
 **Critical files:**
 - Runtime selection: `render_passes/occlusion/shader/occlusion_wgsl/cull.wgsl`,

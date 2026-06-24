@@ -10,9 +10,15 @@
 //! Phase A (discrete LOD chain) uses [`build_lod_chain`]; Phase B (cluster LOD
 //! DAG) will reuse the same collapse with locked group boundaries.
 
+pub mod manifest;
+pub mod plan;
 pub mod quadric;
 pub mod simplify;
 
+pub use manifest::{
+    bounding_sphere_radius, lod_level_filename, lod_manifest_filename, MeshLodLevel, MeshLodManifest,
+};
+pub use plan::{plan_lod_levels, LodPlan, PlannedLevel};
 pub use simplify::{build_lod_chain, simplify, SimplifiedMesh, SimplifyOptions};
 
 #[cfg(test)]
@@ -120,6 +126,47 @@ mod tests {
             );
             prev = lvl.triangle_count();
         }
+    }
+
+    /// A closed manifold (octahedron) has **no** boundary edges, so no vertex is
+    /// locked and the simplifier is free to collapse. It must not panic and must
+    /// stay a valid index buffer.
+    #[test]
+    fn closed_manifold_simplifies_without_panic() {
+        let pos = vec![
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ];
+        // 8 faces of an octahedron (consistent winding).
+        let indices = vec![
+            4, 0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 5, 2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3,
+        ];
+        let m = simplify(&pos, &indices, SimplifyOptions::with_target(2));
+        assert_indices_in_range(&m);
+        assert!(m.triangle_count() <= 8);
+    }
+
+    /// Messy input — a degenerate (zero-area) triangle, a triangle with a
+    /// duplicate index, and an unreferenced vertex — must not panic and must
+    /// yield a clean, in-range, degenerate-free index buffer.
+    #[test]
+    fn messy_input_is_robust() {
+        let (mut pos, mut indices) = grid(6, 6);
+        // Unreferenced extra vertex.
+        pos.push([100.0, 100.0, 100.0]);
+        // A degenerate triangle (three collinear / identical-ish points) and a
+        // duplicate-index triangle.
+        let a = 0u32;
+        let b = 1u32;
+        indices.extend_from_slice(&[a, a, b]); // duplicate index → degenerate
+        indices.extend_from_slice(&[a, b, a]); // also degenerate
+        let base = indices.len() / 3;
+        let m = simplify(&pos, &indices, SimplifyOptions::with_target(base / 4));
+        assert_indices_in_range(&m);
     }
 
     #[test]

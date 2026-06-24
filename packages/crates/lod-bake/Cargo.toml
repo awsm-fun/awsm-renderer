@@ -8,7 +8,14 @@ authors.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
+[features]
+# Derive serde on the bundle-facing manifest types so the editor bake can write
+# them and the scene-loader runtime can read them. The simplifier itself needs
+# no serialization.
+serde = ["dep:serde"]
+
 [dependencies]
 glam = { workspace = true }
+serde = { workspace = true, features = ["derive"], optional = true }
 
 [dev-dependencies]

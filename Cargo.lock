@@ -271,6 +271,7 @@ dependencies = [
  "awsm-renderer-editor-protocol",
  "awsm-renderer-glb-export",
  "awsm-renderer-gltf",
+ "awsm-renderer-lod-bake",
  "awsm-renderer-materials",
  "awsm-renderer-meshgen",
  "awsm-renderer-particles",
@@ -390,6 +391,7 @@ name = "awsm-renderer-lod-bake"
 version = "0.4.0"
 dependencies = [
  "glam 0.32.1",
+ "serde",
 ]
 
 [[package]]

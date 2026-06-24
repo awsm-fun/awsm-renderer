@@ -21,6 +21,7 @@ awsm-renderer-curves = { workspace = true, features = ["serde"] }
 awsm-renderer-meshgen = { workspace = true, features = ["authoring"] }
 awsm-renderer-glb-export = { workspace = true }
 awsm-renderer-materials = { workspace = true }
+awsm-renderer-lod-bake = { workspace = true, features = ["serde"] }
 awsm-renderer-particles = { workspace = true, features = ["serde"] }
 awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export", "debug-views", "dynamic-material-validation"] }
 awsm-renderer-core = { workspace = true }

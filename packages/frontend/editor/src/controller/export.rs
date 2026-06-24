@@ -106,7 +106,15 @@ pub async fn bake_player_bundle(
     //    survive the bake — they're not in the asset table like textures).
     rewrite_buffer_overrides(&mut scene.nodes, &mut files);
 
-    // 1. One geometry-only glb per Glb-lowered mesh asset.
+    // Mesh assets whose referencing nodes opt **in** to LOD (default on). The
+    // toggle is per-node but geometry/levels are per-asset, so an asset gets LOD
+    // baked if *any* node using it is LOD-enabled; the per-instance toggle then
+    // governs runtime level selection (an opted-out instance pins level 0).
+    let mut lod_assets: HashSet<AssetId> = HashSet::new();
+    collect_lod_static_assets(&project.nodes, &mut lod_assets);
+
+    // 1. One geometry-only glb per Glb-lowered mesh asset (+ discrete LOD levels
+    //    for LOD-enabled, above-floor static meshes).
     for (id, entry) in &project.assets.entries {
         if let AssetSource::Mesh(def) = &entry.source {
             if matches!(lower_mesh(def), RuntimeMesh::Glb) {
@@ -118,11 +126,19 @@ pub async fn bake_player_bundle(
                         colors: raw.colors,
                         indices: raw.indices,
                     };
+                    // Bake LOD from `mesh` by reference *before* it's moved into
+                    // the base glb below.
+                    let lod_files = if lod_assets.contains(id) {
+                        crate::controller::lod_bake::bake_static_lod(&id.0.to_string(), &mesh)
+                    } else {
+                        Vec::new()
+                    };
                     let glb = write_glb(&GlbScene {
                         nodes: vec![ExportNode::new("mesh").with_mesh(mesh)],
                         ..Default::default()
                     });
                     files.push(BundleFile::asset(mesh_glb_filename(*id), glb));
+                    files.extend(lod_files);
                 }
             }
         }
@@ -175,6 +191,23 @@ pub async fn bake_player_bundle(
     }
 
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
+}
+
+/// Collect the mesh-asset ids whose referencing `NodeKind::Mesh` nodes have LOD
+/// enabled (static path only — skinned/morph LOD bakes from the rig glb on its
+/// own path). Recurses the whole node tree.
+fn collect_lod_static_assets(
+    nodes: &[awsm_renderer_editor_protocol::EditorNode],
+    out: &mut HashSet<AssetId>,
+) {
+    for n in nodes {
+        if let NodeKind::Mesh { mesh, lod, .. } = &n.kind {
+            if lod.enabled {
+                out.insert(mesh.0);
+            }
+        }
+        collect_lod_static_assets(&n.children, out);
+    }
 }
 
 /// Emit each custom-material BUFFER override's words as `assets/buffer-<id>.bin`
