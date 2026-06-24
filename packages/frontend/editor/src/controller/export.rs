@@ -133,12 +133,17 @@ pub async fn bake_player_bundle(
                     } else {
                         Vec::new()
                     };
+                    // Cluster-LOD DAG (Phase B) for dense static meshes; consumed
+                    // at load only when the `virtual_geometry` feature is on.
+                    let cluster_files =
+                        crate::controller::lod_bake::bake_static_clusters(&id.0.to_string(), &mesh);
                     let glb = write_glb(&GlbScene {
                         nodes: vec![ExportNode::new("mesh").with_mesh(mesh)],
                         ..Default::default()
                     });
                     files.push(BundleFile::asset(mesh_glb_filename(*id), glb));
                     files.extend(lod_files);
+                    files.extend(cluster_files);
                 }
             }
         }

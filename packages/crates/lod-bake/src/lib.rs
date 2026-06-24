@@ -22,7 +22,8 @@ pub use cluster::{build_cluster_graph, build_clusters, group_clusters, ClusterGr
 pub use cluster_mesh::{ClusterMesh, ClusterPage};
 pub use dag::{build_cluster_dag, ClusterDag, DagCluster, DagOptions, ROOT_PARENT_ERROR};
 pub use manifest::{
-    bounding_sphere_radius, lod_level_filename, lod_manifest_filename, MeshLodLevel, MeshLodManifest,
+    bounding_sphere_radius, cluster_mesh_filename, lod_level_filename, lod_manifest_filename,
+    MeshLodLevel, MeshLodManifest,
 };
 pub use plan::{plan_lod_levels, LodPlan, PlannedLevel};
 pub use simplify::{build_lod_chain, simplify, SimplifiedMesh, SimplifyOptions};

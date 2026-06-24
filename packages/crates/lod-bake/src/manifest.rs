@@ -57,6 +57,13 @@ pub fn lod_level_filename(asset_id: &str, level: u32) -> String {
     format!("{asset_id}.lod{level}.glb")
 }
 
+/// The standard bundle filename for a static mesh asset's baked cluster LOD DAG
+/// (a JSON-serialised `ClusterMesh`). Present only for cluster-baked meshes;
+/// consumed when the `virtual_geometry` feature is on.
+pub fn cluster_mesh_filename(asset_id: &str) -> String {
+    format!("{asset_id}.clusters.bin")
+}
+
 /// Conservative object-space bounding-sphere radius: the max distance from the
 /// AABB centre to any vertex. `0.0` for an empty mesh.
 pub fn bounding_sphere_radius(positions: &[[f32; 3]]) -> f32 {

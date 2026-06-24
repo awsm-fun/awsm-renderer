@@ -414,14 +414,26 @@ projection the GPU pass will use). 5 unit tests (finest@0, mid/root cuts,
 triangle-count monotone in threshold, every cluster selected at its lower bound,
 distance coarsening). This is the **reference spec** for the B.2 GPU compute pass.
 
-**Next:** B.2 proper — upload the cluster pages + vertex/index buffers, run the
-two-level cull + per-cluster cut as a compute pass writing one compacted index
-stream + a single `drawIndexedIndirect`; then B.3 (cluster_id in the vis-buffer +
-material fetch from cluster pages). These are the large GPU-runtime investment;
-bundle emission + load of `ClusterMesh` lands with that consumer. _Note for
-crack-free per-cluster (vs per-instance) cuts: project each group's error with a
-group-consistent bounding sphere so all clusters in a group flip together — a
-B.2 refinement; the per-instance uniform cut is already watertight._
+**Status — landed (B.2c, cluster data path verified end-to-end).** The editor
+bake now emits `<id>.clusters.bin` (a JSON `ClusterMesh`) for dense static meshes
+(≥4096 tris); scene-loader's `load_cluster_finest` (gated by `virtual_geometry`)
+loads + deserialises it and renders a cut via `add_raw_mesh`, replacing the base
+glb. Verified via the editor `LoadPlayerBundle` round-trip (`?vg`) on
+DamagedHelmet: the 4 MB cluster DAG loads, and rendering the **coarsest** cut
+(root clusters) gave **2433 tris** (vs 15452 base) drawn **crack-free with full
+materials** — proving bake→emit→load→deserialise→cut→render end-to-end and that
+the boundary-locked DAG produces a usable coarse LOD. Shipped behaviour renders
+the **finest** cut (== source geometry, full detail) until the GPU per-cluster
+cut lands; `?vg` off ⇒ base glb (byte-identical).
+
+**Next:** B.2 proper — upload the cluster pages + vertex/index buffers as GPU
+storage, run the two-level cull + per-cluster cut as a compute pass writing one
+compacted index stream + a single `drawIndexedIndirect` (so the cut varies
+per-cluster across one mesh, the real win); then B.3 (cluster_id in the vis-buffer
++ material fetch from cluster pages). _Crack-free per-cluster cuts need each
+group's error projected with a group-consistent bounding sphere so all clusters
+in a group flip together — a B.2 refinement; the per-instance uniform cut is
+already watertight._
 
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds

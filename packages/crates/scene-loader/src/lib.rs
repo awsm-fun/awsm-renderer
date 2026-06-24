@@ -939,41 +939,53 @@ async fn materialize(
                         loaded.meshes.push(key);
                     }
                     AssetSource::Mesh(RuntimeMesh::Glb) => {
-                        // Bare geometry glb (single identity node) — root it UNDER
-                        // the scene node's transform, which is what places it.
-                        let (keys, _) = load_glb_under(
-                            renderer,
-                            assets,
-                            &mesh_glb_filename(mesh.0),
-                            Some(tk),
-                            mat,
-                        )
-                        .await?;
-                        if let Some(&first) = keys.first() {
-                            maps.meshes.entry(node.id).or_insert(first);
-                            // Discrete LOD (static): load + register this asset's
-                            // simplified level chain (hidden — drawn only when a
-                            // per-frame selection reroutes to it). No-op unless the
-                            // `lod` feature is on, the bundle carries a manifest, AND
-                            // this node opts in (the per-node toggle — an asset can be
-                            // referenced by both LOD-on and LOD-off instances).
-                            if node_lod_enabled(&node.kind) {
-                                load_static_lod_chain(
-                                    renderer,
-                                    assets,
-                                    &mesh.0.to_string(),
-                                    first,
-                                    tk,
-                                    mat,
-                                )
+                        // Cluster LOD (Phase B): when `virtual_geometry` is on and
+                        // this static asset has a baked cluster DAG, render its
+                        // finest cut and skip the base glb. `None` (vg off / no
+                        // cluster data) falls through to the base glb path.
+                        let cluster_key =
+                            load_cluster_finest(renderer, assets, &mesh.0.to_string(), tk, mat)
                                 .await?;
+                        if let Some(ckey) = cluster_key {
+                            maps.meshes.entry(node.id).or_insert(ckey);
+                            maps.node_meshes.entry(node.id).or_default().push(ckey);
+                            loaded.meshes.push(ckey);
+                        } else {
+                            // Bare geometry glb (single identity node) — root it
+                            // UNDER the scene node's transform, which is what places it.
+                            let (keys, _) = load_glb_under(
+                                renderer,
+                                assets,
+                                &mesh_glb_filename(mesh.0),
+                                Some(tk),
+                                mat,
+                            )
+                            .await?;
+                            if let Some(&first) = keys.first() {
+                                maps.meshes.entry(node.id).or_insert(first);
+                                // Discrete LOD (static): load + register this
+                                // asset's simplified level chain (hidden — drawn
+                                // only when a per-frame selection reroutes to it).
+                                // No-op unless the `lod` feature is on, the bundle
+                                // carries a manifest, AND this node opts in.
+                                if node_lod_enabled(&node.kind) {
+                                    load_static_lod_chain(
+                                        renderer,
+                                        assets,
+                                        &mesh.0.to_string(),
+                                        first,
+                                        tk,
+                                        mat,
+                                    )
+                                    .await?;
+                                }
                             }
+                            maps.node_meshes
+                                .entry(node.id)
+                                .or_default()
+                                .extend(keys.iter().copied());
+                            loaded.meshes.extend(keys);
                         }
-                        maps.node_meshes
-                            .entry(node.id)
-                            .or_default()
-                            .extend(keys.iter().copied());
-                        loaded.meshes.extend(keys);
                     }
                     // A Mesh node always references an AssetSource::Mesh; other
                     // source kinds (Filename / Url / Material / Texture) can't be a
@@ -1813,6 +1825,83 @@ fn warn_decal_feature_off() {
 /// Returns `(mesh keys, glb-node-index → baked-transform key)` — the latter lets a
 /// skinned-mesh consumer bind each skeleton joint (by its clean-glb node index) to
 /// drive the skin. Public (R4) so a host can load an individual bundle glb with
+/// Cluster LOD (Phase B), **finest-cut** render: when `virtual_geometry` is on
+/// and the asset has a baked cluster DAG (`<id>.clusters.bin`), render its finest
+/// cut — the level-0 clusters, which reconstruct the source geometry exactly —
+/// and return its key so the caller renders it instead of the base glb. Returns
+/// `None` (→ caller loads the base) when vg is off or there's no cluster data.
+///
+/// This validates the bake→emit→load→render path end-to-end. The GPU per-cluster
+/// LOD cut + compaction (B.2 proper) will replace the static finest cut with a
+/// per-frame on-device selection over the same pages.
+async fn load_cluster_finest(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    asset_id: &str,
+    tk: TransformKey,
+    mat: MaterialKey,
+) -> Result<Option<MeshKey>> {
+    if !renderer.features().virtual_geometry {
+        return Ok(None);
+    }
+    let path = format!(
+        "{ASSETS_DIR}/{}",
+        awsm_renderer_lod_bake::cluster_mesh_filename(asset_id)
+    );
+    let Ok(bytes) = assets.fetch(&path).await else {
+        return Ok(None);
+    };
+    let cm: awsm_renderer_lod_bake::ClusterMesh = match serde_json::from_slice(&bytes) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("cluster LOD: unreadable `{path}`: {e}");
+            return Ok(None);
+        }
+    };
+    // Finest cut: the level-0 (lod_error == 0) clusters' index pages reconstruct
+    // the source geometry exactly. (The GPU pass — B.2 proper — replaces this
+    // static finest cut with a per-frame per-cluster cut; the bake→load→cut→render
+    // path is verified end-to-end via the coarsest cut rendering crack-free.)
+    let mut finest: Vec<u32> = Vec::new();
+    for p in &cm.clusters {
+        if p.lod_error == 0.0 {
+            let s = p.first_index as usize;
+            let e = s + p.index_count as usize;
+            if e <= cm.indices.len() {
+                finest.extend_from_slice(&cm.indices[s..e]);
+            }
+        }
+    }
+    if finest.is_empty() {
+        return Ok(None);
+    }
+    let cluster_count = cm.cluster_count();
+    let raw = RawMeshData {
+        positions: cm.positions,
+        normals: if cm.normals.is_empty() {
+            None
+        } else {
+            Some(cm.normals)
+        },
+        uv_sets: if cm.uvs.is_empty() {
+            vec![]
+        } else {
+            vec![cm.uvs]
+        },
+        colors: if cm.colors.is_empty() {
+            None
+        } else {
+            Some(cm.colors)
+        },
+        indices: finest,
+        skin: None,
+        morph: None,
+    };
+    let key = renderer.add_raw_mesh(raw, tk, mat)?;
+    tracing::info!("cluster LOD: {asset_id} loaded {cluster_count} clusters, finest cut rendered");
+    Ok(Some(key))
+}
+
 /// Whether a node opts in to LOD (its per-mesh `MeshLodConfig.enabled`). The
 /// asset is baked with levels if *any* referencing node is enabled, so the
 /// runtime must re-check the per-node toggle: a LOD-off instance pins level 0.

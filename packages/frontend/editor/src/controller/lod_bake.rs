@@ -35,6 +35,43 @@ pub const LOD_RATIOS: &[f32] = &[0.5, 0.25, 0.125];
 /// floor on top of the explicit toggle.
 pub const LOD_MIN_TRIANGLES: usize = 512;
 
+/// Static meshes below this triangle count don't get a cluster-LOD DAG baked
+/// (cluster LOD only pays off for dense static geometry; smaller meshes use the
+/// discrete chain). Higher than [`LOD_MIN_TRIANGLES`] since clustering carries
+/// more bundle weight.
+pub const CLUSTER_MIN_TRIANGLES: usize = 4096;
+
+/// Bake the cluster-LOD DAG for one static mesh and return the bundle file
+/// (`<id>.clusters.bin`, a JSON `ClusterMesh`) — or empty when below the cluster
+/// floor. Consumed at load only when the `virtual_geometry` feature is on.
+pub fn bake_static_clusters(asset_id: &str, mesh: &MeshData) -> Vec<BundleFile> {
+    if mesh.indices.len() / 3 < CLUSTER_MIN_TRIANGLES {
+        return Vec::new();
+    }
+    let dag = awsm_renderer_lod_bake::build_cluster_dag(
+        &mesh.positions,
+        &mesh.indices,
+        &awsm_renderer_lod_bake::DagOptions::default(),
+    );
+    let cm = awsm_renderer_lod_bake::ClusterMesh::from_dag(
+        &dag,
+        mesh.positions.clone(),
+        mesh.normals.clone().unwrap_or_default(),
+        mesh.uvs.first().cloned().unwrap_or_default(),
+        mesh.colors.clone().unwrap_or_default(),
+    );
+    match serde_json::to_vec(&cm) {
+        Ok(bytes) => vec![BundleFile::asset(
+            awsm_renderer_lod_bake::cluster_mesh_filename(asset_id),
+            bytes,
+        )],
+        Err(e) => {
+            tracing::warn!("cluster bake: serialize failed for {asset_id}: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// One geometry-baking result, cached by geometry hash (filenames are applied
 /// per-asset by the caller, so the cache is shared across assets with identical
 /// geometry).
