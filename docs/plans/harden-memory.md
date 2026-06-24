@@ -292,6 +292,20 @@ it's independent of B1.
 | P4 | Asset-fetch-failure → clean Error, no hang | mt:dev | ✅ | Live (`?demo=remote&model=nonexistent-bad-asset.glb`): a bad asset URL surfaces a clean `RenderEvent::Error` ("parse glb: …") **immediately** (t=0, no hang), `loading` clears, page stays responsive, `ready:false` (no false success). Existing `if let Err(err) = load_gltf(...)` wrapper already routes any fetch/parse failure to one Error event + `loading=false` — no code change needed; gate verified. |
 | Meta | No per-frame cost; release default unchanged | both | ✅ | Landed phases add **zero per-frame cost**: undo cap runs only on edits (push/pop), diagnostics are gated `debug_assertions`/`harden-diag` + cold-path (MCP query / `.lost` / `create_buffer`), device-lost hook is one-shot at device creation. Proof: 1200-cmd churn left all render-stats leak counters flat (render_pipelines/shaders/samplers/pool_textures unchanged); `frame_dt_ms` 16.69 steady. Release default unchanged (behavioural fixes un-gated = correctness; all diagnostics gated). `clippy --all --all-features --tests -D warnings` clean. |
 
+## Status (2026-06-24)
+
+**Done (6/8 rows ✅):** P0, P1, P1b, P1c, P4, Meta — all with live evidence (see
+tracker). The plan's **prime goal — the unbounded-undo OOM ("Aw, Snap!") — is
+fixed and live-verified** (undo log plateaus under a 256 MB byte budget;
+`wasm_heap` stops ramping). `task lint` clean. Committed per phase on
+`doc-aw-snap`.
+
+**Blocked (2/8): P2, P3** — device-loss / worker-crash *recovery*. Root cause:
+the LOCKED "rebuild from CPU mirrors, no reload" design rests on a false premise
+(geometry + texture pixels are upload-then-drop; no CPU mirrors exist). **Needs a
+design decision from David** — re-open the fork and pick reload-from-source vs
+permanent CPU retention (see the ⚠️ BLOCKER section). Detection (P0 hook) landed.
+
 ## Done criteria
 
 Every tracker row ✅ with live evidence: Phase 1 churn repro plateaus
