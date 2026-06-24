@@ -147,6 +147,54 @@ pub fn max_axis_scale(m: &Mat4) -> f32 {
         .max(m.z_axis.truncate().length())
 }
 
+/// GPU byte stride of one [`ClusterPage`] in the storage buffer the B.2 compute
+/// pass reads. 64 B, matching this WGSL std430 struct (each `vec3<f32>` aligns to
+/// 16 B, and the trailing `f32` fills that slot, so the packing is gap-free):
+/// ```wgsl
+/// struct ClusterPage {            //  byte offset
+///     center: vec3<f32>,          //   0  (radius fills 12..16)
+///     radius: f32,                //  12
+///     lod_bounds_center: vec3<f32>,    // 16  (lod_bounds_radius fills 28..32)
+///     lod_bounds_radius: f32,     //  28
+///     parent_bounds_center: vec3<f32>, // 32  (parent_bounds_radius fills 44..48)
+///     parent_bounds_radius: f32,  //  44
+///     lod_error: f32,             //  48
+///     parent_error: f32,          //  52
+///     first_index: u32,           //  56
+///     index_count: u32,           //  60
+/// }                               //  size 64, align 16
+/// ```
+/// `parent_error` carries the runtime root sentinel ([`f32::INFINITY`]); the
+/// shader treats `+inf` as "never simplified", so roots always pass the upper
+/// bound. The cut predicate the shader evaluates per page is exactly
+/// [`select_cut_per_cluster`].
+pub const CLUSTER_PAGE_GPU_STRIDE: usize = 64;
+
+/// Serialise one cluster page into the 64-B GPU layout (little-endian),
+/// appending to `out`. Mirror of the WGSL struct documented on
+/// [`CLUSTER_PAGE_GPU_STRIDE`]; the per-frame uploader reuses one `Vec<u8>`
+/// (no per-frame allocation).
+pub fn write_cluster_page_gpu(p: &ClusterPage, out: &mut Vec<u8>) {
+    let f = |out: &mut Vec<u8>, v: f32| out.extend_from_slice(&v.to_le_bytes());
+    let u = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_le_bytes());
+    f(out, p.center[0]);
+    f(out, p.center[1]);
+    f(out, p.center[2]);
+    f(out, p.radius);
+    f(out, p.lod_bounds_center[0]);
+    f(out, p.lod_bounds_center[1]);
+    f(out, p.lod_bounds_center[2]);
+    f(out, p.lod_bounds_radius);
+    f(out, p.parent_bounds_center[0]);
+    f(out, p.parent_bounds_center[1]);
+    f(out, p.parent_bounds_center[2]);
+    f(out, p.parent_bounds_radius);
+    f(out, p.lod_error);
+    f(out, p.parent_error);
+    u(out, p.first_index);
+    u(out, p.index_count);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +287,38 @@ mod tests {
         select_cut(&p, far, &mut out);
         let far_tris: u32 = out.iter().map(|&i| p[i as usize].index_count / 3).sum();
         assert!(far_tris <= near_tris);
+    }
+
+    #[test]
+    fn gpu_page_layout_offsets_match_std430() {
+        let p = ClusterPage {
+            center: [1.0, 2.0, 3.0],
+            radius: 4.0,
+            lod_error: 13.0,
+            parent_error: 14.0,
+            lod_bounds_center: [5.0, 6.0, 7.0],
+            lod_bounds_radius: 8.0,
+            parent_bounds_center: [9.0, 10.0, 11.0],
+            parent_bounds_radius: 12.0,
+            first_index: 15,
+            index_count: 16,
+        };
+        let mut bytes = Vec::new();
+        write_cluster_page_gpu(&p, &mut bytes);
+        assert_eq!(bytes.len(), CLUSTER_PAGE_GPU_STRIDE, "page is 64 B");
+        let f = |off: usize| f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+        let u = |off: usize| u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+        // Field at each documented std430 offset.
+        assert_eq!([f(0), f(4), f(8)], [1.0, 2.0, 3.0]); // center
+        assert_eq!(f(12), 4.0); // radius
+        assert_eq!([f(16), f(20), f(24)], [5.0, 6.0, 7.0]); // lod_bounds_center
+        assert_eq!(f(28), 8.0); // lod_bounds_radius
+        assert_eq!([f(32), f(36), f(40)], [9.0, 10.0, 11.0]); // parent_bounds_center
+        assert_eq!(f(44), 12.0); // parent_bounds_radius
+        assert_eq!(f(48), 13.0); // lod_error
+        assert_eq!(f(52), 14.0); // parent_error
+        assert_eq!(u(56), 15); // first_index
+        assert_eq!(u(60), 16); // index_count
     }
 
     #[test]
