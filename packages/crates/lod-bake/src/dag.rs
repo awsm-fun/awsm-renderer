@@ -22,6 +22,12 @@ use glam::DVec3;
 use crate::cluster::{build_cluster_graph, build_clusters, group_clusters, Meshlet};
 use crate::simplify::{simplify, SimplifyOptions};
 
+/// `parent_error` for a root cluster (never simplified further). A large finite
+/// sentinel rather than `f32::INFINITY` so the bake output is plain-text
+/// serialisable (JSON has no infinity); the cut test `threshold < parent_error`
+/// is satisfied for every realistic threshold, exactly as infinity would be.
+pub const ROOT_PARENT_ERROR: f32 = f32::MAX;
+
 /// One cluster in the DAG. Triangles index the shared original vertex buffer.
 #[derive(Clone, Debug)]
 pub struct DagCluster {
@@ -34,9 +40,9 @@ pub struct DagCluster {
     /// source group (`0` for level-0 clusters — taken verbatim from the input).
     pub lod_error: f32,
     /// The error of the group that simplifies THIS cluster away into a coarser
-    /// parent. `f32::INFINITY` for root clusters (never simplified further).
-    /// Monotonic: `parent_error >= lod_error`. Runtime LOD cut: render a cluster
-    /// when `lod_error <= threshold < parent_error`.
+    /// parent. [`ROOT_PARENT_ERROR`] for root clusters (never simplified
+    /// further). Monotonic: `parent_error >= lod_error`. Runtime LOD cut: render
+    /// a cluster when `lod_error <= threshold < parent_error`.
     pub parent_error: f32,
 }
 
@@ -236,7 +242,7 @@ fn make_cluster(triangles: Vec<[u32; 3]>, pos: &[DVec3], lod_error: f32) -> DagC
         center: [center.x as f32, center.y as f32, center.z as f32],
         radius: r2.sqrt() as f32,
         lod_error,
-        parent_error: f32::INFINITY,
+        parent_error: ROOT_PARENT_ERROR,
     }
 }
 
@@ -318,11 +324,11 @@ mod tests {
     }
 
     #[test]
-    fn roots_have_infinite_parent_error() {
+    fn roots_have_root_parent_error() {
         let (pos, indices) = grid(20);
         let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
         // At least one cluster is a root (never simplified further).
-        assert!(dag.clusters.iter().any(|c| c.parent_error.is_infinite()));
+        assert!(dag.clusters.iter().any(|c| c.parent_error == ROOT_PARENT_ERROR));
     }
 
     #[test]
@@ -330,6 +336,9 @@ mod tests {
         let (pos, indices) = grid(2); // 8 tris → one cluster, no further levels
         let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
         assert!(!dag.clusters.is_empty());
-        assert!(dag.clusters.iter().all(|c| c.parent_error.is_infinite()));
+        assert!(dag
+            .clusters
+            .iter()
+            .all(|c| c.parent_error == ROOT_PARENT_ERROR));
     }
 }

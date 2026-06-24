@@ -159,4 +159,25 @@ mod tests {
         // The level-0 (error 0) clusters reconstruct exactly the source mesh.
         assert_eq!(cm.finest_triangle_count(), total);
     }
+
+    /// The bundle serialises this with JSON (the codec shared by the editor bake
+    /// + the scene-loader runtime). The root sentinel is finite, so it round-trips
+    /// cleanly (infinity would break JSON).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn json_round_trip() {
+        let (pos, indices) = grid(16);
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+        let cm = ClusterMesh::from_dag(&dag, pos, vec![], vec![], vec![]);
+        let bytes = serde_json::to_vec(&cm).expect("serialize");
+        let back: ClusterMesh = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(back.cluster_count(), cm.cluster_count());
+        assert_eq!(back.indices, cm.indices);
+        assert_eq!(back.clusters, cm.clusters);
+        // No NaN/inf snuck into the page errors.
+        assert!(back
+            .clusters
+            .iter()
+            .all(|p| p.lod_error.is_finite() && p.parent_error.is_finite()));
+    }
 }
