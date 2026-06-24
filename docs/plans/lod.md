@@ -207,7 +207,20 @@ another non-interior vertex, never inward); Corners (seam junctions / >45° turn
 stay locked. This fixed the plateau — DamagedHelmet now bakes the full chain at
 the exact target ratios: 15452 → 7726 (0.5, err 7e-5) → 3862 (0.25, err 7e-4) →
 1931 (0.125, err 4e-3), vs. the old single 10074-tri level. Verified via MCP
-export. **Next:** A.2c (skinned/morph carry-through) + A.3 (runtime selection).
+export.
+
+**Status — landed (A.2c, skinned/morph bake).** `bake_skinned_lod` parses the
+clean rig glb (`get_rig_glb`) via `reexport_clean_scene` into a `GlbScene`, then
+per level recursively simplifies every mesh node + `extra_primitive` and gathers
+its `JOINTS_0`/`WEIGHTS_0` + morph-target deltas onto the surviving vertices with
+the same remap (exact, subset gather), preserving the skeleton + skin binding,
+and `write_glb`s a full rig glb per level (`<source>.lod{N}.glb` + `.lod.toml`).
+Wired into `bake_player_bundle` section 4 (per-node toggle → per-source bake).
+Verified via MCP export: CesiumMan (skin) 4672→2335→1167→823 tris with
+`JOINTS_0`/`WEIGHTS_0` + `skins=1` at every level; MorphStressTest (2 prims, 8
+morph targets) 2412→1212→611→312 with all 8 targets and delta accessors matching
+each level's vertex count. **Bake (plan step 2) complete for all classes.
+Next:** A.3 (runtime per-instance level selection).
 
 **Critical files:**
 - Runtime selection: `render_passes/occlusion/shader/occlusion_wgsl/cull.wgsl`,

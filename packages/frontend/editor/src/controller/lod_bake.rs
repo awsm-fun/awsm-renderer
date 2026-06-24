@@ -1,23 +1,29 @@
-//! Export-time discrete-LOD bake for **static** meshes.
+//! Export-time discrete-LOD bake.
 //!
-//! Called from [`bake_player_bundle`](super::export::bake_player_bundle) per
-//! LOD-enabled `RuntimeMesh::Glb` mesh asset. Generates the simplified level
-//! chain with the shared pure-Rust simplifier ([`awsm_renderer_lod_bake`]),
-//! writes one geometry-only glb per level (`<id>.lod{N}.glb`) plus the
-//! [`MeshLodManifest`] sidecar (`<id>.lod.toml`), and caches the result by
-//! geometry hash so re-exporting an unchanged mesh doesn't re-simplify.
+//! Called from [`bake_player_bundle`](super::export::bake_player_bundle), once
+//! per LOD-enabled mesh, routed by class:
+//! - **static** ([`bake_static_lod`]): from the resolved `MeshData`
+//!   (`mesh_cache::get_raw`).
+//! - **skinned / morph** ([`bake_skinned_lod`]): from the clean rig glb
+//!   (`skinned_bake_cache::get_rig_glb`) — the mesh is simplified while its skin
+//!   `JOINTS_0`/`WEIGHTS_0` and morph-target deltas are carried through to the
+//!   surviving vertices verbatim (the simplifier's subset property makes this
+//!   exact, no interpolation), and the skeleton + skin binding are preserved.
 //!
-//! Skinned / morph meshes take a different source (`get_rig_glb`) and need skin
-//! weight + morph delta carry-through — that path is baked separately.
+//! Both write `<id>.lod{N}.glb` per level + a [`MeshLodManifest`] sidecar
+//! (`<id>.lod.toml`), and cache by content hash so re-export doesn't re-simplify.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use awsm_renderer_editor_protocol::BundleFile;
-use awsm_renderer_glb_export::{write_glb, ExportNode, GlbScene, MeshData};
+use awsm_renderer_glb_export::{
+    reexport_clean_scene, write_glb, ExportNode, ExtraPrimitive, GlbScene, MeshData, MorphTarget,
+};
 use awsm_renderer_lod_bake::{
-    lod_level_filename, lod_manifest_filename, plan_lod_levels, MeshLodManifest,
+    bounding_sphere_radius, lod_level_filename, lod_manifest_filename, plan_lod_levels, simplify,
+    MeshLodLevel, MeshLodManifest, SimplifiedMesh, SimplifyOptions,
 };
 
 /// Target triangle-count fractions of the base for each discrete level (level 0
@@ -142,3 +148,227 @@ fn geometry_key(mesh: &MeshData) -> u64 {
 // is only attribute gather + glb encode + filename + caching, and the editor
 // crate has no native lib target to host tests anyway. End-to-end coverage is
 // the player-bundle export self-verify.
+
+// ── Skinned / morph ───────────────────────────────────────────────────────────
+
+thread_local! {
+    /// rig-glb-hash → baked skinned levels (level glbs + manifest).
+    static SKINNED_CACHE: RefCell<HashMap<u64, BakedStaticLod>> = RefCell::new(HashMap::new());
+}
+
+/// Bake the discrete LOD chain for one skinned/morph mesh from its clean rig glb
+/// and return the bundle files (level rig glbs + manifest). Each level is a full
+/// rig glb — same skeleton + skin binding as the base, but with every mesh
+/// primitive simplified and its `JOINTS_0`/`WEIGHTS_0` + morph deltas gathered
+/// onto the surviving vertices. Returns empty when below the floor / no level
+/// reduced.
+///
+/// `source_id` is the skin source asset id stringified, so files line up with
+/// the base rig glb `<source>.glb`.
+pub fn bake_skinned_lod(source_id: &str, rig_glb: &[u8]) -> Vec<BundleFile> {
+    let Some(base) = parse_rig_scene(rig_glb) else {
+        return Vec::new();
+    };
+    let base_tris = scene_triangle_count(&base);
+    if base_tris < LOD_MIN_TRIANGLES {
+        return Vec::new();
+    }
+
+    let key = {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        rig_glb.hash(&mut h);
+        for r in LOD_RATIOS {
+            r.to_bits().hash(&mut h);
+        }
+        h.finish()
+    };
+    let baked = SKINNED_CACHE.with(|c| c.borrow().get(&key).cloned());
+    let baked = match baked {
+        Some(b) => b,
+        None => {
+            let b = compute_skinned(&base, base_tris);
+            SKINNED_CACHE.with(|c| c.borrow_mut().insert(key, b.clone()));
+            b
+        }
+    };
+
+    if baked.levels.is_empty() {
+        return Vec::new();
+    }
+    let mut files = Vec::with_capacity(baked.levels.len() + 1);
+    for (idx, glb) in &baked.levels {
+        files.push(BundleFile::asset(
+            lod_level_filename(source_id, *idx),
+            glb.clone(),
+        ));
+    }
+    match toml::to_string(&baked.manifest) {
+        Ok(s) => files.push(BundleFile::asset(
+            lod_manifest_filename(source_id),
+            s.into_bytes(),
+        )),
+        Err(e) => {
+            tracing::warn!("lod bake: failed to serialize skinned manifest for {source_id}: {e}");
+            return Vec::new();
+        }
+    }
+    files
+}
+
+/// Run the simplifier per ratio over a clone of the base rig scene, gathering
+/// skin + morph through each level, and encode each reducing level to a glb.
+fn compute_skinned(base: &GlbScene, base_tris: usize) -> BakedStaticLod {
+    let bounds_radius = bounding_sphere_radius(&scene_positions(base));
+    let mut levels = Vec::new();
+    let mut manifest_levels = Vec::new();
+    let mut prev_tris = base_tris;
+    let mut file_index = 1u32;
+
+    for &ratio in LOD_RATIOS {
+        let mut scene = base.clone();
+        let mut tris = 0usize;
+        let mut error = 0.0f32;
+        for node in &mut scene.nodes {
+            simplify_node_tree(node, ratio, &mut tris, &mut error);
+        }
+        if tris == 0 || tris >= prev_tris {
+            continue;
+        }
+        prev_tris = tris;
+        let glb = write_glb(&scene);
+        levels.push((file_index, glb));
+        manifest_levels.push(MeshLodLevel {
+            index: file_index,
+            error,
+            triangle_count: tris as u32,
+        });
+        file_index += 1;
+    }
+
+    BakedStaticLod {
+        levels,
+        manifest: MeshLodManifest {
+            bounds_radius,
+            base_triangle_count: base_tris as u32,
+            levels: manifest_levels,
+        },
+    }
+}
+
+/// Parse rig glb bytes into the export scene (skeleton + skin + morph + meshes).
+fn parse_rig_scene(rig_glb: &[u8]) -> Option<GlbScene> {
+    let (doc, buffers, _images) = gltf::import_slice(rig_glb).ok()?;
+    let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
+    reexport_clean_scene(&doc, &buffers)
+}
+
+/// Recursively simplify every mesh primitive in a node subtree at `ratio`,
+/// accumulating the resulting triangle count + max error.
+fn simplify_node_tree(node: &mut ExportNode, ratio: f32, tris: &mut usize, error: &mut f32) {
+    if let Some(mesh) = node.mesh.take() {
+        let (mesh, sm) = simplify_primitive(mesh, ratio);
+        if let Some(sm) = &sm {
+            *tris += sm.triangle_count();
+            *error = error.max(sm.error);
+            gather_skin_morph(sm, &mut node.joints, &mut node.weights, &mut node.morph_targets);
+        }
+        node.mesh = Some(mesh);
+    }
+    for ep in &mut node.extra_primitives {
+        simplify_extra_primitive(ep, ratio, tris, error);
+    }
+    for child in &mut node.children {
+        simplify_node_tree(child, ratio, tris, error);
+    }
+}
+
+fn simplify_extra_primitive(ep: &mut ExtraPrimitive, ratio: f32, tris: &mut usize, error: &mut f32) {
+    let mesh = std::mem::take(&mut ep.mesh);
+    let (mesh, sm) = simplify_primitive(mesh, ratio);
+    if let Some(sm) = &sm {
+        *tris += sm.triangle_count();
+        *error = error.max(sm.error);
+        gather_skin_morph(sm, &mut ep.joints, &mut ep.weights, &mut ep.morph_targets);
+    }
+    ep.mesh = mesh;
+}
+
+/// Simplify one primitive's geometry to `ratio` and gather its vertex attributes
+/// onto the survivors. Returns the rewritten mesh and the remap (`None` if the
+/// primitive has no triangles or didn't need simplifying).
+fn simplify_primitive(mut mesh: MeshData, ratio: f32) -> (MeshData, Option<SimplifiedMesh>) {
+    let base = mesh.indices.len() / 3;
+    if base == 0 {
+        return (mesh, None);
+    }
+    let target = ((base as f32 * ratio).round() as usize).max(1);
+    let sm = simplify(&mesh.positions, &mesh.indices, SimplifyOptions::with_target(target));
+    // Gather geometry attributes (read originals first, then overwrite).
+    let positions = sm.gather(&mesh.positions);
+    let normals = mesh.normals.as_ref().map(|n| sm.gather(n));
+    let uvs = mesh.uvs.iter().map(|set| sm.gather(set)).collect();
+    let colors = mesh.colors.as_ref().map(|c| sm.gather(c));
+    mesh.positions = positions;
+    mesh.normals = normals;
+    mesh.uvs = uvs;
+    mesh.colors = colors;
+    mesh.indices = sm.indices.clone();
+    (mesh, Some(sm))
+}
+
+/// Carry per-vertex skin (`JOINTS_0`/`WEIGHTS_0`) and morph-target deltas through
+/// the surviving-vertex remap. Exact (subset gather, no interpolation).
+fn gather_skin_morph(
+    sm: &SimplifiedMesh,
+    joints: &mut Option<Vec<[u16; 4]>>,
+    weights: &mut Option<Vec<[f32; 4]>>,
+    morph_targets: &mut [MorphTarget],
+) {
+    if let Some(j) = joints.as_ref() {
+        *joints = Some(sm.gather(j));
+    }
+    if let Some(w) = weights.as_ref() {
+        *weights = Some(sm.gather(w));
+    }
+    for t in morph_targets.iter_mut() {
+        t.positions = sm.gather(&t.positions);
+        if let Some(n) = t.normals.as_ref() {
+            t.normals = Some(sm.gather(n));
+        }
+    }
+}
+
+/// Total triangles across all mesh primitives in the scene (main + extra).
+fn scene_triangle_count(scene: &GlbScene) -> usize {
+    fn node_tris(node: &ExportNode) -> usize {
+        let mut n = node.mesh.as_ref().map_or(0, |m| m.indices.len() / 3);
+        for ep in &node.extra_primitives {
+            n += ep.mesh.indices.len() / 3;
+        }
+        for c in &node.children {
+            n += node_tris(c);
+        }
+        n
+    }
+    scene.nodes.iter().map(node_tris).sum()
+}
+
+/// All mesh positions across the scene (for the bounding-sphere radius).
+fn scene_positions(scene: &GlbScene) -> Vec<[f32; 3]> {
+    fn collect(node: &ExportNode, out: &mut Vec<[f32; 3]>) {
+        if let Some(m) = &node.mesh {
+            out.extend_from_slice(&m.positions);
+        }
+        for ep in &node.extra_primitives {
+            out.extend_from_slice(&ep.mesh.positions);
+        }
+        for c in &node.children {
+            collect(c, out);
+        }
+    }
+    let mut out = Vec::new();
+    for n in &scene.nodes {
+        collect(n, &mut out);
+    }
+    out
+}

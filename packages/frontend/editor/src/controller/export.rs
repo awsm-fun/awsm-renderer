@@ -169,24 +169,37 @@ pub async fn bake_player_bundle(
     // 4. Skinned meshes: one clean rig glb (skeleton + mesh + skin + morph, built
     // at import via reexport_clean_scene) per imported source. The scene.toml
     // SkinnedMesh nodes reference `skin.source` → `assets/<source>.glb`.
-    fn collect_skinned(node: &Node, out: &mut HashSet<AssetId>) {
-        if let NodeKind::SkinnedMesh { skin, .. } = &node.kind.get_cloned() {
+    // `out` = every skinned source (always emitted); `lod` = the subset whose
+    // referencing nodes are LOD-enabled (also gets a simplified level chain).
+    fn collect_skinned(node: &Node, out: &mut HashSet<AssetId>, lod: &mut HashSet<AssetId>) {
+        if let NodeKind::SkinnedMesh { skin, lod: cfg, .. } = &node.kind.get_cloned() {
             out.insert(skin.source);
+            if cfg.enabled {
+                lod.insert(skin.source);
+            }
         }
         for c in node.children.lock_ref().iter() {
-            collect_skinned(c, out);
+            collect_skinned(c, out, lod);
         }
     }
     let mut skinned_sources: HashSet<AssetId> = HashSet::new();
+    let mut lod_skinned: HashSet<AssetId> = HashSet::new();
     for n in &roots {
-        collect_skinned(n, &mut skinned_sources);
+        collect_skinned(n, &mut skinned_sources, &mut lod_skinned);
     }
     for src in skinned_sources {
         if let Some(glb) = crate::engine::bridge::skinned_bake_cache::get_rig_glb(src) {
+            // Bake LOD levels (from the rig glb bytes) before `glb` is moved.
+            let lod_files = if lod_skinned.contains(&src) {
+                crate::controller::lod_bake::bake_skinned_lod(&src.0.to_string(), &glb)
+            } else {
+                Vec::new()
+            };
             files.push(BundleFile::asset(
                 awsm_renderer_editor_protocol::mesh_glb_filename(src),
                 glb,
             ));
+            files.extend(lod_files);
         }
     }
 
