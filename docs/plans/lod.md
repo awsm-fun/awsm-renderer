@@ -292,8 +292,39 @@ clip): `get_memory_stats` shows **4 meshes** (base + 3 levels), and with the wal
 animation posed and frozen the figure renders in the **correct deformed pose at
 both near and far** — i.e. the simplified level deforms with the base's animated
 skeleton (the rebind works), not a frozen bind pose. **Phase A runtime LOD now
-works for static + skinned + morph.** Remaining for Phase A: the full mixed-scene
-acceptance test (perf numbers).
+works for static + skinned + morph.**
+
+**Status — PASSED: Phase A mixed-scene acceptance test.** Measured via the editor
+`LoadPlayerBundle` round-trip with the new `visible_triangles` metric (submitted
+geometry across all `!hidden` meshes — the deterministic, vsync-independent
+before/after number). Mixed scene = DamagedHelmet (static) + CesiumMan (skinned,
+walk clip) + MorphStressTest (morph), coexisting in one bundle, one render path.
+- **Perf win** (all-LOD-on vs the all-LOD-off baseline): LOD-off is **24948**
+  tris at every distance; LOD-on is **11052 @ mid (−56%)** and **8185 @ far
+  (−67%)**. Submitted geometry shrinks with distance exactly as the level
+  selection dictates.
+- **Toggle matrix, in a single frame**: a LOD-on helmet beside a LOD-off
+  duplicate (toggled off via the **inspector LOD switch** — A.1 UI verified
+  end-to-end), at far → `visible_triangles = 17383 = 1931 (on→coarsest) + 15452
+  (off→full)`, **exactly**. The LOD-off instance keeps full detail; `meshes = 5`
+  confirms it registered **no** level geometry (the per-node toggle gating
+  works), while the LOD-on instance loaded base + 3 levels.
+- **No per-frame allocs**: `wasm_heap_bytes` is **constant** (338427904) across
+  near→mid→far dollying — the selection is `mem::take` + arithmetic + flag flips,
+  zero per-frame heap.
+- **Flag off ⇒ byte-identical**: `?lod` off loads only base meshes (`meshes = 6`
+  vs 18 with LOD) — no level geometry, constant triangles.
+- **Correctness**: skinned/morph deform correctly at coarse levels (A.3d);
+  LOD-off renders full detail; all three classes shade through the same path.
+
+**PHASE A COMPLETE.** Discrete LOD chain ships: per-mesh toggle (UI + MCP),
+export bake for static/skinned/morph, runtime per-instance screen-error
+selection, gated behind `lod` (default off ⇒ byte-identical). Cleared to start
+Phase B (cluster LOD DAG).
+
+_Phase A follow-ups (non-blocking): multi-mesh-node skinned LOD; rebuild the MCP
+server so `set_mesh_lod` is callable (the tool exists; the running server
+predates it); tune the screen-error threshold per-class._
 
 **Critical files:**
 - Runtime selection: `render_passes/occlusion/shader/occlusion_wgsl/cull.wgsl`,
