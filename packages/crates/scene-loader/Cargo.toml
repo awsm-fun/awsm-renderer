@@ -27,7 +27,11 @@ awsm-renderer-curves = { workspace = true }
 awsm-renderer-particles = { workspace = true }
 # The runtime Scene schema we load.
 awsm-renderer-scene = { workspace = true }
+# Discrete-LOD manifest (`MeshLodManifest`) parsed from each bundle's `.lod.toml`.
+awsm-renderer-lod-bake = { workspace = true, features = ["serde"] }
 glam = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+# Parse the `.lod.toml` LOD manifests baked into the bundle.
+toml = "0.8"
 tracing = { workspace = true }

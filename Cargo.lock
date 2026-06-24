@@ -528,12 +528,14 @@ dependencies = [
  "awsm-renderer-core",
  "awsm-renderer-curves",
  "awsm-renderer-gltf",
+ "awsm-renderer-lod-bake",
  "awsm-renderer-materials",
  "awsm-renderer-meshgen",
  "awsm-renderer-particles",
  "awsm-renderer-scene",
  "glam 0.32.1",
  "serde_json",
+ "toml",
  "tracing",
 ]
 

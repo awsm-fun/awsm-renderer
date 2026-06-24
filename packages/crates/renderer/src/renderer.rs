@@ -204,6 +204,11 @@ pub struct AwsmRenderer {
     /// `features.coverage_lod == false` it just stays empty, which
     /// makes `is_below_threshold` return `false` for everything.
     pub coverage: coverage::MeshCoverage,
+    /// Discrete-LOD level chains, keyed by base `MeshKey`. Populated by the
+    /// scene loader only when `features.lod` is on (otherwise empty, and every
+    /// instance draws its base mesh). The per-frame selection pass reads this to
+    /// choose a level per instance. See [`crate::lod`].
+    pub lod: crate::lod::LodRegistry,
     /// GPU coverage producer buffers. The producer pass
     /// (`render_passes/coverage/`) atomic-adds per-pixel into
     /// `counts_buffer`; the renderer copies to `readback_buffer`
@@ -2102,6 +2107,7 @@ impl AwsmRendererBuilder {
             decal_classify_buffers,
             compaction_buffers,
             coverage: coverage::MeshCoverage::default(),
+            lod: crate::lod::LodRegistry::default(),
             coverage_buffers,
             coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 CoverageReadbackState::default(),

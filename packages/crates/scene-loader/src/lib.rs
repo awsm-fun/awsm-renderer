@@ -111,6 +111,7 @@ use awsm_renderer::cameras::CameraKey;
 use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::unlit::UnlitMaterial;
+use awsm_renderer::lod::{LodChain, LodLevel};
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::pipeline_scheduler::CompileProgress;
@@ -950,6 +951,19 @@ async fn materialize(
                         .await?;
                         if let Some(&first) = keys.first() {
                             maps.meshes.entry(node.id).or_insert(first);
+                            // Discrete LOD (static): load + register this asset's
+                            // simplified level chain (hidden — drawn only when a
+                            // per-frame selection reroutes to it). No-op unless the
+                            // `lod` feature is on and the bundle carries a manifest.
+                            load_static_lod_chain(
+                                renderer,
+                                assets,
+                                &mesh.0.to_string(),
+                                first,
+                                tk,
+                                mat,
+                            )
+                            .await?;
                         }
                         maps.node_meshes
                             .entry(node.id)
@@ -1780,6 +1794,74 @@ fn warn_decal_feature_off() {
 /// Returns `(mesh keys, glb-node-index → baked-transform key)` — the latter lets a
 /// skinned-mesh consumer bind each skeleton joint (by its clean-glb node index) to
 /// drive the skin. Public (R4) so a host can load an individual bundle glb with
+/// Load + register the discrete-LOD level chain for a **static** mesh asset.
+///
+/// Each level glb (`<id>.lod{N}.glb`) is loaded under the same transform `tk` and
+/// material `mat` as the base, so a level renders co-located with it; the level
+/// meshes are set hidden (they draw only when the per-frame selection reroutes to
+/// them) and the chain is registered on `renderer.lod` keyed by `base_key`.
+///
+/// A no-op when the `lod` feature is off, or when the mesh has no `.lod.toml`
+/// manifest (most meshes — below the bake floor or LOD-disabled). Skinned/morph
+/// LOD selection runs on a separate path (shared skeleton) and is not loaded here.
+async fn load_static_lod_chain(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    asset_id: &str,
+    base_key: MeshKey,
+    tk: TransformKey,
+    mat: MaterialKey,
+) -> Result<()> {
+    if !renderer.features().lod {
+        return Ok(());
+    }
+    let manifest_path = format!(
+        "{ASSETS_DIR}/{}",
+        awsm_renderer_lod_bake::lod_manifest_filename(asset_id)
+    );
+    // Missing manifest = this mesh has no LOD; not an error.
+    let Ok(bytes) = assets.fetch(&manifest_path).await else {
+        return Ok(());
+    };
+    let manifest: awsm_renderer_lod_bake::MeshLodManifest = match std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| toml::from_str(s).ok())
+    {
+        Some(m) => m,
+        None => {
+            tracing::warn!("lod: ignoring unreadable manifest `{manifest_path}`");
+            return Ok(());
+        }
+    };
+
+    let mut levels = Vec::with_capacity(manifest.levels.len());
+    for lvl in &manifest.levels {
+        let leaf = awsm_renderer_lod_bake::lod_level_filename(asset_id, lvl.index);
+        let (keys, _) = load_glb_under(renderer, assets, &leaf, Some(tk), mat).await?;
+        let Some(&level_key) = keys.first() else {
+            continue;
+        };
+        // Levels are off by default — only the selected level is shown each frame.
+        for &k in &keys {
+            let _ = renderer.set_mesh_hidden(k, true);
+        }
+        levels.push(LodLevel {
+            mesh_key: level_key,
+            error: lvl.error,
+        });
+    }
+    if !levels.is_empty() {
+        renderer.lod.register(
+            base_key,
+            LodChain {
+                levels,
+                bounds_radius: manifest.bounds_radius,
+            },
+        );
+    }
+    Ok(())
+}
+
 /// our material-source semantics outside the full scene pass.
 pub async fn load_glb_under(
     renderer: &mut AwsmRenderer,

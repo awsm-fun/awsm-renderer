@@ -244,6 +244,22 @@ selected). **Next (A.3b):** scene-loader loads each level glb as a hidden
 selection rewrite in `render.rs`. Skinned meshes draw on a separate path and get
 their own selection hook.
 
+**Status — landed (A.3b, loader + registry).** `AwsmRenderer` gains a
+`lod: LodRegistry` field. The scene loader's static `Mesh(Glb)` path now calls
+`load_static_lod_chain`: gated by `features().lod`, it fetches `<id>.lod.toml`
+(absent ⇒ no-op, not an error), loads each `<id>.lod{N}.glb` under the **same
+transform + material** as the base (so a level is co-located), sets the level
+meshes **hidden**, and registers the chain on `renderer.lod` keyed by the base
+key. Mechanism decided: **visibility-swap** — `set_mesh_hidden` is a cheap
+flag (`renderable.rs` filters `!hidden`), safe to toggle per frame, so A.3c shows
+the selected level and hides the rest (no snapshot/shader surgery, correct by
+construction). Flag off ⇒ nothing loads ⇒ byte-identical. Skinned-runtime is
+deferred: separate rig-glb levels don't share the base's animated skeleton, so
+that path needs shared-skeleton level meshes (own follow-up). Mandated suite
+green; editor builds for wasm32. **Next (A.3c):** the per-frame static selection
+pass (`renderer.lod` + camera → `select_level` → `set_mesh_hidden`), then
+measure the mid/far perf win.
+
 **Critical files:**
 - Runtime selection: `render_passes/occlusion/shader/occlusion_wgsl/cull.wgsl`,
   `render_passes/occlusion/compaction.rs`
