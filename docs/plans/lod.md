@@ -241,8 +241,9 @@ geometry converge on the **same** visibility buffer, so `material_prep` /
   (cluster, Phase B) to `features.rs`, default off initially, mirroring
   `gpu_culling`. With the flag off, assert byte-identical output to today
   (default-must-equal-today). Direction is default-on once proven.
-- **Sequencing**: no external dependency — this lands on the `lod` branch on its
-  own. Within this plan, Phase A (discrete) ships first, then Phase B (cluster).
+- **Sequencing**: no external dependency (the `awsm-renderer-*` crate rename
+  shipped at 0.4.0). Built on the `lod-nanite` branch. Within this plan, Phase A
+  (discrete) ships first, then Phase B (cluster).
 - **No per-frame heap allocs** in the hot path (David's standard) — pool/avoid
   in the runtime selection + cull paths. Verify with `?stress=N` +
   `?trace=sub-frame`.
