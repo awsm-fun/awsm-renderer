@@ -1245,6 +1245,7 @@ impl AwsmRenderer {
         // `virtual_geometry` + a loaded cluster mesh. Runs the cut compute into
         // `selected`; the readback verification + compaction/indirect-draw
         // consumers follow. Independent of `gpu_occlusion`.
+        let mut cluster_cut_kick: Option<(web_sys::GpuBuffer, u32)> = None;
         if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
             if cluster_pass.cluster_count > 0 {
                 if let Some(cam) = self.camera.last_matrices.as_ref() {
@@ -1258,6 +1259,29 @@ impl AwsmRenderer {
                                 vh as f32,
                                 Self::LOD_ERROR_THRESHOLD_PX,
                             )?;
+                            // One-shot readback verification: copy `selected` to
+                            // its MAP_READ mirror (recorded after the dispatch);
+                            // the post-submit spawn_local logs the selected count.
+                            let want = {
+                                let st = self.cluster_cut_readback.lock().unwrap();
+                                !st.inflight && !st.logged
+                            };
+                            if want {
+                                if let Some(buffers) = cluster_pass.buffers.as_ref() {
+                                    let bytes = cluster_pass.cluster_count.saturating_mul(4);
+                                    ctx.command_encoder.copy_buffer_to_buffer(
+                                        &buffers.selected_buffer,
+                                        0,
+                                        &buffers.readback_buffer,
+                                        0,
+                                        bytes,
+                                    )?;
+                                    cluster_cut_kick = Some((
+                                        buffers.readback_buffer.clone(),
+                                        cluster_pass.cluster_count,
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -1612,6 +1636,36 @@ impl AwsmRenderer {
                 let mut state = state.lock().unwrap();
                 state.pending_snapshot = Some(snapshot);
                 state.inflight = false;
+            });
+        }
+
+        // One-shot Phase B cluster-cut readback verification (mirrors the
+        // coverage readback shape). Logs how many clusters the GPU cut selected —
+        // a sanity check vs the tested `select_cut_per_cluster` (expect non-zero
+        // and < total at a normal camera distance).
+        if let Some((readback_buffer, total)) = cluster_cut_kick {
+            let state = std::sync::Arc::clone(&self.cluster_cut_readback);
+            state.lock().unwrap().inflight = true;
+            let size = total.saturating_mul(4);
+            wasm_bindgen_futures::spawn_local(async move {
+                match crate::core::buffers::extract_buffer_vec(&readback_buffer, Some(size)).await {
+                    Ok(bytes) => {
+                        let selected = bytes
+                            .chunks_exact(4)
+                            .filter(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) != 0)
+                            .count();
+                        tracing::info!(
+                            "cluster cut (GPU): {selected}/{total} clusters selected by cluster_cut.wgsl"
+                        );
+                        let mut s = state.lock().unwrap();
+                        s.logged = true;
+                        s.inflight = false;
+                    }
+                    Err(err) => {
+                        tracing::warn!("cluster cut readback mapAsync failed: {err:?}");
+                        state.lock().unwrap().inflight = false;
+                    }
+                }
             });
         }
 

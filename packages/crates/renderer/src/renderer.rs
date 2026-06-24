@@ -57,6 +57,16 @@ pub struct CoverageReadbackState {
     pub pending_snapshot: Option<Vec<(MeshKey, u32)>>,
 }
 
+/// One-shot verification of the Phase B per-cluster GPU cut: read the `selected`
+/// flags back once and log how many clusters the GPU cut chose (a sanity check
+/// vs the tested `select_cut_per_cluster` — non-zero and ≤ cluster_count).
+/// `inflight` single-buffers the `mapAsync`; `logged` fires it only once.
+#[derive(Default)]
+pub struct ClusterCutReadback {
+    pub inflight: bool,
+    pub logged: bool,
+}
+
 /// Per-frame state for the MSAA edge-budget overflow readback loop.
 ///
 /// The render frame copies 8 bytes
@@ -223,6 +233,9 @@ pub struct AwsmRenderer {
     /// future-proof for the day the renderer moves across threads
     /// (single-threaded today, so the lock is uncontested).
     pub coverage_readback_state: std::sync::Arc<std::sync::Mutex<CoverageReadbackState>>,
+    /// One-shot Phase B cluster-cut readback verification (gated by
+    /// `virtual_geometry`; same `Arc<Mutex>` + `spawn_local` discipline).
+    pub cluster_cut_readback: std::sync::Arc<std::sync::Mutex<ClusterCutReadback>>,
     /// State for the MSAA edge-budget auto-grow readback loop. Same
     /// `Arc<Mutex<…>>` discipline as `coverage_readback_state` —
     /// `mapAsync` writes through the lock from a detached
@@ -2111,6 +2124,9 @@ impl AwsmRendererBuilder {
             coverage_buffers,
             coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 CoverageReadbackState::default(),
+            )),
+            cluster_cut_readback: std::sync::Arc::new(std::sync::Mutex::new(
+                ClusterCutReadback::default(),
             )),
             edge_overflow_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 EdgeOverflowReadbackState::default(),
