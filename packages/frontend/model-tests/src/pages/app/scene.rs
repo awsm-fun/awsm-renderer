@@ -54,6 +54,18 @@ fn stress_grid_count() -> Option<u32> {
     None
 }
 
+/// `?lod` — enable the renderer's discrete-LOD feature so a loaded bundle's
+/// baked level chains (`<id>.lod{N}.glb` + `.lod.toml`) drive per-instance
+/// screen-error level selection. Default off ⇒ byte-identical to today.
+pub fn lod_enabled() -> bool {
+    let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) else {
+        return false;
+    };
+    let q = search.trim_start_matches('?');
+    q.split('&')
+        .any(|p| p == "lod" || p.starts_with("lod="))
+}
+
 /// `?ourformat=1` — route the load through the TWO-STAGE our-format path (§0):
 /// STAGE 1 import the source glTF → our clean glb (GPU-free `reexport_clean`),
 /// STAGE 2 materialise that clean glb via `populate_gltf`. Opt-in dev toggle so the

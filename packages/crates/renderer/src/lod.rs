@@ -38,6 +38,11 @@ pub struct LodChain {
     /// bounds-aware selection refinements; the error is already absolute so the
     /// basic projection in [`select_level`] doesn't need it.
     pub bounds_radius: f32,
+    /// The level currently shown for this chain (`0` = base). Tracked so the
+    /// per-frame selection only calls `set_mesh_hidden` when the choice actually
+    /// changes — steady-state cost is the selection arithmetic, no flag churn.
+    /// Starts at `0`, matching the loader (levels loaded hidden, base visible).
+    pub current_level: usize,
 }
 
 impl LodChain {
@@ -72,6 +77,12 @@ impl LodRegistry {
 
     pub fn get(&self, base: MeshKey) -> Option<&LodChain> {
         self.chains.get(base)
+    }
+
+    /// Mutable iteration over `(base MeshKey, chain)` — the per-frame selection
+    /// pass uses this to update each chain's `current_level`.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (MeshKey, &mut LodChain)> {
+        self.chains.iter_mut()
     }
 
     pub fn clear(&mut self) {
@@ -145,6 +156,7 @@ mod tests {
                 .map(|(&error, &mesh_key)| LodLevel { mesh_key, error })
                 .collect(),
             bounds_radius: 1.0,
+            ..Default::default()
         }
     }
 

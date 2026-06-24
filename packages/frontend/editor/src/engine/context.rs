@@ -210,10 +210,25 @@ fn editor_features() -> RendererFeatures {
         // The canvas wires `.pick()` to pointer-down for node selection (M6).
         picking: true,
         // LOD is a player-bundle delivery optimisation; the editor renders the
-        // editable scene at full detail.
-        lod: false,
+        // editable scene at full detail, so it's off by default. Opt in with the
+        // `?lod` URL flag to exercise the player LOD path on a `LoadPlayerBundle`
+        // round-trip (the editable scene registers no chains, so it stays a no-op
+        // there regardless).
+        lod: url_has_flag("lod"),
         indirect_first_instance: FeatureToggle::Auto,
     }
+}
+
+/// True when `?<key>` (or `?<key>=…`) is present in the page URL's query string.
+fn url_has_flag(key: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .map(|search| {
+            let q = search.trim_start_matches('?');
+            q.split('&')
+                .any(|p| p == key || p.starts_with(&format!("{key}=")))
+        })
+        .unwrap_or(false)
 }
 
 async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<AwsmRenderer> {

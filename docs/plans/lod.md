@@ -256,9 +256,25 @@ the selected level and hides the rest (no snapshot/shader surgery, correct by
 construction). Flag off ⇒ nothing loads ⇒ byte-identical. Skinned-runtime is
 deferred: separate rig-glb levels don't share the base's animated skeleton, so
 that path needs shared-skeleton level meshes (own follow-up). Mandated suite
-green; editor builds for wasm32. **Next (A.3c):** the per-frame static selection
-pass (`renderer.lod` + camera → `select_level` → `set_mesh_hidden`), then
-measure the mid/far perf win.
+green; editor builds for wasm32.
+
+**Status — landed (A.3c, per-frame static selection).** `AwsmRenderer::
+update_lod_selection` runs each frame just before `collect_renderables`: per
+chain it reads the base mesh's world-AABB centre + transform scale, computes
+camera distance → `projected_px_per_unit` → `select_level`, and visibility-swaps
+to the chosen level (`set_mesh_hidden` only when the choice changes — tracked via
+`LodChain::current_level`, so steady state is pure arithmetic, no per-frame
+alloc). The registry is `mem::take`n during the loop to avoid aliasing
+`&mut self`. Runtime gated behind a `?lod` URL flag in the editor (player
+round-trip) and model-tests (default off ⇒ byte-identical). **Verified** via the
+editor `LoadPlayerBundle` round-trip (`?lod`) on DamagedHelmet: `get_memory_stats`
+shows **4 meshes** (base + 3 levels) for the single-mesh model — the chain loaded
+— and it renders as ONE clean mesh at near *and* far (no z-fighting → exactly one
+level visible); `frame_dt 16.7ms`, `render_cpu 2.11ms`, no errors. The precise
+triangle-throughput before/after numbers are the acceptance test's job (frame
+timing via `?trace`/`?stress` with the mixed scene). **Phase A static runtime LOD
+works end-to-end.** Remaining for Phase A: skinned-runtime selection (shared
+skeleton) + the full mixed-scene acceptance test.
 
 **Critical files:**
 - Runtime selection: `render_passes/occlusion/shader/occlusion_wgsl/cull.wgsl`,

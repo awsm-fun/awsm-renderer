@@ -691,6 +691,12 @@ impl AwsmRenderer {
             self.picker.as_mut(),
         )?;
 
+        // Discrete-LOD: pick a level per instance and flip mesh visibility to it
+        // BEFORE `collect_renderables` reads the `!hidden` set, so this frame's
+        // renderables already reflect the selection. No-op unless the `lod`
+        // feature loaded chains.
+        self.update_lod_selection();
+
         // Populate the pooled renderable lists BEFORE building the
         // RenderContext — `collect_renderables` takes `&mut self` to
         // clear-and-extend the pool's Vecs in place, while ctx holds
@@ -2270,4 +2276,80 @@ fn camera_near_far_from_projection(
     let near = near.abs().max(1e-4);
     let far = far.abs().max(near + 1e-3);
     (near, far)
+}
+
+/// Largest world-space axis scale of an object→world transform — used to project
+/// a mesh's object-space LOD error to world (and thence screen) size.
+fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
+    let sx = m.x_axis.truncate().length();
+    let sy = m.y_axis.truncate().length();
+    let sz = m.z_axis.truncate().length();
+    sx.max(sy).max(sz)
+}
+
+impl AwsmRenderer {
+    /// Geometric-error budget for discrete-LOD level selection, in screen pixels.
+    const LOD_ERROR_THRESHOLD_PX: f32 = 1.0;
+
+    /// Per-frame discrete-LOD level selection (visibility-swap). For each
+    /// registered chain, pick a level by projected screen-space error and show
+    /// it while hiding the previously-shown level — only calling
+    /// `set_mesh_hidden` when the choice actually changes, so the steady state is
+    /// pure arithmetic with no per-frame allocation. No-op unless the `lod`
+    /// feature loaded chains.
+    pub(crate) fn update_lod_selection(&mut self) {
+        if !self.features.lod || self.lod.is_empty() {
+            return;
+        }
+        let Some(cam) = self.camera.last_matrices.as_ref() else {
+            return;
+        };
+        let cam_pos = cam.position_world;
+        let proj_yy = cam.projection.y_axis.y.abs();
+        if proj_yy <= 1e-6 {
+            return;
+        }
+        let tan_half_fov_y = 1.0 / proj_yy;
+        let viewport_h = match self.gpu.current_context_texture_size() {
+            Ok((_, h)) => h as f32,
+            Err(_) => return,
+        };
+
+        // Move the registry out so the loop can call `&mut self` methods without
+        // aliasing `self.lod`. `take` swaps in an empty map — no allocation.
+        let mut reg = std::mem::take(&mut self.lod);
+        for (base_key, chain) in reg.iter_mut() {
+            // Read the base mesh's world placement (immutable borrow, scoped so
+            // it ends before the `set_mesh_hidden` mutable borrow below).
+            let placement = {
+                let Ok(mesh) = self.meshes.get(base_key) else {
+                    continue;
+                };
+                let Some(aabb) = mesh.world_aabb.as_ref() else {
+                    continue;
+                };
+                let center = (aabb.min + aabb.max) * 0.5;
+                let scale = self
+                    .transforms
+                    .get_world(mesh.transform_key)
+                    .map(lod_max_axis_scale)
+                    .unwrap_or(1.0);
+                (center, scale)
+            };
+            let (center, scale) = placement;
+            let distance = (center - cam_pos).length();
+            let px_per_unit =
+                crate::lod::projected_px_per_unit(distance, tan_half_fov_y, viewport_h);
+            let selected =
+                crate::lod::select_level(chain, px_per_unit, scale, Self::LOD_ERROR_THRESHOLD_PX);
+            if selected != chain.current_level {
+                let prev_key = chain.key_for_level(base_key, chain.current_level);
+                let sel_key = chain.key_for_level(base_key, selected);
+                chain.current_level = selected;
+                let _ = self.set_mesh_hidden(prev_key, true);
+                let _ = self.set_mesh_hidden(sel_key, false);
+            }
+        }
+        self.lod = reg;
+    }
 }

@@ -110,6 +110,11 @@ impl AppCanvas {
                             // all-off, so this just sets `picking`.
                             .with_features(awsm_renderer::features::RendererFeatures {
                                 picking: true,
+                                // Opt in to discrete LOD with the `?lod` URL flag
+                                // (default off ⇒ byte-identical). The loaded
+                                // bundle's baked level chains then drive per-
+                                // instance selection.
+                                lod: crate::pages::app::scene::lod_enabled(),
                                 ..Default::default()
                             })
                             .with_phase_handler(clone!(loading_status => move |phase| {

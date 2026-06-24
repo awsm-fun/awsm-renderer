@@ -1856,6 +1856,7 @@ async fn load_static_lod_chain(
             LodChain {
                 levels,
                 bounds_radius: manifest.bounds_radius,
+                ..Default::default()
             },
         );
     }
