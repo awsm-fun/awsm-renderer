@@ -546,10 +546,30 @@ attributes:
      (precedent `meshes/mesh.rs:309-360`) — and **hide `M`’s normal draw**.
   This reuses the normal mesh + material path (no `cluster_id` re-budget, no
   material shader change) — lower-risk than feared; the only renderer touch is the
-  geometry-pass draw hook for `M`. Remaining: upload `M` when vg is on (store its
-  MeshKey/meta/vertex-buffer handle on the cluster pass) + the geometry-pass draw
-  hook. The shipped per-instance cluster cut + discrete LOD already render correct,
-  distance-adaptive, crack-free, coexisting LOD for all mesh classes regardless.
+  geometry-pass draw hook for `M`. The shipped per-instance cluster cut + discrete
+  LOD already render correct, distance-adaptive, crack-free, coexisting LOD for all
+  mesh classes regardless.
+
+- **Status — built; draw activation has a bug to fix.** Landed gated + inert:
+  identity `source_indices` (commit e463c921); `M` upload + `render_mesh` handle
+  (effb7a41); `draw_args.first_instance = M.mesh_meta_idx` (6d508fc3); the
+  geometry-pass draw override in `push_geometry_pass_commands` (80afca17) — drawing
+  `compacted_indices` + `drawIndexedIndirect(draw_args)` for `M`, gated on
+  `mesh_key == M` (inert while `M` is hidden). **Activation attempt** (return `M`
+  un-hidden from `load_cluster_lod` instead of the per-instance chain): the compute
+  is confirmed running on-device — browser console shows
+  `cluster compaction (GPU): draw_args.index_count = 7548 (2516 tris)` — but `M`
+  rendered EMPTY (no visible geometry, no GPU validation error). **Reverted** the
+  activation to keep the verified per-instance chain rendering; the override stays
+  committed + inert. **Most likely bug = pass ordering:** the geometry pass runs in
+  `render.rs` BEFORE the cluster cut/compaction dispatch, so the draw reads
+  last-frame (or frame-0 uninitialised) `draw_args`; the cut+compaction must move
+  to BEFORE the geometry pass (a compute pass writing buffers the render pass then
+  reads). Secondary suspects to check on device: the override is gated on
+  `use_storage_meta` (needs `indirect_first_instance`); and `first_instance` must
+  equal `M`'s committed meta slot (the `unwrap_or(0)` on a not-yet-committed mesh
+  would mis-route the material). Next: reorder the cluster dispatch before the
+  geometry pass, re-activate, and screenshot-verify the per-cluster cut renders.
 
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds
