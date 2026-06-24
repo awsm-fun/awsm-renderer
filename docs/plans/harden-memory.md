@@ -7,17 +7,31 @@
 > render hot path pays **zero** for any of it.
 >
 > **Design decisions are LOCKED (no forks left to ask):**
-> - **Undo/redo cap:** total-**byte** budget, drop-oldest.
-> - **Device-loss (B1a):** in-place **`rebuild_gpu()` from CPU mirrors** —
->   best-in-class seamless recovery (no reload). Rebuild is a cold path.
-> - **Worker-crash (B1b):** **persist slot→key topology in shared memory** —
->   fast seamless respawn (no scene reload). Topology written on change, not per
->   frame.
+> - **Undo/redo cap:** total-**byte** budget, drop-oldest. ✅ landed + verified.
+> - **Device-loss (B1a) — RE-LOCKED 2026-06-24 (David):** **reload from the
+>   retained source-of-truth**, NOT "rebuild from CPU mirrors." The original lock
+>   assumed CPU geometry/texture mirrors exist; they don't (upload-then-drop by
+>   design — see the ⚠️ RESOLVED-BLOCKER section). On `device.lost`, reconstruct
+>   the scene from the authoritative description that's **already retained**
+>   (editor: `EditorProject`; runtime: the scene bundle / its URL) via the
+>   existing load path. Cold path (`.lost` only).
+> - **Worker-crash (B1b) — RE-LOCKED 2026-06-24 (David):** respawn the worker and
+>   **re-run the same source-of-truth load** in the fresh worker (it owns the
+>   device + all GPU handles, which die with it). Persisting slot→key topology in
+>   shared memory is kept ONLY as an optimization where the sim worker's arena
+>   bindings survive; topology written on change, not per frame.
+> - **HARD CONSTRAINT on B1a/B1b (David, 2026-06-24):** recovery must add **no
+>   steady-state memory** and **no performance regression**. (b) satisfies this by
+>   construction — it reuses state already retained for save/load (no new
+>   permanent geometry/texture retention — that's why (a) was rejected) and runs
+>   only on the cold loss/crash path. **Any implementation that permanently
+>   retains expanded geometry/texture CPU mirrors, or adds per-frame cost, is
+>   out-of-bounds and must be flagged, not shipped.**
 > - **Scope:** all three, **ordered** (Phase 1 → 2 → 3), each **self-verified** as a
 >   hard gate before the next.
 > - User directive: *most robust / best-in-class result; code churn and
 >   backwards-compat are NOT concerns; the only hard constraint is no per-frame
->   hot-loop cost.*
+>   hot-loop cost + no steady-state memory growth.*
 
 ---
 
@@ -159,12 +173,13 @@ All under `#[cfg(any(debug_assertions, feature = "harden-diag"))]`.
 
 ---
 
-## ⚠️ BLOCKER (P2/P3) — the LOCKED "rebuild from CPU mirrors" premise is false
+## ✅ RESOLVED-BLOCKER (P2/P3) — "rebuild from CPU mirrors" premise was false → re-locked to reload-from-source
 
-**Surfaced during P2 implementation (2026-06-24).** The LOCKED design for B1a/B1b
-assumes the renderer retains CPU mirrors of **all** scene resources — the plan
-text lists "transforms buffer, instance arenas, materials, **mesh geometry**" as
-recoverable from CPU. Two of those are **not** retained, by deliberate design:
+**Surfaced during P2 implementation (2026-06-24); resolved same day — David chose
+(b) reload-from-source-of-truth.** The original LOCKED design for B1a/B1b assumed
+the renderer retains CPU mirrors of **all** scene resources — the plan text listed
+"transforms buffer, instance arenas, materials, **mesh geometry**" as recoverable
+from CPU. Two of those are **not** retained, by deliberate design:
 
 - **Mesh geometry is upload-then-drop.** `meshes.rs:961 resolve_one` `remove`s the
   `GeometrySource`, uploads it, and **drops it** — "the source is dropped at the
@@ -188,70 +203,128 @@ mirrors" — those mirrors don't exist. The only ways to seamless-recover are:
   "reload" the LOCKED decision forbade. **The no-reload lock was premised on CPU
   mirrors existing; since they don't, that fork must be re-opened.**
 
-**Recommended (needs David's call):** re-open the B1a fork and choose **(b)
-reload-from-source-of-truth** — fast and seamless *from the user's view* because
-the authoritative description is retained, without permanently re-bloating RAM.
-B1b (worker respawn) then re-runs the same source-of-truth load in the fresh
-worker rather than re-handing GPU handles that died with it.
+**DECISION (David, 2026-06-24): (b) reload-from-source-of-truth.** Fast and
+seamless *from the user's view* because the authoritative description is already
+retained, without permanently re-bloating RAM. B1b (worker respawn) then re-runs
+the same source-of-truth load in the fresh worker rather than re-handing GPU
+handles that died with it. **Hard constraint: no steady-state memory growth, no
+perf regression** (see the LOCKED block) — (b) meets it because:
 
-**Second, independent blocker (tooling):** the live repro the plan specifies —
-`evaluate_script("…device.destroy()…")` — isn't directly runnable: the
+- **Editor:** the source-of-truth `EditorProject` (scene tree, captured-mesh
+  geometry, materials, clips) is **already retained** for save/load. Reloading it
+  via the existing `apply_project` (or the `ReloadProjectInMemory` round-trip
+  path, `state.rs:1224`) adds **zero** new permanent retention.
+- **Runtime/player:** source-of-truth = the scene bundle (compressed — *far*
+  smaller than the expanded GPU resources) or its URL. Retain-the-bundle or
+  re-fetch is the app's choice; either is negligible vs. (a)'s per-mesh CPU copy.
+- **Cold path only** (`device.lost` / worker death) → no per-frame / hot-loop cost.
+
+**Second, independent sub-task (tooling) — folded into P2/P3 scope:** the live
+repro `evaluate_script("…device.destroy()…")` isn't directly runnable: the
 `GpuDevice` is owned inside Rust renderer state and is **not exposed to JS** in
 either harness (and in `?demo=motion` it lives in the *render worker* scope, not
-the page). Forcing a loss needs a small test seam (a `#[wasm_bindgen]` export
-that calls `device.destroy()`), which is itself gated work.
+the page). Forcing a loss needs a small **gated** test seam (a `#[wasm_bindgen]`
+export that calls `device.destroy()`, and a worker-kill hook) — gate it
+`#[cfg(any(debug_assertions, feature = "harden-diag"))]` so it never ships.
 
-What **did** land: P0's `install_device_lost_hook` (un-gated detection) means a
-loss is **logged, never silent** — the foundation either recovery strategy builds
-on. The recovery *action* is blocked on the design decision above.
-
----
-
-## Phase 2 — GPU device-loss recovery (B1a): `rebuild_gpu()` from CPU mirrors
-
-Best-in-class, seamless (no reload). The scene/arena/CPU mirrors (transforms buffer,
-instance arenas, materials, mesh geometry) are retained; only `web_sys` GPU handles
-are gone.
-
-1. **Subscribe to `GPUDevice.lost`** (extend the Phase 0 hook from logging to
-   action).
-2. **`renderer.rebuild_gpu()`** — one **cold** entry point that:
-   - requests a fresh adapter/device, re-creates the surface configuration, and
-   - rebuilds **every** GPU-handle subsystem (render passes, pipeline pools, bind
-     groups, texture pool, buffers) and re-uploads from the CPU mirrors.
-   - Give each GPU-handle subsystem a `rebuild`/recreate method behind this single
-     entry point. Churn is fine; **no per-frame cost** (only called on `.lost`). A
-     cheap "device generation" check may guard in-flight submits during rebuild.
-3. Guard in-flight work: drop/await the current frame's submits so nothing targets
-   the dead device mid-rebuild (cf. the existing `mapped_staging_ring` recovery
-   pattern).
-
-**Verify (Multithreaded harness — T4.1):** `task mt:dev`,
-`?demo=motion`, screenshot; force loss via chrome-devtools
-`evaluate_script("…device.destroy()…")` (or the lost-context path) mid-session;
-`wait` + screenshot. **PASS:** the renderer rebuilds and **keeps rendering** —
-movers resume, before/after frames match, no reload, `get_logs` shows the loss +
-recovery.
+What **already landed**: P0's `install_device_lost_hook` (un-gated detection)
+means a loss is **logged, never silent** — the foundation the recovery builds on.
 
 ---
 
-## Phase 3 — render-worker-crash recovery (B1b): persist topology in shared memory
+## Phase 2 — GPU device-loss recovery (B1a): reload from retained source-of-truth
 
-Best-in-class, fast respawn (no scene reload). The sim worker's shared-memory
-bindings survived; the **render worker that owned the slot→key topology died**.
+> **Applies to BOTH the runtime/player AND the editor — primarily the player.**
+> Device loss (GPU reset, driver update, tab backgrounded/evicted, OOM) hits a
+> shipped *game* harder than an editor (the player can't just "reopen the file").
+> The `mt:dev` verification harness (`?demo=motion` / `?demo=remote`) **is** the
+> multithreaded *runtime/player* reference app (PLAYER-GUIDE.md §9) — so P2/P3 are
+> verified on the player path, not the editor. The recovery mechanism (reacquire
+> device → replay the retained source-of-truth) is identical for both; only *what*
+> the source-of-truth is differs (player: scene bundle / its URL; editor:
+> `EditorProject`). The editor is just one consumer whose source-of-truth happens
+> to already be in memory.
 
-1. **Persist topology in shared memory.** The render worker writes its slot→key map
-   into shared `WebAssembly.Memory` **whenever topology changes** (load / add /
-   remove) — **not per frame** (no hot-loop cost). Lay out a compact, fixed region
-   for it.
-2. **Watch the render worker** via `worker.onerror` + a heartbeat (today
+Seamless *from the user's view* (no visible reload), **without** permanently
+retaining geometry/texture CPU mirrors (those don't exist — see RESOLVED-BLOCKER).
+On loss, re-create the GPU device and **replay the authoritative description**
+through the existing load path; the user sees a one-frame re-materialize, not a
+page reload.
+
+1. **Turn the Phase-0 detection hook into an action seam.** Extend
+   `install_device_lost_hook` so on `.lost` it invokes a host-registered
+   `on_device_lost` callback (un-gated; one-shot; cold path) in addition to
+   logging. No per-frame cost — the hook is installed once at device creation.
+2. **`renderer.reacquire_device()`** — a **cold** entry point that re-requests a
+   fresh adapter/device + re-configures the surface, and resets the GPU-handle
+   caches (pipeline pools, bind groups, texture pool, per-pass buffers) to empty
+   so the subsequent load rebuilds them lazily. This is device *re-acquisition* +
+   *cache reset*, NOT data rebuild — the data comes from step 3.
+3. **Replay the source-of-truth load** (the part that owns the data):
+   - **Runtime/player (primary):** re-run the scene load — `populate_awsm_scene`
+     from the retained scene description, or re-fetch the bundle from its URL. In
+     the mt demos: motion re-adds its boxes; remote re-`populate_gltf`s from the
+     retained bytes / re-fetch. The player keeps the *compressed* scene
+     description (or just the URL), never the expanded geometry — so no new RAM.
+   - **Editor:** call `apply_project(ctrl, project)` with the retained
+     `EditorProject` (the same path `ReloadProjectInMemory` uses, `state.rs:1224`)
+     — re-materializes the scene tree, captured meshes, materials, clips onto the
+     fresh device. Zero new retention (the project was already held for save).
+4. **Guard in-flight work:** a cheap "device generation" counter — frames bump it;
+   submits targeting a stale generation are dropped so nothing hits the dead
+   device mid-reacquire (cf. the `mapped_staging_ring` recovery pattern). This is
+   a single existence/equality check, not new per-frame allocation.
+
+> **Memory/perf gate (must hold):** idle `get_memory_stats` before-loss ==
+> after-recovery steady-state (no new retention); `?trace=sub-frame` shows no new
+> per-frame spans; the generation guard is one integer compare. If recovery leaves
+> `wasm_heap`/pool counters higher at steady state, that's a regression — fix or
+> flag, don't ship.
+
+**Test seam (gated `debug_assertions`/`harden-diag`):** add a `#[wasm_bindgen]`
+export that calls `device.destroy()` on the live renderer's device so the repro
+is drivable. In `?demo=motion` it must be callable in the render-worker scope.
+
+**Verify (Multithreaded harness — T4.1):** `task mt:dev`, `?demo=motion`,
+screenshot; force loss via the gated `device.destroy()` seam mid-session; `wait`
++ screenshot. **PASS:** the renderer reacquires + replays and **keeps rendering** —
+movers resume, before/after frames match, no *page* reload, `get_logs` shows the
+loss + recovery, and steady-state memory matches pre-loss.
+
+---
+
+## Phase 3 — render-worker-crash recovery (B1b): respawn + re-run source-of-truth load
+
+The render worker owns the GPU device + **all** GPU handles + the slot→key
+topology; on its death they're gone. Respawn it and re-run the same
+source-of-truth load (B1a's step 3) in the fresh worker. The sim worker's
+shared-memory arena bindings survive, so persisting topology is an optimization,
+not the recovery mechanism.
+
+1. **Watch the render worker** via `worker.onerror` + a liveness check (today
    `workers/pool.rs onerror` only fails the in-flight *meshgen* job and does not
-   respawn — extend it / add the render-worker watch in the host,
-   `examples/multithreaded/src/remote_demo.rs`).
-3. **Respawn on death:** re-spawn from the same bootstrap, re-transfer a **fresh**
-   `OffscreenCanvas` (the old one died with the worker), re-post the shared module +
-   memory, **read the topology back** from shared memory, re-hand every live arena
-   `SlotBinding`, and resume — no scene reload.
+   respawn — extend it / add the render-worker watch in the host:
+   `examples/multithreaded/src/remote_demo.rs` / the demo's `start_main`).
+2. **Respawn on death:** re-spawn from the same bootstrap, re-transfer a **fresh**
+   `OffscreenCanvas` (the old one died with the worker — needs a fresh canvas
+   element or a re-`transfer_control_to_offscreen` on a replacement), re-post the
+   shared module + memory.
+3. **Re-establish the scene in the fresh worker** by re-running the
+   source-of-truth load (same as B1a step 3) — this rebuilds the renderer + GPU
+   resources + the slot→key topology on the new device.
+4. **(Optimization, optional) persist slot→key topology in shared memory** so a
+   respawn that re-uses surviving sim-arena bindings can skip re-handing them:
+   the render worker writes its slot→key map into a compact fixed shared region
+   **only when topology changes** (load / add / remove) — never per frame. Only
+   worth it if profiling shows the re-hand is a real respawn-latency cost.
+
+**Test seam (gated):** a hook to terminate the render worker (`worker.terminate()`
+from the host, or a gated self-`close()`), so the kill is drivable.
+
+**Verify (Multithreaded harness — T4.2):** `?demo=motion`, kill the render worker
+mid-session via the gated seam; **PASS:** the host respawns it, re-hands a fresh
+`OffscreenCanvas`, re-runs the load, and the **movers resume** (scene intact), no
+*page* reload, steady-state memory matches pre-crash.
 
 **Verify (Multithreaded harness — T4.2):** `?demo=motion`, kill the render worker
 mid-session via chrome-devtools; **PASS:** the host respawns it, re-hands the
@@ -287,8 +360,8 @@ it's independent of B1.
 | P1 | Undo/redo byte-budget cap (drop-oldest) + estimator unit test | editor | ✅ | `BoundedHistory` (256 MB budget, drop-oldest) wired into `state.rs` undo/redo. 6 host tests pass (`cargo test -p awsm-editor-protocol history`). Live churn (1200 alt. ~512 KB renames, no new_project): `undo_len` plateaus **511** (drop-oldest), `undo_bytes` plateaus **268,036,874 ≤ 256 MB**, `wasm_heap` plateaus 646 MB (stops ramping). |
 | P1b | Audit + bound other unbounded containers | editor | ✅ | Audited editor+renderer. Undo log was the sole unbounded-and-suspect (now fixed). Leak-panel counters **flat** across the 1200-cmd churn (render_pipelines 16, compute_pipelines 21, shaders 31, samplers 1, pool_textures 0, dynamic_materials 0 — identical before/after). CONSOLE_LOG already capped (200); renderable pools cleared/frame; compute-pipeline+shader caches have removal APIs. Noted: `RenderPipelines.cache` lacks a symmetric removal API (bounded by finite pipeline-variant domain; not the crash cause; flagged for future if dynamic-variant churn ever shows growth). |
 | P1c | (opt-in) oversized-allocation debug guard | editor | ✅ | Gated guard in `renderer-core methods.rs create_buffer` (the central GPU-buffer chokepoint): a single buffer > `OVERSIZED_ALLOC_BYTES` (512 MB) logs `awsm_renderer_core::oversized_alloc` + `debug_assert!`s at our call site instead of trapping in PartitionAlloc. Gated `debug_assertions`/`harden-diag`; clippy `--all-features` clean. |
-| P2 | `rebuild_gpu()` from CPU mirrors + GPUDevice.lost action | mt:dev | 🚫 BLOCKED | **LOCKED premise false** — mesh geometry + texture pixels are upload-then-drop (`meshes.rs:961` source-freed invariant §7; `textures.rs`), so there are **no CPU mirrors to rebuild from**. Seamless recovery needs either permanent geometry/texture CPU retention (re-bloats RAM — fights this plan's goal) or reload-from-source-of-truth (the forbidden "reload"). The no-reload lock must be **re-opened** (see ⚠️ BLOCKER section). 2nd blocker: `GpuDevice` isn't JS-exposed, so `device.destroy()` mid-session isn't drivable without a test seam. Detection (P0 hook) landed; action needs David's design call. |
-| P3 | Render-worker respawn + topology-in-shared-memory | mt:dev | 🚫 BLOCKED | Depends on P2's recovery model. The render worker owns the GPU device + all GPU handles; on its death they're gone, and a respawn must **reconstruct** them — same no-CPU-mirror blocker as P2. The topology-persist piece is independently implementable, but "movers resume, no reload" can't pass until the P2 reload-vs-retain fork is resolved. Also needs a fresh `OffscreenCanvas` (the transferred one dies with the worker) + a worker-kill test seam. |
+| P2 | Device-loss recovery: reacquire device + replay source-of-truth | mt:dev | ☐ (design re-locked) | **Unblocked 2026-06-24** — re-locked to **(b) reload-from-source** (David). Impl pending: device-lost action seam → `reacquire_device()` (re-request device + reset GPU caches) → replay retained source-of-truth (editor `apply_project`; runtime re-`populate`/re-construct) → generation guard for in-flight submits → gated `device.destroy()` test seam. Memory/perf gate: post-recovery steady-state == pre-loss. See rewritten Phase 2. |
+| P3 | Render-worker respawn + re-run source-of-truth load | mt:dev | ☐ (design re-locked) | **Unblocked 2026-06-24** — respawn worker + re-transfer fresh `OffscreenCanvas` + re-run the B1a source-of-truth load on the new device (topology-persist demoted to optional optimization). Impl pending; needs worker-watch + a gated worker-kill seam. See rewritten Phase 3. |
 | P4 | Asset-fetch-failure → clean Error, no hang | mt:dev | ✅ | Live (`?demo=remote&model=nonexistent-bad-asset.glb`): a bad asset URL surfaces a clean `RenderEvent::Error` ("parse glb: …") **immediately** (t=0, no hang), `loading` clears, page stays responsive, `ready:false` (no false success). Existing `if let Err(err) = load_gltf(...)` wrapper already routes any fetch/parse failure to one Error event + `loading=false` — no code change needed; gate verified. |
 | Meta | No per-frame cost; release default unchanged | both | ✅ | Landed phases add **zero per-frame cost**: undo cap runs only on edits (push/pop), diagnostics are gated `debug_assertions`/`harden-diag` + cold-path (MCP query / `.lost` / `create_buffer`), device-lost hook is one-shot at device creation. Proof: 1200-cmd churn left all render-stats leak counters flat (render_pipelines/shaders/samplers/pool_textures unchanged); `frame_dt_ms` 16.69 steady. Release default unchanged (behavioural fixes un-gated = correctness; all diagnostics gated). `clippy --all --all-features --tests -D warnings` clean. |
 
@@ -300,11 +373,14 @@ fixed and live-verified** (undo log plateaus under a 256 MB byte budget;
 `wasm_heap` stops ramping). `task lint` clean. Committed per phase on
 `doc-aw-snap`.
 
-**Blocked (2/8): P2, P3** — device-loss / worker-crash *recovery*. Root cause:
-the LOCKED "rebuild from CPU mirrors, no reload" design rests on a false premise
-(geometry + texture pixels are upload-then-drop; no CPU mirrors exist). **Needs a
-design decision from David** — re-open the fork and pick reload-from-source vs
-permanent CPU retention (see the ⚠️ BLOCKER section). Detection (P0 hook) landed.
+**Pending impl (2/8): P2, P3** — device-loss / worker-crash *recovery* (primarily
+for the **runtime/player**, verified on the `mt:dev` player harness; the editor is
+a second consumer). Design **was** blocked (the old "rebuild from CPU mirrors"
+lock rested on a false premise — geometry/texture are upload-then-drop), now
+**re-locked to (b) reload-from-retained-source-of-truth** (David, 2026-06-24),
+under a hard *no-new-memory / no-perf-regression* constraint. Detection (P0 hook)
+landed; reacquire-device + replay-source + the gated test seams are the remaining
+implementation (see rewritten Phases 2–3). Ready for a fresh `/loop`.
 
 ## Done criteria
 
