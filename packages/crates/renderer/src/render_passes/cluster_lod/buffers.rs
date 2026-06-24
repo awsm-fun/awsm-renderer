@@ -223,13 +223,19 @@ impl ClusterLodBuffers {
         gpu.write_buffer(&self.params_buffer, None, bytes.as_slice(), None, None)
     }
 
-    /// Initialise the indirect draw args to `{index_count:0, instance_count:1,
-    /// first_index:0, base_vertex:0, first_instance:0}` (once, at load). The
-    /// compaction zeroes only `index_count` per frame and atomic-bumps it; the
-    /// static fields stay valid for `drawIndexedIndirect`.
-    pub fn init_draw_args(&self, gpu: &AwsmRendererWebGpu) -> Result<(), AwsmCoreError> {
+    /// Reset the indirect draw args to `{index_count:0, instance_count:1,
+    /// first_index:0, base_vertex:0, first_instance}`. The compaction atomic-bumps
+    /// `index_count`; `first_instance` carries the cluster render mesh's
+    /// `mesh_meta_idx` so the geometry vertex shader's
+    /// `geometry_mesh_metas[instance_index]` resolves to it (material routing).
+    pub fn init_draw_args(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        first_instance: u32,
+    ) -> Result<(), AwsmCoreError> {
         let mut bytes = [0u8; CLUSTER_DRAW_ARGS_SIZE];
         bytes[4..8].copy_from_slice(&1u32.to_le_bytes()); // instance_count = 1
+        bytes[16..20].copy_from_slice(&first_instance.to_le_bytes());
         gpu.write_buffer(&self.draw_args_buffer, None, bytes.as_slice(), None, None)
     }
 

@@ -137,7 +137,7 @@ impl ClusterLodRenderPass {
     /// `compacted_indices` + bump `draw_args.index_count`. Run after [`dispatch`]
     /// (it reads `selected`). After this, `draw_args` drives one
     /// `drawIndexedIndirect(compacted_indices)`.
-    pub fn dispatch_compaction(&self, ctx: &RenderContext) -> Result<()> {
+    pub fn dispatch_compaction(&self, ctx: &RenderContext, first_instance: u32) -> Result<()> {
         let Some(buffers) = self.buffers.as_ref() else {
             return Ok(());
         };
@@ -145,7 +145,7 @@ impl ClusterLodRenderPass {
             return Ok(());
         }
         // queue.writeBuffer is ordered before the submitted compute pass.
-        buffers.init_draw_args(ctx.gpu)?;
+        buffers.init_draw_args(ctx.gpu, first_instance)?;
         let cp = ctx.command_encoder.begin_compute_pass(Some(
             &ComputePassDescriptor::new(Some("Cluster Compaction")).into(),
         ));

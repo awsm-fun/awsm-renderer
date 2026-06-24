@@ -1261,7 +1261,19 @@ impl AwsmRenderer {
                             )?;
                             // Pack the selected clusters into one compacted index
                             // stream + drawIndexedIndirect args (reads `selected`).
-                            cluster_pass.dispatch_compaction(&ctx)?;
+                            // first_instance = the render mesh M's meta slot, so
+                            // the indirect draw's vertex shader resolves M's
+                            // material meta (geometry_mesh_metas[instance_index]).
+                            let first_instance = cluster_pass
+                                .render_mesh
+                                .and_then(|m| ctx.meshes.meta.geometry_buffer_offset(m).ok())
+                                .map(|off| {
+                                    off as u32
+                                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
+                                            as u32
+                                })
+                                .unwrap_or(0);
+                            cluster_pass.dispatch_compaction(&ctx, first_instance)?;
                             // One-shot readback verification: copy the indirect
                             // args' `index_count` (the compacted triangle stream
                             // length) to the MAP_READ mirror; the post-submit
