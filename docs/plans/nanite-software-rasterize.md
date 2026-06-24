@@ -238,17 +238,78 @@ that LOD shipping does not require.
 >   (smaller buffer than the exploded geometry). True per-frame paging below closes
 >   these.
 
-**Step 2 (next) — dynamic paging:**
+### Step 2 (design note) — dynamic paging
 
-- GPU feedback buffer marks the cluster pages the LOD cut needs this frame.
-- CPU streams requested pages from disk/network into the GPU pools and evicts
-  cold pages (LRU against a VRAM budget — ties into
-  `PERFORMANCE_OPEN_WORLD_PLAN.md`).
-- LOD selection clamps to resident pages until higher-detail pages arrive.
+Step 1 caps detail *statically* at load. Step 2 makes residency **per-frame and
+camera-driven**: the cut asks for finer pages where the camera is close, the CPU
+streams them in and evicts cold ones, so a multi-million-tri asset shows full
+detail near the camera within a bounded VRAM budget. This is a design note, not
+yet built — the GPU feedback + async paging + eviction is a multi-day effort and
+the standing rule is "ship Step 1 + design over half-built code."
 
-The cost that scales with "distinct meshes" is memory/streaming (N unique
-datasets resident vs one when instanced); this is what bounds the working set to
-the sum of visible LOD cuts.
+**What changes vs Step 1.** Today `M` is ONE contiguous exploded buffer and the
+compaction emits identity indices into it (the `first_index` remap). Paging breaks
+the "one contiguous M" assumption: geometry must live in **fixed-size page slots**
+so individual clusters can be uploaded/evicted independently.
+
+**GPU residency pool (replaces the monolithic M).**
+- `page_pool`: a fixed-capacity buffer of `P` slots, each holding one cluster's
+  exploded geometry at the bake's max cluster size (≤128 tris ⇒ ≤384 exploded
+  verts × 56 B ≈ 21 KB/slot; e.g. P = 8 192 slots ≈ 168 MB — the VRAM budget knob).
+- `resident: array<i32>` length = `cluster_count`: cluster_id → pool slot, or `-1`
+  if not resident. The single source of truth the cut reads.
+- `slot_meta: array<{cluster_id, last_used_frame}>` length `P`: reverse map for
+  eviction (LRU).
+- CPU keeps the baked `ClusterMesh` page geometries host-side (or mmaps the bundle)
+  as the stream source; "disk/network streaming" is a later refinement of the
+  *source*, orthogonal to the GPU paging mechanics here.
+
+**Per-frame data flow (reuses the existing cut → compaction → draw):**
+1. **Cut (extended `cluster_cut.wgsl`).** For each cluster the cut would select,
+   check `resident[id]`. If resident → emit as today (slot index instead of
+   `first_index`). If NOT resident → (a) walk up to the nearest resident ancestor
+   and emit THAT (crack-free coarse fallback — exactly Step 1's clamp, but the
+   "frontier" is now wherever residency currently reaches), and (b) `atomicOr`/
+   append `id` into a **`feedback` buffer** (a bitset or a compacted append list)
+   marking "wanted but absent". Also bump `slot_meta[slot].last_used_frame` for
+   every resident slot it used (LRU touch).
+2. **Compaction (unchanged shape).** Packs the selected (resident) slots' indices
+   into the compacted stream + draw args, but indices are now `slot*PAGE_VERTS + k`
+   into `page_pool` rather than into a contiguous M.
+3. **Readback (async, amortized).** Copy `feedback` → MAP_READ (the existing
+   readback pattern), one frame latent. CPU gets the set of wanted-absent
+   cluster_ids. No per-frame stall: the draw used the coarse fallback this frame;
+   the finer page appears a frame or two later (progressive refinement, like
+   virtual texturing).
+4. **Stream + evict (CPU).** For each wanted id: find a free slot, or evict the
+   slot with the oldest `last_used_frame` (skip slots used this frame). Upload that
+   cluster's exploded geometry (`writeBuffer` into the slot) and set
+   `resident[id] = slot`. Cap uploads/frame to a byte budget so a big jump doesn't
+   hitch. Clear evicted ids to `-1` first so the cut can't read a half-evicted slot.
+
+**Crack-free.** The cut still only ever emits a valid DAG antichain (the same
+group-consistent `lod_bounds` tiling as Step 1); the coarse-fallback when a page is
+absent is itself a valid (coarser) antichain, so transitions stay watertight — they
+just refine over a few frames as pages arrive. The resident-leaf `lod_error→0`
+clamp from Step 1 becomes dynamic (applied to whichever clusters are currently the
+finest resident on each path).
+
+**Why it stays within budget.** Working-set = sum of the visible LOD cuts' pages,
+not the whole asset; cold pages (off-screen / far) evict. The pool size is the hard
+VRAM cap; detail degrades gracefully (coarser) when the budget is saturated rather
+than overflowing — the property Step 1 already gives, now camera-adaptive.
+
+**Build order when picked up:** (1) page_pool + resident table + port the cut to
+read `resident` and emit slot indices (no feedback yet — static residency through
+the pool, proving the indirection); (2) add the feedback buffer + readback +
+CPU upload-into-slot (no eviction — grow-only until full); (3) LRU eviction +
+per-frame upload budget; (4) multi-million-tri on-device verification + `?stress`.
+Each gated behind `cluster_streaming` (or a new `cluster_paging`) flag, default-off.
+
+**Ties into** `PERFORMANCE_OPEN_WORLD_PLAN.md` (the VRAM-budget / LRU machinery is
+shared with texture streaming). The cost that scales with "distinct meshes" is
+memory/streaming (N unique datasets resident vs one when instanced); this paging is
+what bounds the working set to the sum of visible LOD cuts.
 
 ## Verification
 
