@@ -11,7 +11,6 @@
 //! (`transform_controller`) — no axis constraints, no rotation, no scale.
 //! Authors grab the handle and drag in the camera plane.
 
-use awsm_meshgen::sphere_mesh;
 use awsm_renderer::{
     camera::CameraMatrices,
     materials::{unlit::UnlitMaterial, Material, MaterialAlphaMode, MaterialKey},
@@ -20,6 +19,7 @@ use awsm_renderer::{
     transforms::{Transform, TransformKey},
     AwsmRenderer,
 };
+use awsm_renderer_meshgen::sphere_mesh;
 use glam::{Quat, Vec3};
 
 use crate::viewport3d::transform_controller::ray_plane_intersection;

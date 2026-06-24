@@ -6,8 +6,8 @@ releasing one doesn't touch the others:
 | # | Artifact | Trigger | Destination |
 |---|----------|---------|-------------|
 | 1 | **Frontend editor** | `task editor:deploy` | Cloudflare Pages (`awsm-scene-editor` → scene.awsm.fun) |
-| 2 | **Library crates** (`awsm-scene`, `awsm-renderer`, …) | `task crates-publish` | crates.io |
-| 3 | **MCP server** (`awsm-scene-mcp`) | push a `v<version>` git tag | GitHub Releases |
+| 2 | **Library crates** (`awsm-renderer-scene`, `awsm-renderer`, …) | `task crates-publish` | crates.io |
+| 3 | **MCP server** (`awsm-renderer-scene-mcp`) | push a `v<version>` git tag | GitHub Releases |
 
 Versions across the workspace move in lockstep (`version` under
 `[workspace.package]` in the root `Cargo.toml`, mirrored into the internal
@@ -38,7 +38,7 @@ task crates-publish             # publish for real
 ```
 
 `cargo publish --workspace` publishes every member in dependency order and skips
-the `publish = false` members (the frontends, `awsm-web-shared`, `debugging`, and
+the `publish = false` members (the frontends, `awsm-renderer-web-shared`, `debugging`, and
 the MCP server). The MCP server is **not** a crates.io crate — it ships as a
 binary (track 3).
 
@@ -75,7 +75,7 @@ To cut **only** the MCP-server binary release (skip crates + editor):
 3. **Tag and push** — the tag must be `v<version>` and match the Cargo version:
 
    ```sh
-   git tag -a v0.3.0 -m "awsm-scene-mcp v0.3.0"
+   git tag -a v0.3.0 -m "awsm-renderer-scene-mcp v0.3.0"
    git push origin v0.3.0
    ```
 
@@ -96,8 +96,8 @@ A published GitHub Release at `…/releases/tag/v<version>` with:
 
 - per-platform archives: macOS arm64 + x86_64, Linux x86_64, Windows x86_64-msvc
   (`.tar.xz` / `.zip`) plus `.sha256` checksums,
-- `awsm-scene-mcp-installer.sh` (the `curl … | sh` installer) and
-  `awsm-scene-mcp-installer.ps1` (PowerShell).
+- `awsm-renderer-scene-mcp-installer.sh` (the `curl … | sh` installer) and
+  `awsm-renderer-scene-mcp-installer.ps1` (PowerShell).
 
 The README's install commands all point at `releases/latest/download/…`, so they
 keep working across versions with no edits.
@@ -106,7 +106,7 @@ keep working across versions with no edits.
 
 - **`[workspace.metadata.dist]`** in the root `Cargo.toml` holds the dist config
   (targets, installers, `precise-builds`). **`precise-builds = true`** is
-  important: it builds only the `awsm-scene-mcp` package, so dist never tries to
+  important: it builds only the `awsm-renderer-scene-mcp` package, so dist never tries to
   host-compile the wasm-only editor crate. The MCP crate opts in with
   `[package.metadata.dist] dist = true` (it's `publish = false`, which dist
   otherwise treats as "don't ship").

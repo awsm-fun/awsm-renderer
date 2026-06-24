@@ -8,7 +8,7 @@
 //!
 //! **Geometry is baked at import** (not retained as a hidden renderer copy): each
 //! mesh-bearing glTF node's geometry is read CPU-side from the document's
-//! accessors via [`awsm_glb_export::extract_node_mesh`] and carried on
+//! accessors via [`awsm_renderer_glb_export::extract_node_mesh`] and carried on
 //! [`GltfImport::node_meshes`]. The controller mints a captured `MeshDef` asset
 //! per node and builds a `NodeKind::Mesh { mesh: Captured(..), .. }` node — so an
 //! imported model is the same unified Mesh node as every other geometry kind, with
@@ -18,9 +18,9 @@
 
 use std::collections::HashMap;
 
-use awsm_editor_protocol::MaterialDef;
-use awsm_glb_export::{ExportImage, MeshData};
 use awsm_renderer::textures::TextureKey;
+use awsm_renderer_editor_protocol::MaterialDef;
+use awsm_renderer_glb_export::{ExportImage, MeshData};
 use awsm_renderer_gltf::data::GltfData;
 use awsm_renderer_gltf::extract::{extract_animations, ExtractedAnimation};
 use awsm_renderer_gltf::loader::{get_type_from_filename, GltfFileType};
@@ -94,14 +94,16 @@ pub struct ExtractedMaterial {
 #[derive(Clone, Copy, Default)]
 pub struct TexBinding {
     pub uv_index: u32,
-    pub transform: Option<awsm_editor_protocol::TextureTransform>,
-    pub sampler: Option<awsm_editor_protocol::TextureSampler>,
+    pub transform: Option<awsm_renderer_editor_protocol::TextureTransform>,
+    pub sampler: Option<awsm_renderer_editor_protocol::TextureSampler>,
 }
 
 /// Map a glTF texture sampler → the editor's [`TextureSampler`]. Returns `None`
 /// when it's the glTF default (repeat + linear), to keep refs compact.
-fn gltf_sampler(s: gltf::texture::Sampler) -> Option<awsm_editor_protocol::TextureSampler> {
-    use awsm_editor_protocol::{TextureFilter, TextureSampler, TextureWrap};
+fn gltf_sampler(
+    s: gltf::texture::Sampler,
+) -> Option<awsm_renderer_editor_protocol::TextureSampler> {
+    use awsm_renderer_editor_protocol::{TextureFilter, TextureSampler, TextureWrap};
     let wrap = |w: gltf::texture::WrappingMode| match w {
         gltf::texture::WrappingMode::ClampToEdge => TextureWrap::ClampToEdge,
         gltf::texture::WrappingMode::MirroredRepeat => TextureWrap::MirroredRepeat,
@@ -167,13 +169,13 @@ struct MaterialTextureIndices {
 fn tex_binding(
     tex_coord: u32,
     xform: Option<gltf::texture::TextureTransform>,
-    sampler: Option<awsm_editor_protocol::TextureSampler>,
+    sampler: Option<awsm_renderer_editor_protocol::TextureSampler>,
 ) -> TexBinding {
     let uv_index = xform
         .as_ref()
         .and_then(|x| x.tex_coord())
         .unwrap_or(tex_coord);
-    let transform = xform.map(|x| awsm_editor_protocol::TextureTransform {
+    let transform = xform.map(|x| awsm_renderer_editor_protocol::TextureTransform {
         offset: x.offset(),
         rotation: x.rotation(),
         scale: x.scale(),
@@ -206,7 +208,7 @@ pub async fn import_file(name: &str, url: &str) -> Result<GltfImport, String> {
 /// one entry per individual primitive (`Some(i)`), so the controller can build a
 /// single Mesh node or destructure a multi-material node per-primitive — exactly
 /// the cases the old `Model` path covered. Positions are raw local accessor values
-/// (see [`awsm_glb_export::extract_node_mesh`] on the no-double-transform rule).
+/// (see [`awsm_renderer_glb_export::extract_node_mesh`] on the no-double-transform rule).
 /// Per-node primary geometry keyed by `(node_index, primitive_index)`. ALL UV sets
 /// (incl. `TEXCOORD_1`) ride `MeshData.uvs` now — no separate parallel map.
 type NodeMeshMaps = HashMap<(u32, Option<u32>), MeshData>;
@@ -218,7 +220,9 @@ fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
         let Some(mesh) = node.mesh() else { continue };
         let node_index = node.index() as u32;
         // Whole-node merge (the common, single-material case).
-        if let Some(ex) = awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None) {
+        if let Some(ex) =
+            awsm_renderer_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None)
+        {
             out.insert((node_index, None), ex.mesh);
         }
         // Per-primitive (used when a node's primitives carry different materials
@@ -226,9 +230,12 @@ fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
         let prim_count = mesh.primitives().count();
         if prim_count > 1 {
             for i in 0..prim_count as u32 {
-                if let Some(ex) =
-                    awsm_glb_export::extract_node_mesh(&data.doc, buffers, node_index, Some(i))
-                {
+                if let Some(ex) = awsm_renderer_glb_export::extract_node_mesh(
+                    &data.doc,
+                    buffers,
+                    node_index,
+                    Some(i),
+                ) {
                     out.insert((node_index, Some(i)), ex.mesh);
                 }
             }
@@ -257,7 +264,8 @@ async fn import_typed(
     // Grab the ENCODED texture bytes (PNG/JPEG) off the document before populate
     // consumes it — the renderer keeps only decoded pixels, so these are what we
     // persist (paired with the baked TextureKeys below). Keyed by glTF tex index.
-    let tex_images_by_index = awsm_glb_export::extract_texture_images(&data.doc, &data.buffers.raw);
+    let tex_images_by_index =
+        awsm_renderer_glb_export::extract_texture_images(&data.doc, &data.buffers.raw);
     // Parse animations off the document before `data` is moved into populate.
     // A parse error must not abort the whole import — log it + import zero clips.
     let animations = match extract_animations(&data.doc, &data.buffers.raw) {
@@ -279,8 +287,8 @@ async fn import_typed(
         .meshes()
         .any(|m| m.primitives().any(|p| p.morph_targets().next().is_some()));
     let skinned_glb = if data.doc.skins().next().is_some() || has_morphs {
-        awsm_glb_export::reexport_clean_scene(&data.doc, &data.buffers.raw)
-            .map(|scene| awsm_glb_export::write_glb(&scene))
+        awsm_renderer_glb_export::reexport_clean_scene(&data.doc, &data.buffers.raw)
+            .map(|scene| awsm_renderer_glb_export::write_glb(&scene))
     } else {
         None
     };
@@ -288,7 +296,7 @@ async fn import_typed(
     // `finish_model_import` can bind each skin joint's bone `NodeId` to the index
     // the player's loader will assign that joint. Only meaningful when skinned.
     let node_flat_indices: HashMap<u32, u32> = if skinned_glb.is_some() {
-        awsm_glb_export::scene_node_flat_indices(&data.doc)
+        awsm_renderer_glb_export::scene_node_flat_indices(&data.doc)
             .into_iter()
             .map(|(src, clean)| (src as u32, clean as u32))
             .collect()
@@ -367,7 +375,7 @@ async fn import_typed(
 /// reclaim-guard's scene check (`node_sync::scene_has_skinned_from`) keeps this
 /// template alive through the reload's old-node teardown.
 pub async fn rebuild_skinned_template(
-    source: awsm_editor_protocol::AssetId,
+    source: awsm_renderer_editor_protocol::AssetId,
     rig_bytes: Vec<u8>,
 ) -> Result<(), String> {
     let loader = GltfLoader::from_glb_bytes(&rig_bytes)
@@ -427,9 +435,9 @@ fn extract_material_specs(data: &GltfData) -> Vec<MatSpec> {
                 alpha_mode: extract_alpha_mode(&m),
                 // KHR_materials_unlit → the editor's flat/unlit shading model.
                 shading: if m.unlit() {
-                    awsm_editor_protocol::MaterialShading::Unlit
+                    awsm_renderer_editor_protocol::MaterialShading::Unlit
                 } else {
-                    awsm_editor_protocol::MaterialShading::Pbr
+                    awsm_renderer_editor_protocol::MaterialShading::Pbr
                 },
                 extensions,
                 ..MaterialDef::default()
@@ -505,8 +513,8 @@ fn extract_material_specs(data: &GltfData) -> Vec<MatSpec> {
 }
 
 /// glTF `material.alphaMode` (+ cutoff) → the editor's [`MaterialAlphaMode`].
-fn extract_alpha_mode(m: &gltf::Material) -> awsm_editor_protocol::MaterialAlphaMode {
-    use awsm_editor_protocol::MaterialAlphaMode;
+fn extract_alpha_mode(m: &gltf::Material) -> awsm_renderer_editor_protocol::MaterialAlphaMode {
+    use awsm_renderer_editor_protocol::MaterialAlphaMode;
     match m.alpha_mode() {
         gltf::material::AlphaMode::Opaque => MaterialAlphaMode::Opaque,
         gltf::material::AlphaMode::Mask => MaterialAlphaMode::Mask {
@@ -549,8 +557,8 @@ fn ext_color3(v: &gltf::json::Value, key: &str, default: [f32; 3]) -> [f32; 3] {
 fn extract_extensions(
     m: &gltf::Material,
     ext_textures: &mut Vec<(&'static str, (usize, TexBinding))>,
-) -> awsm_editor_protocol::material::PbrExtensions {
-    use awsm_editor_protocol::material::*;
+) -> awsm_renderer_editor_protocol::material::PbrExtensions {
+    use awsm_renderer_editor_protocol::material::*;
     let mut e = PbrExtensions::default();
 
     // KHR_materials_{emissive_strength, ior, specular, transmission, volume} are
@@ -715,7 +723,7 @@ fn ext_tex(v: &gltf::json::Value, key: &str) -> Option<(usize, TexBinding)> {
                 .and_then(|x| x.as_u64())
                 .map(|x| x as u32)
                 .unwrap_or(tex_coord);
-            let transform = awsm_editor_protocol::TextureTransform {
+            let transform = awsm_renderer_editor_protocol::TextureTransform {
                 offset: read_vec2(t, "offset", [0.0, 0.0]),
                 rotation: ext_f32(t, "rotation", 0.0),
                 scale: read_vec2(t, "scale", [1.0, 1.0]),

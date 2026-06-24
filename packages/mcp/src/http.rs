@@ -29,7 +29,7 @@ use tower_http::cors::{Any, CorsLayer};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
-use awsm_editor_protocol::Request;
+use awsm_renderer_editor_protocol::Request;
 
 use crate::link::EditorLink;
 use crate::mcp::EditorMcp;
@@ -47,7 +47,7 @@ const PNG_BODY_LIMIT: usize = 256 * 1024 * 1024;
 /// On-disk path the editor's PNG upload lands at (and the rmcp tool reads back).
 /// Both sides agree on this naming so the tool needs no shared in-memory map.
 pub(crate) fn png_path(id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("awsm-scene-mcp-{id}.png"))
+    std::env::temp_dir().join(format!("awsm-renderer-scene-mcp-{id}.png"))
 }
 
 #[derive(Clone)]

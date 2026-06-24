@@ -1,4 +1,4 @@
-# awsm-scene
+# awsm-renderer-scene
 
 The lean, canonical **runtime** scene schema for the awsm-renderer player: a
 `Scene` (`scene.toml`) plus an `assets/` directory, all referenced by id. The
@@ -22,13 +22,13 @@ and re-exported at the crate root:
 ## What's not here
 
 Authoring. The modifier stack, per-vertex overrides, and the editor's
-`Mesh = base + edits` model live in `awsm-meshgen` (recipe types) and
-`awsm-editor-protocol` (the `EditorProject` document + `EditorCommand` /
+`Mesh = base + edits` model live in `awsm-renderer-meshgen` (recipe types) and
+`awsm-renderer-editor-protocol` (the `EditorProject` document + `EditorCommand` /
 `EditorQuery`), which depend on this crate and reuse its core types. The editor's
 bake step lowers authoring → runtime (`MeshDef` → `mesh::MeshBlob`).
 
 ## Companion crates
 
-- `awsm-scene-loader` — loads a runtime bundle described by this schema into the
+- `awsm-renderer-scene-loader` — loads a runtime bundle described by this schema into the
   renderer.
-- `awsm-editor-protocol` — the authoring layer that bakes down to this schema.
+- `awsm-renderer-editor-protocol` — the authoring layer that bakes down to this schema.

@@ -53,8 +53,8 @@
 //! uniform/texture/buffer tails).
 
 /// Field type for one entry in a [`MaterialLayout::uniforms`] list.
-/// Mirrors `awsm_scene::FieldType` — kept duplicated here so
-/// `awsm-materials` doesn't depend on `awsm-scene`.
+/// Mirrors `awsm_renderer_scene::FieldType` — kept duplicated here so
+/// `awsm-renderer-materials` doesn't depend on `awsm-renderer-scene`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldType {
     /// `f32`
@@ -173,8 +173,8 @@ pub struct MaterialLayout {
 }
 
 /// One concrete per-instance uniform value. Mirrors
-/// `awsm_scene::UniformValue` — kept duplicated here so
-/// `awsm-materials` doesn't depend on `awsm-scene`.
+/// `awsm_renderer_scene::UniformValue` — kept duplicated here so
+/// `awsm-renderer-materials` doesn't depend on `awsm-renderer-scene`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UniformValue {
     /// `f32` value.

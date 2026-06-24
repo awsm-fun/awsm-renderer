@@ -1,4 +1,4 @@
-# awsm-curves
+# awsm-renderer-curves
 
 Pure-CPU curve math. No `awsm-renderer` dep. No `web-sys` dep.
 
@@ -19,5 +19,5 @@ Gameplay code (lap detection, AI pathing, camera-rail behavior) wants to operate
 
 ## Companion crates
 
-- `awsm-geometry` — non-curve CPU geometry (AABB, ray/triangle, frustum). No dep here on it.
-- `awsm-meshgen` — depends on this crate; sweep generators consume curves.
+- `awsm-renderer-geometry` — non-curve CPU geometry (AABB, ray/triangle, frustum). No dep here on it.
+- `awsm-renderer-meshgen` — depends on this crate; sweep generators consume curves.

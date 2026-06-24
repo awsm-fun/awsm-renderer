@@ -1178,7 +1178,7 @@ impl AwsmRendererBuilder {
     ///
     /// Frontends typically resolve the profile from a URL parameter
     /// (`?mobile=true`) via
-    /// [`awsm_web_shared::perf::resolve_renderer_profile`](https://github.com/dakom/awsm-renderer/blob/main/crates/web-shared/src/perf.rs)
+    /// [`awsm_renderer_web_shared::perf::resolve_renderer_profile`](https://github.com/dakom/awsm-renderer/blob/main/crates/web-shared/src/perf.rs)
     /// and pass the result here.
     ///
     /// **Per-light shadow params** aren't owned by the renderer
@@ -1319,7 +1319,7 @@ impl AwsmRendererBuilder {
 
     /// Pins a renderer-wide shadow configuration that the new
     /// `Shadows` will use at construction. Use this when loading an
-    /// `awsm_scene::EditorProject` so the cube-pool size, EVSM
+    /// `awsm_renderer_scene::EditorProject` so the cube-pool size, EVSM
     /// atlas size, and 2D atlas size match the authored intent before
     /// any frame renders.
     pub fn with_shadows_config(mut self, config: shadows::ShadowsConfig) -> Self {
@@ -2364,7 +2364,7 @@ impl AwsmRenderer {
     /// heuristic.
     pub fn dynamic_material_compile_status(
         &self,
-        shader_id: awsm_materials::MaterialShaderId,
+        shader_id: awsm_renderer_materials::MaterialShaderId,
     ) -> Option<std::result::Result<(), String>> {
         let mid = self
             .pipeline_scheduler
@@ -2397,7 +2397,7 @@ impl AwsmRenderer {
     /// authors materials, so it pays nothing for `naga`.
     pub fn validate_dynamic_material_wgsl(
         &self,
-        shader_id: awsm_materials::MaterialShaderId,
+        shader_id: awsm_renderer_materials::MaterialShaderId,
     ) -> Vec<String> {
         #[cfg(not(feature = "dynamic-material-validation"))]
         {
@@ -2407,7 +2407,7 @@ impl AwsmRenderer {
         #[cfg(feature = "dynamic-material-validation")]
         {
             use crate::dynamic_materials::{first_party_bucket_entries, BucketEntry, ShadingBase};
-            use awsm_materials::MaterialAlphaMode;
+            use awsm_renderer_materials::MaterialAlphaMode;
 
             let Some(info) = self.dynamic_materials.shader_info_for(shader_id) else {
                 return Vec::new();
@@ -2443,7 +2443,7 @@ impl AwsmRenderer {
                     msaa_sample_count: None,
                     mipmaps: false,
                     base: ShadingBase::Custom,
-                    pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                    pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
                     dispatch_hash: 0,
                     dynamic_shader_id: Some(shader_id),
                     dynamic_shader: Some(info),
@@ -2467,7 +2467,7 @@ impl AwsmRenderer {
                 bucket_entries.push(BucketEntry {
                     shader_id,
                     base: ShadingBase::Custom,
-                    pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                    pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
                     name: "custom".to_string(),
                 });
                 let key = ShaderCacheKeyMaterialOpaque {
@@ -2479,7 +2479,7 @@ impl AwsmRenderer {
                     shader_id,
                     base: ShadingBase::Custom,
                     owns_skybox: false,
-                    pbr_features: awsm_materials::pbr::PbrFeatures::default().bits(),
+                    pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
                     dispatch_hash: 0,
                     dynamic_shader: Some(info),
                     bucket_entries,
@@ -2523,7 +2523,7 @@ impl AwsmRenderer {
     /// `wgsl_vertex` (→ shared fast vertex pipeline; nothing to validate).
     pub fn validate_dynamic_vertex_wgsl(
         &self,
-        shader_id: awsm_materials::MaterialShaderId,
+        shader_id: awsm_renderer_materials::MaterialShaderId,
     ) -> Vec<String> {
         #[cfg(not(feature = "dynamic-material-validation"))]
         {

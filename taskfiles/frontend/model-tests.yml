@@ -42,7 +42,7 @@ tasks:
       - cp {{.PATH_DIST}}/index.html {{.PATH_DIST}}/404.html
 
   deploy:
-    desc: "Build the model tester and deploy it to Cloudflare Pages (project: awsm-model-tests → model-tests.awsm.fun)"
+    desc: "Build the model tester and deploy it to Cloudflare Pages (project: awsm-renderer-model-tests → model-tests.awsm.fun)"
     deps: ["build"]
     requires:
       vars:

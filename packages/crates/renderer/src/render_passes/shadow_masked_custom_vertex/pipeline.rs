@@ -22,7 +22,6 @@
 
 use std::collections::HashMap;
 
-use awsm_materials::MaterialShaderId;
 use awsm_renderer_core::buffers::{BufferDescriptor, BufferUsage};
 use awsm_renderer_core::compare::CompareFunction;
 use awsm_renderer_core::pipeline::depth_stencil::DepthStencilState;
@@ -32,6 +31,7 @@ use awsm_renderer_core::pipeline::primitive::{
 };
 use awsm_renderer_core::pipeline::vertex::{VertexAttribute, VertexBufferLayout, VertexFormat};
 use awsm_renderer_core::texture::TextureFormat;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::dynamic_materials::ShadingBase;
 use crate::error::Result;

@@ -1,5 +1,5 @@
 [package]
-name = "awsm-scene-mcp"
+name = "awsm-renderer-scene-mcp"
 description = "Native MCP server that drives the awsm-renderer editor over a WebSocket link."
 edition.workspace = true
 version.workspace = true
@@ -17,12 +17,12 @@ publish = false
 dist = true
 
 [[bin]]
-name = "awsm-scene-mcp"
+name = "awsm-renderer-scene-mcp"
 path = "src/main.rs"
 
 [dependencies]
-awsm-editor-protocol = { workspace = true, features = ["schemars"] }
-awsm-scene = { workspace = true, features = ["schemars"] }
+awsm-renderer-editor-protocol = { workspace = true, features = ["schemars"] }
+awsm-renderer-scene = { workspace = true, features = ["schemars"] }
 glam = { workspace = true }
 
 tokio = { workspace = true }

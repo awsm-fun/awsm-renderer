@@ -9,7 +9,7 @@
 //! procedural (the player regenerates them from params).
 //!
 //! Authoring meshes (`MeshDef` = modifier stack + per-vertex overrides) live in
-//! `awsm-editor-protocol`; the editor's bake lowers them — and imported
+//! `awsm-renderer-editor-protocol`; the editor's bake lowers them — and imported
 //! skinned/morph models — to a `RuntimeMesh` (`Primitive` or a baked `Glb`).
 
 use serde::{Deserialize, Serialize};

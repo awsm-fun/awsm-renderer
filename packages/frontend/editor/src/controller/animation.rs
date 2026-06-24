@@ -20,16 +20,16 @@ use awsm_renderer::animation::{
     AnimationChannel, AnimationData, AnimationSampler, AnimationTarget, TransformAnimation,
     VertexAnimation,
 };
-use awsm_web_shared::prelude::{Mutable, MutableVec};
+use awsm_renderer_web_shared::prelude::{Mutable, MutableVec};
 use glam::{Quat, Vec2, Vec3, Vec4};
 
 use crate::engine::scene::{AssetId, NodeId};
 
-// The serde model types are the **persistence schema** (`awsm_editor_protocol`), so
+// The serde model types are the **persistence schema** (`awsm_renderer_editor_protocol`), so
 // the live model + the project TOML share one definition (mirrors how
 // `StoredMaterial` lives in scene-schema). Re-exported here so the rest of the
 // editor (commands / query / bridge) references them via `controller::animation`.
-pub use awsm_editor_protocol::animation::{
+pub use awsm_renderer_editor_protocol::animation::{
     BuiltinParamKind, CameraParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc,
     LayerModeDoc, LightParamKind, MixerDoc, SamplerKind, StoredAnimation, StoredTrack, StripDoc,
     TexSlot, TexTransformProp, TrackTarget, TrackValue, TransformProp,
@@ -389,7 +389,7 @@ pub fn find_clip(
 
 // ───────────────────────────── serde projection ─────────────────────────────
 // The stored projection types (`StoredAnimation`, `StoredTrack`, the mixer docs)
-// live in `awsm_editor_protocol::animation` (re-exported above) so the live model +
+// live in `awsm_renderer_editor_protocol::animation` (re-exported above) so the live model +
 // the project TOML share one definition. The conversions to/from the live model
 // are free functions here (the stored types are foreign).
 
@@ -462,6 +462,6 @@ pub fn stored_to_live(s: &StoredAnimation) -> Arc<CustomAnimation> {
 // Transport + selection are controller state too: set via transient
 // commands so they broadcast + snapshot but don't pollute undo. These are
 // editor-runtime-only (not persisted in `EditorProject`). The data definitions
-// now live in `awsm_editor_protocol` (so the MCP server shares them); re-exported
+// now live in `awsm_renderer_editor_protocol` (so the MCP server shares them); re-exported
 // here at their established path.
-pub use awsm_editor_protocol::{AnimSel, AnimView, StepKind};
+pub use awsm_renderer_editor_protocol::{AnimSel, AnimView, StepKind};

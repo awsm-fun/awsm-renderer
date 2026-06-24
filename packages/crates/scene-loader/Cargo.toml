@@ -1,6 +1,6 @@
 [package]
-name = "awsm-scene-loader"
-description = "Load an awsm-scene runtime bundle (scene.toml + assets/) into the renderer — the parallel to renderer-gltf's populate_gltf, for OUR own format. Used by the model-test page (round-trip: export a bundle → load it back → compare) and the player."
+name = "awsm-renderer-scene-loader"
+description = "Load an awsm-renderer-scene runtime bundle (scene.toml + assets/) into the renderer — the parallel to renderer-gltf's populate_gltf, for OUR own format. Used by the model-test page (round-trip: export a bundle → load it back → compare) and the player."
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -16,17 +16,17 @@ awsm-renderer = { workspace = true, features = ["scene-schema"] }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 # Dynamic-material types (custom-WGSL registration: layout, registration, shader id).
-awsm-materials = { workspace = true }
+awsm-renderer-materials = { workspace = true }
 # Player-lean meshgen (default = primitives only) for `RuntimeMesh::Primitive`.
-awsm-meshgen = { workspace = true }
+awsm-renderer-meshgen = { workspace = true }
 # Catmull-Rom curve sampling for `InstancesAlongCurve` (point/tangent/arc-length).
-awsm-curves = { workspace = true }
+awsm-renderer-curves = { workspace = true }
 # CPU particle simulator (spawn/integrate/age/cull) reused by the ParticleEmitter
 # handle so a consumer's per-frame tick is near-trivial (Design A: loader sets up,
 # game ticks). Pure-CPU, no GPU — the loader never ticks it.
-awsm-particles = { workspace = true }
+awsm-renderer-particles = { workspace = true }
 # The runtime Scene schema we load.
-awsm-scene = { workspace = true }
+awsm-renderer-scene = { workspace = true }
 glam = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }

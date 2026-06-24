@@ -1,5 +1,5 @@
 //! On-canvas transform gizmo, backed by
-//! `awsm_web_shared::viewport3d::TransformController`.
+//! `awsm_renderer_web_shared::viewport3d::TransformController`.
 //!
 //! The gizmo is generated procedurally (always-on-top fat lines) and picked
 //! analytically — see the controller. It lives in a thread-local (wasm is
@@ -9,10 +9,10 @@
 
 use std::cell::RefCell;
 
-use awsm_editor_protocol::EditorMode;
 use awsm_renderer::transforms::TransformKey;
 use awsm_renderer::AwsmRenderer;
-use awsm_web_shared::viewport3d::transform_controller::{
+use awsm_renderer_editor_protocol::EditorMode;
+use awsm_renderer_web_shared::viewport3d::transform_controller::{
     GizmoSpace, TransformController, TransformObject,
 };
 use futures_signals::map_ref;

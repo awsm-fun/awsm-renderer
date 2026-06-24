@@ -126,11 +126,11 @@ investigating.
 
 ## Picking a tier from code
 
-Frontends call into [`awsm_web_shared::perf`](../packages/frontend/web-shared/src/perf.rs):
+Frontends call into [`awsm_renderer_web_shared::perf`](../packages/frontend/web-shared/src/perf.rs):
 
 ```rust
 use awsm_renderer::debug::{AwsmRendererLogging, RenderTimings};
-use awsm_web_shared::perf::resolve_render_timings;
+use awsm_renderer_web_shared::perf::resolve_render_timings;
 
 let renderer = AwsmRendererBuilder::new(gpu_builder)
     .with_logging(AwsmRendererLogging {

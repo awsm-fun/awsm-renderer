@@ -80,7 +80,7 @@ impl TryFrom<&ShaderCacheKeyShadowMaskedCustomVertex> for ShaderTemplateShadowMa
                 texture_helpers,
                 alpha_wgsl,
                 if value.base == ShadingBase::Flipbook {
-                    awsm_materials::flipbook::FLIPBOOK_CELL_WGSL.to_string()
+                    awsm_renderer_materials::flipbook::FLIPBOOK_CELL_WGSL.to_string()
                 } else {
                     String::new()
                 },

@@ -72,7 +72,7 @@ pub enum CompileInstallTarget {
     /// Compute: dynamic-material opaque pipeline (per shader_id × msaa × mipmaps).
     OpaqueDynamic {
         /// Shader-id of the dynamic material.
-        shader_id: awsm_materials::MaterialShaderId,
+        shader_id: awsm_renderer_materials::MaterialShaderId,
         /// MSAA sample count.
         msaa: Option<u32>,
         /// Mipmap-gradient variant on or off.
@@ -86,7 +86,7 @@ pub enum CompileInstallTarget {
     EdgeResolveShade {
         /// Shader-id of the bucket whose merged interior+edge shading this
         /// pipeline performs.
-        shader_id: awsm_materials::MaterialShaderId,
+        shader_id: awsm_renderer_materials::MaterialShaderId,
         /// Mipmap-gradient variant.
         mipmaps: bool,
     },
@@ -655,7 +655,7 @@ impl PipelineScheduler {
     /// small (typically <16 dynamic materials at runtime).
     pub fn find_material_by_shader_id(
         &self,
-        shader_id: awsm_materials::MaterialShaderId,
+        shader_id: awsm_renderer_materials::MaterialShaderId,
     ) -> Option<MaterialId> {
         for (mid, state) in &self.materials {
             if state.def.shader_id == shader_id {

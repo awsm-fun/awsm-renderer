@@ -23,8 +23,8 @@ A player typically pulls four crates:
 |-------|-------------------|
 | `awsm-renderer` | the renderer, camera, render loop entry points |
 | `awsm-renderer-gltf` | load raw/foreign glTF (`.glb`) into the renderer |
-| `awsm-scene` | our scene/bundle types (`Scene`, nodes, assets) + `scene_from_toml` |
-| `awsm-scene-loader` | load a `Scene` into the renderer (`populate_awsm_scene`) |
+| `awsm-renderer-scene` | our scene/bundle types (`Scene`, nodes, assets) + `scene_from_toml` |
+| `awsm-renderer-scene-loader` | load a `Scene` into the renderer (`populate_awsm_scene`) |
 
 If you depend on them by path (developing against a checkout), pin the **shared**
 types you touch directly — `glam` and `wasm-bindgen` — to the *same* versions the
@@ -34,8 +34,8 @@ renderer workspace uses, or the types won't line up across the crate boundary:
 [dependencies]
 awsm-renderer       = { path = "../renderer/packages/crates/renderer" }
 awsm-renderer-gltf  = { path = "../renderer/packages/crates/renderer-gltf" }
-awsm-scene          = { path = "../renderer/packages/crates/scene" }
-awsm-scene-loader   = { path = "../renderer/packages/crates/scene-loader" }
+awsm-renderer-scene          = { path = "../renderer/packages/crates/scene" }
+awsm-renderer-scene-loader   = { path = "../renderer/packages/crates/scene-loader" }
 
 wasm-bindgen         = "0.2.118"   # match the workspace
 wasm-bindgen-futures = "0.4.68"
@@ -225,7 +225,7 @@ renderer.commit_load(|_| {}).await?;          // <-- THE finalize/compile point
 This is the path a shipped player uses: load a `Scene` the editor exported.
 
 ```rust
-use awsm_scene_loader::populate_awsm_scene;
+use awsm_renderer_scene_loader::populate_awsm_scene;
 use std::collections::HashMap;
 
 let assets: HashMap<String, Vec<u8>> = /* bundle-relative path -> pre-fetched bytes */;
@@ -258,14 +258,14 @@ debugging, runtime-fetched third-party models), not the primary content path.
 Either parse a bundle the editor produced:
 
 ```rust
-let scene: awsm_scene::Scene = awsm_scene::scene_from_toml(&toml_text)?;
+let scene: awsm_renderer_scene::Scene = awsm_renderer_scene::scene_from_toml(&toml_text)?;
 ```
 
 …or build one programmatically (handy for tests/procedural content). The
-`awsm_scene` types are re-exported at the crate root:
+`awsm_renderer_scene` types are re-exported at the crate root:
 
 ```rust
-use awsm_scene::{
+use awsm_renderer_scene::{
     AssetEntry, AssetId, AssetSource, EditorNode, LightConfig, LightKind, MeshRef,
     MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, RuntimeMesh, Scene, Trs,
 };
@@ -542,7 +542,7 @@ invariant check.
 
 **The player path runs in the worker.** A shipped game doesn't load glTF
 directly (that's the editor / model-viewer route) — it loads a `Scene` the
-editor exported, via `awsm_scene_loader::load_scene_for_player(renderer, &scene,
+editor exported, via `awsm_renderer_scene_loader::load_scene_for_player(renderer, &scene,
 &assets, on_phase)`. That call works unchanged inside the render worker:
 materials, primitive + baked meshes, lights, environment and the commit
 transaction all run off-main. After it returns, the static world is driven by

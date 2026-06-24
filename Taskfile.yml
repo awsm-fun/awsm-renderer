@@ -116,7 +116,7 @@ tasks:
       - cargo check --workspace --quiet
 
   publish:
-    desc: "Release <version> end-to-end: bump → commit (only if needed) → tag → publish the library crates → deploy both frontends → push branch + tag. Pushing the tag triggers the cargo-dist awsm-scene-mcp binary release on CI. Usage: task publish -- <version>"
+    desc: "Release <version> end-to-end: bump → commit (only if needed) → tag → publish the library crates → deploy both frontends → push branch + tag. Pushing the tag triggers the cargo-dist awsm-renderer-scene-mcp binary release on CI. Usage: task publish -- <version>"
     vars:
       VERSION: "{{.CLI_ARGS}}"
     preconditions:
@@ -179,9 +179,9 @@ tasks:
     # library crates ever go out — a frontend/example/internal member added later
     # can't accidentally publish itself by forgetting `publish = false`. These are
     # exactly the contents of packages/crates/ (all public); everything excluded is
-    # `publish = false`: the two frontends (awsm-editor, awsm-model-tests),
-    # awsm-web-shared, awsm-render-worker-example, awsm-debugging, awsm-scene-mcp
-    # (ships via cargo-dist, not crates.io), and awsm-editor-protocol (internal
+    # `publish = false`: the two frontends (awsm-renderer-editor, awsm-renderer-model-tests),
+    # awsm-renderer-web-shared, awsm-renderer-render-worker-example, awsm-renderer-debugging, awsm-renderer-scene-mcp
+    # (ships via cargo-dist, not crates.io), and awsm-renderer-editor-protocol (internal
     # editor↔server glue under packages/mcp/).
     #
     # Published one crate at a time, dependency-leaf-first. `cargo publish` waits
@@ -198,7 +198,7 @@ tasks:
     cmds:
       - |
         set -eu
-        CRATES="awsm-curves awsm-geometry awsm-tangents awsm-scene awsm-renderer-core awsm-materials awsm-particles awsm-meshgen awsm-renderer awsm-glb-export awsm-renderer-gltf awsm-gltf-convert awsm-scene-loader"
+        CRATES="awsm-renderer-curves awsm-renderer-geometry awsm-renderer-tangents awsm-renderer-scene awsm-renderer-core awsm-renderer-materials awsm-renderer-particles awsm-renderer-meshgen awsm-renderer awsm-renderer-glb-export awsm-renderer-gltf awsm-renderer-gltf-convert awsm-renderer-scene-loader"
         # Workspace version (first `version = "…"` inside [workspace.package]).
         VERSION="$(awk '/^\[workspace\.package\]/{f=1} f&&/^version = /{gsub(/[",]/,"");print $3;exit}' Cargo.toml)"
         case "{{.PUBLISH_ARGS}}" in *--dry-run*) DRY=1;; *) DRY=0;; esac

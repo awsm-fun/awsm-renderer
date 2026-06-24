@@ -5,7 +5,7 @@
 //! 1:1 field copies; sharing keeps the many shadow-param fields from drifting.
 
 use awsm_renderer::lights::Light;
-use awsm_scene::{LightConfig, LightShadowConfig};
+use awsm_renderer_scene::{LightConfig, LightShadowConfig};
 use glam::Vec3;
 
 /// Build a renderer [`Light`] from a [`LightConfig`] plus the node's world
@@ -55,7 +55,7 @@ pub fn light_shadow_params_from_config(
     cfg: &LightShadowConfig,
 ) -> awsm_renderer::shadows::LightShadowParams {
     use awsm_renderer::shadows as r;
-    use awsm_scene as s;
+    use awsm_renderer_scene as s;
     r::LightShadowParams {
         cast: cfg.cast,
         depth_bias: cfg.depth_bias,

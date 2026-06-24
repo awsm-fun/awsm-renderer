@@ -36,13 +36,13 @@ impl MaterialShaderId {
     /// so it lands at bucket index 0 by type, not by the old "PBR is the
     /// skybox owner" convention.
     pub const SKYBOX: Self = Self(0);
-    /// Physically based rendering. See `awsm-materials::pbr`.
+    /// Physically based rendering. See `awsm-renderer-materials::pbr`.
     pub const PBR: Self = Self(1);
-    /// Unlit (constant emissive surface). See `awsm-materials::unlit`.
+    /// Unlit (constant emissive surface). See `awsm-renderer-materials::unlit`.
     pub const UNLIT: Self = Self(2);
-    /// Toon / cel-shading. See `awsm-materials::toon`.
+    /// Toon / cel-shading. See `awsm-renderer-materials::toon`.
     pub const TOON: Self = Self(3);
-    /// Sprite-sheet flipbook. See `awsm-materials::flipbook`.
+    /// Sprite-sheet flipbook. See `awsm-renderer-materials::flipbook`.
     pub const FLIPBOOK: Self = Self(4);
 
     /// Reserved boundary: ids `5..DYNAMIC_START` are held for future

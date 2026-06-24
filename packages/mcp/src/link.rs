@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use awsm_editor_protocol::{EditorEvent, Request, Response, WsServerMsg};
+use awsm_renderer_editor_protocol::{EditorEvent, Request, Response, WsServerMsg};
 
 /// Upper bound on one request's round-trip (an offline render / settle is the
 /// slow case).

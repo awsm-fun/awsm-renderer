@@ -17,7 +17,7 @@ use awsm_renderer_core::image::{
 use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_core::texture::texture_pool::TextureColorInfo;
-use awsm_scene::{TextureFilter, TextureRef, TextureSampler, TextureWrap, ASSETS_DIR};
+use awsm_renderer_scene::{TextureFilter, TextureRef, TextureSampler, TextureWrap, ASSETS_DIR};
 
 use crate::assets::SceneAssets;
 

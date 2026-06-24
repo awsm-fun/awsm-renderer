@@ -1,8 +1,8 @@
-//! Reusable loader: turn editor-authored `awsm_scene` animation data into
+//! Reusable loader: turn editor-authored `awsm_renderer_scene` animation data into
 //! the renderer's runtime [`AnimationClipGroup`] / [`AnimationMixer`].
 //!
 //! This is the missing piece that lets a **game** (not just the editor) play
-//! animations authored in `awsm-editor`. The editor's own lowering lived in the
+//! animations authored in `awsm-renderer-editor`. The editor's own lowering lived in the
 //! editor crate; the *pure data* part of it lives here, behind the
 //! `scene-schema` feature, so any consumer can use it.
 //!
@@ -14,7 +14,7 @@
 //!
 //! Typical game flow:
 //! ```ignore
-//! let project: awsm_scene::EditorProject = toml::from_str(&text)?;
+//! let project: awsm_renderer_scene::EditorProject = toml::from_str(&text)?;
 //! // ... game materializes the scene and builds its node/material key maps ...
 //! let mut keys = Vec::new();
 //! for clip in &project.editor_animations {
@@ -31,11 +31,11 @@
 //! // converts to seconds internally.
 //! ```
 
-use awsm_scene::animation::{
+use awsm_renderer_scene::animation::{
     ClipDirection, ClipLoop, LayerModeDoc, MixerDoc, SamplerKind, StoredAnimation, StoredTrack,
     TrackTarget, TrackValue, TransformProp,
 };
-use awsm_scene::{AssetId, NodeId};
+use awsm_renderer_scene::{AssetId, NodeId};
 use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::{
@@ -226,7 +226,7 @@ fn morph_scalar_to_vertex(value: &TrackValue, index: usize) -> AnimationData {
 mod tests {
     use super::*;
     use crate::transforms::TransformKey;
-    use awsm_scene::animation::{Interp, Keyframe};
+    use awsm_renderer_scene::animation::{Interp, Keyframe};
 
     fn vec3_key(v: [f32; 3]) -> Keyframe {
         Keyframe {

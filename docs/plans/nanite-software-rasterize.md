@@ -1,0 +1,169 @@
+# Nanite software rasterizer + streaming (future, test-gated)
+
+> A separate, **high-risk** future optimization on top of the cluster-LOD work
+> in [`lod.md`](lod.md) (Phase B). LOD shipping does **not** depend on any of
+> this. Do **not** start until cluster-LOD (HW raster) has landed and sub-pixel
+> triangle density is a *proven* problem on target hardware. The Phase 0 spike
+> below is the go/no-go gate; if it fails, HW-raster cluster-LOD is the
+> end-state and that is fine.
+
+## Why this is split out
+
+Nanite's signature win is rasterizing **sub-pixel triangles** in a compute
+shader instead of the hardware rasterizer (HW raster wastes a full 2×2 quad per
+triangle → ~25% efficiency or worse for pixel-sized triangles). The compute
+rasterizer does a 64-bit `atomicMin(depth << 32 | payload)` per covered pixel:
+one atomic that simultaneously depth-tests and records the winning triangle.
+
+**WebGPU has no 64-bit atomics and no extension for them.** WGSL atomics are
+`atomic<u32>` / `atomic<i32>` only. So the entire SW-raster advantage hinges on
+emulating the depth+payload atomic well enough — correct enough, fast enough —
+to beat HW raster for tiny triangles on our target hardware. This is the single
+biggest risk in the whole Nanite story, and it is the *only* part that is
+genuinely WebGPU-hostile. Anchoring LOD delivery to it would be a mistake — so
+it lives here, behind its own gate, and `lod.md` ships without it.
+
+Other WebGPU constraints relevant here:
+- **No mesh/task shaders** → cluster expansion is indirect compute dispatch +
+  indirect draw, not a mesh-shader amplification stage.
+- **No persistent-thread forward-progress guarantee** → the SW-raster scheduler
+  must be a fixed multi-pass DAG, not a persistent-thread work queue, and no
+  per-pixel spinlock (deadlock risk).
+
+---
+
+## Phase 0 — SW-rasterizer atomic-emulation spike (GO/NO-GO)
+
+De-risk before building anything. In isolation, implement and benchmark a
+compute software rasterizer that emulates the 64-bit depth+payload atomic.
+
+**Harness:** standalone crate `packages/frontend/bench-nanite-sw-raster/` (no
+production render passes), with a **triangle-size knob** (SW raster only wins
+below the HW quad-efficiency cliff) and an **overdraw knob** (atomic
+contention). For each of {HW baseline, A, B} × {size, overdraw}: dispatch/draw →
+readback via `new_copy_and_extract_buffer` → time with `performance.now()` over
+many iters → (for A/B) diff the payload image vs HW ground truth.
+
+**Decision gate:**
+- **GO** (build Phase 3 below): B is correct enough (negligible payload
+  mismatch) and at small triangle sizes A/B beat HW by a worthwhile margin.
+- **NO-GO**: A is too slow, or B's error rate is visible, or neither beats HW at
+  realistic Nanite triangle sizes → stop; HW-raster cluster-LOD (`lod.md`
+  Phase B) is the end-state.
+
+### Depth convention
+
+Renderer is reverse-Z and the HZB is **max-reduced** (closer = larger depth).
+That lines up with `atomicMax`: largest packed value wins ⇒ closest fragment
+wins, *provided depth sits in the high bits*. No convention change needed.
+
+### The bit-budget problem (why one u32 isn't enough for production)
+
+Pack `packed = (depth << PAYLOAD_BITS) | payload`, resolve with `atomicMax`. The
+payload must identify the winning surface:
+- **triangle-within-cluster**: clusters ≤128 tris ⇒ **7 bits**.
+- **visible-cluster index**: indexes the *per-frame compacted visible-cluster
+  list* (not a global cluster id). Even a dense scene caps at, say,
+  2^18 = 262 144 ⇒ **18 bits**.
+
+Payload ≈ 25 bits, leaving only **7 bits of depth** in a u32 — useless
+(z-fighting). This is exactly why a faithful implementation needs 64 bits:
+depth(32) + payload(32). On WebGPU we can't have that in one atomic — hence two
+encodings to benchmark, a perf ceiling and a realistic one.
+
+### Encoding A — single-u32 packed `atomicMax` (PERF CEILING probe)
+
+`packed = (depth16 << 16) | payload16`, one `atomic<u32>` per pixel, resolved
+with `atomicMax`. 16-bit payload is too small for production, but A **measures
+the upper bound on atomic-raster throughput** — the single fastest the approach
+can ever go (one atomic, no loop, no second store). **If A is already too slow,
+full SW raster is dead on WebGPU** — stop, don't even tune B.
+
+### Encoding B — emulated 64-bit (REALISTIC correctness + perf)
+
+Two parallel per-pixel arrays: `depth: array<atomic<u32>>` (full 32-bit) and
+`payload: array<u32>` (full 32-bit, non-atomic). Per covered pixel:
+
+```
+loop {
+  let cur = atomicLoad(&depth[i]);
+  if (my_depth <= cur) { break; }                 // reverse-Z: not closer, lose
+  let res = atomicCompareExchangeWeak(&depth[i], cur, my_depth);
+  if (res.exchanged) { payload[i] = my_payload; break; }
+  // else: someone moved depth; retry with res.old_value
+}
+```
+
+Full depth precision + full 32-bit payload (production-viable), but the payload
+store is **not atomic with the depth CAS** — a closer fragment from another
+workgroup can land its depth between our successful CAS and our payload write,
+leaving payload mismatched for that pixel for one frame.
+
+Measure for B:
+1. **Correctness / error rate** — % of pixels whose payload disagrees with the
+   final depth winner vs HW ground truth. Expected tiny (only exact sub-pixel
+   contention) but must be quantified; visible cracks are unacceptable.
+2. **Perf** — the CAS spin adds contention cost under overdraw. Measure vs A and
+   vs HW.
+
+**Forward-progress caveat:** WebGPU gives no cross-workgroup forward-progress
+guarantee, so a *per-pixel spinlock* (hold lock, write both words, release) is
+unsafe — it can deadlock. B deliberately avoids a lock: the CAS loop only spins
+on its *own* retry and always terminates (depth is monotonic), accepting the
+rare payload race instead of locking. A lock-based race-free variant is out of
+scope for the spike.
+
+### HW-raster baseline
+
+Same triangle soup through a minimal pipeline writing `(depth, payload)` to
+attachments (mirrors today's geometry pass). Gives the throughput +
+ground-truth payload image both encodings are compared against.
+
+### API anchors (renderer-core, verified)
+
+- Device: `AwsmRendererWebGpuBuilder::new(gpu, canvas).with_device_request_limits(DeviceRequestLimits::max_all()).build()` → `AwsmRendererWebGpu { device, .. }`.
+- Compute: `compile_shader`, `create_compute_pipeline` (async), `create_bind_group_layout`, `create_bind_group`, `create_command_encoder` → `begin_compute_pass` → `dispatch_workgroups` → `submit_commands`.
+- Buffers: `create_buffer`, `write_buffer`, `new_copy_and_extract_buffer` for readback.
+- All in `packages/crates/renderer-core/src/{methods.rs,renderer.rs,buffers.rs,command/compute_pass.rs}`.
+
+---
+
+## Phase 3 — Hybrid rasterization (only if Phase 0 is GO)
+
+Route clusters/triangles by screen size:
+- **HW-raster path** (large triangles): the `lod.md` Phase B path — compute
+  builds a compacted index stream → single `drawIndexedIndirect` → existing
+  geometry fragment shader writes the vis buffer.
+- **SW-raster path** (sub-pixel triangles): compute rasterizer using the Phase 0
+  emulated atomic, writing `(depth|payload)` to a storage target, then a resolve
+  pass merges it into the **same** visibility-buffer textures the material
+  passes already read.
+
+Both paths converge on one visibility buffer so `material_prep` /
+`material_opaque` keep working unchanged.
+
+---
+
+## Phase 5 — Streaming (virtual geometry)
+
+Page-based cluster residency, analogous to virtual texturing. Independent of the
+SW rasterizer; kept here because it is the other large, deferrable Nanite bet
+that LOD shipping does not require.
+
+- GPU feedback buffer marks the cluster pages the LOD cut needs this frame.
+- CPU streams requested pages from disk/network into the GPU pools and evicts
+  cold pages (LRU against a VRAM budget — ties into
+  `PERFORMANCE_OPEN_WORLD_PLAN.md`).
+- LOD selection clamps to resident pages until higher-detail pages arrive.
+
+The cost that scales with "distinct meshes" is memory/streaming (N unique
+datasets resident vs one when instanced); this is what bounds the working set to
+the sum of visible LOD cuts.
+
+## Verification
+
+- Bake a multi-million-triangle reference asset; compare SW-raster vs HW-raster
+  for visual parity (payload-image diff + screenshots via chrome-devtools MCP).
+- Cross-check the vis buffer via the existing GPU picker compute path.
+- Stress with `?stress=N` / `?trace=sub-frame`; no per-frame heap allocs in the
+  hot path.

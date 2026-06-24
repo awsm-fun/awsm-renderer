@@ -79,7 +79,7 @@ impl AppCanvas {
                         // Depth24Plus). See
                         // `awsm_renderer::profile::RendererProfile` for
                         // the full matrix.
-                        let profile = awsm_web_shared::perf::resolve_renderer_profile(
+                        let profile = awsm_renderer_web_shared::perf::resolve_renderer_profile(
                             awsm_renderer::profile::RendererProfile::Desktop,
                         );
                         let renderer = match AwsmRendererBuilder::new(gpu_builder)

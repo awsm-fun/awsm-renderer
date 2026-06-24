@@ -24,7 +24,6 @@
 
 use std::collections::HashMap;
 
-use awsm_materials::MaterialShaderId;
 use awsm_renderer::animation::scene_loader::{lower_stored_clip, lower_stored_mixer};
 use awsm_renderer::animation::{
     AnimationClipGroup, AnimationClipKey, AnimationTarget, BuiltinMaterialParam, CameraParam,
@@ -38,8 +37,11 @@ use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::transforms::TransformKey;
 use awsm_renderer::AwsmRenderer;
-use awsm_scene::animation::{BuiltinParamKind, CameraParamKind, LightParamKind, TrackTarget};
-use awsm_scene::{AssetId, CameraConfig, EditorNode, NodeId, Scene};
+use awsm_renderer_materials::MaterialShaderId;
+use awsm_renderer_scene::animation::{
+    BuiltinParamKind, CameraParamKind, LightParamKind, TrackTarget,
+};
+use awsm_renderer_scene::{AssetId, CameraConfig, EditorNode, NodeId, Scene};
 
 /// The renderer keys the loader minted per node/asset while materializing the
 /// scene, consulted to resolve each animation track's abstract target. Built up
@@ -236,8 +238,8 @@ fn resolve_target(
     }
 }
 
-fn tex_slot(s: awsm_scene::animation::TexSlot) -> TexSlot {
-    use awsm_scene::animation::TexSlot as S;
+fn tex_slot(s: awsm_renderer_scene::animation::TexSlot) -> TexSlot {
+    use awsm_renderer_scene::animation::TexSlot as S;
     match s {
         S::BaseColor => TexSlot::BaseColor,
         S::MetallicRoughness => TexSlot::MetallicRoughness,
@@ -247,8 +249,8 @@ fn tex_slot(s: awsm_scene::animation::TexSlot) -> TexSlot {
     }
 }
 
-fn tex_prop(p: awsm_scene::animation::TexTransformProp) -> TexTransformProp {
-    use awsm_scene::animation::TexTransformProp as P;
+fn tex_prop(p: awsm_renderer_scene::animation::TexTransformProp) -> TexTransformProp {
+    use awsm_renderer_scene::animation::TexTransformProp as P;
     match p {
         P::Offset => TexTransformProp::Offset,
         P::Scale => TexTransformProp::Scale,
@@ -330,7 +332,7 @@ fn camera_param(p: CameraParamKind) -> CameraParam {
 #[cfg(test)]
 mod tests {
     use super::expand_descendants;
-    use awsm_scene::{EditorNode, NodeId, NodeKind, Scene};
+    use awsm_renderer_scene::{EditorNode, NodeId, NodeKind, Scene};
 
     fn node(id: NodeId, children: Vec<EditorNode>) -> EditorNode {
         EditorNode {

@@ -41,8 +41,8 @@
 //!
 //! ### What the worker actually renders
 //!
-//! - A single procedural box mesh ([`awsm_meshgen::primitives::box_mesh`])
-//!   with a bright opaque [`awsm_materials::pbr::PbrMaterial`]
+//! - A single procedural box mesh ([`awsm_renderer_meshgen::primitives::box_mesh`])
+//!   with a bright opaque [`awsm_renderer_materials::pbr::PbrMaterial`]
 //!   (emissive factor cranked so the box self-illuminates against an
 //!   empty scene — the example deliberately skips light + environment
 //!   setup to keep the smoke test focused on the OffscreenCanvas +

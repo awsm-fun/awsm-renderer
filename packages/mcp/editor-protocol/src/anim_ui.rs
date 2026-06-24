@@ -1,7 +1,7 @@
 //! Editor-only animation UI enums (timeline selection / view / transport step).
 //! These are control-layer state, not part of the persisted scene schema — the
 //! scene-schema animation *data* types (`TrackTarget`, `Keyframe`, `MixerDoc`, …)
-//! live in `awsm_scene::animation`.
+//! live in `awsm_renderer_scene::animation`.
 
 use serde::{Deserialize, Serialize};
 

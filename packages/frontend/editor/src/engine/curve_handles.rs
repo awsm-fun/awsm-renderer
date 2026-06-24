@@ -1,5 +1,5 @@
 //! Viewport drag-handles for **curve control points**, backed by
-//! `awsm_web_shared::viewport3d::PointHandleSet`.
+//! `awsm_renderer_web_shared::viewport3d::PointHandleSet`.
 //!
 //! Mirrors `gizmo.rs`: the handle set lives in a thread-local so both the render
 //! loop (per-frame screen-constant zoom) and the canvas pointer handlers (pick +
@@ -10,10 +10,10 @@
 
 use std::cell::RefCell;
 
-use awsm_editor_protocol::{CurveDef, NodeKind};
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::AwsmRenderer;
-use awsm_web_shared::viewport3d::point_handle::PointHandleSet;
+use awsm_renderer_editor_protocol::{CurveDef, NodeKind};
+use awsm_renderer_web_shared::viewport3d::point_handle::PointHandleSet;
 use futures_signals::map_ref;
 use glam::{Mat4, Vec3};
 

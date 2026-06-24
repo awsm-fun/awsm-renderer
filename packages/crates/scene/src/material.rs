@@ -263,7 +263,7 @@ ext_struct!(/// `KHR_materials_iridescence` — thin-film interference (soap bub
         tex: Option<TextureRef> = None, thickness_tex: Option<TextureRef> = None });
 
 /// Procedural texture parameters. The renderer materializes these into a real
-/// GPU texture at load time via `awsm-meshgen::procedural_texture::*`.
+/// GPU texture at load time via `awsm-renderer-meshgen::procedural_texture::*`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProceduralTextureDef {

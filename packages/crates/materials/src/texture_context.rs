@@ -3,7 +3,7 @@
 //!
 //! Materials need a handful of texture/sampler lookups when packing their
 //! payload — they don't need the full `Textures` struct from `awsm-renderer`.
-//! Routing those lookups through this trait keeps `awsm-materials` from
+//! Routing those lookups through this trait keeps `awsm-renderer-materials` from
 //! depending on `awsm-renderer`.
 
 use awsm_renderer_core::{

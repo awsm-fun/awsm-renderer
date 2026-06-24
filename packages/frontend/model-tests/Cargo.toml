@@ -1,5 +1,5 @@
 [package]
-name = "awsm-model-tests"
+name = "awsm-renderer-model-tests"
 publish = false  # frontend app, not released to crates.io
 description = "Rendering demos exercising glTF samples, materials, lights, particles."
 edition.workspace = true
@@ -11,8 +11,8 @@ rust-version.workspace = true
 [dependencies]
 awsm-renderer = { workspace = true, features = ["texture-export", "ktx", "serde"] }
 awsm-renderer-gltf = { workspace = true }
-awsm-glb-export = { workspace = true }
-awsm-web-shared = { workspace = true }
+awsm-renderer-glb-export = { workspace = true }
+awsm-renderer-web-shared = { workspace = true }
 serde = {workspace = true}
 serde_json = {workspace = true}
 anyhow = {workspace = true}

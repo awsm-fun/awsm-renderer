@@ -29,15 +29,15 @@ use rmcp::{
 };
 use serde_json::Value;
 
-use awsm_editor_protocol::{
+use awsm_renderer_editor_protocol::{
     CameraAxis, CompileError, CustomAlphaMode, EditorCommand, EditorMode, EditorQuery, InsertSpec,
     ProceduralKind, QueryResult, Request, Response, SlotSpec, StepKind,
 };
-use awsm_scene::animation::{
+use awsm_renderer_scene::animation::{
     BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TexSlot, TexTransformProp,
     TrackTarget, TrackValue, TransformProp,
 };
-use awsm_scene::{
+use awsm_renderer_scene::{
     AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, MeshShadowConfig, NodeId,
     NodeKind, PrimitiveShape, SkyboxConfig, Trs,
 };
@@ -144,7 +144,7 @@ pub struct SelectVerticesParams {
     /// UUID of the geometry node.
     pub node: String,
     /// Strongly-typed selection predicate (the schema lists every `kind`).
-    pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+    pub predicate: Flexible<awsm_renderer_editor_protocol::VertexPredicate>,
     /// §10: `true` ⇒ keep the indices SERVER-SIDE and return a reusable
     /// `{ id, count }` handle (pass `selection: <id>` to the paint/sculpt verbs)
     /// instead of the index array. Use this for full-res selections that would
@@ -167,7 +167,7 @@ pub struct PaintWhereParams {
     /// UUID of the geometry node.
     pub node: String,
     /// Selection predicate (same shapes as `select_vertices_where`).
-    pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+    pub predicate: Flexible<awsm_renderer_editor_protocol::VertexPredicate>,
     /// Linear RGBA `[r,g,b,a]` painted on every selected vertex.
     pub color: [f32; 4],
 }
@@ -177,7 +177,7 @@ pub struct TransformWhereParams {
     /// UUID of the geometry node.
     pub node: String,
     /// Selection predicate (same shapes as `select_vertices_where`).
-    pub predicate: Flexible<awsm_editor_protocol::VertexPredicate>,
+    pub predicate: Flexible<awsm_renderer_editor_protocol::VertexPredicate>,
     /// World-space translation `[x,y,z]` applied to the selection.
     pub translation: [f32; 3],
     /// Smooth radial falloff radius (0 = rigid move of exactly the selection).
@@ -234,7 +234,7 @@ pub struct SetMeshModifiersParams {
     pub mesh: String,
     /// Strongly-typed modifier stack (the schema lists every base + modifier).
     /// See the `awsm://docs/mesh-tools` resource for worked examples.
-    pub stack: Flexible<awsm_editor_protocol::ModifierStack>,
+    pub stack: Flexible<awsm_renderer_editor_protocol::ModifierStack>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -244,7 +244,7 @@ pub struct AddModifierParams {
     pub mesh: String,
     /// One strongly-typed modifier object (e.g. `{"twist":{"axis":"y","turns":2}}`).
     /// See the `awsm://docs/mesh-tools` resource for every modifier's shape.
-    pub modifier: Flexible<awsm_editor_protocol::Modifier>,
+    pub modifier: Flexible<awsm_renderer_editor_protocol::Modifier>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -254,7 +254,7 @@ pub struct SetModifierParams {
     /// Zero-based index of the modifier to replace (must be in range).
     pub index: u32,
     /// The replacement modifier object.
-    pub modifier: Flexible<awsm_editor_protocol::Modifier>,
+    pub modifier: Flexible<awsm_renderer_editor_protocol::Modifier>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -621,7 +621,7 @@ pub struct BuiltinTextureParams {
     /// Mesh node UUID.
     pub node: String,
     /// Which built-in PBR slot to bind.
-    pub slot: awsm_editor_protocol::BuiltinTextureSlot,
+    pub slot: awsm_renderer_editor_protocol::BuiltinTextureSlot,
     /// Texture asset UUID to bind, or omit/null to clear the slot.
     #[serde(default)]
     pub texture: Option<String>,
@@ -646,12 +646,12 @@ pub struct ParticleEmitterParams {
     /// Simulation space: `"world"` (particles persist) or `"local"` (follow the
     /// emitter transform).
     #[serde(default)]
-    pub space: Option<awsm_editor_protocol::EmitterSpaceDef>,
+    pub space: Option<awsm_renderer_editor_protocol::EmitterSpaceDef>,
     /// Spawn shape (externally-tagged): `{"point":{}}`, `{"sphere":{"radius":r}}`,
     /// or `{"cone":{"angle_radians":a,"direction":[x,y,z]}}` (direction in the
     /// emitter's LOCAL space).
     #[serde(default)]
-    pub shape: Option<awsm_editor_protocol::SpawnShapeDef>,
+    pub shape: Option<awsm_renderer_editor_protocol::SpawnShapeDef>,
     /// `[min, max]` initial speed (m/s).
     #[serde(default)]
     pub initial_speed: Option<[f32; 2]>,
@@ -664,14 +664,14 @@ pub struct ParticleEmitterParams {
     /// Forces: list of `{"gravity":{"acceleration":[x,y,z]}}` /
     /// `{"linear_drag":{"coefficient_x1000":n}}` (replaces the whole list).
     #[serde(default)]
-    pub forces: Option<Vec<awsm_editor_protocol::ForceDef>>,
+    pub forces: Option<Vec<awsm_renderer_editor_protocol::ForceDef>>,
     /// Color over life: `{"const":[r,g,b,a]}` or
     /// `{"linear":{"start":[r,g,b,a],"end":[r,g,b,a]}}` (alpha = transparency).
     #[serde(default)]
-    pub color_over_life: Option<awsm_editor_protocol::ColorOverLifeDef>,
+    pub color_over_life: Option<awsm_renderer_editor_protocol::ColorOverLifeDef>,
     /// Size over life: `{"const":s}` or `{"linear":{"start":s,"end":s}}`.
     #[serde(default)]
-    pub size_over_life: Option<awsm_editor_protocol::SizeOverLifeDef>,
+    pub size_over_life: Option<awsm_renderer_editor_protocol::SizeOverLifeDef>,
     /// Route through the transparent-blend pass (true alpha fades) vs the cheaper
     /// opaque-emissive path.
     #[serde(default)]
@@ -710,7 +710,7 @@ pub struct NodeTextureTransformParams {
     /// Mesh node UUID (the slot must already have a texture bound).
     pub node: String,
     /// Which built-in PBR slot to transform.
-    pub slot: awsm_editor_protocol::BuiltinTextureSlot,
+    pub slot: awsm_renderer_editor_protocol::BuiltinTextureSlot,
     /// UV offset `[u, v]` (the base the `flow` scroll accumulates onto).
     #[serde(default)]
     pub offset: Option<[f32; 2]>,
@@ -851,7 +851,7 @@ pub struct SkinWeightsSetParams {
     /// Skinned node UUID.
     pub node: String,
     /// Per-vertex rewrites: { vertex, joints:[u32;4], weights:[f32;4] }.
-    pub entries: Vec<awsm_editor_protocol::SkinWeightEntry>,
+    pub entries: Vec<awsm_renderer_editor_protocol::SkinWeightEntry>,
     /// Rescale each entry's weights to sum to 1.
     #[serde(default)]
     pub normalize: bool,
@@ -1300,7 +1300,7 @@ impl EditorMcp {
         Parameters(p): Parameters<UpdateBuiltinParams>,
     ) -> Result<CallToolResult, McpError> {
         let id = parse_asset(&p.id)?;
-        let def: awsm_editor_protocol::MaterialDef = serde_json::from_value(p.def.clone())
+        let def: awsm_renderer_editor_protocol::MaterialDef = serde_json::from_value(p.def.clone())
             .map_err(|e| {
                 McpError::invalid_params(format!("def does not parse as a MaterialDef: {e}"), None)
             })?;
@@ -2029,7 +2029,7 @@ impl EditorMcp {
                 frame_count: 16,
                 fps: 12.0,
                 time_offset: 0.0,
-                mode: awsm_editor_protocol::FlipBookPlayMode::Loop,
+                mode: awsm_renderer_editor_protocol::FlipBookPlayMode::Loop,
                 flip_y: false,
             },
         };
@@ -2765,11 +2765,11 @@ impl EditorMcp {
         Parameters(p): Parameters<BuiltinAlphaModeParams>,
     ) -> Result<CallToolResult, McpError> {
         let mode = match p.mode {
-            AlphaModeArg::Opaque => awsm_editor_protocol::MaterialAlphaMode::Opaque,
-            AlphaModeArg::Mask => awsm_editor_protocol::MaterialAlphaMode::Mask {
+            AlphaModeArg::Opaque => awsm_renderer_editor_protocol::MaterialAlphaMode::Opaque,
+            AlphaModeArg::Mask => awsm_renderer_editor_protocol::MaterialAlphaMode::Mask {
                 cutoff: p.cutoff.unwrap_or(0.5) as f32,
             },
-            AlphaModeArg::Blend => awsm_editor_protocol::MaterialAlphaMode::Blend,
+            AlphaModeArg::Blend => awsm_renderer_editor_protocol::MaterialAlphaMode::Blend,
         };
         self.dispatch(EditorCommand::SetBuiltinAlphaMode {
             node: parse_node(&p.node)?,
@@ -2818,7 +2818,7 @@ impl EditorMcp {
         let json = match p.schema.as_deref() {
             Some("modifier") | Some("modifier_stack") | Some("modifiers") => {
                 serde_json::to_string_pretty(&schemars::schema_for!(
-                    awsm_editor_protocol::ModifierStack
+                    awsm_renderer_editor_protocol::ModifierStack
                 ))
             }
             _ => serde_json::to_string_pretty(&schemars::schema_for!(NodeKind)),
@@ -3044,8 +3044,10 @@ impl EditorMcp {
             }
         };
         let entries = match &sol {
-            awsm_editor_protocol::QueryResult::Map(m) if m.kind == "ik_solution" => &m.entries,
-            awsm_editor_protocol::QueryResult::Error { error } => {
+            awsm_renderer_editor_protocol::QueryResult::Map(m) if m.kind == "ik_solution" => {
+                &m.entries
+            }
+            awsm_renderer_editor_protocol::QueryResult::Error { error } => {
                 return Err(McpError::internal_error(error.clone(), None))
             }
             other => {
@@ -3092,27 +3094,28 @@ impl EditorMcp {
             }
         };
         let tmap = match &tr {
-            awsm_editor_protocol::QueryResult::Map(m) => &m.entries,
+            awsm_renderer_editor_protocol::QueryResult::Map(m) => &m.entries,
             _ => return Err(McpError::internal_error("bad transforms result", None)),
         };
-        let trs_of = |id: NodeId, rot: [f32; 4]| -> Result<awsm_editor_protocol::Trs, McpError> {
-            let e = tmap
-                .get(&id.to_string())
-                .ok_or_else(|| McpError::internal_error("joint transform missing", None))?;
-            let v3 = |k: &str| -> [f32; 3] {
-                serde_json::from_value(e.get(k).cloned().unwrap_or_default())
-                    .unwrap_or([0.0, 0.0, 0.0])
+        let trs_of =
+            |id: NodeId, rot: [f32; 4]| -> Result<awsm_renderer_editor_protocol::Trs, McpError> {
+                let e = tmap
+                    .get(&id.to_string())
+                    .ok_or_else(|| McpError::internal_error("joint transform missing", None))?;
+                let v3 = |k: &str| -> [f32; 3] {
+                    serde_json::from_value(e.get(k).cloned().unwrap_or_default())
+                        .unwrap_or([0.0, 0.0, 0.0])
+                };
+                let mut scale = v3("scale");
+                if scale == [0.0, 0.0, 0.0] {
+                    scale = [1.0, 1.0, 1.0];
+                }
+                Ok(awsm_renderer_editor_protocol::Trs {
+                    translation: v3("translation"),
+                    rotation: rot,
+                    scale,
+                })
             };
-            let mut scale = v3("scale");
-            if scale == [0.0, 0.0, 0.0] {
-                scale = [1.0, 1.0, 1.0];
-            }
-            Ok(awsm_editor_protocol::Trs {
-                translation: v3("translation"),
-                rotation: rot,
-                scale,
-            })
-        };
         let cmds = vec![
             EditorCommand::SetTransform {
                 id: root,
@@ -3856,7 +3859,7 @@ impl ServerHandler for EditorMcp {
                         };
                         let param = LoggingMessageNotificationParam {
                             level,
-                            logger: Some("awsm-editor".to_string()),
+                            logger: Some("awsm-renderer-editor".to_string()),
                             data: serde_json::to_value(&ev).unwrap_or(Value::Null),
                         };
                         // Stops the forwarder once this MCP session drops.
@@ -4027,8 +4030,8 @@ fn parse_node_opt(s: &Option<String>) -> Result<Option<NodeId>, McpError> {
     s.as_deref().map(parse_node).transpose()
 }
 
-fn parse_wrap(s: &str) -> Result<awsm_editor_protocol::TextureWrap, McpError> {
-    use awsm_editor_protocol::TextureWrap as W;
+fn parse_wrap(s: &str) -> Result<awsm_renderer_editor_protocol::TextureWrap, McpError> {
+    use awsm_renderer_editor_protocol::TextureWrap as W;
     match s.trim().to_ascii_lowercase().as_str() {
         "repeat" => Ok(W::Repeat),
         "clamp" | "clamp_to_edge" | "clamptoedge" => Ok(W::ClampToEdge),

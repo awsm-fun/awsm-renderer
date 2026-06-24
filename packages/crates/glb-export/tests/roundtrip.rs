@@ -2,11 +2,11 @@
 //! both with the `gltf` reader crate (geometry + material factors) and with raw
 //! JSON (extension wiring + referenced-only images).
 
-use awsm_glb_export::{
+use awsm_renderer_glb_export::{
     write_glb, ExportLight, ExportMaterial, ExportNode, GlbScene, PbrMaterial, TexRef,
     TexTransform, Trs, UnlitMaterial, AWSM_MATERIALS_NONE,
 };
-use awsm_meshgen::box_mesh;
+use awsm_renderer_meshgen::box_mesh;
 use glam::Vec3;
 use serde_json::Value;
 
@@ -146,10 +146,10 @@ fn texture_transform_roundtrip() {
                 base_color_texture: Some(tr),
                 ..Default::default()
             }))],
-        images: vec![awsm_glb_export::ExportImage {
+        images: vec![awsm_renderer_glb_export::ExportImage {
             name: "albedo".into(),
             bytes: include_bytes!("fixtures/1x1.png").to_vec(),
-            mime: awsm_glb_export::ImageMime::Png,
+            mime: awsm_renderer_glb_export::ImageMime::Png,
         }],
         ..Default::default()
     };
@@ -208,10 +208,10 @@ fn referenced_texture_is_embedded() {
                 base_color_texture: Some(TexRef::new(0)),
                 ..Default::default()
             }))],
-        images: vec![awsm_glb_export::ExportImage {
+        images: vec![awsm_renderer_glb_export::ExportImage {
             name: "albedo".into(),
             bytes: png,
-            mime: awsm_glb_export::ImageMime::Png,
+            mime: awsm_renderer_glb_export::ImageMime::Png,
         }],
         ..Default::default()
     };
@@ -240,26 +240,26 @@ fn extract_texture_images_roundtrips_encoded_bytes() {
                 base_color_texture: Some(TexRef::new(0)),
                 ..Default::default()
             }))],
-        images: vec![awsm_glb_export::ExportImage {
+        images: vec![awsm_renderer_glb_export::ExportImage {
             name: "albedo".into(),
             bytes: png.clone(),
-            mime: awsm_glb_export::ImageMime::Png,
+            mime: awsm_renderer_glb_export::ImageMime::Png,
         }],
         ..Default::default()
     };
     let glb = write_glb(&scene);
-    let images = awsm_glb_export::extract_texture_images_from_bytes(&glb);
+    let images = awsm_renderer_glb_export::extract_texture_images_from_bytes(&glb);
     // One texture, at index 0, with byte-identical PNG bytes + png ext.
     assert_eq!(images.len(), 1);
     let img = images.get(&0).expect("texture 0");
     assert_eq!(img.bytes, png, "encoded bytes must round-trip exactly");
-    assert_eq!(img.mime, awsm_glb_export::ImageMime::Png);
+    assert_eq!(img.mime, awsm_renderer_glb_export::ImageMime::Png);
     assert_eq!(img.mime.ext(), "png");
 }
 
 #[test]
 fn animation_channel_roundtrips() {
-    use awsm_glb_export::{AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation};
+    use awsm_renderer_glb_export::{AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation};
     // One node + a rotation track (two quaternion keyframes at t=0,1).
     let scene = GlbScene {
         nodes: vec![ExportNode::new("Spinner")],
@@ -294,7 +294,7 @@ fn animation_channel_roundtrips() {
 
 #[test]
 fn multi_uv_sets_roundtrip() {
-    use awsm_glb_export::MeshData;
+    use awsm_renderer_glb_export::MeshData;
     // A triangle with TWO UV sets (TEXCOORD_0 + TEXCOORD_1) — both must survive
     // write_glb so multi-UV meshes (e.g. an AO map on set 1) round-trip.
     let tri = MeshData {
@@ -331,7 +331,7 @@ fn multi_uv_sets_roundtrip() {
 
 #[test]
 fn extract_node_mesh_folds_uv_sets() {
-    use awsm_glb_export::{extract_node_mesh_from_bytes, MeshData};
+    use awsm_renderer_glb_export::{extract_node_mesh_from_bytes, MeshData};
     // A 2-UV mesh, re-extracted via the editor's node path, folds BOTH sets into
     // mesh.uvs (no separate uvs1 channel) — GPU multi-UV step 2.
     let tri = MeshData {
@@ -357,7 +357,7 @@ fn extract_node_mesh_folds_uv_sets() {
 
 #[test]
 fn skinned_morph_mesh_roundtrips() {
-    use awsm_glb_export::{ExportSkin, MeshData, MorphTarget};
+    use awsm_renderer_glb_export::{ExportSkin, MeshData, MorphTarget};
 
     // A triangle skinned to a 2-joint skeleton, with one morph target.
     let tri = MeshData {

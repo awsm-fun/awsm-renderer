@@ -268,7 +268,7 @@ fn handle_event(e: &web_sys::MessageEvent, worker: &Rc<RefCell<Option<web_sys::W
 /// worker path it exercises remain live).
 #[allow(dead_code)]
 fn send_load(worker: &web_sys::Worker) -> Result<(), JsValue> {
-    use awsm_meshgen::primitives::box_mesh;
+    use awsm_renderer_meshgen::primitives::box_mesh;
     use glam::Vec3;
 
     let buffers = js_sys::Array::new();
@@ -656,9 +656,9 @@ fn handle_command(
             });
         }
         RenderCommand::SetMeshMaterial { emissive } => {
-            use awsm_materials::pbr::PbrMaterial;
-            use awsm_materials::MaterialAlphaMode;
             use awsm_renderer::materials::Material;
+            use awsm_renderer_materials::pbr::PbrMaterial;
+            use awsm_renderer_materials::MaterialAlphaMode;
             let mut guard = cell.borrow_mut();
             let r = &mut *guard; // reborrow to &mut AwsmRenderer for split field borrows
             let mut mat = PbrMaterial::new(MaterialAlphaMode::Opaque, false);
@@ -762,11 +762,11 @@ async fn load_models(
     models: &[ModelDesc],
     buffers: &js_sys::Array,
 ) -> Result<(), JsValue> {
-    use awsm_materials::pbr::PbrMaterial;
-    use awsm_materials::MaterialAlphaMode;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
     use awsm_renderer::transforms::Transform;
+    use awsm_renderer_materials::pbr::PbrMaterial;
+    use awsm_renderer_materials::MaterialAlphaMode;
     use glam::Vec3;
 
     let mut guard = cell.borrow_mut();

@@ -1,5 +1,5 @@
 [package]
-name = "awsm-particles"
+name = "awsm-renderer-particles"
 description = "Pure CPU particle simulator (struct-of-arrays, GPU-shape compatible)"
 edition.workspace = true
 version.workspace = true
@@ -10,10 +10,10 @@ repository.workspace = true
 
 [features]
 default = []
-serde = ["dep:serde", "awsm-curves/serde"]
+serde = ["dep:serde", "awsm-renderer-curves/serde"]
 
 [dependencies]
-awsm-curves = { workspace = true }
-awsm-geometry = { workspace = true }
+awsm-renderer-curves = { workspace = true }
+awsm-renderer-geometry = { workspace = true }
 glam = {workspace = true}
 serde = {workspace = true, optional = true}

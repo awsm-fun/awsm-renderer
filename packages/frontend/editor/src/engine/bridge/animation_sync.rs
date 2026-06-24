@@ -216,7 +216,7 @@ fn warn_if_orphaned_clip(
     if orphaned {
         if LAST_ORPHAN_WARN.with(|c| c.get()) != active_id {
             LAST_ORPHAN_WARN.with(|c| c.set(active_id));
-            awsm_web_shared::prelude::Toast::warning(
+            awsm_renderer_web_shared::prelude::Toast::warning(
                 "This clip targets deleted nodes — nothing to animate. \
                  It was likely left behind when its imported model was removed.",
             );
@@ -516,9 +516,11 @@ fn resolve_target(
     }
 }
 
-fn tex_slot(s: awsm_editor_protocol::animation::TexSlot) -> awsm_renderer::animation::TexSlot {
-    use awsm_editor_protocol::animation::TexSlot as S;
+fn tex_slot(
+    s: awsm_renderer_editor_protocol::animation::TexSlot,
+) -> awsm_renderer::animation::TexSlot {
     use awsm_renderer::animation::TexSlot as R;
+    use awsm_renderer_editor_protocol::animation::TexSlot as S;
     match s {
         S::BaseColor => R::BaseColor,
         S::MetallicRoughness => R::MetallicRoughness,
@@ -529,10 +531,10 @@ fn tex_slot(s: awsm_editor_protocol::animation::TexSlot) -> awsm_renderer::anima
 }
 
 fn tex_prop(
-    p: awsm_editor_protocol::animation::TexTransformProp,
+    p: awsm_renderer_editor_protocol::animation::TexTransformProp,
 ) -> awsm_renderer::animation::TexTransformProp {
-    use awsm_editor_protocol::animation::TexTransformProp as P;
     use awsm_renderer::animation::TexTransformProp as R;
+    use awsm_renderer_editor_protocol::animation::TexTransformProp as P;
     match p {
         P::Offset => R::Offset,
         P::Scale => R::Scale,
@@ -546,7 +548,7 @@ fn tex_prop(
 /// resolution note). `None` until a mesh using the material is materialized.
 fn material_key_for_shader(
     r: &awsm_renderer::AwsmRenderer,
-    shader_id: awsm_materials::MaterialShaderId,
+    shader_id: awsm_renderer_materials::MaterialShaderId,
 ) -> Option<awsm_renderer::materials::MaterialKey> {
     use awsm_renderer::materials::Material;
     r.materials.iter().find_map(|(key, mat)| match mat {

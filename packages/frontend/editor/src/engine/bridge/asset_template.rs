@@ -86,7 +86,7 @@ pub struct AssetTemplateNode {
     /// renderer light to THIS editor node's transform_key, so animating the node
     /// moves the light). The duplicate light `populate_gltf` baked is removed at
     /// import (see `remove_template_lights`) so they don't double up.
-    pub light: Option<awsm_editor_protocol::LightConfig>,
+    pub light: Option<awsm_renderer_editor_protocol::LightConfig>,
     pub children: Vec<AssetTemplateNode>,
 }
 
@@ -170,7 +170,7 @@ pub fn build_from_context(renderer: &AwsmRenderer, ctx: &GltfPopulateContext) ->
     // glTF node index → editor LightConfig for every KHR_lights_punctual node,
     // so each light becomes an editable `NodeKind::Light` mirror (bound to the
     // editor node's transform) instead of a dead Group.
-    let lights_by_node: HashMap<u32, awsm_editor_protocol::LightConfig> = ctx
+    let lights_by_node: HashMap<u32, awsm_renderer_editor_protocol::LightConfig> = ctx
         .data
         .doc
         .nodes()
@@ -213,8 +213,8 @@ pub fn build_from_context(renderer: &AwsmRenderer, ctx: &GltfPopulateContext) ->
 /// light inspector's Shadows section.
 fn light_config_from_gltf(
     light: &gltf::khr_lights_punctual::Light,
-) -> awsm_editor_protocol::LightConfig {
-    use awsm_editor_protocol::{LightConfig, LightShadowConfig};
+) -> awsm_renderer_editor_protocol::LightConfig {
+    use awsm_renderer_editor_protocol::{LightConfig, LightShadowConfig};
     let color = light.color();
     let intensity = light.intensity();
     // glTF `range` is `Option`; 0.0 means "unlimited" in our renderer.
@@ -253,7 +253,7 @@ struct SnapshotLookups<'a> {
     key_to_label: &'a HashMap<TransformKey, String>,
     mesh_mat: &'a HashMap<MeshKey, Option<usize>>,
     skin_joints: &'a HashSet<TransformKey>,
-    lights_by_node: &'a HashMap<u32, awsm_editor_protocol::LightConfig>,
+    lights_by_node: &'a HashMap<u32, awsm_renderer_editor_protocol::LightConfig>,
     morph_names_by_node: &'a HashMap<u32, Vec<String>>,
 }
 

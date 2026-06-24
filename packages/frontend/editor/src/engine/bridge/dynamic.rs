@@ -9,17 +9,21 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use awsm_materials::dynamic::{DynamicMaterial, DynamicTextureBinding};
-use awsm_materials::dynamic_layout::{
-    BufferSlotRuntime, FieldType, MaterialLayout, TextureSlotRuntime, UniformFieldRuntime,
-    UniformValue,
-};
-use awsm_materials::{FragmentInputs, MaterialAlphaMode, MaterialShaderId, ShaderIncludes};
 use awsm_renderer::dynamic_materials::MaterialRegistration;
 use awsm_renderer::materials::Material;
 use awsm_renderer::AwsmRenderer;
+use awsm_renderer_materials::dynamic::{DynamicMaterial, DynamicTextureBinding};
+use awsm_renderer_materials::dynamic_layout::{
+    BufferSlotRuntime, FieldType, MaterialLayout, TextureSlotRuntime, UniformFieldRuntime,
+    UniformValue,
+};
+use awsm_renderer_materials::{
+    FragmentInputs, MaterialAlphaMode, MaterialShaderId, ShaderIncludes,
+};
 
-use awsm_editor_protocol::dynamic_material::{MaterialInstance, UniformValue as SceneUniformValue};
+use awsm_renderer_editor_protocol::dynamic_material::{
+    MaterialInstance, UniformValue as SceneUniformValue,
+};
 
 use crate::controller::{AlphaMode, CustomMaterial};
 use crate::engine::context::renderer_handle;
@@ -491,12 +495,14 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
 /// from this + `material.wgsl`. Texture/buffer slot DEFAULTS serialize as `None`
 /// (the editor's `CustomMaterial` doesn't carry default bytes); per-mesh texture/
 /// buffer overrides still apply at instance time.
-pub fn material_definition(mat: &CustomMaterial) -> awsm_editor_protocol::MaterialDefinition {
-    use awsm_editor_protocol::dynamic_material::{
+pub fn material_definition(
+    mat: &CustomMaterial,
+) -> awsm_renderer_editor_protocol::MaterialDefinition {
+    use awsm_renderer_editor_protocol::dynamic_material::{
         BufferSlot, FieldType as FT, MaterialDefinition, TextureSlot, UniformField,
         UniformValue as UV,
     };
-    use awsm_editor_protocol::MaterialAlphaMode;
+    use awsm_renderer_editor_protocol::MaterialAlphaMode;
 
     let parse_ty = |s: &str| -> FT {
         match s {
@@ -643,7 +649,7 @@ fn convert_alpha(a: AlphaMode, cutoff: f32) -> MaterialAlphaMode {
 fn includes_from_keys(keys: &[String]) -> ShaderIncludes {
     let mut s = ShaderIncludes::empty();
     for k in keys {
-        // Single source of truth: awsm_materials::ShaderIncludes::KEY_TABLE.
+        // Single source of truth: awsm_renderer_materials::ShaderIncludes::KEY_TABLE.
         // Unknown keys dropped; Tier-B keys parse for back-compat but are masked
         // off for custom materials by ShaderIncludeFlags::for_custom.
         s = s.union(ShaderIncludes::from_key(k).unwrap_or_else(ShaderIncludes::empty));

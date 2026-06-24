@@ -1005,7 +1005,7 @@ impl Meshes {
             let tangents = source.tangents.clone().or_else(|| {
                 if want_tangents {
                     source.uvs0.as_ref().and_then(|uvs| {
-                        awsm_tangents::generate_tangents(
+                        awsm_renderer_tangents::generate_tangents(
                             &source.positions,
                             &source.normals,
                             uvs,

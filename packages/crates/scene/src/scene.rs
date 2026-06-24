@@ -1,6 +1,6 @@
 //! The runtime scene document — the lean, canonical thing the player loads
 //! (`scene.toml` + an `assets/` directory). The editor authors a richer
-//! `EditorProject` (in `awsm-editor-protocol`); its **bake** step lowers that to
+//! `EditorProject` (in `awsm-renderer-editor-protocol`); its **bake** step lowers that to
 //! a [`Scene`]: modifier stacks evaluate + collapse to mesh blobs (cheap
 //! primitives stay procedural), per-vertex overrides apply, and the editor-only
 //! library snapshots (material/animation authoring state) are dropped — only

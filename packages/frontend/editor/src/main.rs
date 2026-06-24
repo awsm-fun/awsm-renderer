@@ -1,4 +1,4 @@
-//! awsm-editor — v2 blank-slate rebuild bootstrap.
+//! awsm-renderer-editor — v2 blank-slate rebuild bootstrap.
 //!
 //! Boots the real WebGPU renderer (the multi-second cold-start window is covered
 //! by the HTML boot-loader, captioned by the renderer's phase handler), then
@@ -18,7 +18,7 @@ mod prelude;
 mod remote;
 mod scene_mode;
 
-use awsm_web_shared::{logger, prelude::*, theme};
+use awsm_renderer_web_shared::{logger, prelude::*, theme};
 use dominator::stylesheet;
 use wasm_bindgen_futures::spawn_local;
 
@@ -33,7 +33,7 @@ pub fn main() {
         return;
     }
 
-    awsm_web_shared::util::window::set_boot_loader_message("Initializing renderer");
+    awsm_renderer_web_shared::util::window::set_boot_loader_message("Initializing renderer");
     logger::init_logger();
     Modal::init_panic_hook();
     theme::stylesheet::init();
@@ -76,7 +76,7 @@ pub fn main() {
                 spawn_local(clone!(ctx_ready => async move {
                     match engine::context::create_context(canvas).await {
                         Ok(_) => {
-                            awsm_web_shared::util::window::set_boot_loader_message("Compiling render pipelines…");
+                            awsm_renderer_web_shared::util::window::set_boot_loader_message("Compiling render pipelines…");
                             {
                                 let handle = engine::context::renderer_handle();
                                 let mut r = handle.lock().await;
@@ -88,7 +88,7 @@ pub fn main() {
                                 // wording identical across all three).
                                 let on_progress = |stats: awsm_renderer::LoadingStats| {
                                     if let Some(label) = stats.phase_label() {
-                                        awsm_web_shared::util::window::set_boot_loader_message(&label);
+                                        awsm_renderer_web_shared::util::window::set_boot_loader_message(&label);
                                     }
                                 };
                                 // Boot commit: opens the render gate (the editor
@@ -124,7 +124,7 @@ pub fn main() {
                             // Push view settings (MSAA / light-heatmap) to the renderer.
                             engine::settings_sync::start();
                             ctx_ready.set(true);
-                            awsm_web_shared::util::window::remove_boot_loader();
+                            awsm_renderer_web_shared::util::window::remove_boot_loader();
                             // Gesture-free project load: `?load=<base_url>` auto-loads
                             // a project on boot. The scriptable / MCP entry point — the
                             // gesture-free `LoadProjectFromUrl` otherwise has no trigger.
@@ -151,7 +151,7 @@ pub fn main() {
                             }
                         }
                         Err(err) => {
-                            awsm_web_shared::util::window::remove_boot_loader();
+                            awsm_renderer_web_shared::util::window::remove_boot_loader();
                             let msg = format!("Failed to initialize renderer: {err}");
                             // Agent observability: a boot failure happens BEFORE
                             // any MCP attach, so without this beacon the failure

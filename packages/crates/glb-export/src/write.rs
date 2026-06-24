@@ -54,7 +54,7 @@ struct Builder {
 impl Builder {
     fn build(&mut self, scene: &GlbScene) {
         self.root.asset = gltf_json::Asset {
-            generator: Some("awsm-glb-export".to_string()),
+            generator: Some("awsm-renderer-glb-export".to_string()),
             ..Default::default()
         };
 
@@ -1027,6 +1027,6 @@ mod tests {
         // serde_json tolerates the trailing-space chunk padding (JSON whitespace).
         let v: serde_json::Value = serde_json::from_slice(&out[20..20 + json_len]).unwrap();
         assert_eq!(v["asset"]["version"], "2.0", "glTF asset version");
-        assert_eq!(v["asset"]["generator"], "awsm-glb-export");
+        assert_eq!(v["asset"]["generator"], "awsm-renderer-glb-export");
     }
 }

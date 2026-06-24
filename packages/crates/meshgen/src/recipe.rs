@@ -3,7 +3,7 @@
 //! A modifier stack is a non-destructive recipe: a [`MeshBase`] generator plus an
 //! ordered list of [`Modifier`] deformers. It is tiny, infinitely re-editable
 //! project data; the baked `.mesh.bin` triangle buffer is a regenerable cache.
-//! Evaluation (recipe → `MeshData`) lives in `awsm-meshgen` (`modifiers::evaluate`),
+//! Evaluation (recipe → `MeshData`) lives in `awsm-renderer-meshgen` (`modifiers::evaluate`),
 //! which is pure-CPU and natively unit-tested.
 //!
 //! Stored on [`MeshDef::stack`](super::material::MeshDef::stack) — every
@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene::{CrossSectionDef, MeshRef, NodeId, PrimitiveShape, SweepUvMode, Trs};
+use awsm_renderer_scene::{CrossSectionDef, MeshRef, NodeId, PrimitiveShape, SweepUvMode, Trs};
 
 /// The full editable recipe: a base generator + an ordered deformer list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -26,7 +26,7 @@ pub struct ModifierStack {
 
 /// The geometry generator a stack starts from. The pure-data variants
 /// (`Primitive` / `Lathe` / `Superquadric`) are evaluated entirely in
-/// `awsm-meshgen`; `Sweep` (references a scene curve node) and `Captured`
+/// `awsm-renderer-meshgen`; `Sweep` (references a scene curve node) and `Captured`
 /// (references stored bytes) are resolved editor-side and fed to the deformers as
 /// a pre-baked base. (Phase 5 adds an `Sdf(SdfNode)` variant.)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

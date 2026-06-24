@@ -104,11 +104,11 @@ async fn run_render(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
-    use awsm_materials::pbr::PbrMaterial;
-    use awsm_materials::MaterialAlphaMode;
     use awsm_renderer::camera::CameraMatrices;
     use awsm_renderer::materials::Material;
     use awsm_renderer::AwsmRendererBuilder;
+    use awsm_renderer_materials::pbr::PbrMaterial;
+    use awsm_renderer_materials::MaterialAlphaMode;
     use glam::{Mat4, Vec3};
 
     let mut renderer = AwsmRendererBuilder::new(gpu_builder)
@@ -290,9 +290,9 @@ fn churn_tick(s: &mut ChurnState) {
 }
 
 fn spawn_body(s: &mut ChurnState) {
-    use awsm_meshgen::primitives::box_mesh;
     use awsm_renderer::raw_mesh::RawMeshData;
     use awsm_renderer::transforms::Transform;
+    use awsm_renderer_meshgen::primitives::box_mesh;
     use glam::Vec3;
 
     let id = s.next_id;

@@ -1,5 +1,5 @@
 [package]
-name = "awsm-glb-export"
+name = "awsm-renderer-glb-export"
 description = "Scene-complete glTF/GLB export IR + writer for awsm-renderer (no GPU deps)"
 edition.workspace = true
 version.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
-awsm-meshgen = { workspace = true }
+awsm-renderer-meshgen = { workspace = true }
 gltf-json = { workspace = true }
 glam = { workspace = true }
 serde_json = { workspace = true }
@@ -22,7 +22,7 @@ gltf = { workspace = true }
 base64 = { workspace = true }
 # MikkTSpace tangent generation (shared crate), baked into the exported/canonical
 # glb so the (browser) population path is a dumb upload. Pure CPU, wasm-friendly.
-awsm-tangents = { workspace = true }
+awsm-renderer-tangents = { workspace = true }
 
 [dev-dependencies]
 # Throwaway directories for the player-bundle write_to_dir integration test.

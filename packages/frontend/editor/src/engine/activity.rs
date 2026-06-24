@@ -11,7 +11,7 @@
 
 use std::cell::Cell;
 
-use awsm_web_shared::prelude::Mutable;
+use awsm_renderer_web_shared::prelude::Mutable;
 use wasm_bindgen_futures::spawn_local;
 
 /// How long an activity lingers after its work finishes. A fast op (cached

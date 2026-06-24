@@ -1,6 +1,6 @@
 //! Shader cache keys for the opaque material pass.
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::{
     dynamic_materials::{BucketEntry, ShadingBase},
@@ -41,7 +41,7 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// bucket leaves `false` (its kernel shades geometry only), so a mixed
     /// tile's skybox pixels aren't double-written / raced.
     pub owns_skybox: bool,
-    /// Opaque PBR feature mask ([`awsm_materials::pbr::PbrFeatures::bits`])
+    /// Opaque PBR feature mask ([`awsm_renderer_materials::pbr::PbrFeatures::bits`])
     /// the specialized PBR shader is compiled for. Two PBR
     /// pipelines with different feature masks are distinct entries, so a
     /// scene that uses no clearcoat compiles a clearcoat-free shader.
@@ -93,13 +93,13 @@ pub struct ShaderCacheKeyMaterialOpaque {
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct DynamicShaderInfo {
     /// Author-declared shared-module set (already transitively resolved via
-    /// [`awsm_materials::ShaderIncludes::resolve`]) for this dynamic
+    /// [`awsm_renderer_materials::ShaderIncludes::resolve`]) for this dynamic
     /// material. The Custom-base shading host gates its optional modules
     /// (BRDF / apply_lighting / material_color_calc) on this instead of the
     /// blanket `ShaderIncludes::all()`, so a material that declares less
     /// compiles a leaner shader. Defaults to the resolved `all()` set when
     /// the author hasn't narrowed it.
-    pub shader_includes: awsm_materials::ShaderIncludes,
+    pub shader_includes: awsm_renderer_materials::ShaderIncludes,
     /// The auto-generated `struct MaterialData` declaration (output
     /// of `dynamic_layout::generate_wgsl_struct`).
     pub struct_decl: String,

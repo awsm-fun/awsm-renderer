@@ -62,7 +62,7 @@ impl Default for SpriteDef {
 
 /// Grid-uniform sprite-sheet flipbook configuration attached to a
 /// [`SpriteDef`]. Runtime semantics match
-/// `awsm_materials::flipbook::FlipBookMaterial`.
+/// `awsm_renderer_materials::flipbook::FlipBookMaterial`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Copy)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -92,7 +92,7 @@ pub struct SpriteFlipBookDef {
 }
 
 /// Playback mode for a [`SpriteFlipBookDef`]. Mirrors
-/// `awsm_materials::flipbook::FlipBookMode`.
+/// `awsm_renderer_materials::flipbook::FlipBookMode`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default, Copy)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

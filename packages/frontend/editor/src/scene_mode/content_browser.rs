@@ -9,7 +9,7 @@
 //!
 //! The Asset Inspector right-rail (selecting a card) lives in `inspector.rs`.
 
-use awsm_editor_protocol::{
+use awsm_renderer_editor_protocol::{
     AssetSource, MaterialAlphaMode, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef,
 };
 
@@ -135,7 +135,7 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
             .on_click(|| {
                 // "+ Material" authors a custom WGSL material in the Studio.
                 dispatch(EditorCommand::AddCustomMaterial {
-                    id: awsm_editor_protocol::AssetId::new(),
+                    id: awsm_renderer_editor_protocol::AssetId::new(),
                 });
                 dispatch(EditorCommand::SwitchMode { mode: EditorMode::Material });
             }).render())
@@ -145,7 +145,7 @@ fn toolbar(cat: Mutable<Cat>, query: Mutable<String>) -> Dom {
                     let close = close.clone();
                     MenuItem::new(label).icon("texture").on_click(move || {
                         dispatch(EditorCommand::AddTextureAsset {
-                            id: awsm_editor_protocol::AssetId::new(),
+                            id: awsm_renderer_editor_protocol::AssetId::new(),
                             proc: kind,
                         });
                         (close.borrow_mut())();

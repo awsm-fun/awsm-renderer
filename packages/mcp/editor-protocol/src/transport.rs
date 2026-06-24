@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_scene::AssetId;
+use awsm_renderer_scene::AssetId;
 
 use crate::{EditorCommand, EditorMode, EditorQuery, QueryResult};
 
@@ -141,7 +141,7 @@ mod wire_roundtrip_tests {
     //! envelope + the simple high-traffic verbs against rename drift.
 
     use super::*;
-    use awsm_scene::{MaterialShading, NodeId};
+    use awsm_renderer_scene::{MaterialShading, NodeId};
 
     /// ser → de → ser must be byte-stable, and the round-tripped value must
     /// re-serialize to the SAME JSON (catches asymmetric/lossy serde + a
@@ -284,10 +284,10 @@ mod wire_roundtrip_tests {
                 "add_track",
                 EditorCommand::AddTrack {
                     clip: AssetId::new(),
-                    target: awsm_scene::animation::TrackTarget::TextureTransform {
+                    target: awsm_renderer_scene::animation::TrackTarget::TextureTransform {
                         node: NodeId::new(),
-                        slot: awsm_scene::animation::TexSlot::BaseColor,
-                        prop: awsm_scene::animation::TexTransformProp::Offset,
+                        slot: awsm_renderer_scene::animation::TexSlot::BaseColor,
+                        prop: awsm_renderer_scene::animation::TexTransformProp::Offset,
                     },
                 },
             ),
@@ -299,15 +299,15 @@ mod wire_roundtrip_tests {
                     burst_count: None,
                     max_alive: Some(512),
                     one_shot: Some(false),
-                    space: Some(awsm_scene::particle::EmitterSpaceDef::World),
-                    shape: Some(awsm_scene::particle::SpawnShapeDef::Cone {
+                    space: Some(awsm_renderer_scene::particle::EmitterSpaceDef::World),
+                    shape: Some(awsm_renderer_scene::particle::SpawnShapeDef::Cone {
                         angle_radians: 0.5,
                         direction: [0.0, 1.0, 0.0],
                     }),
                     initial_speed: Some([1.0, 3.0]),
                     lifetime: None,
                     size: None,
-                    forces: Some(vec![awsm_scene::particle::ForceDef::Gravity {
+                    forces: Some(vec![awsm_renderer_scene::particle::ForceDef::Gravity {
                         acceleration: [0.0, -9.8, 0.0],
                     }]),
                     color_over_life: None,
@@ -325,7 +325,7 @@ mod wire_roundtrip_tests {
                     scale: Some([2.0, 2.0]),
                     rotation: Some(0.5),
                     flow: Some([0.4, 0.0]),
-                    wrap_u: Some(awsm_scene::primitive::TextureWrap::MirroredRepeat),
+                    wrap_u: Some(awsm_renderer_scene::primitive::TextureWrap::MirroredRepeat),
                     wrap_v: None,
                     uv_set: Some(1),
                 },
@@ -359,7 +359,7 @@ mod wire_roundtrip_tests {
                 EditorCommand::SetTrackSampler {
                     clip: AssetId::new(),
                     track: 0,
-                    sampler: awsm_scene::animation::SamplerKind::Cubic,
+                    sampler: awsm_renderer_scene::animation::SamplerKind::Cubic,
                 },
             ),
             (

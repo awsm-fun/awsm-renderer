@@ -119,7 +119,7 @@ fn create_buffer(
 mod tests {
     use super::*;
     use crate::dynamic_materials::{first_party_bucket_entries, BucketEntry, ShadingBase};
-    use awsm_materials::MaterialShaderId;
+    use awsm_renderer_materials::MaterialShaderId;
 
     fn u32s(bytes: &[u8]) -> Vec<u32> {
         bytes

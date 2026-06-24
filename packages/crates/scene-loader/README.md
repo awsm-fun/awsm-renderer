@@ -1,10 +1,10 @@
-# awsm-scene-loader
+# awsm-renderer-scene-loader
 
-Loads an `awsm-scene` runtime bundle (`scene.toml` + `assets/`) into the
+Loads an `awsm-renderer-scene` runtime bundle (`scene.toml` + `assets/`) into the
 renderer. The parallel to `awsm-renderer-gltf`'s `populate_gltf`: that loads
 *foreign* glTF, this loads *our* format. They share the same renderer core — glb
 meshes in a bundle go through `populate_gltf`'s machinery, primitives regenerate
-via `awsm-meshgen`, and our materials / clips bind on top.
+via `awsm-renderer-meshgen`, and our materials / clips bind on top.
 
 ## What's here
 
@@ -42,6 +42,6 @@ clock (a player's `update_animations`, or the editor round-trip's playhead pin).
 
 ## Companion crates
 
-- `awsm-scene` — the runtime schema this loads.
+- `awsm-renderer-scene` — the runtime schema this loads.
 - `awsm-renderer` / `awsm-renderer-gltf` — the renderer core and the shared glTF
   upload path it reuses.

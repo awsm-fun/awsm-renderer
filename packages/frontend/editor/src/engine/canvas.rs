@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use awsm_renderer::picker::PickResult;
-use awsm_web_shared::prelude::*;
+use awsm_renderer_web_shared::prelude::*;
 use gloo_timers::future::TimeoutFuture;
 use wasm_bindgen_futures::spawn_local;
 

@@ -1,5 +1,5 @@
 [package]
-name = "awsm-materials"
+name = "awsm-renderer-materials"
 description = "Pluggable material shaders behind the MaterialShader trait + Cargo features"
 edition.workspace = true
 version.workspace = true

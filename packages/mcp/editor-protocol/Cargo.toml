@@ -1,6 +1,6 @@
 [package]
-name = "awsm-editor-protocol"
-description = "Internal editor↔MCP wire types (EditorCommand/EditorQuery + the WebSocket transport envelope). Shared only by the awsm-editor frontend and the awsm-scene-mcp binary — not a public library; lives under packages/mcp/ alongside its server."
+name = "awsm-renderer-editor-protocol"
+description = "Internal editor↔MCP wire types (EditorCommand/EditorQuery + the WebSocket transport envelope). Shared only by the awsm-renderer-editor frontend and the awsm-renderer-scene-mcp binary — not a public library; lives under packages/mcp/ alongside its server."
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -11,9 +11,9 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-awsm-scene = { workspace = true }
+awsm-renderer-scene = { workspace = true }
 # Recipe types (ModifierStack/Modifier/…) the commands carry — meshgen owns them.
-awsm-meshgen = { workspace = true, features = ["recipes"] }
+awsm-renderer-meshgen = { workspace = true, features = ["recipes"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # Decode `create_texture` payloads (base64 / `data:` URI) — pure, host-testable.
@@ -23,8 +23,8 @@ schemars = { version = "1", optional = true }
 
 [features]
 default = []
-# Derive JSON Schemas (chains awsm-scene's + meshgen's recipe schemas). MCP server.
-schemars = ["dep:schemars", "awsm-scene/schemars", "awsm-meshgen/schemars"]
+# Derive JSON Schemas (chains awsm-renderer-scene's + meshgen's recipe schemas). MCP server.
+schemars = ["dep:schemars", "awsm-renderer-scene/schemars", "awsm-renderer-meshgen/schemars"]
 
 [dev-dependencies]
 # Authoring round-trip tests (EditorProject + the .mesh.bin bitcode side file).

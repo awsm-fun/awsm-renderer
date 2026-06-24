@@ -1,5 +1,5 @@
 [package]
-name = "awsm-debugging"
+name = "awsm-renderer-debugging"
 publish = false  # internal debugging binaries, not released to crates.io
 description = "Awsm Debugging"
 edition.workspace = true

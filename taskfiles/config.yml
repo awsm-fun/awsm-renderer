@@ -55,5 +55,5 @@ vars:
   # model-tests.awsm.fun) are attached to these projects in the Cloudflare
   # dashboard; the deploy tasks only push builds to the projects.
   CLOUDFLARE_PAGES_PROJECT_EDITOR: "awsm-scene-editor"
-  CLOUDFLARE_PAGES_PROJECT_MODEL_TESTS: "awsm-model-tests"
+  CLOUDFLARE_PAGES_PROJECT_MODEL_TESTS: "awsm-renderer-model-tests"
   CLOUDFLARE_PAGES_BRANCH: "main"

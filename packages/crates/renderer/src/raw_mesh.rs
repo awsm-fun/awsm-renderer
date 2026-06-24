@@ -47,8 +47,8 @@ use crate::{
     AwsmRenderer,
 };
 
-/// Plain-data input for `AwsmRenderer::add_raw_mesh`. Mirrors `awsm_meshgen::MeshData`
-/// but lives here so the renderer crate doesn't depend on `awsm-meshgen`.
+/// Plain-data input for `AwsmRenderer::add_raw_mesh`. Mirrors `awsm_renderer_meshgen::MeshData`
+/// but lives here so the renderer crate doesn't depend on `awsm-renderer-meshgen`.
 #[derive(Debug, Clone, Default)]
 pub struct RawMeshData {
     pub positions: Vec<[f32; 3]>,
@@ -258,7 +258,7 @@ pub(crate) fn material_wants_tangents(mat: &Material) -> bool {
     }
 }
 
-// (MikkTSpace tangent generation moved to the shared `awsm-tangents` crate.)
+// (MikkTSpace tangent generation moved to the shared `awsm-renderer-tangents` crate.)
 
 /// Per-mesh options for [`AwsmRenderer::add_mesh`] beyond the geometry / material /
 /// transform — the instance flags `Mesh::new` takes.

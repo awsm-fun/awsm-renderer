@@ -24,7 +24,7 @@
 //! selects the storage-array vs uniform-with-dynamic-offset meta binding —
 //! matching the plain shadow pipeline's two layouts.
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::{
     dynamic_materials::ShadingBase,

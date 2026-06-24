@@ -214,15 +214,15 @@ pub fn render_worker_start(canvas: web_sys::OffscreenCanvas) -> Result<(), JsVal
 /// a procedural box, and start the rAF loop. Returns `Ok` once the
 /// loop is armed; the closure keeps itself alive via `forget`.
 fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue> {
-    use awsm_materials::pbr::PbrMaterial;
-    use awsm_materials::MaterialAlphaMode;
-    use awsm_meshgen::primitives::box_mesh;
     use awsm_renderer::camera::CameraMatrices;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
     use awsm_renderer::transforms::Transform;
     use awsm_renderer::AwsmRendererBuilder;
     use awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder;
+    use awsm_renderer_materials::pbr::PbrMaterial;
+    use awsm_renderer_materials::MaterialAlphaMode;
+    use awsm_renderer_meshgen::primitives::box_mesh;
     use glam::{Mat4, Vec3};
 
     let gpu = awsm_renderer::web_global::navigator_gpu()

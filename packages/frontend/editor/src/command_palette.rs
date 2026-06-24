@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use awsm_editor_protocol::{LightKind, PrimitiveShape};
+use awsm_renderer_editor_protocol::{LightKind, PrimitiveShape};
 
 use crate::controller::animation::StepKind;
 use crate::controller::InsertSpec;
@@ -180,7 +180,7 @@ fn dispatch(cmd: EditorCommand) {
 fn insert(spec: InsertSpec) -> Rc<dyn Fn()> {
     Rc::new(move || {
         dispatch(EditorCommand::Insert {
-            id: awsm_editor_protocol::NodeId::new(),
+            id: awsm_renderer_editor_protocol::NodeId::new(),
             spec: spec.clone(),
             parent: None,
         })
@@ -330,7 +330,7 @@ fn commands() -> Vec<Cmd> {
         "material",
         Rc::new(|| {
             dispatch(EditorCommand::AddCustomMaterial {
-                id: awsm_editor_protocol::AssetId::new(),
+                id: awsm_renderer_editor_protocol::AssetId::new(),
             });
             dispatch(EditorCommand::SwitchMode {
                 mode: EditorMode::Material,

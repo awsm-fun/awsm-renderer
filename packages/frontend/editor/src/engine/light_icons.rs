@@ -22,13 +22,13 @@
 
 use std::cell::RefCell;
 
-use awsm_meshgen::{cone_mesh, cylinder_mesh, sphere_mesh, MeshData};
 use awsm_renderer::camera::CameraMatrices;
 use awsm_renderer::materials::{unlit::UnlitMaterial, Material, MaterialAlphaMode, MaterialKey};
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::AwsmRenderer;
+use awsm_renderer_meshgen::{cone_mesh, cylinder_mesh, sphere_mesh, MeshData};
 use glam::{Quat, Vec3};
 
 use crate::engine::bridge::bridge;

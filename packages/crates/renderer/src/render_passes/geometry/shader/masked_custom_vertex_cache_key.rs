@@ -14,7 +14,7 @@
 //! uniform-meta shape; instanced combos fall back to the plain custom-vertex /
 //! masked / solid pipelines per the render-pass precedence.
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::{
     dynamic_materials::ShadingBase,

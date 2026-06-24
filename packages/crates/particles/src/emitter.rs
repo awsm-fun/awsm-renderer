@@ -1,6 +1,6 @@
 //! Emitter configuration: knobs for a single particle source.
 
-use awsm_curves::{Curve1, LinearCurve1};
+use awsm_renderer_curves::{Curve1, LinearCurve1};
 
 use crate::spawn::{Force, SpawnShape};
 

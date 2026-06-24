@@ -19,14 +19,14 @@
 
 use std::sync::Arc;
 
-use awsm_meshgen::MeshData;
 use awsm_renderer::meshes::buffer_info::MeshBufferGeometryMorphInfo;
 use awsm_renderer::raw_mesh::{RawMeshData, RawMorph, RawSkin};
 use awsm_renderer::transforms::{Transform, TransformKey};
+use awsm_renderer_meshgen::MeshData;
 // Shared with the runtime-bundle loader (`populate_awsm_scene`) so a light lowers
 // identically on the editor's live render and the player — the round-trip premise.
-use awsm_scene_loader::camera::camera_params_from_config;
-use awsm_scene_loader::light::{light_from_config, light_shadow_params_from_config};
+use awsm_renderer_scene_loader::camera::camera_params_from_config;
+use awsm_renderer_scene_loader::light::{light_from_config, light_shadow_params_from_config};
 use futures_signals::signal::SignalExt;
 use futures_signals::signal_vec::{SignalVecExt, VecDiff};
 use glam::{Mat4, Quat, Vec3, Vec4};
@@ -619,10 +619,10 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
 /// unit-tested directly — the regression guard for the §11 "bound texture renders
 /// flat" silent failure.
 fn merge_slot_texture(
-    inline_tex: Option<awsm_editor_protocol::TextureRef>,
-    override_tex: Option<awsm_editor_protocol::TextureRef>,
-    variant_default: Option<awsm_editor_protocol::TextureRef>,
-) -> Option<awsm_editor_protocol::TextureRef> {
+    inline_tex: Option<awsm_renderer_editor_protocol::TextureRef>,
+    override_tex: Option<awsm_renderer_editor_protocol::TextureRef>,
+    variant_default: Option<awsm_renderer_editor_protocol::TextureRef>,
+) -> Option<awsm_renderer_editor_protocol::TextureRef> {
     inline_tex.or(override_tex).or(variant_default)
 }
 
@@ -632,10 +632,12 @@ fn merge_slot_texture(
 /// roughness / emissive) into a final `MaterialDef`. Returns `None` for a dynamic
 /// material or an unknown id (callers then try the dynamic path / inline).
 fn builtin_merged(
-    inst: &awsm_editor_protocol::dynamic_material::MaterialInstance,
-) -> Option<awsm_editor_protocol::MaterialDef> {
-    use awsm_editor_protocol::material::{MaterialAlphaMode, MaterialShading, PbrExtensions};
-    use awsm_editor_protocol::TextureRef;
+    inst: &awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
+) -> Option<awsm_renderer_editor_protocol::MaterialDef> {
+    use awsm_renderer_editor_protocol::material::{
+        MaterialAlphaMode, MaterialShading, PbrExtensions,
+    };
+    use awsm_renderer_editor_protocol::TextureRef;
     let inline = &inst.inline;
     let ctrl = crate::controller::controller();
     let mat =
@@ -713,7 +715,7 @@ fn builtin_merged(
         (v, _) => v,
     };
 
-    Some(awsm_editor_protocol::MaterialDef {
+    Some(awsm_renderer_editor_protocol::MaterialDef {
         base_color: inline.base_color,
         metallic: inline.metallic,
         roughness: inline.roughness,
@@ -776,7 +778,7 @@ fn builtin_merged(
 /// silently ignored.
 fn resolve_assigned_material(
     r: &mut awsm_renderer::AwsmRenderer,
-    material: Option<&awsm_editor_protocol::dynamic_material::MaterialInstance>,
+    material: Option<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
     vertex_color_set: Option<u32>,
 ) -> awsm_renderer::materials::MaterialKey {
     match material {
@@ -799,11 +801,11 @@ enum MeshMaterial {
     /// A user-assignable geometry node (captured mesh, sweep): resolve the
     /// optional assignment via [`resolve_assigned_material`] — magenta when
     /// unassigned, exactly like a primitive.
-    Assigned(Option<awsm_editor_protocol::dynamic_material::MaterialInstance>),
+    Assigned(Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>),
     /// Render this material def directly — no assignment concept. Used by
     /// instanced geometry, whose appearance is the flat default + per-instance
     /// colours, not a per-node material assignment.
-    Flat(awsm_editor_protocol::MaterialDef),
+    Flat(awsm_renderer_editor_protocol::MaterialDef),
 }
 
 /// The geometry COLOR set index a renderer mesh carries (glTF `COLOR_n`), or
@@ -833,7 +835,7 @@ fn mesh_vertex_color_set(
 
 /// Schema → runtime per-mesh shadow cast/receive flags.
 fn mesh_shadow_flags_from_config(
-    cfg: &awsm_editor_protocol::MeshShadowConfig,
+    cfg: &awsm_renderer_editor_protocol::MeshShadowConfig,
 ) -> awsm_renderer::shadows::MeshShadowFlags {
     awsm_renderer::shadows::MeshShadowFlags {
         cast: cfg.cast,
@@ -854,7 +856,7 @@ fn mesh_shadow_flags_from_config(
 /// skinned node, or a morph-only node with no skin), the node carries no skin, or a
 /// joint can't be resolved to its bone yet — callers then fall back to the
 /// template-reuse path.
-fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawMeshData> {
+fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Option<RawMeshData> {
     let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
         skin.source,
         skin.rig_node_index,
@@ -965,8 +967,8 @@ fn raw_mesh_from_rig(skin: &awsm_editor_protocol::SkinnedMeshRef) -> Option<RawM
 /// are each optional there).
 async fn materialize_skinned_mesh(
     entry: Arc<RendererNode>,
-    skin: awsm_editor_protocol::SkinnedMeshRef,
-    material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+    skin: awsm_renderer_editor_protocol::SkinnedMeshRef,
+    material: Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
     declare_only: bool,
 ) {
     let Some(raw) = raw_mesh_from_rig(&skin) else {
@@ -1041,8 +1043,8 @@ async fn materialize_skinned_mesh(
 /// `model_meshes`.
 async fn materialize_skinned_from_template(
     entry: Arc<RendererNode>,
-    skin: awsm_editor_protocol::SkinnedMeshRef,
-    material: Option<awsm_editor_protocol::dynamic_material::MaterialInstance>,
+    skin: awsm_renderer_editor_protocol::SkinnedMeshRef,
+    material: Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
     declare_only: bool,
 ) {
     // The populate skinned mesh is hidden by `hide_template_meshes` (now hides all
@@ -1138,7 +1140,7 @@ async fn materialize_skinned_from_template(
 
 /// Authored polyline (`NodeKind::Line`) → fat-line strip. The fat-line pipeline
 /// reads world-space positions, so the node transform is baked in CPU-side.
-async fn materialize_line(entry: Arc<RendererNode>, def: awsm_editor_protocol::LineDef) {
+async fn materialize_line(entry: Arc<RendererNode>, def: awsm_renderer_editor_protocol::LineDef) {
     if def.points.len() < 2 {
         return;
     }
@@ -1182,14 +1184,17 @@ async fn materialize_line(entry: Arc<RendererNode>, def: awsm_editor_protocol::L
 /// Curve viz (`NodeKind::Curve`) → a sampled Catmull-Rom polyline drawn as a
 /// magenta fat-line (the curve itself emits no game geometry; sweeps/instances
 /// consume it). World-space, parent transform baked in.
-async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_editor_protocol::CurveDef) {
+async fn materialize_curve_viz(
+    entry: Arc<RendererNode>,
+    def: awsm_renderer_editor_protocol::CurveDef,
+) {
     if def.control_points.len() < 2 {
         return;
     }
     let parent_tk = entry.transform_key;
     let entry2 = entry.clone();
     let line_key = with_renderer_mut(move |r| {
-        use awsm_curves::{CatmullRomCurve, Curve3};
+        use awsm_renderer_curves::{CatmullRomCurve, Curve3};
         let curve = CatmullRomCurve::new(
             def.control_points
                 .iter()
@@ -1238,11 +1243,11 @@ async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_editor_protoc
 /// variant is the follow-on); sprites don't cast/receive shadows.
 async fn materialize_sprite(
     entry: Arc<RendererNode>,
-    def: awsm_editor_protocol::SpriteDef,
+    def: awsm_renderer_editor_protocol::SpriteDef,
     declare_only: bool,
 ) {
-    use awsm_meshgen::sprite_quad;
     use awsm_renderer::meshes::mesh::BillboardMode;
+    use awsm_renderer_meshgen::sprite_quad;
 
     let mesh = sprite_quad(def.size[0], def.size[1]);
     let raw = RawMeshData {
@@ -1253,18 +1258,18 @@ async fn materialize_sprite(
         indices: mesh.indices,
         ..Default::default()
     };
-    let sprite_mat = awsm_editor_protocol::MaterialDef {
+    let sprite_mat = awsm_renderer_editor_protocol::MaterialDef {
         base_color: def.tint,
         metallic: 0.0,
         roughness: 1.0,
         emissive: [def.tint[0] * 1.8, def.tint[1] * 1.8, def.tint[2] * 1.8],
         double_sided: true,
-        ..awsm_editor_protocol::MaterialDef::default()
+        ..awsm_renderer_editor_protocol::MaterialDef::default()
     };
     let mode = match def.billboard {
-        awsm_editor_protocol::BillboardMode::None => BillboardMode::None,
-        awsm_editor_protocol::BillboardMode::YAxis => BillboardMode::YAxis,
-        awsm_editor_protocol::BillboardMode::Full => BillboardMode::Full,
+        awsm_renderer_editor_protocol::BillboardMode::None => BillboardMode::None,
+        awsm_renderer_editor_protocol::BillboardMode::YAxis => BillboardMode::YAxis,
+        awsm_renderer_editor_protocol::BillboardMode::Full => BillboardMode::Full,
     };
     let parent_tk = entry.transform_key;
 
@@ -1304,7 +1309,7 @@ async fn materialize_sprite(
 /// shape/transform change via the kind observer).
 async fn materialize_collider(
     entry: Arc<RendererNode>,
-    shape: awsm_editor_protocol::ColliderShape,
+    shape: awsm_renderer_editor_protocol::ColliderShape,
 ) {
     let parent_tk = entry.transform_key;
     let entry2 = entry.clone();
@@ -1335,7 +1340,10 @@ async fn materialize_collider(
 /// Projection decal (`NodeKind::Decal`) → inserts the renderer decal (inert
 /// until a texture is assigned) plus a unit-cube volume wireframe so the decal
 /// is placeable/visible in the editor (the projection volume).
-async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_editor_protocol::DecalConfig) {
+async fn materialize_decal(
+    entry: Arc<RendererNode>,
+    cfg: awsm_renderer_editor_protocol::DecalConfig,
+) {
     let parent_tk = entry.transform_key;
     let entry2 = entry.clone();
     let alpha = cfg.alpha;
@@ -1350,7 +1358,7 @@ async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_editor_protocol::
             Err(err) => tracing::warn!("insert_decal: {err:?}"),
         }
         let (positions, colors) = super::collider_wire::build(
-            &awsm_editor_protocol::ColliderShape::Box {
+            &awsm_renderer_editor_protocol::ColliderShape::Box {
                 half_extents: [0.5, 0.5, 0.5],
             },
             &world,
@@ -1366,7 +1374,7 @@ async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_editor_protocol::
 
 /// The single curve node referenced by a sweep/instances node, if it exists and
 /// is a `Curve`.
-fn lookup_curve_def(node_id: NodeId) -> Option<awsm_editor_protocol::CurveDef> {
+fn lookup_curve_def(node_id: NodeId) -> Option<awsm_renderer_editor_protocol::CurveDef> {
     let b = bridge();
     let entry = b.nodes.lock().unwrap().get(&node_id).cloned()?;
     match entry.node.kind.get_cloned() {
@@ -1431,11 +1439,11 @@ async fn upload_simple_mesh(
 /// `curve_node` (a Curve) and `source_node` (a Mesh) point at real nodes.
 async fn materialize_instances(
     entry: Arc<RendererNode>,
-    def: awsm_editor_protocol::InstancesAlongCurveDef,
+    def: awsm_renderer_editor_protocol::InstancesAlongCurveDef,
     declare_only: bool,
 ) {
-    use awsm_curves::{CatmullRomCurve, Curve3, FrameSequence};
     use awsm_renderer::instances::InstanceAttr;
+    use awsm_renderer_curves::{CatmullRomCurve, Curve3, FrameSequence};
 
     // Both refs are optional; a nil sentinel just means "not wired up yet" — the
     // node renders empty until the user picks a curve + a source mesh.
@@ -1522,7 +1530,7 @@ async fn materialize_instances(
     let mesh_key = upload_simple_mesh(
         entry,
         raw,
-        MeshMaterial::Flat(awsm_editor_protocol::MaterialDef::default()),
+        MeshMaterial::Flat(awsm_renderer_editor_protocol::MaterialDef::default()),
         declare_only,
     )
     .await;
@@ -1547,7 +1555,7 @@ async fn materialize_instances(
 /// instanced billboard quad, ticked each frame by the render loop.
 async fn materialize_particle(
     entry: Arc<RendererNode>,
-    def: awsm_editor_protocol::ParticleEmitterDef,
+    def: awsm_renderer_editor_protocol::ParticleEmitterDef,
     declare_only: bool,
 ) {
     let parent_tk = entry.transform_key;
@@ -1631,7 +1639,10 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
 /// kind observer re-fires on every `SetKind`, so editing the camera config
 /// re-inserts a slot that reflects the new config — keeping store and config in
 /// sync without a separate observer.
-async fn materialize_camera(entry: Arc<RendererNode>, cfg: awsm_editor_protocol::CameraConfig) {
+async fn materialize_camera(
+    entry: Arc<RendererNode>,
+    cfg: awsm_renderer_editor_protocol::CameraConfig,
+) {
     let params = camera_params_from_config(&cfg);
     let key = with_renderer_mut(move |r| r.cameras.insert(params)).await;
     *entry.camera_key.lock().unwrap() = Some(key);
@@ -1665,7 +1676,7 @@ pub(crate) async fn rematerialize_mesh_nodes() {
 #[cfg(test)]
 mod slot_texture_tests {
     use super::merge_slot_texture;
-    use awsm_editor_protocol::{AssetId, TextureRef};
+    use awsm_renderer_editor_protocol::{AssetId, TextureRef};
 
     // §11 regression guard: a per-mesh inline texture must ENABLE a slot the
     // shared variant lacks (the old code forced `None` here → flat render).

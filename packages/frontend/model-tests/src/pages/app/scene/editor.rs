@@ -4,7 +4,7 @@ use awsm_renderer::{render::RenderHooks, AwsmRenderer};
 use dominator_helpers::futures::AsyncLoader;
 use futures::StreamExt;
 
-use awsm_web_shared::viewport3d::{
+use awsm_renderer_web_shared::viewport3d::{
     grid::{pipelines::EditorPipelines, render::render_grid},
     transform_controller::{TransformController, TransformObject},
 };

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use awsm_renderer::render::RenderHooks;
-use awsm_web_shared::viewport3d::grid::{pipelines::EditorPipelines, render::render_grid};
+use awsm_renderer_web_shared::viewport3d::grid::{pipelines::EditorPipelines, render::render_grid};
 
 use crate::engine::context::{render_hooks_handle, renderer_handle};
 use crate::prelude::*;

@@ -1,7 +1,7 @@
 //! Editor-side reactive materialization for the serializable node descriptors.
 //!
 //! The *data* types (`InsertSpec`, `NodeSpec`, `NodeQuery`, `kind_tag`) live in
-//! [`awsm_editor_protocol`] and are re-exported here at their established path.
+//! [`awsm_renderer_editor_protocol`] and are re-exported here at their established path.
 //! What stays editor-side is the half the protocol crate can't express: turning
 //! a spec into — and capturing one from — the live reactive scene graph
 //! (`Node`), which carries `Mutable`/`MutableVec` fields and UI-only
@@ -9,12 +9,12 @@
 
 use std::sync::Arc;
 
-use awsm_web_shared::prelude::{Mutable, MutableVec};
+use awsm_renderer_web_shared::prelude::{Mutable, MutableVec};
 
 use crate::engine::scene::node::Node;
 use crate::engine::scene::types::AssetStatus;
 
-pub use awsm_editor_protocol::{InsertSpec, NodeQuery, NodeSpec};
+pub use awsm_renderer_editor_protocol::{InsertSpec, NodeQuery, NodeSpec};
 
 /// Build the reactive `Node` for an insert spec (fresh id).
 ///

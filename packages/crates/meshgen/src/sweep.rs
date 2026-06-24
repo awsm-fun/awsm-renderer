@@ -2,7 +2,7 @@
 
 use std::f32::consts::TAU;
 
-use awsm_curves::{Curve3, FrameSequence};
+use awsm_renderer_curves::{Curve3, FrameSequence};
 use glam::{Vec2, Vec3};
 
 use crate::mesh_data::MeshData;
@@ -167,7 +167,7 @@ fn cross_section_points(cs: &CrossSection) -> Vec<Vec2> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awsm_curves::CatmullRomCurve;
+    use awsm_renderer_curves::CatmullRomCurve;
 
     #[test]
     fn sweep_tube_has_expected_vertex_count() {

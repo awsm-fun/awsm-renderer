@@ -74,7 +74,7 @@ pub enum AssetSource {
     /// A runtime mesh — a procedural primitive (regenerated at load) or a baked
     /// geometry blob (`assets/<id>.mesh.bin`). The authoring `MeshDef` (modifier
     /// stack + per-vertex overrides) lowers to this at bake time and lives in
-    /// `awsm-editor-protocol`.
+    /// `awsm-renderer-editor-protocol`.
     Mesh(RuntimeMesh),
 }
 

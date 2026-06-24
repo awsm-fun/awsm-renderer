@@ -4,12 +4,12 @@
 //!
 //! Pure data — no rendering, DOM, async, or reactive deps — so it compiles for
 //! both the editor's wasm target and the native MCP server. It depends on
-//! [`awsm_scene`] (the lean runtime schema — reused for transforms, materials,
-//! lights, cameras, clips, the node hierarchy) and [`awsm_meshgen`]'s recipe
+//! [`awsm_renderer_scene`] (the lean runtime schema — reused for transforms, materials,
+//! lights, cameras, clips, the node hierarchy) and [`awsm_renderer_meshgen`]'s recipe
 //! types (the modifier stack the agent sends over the wire), and adds the
 //! authoring types the runtime crate deliberately omits:
 //! - [`MeshDef`] / [`VertexOverrides`] / [`CapturedSource`] — the editable
-//!   `Mesh = base + edits` (lowered to `awsm_scene::RuntimeMesh` at bake);
+//!   `Mesh = base + edits` (lowered to `awsm_renderer_scene::RuntimeMesh` at bake);
 //! - the authoring asset table ([`AssetSource`] carries `Mesh(MeshDef)`);
 //! - [`EditorProject`] — the on-disk authoring document + its library snapshots.
 //!
@@ -17,7 +17,7 @@
 //! `NodeSpec` into a live `Node`, applying a command to the controller) lives in
 //! the editor — this crate is the vocabulary, not the interpreter.
 
-// The umbrella re-export (`pub use awsm_scene::*`) intentionally has its runtime
+// The umbrella re-export (`pub use awsm_renderer_scene::*`) intentionally has its runtime
 // `AssetSource`/`AssetEntry`/`AssetTable` shadowed by this crate's authoring
 // versions (Rust resolves the explicit re-export over the glob). That shadowing
 // is the whole point — silence the advisory lint.
@@ -59,13 +59,13 @@ pub use transport::{EditorEvent, PngHandle, Request, Response, WsClientMsg, WsSe
 
 // Re-export the meshgen recipe types so editor + mcp callers that build/send a
 // modifier stack have a single import path alongside the commands that carry it.
-pub use awsm_meshgen::recipe::{
+pub use awsm_renderer_meshgen::recipe::{
     Axis, MeshBase, Modifier, ModifierStack, SdfNode, SdfPrimitive, SweepAlongCurveDef,
 };
 
 // Umbrella: re-export the runtime CORE schema so the editor has a single import
 // path for both authoring + CORE types. The authoring `AssetSource`/`AssetEntry`/
-// `AssetTable` re-exported above deliberately shadow awsm-scene's runtime ones
-// (glob re-exports yield to explicit ones), so `awsm_editor_protocol::AssetSource`
+// `AssetTable` re-exported above deliberately shadow awsm-renderer-scene's runtime ones
+// (glob re-exports yield to explicit ones), so `awsm_renderer_editor_protocol::AssetSource`
 // is the authoring table (carries `Mesh(MeshDef)`).
-pub use awsm_scene::*;
+pub use awsm_renderer_scene::*;

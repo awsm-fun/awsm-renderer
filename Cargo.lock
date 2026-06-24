@@ -186,16 +186,69 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-curves"
-version = "0.3.2"
+name = "awsm-renderer"
+version = "0.3.3"
+dependencies = [
+ "anyhow",
+ "askama",
+ "awsm-renderer-core",
+ "awsm-renderer-materials",
+ "awsm-renderer-scene",
+ "awsm-renderer-tangents",
+ "futures",
+ "glam 0.32.1",
+ "indexmap",
+ "naga",
+ "ordered-float",
+ "rstar",
+ "serde",
+ "serde-wasm-bindgen",
+ "slotmap",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "awsm-renderer-core"
+version = "0.3.3"
+dependencies = [
+ "anyhow",
+ "binpack2d",
+ "cfg-if",
+ "exr",
+ "futures",
+ "gloo-net",
+ "half",
+ "image",
+ "indexmap",
+ "js-sys",
+ "ktx2",
+ "ordered-float",
+ "serde",
+ "serde-wasm-bindgen",
+ "slotmap",
+ "thiserror 2.0.18",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "awsm-renderer-curves"
+version = "0.3.3"
 dependencies = [
  "glam 0.32.1",
  "serde",
 ]
 
 [[package]]
-name = "awsm-debugging"
-version = "0.3.2"
+name = "awsm-renderer-debugging"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -208,21 +261,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-editor"
-version = "0.3.2"
+name = "awsm-renderer-editor"
+version = "0.3.3"
 dependencies = [
  "anyhow",
- "awsm-curves",
- "awsm-editor-protocol",
- "awsm-glb-export",
- "awsm-materials",
- "awsm-meshgen",
- "awsm-particles",
  "awsm-renderer",
  "awsm-renderer-core",
+ "awsm-renderer-curves",
+ "awsm-renderer-editor-protocol",
+ "awsm-renderer-glb-export",
  "awsm-renderer-gltf",
- "awsm-scene-loader",
- "awsm-web-shared",
+ "awsm-renderer-materials",
+ "awsm-renderer-meshgen",
+ "awsm-renderer-particles",
+ "awsm-renderer-scene-loader",
+ "awsm-renderer-web-shared",
  "awsm_web 0.45.0",
  "base64 0.22.1",
  "bitcode",
@@ -254,11 +307,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-editor-protocol"
-version = "0.3.2"
+name = "awsm-renderer-editor-protocol"
+version = "0.3.3"
 dependencies = [
- "awsm-meshgen",
- "awsm-scene",
+ "awsm-renderer-meshgen",
+ "awsm-renderer-scene",
  "base64 0.22.1",
  "bitcode",
  "schemars",
@@ -268,19 +321,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-geometry"
-version = "0.3.2"
+name = "awsm-renderer-geometry"
+version = "0.3.3"
 dependencies = [
  "glam 0.32.1",
  "serde",
 ]
 
 [[package]]
-name = "awsm-glb-export"
-version = "0.3.2"
+name = "awsm-renderer-glb-export"
+version = "0.3.3"
 dependencies = [
- "awsm-meshgen",
- "awsm-tangents",
+ "awsm-renderer-meshgen",
+ "awsm-renderer-tangents",
  "base64 0.22.1",
  "glam 0.32.1",
  "gltf",
@@ -291,11 +344,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-gltf-convert"
-version = "0.3.2"
+name = "awsm-renderer-gltf"
+version = "0.3.3"
 dependencies = [
- "awsm-glb-export",
- "awsm-meshgen",
+ "anyhow",
+ "awsm-renderer",
+ "awsm-renderer-core",
+ "awsm-renderer-materials",
+ "awsm-renderer-tangents",
+ "bevy_mikktspace",
+ "futures",
+ "glam 0.32.1",
+ "gloo-net",
+ "gltf",
+ "indexmap",
+ "ordered-float",
+ "proptest",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_bytes",
+ "slotmap",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "awsm-renderer-gltf-convert"
+version = "0.3.3"
+dependencies = [
+ "awsm-renderer-glb-export",
+ "awsm-renderer-meshgen",
  "base64 0.22.1",
  "bevy_mikktspace",
  "glam 0.32.1",
@@ -305,8 +386,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-materials"
-version = "0.3.2"
+name = "awsm-renderer-materials"
+version = "0.3.3"
 dependencies = [
  "awsm-renderer-core",
  "thiserror 2.0.18",
@@ -314,12 +395,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-meshgen"
-version = "0.3.2"
+name = "awsm-renderer-meshgen"
+version = "0.3.3"
 dependencies = [
- "awsm-curves",
- "awsm-geometry",
- "awsm-scene",
+ "awsm-renderer-curves",
+ "awsm-renderer-geometry",
+ "awsm-renderer-scene",
  "fast-surface-nets",
  "glam 0.32.1",
  "ndshape",
@@ -328,14 +409,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-model-tests"
-version = "0.3.2"
+name = "awsm-renderer-model-tests"
+version = "0.3.3"
 dependencies = [
  "anyhow",
- "awsm-glb-export",
  "awsm-renderer",
+ "awsm-renderer-glb-export",
  "awsm-renderer-gltf",
- "awsm-web-shared",
+ "awsm-renderer-web-shared",
  "awsm_web 0.45.0",
  "cfg-if",
  "dominator",
@@ -362,16 +443,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-multithreaded-example"
-version = "0.3.2"
+name = "awsm-renderer-multithreaded-example"
+version = "0.3.3"
 dependencies = [
- "awsm-materials",
- "awsm-meshgen",
  "awsm-renderer",
  "awsm-renderer-core",
  "awsm-renderer-gltf",
- "awsm-scene",
- "awsm-scene-loader",
+ "awsm-renderer-materials",
+ "awsm-renderer-meshgen",
+ "awsm-renderer-scene",
+ "awsm-renderer-scene-loader",
  "glam 0.32.1",
  "gloo-net",
  "js-sys",
@@ -386,24 +467,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-particles"
-version = "0.3.2"
+name = "awsm-renderer-particles"
+version = "0.3.3"
 dependencies = [
- "awsm-curves",
- "awsm-geometry",
+ "awsm-renderer-curves",
+ "awsm-renderer-geometry",
  "glam 0.32.1",
  "serde",
 ]
 
 [[package]]
-name = "awsm-render-worker-example"
-version = "0.3.2"
+name = "awsm-renderer-render-worker-example"
+version = "0.3.3"
 dependencies = [
  "anyhow",
- "awsm-materials",
- "awsm-meshgen",
  "awsm-renderer",
  "awsm-renderer-core",
+ "awsm-renderer-materials",
+ "awsm-renderer-meshgen",
  "glam 0.32.1",
  "serde",
  "serde-wasm-bindgen",
@@ -416,89 +497,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-renderer"
-version = "0.3.2"
-dependencies = [
- "anyhow",
- "askama",
- "awsm-materials",
- "awsm-renderer-core",
- "awsm-scene",
- "awsm-tangents",
- "futures",
- "glam 0.32.1",
- "indexmap",
- "naga",
- "ordered-float",
- "rstar",
- "serde",
- "serde-wasm-bindgen",
- "slotmap",
- "strum",
- "thiserror 2.0.18",
- "tracing",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "awsm-renderer-core"
-version = "0.3.2"
-dependencies = [
- "anyhow",
- "binpack2d",
- "cfg-if",
- "exr",
- "futures",
- "gloo-net",
- "half",
- "image",
- "indexmap",
- "js-sys",
- "ktx2",
- "ordered-float",
- "serde",
- "serde-wasm-bindgen",
- "slotmap",
- "thiserror 2.0.18",
- "tracing",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "awsm-renderer-gltf"
-version = "0.3.2"
-dependencies = [
- "anyhow",
- "awsm-materials",
- "awsm-renderer",
- "awsm-renderer-core",
- "awsm-tangents",
- "bevy_mikktspace",
- "futures",
- "glam 0.32.1",
- "gloo-net",
- "gltf",
- "indexmap",
- "ordered-float",
- "proptest",
- "serde",
- "serde-wasm-bindgen",
- "serde_bytes",
- "slotmap",
- "strum",
- "thiserror 2.0.18",
- "tracing",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "awsm-scene"
-version = "0.3.2"
+name = "awsm-renderer-scene"
+version = "0.3.3"
 dependencies = [
  "bitcode",
  "glam 0.32.1",
@@ -511,30 +511,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-scene-loader"
-version = "0.3.2"
+name = "awsm-renderer-scene-loader"
+version = "0.3.3"
 dependencies = [
  "anyhow",
- "awsm-curves",
- "awsm-materials",
- "awsm-meshgen",
- "awsm-particles",
  "awsm-renderer",
  "awsm-renderer-core",
+ "awsm-renderer-curves",
  "awsm-renderer-gltf",
- "awsm-scene",
+ "awsm-renderer-materials",
+ "awsm-renderer-meshgen",
+ "awsm-renderer-particles",
+ "awsm-renderer-scene",
  "glam 0.32.1",
  "serde_json",
  "tracing",
 ]
 
 [[package]]
-name = "awsm-scene-mcp"
-version = "0.3.2"
+name = "awsm-renderer-scene-mcp"
+version = "0.3.3"
 dependencies = [
  "anyhow",
- "awsm-editor-protocol",
- "awsm-scene",
+ "awsm-renderer-editor-protocol",
+ "awsm-renderer-scene",
  "axum",
  "base64 0.22.1",
  "clap",
@@ -551,20 +551,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "awsm-tangents"
-version = "0.3.2"
+name = "awsm-renderer-tangents"
+version = "0.3.3"
 dependencies = [
  "bevy_mikktspace",
 ]
 
 [[package]]
-name = "awsm-web-shared"
-version = "0.3.2"
+name = "awsm-renderer-web-shared"
+version = "0.3.3"
 dependencies = [
  "anyhow",
- "awsm-meshgen",
  "awsm-renderer",
  "awsm-renderer-gltf",
+ "awsm-renderer-meshgen",
  "dominator",
  "futures",
  "futures-signals",

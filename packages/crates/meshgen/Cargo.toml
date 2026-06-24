@@ -1,5 +1,5 @@
 [package]
-name = "awsm-meshgen"
+name = "awsm-renderer-meshgen"
 description = "Pure CPU mesh generators (primitives + sweep + procedural textures)"
 edition.workspace = true
 version.workspace = true
@@ -10,11 +10,11 @@ repository.workspace = true
 
 [features]
 # Player-lean by default: `primitives` + `mesh_data` (glam-only) always compile,
-# so a plain `awsm-meshgen` dep IS the player build. Heavier capabilities opt in.
+# so a plain `awsm-renderer-meshgen` dep IS the player build. Heavier capabilities opt in.
 default = []
-serde = ["dep:serde", "awsm-curves?/serde", "awsm-geometry?/serde"]
+serde = ["dep:serde", "awsm-renderer-curves?/serde", "awsm-renderer-geometry?/serde"]
 # Recipe TYPES only (ModifierStack/Modifier/SdfNode/MeshBase/Axis/Sweep…) — pure
-# data the editor↔mcp protocol wires; enabled by awsm-editor-protocol. No heavy
+# data the editor↔mcp protocol wires; enabled by awsm-renderer-editor-protocol. No heavy
 # deps. (The recipe types derive serde unconditionally.)
 recipes = ["dep:serde"]
 # Recipe EXECUTION (modifiers / SDF mesher / sweep / edit / expr / stats /
@@ -22,21 +22,21 @@ recipes = ["dep:serde"]
 authoring = [
     "recipes",
     "serde",
-    "dep:awsm-curves",
-    "dep:awsm-geometry",
+    "dep:awsm-renderer-curves",
+    "dep:awsm-renderer-geometry",
     "dep:fast-surface-nets",
     "dep:ndshape",
 ]
-schemars = ["dep:schemars", "awsm-scene/schemars"]
+schemars = ["dep:schemars", "awsm-renderer-scene/schemars"]
 
 [dependencies]
-awsm-scene = { workspace = true }
+awsm-renderer-scene = { workspace = true }
 glam = { workspace = true }
 serde = { workspace = true, optional = true }
 schemars = { version = "1", optional = true }
 # Authoring-only (heavy) — pulled in by the `authoring` feature, never the player.
-awsm-curves = { workspace = true, optional = true }
-awsm-geometry = { workspace = true, optional = true }
+awsm-renderer-curves = { workspace = true, optional = true }
+awsm-renderer-geometry = { workspace = true, optional = true }
 # SDF → triangles: surface-nets mesher (pure Rust, wasm-friendly). Authoring-only.
 fast-surface-nets = { version = "0.2.1", optional = true }
 ndshape = { version = "0.3.0", optional = true }

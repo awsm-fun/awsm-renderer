@@ -1,8 +1,8 @@
 //! GLB export — lower the live editor scene (or one subtree) to a baked
-//! [`awsm_glb_export::GlbScene`] and serialize it to a `.glb`.
+//! [`awsm_renderer_glb_export::GlbScene`] and serialize it to a `.glb`.
 //!
 //! This is the standalone "get geometry out" path behind
-//! [`EditorQuery::ExportGlb`](awsm_editor_protocol::query::EditorQuery::ExportGlb)
+//! [`EditorQuery::ExportGlb`](awsm_renderer_editor_protocol::query::EditorQuery::ExportGlb)
 //! / the `export_scene_glb` + `export_node_glb` MCP tools. The whole-runtime
 //! player publish (Phase 6) reuses the same `GlbScene` IR + `write_glb`.
 //!
@@ -27,14 +27,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use awsm_editor_protocol::animation::{TrackTarget, TrackValue, TransformProp};
-use awsm_editor_protocol::dynamic_material::MaterialInstance;
-use awsm_editor_protocol::{
+use awsm_renderer_editor_protocol::animation::{TrackTarget, TrackValue, TransformProp};
+use awsm_renderer_editor_protocol::dynamic_material::MaterialInstance;
+use awsm_renderer_editor_protocol::{
     AssetId, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, LightConfig,
     MaterialAlphaMode, MaterialDef, MaterialShading, NodeId, NodeKind, SweepAlongCurveDef,
     SweepUvMode, TextureDef, TextureRef,
 };
-use awsm_glb_export::{
+use awsm_renderer_glb_export::{
     write_glb, AlphaMode, AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation, ExportCamera,
     ExportImage, ExportLight, ExportMaterial, ExportNode, GlbScene, ImageMime, MeshData,
     PbrMaterial, TexRef, Trs, UnlitMaterial,
@@ -89,9 +89,11 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
 /// `scene.toml` SkinnedMesh nodes reference it by `skin.source` → `assets/<source>.glb`.
 pub async fn bake_player_bundle(
     ctrl: &super::EditorController,
-) -> Result<Vec<awsm_editor_protocol::BundleFile>, String> {
-    use awsm_editor_protocol::{assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh};
-    use awsm_editor_protocol::{lower_mesh, project_to_scene};
+) -> Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String> {
+    use awsm_renderer_editor_protocol::{
+        assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh,
+    };
+    use awsm_renderer_editor_protocol::{lower_mesh, project_to_scene};
 
     let project = crate::controller::persistence::to_editor_project(ctrl);
     let mut scene = project_to_scene(&project);
@@ -166,7 +168,7 @@ pub async fn bake_player_bundle(
     for src in skinned_sources {
         if let Some(glb) = crate::engine::bridge::skinned_bake_cache::get_rig_glb(src) {
             files.push(BundleFile::asset(
-                awsm_editor_protocol::mesh_glb_filename(src),
+                awsm_renderer_editor_protocol::mesh_glb_filename(src),
                 glb,
             ));
         }
@@ -182,10 +184,10 @@ pub async fn bake_player_bundle(
 /// aren't in the asset table — so the bake must materialize them. Recurses the
 /// whole tree (operates on the baked `Scene`'s plain nodes, pre-serialization).
 fn rewrite_buffer_overrides(
-    nodes: &mut [awsm_editor_protocol::EditorNode],
-    files: &mut Vec<awsm_editor_protocol::BundleFile>,
+    nodes: &mut [awsm_renderer_editor_protocol::EditorNode],
+    files: &mut Vec<awsm_renderer_editor_protocol::BundleFile>,
 ) {
-    use awsm_editor_protocol::{BundleFile, NodeKind, ASSETS_DIR};
+    use awsm_renderer_editor_protocol::{BundleFile, NodeKind, ASSETS_DIR};
     for node in nodes {
         let material = match &mut node.kind {
             NodeKind::Mesh { material, .. } | NodeKind::SkinnedMesh { material, .. } => {
@@ -266,7 +268,7 @@ fn lower_clips(
     clips: &[std::sync::Arc<crate::controller::animation::CustomAnimation>],
     index_map: &HashMap<NodeId, usize>,
 ) -> Vec<ExportAnimation> {
-    use awsm_editor_protocol::animation::SamplerKind;
+    use awsm_renderer_editor_protocol::animation::SamplerKind;
     let mut out = Vec::new();
     for clip in clips {
         let mut channels = Vec::new();
@@ -359,7 +361,9 @@ pub async fn export_glb(scene: &Scene, node: Option<NodeId>) -> Result<Vec<u8>, 
 /// its source placement (edits to the mirror hierarchy don't retarget into
 /// the rig), and rig materials are the source defaults (the bundle path
 /// re-applies ours from scene.toml).
-fn collect_rig_scenes(roots: &[Arc<Node>]) -> (Vec<awsm_glb_export::GlbScene>, HashSet<AssetId>) {
+fn collect_rig_scenes(
+    roots: &[Arc<Node>],
+) -> (Vec<awsm_renderer_glb_export::GlbScene>, HashSet<AssetId>) {
     fn collect(node: &Node, out: &mut Vec<AssetId>, seen: &mut HashSet<AssetId>) {
         if let NodeKind::SkinnedMesh { skin, .. } = &node.kind.get_cloned() {
             if seen.insert(skin.source) {
@@ -385,7 +389,7 @@ fn collect_rig_scenes(roots: &[Arc<Node>]) -> (Vec<awsm_glb_export::GlbScene>, H
             );
             continue;
         };
-        match awsm_glb_export::reexport_clean(&bytes) {
+        match awsm_renderer_glb_export::reexport_clean(&bytes) {
             Some(rig) => {
                 rig_embedded.insert(src);
                 rig_scenes.push(rig);
@@ -405,8 +409,8 @@ fn collect_rig_scenes(roots: &[Arc<Node>]) -> (Vec<awsm_glb_export::GlbScene>, H
 /// node→skin bindings shift by the skins appended so far. Appending never
 /// shifts EXISTING node indices, so animation channels lowered against the
 /// scene part stay valid.
-fn append_rigs(glb: &mut GlbScene, rigs: Vec<awsm_glb_export::GlbScene>) {
-    use awsm_glb_export::ExportMaterial;
+fn append_rigs(glb: &mut GlbScene, rigs: Vec<awsm_renderer_glb_export::GlbScene>) {
+    use awsm_renderer_glb_export::ExportMaterial;
     fn count_nodes(nodes: &[ExportNode]) -> usize {
         nodes.iter().map(|n| 1 + count_nodes(&n.children)).sum()
     }
@@ -853,8 +857,8 @@ fn map_camera(cfg: &CameraConfig) -> ExportCamera {
 /// from the scene tree (mirrors the renderer-bridge `materialize_sweep`). Shared
 /// with `ConvertToEditableMesh` (which bakes a sweep into a captured mesh).
 pub(crate) fn sweep_mesh(scene: &Scene, def: &SweepAlongCurveDef) -> Option<MeshData> {
-    use awsm_curves::CatmullRomCurve;
-    use awsm_meshgen::{sweep_along_curve, CrossSection, SweepOpts, UvMode};
+    use awsm_renderer_curves::CatmullRomCurve;
+    use awsm_renderer_meshgen::{sweep_along_curve, CrossSection, SweepOpts, UvMode};
     use glam::Vec3;
 
     if def.curve_node.is_nil() {

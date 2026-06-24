@@ -3,7 +3,7 @@
 //! action dispatches an `EditorCommand::Insert` through the controller. Camera
 //! ops live in the Settings drawer (a Camera node is inserted from Insert).
 
-use awsm_editor_protocol::{LightKind, PrimitiveShape};
+use awsm_renderer_editor_protocol::{LightKind, PrimitiveShape};
 
 use crate::controller::InsertSpec;
 use crate::engine::scene::{EnvironmentConfig, IblConfig, SkyboxConfig};
@@ -14,7 +14,7 @@ fn insert(spec: InsertSpec) {
     spawn_local(async move {
         if let Err(err) = controller()
             .dispatch(EditorCommand::Insert {
-                id: awsm_editor_protocol::NodeId::new(),
+                id: awsm_renderer_editor_protocol::NodeId::new(),
                 spec,
                 parent: None,
             })
@@ -365,7 +365,7 @@ async fn load_hdr(
 ) -> Result<EnvironmentConfig, String> {
     use crate::engine::bridge::env_sync::stash_ktx;
     use crate::engine::scene::{AssetId, AssetSource};
-    use awsm_editor_protocol::AssetEntry;
+    use awsm_renderer_editor_protocol::AssetEntry;
 
     async fn stash(file: web_sys::File) -> Result<AssetId, String> {
         let bytes = read_file_bytes(&file).await?;

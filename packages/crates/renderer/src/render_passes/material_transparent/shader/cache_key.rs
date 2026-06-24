@@ -1,6 +1,6 @@
 //! Shader cache key for the transparent material pass.
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::{
     dynamic_materials::ShadingBase,
@@ -42,7 +42,7 @@ pub struct ShaderCacheKeyMaterialTransparent {
     /// already material-homogeneous — no uber fragment, per the
     /// specialize-only design). `Custom` for a dynamic author material.
     pub base: ShadingBase,
-    /// PBR feature mask ([`awsm_materials::pbr::PbrFeatures::bits`]) this
+    /// PBR feature mask ([`awsm_renderer_materials::pbr::PbrFeatures::bits`]) this
     /// transparent PBR pipeline is specialized for — drives the compile-
     /// time `{% if pbr_features.<x> %}` gating in the shared brdf /
     /// material_color_calc includes. Inert for non-PBR bases.

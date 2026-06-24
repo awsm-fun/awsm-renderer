@@ -17,7 +17,7 @@
 //!
 //! The renderer reads [`LoadedMaterialFolder`] (the file-system-resolved
 //! variant); both editors and any third-party scene player share this same
-//! loader. The renderer itself does NOT depend on `awsm-scene` — the
+//! loader. The renderer itself does NOT depend on `awsm-renderer-scene` — the
 //! consumer converts the loaded folder into
 //! `awsm_renderer::dynamic_materials::MaterialRegistration` before calling
 //! `AwsmRenderer::register_material`.

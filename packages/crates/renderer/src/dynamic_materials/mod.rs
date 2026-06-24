@@ -6,7 +6,7 @@
 //! - **First-party feature-set variant** `(ShadingBase, features)` — the
 //!   built-in PBR/Toon/Unlit/Flipbook shader templated (Askama, compile-time)
 //!   from its [`ShadingBase`] + feature mask. PBR fans out one bucket per
-//!   distinct [`awsm_materials::pbr::PbrFeatures`] set (allocated via
+//!   distinct [`awsm_renderer_materials::pbr::PbrFeatures`] set (allocated via
 //!   [`DynamicMaterials::resolve_first_party_variant_or_cap_err`]);
 //!   Toon/Unlit/Flipbook have no compile-gateable shading paths today, so
 //!   they stay single-bucket.

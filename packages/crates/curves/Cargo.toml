@@ -1,5 +1,5 @@
 [package]
-name = "awsm-curves"
+name = "awsm-renderer-curves"
 description = "Pure CPU curve math (3D paths + 1D parameter curves + curve-aware geometry helpers)"
 edition.workspace = true
 version.workspace = true

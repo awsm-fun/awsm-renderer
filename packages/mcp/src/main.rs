@@ -1,4 +1,4 @@
-//! `awsm-scene-mcp` — drives the awsm-renderer editor from an AI agent.
+//! `awsm-renderer-scene-mcp` — drives the awsm-renderer editor from an AI agent.
 //!
 //! Topology: an MCP client speaks rmcp `/mcp` to this server; the in-browser
 //! editor (browser wasm) dials *out* to the server's `/editor` WebSocket and
@@ -28,7 +28,7 @@ const DEFAULT_PORT: u16 = 9086;
 /// `?mcp=http://127.0.0.1:<port>` origin the editor points at.
 #[derive(Debug, Parser)]
 #[command(
-    name = "awsm-scene-mcp",
+    name = "awsm-renderer-scene-mcp",
     version,
     about = "Native MCP server for the awsm-renderer editor.",
     long_about = "Native MCP server for the awsm-renderer editor — a stateless bridge \
@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,awsm_scene_mcp=debug".into()),
+                .unwrap_or_else(|_| "info,awsm_renderer_scene_mcp=debug".into()),
         )
         .init();
 
@@ -61,7 +61,9 @@ async fn main() -> Result<()> {
     let link = EditorLink::shared(format!("http://127.0.0.1:{}", args.port));
 
     let http_addr = SocketAddr::from(([127, 0, 0, 1], args.port));
-    tracing::info!("awsm-scene-mcp: rmcp /mcp + editor /editor ws + /png on http://{http_addr}");
+    tracing::info!(
+        "awsm-renderer-scene-mcp: rmcp /mcp + editor /editor ws + /png on http://{http_addr}"
+    );
     http::serve(http_addr, link).await.context("http server")?;
     Ok(())
 }

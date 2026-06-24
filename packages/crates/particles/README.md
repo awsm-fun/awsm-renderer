@@ -1,4 +1,4 @@
-# awsm-particles
+# awsm-renderer-particles
 
 Pure-CPU particle simulator. No `awsm-renderer` dep.
 

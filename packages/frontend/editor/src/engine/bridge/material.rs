@@ -6,9 +6,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use awsm_editor_protocol::{
-    AssetSource, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef, TextureRef,
-};
 use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey, MaterialTexture};
@@ -17,6 +14,9 @@ use awsm_renderer::AwsmRenderer;
 use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_core::texture::texture_pool::TextureColorInfo;
+use awsm_renderer_editor_protocol::{
+    AssetSource, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef, TextureRef,
+};
 
 use crate::engine::scene::AssetId;
 
@@ -25,7 +25,7 @@ use crate::engine::scene::AssetId;
 // the player lower a material identically — the precondition for a meaningful
 // round-trip. Re-exported at the old paths so `material::material_to_renderer`
 // (and the thumbnail renderer's `bmat::material_to_renderer`) keep resolving.
-pub(crate) use awsm_scene_loader::material::{
+pub(crate) use awsm_renderer_scene_loader::material::{
     alpha_mode_of, material_to_pbr, material_to_renderer,
 };
 
@@ -92,8 +92,8 @@ pub(crate) async fn decode_rgba_from_bytes(
 /// PNG/JPEG, or a raw-RGBA descriptor) to RGBA8 + dims (§18 equirect upload).
 /// Mirrors the `CreateTexture` decode but with no caller-supplied dims/format.
 pub(crate) async fn decode_rgba_from_payload(data: &str) -> Result<(Vec<u8>, u32, u32), String> {
-    use awsm_editor_protocol::TexturePayload;
-    let payload = awsm_editor_protocol::decode_texture_payload(data, None, None, None)
+    use awsm_renderer_editor_protocol::TexturePayload;
+    let payload = awsm_renderer_editor_protocol::decode_texture_payload(data, None, None, None)
         .map_err(|e| e.to_string())?;
     match payload {
         TexturePayload::RawRgba8 {
@@ -175,10 +175,10 @@ pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), Str
 /// `TextureDef::Raster` asset entry.
 pub(crate) async fn create_texture(
     id: AssetId,
-    payload: awsm_editor_protocol::TexturePayload,
+    payload: awsm_renderer_editor_protocol::TexturePayload,
     linear: bool,
 ) -> Result<(), String> {
-    use awsm_editor_protocol::TexturePayload;
+    use awsm_renderer_editor_protocol::TexturePayload;
     // Decode WITHOUT holding the renderer lock (the encoded path is async).
     let (rgba, w, h) = match payload {
         TexturePayload::RawRgba8 {
@@ -506,9 +506,9 @@ fn resolve_texture(
 /// defaults to glTF's repeat + linear.
 fn sampler_for(
     r: &mut AwsmRenderer,
-    sampler: Option<awsm_editor_protocol::TextureSampler>,
+    sampler: Option<awsm_renderer_editor_protocol::TextureSampler>,
 ) -> Option<SamplerKey> {
-    use awsm_editor_protocol::{TextureFilter, TextureWrap};
+    use awsm_renderer_editor_protocol::{TextureFilter, TextureWrap};
     let s = sampler.unwrap_or_default();
     let addr = |w: TextureWrap| match w {
         TextureWrap::Repeat => AddressMode::Repeat,
@@ -537,7 +537,7 @@ fn sampler_for(
 
 /// Generate RGBA8 bytes for a procedural texture def (delegates to meshgen).
 pub(crate) fn procedural_rgba(p: &ProceduralTextureDef) -> (Vec<u8>, u32, u32) {
-    use awsm_meshgen::procedural_texture::{checker_rgba, gradient_rgba, noise_rgba};
+    use awsm_renderer_meshgen::procedural_texture::{checker_rgba, gradient_rgba, noise_rgba};
     match *p {
         ProceduralTextureDef::Checker {
             width,

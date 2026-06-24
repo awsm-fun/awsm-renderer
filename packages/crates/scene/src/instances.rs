@@ -35,5 +35,5 @@ impl Default for InstancesAlongCurveDef {
 }
 
 // `SweepAlongCurveDef` is an authoring *recipe* (a `MeshBase::Sweep` payload that
-// bakes to a blob) — it lives in `awsm-meshgen` alongside the sweep evaluator,
+// bakes to a blob) — it lives in `awsm-renderer-meshgen` alongside the sweep evaluator,
 // not in the runtime schema.

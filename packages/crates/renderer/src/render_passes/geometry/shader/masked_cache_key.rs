@@ -29,7 +29,7 @@
 //! draw path (so this key carries no instancing / meta-storage toggles);
 //! instanced masked meshes fall back to the plain (solid) pipeline.
 
-use awsm_materials::MaterialShaderId;
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::{
     dynamic_materials::ShadingBase, render_passes::shader_cache_key::ShaderCacheKeyRenderPass,

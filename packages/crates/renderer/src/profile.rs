@@ -19,7 +19,7 @@
 //! self-consistent bundle. `RendererProfile` is that bundle.
 //!
 //! Resolved through `?mobile=…` URL params via
-//! [`awsm_web_shared::perf::resolve_renderer_profile`](https://github.com/dakom/awsm-renderer/blob/main/crates/web-shared/src/perf.rs)
+//! [`awsm_renderer_web_shared::perf::resolve_renderer_profile`](https://github.com/dakom/awsm-renderer/blob/main/crates/web-shared/src/perf.rs)
 //! so the same code path serves the deployed-site override.
 
 use crate::{

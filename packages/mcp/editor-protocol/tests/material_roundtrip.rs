@@ -14,7 +14,7 @@
 //! channel surfaced by F3), serialize through both serde-JSON and
 //! bitcode, deserialize, and assert deep equality.
 
-use awsm_editor_protocol::{
+use awsm_renderer_editor_protocol::{
     AssetEntry, AssetId, AssetSource, AssetTable, EditorProject, EnvironmentConfig, MaterialDef,
     MaterialShading, SpecularExt, StoredMaterial,
 };

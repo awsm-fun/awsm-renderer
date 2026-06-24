@@ -44,15 +44,15 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// exponential z-slice math. Read from the cache key.
     pub froxel_slice_count: u32,
     /// Concatenated `wgsl_fragment()` of every enabled material — see
-    /// `awsm_materials::registry::build_materials_wgsl`.
+    /// `awsm_renderer_materials::registry::build_materials_wgsl`.
     pub materials_wgsl: String,
     /// Generated `const SHADER_ID_X: u32 = N;` lines — see
-    /// `awsm_materials::registry::build_shader_id_consts`.
+    /// `awsm_renderer_materials::registry::build_shader_id_consts`.
     pub shader_id_consts: String,
     /// PBR feature mask for the shared `brdf.wgsl` include's compile-time
     /// `{% if pbr_features.<x> %}` gating — the transparent material's exact
     /// feature-set (each transparent material compiles its own pipeline).
-    pub pbr_features: awsm_materials::pbr::PbrFeatures,
+    pub pbr_features: awsm_renderer_materials::pbr::PbrFeatures,
     /// Skinny-materials include gating (brdf / apply_lighting) — see the opaque
     /// compute template.
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
@@ -112,14 +112,16 @@ impl ShaderTemplateTransparentMaterialIncludes {
             shadows_enabled: true,
             use_froxel_lights: true,
             froxel_slice_count: cache_key.froxel_slice_count,
-            materials_wgsl: awsm_materials::registry::build_materials_wgsl_filtered(
+            materials_wgsl: awsm_renderer_materials::registry::build_materials_wgsl_filtered(
                 cache_key.base.canonical_shader_id(),
             ),
-            shader_id_consts: awsm_materials::registry::build_shader_id_consts(),
+            shader_id_consts: awsm_renderer_materials::registry::build_shader_id_consts(),
             // Per-material specialization: the shared brdf /
             // material_color_calc includes gate on exactly this transparent
             // material's feature-set (no uber all()).
-            pbr_features: awsm_materials::pbr::PbrFeatures::from_bits(cache_key.pbr_features),
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::from_bits(
+                cache_key.pbr_features,
+            ),
             // `for_custom` forces the Tier-B PBR-internal flags off — a custom
             // material can never enable brdf/apply_lighting/material_color_calc
             // on the transparent path either (Phase 3 item 2; parity with opaque).
