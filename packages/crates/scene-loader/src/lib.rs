@@ -1864,6 +1864,29 @@ async fn load_cluster_lod(
 
     let bounds_radius = awsm_renderer_lod_bake::bounding_sphere_radius(&cm.positions);
 
+    // Phase B GPU cut (B.2): hand the cluster pages to the GPU cut pass. No-op
+    // unless `virtual_geometry` built the pass; coexists with the per-instance
+    // discrete cut below (which the GPU per-cluster dispatch will eventually
+    // replace). The lod-bake `ROOT_PARENT_ERROR` (f32::MAX) rides through as a
+    // huge value, so roots always pass the cut's upper bound on-device.
+    let gpu_pages: Vec<awsm_renderer::cluster_lod::ClusterPage> = cm
+        .clusters
+        .iter()
+        .map(|c| awsm_renderer::cluster_lod::ClusterPage {
+            center: c.center,
+            radius: c.radius,
+            lod_error: c.lod_error,
+            parent_error: c.parent_error,
+            lod_bounds_center: c.lod_bounds_center,
+            lod_bounds_radius: c.lod_bounds_radius,
+            parent_bounds_center: c.parent_bounds_center,
+            parent_bounds_radius: c.parent_bounds_radius,
+            first_index: c.first_index,
+            index_count: c.index_count,
+        })
+        .collect();
+    renderer.upload_cluster_pages(&gpu_pages)?;
+
     // Cut thresholds = the DAG's distinct cluster errors, ascending. Each gives a
     // watertight uniform cut; rising threshold ⇒ coarser. We register the finest
     // cut as the base and the coarser cuts as hidden levels in the SAME

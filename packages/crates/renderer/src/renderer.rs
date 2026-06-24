@@ -2315,6 +2315,20 @@ impl AwsmRendererBuilder {
 // - `wait_for_pipelines_ready` is the test-only helper.
 
 impl AwsmRenderer {
+    /// Upload a cluster mesh's pages into the cluster-LOD cut pass (Phase B,
+    /// B.2). No-op unless `virtual_geometry` built the pass. Called once at mesh
+    /// load by the scene loader; (re)allocates the GPU buffers + rebuilds the cut
+    /// bind group. Disjoint sub-borrows of `self` (pass vs gpu vs layouts).
+    pub fn upload_cluster_pages(
+        &mut self,
+        pages: &[crate::cluster_lod::ClusterPage],
+    ) -> crate::error::Result<()> {
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.upload_pages(&self.gpu, &self.bind_group_layouts, pages)?;
+        }
+        Ok(())
+    }
+
     /// Submit a batch of pipeline groups for compile. Returns ids
     /// immediately in `Pending` state; transitions to `Ready` /
     /// `Failed` surface via [`Self::drain_pipeline_status_events`] or
