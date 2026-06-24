@@ -90,10 +90,10 @@ from data we still hold.
 - Restart/​re-pair mechanics (build a server crate → restart → re-pair): memories
   `mcp-improvements-loop-mechanics`, `mcp-direct-http-client`.
 
-Work on a dedicated branch `harden-memory` created off the current branch (which
-descends from the PR #138 merge, so it already has the multithread + custom-vertex
-work, and carries this plan doc). Commit per phase; don't push / open a PR unless
-asked.
+Do all the work on the **current branch `doc-aw-snap`** (created for this purpose;
+it descends from the PR #138 merge, so it already has the multithread +
+custom-vertex work and carries this plan doc). Do **not** create a new branch.
+Commit per phase; don't push / open a PR unless asked.
 
 ---
 
