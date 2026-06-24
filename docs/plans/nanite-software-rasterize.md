@@ -205,6 +205,28 @@ Page-based cluster residency, analogous to virtual texturing. Independent of the
 SW rasterizer; kept here because it is the other large, deferrable Nanite bet
 that LOD shipping does not require.
 
+> **Step 1 SHIPPED + verified on-device (nanite-streaming): static capped
+> residency.** Flag `cluster_streaming` (default-off, `?stream`). The loader
+> (`select_resident_clusters`, scene-loader) caps the cluster render mesh `M` to a
+> triangle budget — `M`'s exploded buffer (56 B/index) is the multi-million-tri
+> ceiling; cluster metadata is tiny. It keeps the coarsest clusters up to the
+> budget (hard cap), clamps each resident **leaf** `lod_error→0` for watertight
+> close-up, and remaps `first_index` into the compacted `M`. **No shader change** —
+> the per-cluster GPU cut/compaction/draw just see fewer pages + a smaller `M`.
+> - On-device (DamagedHelmet, budget temporarily lowered to 8 000 to force the
+>   cap): `13616 clusters (1006 resident), M = 8000 tris (CAPPED from 43140)`; the
+>   GPU cut then drew `610 tris over 1006 clusters` and the helmet rendered
+>   **watertight with full materials** at 60 fps. Budget passthrough (helmet under
+>   the default 1.0M budget) logs `13616 resident` and is byte-identical to `?vg`.
+>   Flag off ⇒ verbatim passthrough. 3 unit tests pin the cap/remap/leaf-clamp.
+> - **Residual gap (→ Step 2):** the cap is *static* (chosen at load); `M`'s detail
+>   is bounded by the budget regardless of camera, and seams can appear where the
+>   partial frontier level borders coarser-only regions. Positions aren't capped
+>   (smaller buffer than the exploded geometry). True per-frame paging below closes
+>   these.
+
+**Step 2 (next) — dynamic paging:**
+
 - GPU feedback buffer marks the cluster pages the LOD cut needs this frame.
 - CPU streams requested pages from disk/network into the GPU pools and evicts
   cold pages (LRU against a VRAM budget — ties into
