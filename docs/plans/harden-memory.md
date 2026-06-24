@@ -241,7 +241,7 @@ it's independent of B1.
 | P1c | (opt-in) oversized-allocation debug guard | editor | ✅ | Gated guard in `renderer-core methods.rs create_buffer` (the central GPU-buffer chokepoint): a single buffer > `OVERSIZED_ALLOC_BYTES` (512 MB) logs `awsm_renderer_core::oversized_alloc` + `debug_assert!`s at our call site instead of trapping in PartitionAlloc. Gated `debug_assertions`/`harden-diag`; clippy `--all-features` clean. |
 | P2 | `rebuild_gpu()` from CPU mirrors + GPUDevice.lost action | mt:dev | ☐ | |
 | P3 | Render-worker respawn + topology-in-shared-memory | mt:dev | ☐ | |
-| P4 | Asset-fetch-failure → clean Error, no hang | mt:dev | ☐ | |
+| P4 | Asset-fetch-failure → clean Error, no hang | mt:dev | ✅ | Live (`?demo=remote&model=nonexistent-bad-asset.glb`): a bad asset URL surfaces a clean `RenderEvent::Error` ("parse glb: …") **immediately** (t=0, no hang), `loading` clears, page stays responsive, `ready:false` (no false success). Existing `if let Err(err) = load_gltf(...)` wrapper already routes any fetch/parse failure to one Error event + `loading=false` — no code change needed; gate verified. |
 | Meta | No per-frame cost; release default unchanged | both | ☐ | |
 
 ## Done criteria
