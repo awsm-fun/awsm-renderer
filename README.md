@@ -182,12 +182,12 @@ Prebuilt `awsm-renderer-scene-mcp` binaries are published on GitHub Releases for
 
 ```bash
 # macOS / Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-renderer-scene-mcp-installer.sh | sh
 ```
 
 ```powershell
 # Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-renderer-scene-mcp-installer.ps1 | iex"
 ```
 
 From source (needs Rust): `cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-renderer-scene-mcp`, or `task mcp:install` from a local clone. Then run it — bare `awsm-renderer-scene-mcp` listens on `http://127.0.0.1:9086`.

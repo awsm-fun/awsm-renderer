@@ -68,22 +68,22 @@ Everything lives under `packages/`:
 * [awsm-renderer](../packages/crates/renderer): the renderer in all its glory
 * [awsm-renderer-core](../packages/crates/renderer-core): wraps the WebGPU API with very little opinion — just a nicer Rust API
 * [awsm-renderer-gltf](../packages/crates/renderer-gltf): glTF loading on top of the renderer
-* [awsm-scene](../packages/crates/scene): the lean canonical runtime scene schema (`scene.toml` + `assets/`; pure data, shared by the player + any runtime)
-* [awsm-scene-loader](../packages/crates/scene-loader): load an awsm-scene bundle into the renderer
-* [awsm-glb-export](../packages/crates/glb-export) / [awsm-gltf-convert](../packages/crates/gltf-convert): glTF/GLB export IR + the pure-data glTF → canonical-format normalizer
-* [awsm-materials](../packages/crates/materials), [awsm-meshgen](../packages/crates/meshgen), [awsm-curves](../packages/crates/curves), [awsm-geometry](../packages/crates/geometry), [awsm-particles](../packages/crates/particles), [awsm-tangents](../packages/crates/tangents): supporting libraries
+* [awsm-renderer-scene](../packages/crates/scene): the lean canonical runtime scene schema (`scene.toml` + `assets/`; pure data, shared by the player + any runtime)
+* [awsm-renderer-scene-loader](../packages/crates/scene-loader): load an awsm-renderer-scene bundle into the renderer
+* [awsm-renderer-glb-export](../packages/crates/glb-export) / [awsm-renderer-gltf-convert](../packages/crates/gltf-convert): glTF/GLB export IR + the pure-data glTF → canonical-format normalizer
+* [awsm-renderer-materials](../packages/crates/materials), [awsm-renderer-meshgen](../packages/crates/meshgen), [awsm-renderer-curves](../packages/crates/curves), [awsm-renderer-geometry](../packages/crates/geometry), [awsm-renderer-particles](../packages/crates/particles), [awsm-renderer-tangents](../packages/crates/tangents): supporting libraries
 
 See the README's "Library crates" section for the full breakdown + dependency graph.
 
 **Frontends** (`packages/frontend/`, WASM via Trunk)
 
-* [editor](../packages/frontend/editor): the unified scene / material / animation editor (`awsm-editor`). Absorbs what used to be the separate `scene-editor` + `material-editor` + `awsm-renderer-editor` gizmo/grid crate. Deployed to https://scene.awsm.fun.
+* [editor](../packages/frontend/editor): the unified scene / material / animation editor (`awsm-renderer-editor`). Absorbs what used to be the separate `scene-editor` + `material-editor` + `awsm-renderer-editor` gizmo/grid crate. Deployed to https://scene.awsm.fun.
 * [model-tests](../packages/frontend/model-tests): the glTF feature-test viewer. Deployed to https://model-tests.awsm.fun.
 * [web-shared](../packages/frontend/web-shared): shared UI / theme primitives + the viewport gizmo / grid / free-camera helpers
 
 **Native tooling**
 
-* [mcp](../packages/mcp): the `awsm-scene-mcp` that drives the editor from an AI agent (see below). Its [`editor-protocol/`](../packages/mcp/editor-protocol) sub-crate (`awsm-editor-protocol`) is the **internal** editor↔server wire vocabulary (`EditorCommand` / `EditorQuery` + the WebSocket transport types) shared only by the editor frontend and this binary — `publish = false`.
+* [mcp](../packages/mcp): the `awsm-renderer-scene-mcp` that drives the editor from an AI agent (see below). Its [`editor-protocol/`](../packages/mcp/editor-protocol) sub-crate (`awsm-renderer-editor-protocol`) is the **internal** editor↔server wire vocabulary (`EditorCommand` / `EditorQuery` + the WebSocket transport types) shared only by the editor frontend and this binary — `publish = false`.
 * [debugging](../packages/debugging): native debugging binaries
 
 **Other**

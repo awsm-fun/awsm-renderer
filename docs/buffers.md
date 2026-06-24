@@ -15,7 +15,7 @@ separate is the whole point.
    and save. It is **not mutable** — you cannot sculpt a byte-packed vertex
    buffer in place.
 
-2. **`MeshData`** (`awsm_meshgen::MeshData`) — plain geometry arrays:
+2. **`MeshData`** (`awsm_renderer_meshgen::MeshData`) — plain geometry arrays:
    `positions: Vec<[f32;3]>`, `normals`, `uvs`, `colors`, `indices`. This is the
    *mutable* form. Editing operates here — you can move a vertex, repaint a
    color, recompute normals.
@@ -173,7 +173,7 @@ tangents are expected to be generated. We generate them with MikkTSpace
 glb (below) **bakes** generated tangents so population is a dumb upload and the
 generation is covered by pure-data tests; editing regenerates them.
 
-## The convert pipeline (`awsm-gltf-convert`)
+## The convert pipeline (`awsm-renderer-gltf-convert`)
 
 There should be **one** way to load a mesh. Foreign glTF is normalized to our
 canonical form *before* any GPU work, by a pure-data converter (no browser, no
@@ -207,7 +207,7 @@ disk on save. The player populates the canonical glb directly.
 - `pack_mesh_buffers` — `packages/crates/renderer` (called by `add_raw_mesh*` and
   `renderer-gltf`'s vertex builders).
 - `populate_gltf` — `packages/crates/renderer-gltf`.
-- `convert` / `AWSM_format` — `packages/crates/awsm-gltf-convert`.
+- `convert` / `AWSM_format` — `packages/crates/awsm-renderer-gltf-convert`.
 - `MeshData` — `packages/crates/meshgen`.
 - Player load — `packages/crates/scene-loader` (`populate_awsm_scene`).
 - Editor import — `packages/frontend/editor/src/engine/bridge/gltf.rs`.

@@ -15,7 +15,7 @@ live in a shared crate the native server and the editor both depend on.
 ## Architecture
 
 ```
-agent (MCP client) ──HTTP /mcp──▶ awsm-scene-mcp ──WebSocket /editor──▶ editor (browser tab)
+agent (MCP client) ──HTTP /mcp──▶ awsm-renderer-scene-mcp ──WebSocket /editor──▶ editor (browser tab)
                                   (packages/mcp)      editor dials out    → EditorController
                                   • rmcp tool layer   id-tagged req/resp   • src/remote.rs
                                   • /editor ws + link  + push events        • calls controller directly
@@ -34,8 +34,8 @@ Three pieces:
 
 | Piece | Where | Role |
 |---|---|---|
-| `awsm-editor-protocol` | [`packages/mcp/editor-protocol`](../packages/mcp/editor-protocol) | The serializable wire vocabulary — `EditorCommand` / `EditorQuery` / `EditorSnapshot` / `QueryResult` + the `Request` / `Response` envelope and the `WsServerMsg` / `WsClientMsg` WebSocket frames. Compiles for both wasm and native. |
-| `awsm-scene-mcp` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the `/editor` WebSocket link + the `/png` side-channel. Per-tab isolation via pairing codes. `publish = false`. |
+| `awsm-renderer-editor-protocol` | [`packages/mcp/editor-protocol`](../packages/mcp/editor-protocol) | The serializable wire vocabulary — `EditorCommand` / `EditorQuery` / `EditorSnapshot` / `QueryResult` + the `Request` / `Response` envelope and the `WsServerMsg` / `WsClientMsg` WebSocket frames. Compiles for both wasm and native. |
+| `awsm-renderer-scene-mcp` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the `/editor` WebSocket link + the `/png` side-channel. Per-tab isolation via pairing codes. `publish = false`. |
 | editor remote module | [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs) | The WebSocket client: parse `?mcp=`/`?pair=`, dial `ws://<origin>/editor`, read `Request` frames → call `EditorController` → reply with `Response` frames; POST screenshots to `/png/<id>`. |
 
 All editor mutation flows through `EditorController` (the editor's single
@@ -59,7 +59,7 @@ sync, and undo/redo/coalescing all work as in the UI.
 
    (The single port lives in [`taskfiles/config.yml`](../taskfiles/config.yml):
    `PORT_MCP_HTTP_DEV`. Run the server alone with `task mcp:serve`, or the
-   installed binary with `awsm-scene-mcp`.)
+   installed binary with `awsm-renderer-scene-mcp`.)
 
 2. Attach the editor to the server, either way:
 
@@ -82,7 +82,7 @@ sync, and undo/redo/coalescing all work as in the UI.
    ```json
    {
      "mcpServers": {
-       "awsm-scene": { "type": "http", "url": "http://127.0.0.1:9086/mcp" }
+       "awsm-renderer-scene": { "type": "http", "url": "http://127.0.0.1:9086/mcp" }
      }
    }
    ```
@@ -368,7 +368,7 @@ The escape hatches reach **every** `EditorCommand` / `EditorQuery` variant. The
 authoritative inventory is the enums themselves:
 [`controller/command.rs`](../packages/frontend/editor/src/controller/command.rs)
 and [`controller/query.rs`](../packages/frontend/editor/src/controller/query.rs)
-(which re-export from `awsm-editor-protocol`).
+(which re-export from `awsm-renderer-editor-protocol`).
 
 ---
 
@@ -381,7 +381,7 @@ serialized as **JSON** text. A single writer on each side owns the socket so
 concurrent replies/events never interleave a half-written frame.
 
 ```rust
-// awsm-editor-protocol
+// awsm-renderer-editor-protocol
 pub enum Request {
     Dispatch(EditorCommand),       // mutate
     DispatchBatch(Vec<EditorCommand>), // atomic multi-command (one undo entry)

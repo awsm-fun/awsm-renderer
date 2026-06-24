@@ -130,7 +130,7 @@ the coordinates (the query returns indices only).
 - **Name/sig:** add `VertexPredicate::WithinAabb { min: [f32;3], max: [f32;3] }`
   (and consider `Indices { indices: Vec<u32> }` passthrough for composition).
 - **Backing:** add the arm in `state.rs:3212`'s `SelectVerticesWhere` match +
-  a `select_within_aabb` in `awsm_meshgen::edit`.
+  a `select_within_aabb` in `awsm_renderer_meshgen::edit`.
 - **Why P0:** region selection is the bread-and-butter of headless sculpting;
   the existing predicate set can't express an axis-aligned box.
 

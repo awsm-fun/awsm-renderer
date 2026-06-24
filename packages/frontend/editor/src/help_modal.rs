@@ -214,8 +214,8 @@ fn mcp_section() -> Dom {
 
         h("1 · Install the server"),
         p("Prebuilt binaries — no toolchain needed:"),
-        command("macOS / Linux", "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.sh | sh"),
-        command("Windows (PowerShell)", "powershell -ExecutionPolicy Bypass -c \"irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-scene-mcp-installer.ps1 | iex\""),
+        command("macOS / Linux", "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-renderer-scene-mcp-installer.sh | sh"),
+        command("Windows (PowerShell)", "powershell -ExecutionPolicy Bypass -c \"irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-renderer-scene-mcp-installer.ps1 | iex\""),
         command("From source (needs Rust)", "cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-renderer-scene-mcp"),
 
         h("2 · Run it in a terminal"),
