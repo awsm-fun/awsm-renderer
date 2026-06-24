@@ -219,8 +219,30 @@ Wired into `bake_player_bundle` section 4 (per-node toggle → per-source bake).
 Verified via MCP export: CesiumMan (skin) 4672→2335→1167→823 tris with
 `JOINTS_0`/`WEIGHTS_0` + `skins=1` at every level; MorphStressTest (2 prims, 8
 morph targets) 2412→1212→611→312 with all 8 targets and delta accessors matching
-each level's vertex count. **Bake (plan step 2) complete for all classes.
-Next:** A.3 (runtime per-instance level selection).
+each level's vertex count. **Bake (plan step 2) complete for all classes.**
+
+**Status — landed (A.3a, runtime flag + selection core).** Added the `lod`
+feature flag to `features.rs` (default off ⇒ byte-identical; gate-hygiene test)
+and a renderer `lod` module: `LodChain` / `LodLevel` / `LodRegistry`
+(per-base-`MeshKey` level chains) + the pure selection math —
+`projected_px_per_unit` and `select_level` (coarsest level whose projected
+screen-space error ≤ threshold; monotonic-error early-out; scale-aware). Six
+unit tests (close→base, far→coarsest, mid→middle, scale bias, registry
+round-trip). Inert until wired.
+
+**Runtime design (decided from a read of the pipeline).** The occlusion-instance
+buffer is **rebuilt on the CPU every frame** from the opaque snapshots; the
+cleanest selection point is there (Option A): per instance, look up its
+`LodChain`, compute projected error, and write the **selected level's**
+`mesh_meta_offset` into the `OcclusionInstance`. Compaction (`mesh_slot =
+mesh_meta_offset/stride`) then bumps the chosen level's draw slot and the
+geometry pass draws it — cull/compaction/geometry shaders **unchanged**, and it's
+allocation-neutral (the per-frame pack already runs). Level meshes are registered
+as ordinary `MeshKey`s but kept out of the renderable list (they only draw when
+selected). **Next (A.3b):** scene-loader loads each level glb as a hidden
+`MeshKey` + registers the chain (gated by `lod`). **A.3c:** the per-frame
+selection rewrite in `render.rs`. Skinned meshes draw on a separate path and get
+their own selection hook.
 
 **Critical files:**
 - Runtime selection: `render_passes/occlusion/shader/occlusion_wgsl/cull.wgsl`,

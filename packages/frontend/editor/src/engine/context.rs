@@ -209,6 +209,9 @@ fn editor_features() -> RendererFeatures {
         coverage_lod: false,
         // The canvas wires `.pick()` to pointer-down for node selection (M6).
         picking: true,
+        // LOD is a player-bundle delivery optimisation; the editor renders the
+        // editable scene at full detail.
+        lod: false,
         indirect_first_instance: FeatureToggle::Auto,
     }
 }

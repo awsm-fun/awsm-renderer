@@ -54,6 +54,7 @@ pub mod light_buckets;
 pub mod lights;
 pub mod load_phase;
 pub mod loading;
+pub mod lod;
 pub mod materials;
 pub mod mesh_pack;
 pub mod meshes;

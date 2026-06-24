@@ -260,6 +260,7 @@ pub(super) async fn build_renderer(
             decals: false,
             coverage_lod: false,
             picking: false,
+            lod: false,
             indirect_first_instance: FeatureToggle::Auto,
         })
         .build()

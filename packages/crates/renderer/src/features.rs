@@ -109,6 +109,15 @@ pub struct RendererFeatures {
     /// [`PickResult::Disabled`]: crate::picker::PickResult::Disabled
     pub picking: bool,
 
+    /// Enable discrete level-of-detail: load the per-mesh simplified level
+    /// chain baked into the player bundle (`<id>.lod{N}.glb` + `<id>.lod.toml`)
+    /// and select a level per instance by projected screen-space error. Each
+    /// level is a separate `MeshKey`; the runtime reroutes an instance's draw to
+    /// its selected level. When `false` (the default), no level geometry is
+    /// loaded and every instance draws its base mesh — byte-identical to a build
+    /// without LOD. Mirrors [`Self::gpu_culling`] as an opt-in GPU-pipeline gate.
+    pub lod: bool,
+
     /// Whether to use the WebGPU `indirect-first-instance` feature for
     /// the non-instanced geometry pass's drawIndirect path.
     ///
@@ -171,6 +180,10 @@ mod tests {
         assert!(
             !features.picking,
             "picking must default to false so library consumers pay no cost"
+        );
+        assert!(
+            !features.lod,
+            "lod must default to false so a build without LOD is byte-identical"
         );
         assert_eq!(
             features.indirect_first_instance,
