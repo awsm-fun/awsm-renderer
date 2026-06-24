@@ -170,6 +170,44 @@ pub fn max_axis_scale(m: &Mat4) -> f32 {
 /// [`select_cut_per_cluster`].
 pub const CLUSTER_PAGE_GPU_STRIDE: usize = 64;
 
+/// The B.2 cluster-cut compute shader source (one `@workgroup_size(64)` thread
+/// per page; evaluates [`select_cut_per_cluster`] on-device). Embedded so the
+/// path is checked at build time; the pipeline loads this string.
+pub const CLUSTER_CUT_WGSL: &str =
+    include_str!("render_passes/cluster_lod/cluster_cut.wgsl");
+
+/// Byte size of the cluster-cut params uniform (`ClusterCutParams` in the
+/// shader). 96 B: a 64-B column-major `mat4x4` then `camera_pos` (vec3, with
+/// `tan_half_fov_y` filling its 16-B slot), `viewport_h`, `pixel_budget`,
+/// `world_scale`, `cluster_count`.
+pub const CLUSTER_CUT_PARAMS_SIZE: usize = 96;
+
+/// Serialise the cluster-cut params uniform (little-endian) into `out`. `world`
+/// is column-major (WGSL `mat4x4` storage order = glam `to_cols_array`).
+#[allow(clippy::too_many_arguments)]
+pub fn write_cluster_cut_params(
+    instance_world: &Mat4,
+    camera_pos: Vec3,
+    tan_half_fov_y: f32,
+    viewport_h: f32,
+    pixel_budget: f32,
+    world_scale: f32,
+    cluster_count: u32,
+    out: &mut Vec<u8>,
+) {
+    for c in instance_world.to_cols_array() {
+        out.extend_from_slice(&c.to_le_bytes());
+    }
+    out.extend_from_slice(&camera_pos.x.to_le_bytes());
+    out.extend_from_slice(&camera_pos.y.to_le_bytes());
+    out.extend_from_slice(&camera_pos.z.to_le_bytes());
+    out.extend_from_slice(&tan_half_fov_y.to_le_bytes());
+    out.extend_from_slice(&viewport_h.to_le_bytes());
+    out.extend_from_slice(&pixel_budget.to_le_bytes());
+    out.extend_from_slice(&world_scale.to_le_bytes());
+    out.extend_from_slice(&cluster_count.to_le_bytes());
+}
+
 /// Serialise one cluster page into the 64-B GPU layout (little-endian),
 /// appending to `out`. Mirror of the WGSL struct documented on
 /// [`CLUSTER_PAGE_GPU_STRIDE`]; the per-frame uploader reuses one `Vec<u8>`
@@ -287,6 +325,44 @@ mod tests {
         select_cut(&p, far, &mut out);
         let far_tris: u32 = out.iter().map(|&i| p[i as usize].index_count / 3).sum();
         assert!(far_tris <= near_tris);
+    }
+
+    #[test]
+    fn cut_shader_embeds_and_has_entry_point() {
+        assert!(CLUSTER_CUT_WGSL.contains("@compute"));
+        assert!(CLUSTER_CUT_WGSL.contains("fn cs_main"));
+        // The shader struct must declare the same fields the page layout writes.
+        for field in [
+            "lod_bounds_center",
+            "parent_bounds_center",
+            "lod_error",
+            "parent_error",
+            "first_index",
+            "index_count",
+        ] {
+            assert!(CLUSTER_CUT_WGSL.contains(field), "shader missing `{field}`");
+        }
+    }
+
+    #[test]
+    fn cut_params_layout() {
+        let mut out = Vec::new();
+        let world = Mat4::from_scale(Vec3::splat(2.0));
+        write_cluster_cut_params(&world, Vec3::new(1.0, 2.0, 3.0), 0.5, 1080.0, 1.5, 2.0, 7, &mut out);
+        assert_eq!(out.len(), CLUSTER_CUT_PARAMS_SIZE, "params are 96 B");
+        let f = |off: usize| f32::from_le_bytes(out[off..off + 4].try_into().unwrap());
+        let u = |off: usize| u32::from_le_bytes(out[off..off + 4].try_into().unwrap());
+        // mat4 occupies 0..64 (column-major; scale 2 ⇒ diagonal entries 2.0).
+        assert_eq!(f(0), 2.0);
+        assert_eq!(f(20), 2.0);
+        assert_eq!(f(40), 2.0);
+        // camera_pos at 64, tan at 76, then the scalars.
+        assert_eq!([f(64), f(68), f(72)], [1.0, 2.0, 3.0]);
+        assert_eq!(f(76), 0.5); // tan_half_fov_y
+        assert_eq!(f(80), 1080.0); // viewport_h
+        assert_eq!(f(84), 1.5); // pixel_budget
+        assert_eq!(f(88), 2.0); // world_scale
+        assert_eq!(u(92), 7); // cluster_count
     }
 
     #[test]
