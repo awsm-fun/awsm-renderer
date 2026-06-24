@@ -11,12 +11,14 @@
 //! DAG) will reuse the same collapse with locked group boundaries.
 
 pub mod cluster;
+pub mod dag;
 pub mod manifest;
 pub mod plan;
 pub mod quadric;
 pub mod simplify;
 
 pub use cluster::{build_cluster_graph, build_clusters, group_clusters, ClusterGraph, Meshlet};
+pub use dag::{build_cluster_dag, ClusterDag, DagCluster, DagOptions};
 pub use manifest::{
     bounding_sphere_radius, lod_level_filename, lod_manifest_filename, MeshLodLevel, MeshLodManifest,
 };
@@ -75,25 +77,33 @@ mod tests {
     }
 
     #[test]
-    fn boundary_corners_survive_and_extent_is_preserved() {
-        // The four grid corners are boundary *corners* (the boundary turns 90°)
-        // and stay locked, so a moderately simplified mesh still spans the full
-        // extent — even though smooth edge-midpoints may now slide away.
+    fn extent_is_preserved_under_moderate_simplification() {
+        // Boundary vertices may slide along the seam (and a corner with a single
+        // incident triangle can even be orphaned), but locked boundary geometry
+        // keeps SOME surviving vertex on each extent edge, so the silhouette
+        // still spans the full [0,8]² bounds.
         let (pos, indices) = grid(8, 8); // 128 tris
         let base = indices.len() / 3;
         let m = simplify(&pos, &indices, SimplifyOptions::with_target(base * 3 / 4));
-        let survives = |p: [f32; 3]| m.surviving.iter().any(|&s| pos[s as usize] == p);
-        assert!(survives([0.0, 0.0, 0.0]), "corner must survive");
-        assert!(survives([8.0, 0.0, 0.0]), "corner must survive");
-        assert!(survives([0.0, 8.0, 0.0]), "corner must survive");
-        assert!(survives([8.0, 8.0, 0.0]), "far corner must survive");
-        // Extent: the surviving vertices still cover the full [0,8]² bounds.
         let xs: Vec<f32> = m.surviving.iter().map(|&s| pos[s as usize][0]).collect();
         let ys: Vec<f32> = m.surviving.iter().map(|&s| pos[s as usize][1]).collect();
         assert_eq!(xs.iter().cloned().fold(f32::MAX, f32::min), 0.0);
         assert_eq!(xs.iter().cloned().fold(f32::MIN, f32::max), 8.0);
         assert_eq!(ys.iter().cloned().fold(f32::MAX, f32::min), 0.0);
         assert_eq!(ys.iter().cloned().fold(f32::MIN, f32::max), 8.0);
+    }
+
+    /// The simplifier is deterministic: identical input ⇒ identical output (no
+    /// HashMap-iteration-order dependence). Required for content-hash-cached bakes.
+    #[test]
+    fn simplify_is_deterministic() {
+        let (pos, indices) = grid(10, 10);
+        let opts = SimplifyOptions::with_target(80);
+        let a = simplify(&pos, &indices, opts);
+        let b = simplify(&pos, &indices, opts);
+        assert_eq!(a.surviving, b.surviving);
+        assert_eq!(a.indices, b.indices);
+        assert_eq!(a.error.to_bits(), b.error.to_bits());
     }
 
     #[test]

@@ -104,7 +104,14 @@ impl PartialOrd for Candidate {
 impl Ord for Candidate {
     fn cmp(&self, o: &Self) -> Ordering {
         // Reverse so BinaryHeap (a max-heap) yields the *cheapest* collapse.
-        o.cost.partial_cmp(&self.cost).unwrap_or(Ordering::Equal)
+        // Break ties by endpoints so the whole simplification is deterministic
+        // (no HashMap-iteration-order dependence) — required for reproducible
+        // bakes / content-hash caching.
+        o.cost
+            .partial_cmp(&self.cost)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| o.from.cmp(&self.from))
+            .then_with(|| o.to.cmp(&self.to))
     }
 }
 
@@ -195,9 +202,13 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
     let mut live_tris = tri_dead.iter().filter(|d| !**d).count();
     let mut max_cost = 0.0_f64;
 
-    // Seed the heap with every undirected edge's best collapse direction.
+    // Seed the heap with every undirected edge's best collapse direction, in a
+    // deterministic order (HashMap iteration order is randomised) so the whole
+    // collapse sequence is reproducible — required for content-hash-cached bakes.
     let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
-    for &(a, b) in edge_tris.keys() {
+    let mut seed_edges: Vec<(u32, u32)> = edge_tris.keys().copied().collect();
+    seed_edges.sort_unstable();
+    for (a, b) in seed_edges {
         if let Some(c) = candidate(a, b, &pos, &quad, &class, &version) {
             heap.push(c);
         }
