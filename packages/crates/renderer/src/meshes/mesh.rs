@@ -286,6 +286,34 @@ impl Mesh {
             );
         }
 
+        // Cluster-LOD per-cluster cut (Phase B, B.3): if this is the cluster
+        // render mesh M, draw the GPU-compacted cut stream instead of M's own
+        // full index buffer — `set_index_buffer(compacted_indices)` +
+        // `drawIndexedIndirect(draw_args)`. M's exploded vertex buffer + the
+        // storage-meta bind group (group 2) are already bound above, and
+        // `draw_args.first_instance == M.mesh_meta_idx` routes the material.
+        // Requires the storage-meta path; gated on `mesh_key == M` ⇒ no effect on
+        // any other mesh, and inert while M is hidden.
+        if use_storage_meta {
+            if let Some(cluster_pass) = ctx
+                .render_passes
+                .cluster_lod
+                .as_ref()
+                .filter(|cp| cp.render_mesh == Some(mesh_key))
+            {
+                if let Some(buffers) = cluster_pass.buffers.as_ref() {
+                    render_pass.set_index_buffer(
+                        &buffers.compacted_indices_buffer,
+                        IndexFormat::Uint32,
+                        None,
+                        None,
+                    );
+                    render_pass.draw_indexed_indirect_with_f64(&buffers.draw_args_buffer, 0.0);
+                    return Ok(());
+                }
+            }
+        }
+
         let buffer_info = ctx.meshes.buffer_info(mesh_key)?;
 
         render_pass.set_index_buffer(
