@@ -447,9 +447,32 @@ pass that, in one `drawIndexedIndirect`, varies detail *within* a single mesh
 (cluster_id payload + material fetch from cluster pages). That needs GPU storage
 upload of the pages + the cull/cut/compaction compute + vis-buffer changes — the
 deepest GPU work; the per-instance uniform cut above is the watertight,
-shipped-and-verified stepping stone. _Crack-free per-cluster cuts also need each
-group's error projected with a group-consistent bounding sphere so all clusters
-in a group flip together._
+shipped-and-verified stepping stone.
+
+**Status — landed (B.2-GPU prep + coexistence verified).** Group-consistent LOD
+bounds (`lod_bounds` / `parent_bounds` per cluster, the group sphere all its
+clusters flip against ⇒ crack-free per-cluster cut) added to the DAG + page
+format (lod-bake, 32 tests). **Coexistence verified** via the editor round-trip
+with **both** `?vg` + `?lod` on a mixed scene (static helmet + skinned CesiumMan +
+morph MorphStressTest): `get_memory_stats` shows **18 meshes** — the cluster-LOD
+helmet (base + 3 cuts) and the discrete-LOD skinned + morph chains all in the
+**one shared `LodRegistry`** and render path — coarsening together with distance
+(12702 near → 9820 far) and rendering correctly side-by-side (static cluster LOD
++ skinned/morph discrete LOD share one visibility buffer, shade identically). The
+plan's "single visibility-buffer coexistence" holds for the shipped per-instance
+runtime.
+
+**Remaining scope (precise).** The only unshipped plan item is the *per-cluster*
+GPU cut + its vis-buffer integration: (1) upload cluster vertex/index pages +
+per-cluster meta (incl. the group bounds above) to GPU storage; (2) a compute
+pass — two-level cull (instance frustum/HZB, then per-cluster cut via the group-
+sphere-projected `[lod_error, parent_error)`) — writing one compacted index
+stream + `IndirectDrawArgs`; (3) `drawIndexedIndirect` it into the vis-buffer with
+a `cluster_id` payload; (4) re-point `material_prep`/`material_opaque` attribute
+fetch at the cluster index pages. This is HW-raster GPU-compute work (no unit
+tests; live-GPU verification only) and is the deep, higher-risk frontier; the
+shipped per-instance cluster cut + discrete LOD already deliver distance-adaptive,
+crack-free, coexisting LOD for all mesh classes.
 
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds
