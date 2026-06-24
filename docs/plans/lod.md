@@ -525,23 +525,31 @@ attributes:
   the compacted stream against the base cut mesh's vertex buffer would rasterise
   correct positions but the material pass would fetch the **wrong** per-triangle
   vertex indices ⇒ broken UVs/normals.
-- **Path forward (two options, pick on device):** (a) make the cluster geometry a
-  first-class vis-buffer participant — upload `cm` positions/attributes + index
-  pages in the renderer's exploded 56-B visibility layout + a `MeshMeta`, build the
-  compacted stream in *that* index space, draw it via `draw_indexed_indirect_with_f64`
-  (precedent: occlusion's compaction path, `meshes/mesh.rs:309-360`, sets the args
-  `first_instance = mesh_meta_idx` for material routing); or (b) keep the original
-  geometry and add a compacted **attribute-index** buffer alongside, with a small
-  `material_prep`/`material_opaque` tweak to read it instead of the mesh's index
-  buffer. Option (a) is the cleaner Nanite shape. Either way the existing
-  `(triangle_index, mesh_meta)` vis-buffer payload suffices — no `cluster_id`
-  re-budget needed (the plan's original B.3 framing) as long as the drawn index
-  stream + the meta's `vertex_attribute_indices_offset` are in the same space.
-- This is the deepest, highest-risk step (touches the shared geometry pool +
-  material attribute reconstruction for *all* geometry); to be built carefully,
-  gated, with on-device verification. The shipped per-instance cluster cut +
-  discrete LOD already render correct, distance-adaptive, crack-free, coexisting
-  LOD for all mesh classes regardless.
+- **Resolved approach (read `mesh_pack::pack_visibility_bytes` + `meshes.rs`).**
+  The renderer **explodes** geometry: for triangle `t` (in the mesh's index order)
+  it emits 3 corner vertices `[3t,3t+1,3t+2]`, each carrying `triangle_index = t`
+  (56-B layout), while the *original* indices ride in a separate
+  `vertex_attribute_indices` buffer the material reads at `t*3`. So:
+  1. **Cluster render mesh `M`** = `add_raw_mesh(cm.positions, cm.indices)` (the
+     FULL cluster geometry, all levels). `M` is an ordinary mesh — normal
+     `MeshMeta`, normal material path, exploded buffer in `cm.indices` triangle
+     order, `vertex_attribute_indices = cm.indices`.
+  2. **Compaction `source_indices` = identity `[0,1,2,…,3T-1]`** (the exploded
+     raster space), DONE. Because cluster pages are triangle-aligned, a page
+     `[F,C)`’s raster indices are exactly `[F,F+C)`, so the unchanged compaction
+     already emits a drawable stream into `M`’s exploded vertex buffer; each drawn
+     corner carries `triangle_index = t`, and the material refetches `cm.indices`
+     at `t*3` ⇒ correct attributes.
+  3. **Draw**: in the geometry pass, draw `M`’s exploded vertex buffer with the
+     compacted stream — `set_index_buffer(compacted_indices)` +
+     `draw_indexed_indirect(draw_args)` with `first_instance = M.mesh_meta_idx`
+     (precedent `meshes/mesh.rs:309-360`) — and **hide `M`’s normal draw**.
+  This reuses the normal mesh + material path (no `cluster_id` re-budget, no
+  material shader change) — lower-risk than feared; the only renderer touch is the
+  geometry-pass draw hook for `M`. Remaining: upload `M` when vg is on (store its
+  MeshKey/meta/vertex-buffer handle on the cluster pass) + the geometry-pass draw
+  hook. The shipped per-instance cluster cut + discrete LOD already render correct,
+  distance-adaptive, crack-free, coexisting LOD for all mesh classes regardless.
 
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds

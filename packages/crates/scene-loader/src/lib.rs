@@ -1885,7 +1885,14 @@ async fn load_cluster_lod(
             index_count: c.index_count,
         })
         .collect();
-    renderer.upload_cluster_pages(&gpu_pages, &cm.indices)?;
+    // The compaction's `source_indices` is the EXPLODED raster index space, not
+    // `cm.indices`: the renderer explodes geometry (pack_visibility_bytes) so
+    // triangle t's corners are exploded vertices [3t,3t+1,3t+2]. Cluster pages are
+    // triangle-aligned, so the raster indices for a page [F,C) are exactly the
+    // identity range [F,F+C) — feed identity and the unchanged compaction emits a
+    // drawable stream into the (future) cluster render mesh's exploded buffer.
+    let identity_indices: Vec<u32> = (0..cm.indices.len() as u32).collect();
+    renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
 
     // Cut thresholds = the DAG's distinct cluster errors, ascending. Each gives a
     // watertight uniform cut; rising threshold ⇒ coarser. We register the finest
