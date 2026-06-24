@@ -954,16 +954,20 @@ async fn materialize(
                             // Discrete LOD (static): load + register this asset's
                             // simplified level chain (hidden — drawn only when a
                             // per-frame selection reroutes to it). No-op unless the
-                            // `lod` feature is on and the bundle carries a manifest.
-                            load_static_lod_chain(
-                                renderer,
-                                assets,
-                                &mesh.0.to_string(),
-                                first,
-                                tk,
-                                mat,
-                            )
-                            .await?;
+                            // `lod` feature is on, the bundle carries a manifest, AND
+                            // this node opts in (the per-node toggle — an asset can be
+                            // referenced by both LOD-on and LOD-off instances).
+                            if node_lod_enabled(&node.kind) {
+                                load_static_lod_chain(
+                                    renderer,
+                                    assets,
+                                    &mesh.0.to_string(),
+                                    first,
+                                    tk,
+                                    mat,
+                                )
+                                .await?;
+                            }
                         }
                         maps.node_meshes
                             .entry(node.id)
@@ -1021,9 +1025,9 @@ async fn materialize(
             }
             // Discrete LOD (skinned/morph): load each level's mesh REBOUND to the
             // base rig's animated joint transforms (so a level deforms with the
-            // base), hidden, and register the chain. No-op unless `lod` is on and a
-            // manifest exists.
-            if let Some(&base_key) = keys.first() {
+            // base), hidden, and register the chain. No-op unless `lod` is on, a
+            // manifest exists, AND this node opts in (per-node toggle).
+            if let (Some(&base_key), true) = (keys.first(), node_lod_enabled(&node.kind)) {
                 load_skinned_lod_chain(
                     renderer,
                     assets,
@@ -1809,6 +1813,13 @@ fn warn_decal_feature_off() {
 /// Returns `(mesh keys, glb-node-index → baked-transform key)` — the latter lets a
 /// skinned-mesh consumer bind each skeleton joint (by its clean-glb node index) to
 /// drive the skin. Public (R4) so a host can load an individual bundle glb with
+/// Whether a node opts in to LOD (its per-mesh `MeshLodConfig.enabled`). The
+/// asset is baked with levels if *any* referencing node is enabled, so the
+/// runtime must re-check the per-node toggle: a LOD-off instance pins level 0.
+fn node_lod_enabled(kind: &NodeKind) -> bool {
+    kind.mesh_lod().map(|l| l.enabled).unwrap_or(false)
+}
+
 /// Load + register the discrete-LOD level chain for a **static** mesh asset.
 ///
 /// Each level glb (`<id>.lod{N}.glb`) is loaded under the same transform `tk` and

@@ -4707,6 +4707,7 @@ impl EditorController {
                     opaque_main,
                     edge_per_shader,
                     classify_dynamic,
+                    visible_triangles,
                 ) = crate::engine::context::with_renderer_mut(|r| {
                     (
                         r.meshes.len(),
@@ -4722,6 +4723,7 @@ impl EditorController {
                             .edge_pipelines
                             .per_shader_len(),
                         r.render_passes.material_classify.dynamic_cache_len(),
+                        r.meshes.visible_triangle_count(),
                     )
                 })
                 .await;
@@ -4746,6 +4748,10 @@ impl EditorController {
                 entries.insert("opaque_main_keys".to_string(), json!(opaque_main));
                 entries.insert("edge_per_shader_keys".to_string(), json!(edge_per_shader));
                 entries.insert("classify_dynamic_keys".to_string(), json!(classify_dynamic));
+                // Submitted triangles across all visible meshes — the deterministic
+                // discrete-LOD before/after metric (drops as instances pick coarser
+                // levels at distance).
+                entries.insert("visible_triangles".to_string(), json!(visible_triangles));
                 entries.insert("dynamic_materials".to_string(), json!(dynamic_materials));
                 // GPU texture-resource counts (leak diagnostics — the "Destroyed
                 // texture"/"aw snap" blind spot). Growth under textured-material /
