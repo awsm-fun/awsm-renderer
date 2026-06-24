@@ -16,7 +16,7 @@ pub mod plan;
 pub mod quadric;
 pub mod simplify;
 
-pub use cluster::{build_clusters, Meshlet};
+pub use cluster::{build_cluster_graph, build_clusters, group_clusters, ClusterGraph, Meshlet};
 pub use manifest::{
     bounding_sphere_radius, lod_level_filename, lod_manifest_filename, MeshLodLevel, MeshLodManifest,
 };

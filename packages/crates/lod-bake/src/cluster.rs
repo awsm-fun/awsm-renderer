@@ -174,6 +174,112 @@ fn make_meshlet(triangles: Vec<u32>, indices: &[u32], pos: &[DVec3]) -> Meshlet 
     }
 }
 
+/// Cluster adjacency graph: for each cluster, its neighbours and the number of
+/// edges they share (the shared-boundary weight). Built from per-triangle
+/// cluster membership; the `metis` stand-in for the LOD-DAG grouping step.
+#[derive(Clone, Debug, Default)]
+pub struct ClusterGraph {
+    /// `adjacency[c]` = `(neighbour cluster, shared edge count)` pairs.
+    pub adjacency: Vec<Vec<(u32, u32)>>,
+}
+
+/// Build the cluster adjacency graph: clusters sharing a boundary edge are
+/// adjacent, weighted by how many edges they share. Higher weight ⇒ more shared
+/// boundary ⇒ better to group together (the boundary becomes internal and can be
+/// simplified).
+pub fn build_cluster_graph(meshlets: &[Meshlet], indices: &[u32]) -> ClusterGraph {
+    let n = meshlets.len();
+    let tri_count = indices.len() / 3;
+    let mut tri_cluster = vec![u32::MAX; tri_count];
+    for (ci, m) in meshlets.iter().enumerate() {
+        for &t in &m.triangles {
+            tri_cluster[t as usize] = ci as u32;
+        }
+    }
+
+    // Edge → the distinct clusters whose triangles use it.
+    let mut edge_clusters: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    for t in 0..tri_count as u32 {
+        let c = tri_cluster[t as usize];
+        if c == u32::MAX {
+            continue; // degenerate / unassigned
+        }
+        let [a, b, cc] = tri_verts(indices, t);
+        for (u, v) in [(a, b), (b, cc), (cc, a)] {
+            let list = edge_clusters.entry(edge_key(u, v)).or_default();
+            if !list.contains(&c) {
+                list.push(c);
+            }
+        }
+    }
+
+    // Shared-edge weight per cluster pair.
+    let mut weights: HashMap<(u32, u32), u32> = HashMap::new();
+    for clusters in edge_clusters.values() {
+        for i in 0..clusters.len() {
+            for j in (i + 1)..clusters.len() {
+                let (a, b) = (clusters[i], clusters[j]);
+                *weights.entry(edge_key(a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut adjacency = vec![Vec::new(); n];
+    for ((a, b), w) in weights {
+        adjacency[a as usize].push((b, w));
+        adjacency[b as usize].push((a, w));
+    }
+    ClusterGraph { adjacency }
+}
+
+/// Partition clusters into groups of about `target_size`, greedily maximising
+/// intra-group shared boundary (so each group's *external* boundary — the part
+/// that must stay locked during simplification — is small). Every cluster lands
+/// in exactly one group; a cluster with no ungrouped neighbours forms (or stays
+/// in) a smaller group. Returns the groups as lists of cluster indices.
+pub fn group_clusters(graph: &ClusterGraph, target_size: usize) -> Vec<Vec<u32>> {
+    let n = graph.adjacency.len();
+    let target = target_size.max(1);
+    let mut grouped = vec![false; n];
+    let mut groups = Vec::new();
+
+    for seed in 0..n as u32 {
+        if grouped[seed as usize] {
+            continue;
+        }
+        let mut group = vec![seed];
+        grouped[seed as usize] = true;
+
+        while group.len() < target {
+            // Total shared-edge weight from the current group to each ungrouped
+            // neighbour; pick the strongest (ties → lowest id).
+            let mut cand: HashMap<u32, u32> = HashMap::new();
+            for &g in &group {
+                for &(nb, w) in &graph.adjacency[g as usize] {
+                    if !grouped[nb as usize] {
+                        *cand.entry(nb).or_insert(0) += w;
+                    }
+                }
+            }
+            let mut best = u32::MAX;
+            let mut best_w = 0u32;
+            for (nb, w) in cand {
+                if w > best_w || (w == best_w && nb < best) {
+                    best_w = w;
+                    best = nb;
+                }
+            }
+            if best == u32::MAX {
+                break; // no connected ungrouped cluster left
+            }
+            grouped[best as usize] = true;
+            group.push(best);
+        }
+        groups.push(group);
+    }
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +352,79 @@ mod tests {
     #[test]
     fn empty_mesh_is_empty() {
         assert!(build_clusters(&[], &[], 128).is_empty());
+    }
+
+    #[test]
+    fn cluster_graph_is_symmetric_and_weighted() {
+        let (pos, indices) = grid(12);
+        let clusters = build_clusters(&pos, &indices, 16);
+        assert!(clusters.len() > 1, "need multiple clusters to be adjacent");
+        let graph = build_cluster_graph(&clusters, &indices);
+        assert_eq!(graph.adjacency.len(), clusters.len());
+
+        // Symmetric: a→b with weight w implies b→a with weight w.
+        for (a, nbrs) in graph.adjacency.iter().enumerate() {
+            for &(b, w) in nbrs {
+                assert!(w > 0, "adjacency weight must be positive");
+                let back = graph.adjacency[b as usize]
+                    .iter()
+                    .find(|(x, _)| *x == a as u32)
+                    .map(|(_, w)| *w);
+                assert_eq!(back, Some(w), "adjacency must be symmetric");
+            }
+        }
+        // A connected grid partition: every cluster has at least one neighbour.
+        assert!(graph.adjacency.iter().all(|n| !n.is_empty()));
+    }
+
+    #[test]
+    fn grouping_covers_all_clusters_within_target() {
+        let (pos, indices) = grid(16); // 512 tris
+        let clusters = build_clusters(&pos, &indices, 16);
+        let graph = build_cluster_graph(&clusters, &indices);
+        let target = 4;
+        let groups = group_clusters(&graph, target);
+
+        let mut seen = vec![false; clusters.len()];
+        for g in &groups {
+            assert!(!g.is_empty());
+            assert!(g.len() <= target, "group exceeds target size");
+            for &c in g {
+                assert!(!seen[c as usize], "cluster {c} in two groups");
+                seen[c as usize] = true;
+            }
+        }
+        assert!(seen.iter().all(|&s| s), "every cluster grouped");
+        // Most groups should reach the target on a large connected mesh.
+        let full = groups.iter().filter(|g| g.len() == target).count();
+        assert!(full > 0, "expected some full-size groups, got {groups:?}");
+    }
+
+    #[test]
+    fn groups_are_internally_connected() {
+        // Each non-singleton group must be edge-connected through the cluster
+        // graph (greedy growth only adds connected clusters).
+        let (pos, indices) = grid(14);
+        let clusters = build_clusters(&pos, &indices, 16);
+        let graph = build_cluster_graph(&clusters, &indices);
+        let groups = group_clusters(&graph, 4);
+        for g in &groups {
+            if g.len() < 2 {
+                continue;
+            }
+            let set: std::collections::HashSet<u32> = g.iter().copied().collect();
+            // BFS from g[0] within the group must reach all members.
+            let mut stack = vec![g[0]];
+            let mut reached = std::collections::HashSet::new();
+            reached.insert(g[0]);
+            while let Some(c) = stack.pop() {
+                for &(nb, _) in &graph.adjacency[c as usize] {
+                    if set.contains(&nb) && reached.insert(nb) {
+                        stack.push(nb);
+                    }
+                }
+            }
+            assert_eq!(reached.len(), g.len(), "group must be connected");
+        }
     }
 }
