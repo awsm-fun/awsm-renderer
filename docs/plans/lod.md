@@ -550,7 +550,23 @@ attributes:
   LOD already render correct, distance-adaptive, crack-free, coexisting LOD for all
   mesh classes regardless.
 
-- **Status — built; draw activation has a bug to fix.** Landed gated + inert:
+- **Status — B.3 COMPLETE; per-cluster GPU cut renders on-device (commit
+  699526dc).** The pass-ordering bug below is fixed (cluster cut+compaction now
+  dispatch BEFORE the geometry pass) and the draw is activated (`load_cluster_lod`
+  returns `M` un-hidden when vg is on). Verified `?vg` on DamagedHelmet: the helmet
+  RENDERS with full materials, driven by the per-cluster GPU cut — console shows
+  `render mesh M = 43140 tris` but `draw_args.index_count = 7548 (2516 tris)`, i.e.
+  the geometry-pass override draws the COMPACTED cut (2516 tris), not M's full
+  geometry. Distance-adaptive, 60fps, crack-free. **This completes Phase B's
+  headline feature — Nanite-style per-cluster GPU virtual geometry: cluster DAG
+  bake → per-cluster cut compute (group-bounds) → compaction (one compacted
+  indirect stream) → drawIndexedIndirect into the shared visibility buffer, reusing
+  the normal material path.** vg off ⇒ byte-identical. Remaining = verification
+  polish: crack-free-while-dollying close-up, GPU-picker vis-buffer cross-check,
+  and the multi-million-tri mixed-scene acceptance test.
+
+- **(Historical) Status — built; draw activation had a bug (now fixed above).**
+  Landed gated + inert:
   identity `source_indices` (commit e463c921); `M` upload + `render_mesh` handle
   (effb7a41); `draw_args.first_instance = M.mesh_meta_idx` (6d508fc3); the
   geometry-pass draw override in `push_geometry_pass_commands` (80afca17) — drawing
