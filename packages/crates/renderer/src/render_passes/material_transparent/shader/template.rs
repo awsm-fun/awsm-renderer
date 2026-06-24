@@ -119,7 +119,9 @@ impl ShaderTemplateTransparentMaterialIncludes {
             // Per-material specialization: the shared brdf /
             // material_color_calc includes gate on exactly this transparent
             // material's feature-set (no uber all()).
-            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::from_bits(cache_key.pbr_features),
+            pbr_features: awsm_renderer_materials::pbr::PbrFeatures::from_bits(
+                cache_key.pbr_features,
+            ),
             // `for_custom` forces the Tier-B PBR-internal flags off — a custom
             // material can never enable brdf/apply_lighting/material_color_calc
             // on the transparent path either (Phase 3 item 2; parity with opaque).

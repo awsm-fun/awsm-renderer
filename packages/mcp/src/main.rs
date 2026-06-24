@@ -61,7 +61,9 @@ async fn main() -> Result<()> {
     let link = EditorLink::shared(format!("http://127.0.0.1:{}", args.port));
 
     let http_addr = SocketAddr::from(([127, 0, 0, 1], args.port));
-    tracing::info!("awsm-renderer-scene-mcp: rmcp /mcp + editor /editor ws + /png on http://{http_addr}");
+    tracing::info!(
+        "awsm-renderer-scene-mcp: rmcp /mcp + editor /editor ws + /png on http://{http_addr}"
+    );
     http::serve(http_addr, link).await.context("http server")?;
     Ok(())
 }

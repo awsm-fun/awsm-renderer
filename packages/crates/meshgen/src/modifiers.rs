@@ -840,7 +840,9 @@ mod tests {
     fn sweep_and_captured_bases_are_empty_pending_editor() {
         // These need scene state; evaluate yields an empty base (editor resolves).
         let stack = ModifierStack {
-            base: MeshBase::Captured(awsm_renderer_scene::MeshRef(awsm_renderer_scene::AssetId::new())),
+            base: MeshBase::Captured(awsm_renderer_scene::MeshRef(
+                awsm_renderer_scene::AssetId::new(),
+            )),
             modifiers: vec![Modifier::Inflate { amount: 1.0 }],
         };
         assert!(evaluate(&stack).positions.is_empty());

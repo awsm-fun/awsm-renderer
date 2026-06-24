@@ -15,7 +15,9 @@ use awsm_renderer_scene::animation::{
 use awsm_renderer_scene::particle::{
     ColorOverLifeDef, EmitterSpaceDef, ForceDef, SizeOverLifeDef, SpawnShapeDef,
 };
-use awsm_renderer_scene::{AssetId, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind, Trs};
+use awsm_renderer_scene::{
+    AssetId, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind, Trs,
+};
 
 use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
 

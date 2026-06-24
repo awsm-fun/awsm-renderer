@@ -10,9 +10,9 @@
 
 use std::cell::RefCell;
 
-use awsm_renderer_editor_protocol::{CurveDef, NodeKind};
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::AwsmRenderer;
+use awsm_renderer_editor_protocol::{CurveDef, NodeKind};
 use awsm_renderer_web_shared::viewport3d::point_handle::PointHandleSet;
 use futures_signals::map_ref;
 use glam::{Mat4, Vec3};

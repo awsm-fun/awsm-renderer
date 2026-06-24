@@ -18,9 +18,9 @@
 
 use std::collections::HashMap;
 
+use awsm_renderer::textures::TextureKey;
 use awsm_renderer_editor_protocol::MaterialDef;
 use awsm_renderer_glb_export::{ExportImage, MeshData};
-use awsm_renderer::textures::TextureKey;
 use awsm_renderer_gltf::data::GltfData;
 use awsm_renderer_gltf::extract::{extract_animations, ExtractedAnimation};
 use awsm_renderer_gltf::loader::{get_type_from_filename, GltfFileType};
@@ -100,7 +100,9 @@ pub struct TexBinding {
 
 /// Map a glTF texture sampler → the editor's [`TextureSampler`]. Returns `None`
 /// when it's the glTF default (repeat + linear), to keep refs compact.
-fn gltf_sampler(s: gltf::texture::Sampler) -> Option<awsm_renderer_editor_protocol::TextureSampler> {
+fn gltf_sampler(
+    s: gltf::texture::Sampler,
+) -> Option<awsm_renderer_editor_protocol::TextureSampler> {
     use awsm_renderer_editor_protocol::{TextureFilter, TextureSampler, TextureWrap};
     let wrap = |w: gltf::texture::WrappingMode| match w {
         gltf::texture::WrappingMode::ClampToEdge => TextureWrap::ClampToEdge,
@@ -218,7 +220,9 @@ fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
         let Some(mesh) = node.mesh() else { continue };
         let node_index = node.index() as u32;
         // Whole-node merge (the common, single-material case).
-        if let Some(ex) = awsm_renderer_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None) {
+        if let Some(ex) =
+            awsm_renderer_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None)
+        {
             out.insert((node_index, None), ex.mesh);
         }
         // Per-primitive (used when a node's primitives carry different materials
@@ -226,9 +230,12 @@ fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
         let prim_count = mesh.primitives().count();
         if prim_count > 1 {
             for i in 0..prim_count as u32 {
-                if let Some(ex) =
-                    awsm_renderer_glb_export::extract_node_mesh(&data.doc, buffers, node_index, Some(i))
-                {
+                if let Some(ex) = awsm_renderer_glb_export::extract_node_mesh(
+                    &data.doc,
+                    buffers,
+                    node_index,
+                    Some(i),
+                ) {
                     out.insert((node_index, Some(i)), ex.mesh);
                 }
             }
@@ -257,7 +264,8 @@ async fn import_typed(
     // Grab the ENCODED texture bytes (PNG/JPEG) off the document before populate
     // consumes it — the renderer keeps only decoded pixels, so these are what we
     // persist (paired with the baked TextureKeys below). Keyed by glTF tex index.
-    let tex_images_by_index = awsm_renderer_glb_export::extract_texture_images(&data.doc, &data.buffers.raw);
+    let tex_images_by_index =
+        awsm_renderer_glb_export::extract_texture_images(&data.doc, &data.buffers.raw);
     // Parse animations off the document before `data` is moved into populate.
     // A parse error must not abort the whole import — log it + import zero clips.
     let animations = match extract_animations(&data.doc, &data.buffers.raw) {

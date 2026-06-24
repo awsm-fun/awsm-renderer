@@ -198,7 +198,10 @@ fn status_badge(wgsl: &str, registered: bool) -> Dom {
 
 /// Mutate the inner `MaterialDef` of a built-in library material + flag dirty.
 /// The `spawn_builtin_resync` observer re-materializes assigned meshes.
-fn edit_builtin(mat: &Arc<CustomMaterial>, f: impl FnOnce(&mut awsm_renderer_editor_protocol::MaterialDef)) {
+fn edit_builtin(
+    mat: &Arc<CustomMaterial>,
+    f: impl FnOnce(&mut awsm_renderer_editor_protocol::MaterialDef),
+) {
     // All-via-controller: the edit dispatches `UpdateBuiltinMaterial` (undoable,
     // cross-tab, MCP-visible) instead of mutating the reactive def directly —
     // the handler owns the thumbnail refresh + assigned-mesh resync.
@@ -276,8 +279,10 @@ fn builtin_texture_row(
     mat: &Arc<CustomMaterial>,
     label: &str,
     current: Option<awsm_renderer_editor_protocol::TextureRef>,
-    set: impl Fn(&mut awsm_renderer_editor_protocol::MaterialDef, Option<awsm_renderer_editor_protocol::TextureRef>)
-        + 'static,
+    set: impl Fn(
+            &mut awsm_renderer_editor_protocol::MaterialDef,
+            Option<awsm_renderer_editor_protocol::TextureRef>,
+        ) + 'static,
 ) -> Dom {
     use awsm_renderer_editor_protocol::TextureRef;
     use futures_signals::signal::SignalExt;
@@ -314,7 +319,10 @@ fn builtin_texture_row(
 /// The material's texture slots (variant: enabling one recompiles assigned meshes).
 /// Base-color + emissive maps apply to every shading model; metallic/roughness,
 /// normal and occlusion maps are PBR-only.
-fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_renderer_editor_protocol::MaterialDef) -> Dom {
+fn textures_section(
+    mat: &Arc<CustomMaterial>,
+    def: &awsm_renderer_editor_protocol::MaterialDef,
+) -> Dom {
     use awsm_renderer_editor_protocol::MaterialShading;
     let is_flipbook = matches!(def.shading, MaterialShading::FlipBook { .. });
     let mut sec = Section::new("Textures");
@@ -375,7 +383,10 @@ fn textures_section(mat: &Arc<CustomMaterial>, def: &awsm_renderer_editor_protoc
 
 /// The Toon knobs (uniforms structurally carried on the Toon shading variant, so
 /// they live on the material). Only shown for Toon materials.
-fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_renderer_editor_protocol::MaterialDef) -> Dom {
+fn toon_section(
+    mat: &Arc<CustomMaterial>,
+    def: &awsm_renderer_editor_protocol::MaterialDef,
+) -> Dom {
     use awsm_renderer_editor_protocol::MaterialShading;
     let MaterialShading::Toon {
         diffuse_bands,
@@ -465,7 +476,10 @@ fn toon_section(mat: &Arc<CustomMaterial>, def: &awsm_renderer_editor_protocol::
 /// variant — one canonical FLIPBOOK shader, no recompile on edit). Only shown
 /// for FlipBook materials. The atlas image itself is the "Base color map" in
 /// the Textures section.
-fn flipbook_section(mat: &Arc<CustomMaterial>, def: &awsm_renderer_editor_protocol::MaterialDef) -> Dom {
+fn flipbook_section(
+    mat: &Arc<CustomMaterial>,
+    def: &awsm_renderer_editor_protocol::MaterialDef,
+) -> Dom {
     use awsm_renderer_editor_protocol::{FlipBookPlayMode, MaterialShading};
     let MaterialShading::FlipBook {
         cols,

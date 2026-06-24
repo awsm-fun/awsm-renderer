@@ -19,10 +19,10 @@
 
 use std::sync::Arc;
 
-use awsm_renderer_meshgen::MeshData;
 use awsm_renderer::meshes::buffer_info::MeshBufferGeometryMorphInfo;
 use awsm_renderer::raw_mesh::{RawMeshData, RawMorph, RawSkin};
 use awsm_renderer::transforms::{Transform, TransformKey};
+use awsm_renderer_meshgen::MeshData;
 // Shared with the runtime-bundle loader (`populate_awsm_scene`) so a light lowers
 // identically on the editor's live render and the player — the round-trip premise.
 use awsm_renderer_scene_loader::camera::camera_params_from_config;
@@ -634,7 +634,9 @@ fn merge_slot_texture(
 fn builtin_merged(
     inst: &awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
 ) -> Option<awsm_renderer_editor_protocol::MaterialDef> {
-    use awsm_renderer_editor_protocol::material::{MaterialAlphaMode, MaterialShading, PbrExtensions};
+    use awsm_renderer_editor_protocol::material::{
+        MaterialAlphaMode, MaterialShading, PbrExtensions,
+    };
     use awsm_renderer_editor_protocol::TextureRef;
     let inline = &inst.inline;
     let ctrl = crate::controller::controller();
@@ -1182,7 +1184,10 @@ async fn materialize_line(entry: Arc<RendererNode>, def: awsm_renderer_editor_pr
 /// Curve viz (`NodeKind::Curve`) → a sampled Catmull-Rom polyline drawn as a
 /// magenta fat-line (the curve itself emits no game geometry; sweeps/instances
 /// consume it). World-space, parent transform baked in.
-async fn materialize_curve_viz(entry: Arc<RendererNode>, def: awsm_renderer_editor_protocol::CurveDef) {
+async fn materialize_curve_viz(
+    entry: Arc<RendererNode>,
+    def: awsm_renderer_editor_protocol::CurveDef,
+) {
     if def.control_points.len() < 2 {
         return;
     }
@@ -1241,8 +1246,8 @@ async fn materialize_sprite(
     def: awsm_renderer_editor_protocol::SpriteDef,
     declare_only: bool,
 ) {
-    use awsm_renderer_meshgen::sprite_quad;
     use awsm_renderer::meshes::mesh::BillboardMode;
+    use awsm_renderer_meshgen::sprite_quad;
 
     let mesh = sprite_quad(def.size[0], def.size[1]);
     let raw = RawMeshData {
@@ -1335,7 +1340,10 @@ async fn materialize_collider(
 /// Projection decal (`NodeKind::Decal`) → inserts the renderer decal (inert
 /// until a texture is assigned) plus a unit-cube volume wireframe so the decal
 /// is placeable/visible in the editor (the projection volume).
-async fn materialize_decal(entry: Arc<RendererNode>, cfg: awsm_renderer_editor_protocol::DecalConfig) {
+async fn materialize_decal(
+    entry: Arc<RendererNode>,
+    cfg: awsm_renderer_editor_protocol::DecalConfig,
+) {
     let parent_tk = entry.transform_key;
     let entry2 = entry.clone();
     let alpha = cfg.alpha;
@@ -1434,8 +1442,8 @@ async fn materialize_instances(
     def: awsm_renderer_editor_protocol::InstancesAlongCurveDef,
     declare_only: bool,
 ) {
-    use awsm_renderer_curves::{CatmullRomCurve, Curve3, FrameSequence};
     use awsm_renderer::instances::InstanceAttr;
+    use awsm_renderer_curves::{CatmullRomCurve, Curve3, FrameSequence};
 
     // Both refs are optional; a nil sentinel just means "not wired up yet" — the
     // node renders empty until the user picks a curve + a source mesh.
@@ -1631,7 +1639,10 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
 /// kind observer re-fires on every `SetKind`, so editing the camera config
 /// re-inserts a slot that reflects the new config — keeping store and config in
 /// sync without a separate observer.
-async fn materialize_camera(entry: Arc<RendererNode>, cfg: awsm_renderer_editor_protocol::CameraConfig) {
+async fn materialize_camera(
+    entry: Arc<RendererNode>,
+    cfg: awsm_renderer_editor_protocol::CameraConfig,
+) {
     let params = camera_params_from_config(&cfg);
     let key = with_renderer_mut(move |r| r.cameras.insert(params)).await;
     *entry.camera_key.lock().unwrap() = Some(key);

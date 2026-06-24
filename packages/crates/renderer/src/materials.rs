@@ -8,12 +8,12 @@
 
 use std::sync::LazyLock;
 
-use awsm_renderer_materials::MaterialShader;
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
 };
+use awsm_renderer_materials::MaterialShader;
 use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use thiserror::Error;
 
@@ -26,7 +26,9 @@ use crate::{
 
 // Re-export the material types from `awsm-renderer-materials` so consumers can keep
 // using `crate::materials::*` paths.
-pub use awsm_renderer_materials::{MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext};
+pub use awsm_renderer_materials::{
+    MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext,
+};
 
 /// PBR material parameters — re-exported from `awsm-renderer-materials`.
 pub mod pbr {
@@ -57,6 +59,7 @@ pub mod writer {
     pub use awsm_renderer_materials::writer::*;
 }
 
+use awsm_renderer_core::keys::{TextureKey, TextureTransformKey};
 use awsm_renderer_materials::{
     dynamic::{DynamicMaterial, DynamicTextureBinding},
     flipbook::FlipBookMaterial,
@@ -64,7 +67,6 @@ use awsm_renderer_materials::{
     toon::ToonMaterial,
     unlit::UnlitMaterial,
 };
-use awsm_renderer_core::keys::{TextureKey, TextureTransformKey};
 
 impl AwsmRenderer {
     /// Updates a material in place.
@@ -274,7 +276,10 @@ impl Material {
             // cutouts in the masked visibility raster. Only BLEND routes to the
             // forward transparent pass.
             Material::Custom(m) => {
-                matches!(m.alpha_mode, awsm_renderer_materials::MaterialAlphaMode::Blend)
+                matches!(
+                    m.alpha_mode,
+                    awsm_renderer_materials::MaterialAlphaMode::Blend
+                )
             }
         }
     }

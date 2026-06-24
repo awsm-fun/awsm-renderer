@@ -23,9 +23,9 @@ use awsm_renderer_core::{
     configuration::{CanvasAlphaMode, CanvasConfiguration, CanvasToneMappingMode},
     renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits},
 };
-use awsm_web::dom::resize::ResizeObserver;
 use awsm_renderer_web_shared::prelude::AsyncLoader;
 use awsm_renderer_web_shared::util::free_camera::FreeCamera as Camera;
+use awsm_web::dom::resize::ResizeObserver;
 use dominator::clone;
 use gloo_render::AnimationFrame;
 

@@ -10,8 +10,6 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use awsm_renderer_materials::MaterialShaderId;
-use awsm_renderer_meshgen::sphere_mesh;
 use awsm_renderer::lights::Light;
 use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
@@ -23,6 +21,8 @@ use awsm_renderer_core::configuration::{
     CanvasAlphaMode, CanvasConfiguration, CanvasToneMappingMode,
 };
 use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
+use awsm_renderer_materials::MaterialShaderId;
+use awsm_renderer_meshgen::sphere_mesh;
 use awsm_renderer_web_shared::util::free_camera::FreeCamera as Camera;
 use gloo_render::AnimationFrame;
 use wasm_bindgen_futures::spawn_local;

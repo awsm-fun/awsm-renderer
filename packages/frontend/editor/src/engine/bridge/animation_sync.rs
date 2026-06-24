@@ -516,9 +516,11 @@ fn resolve_target(
     }
 }
 
-fn tex_slot(s: awsm_renderer_editor_protocol::animation::TexSlot) -> awsm_renderer::animation::TexSlot {
-    use awsm_renderer_editor_protocol::animation::TexSlot as S;
+fn tex_slot(
+    s: awsm_renderer_editor_protocol::animation::TexSlot,
+) -> awsm_renderer::animation::TexSlot {
     use awsm_renderer::animation::TexSlot as R;
+    use awsm_renderer_editor_protocol::animation::TexSlot as S;
     match s {
         S::BaseColor => R::BaseColor,
         S::MetallicRoughness => R::MetallicRoughness,
@@ -531,8 +533,8 @@ fn tex_slot(s: awsm_renderer_editor_protocol::animation::TexSlot) -> awsm_render
 fn tex_prop(
     p: awsm_renderer_editor_protocol::animation::TexTransformProp,
 ) -> awsm_renderer::animation::TexTransformProp {
-    use awsm_renderer_editor_protocol::animation::TexTransformProp as P;
     use awsm_renderer::animation::TexTransformProp as R;
+    use awsm_renderer_editor_protocol::animation::TexTransformProp as P;
     match p {
         P::Offset => R::Offset,
         P::Scale => R::Scale,

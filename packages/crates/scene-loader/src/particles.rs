@@ -24,7 +24,6 @@
 //! whole emitter.
 
 use anyhow::Result;
-use awsm_renderer_particles::{Emitter, EmitterSpace, Force, Simulator, SpawnShape};
 use awsm_renderer::instances::InstanceAttr;
 use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode};
@@ -33,6 +32,7 @@ use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::shadows::MeshShadowFlags;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::AwsmRenderer;
+use awsm_renderer_particles::{Emitter, EmitterSpace, Force, Simulator, SpawnShape};
 use awsm_renderer_scene::{
     ColorOverLifeDef, EmitterSpaceDef, ForceDef, ParticleEmitterDef, SizeOverLifeDef, SpawnShapeDef,
 };
@@ -148,7 +148,9 @@ pub(crate) fn def_to_emitter(def: &ParticleEmitterDef) -> Emitter {
             })
             .collect(),
         color_over_life: match &def.color_over_life {
-            ColorOverLifeDef::Const(c) => awsm_renderer_particles::emitter::ColorOverLife::Const(*c),
+            ColorOverLifeDef::Const(c) => {
+                awsm_renderer_particles::emitter::ColorOverLife::Const(*c)
+            }
             ColorOverLifeDef::Linear { start, end } => {
                 awsm_renderer_particles::emitter::ColorOverLife::Linear {
                     start: *start,

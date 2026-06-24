@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 
-use awsm_renderer_materials::MaterialShaderId;
 use awsm_renderer_core::compare::CompareFunction;
 use awsm_renderer_core::pipeline::depth_stencil::DepthStencilState;
 use awsm_renderer_core::pipeline::fragment::ColorTargetState;
@@ -19,6 +18,7 @@ use awsm_renderer_core::pipeline::multisample::MultisampleState;
 use awsm_renderer_core::pipeline::primitive::{
     CullMode, FrontFace, PrimitiveState, PrimitiveTopology,
 };
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::dynamic_materials::ShadingBase;
 use crate::error::Result;

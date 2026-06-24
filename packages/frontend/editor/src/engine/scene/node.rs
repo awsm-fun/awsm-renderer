@@ -182,7 +182,9 @@ impl Node {
     pub fn new_instances(name: impl Into<String>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::InstancesAlongCurve(awsm_renderer_editor_protocol::InstancesAlongCurveDef::default()),
+            NodeKind::InstancesAlongCurve(
+                awsm_renderer_editor_protocol::InstancesAlongCurveDef::default(),
+            ),
         )
     }
 
@@ -193,7 +195,9 @@ impl Node {
         Self::new_inner(
             name,
             NodeKind::Mesh {
-                mesh: awsm_renderer_editor_protocol::MeshRef(awsm_renderer_editor_protocol::AssetId::new()),
+                mesh: awsm_renderer_editor_protocol::MeshRef(
+                    awsm_renderer_editor_protocol::AssetId::new(),
+                ),
                 material: None,
                 shadow: Default::default(),
             },

@@ -602,8 +602,12 @@ impl EditorController {
             colors: cap.colors.clone(),
             indices: cap.indices.clone(),
         };
-        let new_positions =
-            awsm_renderer_meshgen::edit::soft_transform_positions(&md, indices, translation, falloff);
+        let new_positions = awsm_renderer_meshgen::edit::soft_transform_positions(
+            &md,
+            indices,
+            translation,
+            falloff,
+        );
         // Only override the verts the falloff actually moved.
         let mut moved = false;
         let prior = self.apply_vertex_overrides(mesh, |ov| {
@@ -747,7 +751,9 @@ impl EditorController {
     ) -> Option<(AssetId, std::sync::Arc<crate::engine::scene::node::Node>)> {
         use crate::engine::bridge::mesh_cache;
         use crate::engine::scene::node::Node;
-        use awsm_renderer_editor_protocol::{CapturedSource, MeshDef, MeshRef, PrimitiveShape, Trs};
+        use awsm_renderer_editor_protocol::{
+            CapturedSource, MeshDef, MeshRef, PrimitiveShape, Trs,
+        };
         use awsm_renderer_editor_protocol::{MeshBase, ModifierStack};
 
         let (label, base, source): (&str, MeshBase, CapturedSource) = match spec {
@@ -1201,11 +1207,15 @@ impl EditorController {
                     // textures / uploading meshes / compiling pipelines N) in the
                     // activity pill — live, because the pill is a reactive signal
                     // and the loader's awaits yield to the event loop.
-                    let res =
-                        awsm_renderer_scene_loader::populate_awsm_scene(&mut r, &scene, &assets, |p| {
+                    let res = awsm_renderer_scene_loader::populate_awsm_scene(
+                        &mut r,
+                        &scene,
+                        &assets,
+                        |p| {
                             crate::engine::activity::set_load_phase(Some(p.label()));
-                        })
-                        .await;
+                        },
+                    )
+                    .await;
                     crate::engine::activity::set_load_phase(None);
                     let loaded =
                         res.map_err(|e| crate::error::EditorError::msg(format!("populate: {e}")))?;
@@ -2484,8 +2494,9 @@ impl EditorController {
                 // and restores it on reload; env_sync decodes + projects it lazily.
                 // Then point both skybox + IBL at it. Inverse restores the prior env.
                 use awsm_renderer_editor_protocol::TexturePayload;
-                let payload = awsm_renderer_editor_protocol::decode_texture_payload(&data, None, None, None)
-                    .map_err(crate::error::EditorError::msg)?;
+                let payload =
+                    awsm_renderer_editor_protocol::decode_texture_payload(&data, None, None, None)
+                        .map_err(crate::error::EditorError::msg)?;
                 let (bytes, mime, ext) = match payload {
                     TexturePayload::Encoded { bytes, mime } => {
                         let m = mime.as_deref().unwrap_or("image/png");
@@ -2516,7 +2527,9 @@ impl EditorController {
                 self.scene
                     .environment
                     .set(awsm_renderer_editor_protocol::EnvironmentConfig {
-                        skybox: awsm_renderer_editor_protocol::SkyboxConfig::Equirect { asset_id: id },
+                        skybox: awsm_renderer_editor_protocol::SkyboxConfig::Equirect {
+                            asset_id: id,
+                        },
                         ibl: awsm_renderer_editor_protocol::IblConfig::Equirect { asset_id: id },
                     });
                 self.scene.bump_revision();
@@ -4448,8 +4461,11 @@ impl EditorController {
                 });
                 match mesh {
                     Some(mesh) => {
-                        let profile =
-                            awsm_renderer_meshgen::cross_section_profile(&mesh, axis as usize, samples);
+                        let profile = awsm_renderer_meshgen::cross_section_profile(
+                            &mesh,
+                            axis as usize,
+                            samples,
+                        );
                         let mut entries = std::collections::BTreeMap::new();
                         entries.insert("axis".to_string(), json!(axis));
                         entries.insert("profile".to_string(), json!(profile));
@@ -5854,8 +5870,8 @@ fn read_readback_target(
         R::Uniform { material, name } => {
             // Custom-material asset → shader id → uniform slot index by name →
             // live MaterialKey → read its current `DynamicMaterial::values[slot]`.
-            use awsm_renderer_materials::dynamic_layout::UniformValue;
             use awsm_renderer::materials::Material;
+            use awsm_renderer_materials::dynamic_layout::UniformValue;
             fn uniform_value_to_json(v: &UniformValue) -> serde_json::Value {
                 match v {
                     UniformValue::F32(x) => json!(x),
@@ -7114,7 +7130,9 @@ fn build_editor_subtree(
     node_map: &mut std::collections::HashMap<u32, NodeId>,
 ) -> Arc<crate::engine::scene::node::Node> {
     use crate::engine::scene::node::Node;
-    use awsm_renderer_editor_protocol::{dynamic_material::MaterialInstance, NodeKind, SkinnedMeshRef, Trs};
+    use awsm_renderer_editor_protocol::{
+        dynamic_material::MaterialInstance, NodeKind, SkinnedMeshRef, Trs,
+    };
 
     // This node's index in the clean rig glb (the DFS-flatten `reexport_clean`
     // assigns), the index space the MATERIALISER decodes the rig glb at. Falls

@@ -3044,7 +3044,9 @@ impl EditorMcp {
             }
         };
         let entries = match &sol {
-            awsm_renderer_editor_protocol::QueryResult::Map(m) if m.kind == "ik_solution" => &m.entries,
+            awsm_renderer_editor_protocol::QueryResult::Map(m) if m.kind == "ik_solution" => {
+                &m.entries
+            }
             awsm_renderer_editor_protocol::QueryResult::Error { error } => {
                 return Err(McpError::internal_error(error.clone(), None))
             }
@@ -3095,24 +3097,25 @@ impl EditorMcp {
             awsm_renderer_editor_protocol::QueryResult::Map(m) => &m.entries,
             _ => return Err(McpError::internal_error("bad transforms result", None)),
         };
-        let trs_of = |id: NodeId, rot: [f32; 4]| -> Result<awsm_renderer_editor_protocol::Trs, McpError> {
-            let e = tmap
-                .get(&id.to_string())
-                .ok_or_else(|| McpError::internal_error("joint transform missing", None))?;
-            let v3 = |k: &str| -> [f32; 3] {
-                serde_json::from_value(e.get(k).cloned().unwrap_or_default())
-                    .unwrap_or([0.0, 0.0, 0.0])
+        let trs_of =
+            |id: NodeId, rot: [f32; 4]| -> Result<awsm_renderer_editor_protocol::Trs, McpError> {
+                let e = tmap
+                    .get(&id.to_string())
+                    .ok_or_else(|| McpError::internal_error("joint transform missing", None))?;
+                let v3 = |k: &str| -> [f32; 3] {
+                    serde_json::from_value(e.get(k).cloned().unwrap_or_default())
+                        .unwrap_or([0.0, 0.0, 0.0])
+                };
+                let mut scale = v3("scale");
+                if scale == [0.0, 0.0, 0.0] {
+                    scale = [1.0, 1.0, 1.0];
+                }
+                Ok(awsm_renderer_editor_protocol::Trs {
+                    translation: v3("translation"),
+                    rotation: rot,
+                    scale,
+                })
             };
-            let mut scale = v3("scale");
-            if scale == [0.0, 0.0, 0.0] {
-                scale = [1.0, 1.0, 1.0];
-            }
-            Ok(awsm_renderer_editor_protocol::Trs {
-                translation: v3("translation"),
-                rotation: rot,
-                scale,
-            })
-        };
         let cmds = vec![
             EditorCommand::SetTransform {
                 id: root,

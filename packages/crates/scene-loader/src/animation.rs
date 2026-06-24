@@ -24,7 +24,6 @@
 
 use std::collections::HashMap;
 
-use awsm_renderer_materials::MaterialShaderId;
 use awsm_renderer::animation::scene_loader::{lower_stored_clip, lower_stored_mixer};
 use awsm_renderer::animation::{
     AnimationClipGroup, AnimationClipKey, AnimationTarget, BuiltinMaterialParam, CameraParam,
@@ -38,7 +37,10 @@ use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::render_passes::lines::LineKey;
 use awsm_renderer::transforms::TransformKey;
 use awsm_renderer::AwsmRenderer;
-use awsm_renderer_scene::animation::{BuiltinParamKind, CameraParamKind, LightParamKind, TrackTarget};
+use awsm_renderer_materials::MaterialShaderId;
+use awsm_renderer_scene::animation::{
+    BuiltinParamKind, CameraParamKind, LightParamKind, TrackTarget,
+};
 use awsm_renderer_scene::{AssetId, CameraConfig, EditorNode, NodeId, Scene};
 
 /// The renderer keys the loader minted per node/asset while materializing the

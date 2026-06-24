@@ -11,7 +11,9 @@
 //! `proptest` sweeps the matrix (vertex count, channel presence, index topology,
 //! material factors, animation paths/interpolation) rather than hand-enumerating.
 
-use awsm_renderer_glb_export::{extract_node_mesh_from_bytes, write_glb, ExportNode, GlbScene, MeshData};
+use awsm_renderer_glb_export::{
+    extract_node_mesh_from_bytes, write_glb, ExportNode, GlbScene, MeshData,
+};
 use awsm_renderer_gltf_convert::{
     awsm_format_version, convert, is_canonical, AlphaMode, AWSM_FORMAT_VERSION,
 };

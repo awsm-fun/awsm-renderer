@@ -74,7 +74,10 @@ impl<'a> DynamicMaterialContext for DynamicMaterialPackContext<'a> {
         self.materials.get(shader_id).map(|r| &r.layout)
     }
 
-    fn alpha_mode(&self, shader_id: MaterialShaderId) -> Option<awsm_renderer_materials::MaterialAlphaMode> {
+    fn alpha_mode(
+        &self,
+        shader_id: MaterialShaderId,
+    ) -> Option<awsm_renderer_materials::MaterialAlphaMode> {
         self.materials.get(shader_id).map(|r| r.alpha_mode)
     }
 
@@ -907,10 +910,11 @@ impl DynamicMaterials {
                     "material_data_load",
                     &reg.layout,
                 ),
-                texture_helpers: awsm_renderer_materials::dynamic_layout::generate_wgsl_texture_helpers(
-                    "MaterialData",
-                    &reg.layout,
-                ),
+                texture_helpers:
+                    awsm_renderer_materials::dynamic_layout::generate_wgsl_texture_helpers(
+                        "MaterialData",
+                        &reg.layout,
+                    ),
                 alpha_wgsl,
             },
         )
@@ -2023,7 +2027,9 @@ mod tests {
     #[cfg(feature = "dynamic-material-validation")]
     #[test]
     fn custom_vertex_geometry_multi_uv_and_texture_naga_validates() {
-        use awsm_renderer_materials::dynamic_layout::{FieldType, TextureSlotRuntime, UniformFieldRuntime};
+        use awsm_renderer_materials::dynamic_layout::{
+            FieldType, TextureSlotRuntime, UniformFieldRuntime,
+        };
 
         let mut dm = DynamicMaterials::new();
         let mut r = reg("displacer_multi_uv", 1, 1);

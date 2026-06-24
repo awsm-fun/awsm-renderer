@@ -353,15 +353,17 @@ impl MaterialEdgePipelines {
                         }
                         Some(reg) => Some(DynamicShaderInfo {
                             shader_includes: reg.shader_includes.resolve(),
-                            struct_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_struct(
-                                "MaterialData",
-                                &reg.layout,
-                            ),
-                            loader_decl: awsm_renderer_materials::dynamic_layout::generate_wgsl_loader(
-                                "MaterialData",
-                                "material_data_load",
-                                &reg.layout,
-                            ),
+                            struct_decl:
+                                awsm_renderer_materials::dynamic_layout::generate_wgsl_struct(
+                                    "MaterialData",
+                                    &reg.layout,
+                                ),
+                            loader_decl:
+                                awsm_renderer_materials::dynamic_layout::generate_wgsl_loader(
+                                    "MaterialData",
+                                    "material_data_load",
+                                    &reg.layout,
+                                ),
                             wgsl_fragment: reg.wgsl_fragment.clone(),
                         }),
                         None if registry.first_party_variant_of(entry.shader_id).is_some() => None,

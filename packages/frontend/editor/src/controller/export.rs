@@ -90,7 +90,9 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
 pub async fn bake_player_bundle(
     ctrl: &super::EditorController,
 ) -> Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String> {
-    use awsm_renderer_editor_protocol::{assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh};
+    use awsm_renderer_editor_protocol::{
+        assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh,
+    };
     use awsm_renderer_editor_protocol::{lower_mesh, project_to_scene};
 
     let project = crate::controller::persistence::to_editor_project(ctrl);
@@ -359,7 +361,9 @@ pub async fn export_glb(scene: &Scene, node: Option<NodeId>) -> Result<Vec<u8>, 
 /// its source placement (edits to the mirror hierarchy don't retarget into
 /// the rig), and rig materials are the source defaults (the bundle path
 /// re-applies ours from scene.toml).
-fn collect_rig_scenes(roots: &[Arc<Node>]) -> (Vec<awsm_renderer_glb_export::GlbScene>, HashSet<AssetId>) {
+fn collect_rig_scenes(
+    roots: &[Arc<Node>],
+) -> (Vec<awsm_renderer_glb_export::GlbScene>, HashSet<AssetId>) {
     fn collect(node: &Node, out: &mut Vec<AssetId>, seen: &mut HashSet<AssetId>) {
         if let NodeKind::SkinnedMesh { skin, .. } = &node.kind.get_cloned() {
             if seen.insert(skin.source) {

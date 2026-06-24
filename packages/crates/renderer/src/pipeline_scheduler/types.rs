@@ -20,8 +20,8 @@
 //! All `Material`-flavoured ids share a `SlotMap`; `Pass`-flavoured ids
 //! are keyed by `PassKind` (one-of-each-kind).
 
-use awsm_renderer_materials::{MaterialAlphaMode, MaterialShaderId};
 use awsm_renderer_core::pipeline::primitive::CullMode;
+use awsm_renderer_materials::{MaterialAlphaMode, MaterialShaderId};
 use slotmap::new_key_type;
 
 use crate::{

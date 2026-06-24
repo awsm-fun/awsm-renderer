@@ -6,9 +6,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use awsm_renderer_editor_protocol::{
-    AssetSource, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef, TextureRef,
-};
 use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey, MaterialTexture};
@@ -17,6 +14,9 @@ use awsm_renderer::AwsmRenderer;
 use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_core::texture::texture_pool::TextureColorInfo;
+use awsm_renderer_editor_protocol::{
+    AssetSource, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef, TextureRef,
+};
 
 use crate::engine::scene::AssetId;
 

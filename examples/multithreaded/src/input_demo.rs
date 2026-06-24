@@ -362,14 +362,14 @@ async fn run_render(
     camera: Rc<RefCell<CameraState>>,
     canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
-    use awsm_renderer_materials::pbr::PbrMaterial;
-    use awsm_renderer_materials::MaterialAlphaMode;
-    use awsm_renderer_meshgen::primitives::box_mesh;
     use awsm_renderer::camera::CameraMatrices;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
     use awsm_renderer::transforms::Transform;
     use awsm_renderer::AwsmRendererBuilder;
+    use awsm_renderer_materials::pbr::PbrMaterial;
+    use awsm_renderer_materials::MaterialAlphaMode;
+    use awsm_renderer_meshgen::primitives::box_mesh;
     use glam::{Mat4, Vec3};
 
     let mut renderer = AwsmRendererBuilder::new(gpu_builder)

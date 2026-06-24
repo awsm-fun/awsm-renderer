@@ -117,7 +117,9 @@ pub fn alpha_mode_of(def: &MaterialDef) -> MaterialAlphaMode {
                 MaterialAlphaMode::Opaque
             }
         }
-        awsm_renderer_scene::MaterialAlphaMode::Mask { cutoff } => MaterialAlphaMode::Mask { cutoff },
+        awsm_renderer_scene::MaterialAlphaMode::Mask { cutoff } => {
+            MaterialAlphaMode::Mask { cutoff }
+        }
         awsm_renderer_scene::MaterialAlphaMode::Blend => MaterialAlphaMode::Blend,
     }
 }

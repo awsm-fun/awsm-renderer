@@ -21,12 +21,12 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use awsm_renderer_materials::MaterialShaderId;
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
 };
+use awsm_renderer_materials::MaterialShaderId;
 
 use crate::buffer::mapped_uploader::MappedUploader;
 

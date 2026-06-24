@@ -1,6 +1,5 @@
 //! Transparent material pass pipeline setup.
 
-use awsm_renderer_materials::MaterialShaderId;
 use awsm_renderer_core::compare::CompareFunction;
 use awsm_renderer_core::pipeline::depth_stencil::DepthStencilState;
 use awsm_renderer_core::pipeline::fragment::{
@@ -15,6 +14,7 @@ use awsm_renderer_core::pipeline::vertex::{
 };
 use awsm_renderer_core::renderer::AwsmRendererWebGpu;
 use awsm_renderer_core::texture::TextureFormat;
+use awsm_renderer_materials::MaterialShaderId;
 use slotmap::SecondaryMap;
 
 use crate::anti_alias::AntiAliasing;

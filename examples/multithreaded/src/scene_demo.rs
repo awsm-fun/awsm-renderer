@@ -109,7 +109,8 @@ async fn fetch_scene_file(url: &str) -> Result<awsm_renderer_scene::Scene, Strin
         .text()
         .await
         .map_err(|e| format!("read {url}: {e}"))?;
-    awsm_renderer_scene::project_dir::scene_from_toml(&text).map_err(|e| format!("parse {url}: {e}"))
+    awsm_renderer_scene::project_dir::scene_from_toml(&text)
+        .map_err(|e| format!("parse {url}: {e}"))
 }
 
 async fn run_render(
@@ -159,9 +160,10 @@ async fn run_render(
         }
     };
     let assets: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
-    let loaded = awsm_renderer_scene_loader::load_scene_for_player(&mut renderer, &scene, &assets, |_| {})
-        .await
-        .map_err(|e| JsValue::from_str(&format!("load_scene_for_player: {e}")))?;
+    let loaded =
+        awsm_renderer_scene_loader::load_scene_for_player(&mut renderer, &scene, &assets, |_| {})
+            .await
+            .map_err(|e| JsValue::from_str(&format!("load_scene_for_player: {e}")))?;
     let node_count = loaded.nodes.len();
     let prefab_count = loaded.prefabs.len();
 

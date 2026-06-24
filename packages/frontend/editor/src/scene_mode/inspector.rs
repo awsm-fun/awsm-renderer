@@ -1690,9 +1690,15 @@ pub(crate) fn collect_texture_assets() -> Vec<(AssetId, String)> {
             awsm_renderer_editor_protocol::AssetSource::Texture(def) => {
                 let label = match def {
                     awsm_renderer_editor_protocol::TextureDef::Procedural(p) => match p {
-                        awsm_renderer_editor_protocol::ProceduralTextureDef::Checker { .. } => "Checker",
-                        awsm_renderer_editor_protocol::ProceduralTextureDef::Gradient { .. } => "Gradient",
-                        awsm_renderer_editor_protocol::ProceduralTextureDef::Noise { .. } => "Noise",
+                        awsm_renderer_editor_protocol::ProceduralTextureDef::Checker { .. } => {
+                            "Checker"
+                        }
+                        awsm_renderer_editor_protocol::ProceduralTextureDef::Gradient {
+                            ..
+                        } => "Gradient",
+                        awsm_renderer_editor_protocol::ProceduralTextureDef::Noise { .. } => {
+                            "Noise"
+                        }
                     }
                     .to_string(),
                     awsm_renderer_editor_protocol::TextureDef::Raster { display_name } => {
@@ -2692,7 +2698,9 @@ fn pick_buffer_bin(node: &Arc<Node>, name: &str) {
             set_buffer_override(
                 &node,
                 &name,
-                Some(awsm_renderer_editor_protocol::dynamic_material::BufferRef { path: path.into() }),
+                Some(awsm_renderer_editor_protocol::dynamic_material::BufferRef {
+                    path: path.into(),
+                }),
             );
         });
     });

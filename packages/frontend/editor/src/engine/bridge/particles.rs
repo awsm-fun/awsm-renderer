@@ -7,11 +7,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use awsm_renderer_editor_protocol::{
-    ColorOverLifeDef, EmitterSpaceDef, ForceDef, NodeId, ParticleEmitterDef, SizeOverLifeDef,
-    SpawnShapeDef,
-};
-use awsm_renderer_particles::{Emitter, EmitterSpace, Force, Simulator, SpawnShape};
 use awsm_renderer::instances::InstanceAttr;
 use awsm_renderer::materials::pbr::PbrMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
@@ -20,6 +15,11 @@ use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::raw_mesh::RawMeshData;
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer::AwsmRenderer;
+use awsm_renderer_editor_protocol::{
+    ColorOverLifeDef, EmitterSpaceDef, ForceDef, NodeId, ParticleEmitterDef, SizeOverLifeDef,
+    SpawnShapeDef,
+};
+use awsm_renderer_particles::{Emitter, EmitterSpace, Force, Simulator, SpawnShape};
 use glam::{Quat, Vec3};
 
 const PARTICLE_QUAD_SIZE: f32 = 1.0;
@@ -75,7 +75,9 @@ fn def_to_emitter(def: &ParticleEmitterDef) -> Emitter {
             })
             .collect(),
         color_over_life: match &def.color_over_life {
-            ColorOverLifeDef::Const(c) => awsm_renderer_particles::emitter::ColorOverLife::Const(*c),
+            ColorOverLifeDef::Const(c) => {
+                awsm_renderer_particles::emitter::ColorOverLife::Const(*c)
+            }
             ColorOverLifeDef::Linear { start, end } => {
                 awsm_renderer_particles::emitter::ColorOverLife::Linear {
                     start: *start,

@@ -274,7 +274,11 @@ fn unified_shade_opaque_shaders_validate() {
     // Custom (dynamic) base under MSAA + unified — exercises the cs_shade
     // dynamic-wrapper arm (custom_shade_dynamic from both interior + edge).
     for mips in [false, true] {
-        let key = custom_key(awsm_renderer_materials::ShaderIncludes::all(), Some(4), mips);
+        let key = custom_key(
+            awsm_renderer_materials::ShaderIncludes::all(),
+            Some(4),
+            mips,
+        );
         let label = format!("opaque-unified/custom msaa=4 mips={mips}");
         let src = render(&key, &label);
         naga_validate(&src, &label);

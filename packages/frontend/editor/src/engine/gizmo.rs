@@ -9,9 +9,9 @@
 
 use std::cell::RefCell;
 
-use awsm_renderer_editor_protocol::EditorMode;
 use awsm_renderer::transforms::TransformKey;
 use awsm_renderer::AwsmRenderer;
+use awsm_renderer_editor_protocol::EditorMode;
 use awsm_renderer_web_shared::viewport3d::transform_controller::{
     GizmoSpace, TransformController, TransformObject,
 };

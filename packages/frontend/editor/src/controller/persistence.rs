@@ -364,7 +364,10 @@ fn skinned_sources(ctrl: &EditorController) -> std::collections::HashSet<AssetId
 /// [`skinned_sources`] but over the serialized `EditorNode` tree.
 fn skinned_sources_from_project(project: &EditorProject) -> std::collections::HashSet<AssetId> {
     use crate::engine::scene::NodeKind;
-    fn walk(node: &awsm_renderer_editor_protocol::EditorNode, out: &mut std::collections::HashSet<AssetId>) {
+    fn walk(
+        node: &awsm_renderer_editor_protocol::EditorNode,
+        out: &mut std::collections::HashSet<AssetId>,
+    ) {
         if let NodeKind::SkinnedMesh { skin, .. } = &node.kind {
             out.insert(skin.source);
         }

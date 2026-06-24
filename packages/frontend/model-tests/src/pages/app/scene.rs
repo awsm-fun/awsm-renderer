@@ -23,10 +23,10 @@ use awsm_renderer_gltf::AwsmRendererGltfExt;
 use awsm_renderer::materials::Material;
 use awsm_renderer::picker::PickResult;
 use awsm_renderer::AwsmRenderer;
-use awsm_web::dom::resize::ResizeObserver;
 use awsm_renderer_web_shared::viewport3d::transform_controller::{
     GizmoSpace, TransformController, TransformObject,
 };
+use awsm_web::dom::resize::ResizeObserver;
 use camera::{Camera, CameraId};
 use gloo_events::EventListener;
 use wasm_bindgen_futures::spawn_local;

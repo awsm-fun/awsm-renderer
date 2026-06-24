@@ -56,9 +56,9 @@ fn project_with_mesh_asset(asset_id: AssetId, label: &str) -> EditorProject {
             source: None,
             editable: false,
             stack: awsm_renderer_editor_protocol::ModifierStack {
-                base: awsm_renderer_editor_protocol::MeshBase::Captured(awsm_renderer_editor_protocol::MeshRef(
-                    asset_id,
-                )),
+                base: awsm_renderer_editor_protocol::MeshBase::Captured(
+                    awsm_renderer_editor_protocol::MeshRef(asset_id),
+                ),
                 modifiers: vec![],
             },
             overrides: Default::default(),

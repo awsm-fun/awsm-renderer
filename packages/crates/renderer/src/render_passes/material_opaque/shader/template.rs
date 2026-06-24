@@ -461,7 +461,9 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // once as `inc` above and shared with the bind-group template).
                 inc,
                 owns_skybox: value.owns_skybox,
-                pbr_features: awsm_renderer_materials::pbr::PbrFeatures::from_bits(value.pbr_features),
+                pbr_features: awsm_renderer_materials::pbr::PbrFeatures::from_bits(
+                    value.pbr_features,
+                ),
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()
@@ -1109,8 +1111,16 @@ mod size_regression {
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {
-        let empty = render_custom(awsm_renderer_materials::ShaderIncludes::empty(), Some(4), true);
-        let all = render_custom(awsm_renderer_materials::ShaderIncludes::all(), Some(4), true);
+        let empty = render_custom(
+            awsm_renderer_materials::ShaderIncludes::empty(),
+            Some(4),
+            true,
+        );
+        let all = render_custom(
+            awsm_renderer_materials::ShaderIncludes::all(),
+            Some(4),
+            true,
+        );
         eprintln!(
             "[size_regression] Custom msaa4+mips — empty: {} B, all: {} B (delta {})",
             empty.len(),

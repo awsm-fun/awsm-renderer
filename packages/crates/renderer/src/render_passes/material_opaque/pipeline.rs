@@ -257,7 +257,9 @@ impl MaterialOpaquePipelines {
                             .iter()
                             .find(|e| e.shader_id == shader_id)
                             .map(|e| e.pbr_features)
-                            .unwrap_or_else(|| awsm_renderer_materials::pbr::PbrFeatures::default().bits()),
+                            .unwrap_or_else(|| {
+                                awsm_renderer_materials::pbr::PbrFeatures::default().bits()
+                            }),
                         // Builder-time prewarm — no dynamic materials
                         // can be registered before `build()` returns,
                         // so the stable empty-state sentinel applies.

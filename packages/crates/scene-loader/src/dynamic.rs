@@ -19,6 +19,10 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use awsm_renderer::dynamic_materials::MaterialRegistration;
+use awsm_renderer::materials::Material;
+use awsm_renderer::AwsmRenderer;
+use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_materials::dynamic::{DynamicMaterial, DynamicTextureBinding};
 use awsm_renderer_materials::dynamic_layout::{
     BufferSlotRuntime, FieldType, MaterialLayout, TextureSlotRuntime, UniformFieldRuntime,
@@ -27,10 +31,6 @@ use awsm_renderer_materials::dynamic_layout::{
 use awsm_renderer_materials::{
     FragmentInputs, MaterialAlphaMode as RAlphaMode, MaterialShaderId, ShaderIncludes,
 };
-use awsm_renderer::dynamic_materials::MaterialRegistration;
-use awsm_renderer::materials::Material;
-use awsm_renderer::AwsmRenderer;
-use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_scene::{
     AssetId, FieldType as SFieldType, MaterialAlphaMode as SAlphaMode, MaterialDefinition,
     MaterialInstance, Scene, UniformValue as SUniformValue,
@@ -429,7 +429,11 @@ mod tests {
     // boundary, so an authored uniform-value tweak stays a cheap no-recompile
     // update while a real layout change forces a distinct registration.
 
-    fn uni(name: &str, ty: SFieldType, default: SUniformValue) -> awsm_renderer_scene::UniformField {
+    fn uni(
+        name: &str,
+        ty: SFieldType,
+        default: SUniformValue,
+    ) -> awsm_renderer_scene::UniformField {
         awsm_renderer_scene::UniformField {
             name: name.into(),
             ty,
