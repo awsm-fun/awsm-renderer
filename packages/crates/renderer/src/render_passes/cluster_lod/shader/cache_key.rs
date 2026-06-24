@@ -12,3 +12,13 @@ impl From<ShaderCacheKeyClusterCut> for ShaderCacheKey {
         ShaderCacheKey::RenderPass(ShaderCacheKeyRenderPass::ClusterCut(key))
     }
 }
+
+/// Cache key for the cluster-compaction compute shader. One shared pipeline.
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Default)]
+pub struct ShaderCacheKeyClusterCompaction;
+
+impl From<ShaderCacheKeyClusterCompaction> for ShaderCacheKey {
+    fn from(key: ShaderCacheKeyClusterCompaction) -> Self {
+        ShaderCacheKey::RenderPass(ShaderCacheKeyRenderPass::ClusterCompaction(key))
+    }
+}

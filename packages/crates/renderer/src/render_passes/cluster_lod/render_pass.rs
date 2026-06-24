@@ -14,12 +14,15 @@ use crate::cluster_lod::ClusterPage;
 use crate::error::Result;
 use crate::render::RenderContext;
 use crate::render_passes::cluster_lod::{
-    bind_group::ClusterCutBindGroups, buffers::ClusterLodBuffers, pipeline::ClusterLodPipelines,
+    bind_group::{ClusterCompactionBindGroups, ClusterCutBindGroups},
+    buffers::ClusterLodBuffers,
+    pipeline::ClusterLodPipelines,
 };
 use crate::render_passes::RenderPassInitContext;
 
 pub struct ClusterLodRenderPass {
     pub bind_groups: ClusterCutBindGroups,
+    pub compaction_bind_groups: ClusterCompactionBindGroups,
     pub pipelines: ClusterLodPipelines,
     /// Per-mesh cluster buffers (single cluster mesh for now — a `MeshKey`
     /// registry is the multi-mesh follow-up). `None` until a cluster mesh loads.
@@ -34,9 +37,11 @@ impl ClusterLodRenderPass {
     /// it here) — the first on-GPU checkpoint for the per-cluster cut.
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = ClusterCutBindGroups::new(ctx)?;
-        let pipelines = ClusterLodPipelines::new(ctx, &bind_groups).await?;
+        let compaction_bind_groups = ClusterCompactionBindGroups::new(ctx)?;
+        let pipelines = ClusterLodPipelines::new(ctx, &bind_groups, &compaction_bind_groups).await?;
         Ok(Self {
             bind_groups,
+            compaction_bind_groups,
             pipelines,
             buffers: None,
             cluster_count: 0,
@@ -74,6 +79,7 @@ impl ClusterLodRenderPass {
         self.cluster_count = count;
         let buffers = self.buffers.as_ref().unwrap();
         self.bind_groups.recreate(gpu, layouts, buffers)?;
+        self.compaction_bind_groups.recreate(gpu, layouts, buffers)?;
         Ok(())
     }
 

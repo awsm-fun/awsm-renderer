@@ -3,7 +3,9 @@
 use askama::Template;
 
 use crate::{
-    render_passes::cluster_lod::shader::cache_key::ShaderCacheKeyClusterCut,
+    render_passes::cluster_lod::shader::cache_key::{
+        ShaderCacheKeyClusterCompaction, ShaderCacheKeyClusterCut,
+    },
     shaders::{AwsmShaderError, Result},
 };
 
@@ -29,6 +31,30 @@ impl ShaderTemplateClusterCut {
 
     pub fn debug_label(&self) -> Option<&str> {
         Some("Cluster Cut")
+    }
+}
+
+/// Renders `cluster_lod_wgsl/cluster_compaction.wgsl` — packs the cut's selected
+/// clusters' index pages into one compacted stream + drawIndexedIndirect args.
+#[derive(Template, Debug, Default)]
+#[template(path = "cluster_lod_wgsl/cluster_compaction.wgsl", whitespace = "minimize")]
+pub struct ShaderTemplateClusterCompaction;
+
+impl TryFrom<&ShaderCacheKeyClusterCompaction> for ShaderTemplateClusterCompaction {
+    type Error = AwsmShaderError;
+
+    fn try_from(_value: &ShaderCacheKeyClusterCompaction) -> Result<Self> {
+        Ok(Self)
+    }
+}
+
+impl ShaderTemplateClusterCompaction {
+    pub fn into_source(self) -> Result<String> {
+        self.render().map_err(AwsmShaderError::from)
+    }
+
+    pub fn debug_label(&self) -> Option<&str> {
+        Some("Cluster Compaction")
     }
 }
 

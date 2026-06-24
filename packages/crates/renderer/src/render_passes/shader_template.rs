@@ -2,7 +2,9 @@
 
 use crate::{
     render_passes::{
-        cluster_lod::shader::template::ShaderTemplateClusterCut,
+        cluster_lod::shader::template::{
+            ShaderTemplateClusterCompaction, ShaderTemplateClusterCut,
+        },
         coverage::shader::template::ShaderTemplateCoverage,
         display::shader::template::ShaderTemplateDisplay,
         effects::shader::template::ShaderTemplateEffects,
@@ -47,6 +49,7 @@ pub enum ShaderTemplateRenderPass {
     OcclusionCull(ShaderTemplateOcclusionCull),
     OcclusionCompaction(ShaderTemplateOcclusionCompaction),
     ClusterCut(ShaderTemplateClusterCut),
+    ClusterCompaction(ShaderTemplateClusterCompaction),
     Effects(ShaderTemplateEffects),
     Display(ShaderTemplateDisplay),
 }
@@ -110,6 +113,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::ClusterCut(cache_key) => {
                 Ok(ShaderTemplateRenderPass::ClusterCut(cache_key.try_into()?))
             }
+            ShaderCacheKeyRenderPass::ClusterCompaction(cache_key) => Ok(
+                ShaderTemplateRenderPass::ClusterCompaction(cache_key.try_into()?),
+            ),
             ShaderCacheKeyRenderPass::Effects(cache_key) => {
                 Ok(ShaderTemplateRenderPass::Effects(cache_key.try_into()?))
             }
@@ -142,6 +148,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::OcclusionCull(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::OcclusionCompaction(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::ClusterCut(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::ClusterCompaction(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.into_source(),
         }
@@ -170,6 +177,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::OcclusionCull(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::OcclusionCompaction(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::ClusterCut(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::ClusterCompaction(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.debug_label(),
         }

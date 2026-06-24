@@ -97,3 +97,79 @@ impl ClusterCutBindGroups {
         Ok(())
     }
 }
+
+/// Bind group for the compaction pass: pages(RO), selected(RO), source_indices
+/// (RO), compacted_indices(RW), draw_args(RW), params(uniform — reused cut
+/// params, only `cluster_count` read). All compute-visible.
+pub struct ClusterCompactionBindGroups {
+    pub layout_key: BindGroupLayoutKey,
+    bind_group: Option<web_sys::GpuBindGroup>,
+}
+
+impl ClusterCompactionBindGroups {
+    pub fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
+        let compute_only = |resource| BindGroupLayoutCacheKeyEntry {
+            resource,
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        };
+        let storage_ro = || {
+            BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+            )
+        };
+        let storage_rw = || {
+            BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
+            )
+        };
+        let entries = vec![
+            compute_only(storage_ro()), // pages
+            compute_only(storage_ro()), // selected
+            compute_only(storage_ro()), // source_indices
+            compute_only(storage_rw()), // compacted_indices
+            compute_only(storage_rw()), // draw_args
+            compute_only(BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+            )), // params
+        ];
+        let layout_key = ctx
+            .bind_group_layouts
+            .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?;
+        Ok(Self {
+            layout_key,
+            bind_group: None,
+        })
+    }
+
+    pub fn get_bind_group(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.bind_group
+            .as_ref()
+            .ok_or_else(|| AwsmBindGroupError::NotFound("ClusterCompaction".to_string()))
+    }
+
+    pub fn recreate(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        layouts: &BindGroupLayouts,
+        buffers: &ClusterLodBuffers,
+    ) -> Result<()> {
+        let buf = |i, b| BindGroupEntry::new(i, BindGroupResource::Buffer(BufferBinding::new(b)));
+        let entries = vec![
+            buf(0, &buffers.pages_buffer),
+            buf(1, &buffers.selected_buffer),
+            buf(2, &buffers.source_indices_buffer),
+            buf(3, &buffers.compacted_indices_buffer),
+            buf(4, &buffers.draw_args_buffer),
+            buf(5, &buffers.params_buffer),
+        ];
+        let descriptor = BindGroupDescriptor::new(
+            layouts.get(self.layout_key)?,
+            Some("ClusterCompaction"),
+            entries,
+        );
+        self.bind_group = Some(gpu.create_bind_group(&descriptor.into()));
+        Ok(())
+    }
+}
