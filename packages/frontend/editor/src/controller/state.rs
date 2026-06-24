@@ -12,8 +12,8 @@ use super::*;
 use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
 use awsm_editor_protocol::{
-    AssetEntry, AssetSource as SceneAssetSource, MaterialDef, ModifierStack, ProceduralTextureDef,
-    TextureDef,
+    AssetEntry, AssetSource as SceneAssetSource, BoundedHistory, MaterialDef, ModifierStack,
+    ProceduralTextureDef, TextureDef,
 };
 use std::sync::Arc;
 
@@ -189,10 +189,12 @@ pub struct EditorController {
     pub settings: Settings,
     /// Whether the Settings drawer is open.
     pub settings_open: Mutable<bool>,
-    /// Inverses of applied commands, newest last (the undo log).
-    undo: Rc<RefCell<Vec<EditorCommand>>>,
-    /// Inverses popped by undo, re-appliable by redo.
-    redo: Rc<RefCell<Vec<EditorCommand>>>,
+    /// Inverses of applied commands, newest last (the undo log). Bounded by a
+    /// total-byte budget (drop-oldest) so a high-volume agent session can't grow
+    /// it toward the ~2 GB WASM-realloc OOM cliff — see [`BoundedHistory`].
+    undo: Rc<RefCell<BoundedHistory>>,
+    /// Inverses popped by undo, re-appliable by redo. Same byte budget.
+    redo: Rc<RefCell<BoundedHistory>>,
     /// Count of in-flight (or debounce-scheduled) material compiles. The
     /// `WaitRenderSettled` query waits for this to reach zero — plus the
     /// renderer's own pipeline scheduler to drain and a frame to present — so an
@@ -276,8 +278,8 @@ impl EditorController {
             cmdk_open: Mutable::new(false),
             settings: Settings::default(),
             settings_open: Mutable::new(false),
-            undo: Rc::new(RefCell::new(Vec::new())),
-            redo: Rc::new(RefCell::new(Vec::new())),
+            undo: Rc::new(RefCell::new(BoundedHistory::with_default_budget())),
+            redo: Rc::new(RefCell::new(BoundedHistory::with_default_budget())),
             compile_pending: Rc::new(Cell::new(0)),
         }
     }
@@ -4757,6 +4759,35 @@ impl EditorController {
                 entries.insert("js_heap_used_bytes".to_string(), json!(heap_used));
                 entries.insert("js_heap_total_bytes".to_string(), json!(heap_total));
                 entries.insert("js_heap_limit_bytes".to_string(), json!(heap_limit));
+                // Opt-in hardening diagnostics (gated): the metrics the JS-heap
+                // soak misses. `wasm_heap_bytes` is WASM linear-memory size — the
+                // arena the unbounded-undo OOM actually grows. `undo_*`/`redo_*`
+                // expose the bounded-history depth + its estimated retained bytes
+                // (the same estimator the byte-budget cap uses), so a churn repro
+                // can confirm the log PLATEAUS under budget instead of ramping
+                // toward the ~2 GB realloc cliff.
+                #[cfg(any(debug_assertions, feature = "harden-diag"))]
+                {
+                    let wasm_heap_bytes = wasm_bindgen::memory()
+                        .dyn_into::<js_sys::WebAssembly::Memory>()
+                        .ok()
+                        .and_then(|m| m.buffer().dyn_into::<js_sys::ArrayBuffer>().ok())
+                        .map(|b| b.byte_length())
+                        .unwrap_or(0);
+                    entries.insert("wasm_heap_bytes".to_string(), json!(wasm_heap_bytes));
+                    let (undo_len, undo_bytes) = {
+                        let u = self.undo.borrow();
+                        (u.len(), u.bytes())
+                    };
+                    let (redo_len, redo_bytes) = {
+                        let r = self.redo.borrow();
+                        (r.len(), r.bytes())
+                    };
+                    entries.insert("undo_len".to_string(), json!(undo_len));
+                    entries.insert("undo_bytes".to_string(), json!(undo_bytes));
+                    entries.insert("redo_len".to_string(), json!(redo_len));
+                    entries.insert("redo_bytes".to_string(), json!(redo_bytes));
+                }
                 QueryResult::Map(query::MapResult {
                     kind: "memory_stats".to_string(),
                     entries,

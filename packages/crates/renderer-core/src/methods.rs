@@ -291,6 +291,34 @@ impl AwsmRendererWebGpu {
         &self,
         descriptor: &web_sys::GpuBufferDescriptor,
     ) -> Result<web_sys::GpuBuffer> {
+        // Opt-in oversized-allocation guard: a single GPU buffer larger than
+        // OVERSIZED_ALLOC_BYTES almost certainly means a runaway size
+        // computation (a `* 0` count flipped, an overflow). Tripping a
+        // `debug_assert!` + `tracing::error!` here surfaces it at OUR call site
+        // with a stack — instead of as an opaque `IMMEDIATE_CRASH` deep in the
+        // browser allocator. Cold path (buffer creation, not per frame).
+        #[cfg(any(debug_assertions, feature = "harden-diag"))]
+        {
+            let size = js_sys::Reflect::get(
+                descriptor.as_ref(),
+                &wasm_bindgen::JsValue::from_str("size"),
+            )
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+            if size > crate::OVERSIZED_ALLOC_BYTES as f64 {
+                tracing::error!(
+                    target: "awsm_renderer_core::oversized_alloc",
+                    "create_buffer requested {} bytes (> {} cap) — likely a runaway size computation",
+                    size,
+                    crate::OVERSIZED_ALLOC_BYTES
+                );
+                debug_assert!(
+                    size <= crate::OVERSIZED_ALLOC_BYTES as f64,
+                    "oversized GPU buffer allocation: {size} bytes"
+                );
+            }
+        }
         self.device
             .create_buffer(descriptor)
             .map_err(AwsmCoreError::buffer_creation)

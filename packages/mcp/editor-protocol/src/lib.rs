@@ -27,6 +27,7 @@ mod anim_ui;
 mod assets;
 mod bake;
 mod command;
+mod history;
 mod merge_patch;
 mod mesh_def;
 mod node_spec;
@@ -42,6 +43,7 @@ pub use command::{
     BuiltinTextureSlot, CameraAxis, CustomAlphaMode, EditorCommand, EditorMode, ProceduralKind,
     SkinWeightEntry, SlotSpec,
 };
+pub use history::{estimate_command_bytes, BoundedHistory, DEFAULT_HISTORY_BUDGET_BYTES};
 pub use merge_patch::{coerce_patch, json_merge_patch};
 pub use mesh_def::{CapturedMesh, CapturedSource, MeshDef, VertexOverrides};
 pub use node_spec::{kind_tag, InsertSpec, NodeQuery, NodeSpec};

@@ -16,7 +16,7 @@
 //! so the descent's `updated` count tracks the movers, not the total slot
 //! count (`?stress=N` to scale, default 25).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use awsm_renderer::buffer::shared_arena::foreign_write;
@@ -25,6 +25,15 @@ use wasm_bindgen::prelude::*;
 use web_sys::js_sys;
 
 /// Main thread: transfer the canvas + spawn the render worker.
+///
+/// Resilience scope (harden-memory B1): a lost **GPU device** is recovered
+/// **in place** by the render worker (see `arm_recovery`) — the worker lives, so
+/// it's seamless + leak-free. A render-worker **process death** (a Rust panic →
+/// `abort`, or a browser OOM-kill) is treated as **catastrophic and not
+/// recovered**: a killed wasm thread can't run destructors, so respawning it
+/// would orphan its shared-memory allocations (an unbounded per-crash leak), and
+/// a panic is unrecoverable by design anyway. Device-loss is the common,
+/// recoverable failure; that's the one we handle.
 pub fn start_main() -> Result<(), JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let document = window
@@ -50,8 +59,11 @@ pub fn start_main() -> Result<(), JsValue> {
     set(&payload, "count", &JsValue::from_f64(count as f64));
 
     let on_msg = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(|e: web_sys::MessageEvent| {
-        let data = e.data();
-        let _ = js_sys::Reflect::set(&js_sys::global(), &JsValue::from_str("__mt_motion"), &data);
+        let _ = js_sys::Reflect::set(
+            &js_sys::global(),
+            &JsValue::from_str("__mt_motion"),
+            &e.data(),
+        );
     });
     let transfer = js_sys::Array::new();
     transfer.push(&offscreen);
@@ -63,6 +75,18 @@ pub fn start_main() -> Result<(), JsValue> {
     )?;
     on_msg.forget();
     crate::viewport::observe_resize(&canvas, &worker)?;
+    // Test seam (gated): expose the render-worker handle so a chrome-devtools
+    // `evaluate_script` on the PAGE can post `{kind:"__mt_test_lose_device"}` to
+    // force a `device.destroy()` inside the worker — the device lives in the
+    // worker scope and isn't otherwise reachable from the page. Never ships.
+    #[cfg(any(debug_assertions, feature = "harden-diag"))]
+    {
+        let _ = js_sys::Reflect::set(
+            &js_sys::global(),
+            &JsValue::from_str("__mt_motion_worker"),
+            &worker,
+        );
+    }
     tracing::info!("motion demo: spawned render worker ({count} bodies)");
     Ok(())
 }
@@ -111,20 +135,30 @@ fn body_base(i: usize, count: usize) -> [f32; 3] {
     [(col - cx) * 1.4, (row - cy) * 1.4, 0.0]
 }
 
-async fn run_render(
+/// Build a fresh renderer on `gpu_builder`'s device + (re)construct the box
+/// scene from the **source-of-truth** (this construction code — the renderer
+/// drops geometry CPU mirrors after upload, so reload-from-source is the only
+/// recovery path; see harden-memory.md B1a). Returns the renderer + its
+/// transform keys (the physics-worker topology). Shared by the initial boot and
+/// the cold device-loss recovery path — identical scene either way.
+async fn build_renderer_and_scene(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     count: usize,
-    canvas: web_sys::OffscreenCanvas,
-) -> Result<(), JsValue> {
+) -> Result<
+    (
+        awsm_renderer::AwsmRenderer,
+        Vec<awsm_renderer::transforms::TransformKey>,
+    ),
+    JsValue,
+> {
     use awsm_materials::pbr::PbrMaterial;
     use awsm_materials::MaterialAlphaMode;
     use awsm_meshgen::primitives::box_mesh;
-    use awsm_renderer::camera::CameraMatrices;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
     use awsm_renderer::transforms::Transform;
     use awsm_renderer::AwsmRendererBuilder;
-    use glam::{Mat4, Vec3};
+    use glam::Vec3;
 
     let mut renderer = AwsmRendererBuilder::new(gpu_builder)
         .build()
@@ -173,10 +207,20 @@ async fn run_render(
 
     // Establish initial world matrices in the arena (one walk + descent).
     renderer.update_transforms();
+    Ok((renderer, transform_keys))
+}
 
-    // Hand the physics worker each body's slot binding (the topology
-    // command channel — one postMessage at spawn). The first half are
-    // movers; the rest static.
+/// Hand the physics worker each body's **fresh** slot binding (the topology
+/// command channel — one postMessage at spawn) and spawn it. The first half are
+/// movers; the rest static. Re-run verbatim on recovery against the new arena's
+/// bindings so the movers resume. Returns the spawned worker so the caller can
+/// `terminate()` it before the arena it writes into is freed.
+fn spawn_physics(
+    renderer: &awsm_renderer::AwsmRenderer,
+    count: usize,
+    transform_keys: &[awsm_renderer::transforms::TransformKey],
+    phys_msgs: Rc<RefCell<u32>>,
+) -> Result<web_sys::Worker, JsValue> {
     let movers = (count / 2).max(1);
     let dirty_addr = renderer
         .transforms
@@ -202,27 +246,163 @@ async fn run_render(
 
     // Count any messages the physics worker posts back (must stay 0 — the
     // hot path is shared memory, not postMessage).
-    let phys_msgs = Rc::new(RefCell::new(0u32));
-    let phys_msgs_cb = phys_msgs.clone();
     let on_phys = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |_| {
-        *phys_msgs_cb.borrow_mut() += 1;
+        *phys_msgs.borrow_mut() += 1;
     });
-    crate::bootstrap::spawn_shared_worker_transfer(
+    let worker = crate::bootstrap::spawn_shared_worker_transfer(
         "motion-physics",
         &phys_payload,
         &js_sys::Array::new(),
         on_phys.as_ref().unchecked_ref(),
     )?;
     on_phys.forget();
+    Ok(worker)
+}
 
-    // Frame loop: descend (picks up physics writes) + render.
+/// Everything the cold device-loss recovery path needs, bundled so the loss
+/// callback + `recover` pass it around as one cheap `Clone` (all `Rc`/handles).
+/// NOT touched on the per-frame hot path — only on `.lost`.
+#[derive(Clone)]
+struct RecoveryCtx {
+    cell: Rc<RefCell<awsm_renderer::AwsmRenderer>>,
+    physics: Rc<RefCell<Option<web_sys::Worker>>>,
+    phys_msgs: Rc<RefCell<u32>>,
+    /// Set while a rebuild is in flight; the frame loop's single per-frame check
+    /// reads this to skip frames against the dead device (and avoid racing the
+    /// `cell` swap). The ONLY per-frame cost recovery adds.
+    recovering: Rc<Cell<bool>>,
+    count: usize,
+    canvas: web_sys::OffscreenCanvas,
+}
+
+/// Arm the device-loss **action seam** on the renderer's current device:
+/// **event-driven** (no per-frame poll). On loss it kicks `recover` directly.
+/// Re-armed after every recovery so a second loss recovers too.
+fn arm_recovery(ctx: RecoveryCtx) {
+    let ctx2 = ctx.clone();
+    ctx.cell.borrow().gpu.on_device_lost(move |reason| {
+        tracing::warn!("motion demo: GPU device lost ({reason}) — starting recovery");
+        if ctx2.recovering.get() {
+            return; // already recovering
+        }
+        ctx2.recovering.set(true);
+        wasm_bindgen_futures::spawn_local(recover(ctx2.clone()));
+    });
+}
+
+/// Cold device-loss recovery (B1a, reload-from-source): rebuild the renderer on
+/// a **fresh** device + replay the box scene, then re-hand the physics worker
+/// the new arena bindings. The old renderer is dropped (frees its dead GPU
+/// handles + old arena). No page reload; movers resume.
+async fn recover(ctx: RecoveryCtx) {
+    use awsm_renderer::web_global::navigator_gpu;
+    use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
+
+    // Stop the old physics worker BEFORE the old arena is freed — its writes
+    // target addresses inside the old shared-arena allocation.
+    if let Some(w) = ctx.physics.borrow_mut().take() {
+        w.terminate();
+    }
+
+    let result = async {
+        let gpu = navigator_gpu().ok_or_else(|| JsValue::from_str("recover: no navigator.gpu"))?;
+        let gpu_builder =
+            AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, ctx.canvas.clone())
+                .with_device_request_limits(DeviceRequestLimits::max_all());
+        let (new_renderer, tks) = build_renderer_and_scene(gpu_builder, ctx.count).await?;
+        // Swap in the fresh renderer (drops the old → frees dead handles + old
+        // arena), re-arm the loss seam, re-spawn physics on the NEW bindings.
+        *ctx.cell.borrow_mut() = new_renderer;
+        arm_recovery(ctx.clone());
+        let w = spawn_physics(&ctx.cell.borrow(), ctx.count, &tks, ctx.phys_msgs.clone())?;
+        *ctx.physics.borrow_mut() = Some(w);
+        Ok::<(), JsValue>(())
+    }
+    .await;
+
+    match result {
+        Ok(()) => tracing::info!("motion demo: GPU device recovered — rendering resumed"),
+        Err(err) => tracing::error!("motion demo: recovery FAILED: {err:?}"),
+    }
+    ctx.recovering.set(false);
+}
+
+/// Combined worker `onmessage`: resize forwarding + the **gated test seam** that
+/// forces `device.destroy()` so the device-loss recovery repro is drivable from
+/// the page (the device lives in this worker scope). Replaces the resize-only
+/// handler `install_worker_resize` would set.
+fn install_motion_onmessage(
+    canvas: &web_sys::OffscreenCanvas,
+    cell: &Rc<RefCell<awsm_renderer::AwsmRenderer>>,
+) {
+    let canvas = canvas.clone();
+    #[allow(unused_variables)]
+    let cell = cell.clone();
+    let cb = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
+        let data = e.data();
+        if crate::viewport::try_apply_resize(&canvas, &data).is_some() {
+            return;
+        }
+        #[cfg(any(debug_assertions, feature = "harden-diag"))]
+        {
+            let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
+                .ok()
+                .and_then(|v| v.as_string());
+            if kind.as_deref() == Some("__mt_test_lose_device") {
+                tracing::warn!("motion demo: TEST seam — forcing device.destroy()");
+                cell.borrow().gpu.device.destroy();
+            }
+        }
+    });
+    js_sys::global()
+        .unchecked_into::<web_sys::DedicatedWorkerGlobalScope>()
+        .set_onmessage(Some(cb.as_ref().unchecked_ref()));
+    cb.forget();
+}
+
+async fn run_render(
+    gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
+    count: usize,
+    canvas: web_sys::OffscreenCanvas,
+) -> Result<(), JsValue> {
+    use awsm_renderer::camera::CameraMatrices;
+    use glam::{Mat4, Vec3};
+
+    let (renderer, transform_keys) = build_renderer_and_scene(gpu_builder, count).await?;
+    let movers = (count / 2).max(1);
+
+    // Shared state across the frame loop + the cold recovery path.
     #[allow(clippy::arc_with_non_send_sync)]
     let cell = Rc::new(RefCell::new(renderer));
+    let phys_msgs = Rc::new(RefCell::new(0u32));
+    let ctx = RecoveryCtx {
+        cell: cell.clone(),
+        physics: Rc::new(RefCell::new(None)),
+        phys_msgs: phys_msgs.clone(),
+        recovering: Rc::new(Cell::new(false)),
+        count,
+        canvas: canvas.clone(),
+    };
+
+    // Spawn the physics worker against the live arena bindings.
+    *ctx.physics.borrow_mut() = Some(spawn_physics(
+        &cell.borrow(),
+        count,
+        &transform_keys,
+        phys_msgs.clone(),
+    )?);
+    // Arm the device-loss action seam (event-driven) + the combined resize/test
+    // onmessage.
+    arm_recovery(ctx.clone());
+    install_motion_onmessage(&canvas, &cell);
+
+    // Frame loop: descend (picks up physics writes) + render.
     #[allow(clippy::arc_with_non_send_sync)]
     let raf: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let raf_init = raf.clone();
     let raf_run = raf.clone();
     let cell_loop = cell.clone();
+    let recovering = ctx.recovering.clone();
     let frame = Rc::new(RefCell::new(0u32));
     // Running maxima — the per-frame `updated` count fluctuates with
     // render/physics interleave, so report the peak: it equals the mover
@@ -238,6 +418,16 @@ async fn run_render(
     let max_visible = Rc::new(RefCell::new(0usize));
 
     *raf_init.borrow_mut() = Some(Closure::new(move || {
+        // The ONLY per-frame cost recovery adds: one `Cell<bool>` read. While a
+        // device-loss rebuild is in flight the device is dead — skip the frame
+        // (and don't race the `cell` swap). False in steady state.
+        if recovering.get() {
+            if let Some(cb) = raf_run.borrow().as_ref() {
+                let _ =
+                    awsm_renderer::web_global::request_animation_frame(cb.as_ref().unchecked_ref());
+            }
+            return;
+        }
         let mut r = cell_loop.borrow_mut();
         let f = {
             let mut fb = frame.borrow_mut();
