@@ -1,5 +1,6 @@
 //! Render pass orchestration and initialization.
 
+pub mod cluster_lod;
 pub mod coverage;
 pub mod display;
 pub mod effects;

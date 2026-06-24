@@ -174,7 +174,7 @@ pub const CLUSTER_PAGE_GPU_STRIDE: usize = 64;
 /// per page; evaluates [`select_cut_per_cluster`] on-device). Embedded so the
 /// path is checked at build time; the pipeline loads this string.
 pub const CLUSTER_CUT_WGSL: &str =
-    include_str!("render_passes/cluster_lod/cluster_cut.wgsl");
+    include_str!("render_passes/cluster_lod/shader/cluster_lod_wgsl/cluster_cut.wgsl");
 
 /// Byte size of the cluster-cut params uniform (`ClusterCutParams` in the
 /// shader). 96 B: a 64-B column-major `mat4x4` then `camera_pos` (vec3, with
