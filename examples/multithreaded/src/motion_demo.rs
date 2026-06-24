@@ -18,100 +18,22 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use awsm_renderer::buffer::shared_arena::foreign_write;
 use awsm_renderer::buffer::shared_arena::SlotBinding;
 use wasm_bindgen::prelude::*;
 use web_sys::js_sys;
 
-/// Current render-worker **epoch**, in shared memory (a plain `static` lives in
-/// the shared linear memory every worker attaches to — same address everywhere,
-/// cf. `smoke.rs`'s `SHARED_COUNTER`). Each render worker claims a unique epoch
-/// at startup (`fetch_add`); its physics worker(s) carry that epoch and self-
-/// terminate the instant the global epoch advances past theirs. This is how a
-/// render-worker **respawn** (P3) reaps the **orphaned** physics worker the dead
-/// render worker spawned — without the main thread ever holding its handle.
-/// Read once per physics tick (not the render hot path); zero render-frame cost.
-static RENDER_EPOCH: AtomicU32 = AtomicU32::new(0);
-
-/// Wall-clock now (ms) on the main thread — for the render-worker heartbeat.
-fn now_ms() -> f64 {
-    web_sys::window()
-        .and_then(|w| w.performance())
-        .map(|p| p.now())
-        .unwrap_or(0.0)
-}
-
-/// Spawn (or respawn) the render worker against `canvas`: transfer its control,
-/// post `{canvas, count}`, and install the heartbeat-stamping `onmessage`. The
-/// canvas must be a **fresh** element each spawn — `transfer_control_to_offscreen`
-/// is one-shot per element, and on a respawn the old `OffscreenCanvas` died with
-/// the worker. Returns the worker handle so the watchdog can `terminate()` it.
-fn spawn_render_worker(
-    canvas: &web_sys::HtmlCanvasElement,
-    count: usize,
-    last_seen: Rc<Cell<f64>>,
-) -> Result<web_sys::Worker, JsValue> {
-    let _ = crate::viewport::size_canvas_to_display(canvas);
-    let offscreen = canvas.transfer_control_to_offscreen()?;
-
-    let payload = js_sys::Object::new();
-    set(&payload, "canvas", &offscreen);
-    set(&payload, "count", &JsValue::from_f64(count as f64));
-
-    let on_msg =
-        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
-            // Heartbeat: any message from the render worker proves it's alive.
-            last_seen.set(now_ms());
-            let _ = js_sys::Reflect::set(
-                &js_sys::global(),
-                &JsValue::from_str("__mt_motion"),
-                &e.data(),
-            );
-        });
-    let transfer = js_sys::Array::new();
-    transfer.push(&offscreen);
-    let worker = crate::bootstrap::spawn_shared_worker_transfer(
-        "motion-render",
-        &payload,
-        &transfer,
-        on_msg.as_ref().unchecked_ref(),
-    )?;
-    on_msg.forget();
-    crate::viewport::observe_resize(canvas, &worker)?;
-    // Test seam (gated): expose the render-worker handle so a chrome-devtools
-    // `evaluate_script` on the PAGE can `.terminate()` it (P3 worker-crash repro)
-    // or post `{kind:"__mt_test_lose_device"}` to force a `device.destroy()` (P2
-    // device-loss repro) inside the worker scope. Never ships.
-    #[cfg(any(debug_assertions, feature = "harden-diag"))]
-    {
-        let _ = js_sys::Reflect::set(
-            &js_sys::global(),
-            &JsValue::from_str("__mt_motion_worker"),
-            &worker,
-        );
-    }
-    Ok(worker)
-}
-
-/// Replace the live `#canvas` element with a fresh one (same id → same CSS) and
-/// return it. The old element's offscreen control was transferred to the dead
-/// worker and can never be re-transferred, so a respawn needs a new element.
-fn replace_canvas(document: &web_sys::Document) -> Result<web_sys::HtmlCanvasElement, JsValue> {
-    let old: web_sys::HtmlCanvasElement = document
-        .get_element_by_id("canvas")
-        .ok_or_else(|| JsValue::from_str("no #canvas"))?
-        .unchecked_into();
-    let new: web_sys::HtmlCanvasElement = document.create_element("canvas")?.unchecked_into();
-    new.set_id("canvas");
-    if let Some(parent) = old.parent_node() {
-        parent.replace_child(&new, &old)?;
-    }
-    Ok(new)
-}
-
-/// Main thread: spawn the render worker + run the **crash watchdog** (B1b).
+/// Main thread: transfer the canvas + spawn the render worker.
+///
+/// Resilience scope (harden-memory B1): a lost **GPU device** is recovered
+/// **in place** by the render worker (see `arm_recovery`) — the worker lives, so
+/// it's seamless + leak-free. A render-worker **process death** (a Rust panic →
+/// `abort`, or a browser OOM-kill) is treated as **catastrophic and not
+/// recovered**: a killed wasm thread can't run destructors, so respawning it
+/// would orphan its shared-memory allocations (an unbounded per-crash leak), and
+/// a panic is unrecoverable by design anyway. Device-loss is the common,
+/// recoverable failure; that's the one we handle.
 pub fn start_main() -> Result<(), JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let document = window
@@ -121,6 +43,8 @@ pub fn start_main() -> Result<(), JsValue> {
         .get_element_by_id("canvas")
         .ok_or_else(|| JsValue::from_str("no #canvas"))?
         .unchecked_into();
+    let _ = crate::viewport::size_canvas_to_display(&canvas);
+    let offscreen = canvas.transfer_control_to_offscreen()?;
 
     let search = window.location().search().unwrap_or_default();
     let count = web_sys::UrlSearchParams::new_with_str(&search)
@@ -130,55 +54,40 @@ pub fn start_main() -> Result<(), JsValue> {
         .unwrap_or(25)
         .max(2);
 
-    let last_seen = Rc::new(Cell::new(now_ms()));
-    let worker_slot: Rc<RefCell<Option<web_sys::Worker>>> = Rc::new(RefCell::new(None));
-    *worker_slot.borrow_mut() = Some(spawn_render_worker(&canvas, count, last_seen.clone())?);
-    tracing::info!("motion demo: spawned render worker ({count} bodies)");
+    let payload = js_sys::Object::new();
+    set(&payload, "canvas", &offscreen);
+    set(&payload, "count", &JsValue::from_f64(count as f64));
 
-    // Crash watchdog: a render-worker death (terminate / crash / hang) stops the
-    // ~2/s heartbeat. If it goes stale, respawn the worker against a FRESH canvas
-    // and re-run the source-of-truth load (B1b). The 3 s threshold clears the
-    // ~1 s P2 device-loss rebuild (which also pauses the heartbeat) so a normal
-    // recovery never trips a false respawn. Cold path; never per render frame.
-    let respawning = Rc::new(Cell::new(false));
-    let holder: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
-    let holder_run = holder.clone();
-    let win = window.clone();
-    *holder.borrow_mut() = Some(Closure::<dyn FnMut()>::new(move || {
-        if !respawning.get() && now_ms() - last_seen.get() > 3000.0 {
-            respawning.set(true);
-            tracing::warn!("motion demo: render worker heartbeat stale — respawning");
-            let r: Result<(), JsValue> = (|| {
-                if let Some(old) = worker_slot.borrow_mut().take() {
-                    old.terminate();
-                }
-                let fresh = replace_canvas(&document)?;
-                let w = spawn_render_worker(&fresh, count, last_seen.clone())?;
-                *worker_slot.borrow_mut() = Some(w);
-                last_seen.set(now_ms());
-                Ok(())
-            })();
-            if let Err(err) = r {
-                tracing::error!("motion demo: respawn failed: {err:?}");
-            } else {
-                tracing::info!("motion demo: render worker respawned — re-loading scene");
-            }
-            respawning.set(false);
-        }
-        if let Some(cb) = holder_run.borrow().as_ref() {
-            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                1000,
-            );
-        }
-    }));
-    if let Some(cb) = holder.borrow().as_ref() {
-        window.set_timeout_with_callback_and_timeout_and_arguments_0(
-            cb.as_ref().unchecked_ref(),
-            1000,
-        )?;
+    let on_msg = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(|e: web_sys::MessageEvent| {
+        let _ = js_sys::Reflect::set(
+            &js_sys::global(),
+            &JsValue::from_str("__mt_motion"),
+            &e.data(),
+        );
+    });
+    let transfer = js_sys::Array::new();
+    transfer.push(&offscreen);
+    let worker = crate::bootstrap::spawn_shared_worker_transfer(
+        "motion-render",
+        &payload,
+        &transfer,
+        on_msg.as_ref().unchecked_ref(),
+    )?;
+    on_msg.forget();
+    crate::viewport::observe_resize(&canvas, &worker)?;
+    // Test seam (gated): expose the render-worker handle so a chrome-devtools
+    // `evaluate_script` on the PAGE can post `{kind:"__mt_test_lose_device"}` to
+    // force a `device.destroy()` inside the worker — the device lives in the
+    // worker scope and isn't otherwise reachable from the page. Never ships.
+    #[cfg(any(debug_assertions, feature = "harden-diag"))]
+    {
+        let _ = js_sys::Reflect::set(
+            &js_sys::global(),
+            &JsValue::from_str("__mt_motion_worker"),
+            &worker,
+        );
     }
-    std::mem::forget(holder);
+    tracing::info!("motion demo: spawned render worker ({count} bodies)");
     Ok(())
 }
 
@@ -311,7 +220,6 @@ fn spawn_physics(
     count: usize,
     transform_keys: &[awsm_renderer::transforms::TransformKey],
     phys_msgs: Rc<RefCell<u32>>,
-    epoch: u32,
 ) -> Result<web_sys::Worker, JsValue> {
     let movers = (count / 2).max(1);
     let dirty_addr = renderer
@@ -322,9 +230,6 @@ fn spawn_physics(
     phys_payload.push(&JsValue::from_f64(count as f64));
     phys_payload.push(&JsValue::from_f64(movers as f64));
     phys_payload.push(&JsValue::from_f64(dirty_addr as f64));
-    // [3] = this physics worker's epoch — it self-terminates once the global
-    // RENDER_EPOCH advances past this (its render worker died + respawned).
-    phys_payload.push(&JsValue::from_f64(epoch as f64));
     for (i, tk) in transform_keys.iter().enumerate() {
         let b = renderer
             .transforms
@@ -368,9 +273,6 @@ struct RecoveryCtx {
     recovering: Rc<Cell<bool>>,
     count: usize,
     canvas: web_sys::OffscreenCanvas,
-    /// This render worker's epoch — passed to every physics worker it spawns
-    /// (initial + device-loss re-spawn) so they share its lifecycle.
-    epoch: u32,
 }
 
 /// Arm the device-loss **action seam** on the renderer's current device:
@@ -412,13 +314,7 @@ async fn recover(ctx: RecoveryCtx) {
         // arena), re-arm the loss seam, re-spawn physics on the NEW bindings.
         *ctx.cell.borrow_mut() = new_renderer;
         arm_recovery(ctx.clone());
-        let w = spawn_physics(
-            &ctx.cell.borrow(),
-            ctx.count,
-            &tks,
-            ctx.phys_msgs.clone(),
-            ctx.epoch,
-        )?;
+        let w = spawn_physics(&ctx.cell.borrow(), ctx.count, &tks, ctx.phys_msgs.clone())?;
         *ctx.physics.borrow_mut() = Some(w);
         Ok::<(), JsValue>(())
     }
@@ -472,12 +368,6 @@ async fn run_render(
     use awsm_renderer::camera::CameraMatrices;
     use glam::{Mat4, Vec3};
 
-    // Claim a unique render-worker epoch. The act of a respawned render worker
-    // claiming a higher epoch is what signals the dead worker's orphaned physics
-    // worker to self-terminate (P3). `+1` so the first worker is epoch 1 (0 = the
-    // "no worker yet" sentinel).
-    let epoch = RENDER_EPOCH.fetch_add(1, Ordering::AcqRel) + 1;
-
     let (renderer, transform_keys) = build_renderer_and_scene(gpu_builder, count).await?;
     let movers = (count / 2).max(1);
 
@@ -492,7 +382,6 @@ async fn run_render(
         recovering: Rc::new(Cell::new(false)),
         count,
         canvas: canvas.clone(),
-        epoch,
     };
 
     // Spawn the physics worker against the live arena bindings.
@@ -501,7 +390,6 @@ async fn run_render(
         count,
         &transform_keys,
         phys_msgs.clone(),
-        epoch,
     )?);
     // Arm the device-loss action seam (event-driven) + the combined resize/test
     // onmessage.
@@ -650,11 +538,10 @@ fn physics_main(payload: JsValue) -> Result<(), JsValue> {
     let count = arr.get(0).as_f64().unwrap_or(0.0) as usize;
     let movers = arr.get(1).as_f64().unwrap_or(0.0) as usize;
     let dirty_addr = arr.get(2).as_f64().unwrap_or(0.0) as usize;
-    let epoch = arr.get(3).as_f64().unwrap_or(0.0) as u32;
     let mut bindings = Vec::with_capacity(count);
     let mut bases = Vec::with_capacity(count);
     for i in 0..count {
-        let base = 4 + i * 6;
+        let base = 3 + i * 6;
         bindings.push(SlotBinding {
             value_addr: arr.get(base as u32).as_f64().unwrap_or(0.0) as usize,
             version_addr: arr.get((base + 1) as u32).as_f64().unwrap_or(0.0) as usize,
@@ -666,24 +553,10 @@ fn physics_main(payload: JsValue) -> Result<(), JsValue> {
             arr.get((base + 5) as u32).as_f64().unwrap_or(0.0) as f32,
         ]);
     }
-    tracing::info!(
-        "motion physics worker (epoch {epoch}): {count} bodies ({movers} movers), integrating motion"
-    );
+    tracing::info!("motion physics worker: {count} bodies ({movers} movers), integrating motion");
 
-    // Self-terminate the instant the global render epoch advances past ours — our
-    // render worker died and a respawned one claimed a higher epoch (P3). Without
-    // this, a killed render worker's physics worker would orphan: keep writing to
-    // the freed arena and accumulate one extra worker per respawn.
-    let close_scope = js_sys::global().unchecked_into::<web_sys::DedicatedWorkerGlobalScope>();
     let tick = Rc::new(RefCell::new(0u32));
     repeat_every(16, move || {
-        if RENDER_EPOCH.load(Ordering::Acquire) != epoch {
-            tracing::info!(
-                "motion physics worker (epoch {epoch}): render worker gone — self-closing"
-            );
-            close_scope.close();
-            return;
-        }
         let t = {
             let mut tb = tick.borrow_mut();
             *tb = tb.wrapping_add(1);
