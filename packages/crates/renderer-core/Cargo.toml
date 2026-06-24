@@ -25,6 +25,10 @@ mega-texture = ["dep:binpack2d"]
 texture-pool = ["image"]
 serde = ["dep:serde", "dep:serde-wasm-bindgen"]
 texture-export = ["dep:image", "dep:half"]
+# Opt-in oversized-allocation guard (logs + debug_asserts on a >512MB single GPU
+# buffer). Always on in debug via `debug_assertions`; this flag enables it in a
+# release soak without otherwise changing the release default.
+harden-diag = []
 
 [dependencies]
 anyhow = {workspace = true}
