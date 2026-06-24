@@ -397,11 +397,11 @@ it's independent of B1.
 
 ## Status (2026-06-24)
 
-**Done (6/8 rows ✅):** P0, P1, P1b, P1c, P4, Meta — all with live evidence (see
-tracker). The plan's **prime goal — the unbounded-undo OOM ("Aw, Snap!") — is
+**Done (7/8 rows ✅):** P0, P1, P1b, P1c, **P2**, P4, Meta — all with live evidence
+(see tracker). The plan's **prime goal — the unbounded-undo OOM ("Aw, Snap!") — is
 fixed and live-verified** (undo log plateaus under a 256 MB byte budget;
-`wasm_heap` stops ramping). `task lint` clean. Committed per phase on
-`doc-aw-snap`.
+`wasm_heap` stops ramping), and **GPU device-loss recovery (P2) works leak-free**
+on the player harness. `task lint` clean. Committed per phase on `doc-aw-snap`.
 
 **Device-loss recovery (P2) ✅ done** under (b) reload-from-source — live on the
 player harness, movers resume, memory **plateaus** (no leak), one `Cell` read of
