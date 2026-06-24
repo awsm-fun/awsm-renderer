@@ -1,11 +1,34 @@
 # Nanite software rasterizer + streaming (future, test-gated)
 
 > A separate, **high-risk** future optimization on top of the cluster-LOD work
-> in [`lod.md`](lod.md) (Phase B). LOD shipping does **not** depend on any of
-> this. Do **not** start until cluster-LOD (HW raster) has landed and sub-pixel
-> triangle density is a *proven* problem on target hardware. The Phase 0 spike
-> below is the go/no-go gate; if it fails, HW-raster cluster-LOD is the
-> end-state and that is fine.
+> (Phase B, now shipped — see PR #143 / the deleted `lod.md`). LOD shipping does
+> **not** depend on any of this. The Phase 0 spike below is the go/no-go gate; if
+> it fails, HW-raster cluster-LOD is the end-state and that is fine.
+
+> **STATUS — IN PROGRESS on the `nanite-streaming` branch** (started after the LOD
+> PR #143). Plan/ordering for this branch, gated behind NEW default-off flags so
+> the shipped LOD path never regresses:
+> 1. **Phase 0 — SW-raster spike (GO/NO-GO), first.** New standalone wasm crate
+>    `packages/frontend/bench-nanite-sw-raster/` mirroring `model-tests` (Trunk +
+>    `taskfiles/frontend/...` dev server; build the device via renderer-core
+>    `AwsmRendererWebGpuBuilder`). Implement HW baseline + Encoding A (packed
+>    `atomicMax`) + Encoding B (emulated-64 CAS), a triangle-size + overdraw knob,
+>    `performance.now()` timing over many iters, and a payload-image diff vs HW.
+>    Drive it via chrome-devtools (navigate → read browser console). RECORD the
+>    verdict + numbers here. If NO-GO, skip Phase 3 and go straight to streaming.
+> 2. **Phase 5 — streaming (the multi-million-tri fix), independent of Phase 0.**
+>    This is the user's priority (multi-million-tri scaling). Start with the
+>    intermediate win: cap/page cluster-page residency so the cluster render mesh
+>    `M` no longer uploads its FULL exploded geometry (today's ceiling) — GPU
+>    feedback marks the pages the cut needs, CPU streams/evicts against a budget,
+>    LOD clamps to resident pages. Land gated, show it renders a denser asset than
+>    today, document the residual gap, then iterate toward full residency.
+> 3. **Phase 3 — hybrid rasterization, ONLY if Phase 0 is GO.**
+> Discipline unchanged from the LOD work: gate behind default-off flags
+> (flag-off byte-identical), test before every commit, on-device verify via
+> chrome-devtools (renderer tracing → BROWSER console), GPU-readback to confirm
+> compute output, no per-frame heap allocs, pure-Rust algorithms (wasm target),
+> one logical step per commit, never leave the renderer broken (revert+diagnose).
 
 ## Why this is split out
 
