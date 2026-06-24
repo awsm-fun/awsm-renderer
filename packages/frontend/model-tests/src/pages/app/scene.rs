@@ -62,8 +62,7 @@ pub fn lod_enabled() -> bool {
         return false;
     };
     let q = search.trim_start_matches('?');
-    q.split('&')
-        .any(|p| p == "lod" || p.starts_with("lod="))
+    q.split('&').any(|p| p == "lod" || p.starts_with("lod="))
 }
 
 /// `?ourformat=1` — route the load through the TWO-STAGE our-format path (§0):

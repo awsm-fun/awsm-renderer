@@ -37,7 +37,10 @@ impl ShaderTemplateClusterCut {
 /// Renders `cluster_lod_wgsl/cluster_compaction.wgsl` — packs the cut's selected
 /// clusters' index pages into one compacted stream + drawIndexedIndirect args.
 #[derive(Template, Debug, Default)]
-#[template(path = "cluster_lod_wgsl/cluster_compaction.wgsl", whitespace = "minimize")]
+#[template(
+    path = "cluster_lod_wgsl/cluster_compaction.wgsl",
+    whitespace = "minimize"
+)]
 pub struct ShaderTemplateClusterCompaction;
 
 impl TryFrom<&ShaderCacheKeyClusterCompaction> for ShaderTemplateClusterCompaction {

@@ -37,7 +37,10 @@ impl ClusterLodPipelines {
             ctx.bind_group_layouts,
             PipelineLayoutCacheKey::new(vec![compaction_bg.layout_key]),
         )?;
-        let cut_shader = ctx.shaders.get_key(ctx.gpu, ShaderCacheKeyClusterCut).await?;
+        let cut_shader = ctx
+            .shaders
+            .get_key(ctx.gpu, ShaderCacheKeyClusterCut)
+            .await?;
         let compaction_shader = ctx
             .shaders
             .get_key(ctx.gpu, ShaderCacheKeyClusterCompaction)

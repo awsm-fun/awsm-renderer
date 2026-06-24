@@ -43,7 +43,8 @@ impl ClusterLodRenderPass {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = ClusterCutBindGroups::new(ctx)?;
         let compaction_bind_groups = ClusterCompactionBindGroups::new(ctx)?;
-        let pipelines = ClusterLodPipelines::new(ctx, &bind_groups, &compaction_bind_groups).await?;
+        let pipelines =
+            ClusterLodPipelines::new(ctx, &bind_groups, &compaction_bind_groups).await?;
         Ok(Self {
             bind_groups,
             compaction_bind_groups,
@@ -85,7 +86,8 @@ impl ClusterLodRenderPass {
         self.cluster_count = count;
         let buffers = self.buffers.as_ref().unwrap();
         self.bind_groups.recreate(gpu, layouts, buffers)?;
-        self.compaction_bind_groups.recreate(gpu, layouts, buffers)?;
+        self.compaction_bind_groups
+            .recreate(gpu, layouts, buffers)?;
         Ok(())
     }
 

@@ -17,8 +17,7 @@ use awsm_renderer_editor_protocol::{
     AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, EvsmCutoff,
     FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, MaterialAlphaMode,
     MaterialDef, MaterialShading, MeshLodConfig, MeshShadowConfig, ParticleEmitterDef,
-    PrimitiveShape,
-    ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef,
+    PrimitiveShape, ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef,
 };
 
 /// The right rail shows the **Asset Inspector** when an asset is selected in the
@@ -3344,7 +3343,10 @@ fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
 fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
     match node.kind.get_cloned() {
         NodeKind::Mesh {
-            mesh, material, lod, ..
+            mesh,
+            material,
+            lod,
+            ..
         } => {
             dispatch_kind(
                 node.id,
@@ -3357,7 +3359,10 @@ fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
             );
         }
         NodeKind::SkinnedMesh {
-            skin, material, lod, ..
+            skin,
+            material,
+            lod,
+            ..
         } => {
             dispatch_kind(
                 node.id,

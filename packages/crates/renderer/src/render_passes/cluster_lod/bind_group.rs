@@ -60,7 +60,9 @@ impl ClusterCutBindGroups {
         })
     }
 
-    pub fn get_bind_group(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+    pub fn get_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
         self.bind_group
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("ClusterCut".to_string()))
@@ -88,11 +90,8 @@ impl ClusterCutBindGroups {
                 BindGroupResource::Buffer(BufferBinding::new(&buffers.params_buffer)),
             ),
         ];
-        let descriptor = BindGroupDescriptor::new(
-            layouts.get(self.layout_key)?,
-            Some("ClusterCut"),
-            entries,
-        );
+        let descriptor =
+            BindGroupDescriptor::new(layouts.get(self.layout_key)?, Some("ClusterCut"), entries);
         self.bind_group = Some(gpu.create_bind_group(&descriptor.into()));
         Ok(())
     }
@@ -143,7 +142,9 @@ impl ClusterCompactionBindGroups {
         })
     }
 
-    pub fn get_bind_group(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+    pub fn get_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
         self.bind_group
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("ClusterCompaction".to_string()))

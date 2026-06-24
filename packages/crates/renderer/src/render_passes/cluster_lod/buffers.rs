@@ -111,7 +111,10 @@ impl ClusterLodBuffers {
             &BufferDescriptor::new(
                 Some("ClusterLodCompactedIndices"),
                 index_bytes,
-                BufferUsage::new().with_storage().with_index().with_copy_src(),
+                BufferUsage::new()
+                    .with_storage()
+                    .with_index()
+                    .with_copy_src(),
             )
             .into(),
         )?;
@@ -176,7 +179,13 @@ impl ClusterLodBuffers {
         for &i in indices {
             bytes.extend_from_slice(&i.to_le_bytes());
         }
-        gpu.write_buffer(&self.source_indices_buffer, None, bytes.as_slice(), None, None)
+        gpu.write_buffer(
+            &self.source_indices_buffer,
+            None,
+            bytes.as_slice(),
+            None,
+            None,
+        )
     }
 
     /// Upload the cluster pages (once, at mesh load). Serialises into the reused
@@ -193,7 +202,13 @@ impl ClusterLodBuffers {
         if self.staging.is_empty() {
             return Ok(());
         }
-        gpu.write_buffer(&self.pages_buffer, None, self.staging.as_slice(), None, None)
+        gpu.write_buffer(
+            &self.pages_buffer,
+            None,
+            self.staging.as_slice(),
+            None,
+            None,
+        )
     }
 
     /// Rewrite the per-frame cut params (camera + this instance's transform).

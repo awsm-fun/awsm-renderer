@@ -76,7 +76,11 @@ mod tests {
             m.triangle_count()
         );
         // A flat plane has zero QEM error no matter how far we collapse.
-        assert!(m.error < 1e-3, "flat plane should simplify losslessly, err={}", m.error);
+        assert!(
+            m.error < 1e-3,
+            "flat plane should simplify losslessly, err={}",
+            m.error
+        );
     }
 
     #[test]

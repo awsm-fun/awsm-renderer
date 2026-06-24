@@ -39,8 +39,7 @@ use awsm_renderer_scene::animation::{
 };
 use awsm_renderer_scene::{
     AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, MeshLodConfig,
-    MeshShadowConfig, NodeId,
-    NodeKind, PrimitiveShape, SkyboxConfig, Trs,
+    MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, SkyboxConfig, Trs,
 };
 
 use crate::link::{AgentSession, EditorLink, LinkError};
@@ -1713,9 +1712,7 @@ impl EditorMcp {
                 None,
             )
         })?;
-        *lod = MeshLodConfig {
-            enabled: p.enabled,
-        };
+        *lod = MeshLodConfig { enabled: p.enabled };
         self.dispatch(EditorCommand::SetKind {
             id: node,
             kind: Box::new(kind),

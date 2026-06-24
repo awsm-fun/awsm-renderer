@@ -136,13 +136,7 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
 
     // Mutable triangle table (current vertex ids) + removal flags.
     let mut tris: Vec<[u32; 3]> = (0..tri_count)
-        .map(|t| {
-            [
-                indices[t * 3],
-                indices[t * 3 + 1],
-                indices[t * 3 + 2],
-            ]
-        })
+        .map(|t| [indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2]])
         .collect();
     let mut tri_dead = vec![false; tri_count];
 
@@ -232,7 +226,15 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
         // Flip guard: collapsing `from` onto `to` rewrites every triangle that
         // uses `from` (and not `to`) to use `to` instead. Reject if any such
         // triangle would fold over.
-        if would_flip(from, to, &tris, &tri_dead, &vert_tris, &pos, opts.flip_threshold) {
+        if would_flip(
+            from,
+            to,
+            &tris,
+            &tri_dead,
+            &vert_tris,
+            &pos,
+            opts.flip_threshold,
+        ) {
             continue;
         }
 

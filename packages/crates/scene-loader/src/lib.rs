@@ -110,8 +110,8 @@ use awsm_renderer::animation::AnimationClipKey;
 use awsm_renderer::cameras::CameraKey;
 use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
-use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::lod::{LodChain, LodLevel};
+use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::pipeline_scheduler::CompileProgress;
@@ -2023,7 +2023,7 @@ async fn load_skinned_lod_chain(
     mat: MaterialKey,
 ) -> Result<()> {
     use awsm_renderer::meshes::buffer_info::MeshBufferGeometryMorphInfo;
-    use awsm_renderer::raw_mesh::{RawMorph, RawMeshData, RawSkin};
+    use awsm_renderer::raw_mesh::{RawMeshData, RawMorph, RawSkin};
 
     if !renderer.features().lod {
         return Ok(());

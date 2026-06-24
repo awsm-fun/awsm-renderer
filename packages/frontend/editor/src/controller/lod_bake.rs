@@ -139,7 +139,12 @@ pub fn bake_static_lod(asset_id: &str, mesh: &MeshData) -> Vec<BundleFile> {
 /// Plan the chain (shared crate), then gather attributes + encode each level to
 /// a glb. Pure (no cache / no filenames) so it's trivially cacheable.
 fn compute(mesh: &MeshData) -> BakedStaticLod {
-    let plan = plan_lod_levels(&mesh.positions, &mesh.indices, LOD_RATIOS, LOD_MIN_TRIANGLES);
+    let plan = plan_lod_levels(
+        &mesh.positions,
+        &mesh.indices,
+        LOD_RATIOS,
+        LOD_MIN_TRIANGLES,
+    );
     let manifest = plan.manifest();
     let levels = plan
         .levels
@@ -307,7 +312,12 @@ fn simplify_node_tree(node: &mut ExportNode, ratio: f32, tris: &mut usize, error
         if let Some(sm) = &sm {
             *tris += sm.triangle_count();
             *error = error.max(sm.error);
-            gather_skin_morph(sm, &mut node.joints, &mut node.weights, &mut node.morph_targets);
+            gather_skin_morph(
+                sm,
+                &mut node.joints,
+                &mut node.weights,
+                &mut node.morph_targets,
+            );
         }
         node.mesh = Some(mesh);
     }
@@ -319,7 +329,12 @@ fn simplify_node_tree(node: &mut ExportNode, ratio: f32, tris: &mut usize, error
     }
 }
 
-fn simplify_extra_primitive(ep: &mut ExtraPrimitive, ratio: f32, tris: &mut usize, error: &mut f32) {
+fn simplify_extra_primitive(
+    ep: &mut ExtraPrimitive,
+    ratio: f32,
+    tris: &mut usize,
+    error: &mut f32,
+) {
     let mesh = std::mem::take(&mut ep.mesh);
     let (mesh, sm) = simplify_primitive(mesh, ratio);
     if let Some(sm) = &sm {
@@ -339,7 +354,11 @@ fn simplify_primitive(mut mesh: MeshData, ratio: f32) -> (MeshData, Option<Simpl
         return (mesh, None);
     }
     let target = ((base as f32 * ratio).round() as usize).max(1);
-    let sm = simplify(&mesh.positions, &mesh.indices, SimplifyOptions::with_target(target));
+    let sm = simplify(
+        &mesh.positions,
+        &mesh.indices,
+        SimplifyOptions::with_target(target),
+    );
     // Gather geometry attributes (read originals first, then overwrite).
     let positions = sm.gather(&mesh.positions);
     let normals = mesh.normals.as_ref().map(|n| sm.gather(n));

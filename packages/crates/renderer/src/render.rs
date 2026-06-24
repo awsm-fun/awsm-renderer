@@ -2449,4 +2449,3 @@ impl AwsmRenderer {
         self.lod = reg;
     }
 }
-

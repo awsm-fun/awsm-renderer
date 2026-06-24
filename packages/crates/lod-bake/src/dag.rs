@@ -91,11 +91,7 @@ impl Default for DagOptions {
 }
 
 /// Build the cluster LOD DAG for `(positions, indices)`.
-pub fn build_cluster_dag(
-    positions: &[[f32; 3]],
-    indices: &[u32],
-    opts: &DagOptions,
-) -> ClusterDag {
+pub fn build_cluster_dag(positions: &[[f32; 3]], indices: &[u32], opts: &DagOptions) -> ClusterDag {
     let pos: Vec<DVec3> = positions
         .iter()
         .map(|p| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64))
@@ -225,10 +221,7 @@ pub fn build_cluster_dag(
 
 /// Compact a submesh (triangles in original indices) to a dense local vertex
 /// space. Returns `(local_positions, local_indices, local→original)`.
-fn compact_submesh(
-    positions: &[[f32; 3]],
-    indices: &[u32],
-) -> (Vec<[f32; 3]>, Vec<u32>, Vec<u32>) {
+fn compact_submesh(positions: &[[f32; 3]], indices: &[u32]) -> (Vec<[f32; 3]>, Vec<u32>, Vec<u32>) {
     let mut orig_to_local: HashMap<u32, u32> = HashMap::new();
     let mut local_to_orig: Vec<u32> = Vec::new();
     let mut local_pos: Vec<[f32; 3]> = Vec::new();
@@ -383,7 +376,10 @@ mod tests {
         let (pos, indices) = grid(20);
         let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
         // At least one cluster is a root (never simplified further).
-        assert!(dag.clusters.iter().any(|c| c.parent_error == ROOT_PARENT_ERROR));
+        assert!(dag
+            .clusters
+            .iter()
+            .any(|c| c.parent_error == ROOT_PARENT_ERROR));
     }
 
     #[test]
@@ -445,8 +441,16 @@ mod tests {
             .sum();
         assert_eq!(l0, total, "level 0 must cover every source triangle");
         // The DAG reduced to coarser levels and a root exists.
-        assert!(dag.clusters.iter().any(|c| c.lod_error > 0.0), "built coarser levels");
-        assert!(dag.clusters.iter().any(|c| c.parent_error >= ROOT_PARENT_ERROR), "has a root");
+        assert!(
+            dag.clusters.iter().any(|c| c.lod_error > 0.0),
+            "built coarser levels"
+        );
+        assert!(
+            dag.clusters
+                .iter()
+                .any(|c| c.parent_error >= ROOT_PARENT_ERROR),
+            "has a root"
+        );
         // Monotonic errors + valid bounds everywhere.
         for c in &dag.clusters {
             assert!(c.parent_error >= c.lod_error);

@@ -307,7 +307,10 @@ mod tests {
         for (i, page) in p.iter().enumerate() {
             let mut out = Vec::new();
             select_cut(&p, page.lod_error, &mut out);
-            assert!(out.contains(&(i as u32)), "cluster {i} missing at its lod_error");
+            assert!(
+                out.contains(&(i as u32)),
+                "cluster {i} missing at its lod_error"
+            );
         }
     }
 
@@ -316,7 +319,10 @@ mod tests {
         let world = Mat4::IDENTITY;
         let near = instance_error_threshold(&world, Vec3::new(0.0, 0.0, 2.0), 0.5, 1080.0, 1.0);
         let far = instance_error_threshold(&world, Vec3::new(0.0, 0.0, 50.0), 0.5, 1080.0, 1.0);
-        assert!(far > near, "a farther instance tolerates a larger object error");
+        assert!(
+            far > near,
+            "a farther instance tolerates a larger object error"
+        );
         // Reuse-buffer call doesn't allocate a fresh vec each time.
         let p = synthetic();
         let mut out = Vec::new();
@@ -348,7 +354,16 @@ mod tests {
     fn cut_params_layout() {
         let mut out = Vec::new();
         let world = Mat4::from_scale(Vec3::splat(2.0));
-        write_cluster_cut_params(&world, Vec3::new(1.0, 2.0, 3.0), 0.5, 1080.0, 1.5, 2.0, 7, &mut out);
+        write_cluster_cut_params(
+            &world,
+            Vec3::new(1.0, 2.0, 3.0),
+            0.5,
+            1080.0,
+            1.5,
+            2.0,
+            7,
+            &mut out,
+        );
         assert_eq!(out.len(), CLUSTER_CUT_PARAMS_SIZE, "params are 96 B");
         let f = |off: usize| f32::from_le_bytes(out[off..off + 4].try_into().unwrap());
         let u = |off: usize| u32::from_le_bytes(out[off..off + 4].try_into().unwrap());
@@ -435,7 +450,13 @@ mod tests {
         out.sort_unstable();
         assert!(out.contains(&0), "near region keeps its FINE cluster");
         assert!(out.contains(&3), "far region drops to its COARSE cluster");
-        assert!(!out.contains(&1), "near region must not pick its coarse cluster");
-        assert!(!out.contains(&2), "far region must not pick its fine cluster");
+        assert!(
+            !out.contains(&1),
+            "near region must not pick its coarse cluster"
+        );
+        assert!(
+            !out.contains(&2),
+            "far region must not pick its fine cluster"
+        );
     }
 }

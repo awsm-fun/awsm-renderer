@@ -369,8 +369,7 @@ fn demo_scene() -> awsm_renderer_scene::Scene {
     use awsm_renderer_scene::{
         AssetEntry, AssetId, AssetSource, EditorNode, EnvironmentConfig, LightConfig, MaterialDef,
         MaterialInstance, MeshLodConfig, MeshRef, MeshShadowConfig, NodeId, NodeKind,
-        PrimitiveShape, RuntimeMesh,
-        Scene, Trs,
+        PrimitiveShape, RuntimeMesh, Scene, Trs,
     };
 
     let mut scene = Scene {
