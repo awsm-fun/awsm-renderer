@@ -426,14 +426,30 @@ the boundary-locked DAG produces a usable coarse LOD. Shipped behaviour renders
 the **finest** cut (== source geometry, full detail) until the GPU per-cluster
 cut lands; `?vg` off ⇒ base glb (byte-identical).
 
-**Next:** B.2 proper — upload the cluster pages + vertex/index buffers as GPU
-storage, run the two-level cull + per-cluster cut as a compute pass writing one
-compacted index stream + a single `drawIndexedIndirect` (so the cut varies
-per-cluster across one mesh, the real win); then B.3 (cluster_id in the vis-buffer
-+ material fetch from cluster pages). _Crack-free per-cluster cuts need each
+**Status — landed (B.2, per-instance cluster-cut LOD, working + verified).**
+`load_cluster_lod` (scene-loader, gated by `virtual_geometry`) builds a chain of
+watertight uniform cuts from the DAG — the finest cut as the base and up to 3
+coarser cuts (chosen at ≥40% triangle drops) as **hidden levels** — each
+compacted to its used vertices, and registers them in the **same `LodRegistry`**
+the discrete chain uses. `update_lod_selection` now runs for `virtual_geometry`
+too, so the **verified Phase A per-frame selection** picks a cut by projected
+screen error and visibility-swaps — distance-adaptive cluster LOD with no new
+runtime and no per-frame allocation. **Verified** via the editor round-trip
+(`?vg`) on DamagedHelmet: `get_memory_stats` shows **4 meshes** (base + 3 cut
+levels), and `visible_triangles` coarsens with distance (5513 near → 3229 far),
+each cut rendering **crack-free with full materials**. `?vg` off ⇒ base glb,
+byte-identical.
+
+This realises Phase B's **per-instance** LOD-cut selection on the verified
+runtime. The remaining **B.2-GPU / B.3** work is the *per-cluster* cut — a compute
+pass that, in one `drawIndexedIndirect`, varies detail *within* a single mesh
+(near clusters fine, far clusters coarse) and shares one visibility buffer
+(cluster_id payload + material fetch from cluster pages). That needs GPU storage
+upload of the pages + the cull/cut/compaction compute + vis-buffer changes — the
+deepest GPU work; the per-instance uniform cut above is the watertight,
+shipped-and-verified stepping stone. _Crack-free per-cluster cuts also need each
 group's error projected with a group-consistent bounding sphere so all clusters
-in a group flip together — a B.2 refinement; the per-instance uniform cut is
-already watertight._
+in a group flip together._
 
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds

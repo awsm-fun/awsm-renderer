@@ -2298,7 +2298,9 @@ impl AwsmRenderer {
     /// pure arithmetic with no per-frame allocation. No-op unless the `lod`
     /// feature loaded chains.
     pub(crate) fn update_lod_selection(&mut self) {
-        if !self.features.lod || self.lod.is_empty() {
+        // Runs for discrete LOD (`lod`) AND cluster-cut LOD (`virtual_geometry`):
+        // both register their chains in `self.lod` and select the same way.
+        if (!self.features.lod && !self.features.virtual_geometry) || self.lod.is_empty() {
             return;
         }
         let Some(cam) = self.camera.last_matrices.as_ref() else {
@@ -2353,3 +2355,4 @@ impl AwsmRenderer {
         self.lod = reg;
     }
 }
+
