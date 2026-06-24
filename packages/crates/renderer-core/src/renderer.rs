@@ -96,6 +96,46 @@ impl AwsmRendererWebGpu {
     pub fn device_id(&self) -> DeviceId {
         self.device_id
     }
+
+    /// Register a host callback fired (once) when **this** device is lost — the
+    /// **action seam** for GPU device-loss recovery (B1a). Attaches another
+    /// handler to the device's `lost` promise *alongside* the logging hook from
+    /// [`install_device_lost_hook`]; the callback receives the loss `reason`
+    /// (`"destroyed"` on an explicit `destroy()`, `"unknown"` on a driver reset
+    /// / OOM). The host uses it to kick a cold-path recovery (reacquire device +
+    /// replay the retained source-of-truth — geometry/texture CPU mirrors don't
+    /// exist, so this is reload-from-source, not rebuild-from-mirror).
+    ///
+    /// Cold path, **one-shot** — installed once per device, never per frame, so
+    /// the render hot loop pays nothing. The closure leaks (`forget`) for the
+    /// device's lifetime (the device outlives nothing once lost).
+    pub fn on_device_lost<F: 'static + FnOnce(String)>(&self, f: F) {
+        let mut slot = Some(f);
+        let cb = Closure::<dyn FnMut(JsValue)>::new(move |info: JsValue| {
+            let reason = js_sys::Reflect::get(&info, &JsValue::from_str("reason"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            if let Some(f) = slot.take() {
+                f(reason);
+            }
+        });
+        match js_sys::Reflect::get(self.device.as_ref(), &JsValue::from_str("lost"))
+            .ok()
+            .and_then(|p| p.dyn_into::<js_sys::Promise>().ok())
+        {
+            Some(promise) => {
+                let _ = promise.then(&cb);
+            }
+            None => {
+                tracing::warn!(
+                    target: "awsm_renderer_core::device_lost",
+                    "on_device_lost: device.lost promise unavailable; recovery won't trigger"
+                );
+            }
+        }
+        cb.forget();
+    }
 }
 
 /// Canvas kind the renderer is targeting — `HtmlCanvasElement` for

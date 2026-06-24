@@ -96,6 +96,24 @@ fn main_thread_boot() -> Result<(), JsValue> {
     }
 }
 
+/// Test/diagnostic (gated): the shared WASM linear-memory size in bytes — the
+/// arena every thread shares (the main-thread instance's `memory` IS the shared
+/// one the workers attach to). The device-loss recovery repro reads this from
+/// the page to prove **repeated** recovery doesn't leak (byteLength plateaus
+/// instead of growing per recovery). Cold path; never per frame.
+#[cfg(any(debug_assertions, feature = "harden-diag"))]
+#[wasm_bindgen]
+pub fn mt_wasm_heap_bytes() -> f64 {
+    // The threaded build's memory buffer is a `SharedArrayBuffer` (not
+    // `ArrayBuffer`), so read `.buffer.byteLength` via Reflect — works for both.
+    let mem = wasm_bindgen::memory();
+    js_sys::Reflect::get(&mem, &JsValue::from_str("buffer"))
+        .ok()
+        .and_then(|buf| js_sys::Reflect::get(&buf, &JsValue::from_str("byteLength")).ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+}
+
 /// Read the `?demo=` query param (defaults to empty).
 fn demo_param() -> String {
     web_sys::window()

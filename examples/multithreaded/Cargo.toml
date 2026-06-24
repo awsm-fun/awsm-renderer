@@ -16,6 +16,14 @@ rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# Gates the device-loss / worker-crash recovery **test seams** (a postMessage
+# that forces device.destroy(); a worker-kill hook). Always on in debug via
+# `debug_assertions`; this flag enables them in a release build for a soak. The
+# recovery itself (arm_recovery/recover) is un-gated — it's correctness.
+harden-diag = []
+
 [dependencies]
 # `texture-export` pulls in the GPU `copyTextureToBuffer` → PNG readback path
 # (`renderer.capture_frame()`) that backs `RenderCommand::Screenshot` (B2).
