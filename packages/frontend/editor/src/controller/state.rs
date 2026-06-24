@@ -884,6 +884,12 @@ impl EditorController {
                 };
                 let mut json = serde_json::to_value(&prev)
                     .map_err(|e| crate::error::EditorError::msg(format!("serialize kind: {e}")))?;
+                // Some MCP clients stringify the patch (a bare `Value` param derives
+                // an unconstrained schema). Coerce a JSON-string patch back to
+                // structured JSON before merging, so it doesn't replace the whole
+                // kind wholesale. Covers both `patch_kind` and `dispatch_command`.
+                let patch = awsm_editor_protocol::coerce_patch(patch)
+                    .map_err(crate::error::EditorError::msg)?;
                 awsm_editor_protocol::json_merge_patch(&mut json, &patch);
                 let next: NodeKind = serde_json::from_value(json).map_err(|e| {
                     crate::error::EditorError::msg(format!(
