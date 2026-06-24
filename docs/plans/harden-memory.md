@@ -235,10 +235,10 @@ it's independent of B1.
 
 | # | Item | Harness | Status | Evidence |
 |---|------|---------|--------|----------|
-| P0 | wasm_heap_bytes + undo_len/bytes in get_memory_stats; GPUDevice.lost logging hook | editor | ☐ | |
-| P1 | Undo/redo byte-budget cap (drop-oldest) + estimator unit test | editor | ☐ | |
-| P1b | Audit + bound other unbounded containers | editor | ☐ | |
-| P1c | (opt-in) oversized-allocation debug guard | editor | ☐ | |
+| P0 | wasm_heap_bytes + undo_len/bytes in get_memory_stats; GPUDevice.lost logging hook | editor | ✅ | Live `get_memory_stats` now returns `wasm_heap_bytes:220397568`, `undo_len/bytes`, `redo_len/bytes` (gated `debug_assertions`/`harden-diag`). `install_device_lost_hook` wired beside `onuncapturederror` (renderer.rs), logs `awsm_renderer_core::device_lost`; un-gated so a loss is never silent (P2 exercises the fire). |
+| P1 | Undo/redo byte-budget cap (drop-oldest) + estimator unit test | editor | ✅ | `BoundedHistory` (256 MB budget, drop-oldest) wired into `state.rs` undo/redo. 6 host tests pass (`cargo test -p awsm-editor-protocol history`). Live churn (1200 alt. ~512 KB renames, no new_project): `undo_len` plateaus **511** (drop-oldest), `undo_bytes` plateaus **268,036,874 ≤ 256 MB**, `wasm_heap` plateaus 646 MB (stops ramping). |
+| P1b | Audit + bound other unbounded containers | editor | ✅ | Audited editor+renderer. Undo log was the sole unbounded-and-suspect (now fixed). Leak-panel counters **flat** across the 1200-cmd churn (render_pipelines 16, compute_pipelines 21, shaders 31, samplers 1, pool_textures 0, dynamic_materials 0 — identical before/after). CONSOLE_LOG already capped (200); renderable pools cleared/frame; compute-pipeline+shader caches have removal APIs. Noted: `RenderPipelines.cache` lacks a symmetric removal API (bounded by finite pipeline-variant domain; not the crash cause; flagged for future if dynamic-variant churn ever shows growth). |
+| P1c | (opt-in) oversized-allocation debug guard | editor | ✅ | Gated guard in `renderer-core methods.rs create_buffer` (the central GPU-buffer chokepoint): a single buffer > `OVERSIZED_ALLOC_BYTES` (512 MB) logs `awsm_renderer_core::oversized_alloc` + `debug_assert!`s at our call site instead of trapping in PartitionAlloc. Gated `debug_assertions`/`harden-diag`; clippy `--all-features` clean. |
 | P2 | `rebuild_gpu()` from CPU mirrors + GPUDevice.lost action | mt:dev | ☐ | |
 | P3 | Render-worker respawn + topology-in-shared-memory | mt:dev | ☐ | |
 | P4 | Asset-fetch-failure → clean Error, no hang | mt:dev | ☐ | |

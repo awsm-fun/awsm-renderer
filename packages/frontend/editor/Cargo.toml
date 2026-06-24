@@ -8,6 +8,14 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Opt-in memory/recovery hardening diagnostics (extra `get_memory_stats`
+# counters: wasm_heap_bytes, undo/redo len+bytes; oversized-allocation guard).
+# Always on in debug builds via `debug_assertions`; this flag turns them on in a
+# release build for a soak without otherwise changing the release default.
+harden-diag = []
+
 [dependencies]
 awsm-curves = { workspace = true, features = ["serde"] }
 awsm-meshgen = { workspace = true, features = ["authoring"] }

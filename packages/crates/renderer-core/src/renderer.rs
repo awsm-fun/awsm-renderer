@@ -287,6 +287,13 @@ impl AwsmRendererWebGpuBuilder {
         // operator filter for it.
         install_uncaptured_error_hook(&device);
 
+        // Detection half of GPU device-loss recovery: wire `device.lost` so a
+        // loss (explicit `destroy()`, driver reset, OOM) surfaces in tracing
+        // instead of silently freezing the canvas. One-shot, cold install — no
+        // per-frame cost. The recovery half (`rebuild_gpu` from CPU mirrors)
+        // hangs off the same signal.
+        install_device_lost_hook(&device);
+
         context
             .configure(
                 &self
@@ -429,6 +436,53 @@ fn install_uncaptured_error_hook(device: &web_sys::GpuDevice) {
         );
     }
     on_err.forget();
+}
+
+/// Install a `device.lost` handler. `GPUDevice.lost` is a `Promise` that
+/// resolves **exactly once** when the device is lost — after an explicit
+/// `device.destroy()` (`reason = "destroyed"`) or a driver reset / OOM
+/// (`reason = "unknown"`). We attach a `.then` and log the reason + message
+/// under the `awsm_renderer_core::device_lost` target so a loss is never silent
+/// (it surfaces in `get_logs`). The closure leaks (`forget`) like the
+/// uncaptured-error hook — one-shot for the device's lifetime.
+///
+/// Pulled via `js_sys::Reflect` rather than a typed getter so the hook keeps
+/// working regardless of the enabled `web-sys` feature set. This is the
+/// **detection** seam; GPU-device-loss recovery (`rebuild_gpu` from CPU
+/// mirrors) builds its action onto this same promise.
+fn install_device_lost_hook(device: &web_sys::GpuDevice) {
+    let on_lost = Closure::<dyn FnMut(JsValue)>::new(move |info: JsValue| {
+        let reason = js_sys::Reflect::get(&info, &JsValue::from_str("reason"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let message = js_sys::Reflect::get(&info, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "<no message>".to_string());
+        tracing::error!(
+            target: "awsm_renderer_core::device_lost",
+            "GPU device lost ({}): {}",
+            reason,
+            message
+        );
+    });
+
+    match js_sys::Reflect::get(device.as_ref(), &JsValue::from_str("lost"))
+        .ok()
+        .and_then(|p| p.dyn_into::<js_sys::Promise>().ok())
+    {
+        Some(promise) => {
+            let _ = promise.then(&on_lost);
+        }
+        None => {
+            tracing::warn!(
+                target: "awsm_renderer_core::device_lost",
+                "device.lost promise unavailable; a device loss would be silent"
+            );
+        }
+    }
+    on_lost.forget();
 }
 
 /// Requested device limits to increase WebGPU caps.
