@@ -8,4 +8,5 @@
 //! incrementally (see docs/plans/lod.md, B.2-GPU). This module currently hosts
 //! the registered cut shader; the pipeline + dispatch + readback follow.
 
+pub mod buffers;
 pub mod shader;
