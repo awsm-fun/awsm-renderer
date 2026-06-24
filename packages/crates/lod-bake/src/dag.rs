@@ -44,6 +44,20 @@ pub struct DagCluster {
     /// further). Monotonic: `parent_error >= lod_error`. Runtime LOD cut: render
     /// a cluster when `lod_error <= threshold < parent_error`.
     pub parent_error: f32,
+    /// Bounding sphere of the **group that created this cluster** (the source
+    /// group simplified into it) — the sphere a GPU per-cluster cut projects
+    /// `lod_error` against. Group-shared, so every cluster of a group flips at
+    /// the same camera threshold ⇒ crack-free. Equals the cluster's own bounds
+    /// for level-0 clusters (no creating group).
+    pub lod_bounds_center: [f32; 3],
+    pub lod_bounds_radius: f32,
+    /// Bounding sphere of the **group that simplifies this cluster away** — the
+    /// sphere a GPU per-cluster cut projects `parent_error` against. Equals the
+    /// cluster's own bounds for roots (never simplified). A child's
+    /// `parent_bounds` is exactly the `lod_bounds` of the coarser clusters its
+    /// group produced — the shared sphere that keeps the cut watertight.
+    pub parent_bounds_center: [f32; 3],
+    pub parent_bounds_radius: f32,
 }
 
 /// The full DAG: clusters across all LOD levels, all indexing one vertex buffer.
@@ -150,10 +164,17 @@ pub fn build_cluster_dag(
             let target = ((group_tris as f32 * opts.simplify_ratio).round() as usize).max(1);
             let sm = simplify(&local_pos, &local_idx, SimplifyOptions::with_target(target));
 
+            // Group sphere: the shared bounds all the group's clusters project
+            // their flip threshold against, so they switch together (crack-free).
+            let (group_c, group_r) = sphere_of(&group_indices, &pos);
+
             // Monotonic group error: at least any child's, plus this collapse's.
             let group_error = sm.error.max(max_child_error) + f32::EPSILON;
             for &local in group {
-                clusters[current[local as usize]].parent_error = group_error;
+                let ci = current[local as usize];
+                clusters[ci].parent_error = group_error;
+                clusters[ci].parent_bounds_center = group_c;
+                clusters[ci].parent_bounds_radius = group_r;
             }
 
             // Reconstruct simplified triangles in ORIGINAL vertex indices.
@@ -181,7 +202,12 @@ pub fn build_cluster_dag(
                     })
                     .collect();
                 next_tris += tris.len();
-                clusters.push(make_cluster(tris, &pos, group_error));
+                let mut nc = make_cluster(tris, &pos, group_error);
+                // This cluster was created by simplifying `group`; project its
+                // own `lod_error` against the shared group sphere.
+                nc.lod_bounds_center = group_c;
+                nc.lod_bounds_radius = group_r;
+                clusters.push(nc);
                 next.push(clusters.len() - 1);
             }
         }
@@ -237,13 +263,42 @@ fn make_cluster(triangles: Vec<[u32; 3]>, pos: &[DVec3], lod_error: f32) -> DagC
     for &v in &seen {
         r2 = r2.max((pos[v as usize] - center).length_squared());
     }
+    let c = [center.x as f32, center.y as f32, center.z as f32];
+    let r = r2.sqrt() as f32;
     DagCluster {
         triangles,
-        center: [center.x as f32, center.y as f32, center.z as f32],
-        radius: r2.sqrt() as f32,
+        center: c,
+        radius: r,
         lod_error,
         parent_error: ROOT_PARENT_ERROR,
+        // Default to own bounds; the DAG build overwrites with the group sphere
+        // (lod_bounds for clusters a group creates, parent_bounds for a group's
+        // children). Level-0 clusters keep own bounds for lod; roots for parent.
+        lod_bounds_center: c,
+        lod_bounds_radius: r,
+        parent_bounds_center: c,
+        parent_bounds_radius: r,
     }
+}
+
+/// Bounding sphere (centre, radius) over the vertices referenced by `indices`.
+fn sphere_of(indices: &[u32], pos: &[DVec3]) -> ([f32; 3], f32) {
+    let mut verts = std::collections::HashSet::new();
+    for &v in indices {
+        verts.insert(v);
+    }
+    let mut c = DVec3::ZERO;
+    for &v in &verts {
+        c += pos[v as usize];
+    }
+    if !verts.is_empty() {
+        c /= verts.len() as f64;
+    }
+    let mut r2 = 0.0_f64;
+    for &v in &verts {
+        r2 = r2.max((pos[v as usize] - c).length_squared());
+    }
+    ([c.x as f32, c.y as f32, c.z as f32], r2.sqrt() as f32)
 }
 
 #[cfg(test)]
@@ -329,6 +384,45 @@ mod tests {
         let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
         // At least one cluster is a root (never simplified further).
         assert!(dag.clusters.iter().any(|c| c.parent_error == ROOT_PARENT_ERROR));
+    }
+
+    #[test]
+    fn group_bounds_are_valid_and_shared() {
+        let (pos, indices) = grid(24);
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+        // Every cluster has finite, non-negative group bounds.
+        for c in &dag.clusters {
+            assert!(c.lod_bounds_radius >= 0.0 && c.lod_bounds_radius.is_finite());
+            assert!(c.parent_bounds_radius >= 0.0 && c.parent_bounds_radius.is_finite());
+        }
+        // A non-root cluster's vertices all lie within its parent (group) sphere
+        // — the cluster belongs to that group, so it shares the sphere all the
+        // group's clusters flip against (the crack-free invariant).
+        for c in &dag.clusters {
+            if c.parent_error >= ROOT_PARENT_ERROR {
+                continue; // root: parent bounds default to own
+            }
+            let ctr = c.parent_bounds_center;
+            for tri in &c.triangles {
+                for &v in tri {
+                    let p = pos[v as usize];
+                    let d = ((p[0] - ctr[0]).powi(2)
+                        + (p[1] - ctr[1]).powi(2)
+                        + (p[2] - ctr[2]).powi(2))
+                    .sqrt();
+                    assert!(
+                        d <= c.parent_bounds_radius + 1e-3,
+                        "cluster vertex must lie within its parent (group) sphere"
+                    );
+                }
+            }
+        }
+        // Coarser clusters (lod_error > 0) carry a group lod sphere distinct from
+        // a degenerate point.
+        assert!(dag
+            .clusters
+            .iter()
+            .any(|c| c.lod_error > 0.0 && c.lod_bounds_radius > 0.0));
     }
 
     #[test]

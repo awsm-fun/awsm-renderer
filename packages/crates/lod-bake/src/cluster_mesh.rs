@@ -25,9 +25,16 @@ pub struct ClusterPage {
     pub radius: f32,
     /// Error introduced creating this cluster (`0` at the finest level).
     pub lod_error: f32,
-    /// Error of the group that simplifies this cluster away (`+∞` for roots).
-    /// LOD cut: draw when `lod_error <= threshold < parent_error`.
+    /// Error of the group that simplifies this cluster away (root sentinel for
+    /// roots). LOD cut: draw when `lod_error <= threshold < parent_error`.
     pub parent_error: f32,
+    /// Group sphere to project `lod_error` against (group-shared ⇒ crack-free
+    /// per-cluster cut). See [`crate::dag::DagCluster::lod_bounds_center`].
+    pub lod_bounds_center: [f32; 3],
+    pub lod_bounds_radius: f32,
+    /// Group sphere to project `parent_error` against.
+    pub parent_bounds_center: [f32; 3],
+    pub parent_bounds_radius: f32,
     /// First index of this cluster's triangles in [`ClusterMesh::indices`].
     pub first_index: u32,
     /// Number of indices (triangle count × 3).
@@ -72,6 +79,10 @@ impl ClusterMesh {
                 radius: c.radius,
                 lod_error: c.lod_error,
                 parent_error: c.parent_error,
+                lod_bounds_center: c.lod_bounds_center,
+                lod_bounds_radius: c.lod_bounds_radius,
+                parent_bounds_center: c.parent_bounds_center,
+                parent_bounds_radius: c.parent_bounds_radius,
                 first_index,
                 index_count: (c.triangles.len() * 3) as u32,
             });
