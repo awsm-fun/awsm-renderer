@@ -39,9 +39,24 @@ existing classifier (`node_is_skinned` in the editor; `RawMeshData.skin` /
 `RawMeshData.morph` at the API level) already distinguishes the two.
 
 **One bake tool, two outputs, routed by class.** The shared piece is the
-simplifier (`meshopt_simplify`). Discrete = run it N times with weight
-preservation. Cluster = graph-partition + boundary-locked simplify +
-error-monotonic regroup into a DAG. The runtime paths differ (see Phase A / B).
+simplifier. Discrete = run it N times with weight preservation. Cluster =
+graph-partition + boundary-locked simplify + error-monotonic regroup into a DAG.
+The runtime paths differ (see Phase A / B).
+
+**Simplifier implementation — pure Rust, not the meshopt C lib (forced by the
+wasm build).** The bake runs inside `bake_player_bundle`, which lives in the
+**editor frontend** — a `wasm32-unknown-unknown` crate. The `meshopt` crate
+compiles vendored meshoptimizer C++ via `cc`, and the toolchain here (Apple
+clang) has no `wasm32` target, so it cannot build for the editor. The shared
+simplifier is therefore a pure-Rust **boundary-locked half-edge QEM collapse**
+(`awsm-renderer-lod-bake`): it collapses each edge onto one of its two *existing*
+endpoints (never synthesizing new vertex positions), so the surviving vertices
+are always a **subset** of the originals. That subset property is what makes
+skin-weight / morph-target carry-through *exact* — a level's vertices keep their
+original JOINTS/WEIGHTS and morph deltas verbatim, no interpolation. Boundary +
+attribute-seam vertices are locked so silhouettes/seams stay stable across
+levels. (This realizes the plan's `meshopt_simplify` intent; the specific C call
+is unavailable in-target.)
 
 ## Where the bake runs: the build boundary, not import
 
@@ -161,6 +176,17 @@ and covers skinned/morph meshes that cluster LOD can never handle.
 **Cost / trade-off:** popping at transitions (acceptable for the discrete tier;
 this is the well-understood classic technique). Authoring/bake of the levels is
 automated.
+
+**Status — landed (A.2 core):** the `awsm-renderer-lod-bake` crate exists with
+the shared simplifier: `simplify(positions, indices, opts) -> SimplifiedMesh`
+and `build_lod_chain(positions, indices, ratios)`. Pure-Rust boundary-locked
+half-edge QEM collapse (see "Simplifier implementation" above); builds for
+`wasm32-unknown-unknown`; unit-tested (flat plane → lossless, boundary verts
+survive, curved surface → nonzero error, attribute gather, monotone chain).
+`SimplifiedMesh { surviving, indices, error }` + `gather<T>(attr)` give the
+caller the subset remap to carry positions/normals/uvs/colors/skin/morph through
+a level. **Next:** wire into `bake_player_bundle` (emit levels + descriptor,
+honour `MeshLodConfig` + min-tris, content-hash cache) then runtime selection.
 
 **Critical files:**
 - Runtime selection: `render_passes/occlusion/shader/occlusion_wgsl/cull.wgsl`,
