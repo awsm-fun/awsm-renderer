@@ -215,6 +215,8 @@ fn editor_features() -> RendererFeatures {
         // round-trip (the editable scene registers no chains, so it stays a no-op
         // there regardless).
         lod: url_has_flag("lod"),
+        // Cluster LOD (Phase B) — player-bundle path, exercised via `?vg`.
+        virtual_geometry: url_has_flag("vg"),
         indirect_first_instance: FeatureToggle::Auto,
     }
 }

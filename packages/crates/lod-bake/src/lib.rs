@@ -11,6 +11,7 @@
 //! DAG) will reuse the same collapse with locked group boundaries.
 
 pub mod cluster;
+pub mod cluster_mesh;
 pub mod dag;
 pub mod manifest;
 pub mod plan;
@@ -18,6 +19,7 @@ pub mod quadric;
 pub mod simplify;
 
 pub use cluster::{build_cluster_graph, build_clusters, group_clusters, ClusterGraph, Meshlet};
+pub use cluster_mesh::{ClusterMesh, ClusterPage};
 pub use dag::{build_cluster_dag, ClusterDag, DagCluster, DagOptions};
 pub use manifest::{
     bounding_sphere_radius, lod_level_filename, lod_manifest_filename, MeshLodLevel, MeshLodManifest,

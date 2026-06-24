@@ -384,6 +384,31 @@ backbone is reused, not rebuilt:
 > Sub-steps: **B.1a** clusters + bounds → **B.1b** cluster adjacency + grouping →
 > **B.1c** the LOD DAG (group→simplify→regroup, monotonic error) + page emit.
 
+**Status — landed: B.1 (cluster bake), complete.** All pure-Rust in
+`awsm-renderer-lod-bake`, all wasm-building, 30 tests:
+- **B.1a** `cluster::build_clusters` — greedy edge-adjacency meshlets (~N tris,
+  compact, bounded), cover-and-disjoint.
+- **B.1b** `cluster::build_cluster_graph` + `group_clusters` — shared-edge
+  adjacency + greedy grouping (the `metis` stand-in), minimising group external
+  boundary.
+- **B.1c** `dag::build_cluster_dag` — the Nanite-style DAG: group →
+  boundary-locked-simplify (crack-free: a group's external edges go one-sided in
+  isolation and lock) → re-cluster → monotonic per-cluster `lod_error` /
+  `parent_error`. Every cluster indexes one shared vertex buffer (the simplifier's
+  subset property). Also hardened the simplifier to be **deterministic** (was
+  HashMap-order-dependent — would break content-hash caching).
+- **B.1d** `cluster_mesh::ClusterMesh::from_dag` — the serialisable bake output:
+  shared vertex attrs + concatenated per-cluster index pages + meta
+  (`ClusterPage { center, radius, lod_error, parent_error, first_index,
+  index_count }`). Indexed form; the renderer explodes to the 56-byte visibility
+  layout at upload. Added the **`virtual_geometry`** feature flag (default off ⇒
+  byte-identical; gate-hygiene test; `?vg` URL toggle in the editor).
+
+**Next:** B.2 (GPU two-level cull + per-cluster LOD-cut compute → one compacted
+indirect stream) and B.3 (cluster_id in the vis-buffer + material fetch from
+cluster pages). These are the large GPU-runtime investment; bundle emission of
+`ClusterMesh` lands with the runtime that consumes it.
+
 **B.2 — Cluster cull + LOD selection (compute):**
 - Two-level cull: cheap per-instance frustum/HZB over instance bounds
   (generalizes today's `OcclusionInstance` array), then per-cluster LOD cut only

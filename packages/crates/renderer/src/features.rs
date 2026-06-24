@@ -118,6 +118,15 @@ pub struct RendererFeatures {
     /// without LOD. Mirrors [`Self::gpu_culling`] as an opt-in GPU-pipeline gate.
     pub lod: bool,
 
+    /// Enable cluster-LOD ("virtual geometry", Phase B) for static rigid meshes:
+    /// load the baked cluster DAG, two-level cull + per-cluster LOD-cut selection
+    /// on the GPU, and a single compacted indirect stream sharing the visibility
+    /// buffer with discrete + skinned geometry. When `false` (the default), no
+    /// cluster data is loaded and static meshes draw whole (discrete LOD still
+    /// applies if `lod` is on) — byte-identical to a build without it. Mirrors
+    /// [`Self::gpu_culling`] / [`Self::lod`] as an opt-in GPU-pipeline gate.
+    pub virtual_geometry: bool,
+
     /// Whether to use the WebGPU `indirect-first-instance` feature for
     /// the non-instanced geometry pass's drawIndirect path.
     ///
@@ -184,6 +193,10 @@ mod tests {
         assert!(
             !features.lod,
             "lod must default to false so a build without LOD is byte-identical"
+        );
+        assert!(
+            !features.virtual_geometry,
+            "virtual_geometry must default to false (byte-identical without cluster LOD)"
         );
         assert_eq!(
             features.indirect_first_instance,
