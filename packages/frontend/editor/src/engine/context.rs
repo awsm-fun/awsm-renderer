@@ -217,6 +217,12 @@ fn editor_features() -> RendererFeatures {
         lod: url_has_flag("lod"),
         // Cluster LOD (Phase B) — player-bundle path, exercised via `?vg`.
         virtual_geometry: url_has_flag("vg"),
+        // Cluster-LOD streaming residency (Phase 5) — cap M's geometry to a
+        // triangle budget so multi-million-tri assets load. Opt in with `?stream`,
+        // or `?streambudget=N` to also set the cap (which implies `?stream`).
+        // Default off ⇒ byte-identical; only bites above the budget.
+        cluster_streaming: url_has_flag("stream") || url_flag_value("streambudget").is_some(),
+        cluster_streaming_budget: url_flag_value("streambudget").and_then(|v| v.parse().ok()),
         indirect_first_instance: FeatureToggle::Auto,
     }
 }
@@ -231,6 +237,16 @@ fn url_has_flag(key: &str) -> bool {
                 .any(|p| p == key || p.starts_with(&format!("{key}=")))
         })
         .unwrap_or(false)
+}
+
+/// The `…` of `?<key>=…` in the page URL's query string, if present.
+fn url_flag_value(key: &str) -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let prefix = format!("{key}=");
+    search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|p| p.strip_prefix(&prefix).map(|v| v.to_string()))
 }
 
 async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<AwsmRenderer> {
