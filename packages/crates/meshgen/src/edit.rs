@@ -292,6 +292,108 @@ fn pca_smallest_axis(positions: &[[f32; 3]], centroid: Vec3) -> Vec3 {
     }
 }
 
+/// Position-welded connected-component id per ORIGINAL vertex index, plus the
+/// component count. Vertices at the same position (within a quantization epsilon)
+/// are **welded** before union-find over triangle edges — so a UV/normal seam
+/// (which duplicates a vertex per face) doesn't fragment one solid piece into
+/// many components. The backbone of [`connected_component_of`] /
+/// [`connected_components`].
+fn weld_components(mesh: &MeshData) -> (Vec<u32>, u32) {
+    use std::collections::HashMap;
+    let n = mesh.positions.len();
+    // 1. Weld by quantized position → a representative original index per cell.
+    let q = 1.0e4_f32;
+    let key = |p: &[f32; 3]| {
+        (
+            (p[0] * q).round() as i64,
+            (p[1] * q).round() as i64,
+            (p[2] * q).round() as i64,
+        )
+    };
+    let mut pos_rep: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    let mut weld = vec![0u32; n];
+    for (i, p) in mesh.positions.iter().enumerate() {
+        let rep = *pos_rep.entry(key(p)).or_insert(i as u32);
+        weld[i] = rep;
+    }
+    // 2. Union-find over the welded reps, joined by triangle edges.
+    fn find(parent: &mut [u32], x: u32) -> u32 {
+        let mut r = x;
+        while parent[r as usize] != r {
+            r = parent[r as usize];
+        }
+        // Path-compress.
+        let mut c = x;
+        while parent[c as usize] != r {
+            let next = parent[c as usize];
+            parent[c as usize] = r;
+            c = next;
+        }
+        r
+    }
+    fn union(parent: &mut [u32], a: u32, b: u32) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            parent[ra as usize] = rb;
+        }
+    }
+    let mut parent: Vec<u32> = (0..n as u32).collect();
+    for tri in mesh.indices.chunks_exact(3) {
+        let a = weld[tri[0] as usize];
+        let b = weld[tri[1] as usize];
+        let c = weld[tri[2] as usize];
+        union(&mut parent, a, b);
+        union(&mut parent, b, c);
+    }
+    // 3. Dense component id per ORIGINAL vertex (via its weld rep's root).
+    let mut comp_ids: HashMap<u32, u32> = HashMap::new();
+    let mut next = 0u32;
+    let mut comp_of = vec![0u32; n];
+    for (i, slot) in comp_of.iter_mut().enumerate() {
+        let root = find(&mut parent, weld[i]);
+        *slot = *comp_ids.entry(root).or_insert_with(|| {
+            let id = next;
+            next += 1;
+            id
+        });
+    }
+    (comp_of, next)
+}
+
+/// All vertex indices in the connected component(s) containing `seeds` (the
+/// "select this solid piece" selector). Position-welded, so a UV/normal-split
+/// seam doesn't break a piece apart. Out-of-range seeds are ignored; an empty /
+/// all-invalid seed list returns empty.
+pub fn connected_component_of(mesh: &MeshData, seeds: &[u32]) -> Vec<u32> {
+    if mesh.positions.is_empty() {
+        return Vec::new();
+    }
+    let (comp_of, _) = weld_components(mesh);
+    let seed_comps: std::collections::HashSet<u32> = seeds
+        .iter()
+        .filter_map(|&s| comp_of.get(s as usize).copied())
+        .collect();
+    if seed_comps.is_empty() {
+        return Vec::new();
+    }
+    (0..comp_of.len() as u32)
+        .filter(|&i| seed_comps.contains(&comp_of[i as usize]))
+        .collect()
+}
+
+/// Every connected component (island) as a list of vertex indices, position-welded.
+/// Order is by first-seen vertex. The discovery counterpart to
+/// [`connected_component_of`] (e.g. "how many separate pieces does this mesh have").
+pub fn connected_components(mesh: &MeshData) -> Vec<Vec<u32>> {
+    let (comp_of, count) = weld_components(mesh);
+    let mut out = vec![Vec::new(); count as usize];
+    for (i, &c) in comp_of.iter().enumerate() {
+        out[c as usize].push(i as u32);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +454,68 @@ mod tests {
         assert_eq!(coords.len(), 3);
         // all `along` in [0,1).
         assert!(coords.iter().all(|c| c[0] >= 0.0 && c[0] < 1.0));
+    }
+
+    /// Merge two meshes into one buffer with disjoint vertex ranges (second's
+    /// indices offset) — a single MeshData holding two unconnected islands.
+    fn merge(a: &MeshData, b: &MeshData) -> MeshData {
+        let off = a.positions.len() as u32;
+        let mut positions = a.positions.clone();
+        positions.extend_from_slice(&b.positions);
+        let mut indices = a.indices.clone();
+        indices.extend(b.indices.iter().map(|&i| i + off));
+        MeshData {
+            positions,
+            normals: None,
+            uvs: Vec::new(),
+            colors: None,
+            indices,
+        }
+    }
+
+    #[test]
+    fn connected_components_finds_two_disjoint_boxes() {
+        let a = box_mesh(Vec3::splat(1.0));
+        let mut b = box_mesh(Vec3::splat(1.0));
+        // Shift b far away so no positions weld between the two.
+        for p in &mut b.positions {
+            p[0] += 100.0;
+        }
+        let na = a.positions.len() as u32;
+        let merged = merge(&a, &b);
+
+        let comps = connected_components(&merged);
+        assert_eq!(comps.len(), 2, "two disjoint boxes → two islands");
+
+        // A seed in box A selects exactly box A's vertex range; none of box B.
+        let sel_a = connected_component_of(&merged, &[0]);
+        assert!(sel_a.iter().all(|&i| i < na), "box A seed leaked into B");
+        assert!(sel_a.contains(&0));
+        // A seed in box B selects only the B range.
+        let sel_b = connected_component_of(&merged, &[na]);
+        assert!(sel_b.iter().all(|&i| i >= na), "box B seed leaked into A");
+        // Together they cover everything, disjointly.
+        assert_eq!(sel_a.len() + sel_b.len(), merged.positions.len());
+    }
+
+    #[test]
+    fn connected_component_welds_split_seam_vertices() {
+        // A single box has split (per-face) corner vertices at shared positions;
+        // position-welding must still report it as ONE connected component.
+        let m = box_mesh(Vec3::splat(2.0));
+        let comps = connected_components(&m);
+        assert_eq!(
+            comps.len(),
+            1,
+            "a box is one welded piece, got {}",
+            comps.len()
+        );
+        // A seed at any vertex selects the whole mesh.
+        let all = connected_component_of(&m, &[0]);
+        assert_eq!(all.len(), m.positions.len());
+        // Empty / out-of-range seeds → empty.
+        assert!(connected_component_of(&m, &[]).is_empty());
+        assert!(connected_component_of(&m, &[9999]).is_empty());
     }
 
     #[test]

@@ -3,7 +3,24 @@
 //! (`#[serde(tag = "query")]`); a tag/field drift would make the MCP tool
 //! silently fail to reach the editor.
 
-use awsm_renderer_editor_protocol::{EditorQuery, NodeId};
+use awsm_renderer_editor_protocol::{EditorQuery, NodeId, VertexPredicate};
+
+#[test]
+fn connected_to_seed_predicate_roundtrip() {
+    let p = VertexPredicate::ConnectedToSeed {
+        seed: vec![3, 17, 42],
+    };
+    let json = serde_json::to_string(&p).expect("serialize");
+    assert!(
+        json.contains("\"kind\":\"connected_to_seed\""),
+        "tag missing: {json}"
+    );
+    let back: VertexPredicate = serde_json::from_str(&json).expect("deserialize");
+    match back {
+        VertexPredicate::ConnectedToSeed { seed } => assert_eq!(seed, vec![3, 17, 42]),
+        other => panic!("expected ConnectedToSeed, got {other:?}"),
+    }
+}
 
 #[test]
 fn get_mesh_data_query_json_roundtrip() {

@@ -229,7 +229,7 @@ green tests.
 
 Append per item as it lands (status + the live-verify proof). Don't rewrite.
 
-- [ ] Item 1 — connectivity / island selection predicates
+- [x] Item 1 — connectivity / island selection predicates — STATIC: clippy/fmt clean, full test green (48 binaries), +2 meshgen connectivity tests (`connected_components_finds_two_disjoint_boxes`, `connected_component_welds_split_seam_vertices`) + 1 predicate roundtrip test. `meshgen::edit::connected_component_of` / `connected_components` (position-welded union-find over triangle edges, so UV/normal seams don't fragment a piece); new `VertexPredicate::ConnectedToSeed { seed }` wired through `select_vertices_by_predicate`; select_vertices_where tool description extended. LIVE: box + Array(count:2) modifier → 48 verts (two 24-vert islands); `select_vertices_where {connected_to_seed, seed:[0]}` → 24 (one island), `seed:[47]` → 24 (the other), disjoint.
 - [ ] Item 2 — separate_mesh
 - [ ] Item 3 — UV-layout overlay
 - [ ] Item 4 — bake_material_to_texture (full, or green partial + review flag)

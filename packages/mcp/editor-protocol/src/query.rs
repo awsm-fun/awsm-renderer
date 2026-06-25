@@ -486,6 +486,12 @@ pub enum VertexPredicate {
     /// Inside the axis-aligned box `[min, max]` (inclusive), in the mesh's local
     /// space — region selection by area (pairs with `get_node_bounds`).
     WithinAabb { min: [f32; 3], max: [f32; 3] },
+    /// Every vertex in the connected **piece(s)** containing `seed` — topology
+    /// (island) selection, not geometry. Position-welded so a UV/normal seam
+    /// doesn't fragment one solid piece. Use it to grab "this whole bolt / belt /
+    /// panel" from a single seed vertex (e.g. the nearest vertex to a click, or
+    /// any index from another predicate). The companion to `separate_mesh`.
+    ConnectedToSeed { seed: Vec<u32> },
 }
 
 /// What a [`EditorQuery::SampleClipTimeseries`] frame reads.

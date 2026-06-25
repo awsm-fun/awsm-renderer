@@ -6490,10 +6490,11 @@ fn select_vertices_by_predicate(
 ) -> Vec<u32> {
     use awsm_renderer_editor_protocol::VertexPredicate as P;
     use awsm_renderer_meshgen::edit::{
-        select_by_axis, select_by_normal_dir, select_top_count_axis, select_top_percent_axis,
-        select_within_aabb, select_within_radius, Cmp,
+        connected_component_of, select_by_axis, select_by_normal_dir, select_top_count_axis,
+        select_top_percent_axis, select_within_aabb, select_within_radius, Cmp,
     };
     match predicate {
+        P::ConnectedToSeed { seed } => connected_component_of(mesh, seed),
         P::NormalDir { dir, threshold } => select_by_normal_dir(mesh, *dir, *threshold),
         P::AxisGreater { axis, value } => {
             select_by_axis(mesh, *axis as usize, Cmp::Greater, *value)
