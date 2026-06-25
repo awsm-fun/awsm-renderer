@@ -809,6 +809,7 @@ impl EditorController {
                 mesh: MeshRef(mesh_id),
                 material: None,
                 shadow: Default::default(),
+                lod: Default::default(),
             },
         );
         std::sync::Arc::get_mut(&mut node)
@@ -1405,12 +1406,13 @@ impl EditorController {
                 let prev = n.kind.get_cloned();
                 // Only a SkinnedMesh can be dropped to editable — anything else is
                 // a no-op (the UI/MCP layer surfaces a clearer message).
-                let (skin, material, shadow): (SkinnedMeshRef, _, _) = match prev.clone() {
+                let (skin, material, shadow, lod): (SkinnedMeshRef, _, _, _) = match prev.clone() {
                     NodeKind::SkinnedMesh {
                         skin,
                         material,
                         shadow,
-                    } => (skin, material, shadow),
+                        lod,
+                    } => (skin, material, shadow, lod),
                     _ => return Ok(None),
                 };
                 // Bind-pose geometry stashed at import (no JOINTS/WEIGHTS).
@@ -1458,6 +1460,7 @@ impl EditorController {
                     mesh: mesh_ref,
                     material,
                     shadow,
+                    lod,
                 });
                 self.structure_rev
                     .set(self.structure_rev.get().wrapping_add(1));
@@ -1972,16 +1975,22 @@ impl EditorController {
                             });
                         let next = match prev.clone() {
                             // The sole procedural-geometry node: one material slot.
-                            NodeKind::Mesh { mesh, shadow, .. } => NodeKind::Mesh {
+                            NodeKind::Mesh {
+                                mesh, shadow, lod, ..
+                            } => NodeKind::Mesh {
                                 mesh,
                                 material: instance,
                                 shadow,
+                                lod,
                             },
                             // A skinned import carries the same one-material slot.
-                            NodeKind::SkinnedMesh { skin, shadow, .. } => NodeKind::SkinnedMesh {
+                            NodeKind::SkinnedMesh {
+                                skin, shadow, lod, ..
+                            } => NodeKind::SkinnedMesh {
                                 skin,
                                 material: instance,
                                 shadow,
+                                lod,
                             },
                             _ => return Ok(None),
                         };
@@ -2019,11 +2028,13 @@ impl EditorController {
                         mesh,
                         material: dst_mat,
                         shadow,
+                        lod,
                     } => (
                         NodeKind::Mesh {
                             mesh,
                             material: src_slot.clone(),
                             shadow,
+                            lod,
                         },
                         dst_mat,
                     ),
@@ -2031,11 +2042,13 @@ impl EditorController {
                         skin,
                         material: dst_mat,
                         shadow,
+                        lod,
                     } => (
                         NodeKind::SkinnedMesh {
                             skin,
                             material: src_slot.clone(),
                             shadow,
+                            lod,
                         },
                         dst_mat,
                     ),
@@ -4694,6 +4707,7 @@ impl EditorController {
                     opaque_main,
                     edge_per_shader,
                     classify_dynamic,
+                    visible_triangles,
                 ) = crate::engine::context::with_renderer_mut(|r| {
                     (
                         r.meshes.len(),
@@ -4709,6 +4723,7 @@ impl EditorController {
                             .edge_pipelines
                             .per_shader_len(),
                         r.render_passes.material_classify.dynamic_cache_len(),
+                        r.meshes.visible_triangle_count(),
                     )
                 })
                 .await;
@@ -4733,6 +4748,10 @@ impl EditorController {
                 entries.insert("opaque_main_keys".to_string(), json!(opaque_main));
                 entries.insert("edge_per_shader_keys".to_string(), json!(edge_per_shader));
                 entries.insert("classify_dynamic_keys".to_string(), json!(classify_dynamic));
+                // Submitted triangles across all visible meshes — the deterministic
+                // discrete-LOD before/after metric (drops as instances pick coarser
+                // levels at distance).
+                entries.insert("visible_triangles".to_string(), json!(visible_triangles));
                 entries.insert("dynamic_materials".to_string(), json!(dynamic_materials));
                 // GPU texture-resource counts (leak diagnostics — the "Destroyed
                 // texture"/"aw snap" blind spot). Growth under textured-material /
@@ -7237,6 +7256,7 @@ fn build_editor_subtree(
                     },
                     material,
                     shadow: Default::default(),
+                    lod: Default::default(),
                 },
             )
         } else {
@@ -7274,6 +7294,7 @@ fn build_editor_subtree(
                         },
                         material,
                         shadow: Default::default(),
+                        lod: Default::default(),
                     },
                 );
                 group.children.lock_mut().push_cloned(part);
@@ -7299,6 +7320,7 @@ fn build_editor_subtree(
                     mesh: mesh_ref,
                     material,
                     shadow: Default::default(),
+                    lod: Default::default(),
                 });
             } else {
                 tracing::warn!(
@@ -7333,6 +7355,7 @@ fn build_editor_subtree(
                         mesh: mesh_ref,
                         material,
                         shadow: Default::default(),
+                        lod: Default::default(),
                     });
                 } else {
                     tracing::warn!(
@@ -7660,6 +7683,7 @@ mod unassigned_material_tests {
             mesh: MeshRef(AssetId::new()),
             material: None,
             shadow: Default::default(),
+            lod: Default::default(),
         };
         assert_eq!(unassigned_material_kind(&mesh), "unassigned");
     }

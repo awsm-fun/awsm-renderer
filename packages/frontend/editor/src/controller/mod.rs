@@ -14,6 +14,7 @@ pub mod animation;
 mod command;
 pub mod custom_material;
 pub mod export;
+pub mod lod_bake;
 pub mod mesh_eval;
 mod node_spec;
 pub mod persistence;

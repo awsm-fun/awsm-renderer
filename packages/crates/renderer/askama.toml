@@ -14,6 +14,7 @@ dirs = [
     "src/render_passes/material_prep/shader",
     "src/render_passes/material_transparent/shader",
     "src/render_passes/occlusion/shader",
+    "src/render_passes/cluster_lod/shader",
     "src/render_passes/display/shader",
     "src/render_passes/effects/shader",
     "src/picker/shader",

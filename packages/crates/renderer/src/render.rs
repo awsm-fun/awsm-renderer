@@ -691,6 +691,12 @@ impl AwsmRenderer {
             self.picker.as_mut(),
         )?;
 
+        // Discrete-LOD: pick a level per instance and flip mesh visibility to it
+        // BEFORE `collect_renderables` reads the `!hidden` set, so this frame's
+        // renderables already reflect the selection. No-op unless the `lod`
+        // feature loaded chains.
+        self.update_lod_selection();
+
         // Populate the pooled renderable lists BEFORE building the
         // RenderContext — `collect_renderables` takes `&mut self` to
         // clear-and-extend the pool's Vecs in place, while ctx holds
@@ -842,6 +848,65 @@ impl AwsmRenderer {
                     None
                 };
                 hook(&ctx)?;
+            }
+        }
+
+        // Cluster-LOD per-cluster cut (Phase B GPU; B.2) — MUST run before the
+        // geometry pass: the cut compute writes `selected`, the compaction packs
+        // the compacted index stream + `drawIndexedIndirect` args, and the
+        // geometry pass's cluster draw override (mesh.rs) reads them THIS frame.
+        // Gated by `virtual_geometry` + a loaded cluster mesh; independent of
+        // `gpu_occlusion`.
+        let mut cluster_cut_kick: Option<(web_sys::GpuBuffer, u32)> = None;
+        if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
+            if cluster_pass.cluster_count > 0 {
+                if let Some(cam) = self.camera.last_matrices.as_ref() {
+                    let proj_yy = cam.projection.y_axis.y.abs();
+                    if proj_yy > 1e-6 {
+                        if let Ok((_, vh)) = self.gpu.current_context_texture_size() {
+                            cluster_pass.dispatch(
+                                &ctx,
+                                cam.position_world,
+                                1.0 / proj_yy,
+                                vh as f32,
+                                Self::LOD_ERROR_THRESHOLD_PX,
+                            )?;
+                            // first_instance = the render mesh M's meta slot, so the
+                            // indirect draw's vertex shader resolves M's material
+                            // meta (geometry_mesh_metas[instance_index]).
+                            let first_instance = cluster_pass
+                                .render_mesh
+                                .and_then(|m| ctx.meshes.meta.geometry_buffer_offset(m).ok())
+                                .map(|off| {
+                                    off as u32
+                                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
+                                            as u32
+                                })
+                                .unwrap_or(0);
+                            cluster_pass.dispatch_compaction(&ctx, first_instance)?;
+                            // One-shot readback verification of draw_args.index_count.
+                            let want = {
+                                let st = self.cluster_cut_readback.lock().unwrap();
+                                !st.inflight && !st.logged
+                            };
+                            if want {
+                                if let Some(buffers) = cluster_pass.buffers.as_ref() {
+                                    ctx.command_encoder.copy_buffer_to_buffer(
+                                        &buffers.draw_args_buffer,
+                                        0,
+                                        &buffers.readback_buffer,
+                                        0,
+                                        4,
+                                    )?;
+                                    cluster_cut_kick = Some((
+                                        buffers.readback_buffer.clone(),
+                                        cluster_pass.cluster_count,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1235,6 +1300,9 @@ impl AwsmRenderer {
         // flipped `args_ready` so the geometry pass routes through the
         // CPU branch — and the cull/compaction passes are simply
         // skipped, saving the compute dispatches on small scenes.
+        // (Cluster-LOD cut/compaction dispatch moved to BEFORE the geometry pass
+        // so the indirect draw reads this frame's compacted stream — see above.)
+
         if frame_opts.gpu_occlusion {
             if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
                 self.occlusion_buffers.as_ref(),
@@ -1583,6 +1651,38 @@ impl AwsmRenderer {
                 let mut state = state.lock().unwrap();
                 state.pending_snapshot = Some(snapshot);
                 state.inflight = false;
+            });
+        }
+
+        // One-shot Phase B cluster-cut readback verification (mirrors the
+        // coverage readback shape). Logs how many clusters the GPU cut selected —
+        // a sanity check vs the tested `select_cut_per_cluster` (expect non-zero
+        // and < total at a normal camera distance).
+        if let Some((readback_buffer, total)) = cluster_cut_kick {
+            let state = std::sync::Arc::clone(&self.cluster_cut_readback);
+            state.lock().unwrap().inflight = true;
+            wasm_bindgen_futures::spawn_local(async move {
+                match crate::core::buffers::extract_buffer_vec(&readback_buffer, Some(4)).await {
+                    Ok(bytes) if bytes.len() >= 4 => {
+                        let index_count =
+                            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                        tracing::info!(
+                            "cluster compaction (GPU): draw_args.index_count = {index_count} \
+                             ({} tris) over {total} clusters",
+                            index_count / 3
+                        );
+                        let mut s = state.lock().unwrap();
+                        s.logged = true;
+                        s.inflight = false;
+                    }
+                    Ok(_) => {
+                        state.lock().unwrap().inflight = false;
+                    }
+                    Err(err) => {
+                        tracing::warn!("cluster compaction readback mapAsync failed: {err:?}");
+                        state.lock().unwrap().inflight = false;
+                    }
+                }
             });
         }
 
@@ -2270,4 +2370,82 @@ fn camera_near_far_from_projection(
     let near = near.abs().max(1e-4);
     let far = far.abs().max(near + 1e-3);
     (near, far)
+}
+
+/// Largest world-space axis scale of an object→world transform — used to project
+/// a mesh's object-space LOD error to world (and thence screen) size.
+fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
+    let sx = m.x_axis.truncate().length();
+    let sy = m.y_axis.truncate().length();
+    let sz = m.z_axis.truncate().length();
+    sx.max(sy).max(sz)
+}
+
+impl AwsmRenderer {
+    /// Geometric-error budget for discrete-LOD level selection, in screen pixels.
+    const LOD_ERROR_THRESHOLD_PX: f32 = 1.0;
+
+    /// Per-frame discrete-LOD level selection (visibility-swap). For each
+    /// registered chain, pick a level by projected screen-space error and show
+    /// it while hiding the previously-shown level — only calling
+    /// `set_mesh_hidden` when the choice actually changes, so the steady state is
+    /// pure arithmetic with no per-frame allocation. No-op unless the `lod`
+    /// feature loaded chains.
+    pub(crate) fn update_lod_selection(&mut self) {
+        // Runs for discrete LOD (`lod`) AND cluster-cut LOD (`virtual_geometry`):
+        // both register their chains in `self.lod` and select the same way.
+        if (!self.features.lod && !self.features.virtual_geometry) || self.lod.is_empty() {
+            return;
+        }
+        let Some(cam) = self.camera.last_matrices.as_ref() else {
+            return;
+        };
+        let cam_pos = cam.position_world;
+        let proj_yy = cam.projection.y_axis.y.abs();
+        if proj_yy <= 1e-6 {
+            return;
+        }
+        let tan_half_fov_y = 1.0 / proj_yy;
+        let viewport_h = match self.gpu.current_context_texture_size() {
+            Ok((_, h)) => h as f32,
+            Err(_) => return,
+        };
+
+        // Move the registry out so the loop can call `&mut self` methods without
+        // aliasing `self.lod`. `take` swaps in an empty map — no allocation.
+        let mut reg = std::mem::take(&mut self.lod);
+        for (base_key, chain) in reg.iter_mut() {
+            // Read the base mesh's world placement (immutable borrow, scoped so
+            // it ends before the `set_mesh_hidden` mutable borrow below).
+            let placement = {
+                let Ok(mesh) = self.meshes.get(base_key) else {
+                    continue;
+                };
+                let Some(aabb) = mesh.world_aabb.as_ref() else {
+                    continue;
+                };
+                let center = (aabb.min + aabb.max) * 0.5;
+                let scale = self
+                    .transforms
+                    .get_world(mesh.transform_key)
+                    .map(lod_max_axis_scale)
+                    .unwrap_or(1.0);
+                (center, scale)
+            };
+            let (center, scale) = placement;
+            let distance = (center - cam_pos).length();
+            let px_per_unit =
+                crate::lod::projected_px_per_unit(distance, tan_half_fov_y, viewport_h);
+            let selected =
+                crate::lod::select_level(chain, px_per_unit, scale, Self::LOD_ERROR_THRESHOLD_PX);
+            if selected != chain.current_level {
+                let prev_key = chain.key_for_level(base_key, chain.current_level);
+                let sel_key = chain.key_for_level(base_key, selected);
+                chain.current_level = selected;
+                let _ = self.set_mesh_hidden(prev_key, true);
+                let _ = self.set_mesh_hidden(sel_key, false);
+            }
+        }
+        self.lod = reg;
+    }
 }

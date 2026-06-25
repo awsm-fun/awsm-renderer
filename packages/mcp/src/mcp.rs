@@ -38,8 +38,8 @@ use awsm_renderer_scene::animation::{
     TrackTarget, TrackValue, TransformProp,
 };
 use awsm_renderer_scene::{
-    AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, MeshShadowConfig, NodeId,
-    NodeKind, PrimitiveShape, SkyboxConfig, Trs,
+    AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, MeshLodConfig,
+    MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, SkyboxConfig, Trs,
 };
 
 use crate::link::{AgentSession, EditorLink, LinkError};
@@ -364,6 +364,15 @@ pub struct SetMeshShadowParams {
     pub cast: bool,
     /// Whether the mesh's shaded pixels darken under shadow (receives shadows).
     pub receive: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetMeshLodParams {
+    /// Mesh / SkinnedMesh / InstancesAlongCurve node UUID.
+    pub node: String,
+    /// Whether the export-time LOD bake generates simplified levels for this
+    /// mesh. LOD is opt-out (default on); set false for hero/low-poly/UI meshes.
+    pub enabled: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1677,6 +1686,33 @@ impl EditorMcp {
             cast: p.cast,
             receive: p.receive,
         };
+        self.dispatch(EditorCommand::SetKind {
+            id: node,
+            kind: Box::new(kind),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set a mesh node's LOD opt-out flag. Works on Mesh, SkinnedMesh, and InstancesAlongCurve nodes; errors on any other kind. `enabled` = the export-time LOD bake generates simplified detail levels for this mesh (opt-out, default on — set false for hero assets, already-low-poly meshes, or HUD/UI meshes). Authored in the editable project and consumed by the player-bundle export bake. Reads the node's current kind, updates only its `lod` config, and re-sends it (one SetKind = one undo step)."
+    )]
+    async fn set_mesh_lod(
+        &self,
+        Parameters(p): Parameters<SetMeshLodParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = parse_node(&p.node)?;
+        let mut kind = self.current_kind(node).await?;
+        let label = kind.label();
+        let lod = kind.mesh_lod_mut().ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "node {node} is a {label} — not a LOD-bearing kind (Mesh / SkinnedMesh / \
+                     InstancesAlongCurve)"
+                ),
+                None,
+            )
+        })?;
+        *lod = MeshLodConfig { enabled: p.enabled };
         self.dispatch(EditorCommand::SetKind {
             id: node,
             kind: Box::new(kind),

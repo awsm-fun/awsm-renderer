@@ -2243,6 +2243,21 @@ impl Meshes {
         self.list.iter()
     }
 
+    /// Total triangles across all **visible** (`!hidden`) meshes — the geometry
+    /// the frame submits, counting each mesh once. Discrete LOD reduces this by
+    /// swapping an instance to a coarser level (fewer indices); it's the
+    /// deterministic before/after metric for the LOD perf win (independent of
+    /// GPU timers / vsync). Each mesh is counted once, so it reflects per-mesh
+    /// LOD, not instance multiplicity.
+    pub fn visible_triangle_count(&self) -> u64 {
+        self.list
+            .iter()
+            .filter(|(_, m)| !m.hidden)
+            .filter_map(|(k, _)| self.buffer_info(k).ok())
+            .map(|info| (info.triangles.vertex_attribute_indices.count / 3) as u64)
+            .sum()
+    }
+
     /// Walk every mesh key and apply `gate_fn(mesh_key) -> u32` to
     /// `MeshMeta::set_shadow_receiver_gate`. Exists so the caller
     /// doesn't have to materialise a `Vec<MeshKey>` per frame just to

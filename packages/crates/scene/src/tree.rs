@@ -205,6 +205,10 @@ pub enum NodeKind {
         material: Option<MaterialInstance>,
         #[serde(default)]
         shadow: MeshShadowConfig,
+        /// Per-mesh LOD opt-out (default on). Authored in the editable project,
+        /// consumed by the export-time LOD bake. See [`MeshLodConfig`].
+        #[serde(default)]
+        lod: MeshLodConfig,
     },
     /// A **skinned** mesh imported from a glTF — a deliberate *second* geometry
     /// category, distinct from `Mesh`. It is **not** a `MeshDef`/`ModifierStack`
@@ -223,6 +227,9 @@ pub enum NodeKind {
         material: Option<MaterialInstance>,
         #[serde(default)]
         shadow: MeshShadowConfig,
+        /// Per-mesh LOD opt-out (default on). See [`MeshLodConfig`].
+        #[serde(default)]
+        lod: MeshLodConfig,
     },
     /// Catmull-Rom curve (control points + closed + tension). Emits no renderer
     /// node directly; consumed by sweep / instance / camera nodes.
@@ -283,6 +290,34 @@ fn default_true_msc() -> bool {
     true
 }
 
+/// Per-mesh LOD opt-**out** flag. LOD is the norm for a general game renderer,
+/// so this defaults **on**; authors flip it off for hero assets where any
+/// simplification is unacceptable, already-low-poly meshes (bake cost, no
+/// benefit), or HUD/UI meshes.
+///
+/// Authored in the editable project (persists in `project.toml` like
+/// [`MeshShadowConfig`]) and consumed by the **export-time** LOD bake — it has
+/// no meaning at import. One `enabled: bool` to start; grows later to carry
+/// params (target ratios, level count, error threshold).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MeshLodConfig {
+    /// Whether the export bake generates simplified LOD levels for this mesh.
+    #[serde(default = "default_true_mlc")]
+    pub enabled: bool,
+}
+
+impl Default for MeshLodConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+fn default_true_mlc() -> bool {
+    true
+}
+
 impl NodeKind {
     pub fn label(&self) -> &'static str {
         match self {
@@ -322,6 +357,27 @@ impl NodeKind {
             _ => None,
         }
     }
+
+    /// Returns this node's mesh LOD config if the variant carries one; `None`
+    /// for non-mesh kinds. Mirrors [`Self::mesh_shadow`].
+    pub fn mesh_lod(&self) -> Option<&MeshLodConfig> {
+        match self {
+            Self::Mesh { lod, .. } => Some(lod),
+            Self::SkinnedMesh { lod, .. } => Some(lod),
+            Self::InstancesAlongCurve(d) => Some(&d.lod),
+            _ => None,
+        }
+    }
+
+    /// Mutable variant of [`Self::mesh_lod`].
+    pub fn mesh_lod_mut(&mut self) -> Option<&mut MeshLodConfig> {
+        match self {
+            Self::Mesh { lod, .. } => Some(lod),
+            Self::SkinnedMesh { lod, .. } => Some(lod),
+            Self::InstancesAlongCurve(d) => Some(&mut d.lod),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -357,6 +413,7 @@ mod tests {
                 },
                 material: None,
                 shadow: MeshShadowConfig::default(),
+                lod: MeshLodConfig::default(),
             },
             locked: false,
             visible: true,
@@ -388,6 +445,31 @@ mod tests {
         let skin: SkinnedMeshRef = toml::from_str(toml).expect("deserialize legacy");
         assert!(skin.joints.is_empty());
         assert_eq!(skin.node_index, 1);
+    }
+
+    /// A `MeshLodConfig` round-trips through TOML, and a legacy `Mesh` node with
+    /// no `lod` table defaults to `enabled = true` (LOD is opt-out, default on).
+    /// This is the backwards-compat guarantee for projects saved before the LOD
+    /// toggle existed.
+    #[test]
+    fn mesh_lod_config_default_and_round_trip() {
+        // Explicit opt-out survives a round-trip.
+        let off = MeshLodConfig { enabled: false };
+        let text = toml::to_string(&off).expect("serialize");
+        let back: MeshLodConfig = toml::from_str(&text).expect("deserialize");
+        assert_eq!(off, back);
+
+        // A legacy mesh kind TOML with no `lod` table → enabled defaults true.
+        let legacy = r#"
+            [mesh]
+            mesh = "00000000-0000-0000-0000-000000000000"
+        "#;
+        let kind: NodeKind = toml::from_str(legacy).expect("deserialize legacy mesh kind");
+        assert_eq!(
+            kind.mesh_lod().copied(),
+            Some(MeshLodConfig { enabled: true }),
+            "absent `lod` must default to enabled (opt-out, default on)"
+        );
     }
 }
 

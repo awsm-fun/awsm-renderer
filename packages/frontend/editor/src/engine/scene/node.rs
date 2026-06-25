@@ -200,6 +200,7 @@ impl Node {
                 ),
                 material: None,
                 shadow: Default::default(),
+                lod: Default::default(),
             },
         )
     }

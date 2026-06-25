@@ -57,6 +57,16 @@ pub struct CoverageReadbackState {
     pub pending_snapshot: Option<Vec<(MeshKey, u32)>>,
 }
 
+/// One-shot verification of the Phase B per-cluster GPU cut: read the `selected`
+/// flags back once and log how many clusters the GPU cut chose (a sanity check
+/// vs the tested `select_cut_per_cluster` — non-zero and ≤ cluster_count).
+/// `inflight` single-buffers the `mapAsync`; `logged` fires it only once.
+#[derive(Default)]
+pub struct ClusterCutReadback {
+    pub inflight: bool,
+    pub logged: bool,
+}
+
 /// Per-frame state for the MSAA edge-budget overflow readback loop.
 ///
 /// The render frame copies 8 bytes
@@ -204,6 +214,11 @@ pub struct AwsmRenderer {
     /// `features.coverage_lod == false` it just stays empty, which
     /// makes `is_below_threshold` return `false` for everything.
     pub coverage: coverage::MeshCoverage,
+    /// Discrete-LOD level chains, keyed by base `MeshKey`. Populated by the
+    /// scene loader only when `features.lod` is on (otherwise empty, and every
+    /// instance draws its base mesh). The per-frame selection pass reads this to
+    /// choose a level per instance. See [`crate::lod`].
+    pub lod: crate::lod::LodRegistry,
     /// GPU coverage producer buffers. The producer pass
     /// (`render_passes/coverage/`) atomic-adds per-pixel into
     /// `counts_buffer`; the renderer copies to `readback_buffer`
@@ -218,6 +233,9 @@ pub struct AwsmRenderer {
     /// future-proof for the day the renderer moves across threads
     /// (single-threaded today, so the lock is uncontested).
     pub coverage_readback_state: std::sync::Arc<std::sync::Mutex<CoverageReadbackState>>,
+    /// One-shot Phase B cluster-cut readback verification (gated by
+    /// `virtual_geometry`; same `Arc<Mutex>` + `spawn_local` discipline).
+    pub cluster_cut_readback: std::sync::Arc<std::sync::Mutex<ClusterCutReadback>>,
     /// State for the MSAA edge-budget auto-grow readback loop. Same
     /// `Arc<Mutex<…>>` discipline as `coverage_readback_state` —
     /// `mapAsync` writes through the lock from a detached
@@ -2102,9 +2120,13 @@ impl AwsmRendererBuilder {
             decal_classify_buffers,
             compaction_buffers,
             coverage: coverage::MeshCoverage::default(),
+            lod: crate::lod::LodRegistry::default(),
             coverage_buffers,
             coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 CoverageReadbackState::default(),
+            )),
+            cluster_cut_readback: std::sync::Arc::new(std::sync::Mutex::new(
+                ClusterCutReadback::default(),
             )),
             edge_overflow_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 EdgeOverflowReadbackState::default(),
@@ -2309,6 +2331,30 @@ impl AwsmRendererBuilder {
 // - `wait_for_pipelines_ready` is the test-only helper.
 
 impl AwsmRenderer {
+    /// Upload a cluster mesh's pages into the cluster-LOD cut pass (Phase B,
+    /// B.2). No-op unless `virtual_geometry` built the pass. Called once at mesh
+    /// load by the scene loader; (re)allocates the GPU buffers + rebuilds the cut
+    /// bind group. Disjoint sub-borrows of `self` (pass vs gpu vs layouts).
+    pub fn upload_cluster_pages(
+        &mut self,
+        pages: &[crate::cluster_lod::ClusterPage],
+        indices: &[u32],
+    ) -> crate::error::Result<()> {
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.upload_pages(&self.gpu, &self.bind_group_layouts, pages, indices)?;
+        }
+        Ok(())
+    }
+
+    /// Register the cluster render mesh `M` (the full cluster geometry) whose
+    /// exploded vertex buffer the compacted indirect stream draws into. No-op
+    /// unless `virtual_geometry` built the pass.
+    pub fn set_cluster_render_mesh(&mut self, mesh_key: crate::meshes::MeshKey) {
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.render_mesh = Some(mesh_key);
+        }
+    }
+
     /// Submit a batch of pipeline groups for compile. Returns ids
     /// immediately in `Pending` state; transitions to `Ready` /
     /// `Failed` surface via [`Self::drain_pipeline_status_events`] or

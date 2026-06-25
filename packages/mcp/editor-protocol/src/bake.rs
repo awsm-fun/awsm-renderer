@@ -76,8 +76,8 @@ mod tests {
     use super::*;
     use crate::{AssetEntry, AssetSource, Axis, MeshDef, Modifier, ModifierStack, VertexOverrides};
     use awsm_renderer_scene::{
-        scene_from_toml, scene_to_toml, AssetId, EditorNode, MeshRef, MeshShadowConfig, NodeId,
-        NodeKind, PrimitiveShape,
+        scene_from_toml, scene_to_toml, AssetId, EditorNode, MeshLodConfig, MeshRef,
+        MeshShadowConfig, NodeId, NodeKind, PrimitiveShape,
     };
 
     fn primitive_meshdef(shape: PrimitiveShape) -> MeshDef {
@@ -141,6 +141,7 @@ mod tests {
                 mesh: MeshRef(mesh_id),
                 material: None,
                 shadow: MeshShadowConfig::default(),
+                lod: MeshLodConfig::default(),
             },
             locked: false,
             visible: true,

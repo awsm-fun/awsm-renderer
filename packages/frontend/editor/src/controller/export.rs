@@ -106,7 +106,15 @@ pub async fn bake_player_bundle(
     //    survive the bake — they're not in the asset table like textures).
     rewrite_buffer_overrides(&mut scene.nodes, &mut files);
 
-    // 1. One geometry-only glb per Glb-lowered mesh asset.
+    // Mesh assets whose referencing nodes opt **in** to LOD (default on). The
+    // toggle is per-node but geometry/levels are per-asset, so an asset gets LOD
+    // baked if *any* node using it is LOD-enabled; the per-instance toggle then
+    // governs runtime level selection (an opted-out instance pins level 0).
+    let mut lod_assets: HashSet<AssetId> = HashSet::new();
+    collect_lod_static_assets(&project.nodes, &mut lod_assets);
+
+    // 1. One geometry-only glb per Glb-lowered mesh asset (+ discrete LOD levels
+    //    for LOD-enabled, above-floor static meshes).
     for (id, entry) in &project.assets.entries {
         if let AssetSource::Mesh(def) = &entry.source {
             if matches!(lower_mesh(def), RuntimeMesh::Glb) {
@@ -118,11 +126,24 @@ pub async fn bake_player_bundle(
                         colors: raw.colors,
                         indices: raw.indices,
                     };
+                    // Bake LOD from `mesh` by reference *before* it's moved into
+                    // the base glb below.
+                    let lod_files = if lod_assets.contains(id) {
+                        crate::controller::lod_bake::bake_static_lod(&id.0.to_string(), &mesh)
+                    } else {
+                        Vec::new()
+                    };
+                    // Cluster-LOD DAG (Phase B) for dense static meshes; consumed
+                    // at load only when the `virtual_geometry` feature is on.
+                    let cluster_files =
+                        crate::controller::lod_bake::bake_static_clusters(&id.0.to_string(), &mesh);
                     let glb = write_glb(&GlbScene {
                         nodes: vec![ExportNode::new("mesh").with_mesh(mesh)],
                         ..Default::default()
                     });
                     files.push(BundleFile::asset(mesh_glb_filename(*id), glb));
+                    files.extend(lod_files);
+                    files.extend(cluster_files);
                 }
             }
         }
@@ -153,28 +174,58 @@ pub async fn bake_player_bundle(
     // 4. Skinned meshes: one clean rig glb (skeleton + mesh + skin + morph, built
     // at import via reexport_clean_scene) per imported source. The scene.toml
     // SkinnedMesh nodes reference `skin.source` → `assets/<source>.glb`.
-    fn collect_skinned(node: &Node, out: &mut HashSet<AssetId>) {
-        if let NodeKind::SkinnedMesh { skin, .. } = &node.kind.get_cloned() {
+    // `out` = every skinned source (always emitted); `lod` = the subset whose
+    // referencing nodes are LOD-enabled (also gets a simplified level chain).
+    fn collect_skinned(node: &Node, out: &mut HashSet<AssetId>, lod: &mut HashSet<AssetId>) {
+        if let NodeKind::SkinnedMesh { skin, lod: cfg, .. } = &node.kind.get_cloned() {
             out.insert(skin.source);
+            if cfg.enabled {
+                lod.insert(skin.source);
+            }
         }
         for c in node.children.lock_ref().iter() {
-            collect_skinned(c, out);
+            collect_skinned(c, out, lod);
         }
     }
     let mut skinned_sources: HashSet<AssetId> = HashSet::new();
+    let mut lod_skinned: HashSet<AssetId> = HashSet::new();
     for n in &roots {
-        collect_skinned(n, &mut skinned_sources);
+        collect_skinned(n, &mut skinned_sources, &mut lod_skinned);
     }
     for src in skinned_sources {
         if let Some(glb) = crate::engine::bridge::skinned_bake_cache::get_rig_glb(src) {
+            // Bake LOD levels (from the rig glb bytes) before `glb` is moved.
+            let lod_files = if lod_skinned.contains(&src) {
+                crate::controller::lod_bake::bake_skinned_lod(&src.0.to_string(), &glb)
+            } else {
+                Vec::new()
+            };
             files.push(BundleFile::asset(
                 awsm_renderer_editor_protocol::mesh_glb_filename(src),
                 glb,
             ));
+            files.extend(lod_files);
         }
     }
 
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
+}
+
+/// Collect the mesh-asset ids whose referencing `NodeKind::Mesh` nodes have LOD
+/// enabled (static path only — skinned/morph LOD bakes from the rig glb on its
+/// own path). Recurses the whole node tree.
+fn collect_lod_static_assets(
+    nodes: &[awsm_renderer_editor_protocol::EditorNode],
+    out: &mut HashSet<AssetId>,
+) {
+    for n in nodes {
+        if let NodeKind::Mesh { mesh, lod, .. } = &n.kind {
+            if lod.enabled {
+                out.insert(mesh.0);
+            }
+        }
+        collect_lod_static_assets(&n.children, out);
+    }
 }
 
 /// Emit each custom-material BUFFER override's words as `assets/buffer-<id>.bin`

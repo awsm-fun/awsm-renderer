@@ -110,6 +110,7 @@ use awsm_renderer::animation::AnimationClipKey;
 use awsm_renderer::cameras::CameraKey;
 use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
+use awsm_renderer::lod::{LodChain, LodLevel};
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
 use awsm_renderer::meshes::MeshKey;
@@ -938,24 +939,53 @@ async fn materialize(
                         loaded.meshes.push(key);
                     }
                     AssetSource::Mesh(RuntimeMesh::Glb) => {
-                        // Bare geometry glb (single identity node) — root it UNDER
-                        // the scene node's transform, which is what places it.
-                        let (keys, _) = load_glb_under(
-                            renderer,
-                            assets,
-                            &mesh_glb_filename(mesh.0),
-                            Some(tk),
-                            mat,
-                        )
-                        .await?;
-                        if let Some(&first) = keys.first() {
-                            maps.meshes.entry(node.id).or_insert(first);
+                        // Cluster LOD (Phase B): when `virtual_geometry` is on and
+                        // this static asset has a baked cluster DAG, render its
+                        // finest cut and skip the base glb. `None` (vg off / no
+                        // cluster data) falls through to the base glb path.
+                        let cluster_key =
+                            load_cluster_lod(renderer, assets, &mesh.0.to_string(), tk, mat)
+                                .await?;
+                        if let Some(ckey) = cluster_key {
+                            maps.meshes.entry(node.id).or_insert(ckey);
+                            maps.node_meshes.entry(node.id).or_default().push(ckey);
+                            loaded.meshes.push(ckey);
+                        } else {
+                            // Bare geometry glb (single identity node) — root it
+                            // UNDER the scene node's transform, which is what places it.
+                            let (keys, _) = load_glb_under(
+                                renderer,
+                                assets,
+                                &mesh_glb_filename(mesh.0),
+                                Some(tk),
+                                mat,
+                            )
+                            .await?;
+                            if let Some(&first) = keys.first() {
+                                maps.meshes.entry(node.id).or_insert(first);
+                                // Discrete LOD (static): load + register this
+                                // asset's simplified level chain (hidden — drawn
+                                // only when a per-frame selection reroutes to it).
+                                // No-op unless the `lod` feature is on, the bundle
+                                // carries a manifest, AND this node opts in.
+                                if node_lod_enabled(&node.kind) {
+                                    load_static_lod_chain(
+                                        renderer,
+                                        assets,
+                                        &mesh.0.to_string(),
+                                        first,
+                                        tk,
+                                        mat,
+                                    )
+                                    .await?;
+                                }
+                            }
+                            maps.node_meshes
+                                .entry(node.id)
+                                .or_default()
+                                .extend(keys.iter().copied());
+                            loaded.meshes.extend(keys);
                         }
-                        maps.node_meshes
-                            .entry(node.id)
-                            .or_default()
-                            .extend(keys.iter().copied());
-                        loaded.meshes.extend(keys);
                     }
                     // A Mesh node always references an AssetSource::Mesh; other
                     // source kinds (Filename / Url / Material / Texture) can't be a
@@ -1004,6 +1034,21 @@ async fn materialize(
                 if let Some(&tk) = node_index_transforms.get(&(j.index as usize)) {
                     maps.skin_joints.insert(j.node, tk);
                 }
+            }
+            // Discrete LOD (skinned/morph): load each level's mesh REBOUND to the
+            // base rig's animated joint transforms (so a level deforms with the
+            // base), hidden, and register the chain. No-op unless `lod` is on, a
+            // manifest exists, AND this node opts in (per-node toggle).
+            if let (Some(&base_key), true) = (keys.first(), node_lod_enabled(&node.kind)) {
+                load_skinned_lod_chain(
+                    renderer,
+                    assets,
+                    &skin.source.to_string(),
+                    base_key,
+                    &node_index_transforms,
+                    mat,
+                )
+                .await?;
             }
             loaded.meshes.extend(keys);
             *uploaded += 1;
@@ -1780,6 +1825,336 @@ fn warn_decal_feature_off() {
 /// Returns `(mesh keys, glb-node-index → baked-transform key)` — the latter lets a
 /// skinned-mesh consumer bind each skeleton joint (by its clean-glb node index) to
 /// drive the skin. Public (R4) so a host can load an individual bundle glb with
+/// Cluster LOD (Phase B), **finest-cut** render: when `virtual_geometry` is on
+/// and the asset has a baked cluster DAG (`<id>.clusters.bin`), render its finest
+/// cut — the level-0 clusters, which reconstruct the source geometry exactly —
+/// and return its key so the caller renders it instead of the base glb. Returns
+/// `None` (→ caller loads the base) when vg is off or there's no cluster data.
+///
+/// This validates the bake→emit→load→render path end-to-end. The GPU per-cluster
+/// LOD cut + compaction (B.2 proper) will replace the static finest cut with a
+/// per-frame on-device selection over the same pages.
+async fn load_cluster_lod(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    asset_id: &str,
+    tk: TransformKey,
+    mat: MaterialKey,
+) -> Result<Option<MeshKey>> {
+    if !renderer.features().virtual_geometry {
+        return Ok(None);
+    }
+    let path = format!(
+        "{ASSETS_DIR}/{}",
+        awsm_renderer_lod_bake::cluster_mesh_filename(asset_id)
+    );
+    let Ok(bytes) = assets.fetch(&path).await else {
+        return Ok(None);
+    };
+    let cm: awsm_renderer_lod_bake::ClusterMesh = match serde_json::from_slice(&bytes) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("cluster LOD: unreadable `{path}`: {e}");
+            return Ok(None);
+        }
+    };
+    if cm.positions.is_empty() || cm.clusters.is_empty() {
+        return Ok(None);
+    }
+
+    // Phase B GPU cut (B.2): hand the cluster pages to the GPU cut pass. No-op
+    // unless `virtual_geometry` built the pass; coexists with the per-instance
+    // discrete cut below (which the GPU per-cluster dispatch will eventually
+    // replace). The lod-bake `ROOT_PARENT_ERROR` (f32::MAX) rides through as a
+    // huge value, so roots always pass the cut's upper bound on-device.
+    let gpu_pages: Vec<awsm_renderer::cluster_lod::ClusterPage> = cm
+        .clusters
+        .iter()
+        .map(|c| awsm_renderer::cluster_lod::ClusterPage {
+            center: c.center,
+            radius: c.radius,
+            lod_error: c.lod_error,
+            parent_error: c.parent_error,
+            lod_bounds_center: c.lod_bounds_center,
+            lod_bounds_radius: c.lod_bounds_radius,
+            parent_bounds_center: c.parent_bounds_center,
+            parent_bounds_radius: c.parent_bounds_radius,
+            first_index: c.first_index,
+            index_count: c.index_count,
+        })
+        .collect();
+    // The compaction's `source_indices` is the EXPLODED raster index space, not
+    // `cm.indices`: the renderer explodes geometry (pack_visibility_bytes) so
+    // triangle t's corners are exploded vertices [3t,3t+1,3t+2]. Cluster pages are
+    // triangle-aligned, so the raster indices for a page [F,C) are exactly the
+    // identity range [F,F+C) — feed identity and the unchanged compaction emits a
+    // drawable stream into the (future) cluster render mesh's exploded buffer.
+    let identity_indices: Vec<u32> = (0..cm.indices.len() as u32).collect();
+    renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
+
+    // Cluster render mesh M = the FULL cluster geometry as an ordinary mesh, so
+    // its exploded vertex buffer is in cm.indices triangle order with
+    // vertex_attribute_indices = cm.indices (the normal material path). M is the
+    // node's visible mesh; the GPU per-cluster cut's compacted indirect stream
+    // draws into M's buffer (the geometry-pass override in mesh.rs keys on
+    // `cluster_lod.render_mesh == mesh_key`), so detail varies WITHIN the mesh by
+    // per-cluster distance. (load_cluster_lod is only reached when
+    // virtual_geometry is on.)
+    let m_raw = RawMeshData {
+        positions: cm.positions.clone(),
+        normals: (!cm.normals.is_empty()).then(|| cm.normals.clone()),
+        uv_sets: if cm.uvs.is_empty() {
+            vec![]
+        } else {
+            vec![cm.uvs.clone()]
+        },
+        colors: (!cm.colors.is_empty()).then(|| cm.colors.clone()),
+        indices: cm.indices.clone(),
+        skin: None,
+        morph: None,
+    };
+    let m_key = renderer.add_raw_mesh(m_raw, tk, mat)?;
+    renderer.set_cluster_render_mesh(m_key);
+    tracing::info!(
+        "cluster LOD (GPU): {asset_id} {} clusters, render mesh M = {} tris, per-cluster cut drives draw",
+        cm.cluster_count(),
+        cm.indices.len() / 3
+    );
+    Ok(Some(m_key))
+}
+
+/// Whether a node opts in to LOD (its per-mesh `MeshLodConfig.enabled`). The
+/// asset is baked with levels if *any* referencing node is enabled, so the
+/// runtime must re-check the per-node toggle: a LOD-off instance pins level 0.
+fn node_lod_enabled(kind: &NodeKind) -> bool {
+    kind.mesh_lod().map(|l| l.enabled).unwrap_or(false)
+}
+
+/// Load + register the discrete-LOD level chain for a **static** mesh asset.
+///
+/// Each level glb (`<id>.lod{N}.glb`) is loaded under the same transform `tk` and
+/// material `mat` as the base, so a level renders co-located with it; the level
+/// meshes are set hidden (they draw only when the per-frame selection reroutes to
+/// them) and the chain is registered on `renderer.lod` keyed by `base_key`.
+///
+/// A no-op when the `lod` feature is off, or when the mesh has no `.lod.toml`
+/// manifest (most meshes — below the bake floor or LOD-disabled). Skinned/morph
+/// LOD selection runs on a separate path (shared skeleton) and is not loaded here.
+async fn load_static_lod_chain(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    asset_id: &str,
+    base_key: MeshKey,
+    tk: TransformKey,
+    mat: MaterialKey,
+) -> Result<()> {
+    if !renderer.features().lod {
+        return Ok(());
+    }
+    let manifest_path = format!(
+        "{ASSETS_DIR}/{}",
+        awsm_renderer_lod_bake::lod_manifest_filename(asset_id)
+    );
+    // Missing manifest = this mesh has no LOD; not an error.
+    let Ok(bytes) = assets.fetch(&manifest_path).await else {
+        return Ok(());
+    };
+    let manifest: awsm_renderer_lod_bake::MeshLodManifest = match std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| toml::from_str(s).ok())
+    {
+        Some(m) => m,
+        None => {
+            tracing::warn!("lod: ignoring unreadable manifest `{manifest_path}`");
+            return Ok(());
+        }
+    };
+
+    let mut levels = Vec::with_capacity(manifest.levels.len());
+    for lvl in &manifest.levels {
+        let leaf = awsm_renderer_lod_bake::lod_level_filename(asset_id, lvl.index);
+        let (keys, _) = load_glb_under(renderer, assets, &leaf, Some(tk), mat).await?;
+        let Some(&level_key) = keys.first() else {
+            continue;
+        };
+        // Levels are off by default — only the selected level is shown each frame.
+        for &k in &keys {
+            let _ = renderer.set_mesh_hidden(k, true);
+        }
+        levels.push(LodLevel {
+            mesh_key: level_key,
+            error: lvl.error,
+        });
+    }
+    if !levels.is_empty() {
+        renderer.lod.register(
+            base_key,
+            LodChain {
+                levels,
+                bounds_radius: manifest.bounds_radius,
+                ..Default::default()
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Load + register the discrete-LOD level chain for a **skinned / morph** mesh.
+///
+/// Each level rig glb (`<source>.lod{N}.glb`) carries its own skeleton, but the
+/// animation clips only drive the *base* rig's joints. So instead of loading the
+/// level glb wholesale (which would make a second, undriven skeleton), this
+/// extracts each level mesh node's geometry + skin + morph and rebuilds it with
+/// `add_raw_mesh`, **rebinding** its skin to the BASE rig's joint transforms
+/// (mapped through `node_index_transforms` — valid because every level shares the
+/// base's joint node indices, both coming from `reexport_clean_scene` of the same
+/// source). The level meshes thus deform with the base; they're set hidden and
+/// the chain is registered keyed by `base_key`.
+///
+/// No-op when `lod` is off / no manifest. Scoped to the common single-mesh-node
+/// skinned case: the chain is keyed on `base_key` and tracks each level's first
+/// mesh node (multi-mesh skinned LOD is a follow-up).
+async fn load_skinned_lod_chain(
+    renderer: &mut AwsmRenderer,
+    assets: &impl SceneAssets,
+    source_id: &str,
+    base_key: MeshKey,
+    node_index_transforms: &HashMap<usize, TransformKey>,
+    mat: MaterialKey,
+) -> Result<()> {
+    use awsm_renderer::meshes::buffer_info::MeshBufferGeometryMorphInfo;
+    use awsm_renderer::raw_mesh::{RawMeshData, RawMorph, RawSkin};
+
+    if !renderer.features().lod {
+        return Ok(());
+    }
+    let manifest_path = format!(
+        "{ASSETS_DIR}/{}",
+        awsm_renderer_lod_bake::lod_manifest_filename(source_id)
+    );
+    let Ok(bytes) = assets.fetch(&manifest_path).await else {
+        return Ok(());
+    };
+    let manifest: awsm_renderer_lod_bake::MeshLodManifest = match std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| toml::from_str(s).ok())
+    {
+        Some(m) => m,
+        None => {
+            tracing::warn!("lod: ignoring unreadable skinned manifest `{manifest_path}`");
+            return Ok(());
+        }
+    };
+
+    let root = renderer.transforms.root_node;
+    let mut levels = Vec::with_capacity(manifest.levels.len());
+    for lvl in &manifest.levels {
+        let leaf = awsm_renderer_lod_bake::lod_level_filename(source_id, lvl.index);
+        let key = format!("{ASSETS_DIR}/{leaf}");
+        let Ok(glb) = assets.fetch(&key).await else {
+            continue;
+        };
+        // Parse once; rebuild every mesh node bound to the base's transforms.
+        let data = GltfLoader::from_glb_bytes(&glb).await?.into_data(None)?;
+        let mut level_first: Option<MeshKey> = None;
+        let node_indices: Vec<usize> = data
+            .doc
+            .nodes()
+            .filter(|n| n.mesh().is_some())
+            .map(|n| n.index())
+            .collect();
+        for node_index in node_indices {
+            let Some(extracted) = awsm_renderer_glb_export::extract_node_mesh(
+                &data.doc,
+                &data.buffers.raw,
+                node_index as u32,
+                None,
+            ) else {
+                continue;
+            };
+            // Rebind skin joints (rig node index → base transform).
+            let raw_skin = match extracted.skin.as_ref() {
+                Some(s) => {
+                    let mut joints = Vec::with_capacity(s.joint_node_indices.len());
+                    let mut ok = true;
+                    for rig_idx in &s.joint_node_indices {
+                        match node_index_transforms.get(rig_idx) {
+                            Some(&tk) => joints.push(tk),
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !ok {
+                        None
+                    } else {
+                        Some(RawSkin {
+                            joints,
+                            inverse_bind_matrices: s
+                                .inverse_bind_matrices
+                                .iter()
+                                .map(glam::Mat4::from_cols_array)
+                                .collect(),
+                            set_count: 1,
+                            index_weights: s.packed_index_weights(),
+                        })
+                    }
+                }
+                None => None,
+            };
+            let vertex_count = extracted.mesh.positions.len();
+            let raw_morph = extracted.morph.as_ref().map(|m| {
+                let values = m.packed_values(vertex_count);
+                RawMorph {
+                    info: MeshBufferGeometryMorphInfo {
+                        targets_len: m.targets_len(),
+                        vertex_stride_size: m.vertex_stride_size(),
+                        values_size: values.len(),
+                    },
+                    weights: m.weights_bytes(),
+                    values,
+                }
+            });
+            let raw = RawMeshData {
+                positions: extracted.mesh.positions,
+                normals: extracted.mesh.normals,
+                uv_sets: extracted.mesh.uvs,
+                colors: extracted.mesh.colors,
+                indices: extracted.mesh.indices,
+                skin: raw_skin,
+                morph: raw_morph,
+            };
+            // Self-placing under the renderer root, exactly like the base rig.
+            let tk = renderer.transforms.insert(Transform::default(), Some(root));
+            let Ok(mk) = renderer.add_raw_mesh(raw, tk, mat) else {
+                continue;
+            };
+            let _ = renderer.set_mesh_hidden(mk, true);
+            if level_first.is_none() {
+                level_first = Some(mk);
+            }
+        }
+        if let Some(mesh_key) = level_first {
+            levels.push(LodLevel {
+                mesh_key,
+                error: lvl.error,
+            });
+        }
+    }
+    if !levels.is_empty() {
+        renderer.lod.register(
+            base_key,
+            LodChain {
+                levels,
+                bounds_radius: manifest.bounds_radius,
+                ..Default::default()
+            },
+        );
+    }
+    Ok(())
+}
+
 /// our material-source semantics outside the full scene pass.
 pub async fn load_glb_under(
     renderer: &mut AwsmRenderer,

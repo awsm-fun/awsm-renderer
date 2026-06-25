@@ -7,6 +7,7 @@ members = [
     "packages/crates/glb-export",
     "packages/crates/gltf-convert",
     "packages/crates/tangents",
+    "packages/crates/lod-bake",
     "packages/crates/particles",
     "packages/crates/renderer",
     "packages/crates/renderer-core",
@@ -124,6 +125,7 @@ awsm-renderer-meshgen = { path = "packages/crates/meshgen", version = "0.4.0" }
 awsm-renderer-glb-export = { path = "packages/crates/glb-export", version = "0.4.0" }
 awsm-renderer-gltf-convert = { path = "packages/crates/gltf-convert", version = "0.4.0" }
 awsm-renderer-tangents = { path = "packages/crates/tangents", version = "0.4.0" }
+awsm-renderer-lod-bake = { path = "packages/crates/lod-bake", version = "0.4.0" }
 awsm-renderer-particles = { path = "packages/crates/particles", version = "0.4.0" }
 awsm-renderer-materials = { path = "packages/crates/materials", version = "0.4.0" }
 awsm-renderer = { path = "packages/crates/renderer", version = "0.4.0" }
