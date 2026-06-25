@@ -97,6 +97,32 @@ multi-file GPU build — realistically multi-day):**
    scene tree ends empty; getting a *visible* cluster screenshot to confirm refinement
    needs a persistent scene path — resolve as part of 20b's on-device verify.)
 
+   **Step 20b-i DONE (slot exploded-vertex byte builder).** `mesh_pack::pack_visibility_slot_bytes`
+   packs ONE page-pool slot's `PAGE_VERTS` exploded 56-B visibility records from a cluster's
+   triangle-order index slice, with slot-relative `triangle_index` (`pool_slot*(PAGE_VERTS/3)
+   + local_tri`) so the visibility-resolve's per-triangle corner fetch stays self-consistent
+   after a slot is overwritten. Unit-tested (`slot_pack_matches_full_packer_except_triangle_index`):
+   slot 0 is byte-identical to `pack_visibility_bytes`; slot N differs ONLY in `triangle_index`;
+   the `out` buffer is reused (no per-frame alloc). Synthetic tangents (cluster material has no
+   normal map ⇒ the full packer also used synthetic — matched). Pure + unwired ⇒ byte-identical.
+
+   **IMPORTANT model finding (do NOT skip — drives 20b-ii/iii):** step 2's GPU upload is a
+   FIXED 785-cluster *frontier* (clamped errors, identity resident table). True dynamic paging
+   needs a different data model: upload **all ~13k DAG pages** to the cut (un-clamped real
+   `[lod_error,parent_error)`; 13065×64B≈836KB, trivial) + a **full-DAG resident table**
+   (cluster_id→slot, −1=absent; ~52KB) so ANY cluster can occupy a slot over time. Crack-free
+   fallback = the deepest-resident cluster on each path stays CLAMPED always-draw (lod_error0/
+   parent_errorMAX); when finer clusters stream in, un-clamp the parent + clamp the new finer
+   leaves (re-upload the pages' error fields or a parallel clamp array). So per frame the
+   manager updates: (a) residency/slots (writeBuffer slot vertex data via `pack_visibility_slot_bytes`
+   + slot `source_indices` span), (b) per-page clamp state, (c) the resident table. This is a
+   real redesign of the `cluster_paging` load path (currently the bounded 785-frontier), to be
+   landed gated so flag-off stays byte-identical and flag-on stays watertight at each step.
+   Remaining 20b sub-steps: (ii) renderer writeBuffer API for a slot's data sub-range + source_indices
+   span + resident entry (+ byte-math test); (iii) load path uploads all pages + full-DAG resident
+   table, init residency = the coarse antichain in slots (verify still watertight); (iv) per-frame
+   stream/evict + re-clamp driven by `plan_stream_evict` → dolly-in refine on-device → A2.
+
    *(Superseded GPU-feedback design (A) kept below for reference.)*
 
    **Key constraint (found analysing it):** the GPU cut CANNOT "walk up to the nearest

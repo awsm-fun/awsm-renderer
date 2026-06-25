@@ -78,6 +78,77 @@ pub fn pack_visibility_bytes(
     out
 }
 
+/// Pack ONE page-pool slot's exploded visibility vertices for Gap-B dynamic
+/// paging — the bytes that overwrite a reused slot in the cluster render mesh's
+/// visibility-data section when a cluster is streamed in.
+///
+/// `corner_indices` is the slot's per-triangle-corner ORIGINAL vertex indices in
+/// triangle order (a cluster's index slice, padded to `page_verts`, exactly as the
+/// scene-loader's `build_slot_geometry` lays a slot out). The same
+/// `front_face` corner swizzle the full-mesh packer applies is applied here, so
+/// the emitted 56-B records are byte-identical to what
+/// [`pack_visibility_bytes`] would have produced for these triangles — EXCEPT the
+/// `triangle_index` field, which is made slot-relative:
+/// `triangle_index = pool_slot * (page_verts/3) + local_triangle`. That matches
+/// the value the full-buffer explode assigned this slot (slot `s`'s exploded
+/// corners occupy flat indices `[s*page_verts, +page_verts)`, so corner `j`'s
+/// triangle is `j/3`), keeping the visibility-resolve's per-triangle corner fetch
+/// self-consistent after the slot is overwritten with a different cluster.
+///
+/// Tangents are the synthetic fallback (the cluster render mesh has no normal-map
+/// material ⇒ the full-mesh packer also used synthetic — see `meshes.rs` tangent
+/// gating). `out` is cleared + refilled (reuse across streams ⇒ no per-frame
+/// allocation). `corner_indices.len()` must equal `page_verts` (a multiple of 3).
+pub fn pack_visibility_slot_bytes(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    corner_indices: &[u32],
+    pool_slot: usize,
+    page_verts: usize,
+    front_face: FrontFace,
+    out: &mut Vec<u8>,
+) {
+    out.clear();
+    debug_assert_eq!(corner_indices.len(), page_verts, "slot must be page_verts long");
+    let corner_order: [usize; 3] = match front_face {
+        FrontFace::Cw => [0, 2, 1],
+        _ => [0, 1, 2],
+    };
+    let tris_per_slot = page_verts / 3;
+    let base_triangle = pool_slot * tris_per_slot;
+    for (local_triangle, tri) in corner_indices.chunks_exact(3).enumerate() {
+        let triangle_index = (base_triangle + local_triangle) as u32;
+        for &corner in corner_order.iter() {
+            let vertex_index = tri[corner];
+            let v = vertex_index as usize;
+            let pos = positions[v];
+            let normal = normals[v];
+            let bary = BARYCENTRICS[corner];
+            let tan = SYNTHETIC_TANGENT;
+            // position (12)
+            out.extend_from_slice(&pos[0].to_le_bytes());
+            out.extend_from_slice(&pos[1].to_le_bytes());
+            out.extend_from_slice(&pos[2].to_le_bytes());
+            // triangle_index (4) — slot-relative
+            out.extend_from_slice(&triangle_index.to_le_bytes());
+            // barycentric (8)
+            out.extend_from_slice(&bary[0].to_le_bytes());
+            out.extend_from_slice(&bary[1].to_le_bytes());
+            // normal (12)
+            out.extend_from_slice(&normal[0].to_le_bytes());
+            out.extend_from_slice(&normal[1].to_le_bytes());
+            out.extend_from_slice(&normal[2].to_le_bytes());
+            // tangent (16)
+            out.extend_from_slice(&tan[0].to_le_bytes());
+            out.extend_from_slice(&tan[1].to_le_bytes());
+            out.extend_from_slice(&tan[2].to_le_bytes());
+            out.extend_from_slice(&tan[3].to_le_bytes());
+            // original_vertex_index (4)
+            out.extend_from_slice(&vertex_index.to_le_bytes());
+        }
+    }
+}
+
 /// Transparency geometry — 40 bytes per **original** (non-exploded) vertex,
 /// drawn with the index buffer:
 /// `position(12) | normal(12) | tangent(16)`.
@@ -274,5 +345,86 @@ mod tests {
             assert_eq!(normal, normals[v], "transparency v{v} normal");
             assert_eq!(tangent, tangents[v], "transparency v{v} tangent");
         }
+    }
+
+    // ── Gap-B dynamic paging: slot packer matches the full-mesh packer ─────────
+    #[test]
+    fn slot_pack_matches_full_packer_except_triangle_index() {
+        // 6-vertex, 4-triangle "cluster"; page_verts = 6 (2 triangles/slot) so the
+        // slot math is exercised with >1 triangle. Distinct per-vertex normals so a
+        // mis-indexing bug shows. Synthetic tangents (the cluster mesh path).
+        let positions = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+        ];
+        let normals = vec![
+            [0.1, 0.0, 0.9],
+            [0.2, 0.0, 0.8],
+            [0.3, 0.0, 0.7],
+            [0.4, 0.0, 0.6],
+            [0.5, 0.0, 0.5],
+            [0.6, 0.0, 0.4],
+        ];
+        let page_verts = 6usize; // 2 triangles per slot
+        // Slot's triangle-order corner indices (one cluster's two triangles).
+        let slot_indices = vec![0u32, 1, 2, 1, 4, 5];
+
+        // Slot 0 must be byte-identical to the full-mesh packer (synthetic tangents,
+        // triangle_index base 0).
+        let full = pack_visibility_bytes(&positions, &normals, None, &slot_indices, FrontFace::Ccw);
+        let mut slot0 = Vec::new();
+        pack_visibility_slot_bytes(
+            &positions,
+            &normals,
+            &slot_indices,
+            0,
+            page_verts,
+            FrontFace::Ccw,
+            &mut slot0,
+        );
+        assert_eq!(slot0, full, "slot 0 is byte-identical to the full packer");
+        assert_eq!(slot0.len(), 56 * page_verts);
+
+        // Slot 3 differs ONLY in triangle_index: base = 3 * (6/3) = 6, so the two
+        // triangles are 6 and 7; every other byte equals slot 0's.
+        let mut slot3 = Vec::new();
+        pack_visibility_slot_bytes(
+            &positions,
+            &normals,
+            &slot_indices,
+            3,
+            page_verts,
+            FrontFace::Ccw,
+            &mut slot3,
+        );
+        for rec in 0..page_verts {
+            let o = rec * 56;
+            // triangle_index (offset 12) is slot-relative: 6 + rec/3.
+            assert_eq!(
+                u32::from_le_bytes(slot3[o + 12..o + 16].try_into().unwrap()),
+                6 + (rec / 3) as u32,
+                "slot 3 record {rec} triangle_index"
+            );
+            // All other bytes (before + after the 4-byte triangle_index) match slot 0.
+            assert_eq!(slot3[o..o + 12], slot0[o..o + 12], "record {rec} pos");
+            assert_eq!(slot3[o + 16..o + 56], slot0[o + 16..o + 56], "record {rec} rest");
+        }
+
+        // out is reused (cleared) — a second pack of a smaller-base slot leaves no
+        // stale tail.
+        pack_visibility_slot_bytes(
+            &positions,
+            &normals,
+            &slot_indices,
+            0,
+            page_verts,
+            FrontFace::Ccw,
+            &mut slot3,
+        );
+        assert_eq!(slot3, slot0, "reused buffer cleared + refilled correctly");
     }
 }
