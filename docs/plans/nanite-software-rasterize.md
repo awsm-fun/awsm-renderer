@@ -70,6 +70,25 @@ So: **LOD cut (bounded draw) + streaming residency (bounded VRAM), on HW raster*
 multi-million-tri. The SW rasterizer was only ever a *further* speed refinement for
 a density we don't need to hit, which is why it's correctly parked.
 
+**What bounds the cut (why ~hundreds-of-k–2M triangles is renderable, not a wall).**
+The cut's triangle count is tied to **screen resolution + the pixel-error budget,
+NOT the source size** — the same draw whether the source is 1M or 500M tris (1080p ≈
+2.1M px, 4K ≈ 8.3M px; at a few px/triangle the cut is ~a few hundred thousand to
+~2M tris). That's cheap here because the renderer is **visibility-buffer deferred**:
+- the **geometry pass only writes triangle-ID + barycentrics** — a thin raster pass
+  (modern GPUs set up triangles at billions/sec ⇒ ~2M tris is sub-ms to ~2 ms, well
+  inside a 16.6 ms frame);
+- **material shading is deferred + per-pixel**, so its cost scales with screen
+  pixels, not triangle count (adding source detail adds no shading work);
+- the **two-level HZB occlusion cull** drops occluded clusters *before* the draw, so
+  you rasterize only the visible part of the cut.
+
+The one place this strains is pushing toward literal **1 triangle per pixel**, where
+the fixed-function rasterizer's 2×2-quad granularity wastes up to ~4× the
+geometry-pass fragment work — the exact regime the parked SW rasterizer targets. The
+pixel-error budget is the knob to stay above that cliff (and shrink the cut). Real
+numbers come from the benchmarking step in Acceptance, once Gap A + Gap B land.
+
 ---
 
 ## Gap A — cluster bake/cut robustness on non-watertight / subdivided meshes
@@ -217,6 +236,24 @@ shared with texture streaming.
 - **Gap B:** a genuinely multi-million-tri asset renders at interactive rates with
   full detail near the camera and bounded VRAM; panning/dollying refines without
   cracks; `?stress=N` shows no per-frame heap allocs (`?trace=sub-frame`).
+- **Final multi-million-tri benchmarking (REQUIRED once Gap A + Gap B both land — the
+  empirical multi-million-tri proof).** Build real test scenes in the genuine
+  multi-million-triangle range and capture REAL numbers (don't just assert it):
+  - **Scenes:** (a) one high-density *unique* asset — a sculpted/subdivided mesh of
+    ≥5–10M source triangles (use the `Subdivide` modifier or import a dense scan;
+    once Gap A lands, subdivided meshes bake watertight); (b) a heavily-*instanced*
+    scene with *many distinct* multi-M-tri datasets, to exercise streaming residency
+    + eviction (instancing shares one dataset, so distinct datasets are what stress
+    VRAM — see the note below).
+  - **Measure at 1080p and 4K, via `?trace=sub-frame`:** total frame time + per-pass
+    breakdown (cut, compaction, geometry/vis-buffer, deferred shading); the **drawn
+    triangle count (cut size) vs the source triangle count** (the headline: draw
+    stays ~screen-bounded while source scales up); page-pool occupancy + eviction
+    churn while dollying; peak VRAM. Confirm no per-frame heap allocs under
+    `?stress=N`.
+  - **Baseline:** compare against flags-off / non-LOD where the asset can even load,
+    and note the multi-million-tri cases that *only* load because of streaming.
+  - **Record the resulting table in this doc** as the closing evidence.
 - **Always:** flags default-off ⇒ byte-identical (the non-LOD hot path is gated at
   `render.rs` `(!lod && !virtual_geometry) || lod.is_empty()` and `cluster_lod:
   Option`); `cargo test -p awsm-renderer -p awsm-renderer-materials -p
