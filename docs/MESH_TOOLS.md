@@ -187,11 +187,38 @@ modifiers) or already frozen (terminal authoring).
 { "kind": "axis_greater",  "axis": 0, "value": 0.0 }
 { "kind": "axis_less",     "axis": 1, "value": -0.4 }
 { "kind": "within_radius", "center": [0,0,0], "radius": 0.3 }
+{ "kind": "within_aabb",   "min": [x,y,z], "max": [x,y,z] }   // local-space box
+{ "kind": "connected_to_seed", "seed": [i, ...] }             // the whole connected PIECE
 ```
-`axis`: 0=X, 1=Y, 2=Z.
+`axis`: 0=X, 1=Y, 2=Z. The geometry predicates above pick verts by position/normal;
+**`connected_to_seed`** is topology — it grabs every vertex in the connected island(s)
+containing the `seed` verts, position-welded so a UV/normal seam doesn't fragment a
+solid piece. Use it to select "this whole bolt / belt / panel" from one seed (e.g. any
+index from another predicate), and pair it with `separate_mesh` to detach that piece.
 
 **Example — flare a cup's rim:** `select_vertices_where {node, {"kind":"top_percent","axis":1,"percent":0.12}}`
 → `soft_transform_vertices {mesh, indices, translation:[0,0.4,0], falloff:0.5}`.
+
+---
+
+## Region editing — `separate_mesh`
+
+Detach part of a mesh into its **own node** so it can carry a different material or be
+edited independently (the model is one-material-per-node, so multi-material = multiple
+nodes — exactly what an imported multi-primitive glTF already destructures into).
+
+- `separate_mesh { node, selection?|indices?, keep_remainder? }` — a triangle moves
+  when **all 3** of its vertices are selected. Pick the region with
+  `select_vertices_where` (the `connected_to_seed` predicate grabs a whole piece, or
+  store a handle with `store:true`). The new sibling node inherits the source's
+  transform + material — `assign_material` a different material to it next. By default
+  the source is left intact (the new node is an extracted **copy**); pass
+  `keep_remainder:true` to also **remove** those faces from the source (no overlap /
+  z-fighting). Undoable.
+
+**Example — re-skin one belt of a tank:** `select_vertices_where {node, {"kind":"connected_to_seed","seed":[<a vert on that belt>]}, store:true}`
+→ `separate_mesh {node, selection:<handle>, keep_remainder:true}`
+→ `assign_material {node:<new "Separated" node>, material:<belt material>}`.
 
 ---
 
@@ -227,6 +254,13 @@ modifiers) or already frozen (terminal authoring).
   `{ base, modifiers, modifier_count, frozen_topology, has_overrides,
   override_counts:{positions,colors,normals,uvs} }`. `frozen_topology:true` means
   per-vertex authoring already collapsed the stack (terminal).
+- `get_uv_layout { node, uv_set?, offset?, limit? }` → the UV-island overlay:
+  `{ has_uv, island_count, bounds:{min,max}, islands:[{count,min,max}], edge_count,
+  edges:[[[u,v],[u,v]]…] }`. Diagnoses **"atlas vs strip"** in one read — a
+  continuous strip UV is ONE island spanning ~[0,1] (good for scrolling/tiling); a
+  packed atlas is MANY small islands (a global UV scroll slides samples onto unrelated
+  content). `edges` is the UV wireframe (paged by `offset`/`limit`); island summaries
+  are always full.
 
 > **`set_mesh_data` safety (escape-hatch via `dispatch_command`):** replacing a
 > mesh's geometry wholesale now **validates** before storing — empty/degenerate
