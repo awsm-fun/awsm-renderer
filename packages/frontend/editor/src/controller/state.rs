@@ -521,7 +521,11 @@ impl EditorController {
         }
         let mut inv = vec![restore_stack];
         if let Some(bytes) = prior_bytes {
-            inv.push(EditorCommand::SetMeshData { mesh, data: bytes });
+            inv.push(EditorCommand::SetMeshData {
+                mesh,
+                data: bytes,
+                allow_empty: true,
+            });
         }
         inv.push(EditorCommand::SetVertexOverrides {
             mesh,
@@ -1482,14 +1486,27 @@ impl EditorController {
                 let _ = (node, mesh);
                 Ok(None)
             }
-            EditorCommand::SetMeshData { mesh, data } => {
+            EditorCommand::SetMeshData {
+                mesh,
+                data,
+                allow_empty,
+            } => {
                 use crate::engine::bridge::mesh_cache;
+                // Reject the silent mesh-wipe footgun + structurally-broken input
+                // BEFORE storing (undo can't help if we never warned).
+                data.validate(allow_empty)
+                    .map_err(crate::error::EditorError::msg)?;
                 let prior = mesh_cache::get_captured(mesh);
                 mesh_cache::store_with_id(mesh, data);
                 self.scene.bump_revision();
                 // Inverse restores the prior geometry; if there was none (the mesh
-                // didn't exist), the edit isn't undoable.
-                Ok(prior.map(|data| EditorCommand::SetMeshData { mesh, data }))
+                // didn't exist), the edit isn't undoable. allow_empty:true so a
+                // legitimately-empty prior round-trips through the guard.
+                Ok(prior.map(|data| EditorCommand::SetMeshData {
+                    mesh,
+                    data,
+                    allow_empty: true,
+                }))
             }
             EditorCommand::SetMeshModifiers { mesh, stack } => {
                 Ok(self.apply_mesh_stack(mesh, stack))
@@ -1642,6 +1659,25 @@ impl EditorController {
                 })?;
                 Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
             }
+            EditorCommand::SetVertexUvs {
+                mesh,
+                indices,
+                uvs,
+                selection,
+            } => {
+                let indices = resolve_vertex_selection_or(selection, indices)?;
+                // Per-index parallel-array write (mirrors SetVertexPositions): the
+                // bake applies `overrides.uvs`, creating the UV channel if absent.
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for (k, &idx) in indices.iter().enumerate() {
+                        if let Some(uv) = uvs.get(k) {
+                            ov.uvs.insert(idx, *uv);
+                        }
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
             EditorCommand::SetVertexOverrides { mesh, overrides } => {
                 let collapse = self.ensure_authorable(mesh)?;
                 let prior = self.apply_vertex_overrides(mesh, |ov| {
@@ -1780,8 +1816,146 @@ impl EditorController {
                     EditorCommand::SetMeshData {
                         mesh,
                         data: prior_bytes,
+                        allow_empty: true,
                     },
                 ])))
+            }
+            EditorCommand::SeparateMesh {
+                node,
+                indices,
+                selection,
+                new_node,
+                keep_remainder,
+            } => {
+                use crate::engine::bridge::mesh_cache;
+                use crate::engine::scene::node::Node;
+                use awsm_renderer_editor_protocol::{
+                    CapturedSource, MeshBase, MeshDef, MeshRef, ModifierStack,
+                };
+
+                let (src_mesh, md) = match self.node_editable_mesh(node) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        Toast::error(e);
+                        return Ok(None);
+                    }
+                };
+                let sel = resolve_vertex_selection_or(selection, indices)?;
+                if sel.is_empty() {
+                    Toast::error("separate_mesh: empty selection");
+                    return Ok(None);
+                }
+                let (extracted, remainder) = awsm_renderer_meshgen::edit::extract_faces(&md, &sel);
+                if extracted.positions.is_empty() {
+                    Toast::error("separate_mesh: selection contains no complete face");
+                    return Ok(None);
+                }
+                // Source transform + material to inherit onto the new node.
+                let (src_trs, src_material) = match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => match n.kind.get_cloned() {
+                        NodeKind::Mesh { material, .. } => (n.transform.get(), material),
+                        _ => return Ok(None),
+                    },
+                    None => return Ok(None),
+                };
+                // Mint the new node + asset (deterministic id ⇒ idempotent replay).
+                let new_node_id = new_node.unwrap_or_else(NodeId::new);
+                if mutate::find_by_id(&self.scene, new_node_id).is_some() {
+                    return Ok(None);
+                }
+                let new_mesh_id = AssetId(new_node_id.0);
+                mesh_cache::store_with_id(new_mesh_id, mesh_cache::from_mesh_data(extracted));
+                self.scene.assets.lock().unwrap().entries.insert(
+                    new_mesh_id,
+                    AssetEntry::new(SceneAssetSource::Mesh(MeshDef {
+                        label: "Separated".to_string(),
+                        source: Some(CapturedSource::Editable),
+                        editable: true,
+                        stack: ModifierStack {
+                            base: MeshBase::Captured(MeshRef(new_mesh_id)),
+                            modifiers: vec![],
+                        },
+                        overrides: Default::default(),
+                    })),
+                );
+                let mut newn = Node::new_with_transform_and_kind(
+                    "Separated",
+                    src_trs,
+                    NodeKind::Mesh {
+                        mesh: MeshRef(new_mesh_id),
+                        material: src_material,
+                        shadow: Default::default(),
+                        lod: Default::default(),
+                    },
+                );
+                std::sync::Arc::get_mut(&mut newn)
+                    .expect("freshly built node is sole-owned")
+                    .id = new_node_id;
+                let parent = mutate::find_parent(&self.scene, node).map(|p| p.id);
+                if !mutate::insert_under(&self.scene, parent, newn) {
+                    return Ok(None);
+                }
+
+                // Inverse: drop the new node + asset (and, below, restore the source).
+                let mut inverse = vec![EditorCommand::Batch(vec![
+                    EditorCommand::Delete { id: new_node_id },
+                    EditorCommand::DeleteAsset { id: new_mesh_id },
+                ])];
+
+                if keep_remainder {
+                    // Capture source prior state for a wholesale undo restore.
+                    let (prior_stack, prior_overrides) = {
+                        let assets = self.scene.assets.lock().unwrap();
+                        match assets.get(src_mesh).map(|e| &e.source) {
+                            Some(SceneAssetSource::Mesh(def)) => {
+                                (def.stack.clone(), def.overrides.clone())
+                            }
+                            _ => (
+                                ModifierStack {
+                                    base: MeshBase::Captured(MeshRef(src_mesh)),
+                                    modifiers: vec![],
+                                },
+                                Default::default(),
+                            ),
+                        }
+                    };
+                    let prior_bytes = mesh_cache::get_captured(src_mesh);
+                    // Source ← remainder: flatten to a bare capture, clear overrides
+                    // (they index the now-stale topology).
+                    {
+                        let mut assets = self.scene.assets.lock().unwrap();
+                        if let Some(entry) = assets.entries.get_mut(&src_mesh) {
+                            if let SceneAssetSource::Mesh(def) = &mut entry.source {
+                                def.stack = ModifierStack {
+                                    base: MeshBase::Captured(MeshRef(src_mesh)),
+                                    modifiers: vec![],
+                                };
+                                def.overrides = Default::default();
+                                def.editable = true;
+                            }
+                        }
+                    }
+                    mesh_cache::store_with_id(src_mesh, mesh_cache::from_mesh_data(remainder));
+                    // Restore source on undo: recipe → exact bytes → overrides.
+                    let mut restore = vec![EditorCommand::SetMeshModifiers {
+                        mesh: src_mesh,
+                        stack: prior_stack,
+                    }];
+                    if let Some(bytes) = prior_bytes {
+                        restore.push(EditorCommand::SetMeshData {
+                            mesh: src_mesh,
+                            data: bytes,
+                            allow_empty: true,
+                        });
+                    }
+                    restore.push(EditorCommand::SetVertexOverrides {
+                        mesh: src_mesh,
+                        overrides: prior_overrides,
+                    });
+                    inverse.push(EditorCommand::Batch(restore));
+                }
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::Batch(inverse)))
             }
             EditorCommand::SetAssetSelection { id } => {
                 self.asset_selection.set(id);
@@ -2970,6 +3144,49 @@ impl EditorController {
                         c.tracks.lock_mut().push_cloned(track);
                         self.dirty.set_neq(true);
                         Toast::info(format!("Added track {key}"));
+                        Ok(Some(EditorCommand::DeleteTrack { clip, track: index }))
+                    }
+                    None => Ok(None),
+                }
+            }
+            EditorCommand::AddSpinTrack {
+                clip,
+                node,
+                axis,
+                turns,
+                duration,
+                keys_per_turn,
+            } => {
+                // Validate the node exists (mirrors AddTrack) before building.
+                if mutate::find_by_id(&self.scene, node).is_none() {
+                    Toast::error("Can't add a spin track — its target node no longer exists.");
+                    return Ok(None);
+                }
+                match find_clip(&self.custom_animations, clip) {
+                    Some(c) => {
+                        let (times, keys) = animation::spin_keyframes(
+                            axis,
+                            turns,
+                            duration,
+                            keys_per_turn.unwrap_or(4),
+                        );
+                        let st = animation::StoredTrack {
+                            target: animation::TrackTarget::Transform {
+                                node,
+                                prop: animation::TransformProp::Rotation,
+                            },
+                            sampler: animation::SamplerKind::Linear,
+                            mute: false,
+                            solo: false,
+                            expanded: false,
+                            times,
+                            keys,
+                        };
+                        let live = animation::stored_track_to_live(&st);
+                        let index = c.tracks.lock_ref().len();
+                        c.tracks.lock_mut().push_cloned(live);
+                        self.dirty.set_neq(true);
+                        Toast::info(format!("Added spin track ({turns} turn(s))"));
                         Ok(Some(EditorCommand::DeleteTrack { clip, track: index }))
                     }
                     None => Ok(None),
@@ -4523,6 +4740,7 @@ impl EditorController {
                 selection,
                 offset,
                 limit,
+                include_source,
             } => {
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
@@ -4530,6 +4748,25 @@ impl EditorController {
                         error: skinned_edit_error(node),
                     };
                 }
+                // §P3: optionally tag each channel base-vs-override. Resolve the
+                // mesh def's sparse override maps once (same node→mesh→def path as
+                // get_mesh_layers); a vertex index present in a channel's map was
+                // authored, otherwise it rides the evaluated base.
+                let overrides = if include_source {
+                    mutate::find_by_id(&self.scene, node)
+                        .and_then(|n| match n.kind.get_cloned() {
+                            NodeKind::Mesh { mesh, .. } => Some(mesh.0),
+                            _ => None,
+                        })
+                        .and_then(|id| {
+                            match self.scene.assets.lock().unwrap().get(id).map(|e| &e.source) {
+                                Some(SceneAssetSource::Mesh(def)) => Some(def.overrides.clone()),
+                                _ => None,
+                            }
+                        })
+                } else {
+                    None
+                };
                 // §10: a `selection` handle's indices win over an explicit list; a
                 // dangling handle errors loudly.
                 let target: Vec<u32> = match selection {
@@ -4565,13 +4802,24 @@ impl EditorController {
                             .iter()
                             .map(|&i| {
                                 let idx = i as usize;
-                                json!({
+                                let mut v = json!({
                                     "index": i,
                                     "position": md.positions.get(idx),
                                     "normal": md.normals.as_ref().and_then(|n| n.get(idx)),
                                     "color": md.colors.as_ref().and_then(|c| c.get(idx)),
                                     "uv": md.uvs.first().and_then(|u| u.get(idx)),
-                                })
+                                });
+                                if let Some(ov) = &overrides {
+                                    let src =
+                                        |present: bool| if present { "override" } else { "base" };
+                                    v["source"] = json!({
+                                        "position": src(ov.positions.contains_key(&i)),
+                                        "normal": src(ov.normals.contains_key(&i)),
+                                        "color": src(ov.colors.contains_key(&i)),
+                                        "uv": src(ov.uvs.contains_key(&i)),
+                                    });
+                                }
+                                v
                             })
                             .collect();
                         let mut entries = std::collections::BTreeMap::new();
@@ -4658,6 +4906,220 @@ impl EditorController {
                         error: format!("node {node} is not a Mesh / has no resolvable mesh asset"),
                     },
                 }
+            }
+            EditorQuery::GetMeshData {
+                node,
+                offset,
+                limit,
+            } => {
+                use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(md) => {
+                        let tri_count = md.indices.len() / 3;
+                        let start = offset.unwrap_or(0) as usize;
+                        // Page over WHOLE triangles (the new payload). Each chunk is
+                        // [a,b,c] vertex indices; per-vertex attrs come from
+                        // get_vertex_data (kept out here to stay compact).
+                        let tris_iter = md.indices.chunks_exact(3).skip(start);
+                        let tris: Vec<[u32; 3]> = match limit {
+                            Some(l) => tris_iter
+                                .take(l as usize)
+                                .map(|c| [c[0], c[1], c[2]])
+                                .collect(),
+                            None => tris_iter.map(|c| [c[0], c[1], c[2]]).collect(),
+                        };
+                        // Local-space bbox over positions.
+                        let bbox = if md.positions.is_empty() {
+                            json!(null)
+                        } else {
+                            let mut min = [f32::INFINITY; 3];
+                            let mut max = [f32::NEG_INFINITY; 3];
+                            for p in &md.positions {
+                                for k in 0..3 {
+                                    min[k] = min[k].min(p[k]);
+                                    max[k] = max[k].max(p[k]);
+                                }
+                            }
+                            json!({ "min": min, "max": max })
+                        };
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("vertex_count".to_string(), json!(md.positions.len()));
+                        entries.insert("triangle_count".to_string(), json!(tri_count));
+                        entries.insert("offset".to_string(), json!(start));
+                        entries.insert("returned".to_string(), json!(tris.len()));
+                        entries.insert("triangles".to_string(), json!(tris));
+                        entries.insert("bbox".to_string(), bbox);
+                        QueryResult::Map(query::MapResult {
+                            kind: "mesh_data".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    },
+                }
+            }
+            EditorQuery::StripParameterize {
+                node,
+                selection,
+                indices,
+                axis,
+            } => {
+                use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                let Some(md) = mesh else {
+                    return QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    };
+                };
+                // Resolve the band: selection handle > explicit indices > whole mesh.
+                let target: Vec<u32> = match selection {
+                    Some(id) => match lookup_vertex_selection(id) {
+                        Some(v) => v,
+                        None => {
+                            return QueryResult::Error {
+                                error: format!("no vertex-selection handle {id}"),
+                            }
+                        }
+                    },
+                    None if !indices.is_empty() => indices,
+                    None => (0..md.positions.len() as u32).collect(),
+                };
+                // Gather the band's positions (skip any out-of-range index).
+                let positions: Vec<[f32; 3]> = target
+                    .iter()
+                    .filter_map(|&i| md.positions.get(i as usize).copied())
+                    .collect();
+                let (resolved_axis, coords) =
+                    awsm_renderer_meshgen::edit::strip_parameterize(&positions, axis);
+                // Pair each in-range index with its (along, across).
+                let verts: Vec<serde_json::Value> = target
+                    .iter()
+                    .filter(|&&i| (i as usize) < md.positions.len())
+                    .zip(coords.iter())
+                    .map(|(&i, c)| json!({ "index": i, "along": c[0], "across": c[1] }))
+                    .collect();
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("axis".to_string(), json!(resolved_axis));
+                entries.insert("count".to_string(), json!(verts.len()));
+                entries.insert("heuristic".to_string(), json!(true));
+                entries.insert(
+                    "note".to_string(),
+                    json!("along=travel about axle [0,1); across=lateral along axle [0,1]; winding/polarity may be flipped — flip axis or use 1-coord if needed"),
+                );
+                entries.insert("vertices".to_string(), json!(verts));
+                QueryResult::Map(query::MapResult {
+                    kind: "strip_parameterize".to_string(),
+                    entries,
+                })
+            }
+            EditorQuery::UvLayout {
+                node,
+                uv_set,
+                offset,
+                limit,
+            } => {
+                use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                let Some(md) = mesh else {
+                    return QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    };
+                };
+                let set = uv_set.unwrap_or(0) as usize;
+                let Some(uvs) = md.uvs.get(set) else {
+                    let mut entries = std::collections::BTreeMap::new();
+                    entries.insert("has_uv".to_string(), json!(false));
+                    entries.insert("uv_set".to_string(), json!(set));
+                    return QueryResult::Map(query::MapResult {
+                        kind: "uv_layout".to_string(),
+                        entries,
+                    });
+                };
+                let (island_of, count) = awsm_renderer_meshgen::edit::uv_islands(uvs, &md.indices);
+                // Per-island vertex count + UV bounds; overall bounds.
+                let mut isl_min = vec![[f32::INFINITY; 2]; count as usize];
+                let mut isl_max = vec![[f32::NEG_INFINITY; 2]; count as usize];
+                let mut isl_n = vec![0u32; count as usize];
+                let (mut omin, mut omax) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+                for (i, uv) in uvs.iter().enumerate() {
+                    let c = island_of[i] as usize;
+                    isl_n[c] += 1;
+                    for k in 0..2 {
+                        isl_min[c][k] = isl_min[c][k].min(uv[k]);
+                        isl_max[c][k] = isl_max[c][k].max(uv[k]);
+                        omin[k] = omin[k].min(uv[k]);
+                        omax[k] = omax[k].max(uv[k]);
+                    }
+                }
+                let islands: Vec<serde_json::Value> = (0..count as usize)
+                    .map(|c| json!({ "count": isl_n[c], "min": isl_min[c], "max": isl_max[c] }))
+                    .collect();
+                // Unique undirected UV edges (the wireframe), paged.
+                let mut seen = std::collections::HashSet::new();
+                let mut all_edges: Vec<[u32; 2]> = Vec::new();
+                for tri in md.indices.chunks_exact(3) {
+                    for &(a, b) in &[(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                        let e = if a < b { (a, b) } else { (b, a) };
+                        if seen.insert(e) {
+                            all_edges.push([e.0, e.1]);
+                        }
+                    }
+                }
+                let edge_count = all_edges.len();
+                let start = offset.unwrap_or(0) as usize;
+                let page = match limit {
+                    Some(l) => all_edges
+                        .iter()
+                        .skip(start)
+                        .take(l as usize)
+                        .collect::<Vec<_>>(),
+                    None => all_edges.iter().skip(start).collect::<Vec<_>>(),
+                };
+                let edges: Vec<serde_json::Value> = page
+                    .iter()
+                    .filter_map(|e| {
+                        let a = uvs.get(e[0] as usize)?;
+                        let b = uvs.get(e[1] as usize)?;
+                        Some(json!([a, b]))
+                    })
+                    .collect();
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("has_uv".to_string(), json!(true));
+                entries.insert("uv_set".to_string(), json!(set));
+                entries.insert("island_count".to_string(), json!(count));
+                entries.insert("bounds".to_string(), json!({ "min": omin, "max": omax }));
+                entries.insert("islands".to_string(), json!(islands));
+                entries.insert("edge_count".to_string(), json!(edge_count));
+                entries.insert("offset".to_string(), json!(start));
+                entries.insert("returned".to_string(), json!(edges.len()));
+                entries.insert("edges".to_string(), json!(edges));
+                QueryResult::Map(query::MapResult {
+                    kind: "uv_layout".to_string(),
+                    entries,
+                })
             }
             EditorQuery::WaitRenderSettled { max_ms } => self.wait_render_settled(max_ms).await,
             EditorQuery::NodeTransforms { nodes } => self.node_transforms(&nodes).await,
@@ -6258,10 +6720,11 @@ fn select_vertices_by_predicate(
 ) -> Vec<u32> {
     use awsm_renderer_editor_protocol::VertexPredicate as P;
     use awsm_renderer_meshgen::edit::{
-        select_by_axis, select_by_normal_dir, select_top_count_axis, select_top_percent_axis,
-        select_within_aabb, select_within_radius, Cmp,
+        connected_component_of, select_by_axis, select_by_normal_dir, select_top_count_axis,
+        select_top_percent_axis, select_within_aabb, select_within_radius, Cmp,
     };
     match predicate {
+        P::ConnectedToSeed { seed } => connected_component_of(mesh, seed),
         P::NormalDir { dir, threshold } => select_by_normal_dir(mesh, *dir, *threshold),
         P::AxisGreater { axis, value } => {
             select_by_axis(mesh, *axis as usize, Cmp::Greater, *value)

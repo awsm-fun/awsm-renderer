@@ -53,14 +53,87 @@ pub struct MeshDef {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VertexOverrides {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_int_keyed_map")]
     pub positions: std::collections::HashMap<u32, [f32; 3]>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_int_keyed_map")]
     pub colors: std::collections::HashMap<u32, [f32; 4]>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_int_keyed_map")]
     pub normals: std::collections::HashMap<u32, [f32; 3]>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_int_keyed_map")]
     pub uvs: std::collections::HashMap<u32, [f32; 2]>,
+}
+
+/// Deserialize a `u32`-keyed map whose keys may arrive as integers (bitcode /
+/// native) **or** as integer-strings (JSON). This is what makes the per-vertex
+/// override commands drivable over JSON dispatch: serde's `#[serde(tag="cmd")]`
+/// internally-tagged `EditorCommand` buffers each variant into a `Content` value
+/// before deserializing it, and `Content` (like `serde_json::from_value`) can't
+/// coerce a JSON string object-key into `u32` — so a plain `HashMap<u32,_>` field
+/// rejects `{"0":[…]}` with "invalid type: string, expected u32". A key visitor
+/// using `deserialize_any` accepts both shapes and survives the `Content` round
+/// (and bitcode, which feeds the key back as an integer).
+fn de_int_keyed_map<'de, D, V>(d: D) -> Result<std::collections::HashMap<u32, V>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    V: serde::Deserialize<'de>,
+{
+    use std::collections::HashMap;
+    use std::marker::PhantomData;
+
+    struct U32Key(u32);
+    impl<'de> serde::Deserialize<'de> for U32Key {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            // Branch on the format: human-readable (serde_json / serde's tagged-enum
+            // `Content` buffer) hands map keys back as strings and supports
+            // `deserialize_any`; non-self-describing binary formats (bitcode — the
+            // `.mesh.bin` / project persistence) wrote the key as a real `u32` and
+            // reject `deserialize_any`, so read it natively there.
+            if d.is_human_readable() {
+                struct KeyVisitor;
+                impl serde::de::Visitor<'_> for KeyVisitor {
+                    type Value = u32;
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("a u32 vertex index (integer or integer-string)")
+                    }
+                    fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<u32, E> {
+                        u32::try_from(v).map_err(serde::de::Error::custom)
+                    }
+                    fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<u32, E> {
+                        u32::try_from(v).map_err(serde::de::Error::custom)
+                    }
+                    fn visit_u32<E: serde::de::Error>(self, v: u32) -> Result<u32, E> {
+                        Ok(v)
+                    }
+                    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<u32, E> {
+                        v.parse().map_err(serde::de::Error::custom)
+                    }
+                }
+                d.deserialize_any(KeyVisitor).map(U32Key)
+            } else {
+                u32::deserialize(d).map(U32Key)
+            }
+        }
+    }
+
+    struct MapVisitor<V>(PhantomData<V>);
+    impl<'de, V: serde::Deserialize<'de>> serde::de::Visitor<'de> for MapVisitor<V> {
+        type Value = HashMap<u32, V>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a map keyed by vertex index")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut a: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = HashMap::new();
+            while let Some((k, v)) = a.next_entry::<U32Key, V>()? {
+                out.insert(k.0, v);
+            }
+            Ok(out)
+        }
+    }
+
+    d.deserialize_map(MapVisitor(PhantomData))
 }
 
 impl VertexOverrides {
@@ -116,4 +189,56 @@ pub struct CapturedMesh {
     pub uvs1: Option<Vec<[f32; 2]>>,
     pub colors: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
+}
+
+impl CapturedMesh {
+    /// Validate geometry before a `SetMeshData` stores it. Rejects the silent
+    /// mesh-wipe footgun (`{positions:[], indices:[]}` used to overwrite a real
+    /// mesh and return `ok`) and structurally-broken input. With `allow_empty`,
+    /// empty geometry is permitted (a deliberate clear / the undo-restore path)
+    /// but the structural invariants below still hold for any non-empty buffer.
+    ///
+    /// Always enforced: `indices.len()` a multiple of 3; every index in range for
+    /// `positions`; any present optional channel (`normals`/`uvs`/`uvs1`/`colors`)
+    /// vertex-aligned with `positions`.
+    pub fn validate(&self, allow_empty: bool) -> Result<(), String> {
+        if !allow_empty && (self.positions.is_empty() || self.indices.is_empty()) {
+            return Err(format!(
+                "set_mesh_data: refusing to store empty/degenerate geometry \
+                 ({} positions, {} indices) — pass allow_empty:true to clear a mesh deliberately",
+                self.positions.len(),
+                self.indices.len()
+            ));
+        }
+        if self.indices.len() % 3 != 0 {
+            return Err(format!(
+                "set_mesh_data: indices length {} is not a multiple of 3 (not a triangle list)",
+                self.indices.len()
+            ));
+        }
+        let vcount = self.positions.len() as u32;
+        if let Some(&max) = self.indices.iter().max() {
+            if max >= vcount {
+                return Err(format!(
+                    "set_mesh_data: index {max} out of range for {vcount} vertices"
+                ));
+            }
+        }
+        let check = |name: &str, len: Option<usize>| -> Result<(), String> {
+            if let Some(n) = len {
+                if n != self.positions.len() {
+                    return Err(format!(
+                        "set_mesh_data: {name} length {n} != positions length {}",
+                        self.positions.len()
+                    ));
+                }
+            }
+            Ok(())
+        };
+        check("normals", self.normals.as_ref().map(|v| v.len()))?;
+        check("uvs", self.uvs.as_ref().map(|v| v.len()))?;
+        check("uvs1", self.uvs1.as_ref().map(|v| v.len()))?;
+        check("colors", self.colors.as_ref().map(|v| v.len()))?;
+        Ok(())
+    }
 }

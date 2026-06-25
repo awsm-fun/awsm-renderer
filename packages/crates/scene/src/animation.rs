@@ -321,6 +321,65 @@ pub struct MixerDoc {
     pub layers: Vec<LayerDoc>,
 }
 
+/// Generate the keyframes for a **spin** track: `turns` full revolutions about
+/// (normalized) `axis` over `duration` seconds, sampled at `keys_per_turn`
+/// keyframes per revolution (min 1). Returns aligned `(times, keys)` of
+/// quaternion keyframes (`Interp::Linear`). Backs the `AddSpinTrack` convenience
+/// command — collapses the hand-authored "keyframe N quarter-turn quats" workflow
+/// into one call.
+///
+/// Consecutive quaternions are kept hemisphere-continuous (negated when their dot
+/// with the previous key is negative) so linear interpolation takes the intended
+/// short arc between samples instead of flipping the long way at the
+/// double-cover boundary. The endpoints are both included, so a 1-turn spin
+/// returns to an identity-equivalent rotation.
+pub fn spin_keyframes(
+    axis: [f32; 3],
+    turns: f32,
+    duration: f64,
+    keys_per_turn: u32,
+) -> (Vec<f64>, Vec<Keyframe>) {
+    use std::f32::consts::TAU;
+    let kpt = keys_per_turn.max(1);
+    // ceil(|turns| * keys_per_turn) segments → +1 for the closing endpoint; never
+    // fewer than 2 keys (a degenerate 0-turn still yields start+end at identity).
+    let n = ((turns.abs() * kpt as f32).ceil() as usize).max(1) + 1;
+    let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    let ax = if len > 1.0e-6 {
+        [axis[0] / len, axis[1] / len, axis[2] / len]
+    } else {
+        [0.0, 1.0, 0.0] // degenerate axis → spin about +Y
+    };
+    let zero = TrackValue::Quat([0.0, 0.0, 0.0, 0.0]);
+    let mut times = Vec::with_capacity(n);
+    let mut keys = Vec::with_capacity(n);
+    let mut prev: Option<[f32; 4]> = None;
+    for k in 0..n {
+        let frac = k as f32 / (n - 1) as f32;
+        let t = duration * frac as f64;
+        let half = TAU * turns * frac * 0.5;
+        let s = half.sin();
+        let mut q = [ax[0] * s, ax[1] * s, ax[2] * s, half.cos()];
+        if let Some(p) = prev {
+            let dot = p[0] * q[0] + p[1] * q[1] + p[2] * q[2] + p[3] * q[3];
+            if dot < 0.0 {
+                for c in q.iter_mut() {
+                    *c = -*c;
+                }
+            }
+        }
+        prev = Some(q);
+        times.push(t);
+        keys.push(Keyframe {
+            value: TrackValue::Quat(q),
+            interp: Interp::Linear,
+            in_tangent: zero,
+            out_tangent: zero,
+        });
+    }
+    (times, keys)
+}
+
 #[cfg(test)]
 mod track_value_tests {
     use super::*;
@@ -366,5 +425,62 @@ mod track_value_tests {
         let j = serde_json::to_string(&k).expect("json ser");
         let back: Keyframe = serde_json::from_str(&j).expect("json de");
         assert_eq!(k, back);
+    }
+
+    fn is_identity_rotation(q: [f32; 4]) -> bool {
+        // identity OR its double-cover negative: xyz≈0, |w|≈1.
+        q[0].abs() < 1.0e-4
+            && q[1].abs() < 1.0e-4
+            && q[2].abs() < 1.0e-4
+            && (q[3].abs() - 1.0).abs() < 1.0e-4
+    }
+
+    #[test]
+    fn spin_keyframes_one_full_turn() {
+        let (times, keys) = spin_keyframes([0.0, 1.0, 0.0], 1.0, 2.0, 4);
+        // 4 segments per turn + closing endpoint = 5 keys.
+        assert_eq!(times.len(), 5);
+        assert_eq!(keys.len(), 5);
+        // times span [0, duration], monotonic.
+        assert!((times[0]).abs() < 1.0e-9);
+        assert!((times[4] - 2.0).abs() < 1.0e-6);
+        assert!(times.windows(2).all(|w| w[1] > w[0]));
+        // first key = identity; last key = full revolution ⇒ identity rotation.
+        let q0 = match keys[0].value {
+            TrackValue::Quat(q) => q,
+            _ => panic!("expected quat"),
+        };
+        assert!(is_identity_rotation(q0));
+        let q4 = match keys[4].value {
+            TrackValue::Quat(q) => q,
+            _ => panic!("expected quat"),
+        };
+        assert!(
+            is_identity_rotation(q4),
+            "1 turn should return to identity: {q4:?}"
+        );
+        // 180° key ≈ rotation by π about Y ⇒ |y|≈1, w≈0.
+        let q2 = match keys[2].value {
+            TrackValue::Quat(q) => q,
+            _ => panic!("expected quat"),
+        };
+        assert!((q2[1].abs() - 1.0).abs() < 1.0e-4, "180deg key: {q2:?}");
+        // all keys + sampler are Linear.
+        assert!(keys.iter().all(|k| k.interp == Interp::Linear));
+    }
+
+    #[test]
+    fn spin_keyframes_degenerate_axis_and_quarter_turn() {
+        // zero axis falls back to +Y; quarter turn → 2 keys (start + 90°).
+        let (times, keys) = spin_keyframes([0.0, 0.0, 0.0], 0.25, 1.0, 4);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(times.len(), 2);
+        let q1 = match keys[1].value {
+            TrackValue::Quat(q) => q,
+            _ => panic!(),
+        };
+        // 90° about Y: y = sin(45°) ≈ 0.7071, w = cos(45°) ≈ 0.7071.
+        assert!((q1[1] - 0.70710677).abs() < 1.0e-4, "{q1:?}");
+        assert!((q1[3] - 0.70710677).abs() < 1.0e-4, "{q1:?}");
     }
 }

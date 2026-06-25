@@ -198,6 +198,23 @@ pub struct MeshIdParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SeparateMeshParams {
+    /// UUID of the source mesh node to detach a region from.
+    pub node: String,
+    /// Vertex indices of the region (a face moves when all 3 verts are selected).
+    /// Omit when using `selection`.
+    #[serde(default)]
+    pub indices: Vec<u32>,
+    /// §10: a stored selection HANDLE supplying the region indices.
+    #[serde(default)]
+    pub selection: Option<u32>,
+    /// When true, also REMOVE the extracted faces from the source (source ←
+    /// remainder). Default false (source untouched; the new node is a copy).
+    #[serde(default)]
+    pub keep_remainder: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetVertexPositionsParams {
     pub mesh: String,
     /// Vertex indices to move (omit when using `selection`).
@@ -301,6 +318,21 @@ pub struct SetVertexNormalsParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetVertexUvsParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+    /// Vertex indices to set UVs on (omit when using `selection`).
+    #[serde(default)]
+    pub indices: Vec<u32>,
+    /// UV coordinates [u, v], aligned with `indices` (or with the `selection`
+    /// handle's stored order). `uvs[k]` is written to vertex `indices[k]`.
+    pub uvs: Vec<[f32; 2]>,
+    /// §10: a selection HANDLE id supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DisplaceFromTextureParams {
     /// UUID of the geometry node to displace.
     pub node: String,
@@ -329,12 +361,62 @@ pub struct GetVertexDataParams {
     /// Page the result (max returned).
     #[serde(default)]
     pub limit: Option<u32>,
+    /// When true, add a per-vertex `source` block tagging each channel
+    /// (position/normal/color/uv) as `"override"` or `"base"` — verify which
+    /// channels an authoring op actually wrote.
+    #[serde(default)]
+    pub include_source: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetMeshLayersParams {
     /// UUID of the node whose mesh layer summary to read.
     pub node: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetMeshDataParams {
+    /// UUID of the node whose resolved-mesh topology to read.
+    pub node: String,
+    /// Page the triangle list (start triangle) — a full index buffer overflows
+    /// the token cap.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Page the triangle list (max triangles returned).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UvLayoutParams {
+    /// UUID of the node whose UV layout to read.
+    pub node: String,
+    /// UV set (TEXCOORD_n), default 0.
+    #[serde(default)]
+    pub uv_set: Option<u32>,
+    /// Page the UV-edge wireframe (start edge).
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Page the UV-edge wireframe (max edges returned).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StripParameterizeParams {
+    /// UUID of the node whose resolved mesh to parameterize.
+    pub node: String,
+    /// §10: a selection HANDLE id naming the band (preferred for big bands).
+    #[serde(default)]
+    pub selection: Option<u32>,
+    /// Explicit vertex indices of the band (used when no `selection`). Both empty
+    /// ⇒ the whole mesh.
+    #[serde(default)]
+    pub indices: Vec<u32>,
+    /// The axle [x, y, z] (normalized internally). Omit to auto-fit the band's
+    /// least-variance PCA direction.
+    #[serde(default)]
+    pub axis: Option<[f32; 3]>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1029,6 +1111,23 @@ pub struct TrackValueArg {
 pub struct AddTrackParams {
     pub clip: String,
     pub target: TrackTargetArg,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddSpinTrackParams {
+    /// UUID of the clip to add the spin track to.
+    pub clip: String,
+    /// UUID of the node to spin (a rotation Transform track is created on it).
+    pub node: String,
+    /// Local rotation axis [x, y, z] (normalized internally; degenerate → +Y).
+    pub axis: [f32; 3],
+    /// Number of full revolutions over `duration` (fractional / negative allowed).
+    pub turns: f32,
+    /// Clip-time span of the spin, in seconds.
+    pub duration: f64,
+    /// Keyframes generated per revolution (default 4 = 90° steps).
+    #[serde(default)]
+    pub keys_per_turn: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2231,8 +2330,25 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Detach the faces fully covered by a vertex selection into a NEW sibling Mesh node — region isolation, e.g. to give one region (a belt, a panel, a bolt) its own material. A triangle moves when ALL 3 of its vertices are selected; pick the region with select_vertices_where (the {\"kind\":\"connected_to_seed\"} predicate grabs a whole connected piece). `node` is the source node UUID; pass `selection` (a stored handle) or `indices`. By default the source is left intact (the new node is an extracted COPY); pass `keep_remainder:true` to also REMOVE those faces from the source (no overlap / z-fighting). The new node inherits the source's transform + material — assign_material a different material to it next. Undoable. Returns ok."
+    )]
+    async fn separate_mesh(
+        &self,
+        Parameters(p): Parameters<SeparateMeshParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SeparateMesh {
+            node: parse_node(&p.node)?,
+            indices: p.indices,
+            selection: p.selection,
+            new_node: None,
+            keep_remainder: p.keep_remainder,
+        })
+        .await
+    }
+
+    #[tool(
         annotations(read_only_hint = true),
-        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON. For \"the top of the mesh\" pick the right notion: {\"kind\":\"top_count\",\"axis\":1,\"count\":40} = the 40 HIGHEST verts by count (use get_mesh_stats for the total to turn a fraction into a count); {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} = every vert in the top 20% of the axis EXTENT (a height band — the count it returns depends on tessellation, not 0.2). Others: {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection). §10: pass `store:true` to keep the indices SERVER-SIDE and get back a reusable `{id,count}` HANDLE — then paint_vertex_colors / soft_transform_vertices / set_vertex_positions / set_vertex_normals / get_vertex_data accept `selection:<id>` so ONE selection drives many ops and a full-res band never crosses the token cap. `count_only:true` returns just the count; `offset`/`limit` page the raw indices. (The fused paint_where/transform_where are the one-shot alternative.)"
+        description = "Select a node mesh's vertices by predicate (no cursor), returning their indices to feed into set_vertex_positions / soft_transform_vertices. `predicate` is a VertexPredicate JSON. For \"the top of the mesh\" pick the right notion: {\"kind\":\"top_count\",\"axis\":1,\"count\":40} = the 40 HIGHEST verts by count (use get_mesh_stats for the total to turn a fraction into a count); {\"kind\":\"top_percent\",\"axis\":1,\"percent\":0.2} = every vert in the top 20% of the axis EXTENT (a height band — the count it returns depends on tessellation, not 0.2). Others: {\"kind\":\"normal_dir\",\"dir\":[0,1,0],\"threshold\":0.7} / axis_greater / axis_less / within_radius / within_aabb (box: {\"kind\":\"within_aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} — local space; pair with get_node_bounds for region selection). TOPOLOGY (island) selection: {\"kind\":\"connected_to_seed\",\"seed\":[i,...]} selects the whole connected PIECE(s) containing the seed vertices — position-welded so a UV/normal seam doesn't fragment a solid piece (grab \"this whole bolt/belt/panel\" from one seed; companion to separate_mesh). §10: pass `store:true` to keep the indices SERVER-SIDE and get back a reusable `{id,count}` HANDLE — then paint_vertex_colors / soft_transform_vertices / set_vertex_positions / set_vertex_normals / get_vertex_data accept `selection:<id>` so ONE selection drives many ops and a full-res band never crosses the token cap. `count_only:true` returns just the count; `offset`/`limit` page the raw indices. (The fused paint_where/transform_where are the one-shot alternative.)"
     )]
     async fn select_vertices_where(
         &self,
@@ -2313,6 +2429,22 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Author per-vertex UVs (TEXCOORD_0) on an editable mesh — the write verb that completes the per-vertex authoring family (positions/colors/normals already had one). `mesh` is the mesh asset UUID; `indices` are vertex indices (into the resolved/baked topology — get them from select_vertices_where or get_mesh_data); `uvs[k]` is the [u,v] written to `indices[k]` (per-vertex parallel arrays, so a whole continuous strip parameterization lands in one call). Use this to lay a continuous strip UV (travel along one axis) for conveyor/tread/road scrolling — see the 'Geometry-locked scroll' recipe in `awsm://docs/material-recipes`, and pair with strip_parameterize to compute (along, across) coords. TERMINAL/COLLAPSE: the first per-vertex authoring op freezes the procedural stack to a Captured base (topology locks). The bake creates the UV channel if the mesh had none. Single UV set (0). Re-bakes; verify with get_vertex_data."
+    )]
+    async fn set_vertex_uvs(
+        &self,
+        Parameters(p): Parameters<SetVertexUvsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetVertexUvs {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            uvs: p.uvs,
+            selection: p.selection,
+        })
+        .await
+    }
+
+    #[tool(
         description = "Displace a node's mesh by an agent-authored HEIGHTMAP image (§16) — the generic 'supply your own heightfield' hook. `data` is a data:image/png;base64 heightmap; each vertex moves along its normal by luminance(heightmap @ its UV) * `strength` (black = flat, white = raised; negative strength carves in). Author ANY terrain externally (eroded ridges, a stamped logo, scanned relief, multi-octave fbm baked to a PNG) and feed it — composes with create_texture-style raw upload. Needs a UV-mapped, sufficiently TESSELLATED mesh (subdivide a plane via set_mesh_modifiers first — displacement only moves existing verts). Collapses to a frozen-topology override layer (like the sculpt verbs) and re-bakes; undoable. Verify with get_mesh_stats (bbox grows) or a screenshot."
     )]
     async fn displace_from_texture(
@@ -2336,7 +2468,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Read the FINAL (post-eval + override) per-vertex data for specific indices of a node's resolved mesh: returns `{ vertex_count, vertices: [{ index, position, normal, color, uv }] }` (color/uv null when the mesh has no such channel). The read counterpart to paint_vertex_colors / set_vertex_normals / set_vertex_positions — confirm what your last authoring op actually produced. `node` is the node UUID; `indices` the verts to read."
+        description = "Read the FINAL (post-eval + override) per-vertex data for specific indices of a node's resolved mesh: returns `{ vertex_count, vertices: [{ index, position, normal, color, uv }] }` (color/uv null when the mesh has no such channel). The read counterpart to paint_vertex_colors / set_vertex_normals / set_vertex_positions / set_vertex_uvs — confirm what your last authoring op actually produced. `node` is the node UUID; `indices` the verts to read. Pass `include_source:true` to also get a per-vertex `source:{position,normal,color,uv}` block tagging each channel `\"override\"` (authored) or `\"base\"` (rides the evaluated geometry)."
     )]
     async fn get_vertex_data(
         &self,
@@ -2348,6 +2480,7 @@ impl EditorMcp {
             selection: p.selection,
             offset: p.offset,
             limit: p.limit,
+            include_source: p.include_source,
         })
         .await
     }
@@ -2362,6 +2495,56 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::GetMeshLayers {
             node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Read a node's resolved-mesh TOPOLOGY: `{ vertex_count, triangle_count, triangles:[[a,b,c],…], offset, returned, bbox:{min,max} }` — the triangle index buffer (paged by triangle via `offset`/`limit`, since a full index buffer overflows the token cap) plus counts and the local-space bounding box. The read counterpart to set_mesh_data and the connectivity source for loop-ordering / edge-adjacency / arc-length (e.g. ordering a conveyor belt loop before set_vertex_uvs). Per-vertex attributes (position/normal/uv/color) come from get_vertex_data — this returns only indices + metadata to stay compact. `node` is the node UUID."
+    )]
+    async fn get_mesh_data(
+        &self,
+        Parameters(p): Parameters<GetMeshDataParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetMeshData {
+            node: parse_node(&p.node)?,
+            offset: p.offset,
+            limit: p.limit,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "HEURISTIC strip/loop parameterization of a vertex band → normalized (along, across) UVs to feed straight into set_vertex_uvs for a conveyor / tread / road. Returns `{ axis, count, vertices:[{index, along, across}], heuristic:true, note }`: `along` ∈ [0,1) = angle about the axle (monotonic travel around the loop), `across` ∈ [0,1] = lateral position along the axle. `axis` is the axle [x,y,z] (normalized); omit to auto-fit it as the band's least-variance PCA direction — but auto-fit is BEST-EFFORT and unreliable on near-isotropic bands (e.g. a tube whose height ≈ diameter, where the axle and a radial direction have comparable variance), so PREFER passing an explicit `axis` for treads/belts (you usually know the axle, e.g. split L/R belts by x and spin about the wheel axle). Target band: a `selection` HANDLE (from select_vertices_where {store:true}), an explicit `indices` list, or — both omitted — the whole mesh. It's a heuristic (assumes a surface of revolution about the axle, not a true geodesic unwrap); the winding direction / polarity may come out flipped — pass an explicit `axis`, or use `1-along`/`1-across`, to correct. Pairs with set_vertex_uvs (write the coords) + a texture_transform V-scroll."
+    )]
+    async fn strip_parameterize(
+        &self,
+        Parameters(p): Parameters<StripParameterizeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::StripParameterize {
+            node: parse_node(&p.node)?,
+            selection: p.selection,
+            indices: p.indices,
+            axis: p.axis,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "UV-layout overlay of a node's resolved mesh (UV set `uv_set`, default 0): `{ has_uv, uv_set, island_count, bounds:{min,max}, islands:[{count,min,max}], edge_count, edges:[[[u,v],[u,v]],…] }`. Diagnoses 'atlas vs strip' in ONE read — a continuous strip UV is ONE island spanning ~[0,1] (good for scrolling/tiling); a baked atlas is MANY small islands (scrolling slides samples onto unrelated content). `edges` is the UV wireframe for drawing the overlay, paged by `offset`/`limit` (can be large); the island summaries are always full. `has_uv:false` means the mesh carries no such UV set."
+    )]
+    async fn get_uv_layout(
+        &self,
+        Parameters(p): Parameters<UvLayoutParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::UvLayout {
+            node: parse_node(&p.node)?,
+            uv_set: p.uv_set,
+            offset: p.offset,
+            limit: p.limit,
         })
         .await
     }
@@ -2645,7 +2828,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the FragmentInputs (interpolants) a custom material's WGSL reads (`keys`). Legal: normals, tangents, uv, lights, view_dir, vertex_color. Unknown keys are dropped."
+        description = "Set the FragmentInputs (interpolants) a custom material's WGSL reads (`keys`). Legal: normals, tangents, uv, lights, view_dir, vertex_color. Unknown keys are dropped. NOTE: the per-vertex ACCESSOR functions are gated on SHADER-INCLUDES, not these inputs — `material_uv(input, n)` needs `set_material_includes [\"textures\"]` and `material_vertex_color(input, n)` needs `[\"vertex_color\"]`; declaring fragment_inputs:[\"uv\"] does NOT bring `material_uv` into scope (it only sets the vertex-attribute layout)."
     )]
     async fn set_material_fragment_inputs(
         &self,
@@ -2659,7 +2842,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the default value of a custom material's declared uniform slot (by name). `value` is comma-separated (e.g. \"0.6, 0.7, 1.0\"). The writable counterpart of reading a uniform back."
+        description = "Set the default value of a custom material's declared uniform slot (by name). `value` is comma-separated (e.g. \"0.6, 0.7, 1.0\"). The writable counterpart of reading a uniform back. A uniform (e.g. a scroll `speed` / time multiplier) is the usual handle a custom-WGSL scroll animates — see the 'Geometry-locked scroll (conveyor / tread / road)' recipe in awsm://docs/material-recipes for the geometry-locked vs normal-derived distinction."
     )]
     async fn set_material_uniform(
         &self,
@@ -2891,7 +3074,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the UV transform / flow / wrap of a mesh node's BUILT-IN (inline PBR) texture slot (base_color | metallic_roughness | normal | occlusion | emissive). Patch-style: only the fields you pass change. offset/scale/rotation set the KHR_texture_transform (scale>1 tiles); flow=[u,v] auto-scrolls the texture (UV-units/sec — conveyors/water/lava — set [0,0] to stop); wrap_u/wrap_v = repeat|clamp_to_edge|mirrored_repeat; uv_set picks the TEXCOORD set. The slot must already have a texture bound (set_node_texture first) — an empty slot is rejected, not silently ignored. Renders immediately. For a directional/keyframed scroll use a texture_transform animation track instead."
+        description = "Set the UV transform / flow / wrap of a mesh node's BUILT-IN (inline PBR) texture slot (base_color | metallic_roughness | normal | occlusion | emissive). Patch-style: only the fields you pass change. offset/scale/rotation set the KHR_texture_transform (scale>1 tiles); flow=[u,v] auto-scrolls the texture (UV-units/sec — conveyors/water/lava — set [0,0] to stop); wrap_u/wrap_v = repeat|clamp_to_edge|mirrored_repeat; uv_set picks the TEXCOORD set. The slot must already have a texture bound (set_node_texture first) — an empty slot is rejected, not silently ignored. Renders immediately. For a directional/keyframed scroll use a texture_transform animation track instead. NOTE: scrolling only reads as travel on a GEOMETRY-LOCKED strip UV (one axis = travel) + a tileable texture — on a baked atlas UV it slides samples onto unrelated content. See the 'Geometry-locked scroll (conveyor / tread / road)' recipe in awsm://docs/material-recipes (author the strip UV with set_vertex_uvs + strip_parameterize first)."
     )]
     async fn set_node_texture_transform(
         &self,
@@ -3489,6 +3672,24 @@ impl EditorMcp {
         self.dispatch(EditorCommand::AddTrack {
             clip: parse_asset(&p.clip)?,
             target: build_track_target(&p.target)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Add a one-line SPIN: a rotation Transform track on `node` that turns `turns` full revolutions about local `axis` [x,y,z] over `duration` seconds, expanded to evenly-spaced quaternion keyframes (`keys_per_turn` per revolution, default 4; linear). Collapses the verbose hand-author-N-quarter-turn-quats workflow for wheels / rotors / fans. `turns` may be fractional (0.25 = a quarter turn) or negative (reverse). Plays/reverses further via set_clip_speed / set_clip_direction. Appends one track (its index = prior track count); undo removes it."
+    )]
+    async fn add_spin_track(
+        &self,
+        Parameters(p): Parameters<AddSpinTrackParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::AddSpinTrack {
+            clip: parse_asset(&p.clip)?,
+            node: parse_node(&p.node)?,
+            axis: p.axis,
+            turns: p.turns,
+            duration: p.duration,
+            keys_per_turn: p.keys_per_turn,
         })
         .await
     }
@@ -4132,6 +4333,13 @@ fn json_arg<T: serde::de::DeserializeOwned>(
     v: serde_json::Value,
     what: &str,
 ) -> Result<T, McpError> {
+    // A bare JSON string arg is itself JSON (some clients double-encode); parse it
+    // to a Value first, then deserialize. Integer-keyed maps inside tagged-enum
+    // commands (e.g. `set_vertex_overrides {overrides:{uvs:{"0":[u,v]}}}`) are
+    // handled at the field level in `VertexOverrides` (a string-or-int key
+    // deserializer that survives serde's internally-tagged `Content` buffering) —
+    // `from_str` alone does NOT fix them, because the `#[serde(tag="cmd")]` enum
+    // buffers the variant into `Content`, which can't coerce a string key to u32.
     let v = match v {
         serde_json::Value::String(s) => serde_json::from_str(&s)
             .map_err(|e| McpError::invalid_params(format!("bad {what}: {e}"), None))?,
@@ -4415,4 +4623,45 @@ fn fmt_diag_errors(errors: &[CompileError]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `json_arg` must deserialize an `EditorCommand` carrying an
+    /// integer-keyed map (`VertexOverrides.uvs: HashMap<u32,…>`) whose JSON keys
+    /// are strings. The old `from_value` path rejected this with
+    /// "invalid type: string \"0\", expected u32", making every integer-keyed-map
+    /// command un-drivable over dispatch_command. `from_str` parses it.
+    #[test]
+    fn json_arg_parses_integer_keyed_map_command() {
+        let v = serde_json::json!({
+            "cmd": "set_vertex_overrides",
+            "mesh": "00000000-0000-0000-0000-000000000001",
+            "overrides": { "uvs": { "0": [0.1, 0.2], "7": [0.3, 0.4] } }
+        });
+        let cmd: EditorCommand = json_arg(v, "command").expect("integer-keyed map should parse");
+        match cmd {
+            EditorCommand::SetVertexOverrides { overrides, .. } => {
+                assert_eq!(overrides.uvs.get(&0), Some(&[0.1, 0.2]));
+                assert_eq!(overrides.uvs.get(&7), Some(&[0.3, 0.4]));
+            }
+            other => panic!("expected SetVertexOverrides, got {other:?}"),
+        }
+    }
+
+    /// The String-wrapped form (a JSON-encoded string arg) must still work.
+    #[test]
+    fn json_arg_parses_string_wrapped_command() {
+        let inner = r#"{"cmd":"set_vertex_overrides","mesh":"00000000-0000-0000-0000-000000000001","overrides":{"uvs":{"3":[0.5,0.6]}}}"#;
+        let v = serde_json::Value::String(inner.to_string());
+        let cmd: EditorCommand = json_arg(v, "command").expect("string-wrapped should parse");
+        match cmd {
+            EditorCommand::SetVertexOverrides { overrides, .. } => {
+                assert_eq!(overrides.uvs.get(&3), Some(&[0.5, 0.6]));
+            }
+            other => panic!("expected SetVertexOverrides, got {other:?}"),
+        }
+    }
 }

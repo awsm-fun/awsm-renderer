@@ -252,6 +252,165 @@ fn mesh_asset_with_source_roundtrip() {
 }
 
 #[test]
+fn vertex_overrides_uvs_roundtrip() {
+    // The UV override channel is what `SetVertexUvs` writes (the closing gap in
+    // the per-vertex authoring family). A "drop the uvs map" regression would
+    // silently lose authored strip parameterizations — exercise JSON + bitcode.
+    use awsm_renderer_editor_protocol::VertexOverrides;
+    let mut ov = VertexOverrides::default();
+    ov.uvs.insert(0, [0.0, 0.0]);
+    ov.uvs.insert(1, [1.0, 0.0]);
+    ov.uvs.insert(7, [0.5, 0.25]);
+    ov.colors.insert(3, [1.0, 0.0, 0.0, 1.0]);
+
+    let json = serde_json::to_string(&ov).expect("json serialize");
+    let back: VertexOverrides = serde_json::from_str(&json).expect("json deserialize");
+    assert_eq!(ov, back, "JSON drift");
+    assert_eq!(back.uvs.get(&7), Some(&[0.5, 0.25]));
+
+    let bytes = bitcode::serialize(&ov).expect("bitcode serialize");
+    let back: VertexOverrides = bitcode::deserialize(&bytes).expect("bitcode deserialize");
+    assert_eq!(ov, back, "bitcode drift");
+    assert!(!back.is_empty());
+}
+
+#[test]
+fn set_vertex_uvs_command_json_roundtrip() {
+    // The new write verb must survive the dispatch wire (serde-tagged JSON).
+    use awsm_renderer_editor_protocol::EditorCommand;
+    let cmd = EditorCommand::SetVertexUvs {
+        mesh: AssetId::new(),
+        indices: vec![0, 1, 2],
+        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        selection: None,
+    };
+    let json = serde_json::to_string(&cmd).expect("json serialize");
+    // Tagged with `cmd` like every other EditorCommand.
+    assert!(
+        json.contains("\"cmd\":\"set_vertex_uvs\""),
+        "tag missing: {json}"
+    );
+    let back: EditorCommand = serde_json::from_str(&json).expect("json deserialize");
+    match back {
+        EditorCommand::SetVertexUvs { indices, uvs, .. } => {
+            assert_eq!(indices, vec![0, 1, 2]);
+            assert_eq!(uvs, vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]);
+        }
+        other => panic!("expected SetVertexUvs, got {other:?}"),
+    }
+}
+
+#[test]
+fn captured_mesh_validate_rejects_empty_and_degenerate() {
+    // The set_mesh_data guard (Item 3): empty/degenerate geometry must be
+    // rejected unless allow_empty, and structural invariants always hold.
+    let good = sample_captured_mesh();
+    assert!(good.validate(false).is_ok(), "valid mesh should pass");
+
+    // Empty wipe — rejected by default, allowed with allow_empty.
+    let empty = CapturedMesh {
+        positions: vec![],
+        normals: None,
+        uvs: None,
+        uvs1: None,
+        colors: None,
+        indices: vec![],
+    };
+    assert!(empty.validate(false).is_err(), "empty should be rejected");
+    assert!(
+        empty.validate(true).is_ok(),
+        "empty allowed with allow_empty"
+    );
+
+    // Indices not a multiple of 3.
+    let mut bad = sample_captured_mesh();
+    bad.indices = vec![0, 1];
+    assert!(
+        bad.validate(false).is_err(),
+        "non-triangle indices rejected"
+    );
+    assert!(
+        bad.validate(true).is_err(),
+        "allow_empty does NOT waive structural checks"
+    );
+
+    // Index out of range for positions (4 verts → max valid index 3).
+    let mut oor = sample_captured_mesh();
+    oor.indices = vec![0, 1, 99];
+    assert!(oor.validate(false).is_err(), "out-of-range index rejected");
+
+    // Misaligned optional channel (normals shorter than positions).
+    let mut mis = sample_captured_mesh();
+    mis.normals = Some(vec![[0.0, 0.0, 1.0]]);
+    assert!(mis.validate(false).is_err(), "misaligned normals rejected");
+}
+
+#[test]
+fn set_mesh_data_command_allow_empty_defaults_false() {
+    // allow_empty is #[serde(default)] — omitting it deserializes to false so the
+    // guard is on by default; older project JSON without the field round-trips.
+    use awsm_renderer_editor_protocol::EditorCommand;
+    let json = format!(
+        "{{\"cmd\":\"set_mesh_data\",\"mesh\":\"{}\",\"data\":{{\"positions\":[[0,0,0],[1,0,0],[0,1,0]],\"normals\":null,\"uvs\":null,\"colors\":null,\"indices\":[0,1,2]}}}}",
+        AssetId::new()
+    );
+    let cmd: EditorCommand = serde_json::from_str(&json).expect("deserialize");
+    match cmd {
+        EditorCommand::SetMeshData { allow_empty, .. } => assert!(!allow_empty),
+        other => panic!("expected SetMeshData, got {other:?}"),
+    }
+}
+
+#[test]
+fn separate_mesh_command_json_roundtrip() {
+    use awsm_renderer_editor_protocol::{EditorCommand, NodeId};
+    let cmd = EditorCommand::SeparateMesh {
+        node: NodeId::new(),
+        indices: vec![0, 1, 2, 3],
+        selection: None,
+        new_node: Some(NodeId::new()),
+        keep_remainder: true,
+    };
+    let json = serde_json::to_string(&cmd).expect("serialize");
+    assert!(
+        json.contains("\"cmd\":\"separate_mesh\""),
+        "tag missing: {json}"
+    );
+    let back: EditorCommand = serde_json::from_str(&json).expect("deserialize");
+    match back {
+        EditorCommand::SeparateMesh {
+            indices,
+            keep_remainder,
+            new_node,
+            ..
+        } => {
+            assert_eq!(indices, vec![0, 1, 2, 3]);
+            assert!(keep_remainder);
+            assert!(new_node.is_some());
+        }
+        other => panic!("expected SeparateMesh, got {other:?}"),
+    }
+
+    // Minimal form: indices/selection/new_node/keep_remainder all default.
+    let json = format!(
+        "{{\"cmd\":\"separate_mesh\",\"node\":\"{}\"}}",
+        NodeId::new()
+    );
+    let back: EditorCommand = serde_json::from_str(&json).expect("deserialize minimal");
+    match back {
+        EditorCommand::SeparateMesh {
+            keep_remainder,
+            new_node,
+            ..
+        } => {
+            assert!(!keep_remainder);
+            assert!(new_node.is_none());
+        }
+        other => panic!("expected SeparateMesh, got {other:?}"),
+    }
+}
+
+#[test]
 fn mesh_asset_filename_is_stable() {
     // The filename helper is the side-table addressing contract — it
     // must produce the same string for the same AssetId on every call,

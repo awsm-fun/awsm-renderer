@@ -124,18 +124,33 @@ keeping the per-pixel cost low.
 ### Per-vertex colours + UVs (and other named attributes)
 
 A custom material can read any interpolated per-vertex `COLOR_n` **or
-`TEXCOORD_n`** the same way built-in PBR does — declare the matching
-`fragment_inputs` (`["vertex_color"]` / `["uv"]`) and call the in-scope helper:
+`TEXCOORD_n`** the same way built-in PBR does. Each accessor is emitted only when
+you declare its **shader-include** (`set_material_includes`), NOT a fragment-input:
+
+| Accessor | Required include (`set_material_includes`) |
+|---|---|
+| `material_vertex_color(input, n)` | `"vertex_color"` |
+| `material_uv(input, n)` | `"textures"` |
+
+> ⚠️ These are **shader-includes**, not `fragment_inputs`. Declaring
+> `fragment_inputs:["uv"]` does **not** bring `material_uv` into scope (it only
+> affects the vertex-attribute layout) — you'll get
+> `no definition in scope for identifier: material_uv` at compile time. Use the
+> `textures` include. (`material_uv` rides the `textures` include because it shares
+> the per-vertex UV-fetch helper with texture sampling; reading UVs costs you no
+> actual texture binding.)
 
 ```wgsl
-// shader.wgsl — an unlit vertex-colour material (one tiny opaque bucket)
+// shader.wgsl — an unlit vertex-colour material (one tiny opaque bucket).
+// set_material_includes ["vertex_color"]
 let c = material_vertex_color(input, 0u);   // interpolated COLOR_0 at this pixel
 return OpaqueShadingOutput(c.rgb, 1.0);
 ```
 
 ```wgsl
 // …and the UV companion — read any TEXCOORD set directly (set 1 here), the same
-// multi-set data built-in PBR's per-texture `uv_index` samples:
+// multi-set data built-in PBR's per-texture `uv_index` samples.
+// set_material_includes ["textures"]
 let uv1 = material_uv(input, 1u);           // interpolated TEXCOORD_1 at this pixel
 ```
 

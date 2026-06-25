@@ -669,7 +669,18 @@ fn vdivider() -> Dom {
 }
 
 fn brand() -> Dom {
-    html!("div", {
+    html!("a", {
+        // Links home to awsm.fun — in a new tab so it never navigates away from
+        // unsaved editor work. Mirrors the awsm-audio brand so the tools read as
+        // one family.
+        .attr("href", "https://awsm.fun")
+        .attr("target", "_blank")
+        .attr("rel", "noopener noreferrer")
+        .attr("title", "awsm.fun")
+        .style("text-decoration", "none")
+        .style("color", "inherit")
+        .style("cursor", "pointer")
+        .style("user-select", "none")
         .style("display", "flex")
         .style("align-items", "center")
         .style("gap", "9px")

@@ -552,7 +552,20 @@ pub enum EditorCommand {
     /// collapsed modifier bake). The bridge re-materializes every referencing
     /// `NodeKind::Mesh` node via the mesh-revision observer. Inverse: restore the
     /// prior geometry (a `SetMeshData` carrying the previous `CapturedMesh`).
-    SetMeshData { mesh: AssetId, data: CapturedMesh },
+    ///
+    /// Validated before it stores: empty/degenerate geometry is REJECTED (an
+    /// errant `{positions:[], indices:[]}` used to silently wipe a mesh and
+    /// return `ok`). `indices` must be a multiple of 3 and in range for
+    /// `positions`, and any present optional channel must be vertex-aligned. Set
+    /// `allow_empty:true` to deliberately clear a mesh to empty geometry (the
+    /// internal undo-restore path passes it so a legitimately-empty prior can
+    /// round-trip).
+    SetMeshData {
+        mesh: AssetId,
+        data: CapturedMesh,
+        #[serde(default)]
+        allow_empty: bool,
+    },
     /// Replace an editable mesh's procedural **recipe** wholesale (modifier
     /// stack: base + ordered deformers) — the idempotent, coalescing idiom of
     /// `SetCustomMaterialLayout`. The handler re-evaluates the stack to triangles
@@ -607,6 +620,29 @@ pub enum EditorCommand {
         #[serde(default)]
         selection: Option<u32>,
     },
+    /// Detach the faces fully covered by a vertex selection into a NEW sibling
+    /// `Mesh` node — region isolation (e.g. give that region its own material).
+    /// A triangle moves when all 3 of its vertices are selected. The new node
+    /// inherits the source's transform + material; its geometry is a frozen
+    /// `Captured` mesh (a fresh asset, id derived from `new_node`). When
+    /// `keep_remainder` is true the extracted faces are ALSO removed from the
+    /// source (source ← remainder); otherwise the source is untouched (the new
+    /// node is an extracted copy). Inverse: delete the new node + its asset and
+    /// (if remainder was applied) restore the source geometry — a `Batch`.
+    SeparateMesh {
+        node: NodeId,
+        #[serde(default)]
+        indices: Vec<u32>,
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
+        /// Deterministic id for the new node (asset id derives from it). Minted
+        /// when omitted.
+        #[serde(default)]
+        new_node: Option<NodeId>,
+        #[serde(default)]
+        keep_remainder: bool,
+    },
     /// Bake an editable mesh's modifier stack into raw triangles and clear the
     /// recipe (the deliberate heavy snapshot). Inverse:
     /// `Batch[SetMeshModifiers(prior), SetMeshData(prior_bytes)]`.
@@ -643,6 +679,23 @@ pub enum EditorCommand {
         #[serde(default)]
         indices: Vec<u32>,
         normal: [f32; 3],
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
+    },
+    /// Set the per-vertex **UV** override (TEXCOORD_0) of `indices` to `uvs`.
+    /// `indices[k]` gets `uvs[k]` — a per-vertex parallel-array write (mirrors
+    /// `SetVertexPositions`), so a continuous strip parameterization can be
+    /// authored in one call. The closing gap in the per-vertex authoring family:
+    /// positions/colors/normals already had verbs, UVs did not. Same
+    /// collapse-first / re-bake / terminal semantics as the others (the bake
+    /// already consumes `overrides.uvs`, creating the channel if absent). Inverse:
+    /// restore the prior overrides. Single UV set (0) only.
+    SetVertexUvs {
+        mesh: AssetId,
+        #[serde(default)]
+        indices: Vec<u32>,
+        uvs: Vec<[f32; 2]>,
         /// §10: target indices from a stored selection HANDLE instead of `indices`.
         #[serde(default)]
         selection: Option<u32>,
@@ -854,6 +907,22 @@ pub enum EditorCommand {
     // ───────────────────────── Animation: tracks ─────────────────────────────
     /// Add a track to a clip, bound to `target`. Inverse: `DeleteTrack`.
     AddTrack { clip: AssetId, target: TrackTarget },
+    /// Convenience: add a **rotation** Transform track on `node` that spins
+    /// `turns` full revolutions about (normalized) local `axis` over `duration`
+    /// seconds, expanded to evenly-spaced quaternion keyframes (`keys_per_turn`
+    /// per revolution, default 4; `Linear`). Collapses the verbose
+    /// "hand-author N quarter-turn quats" workflow into one call (wheels, rotors,
+    /// fans). Plays/reverses via `set_clip_speed` / `set_clip_direction`. Inverse:
+    /// `DeleteTrack` (it adds exactly one track).
+    AddSpinTrack {
+        clip: AssetId,
+        node: NodeId,
+        axis: [f32; 3],
+        turns: f32,
+        duration: f64,
+        #[serde(default)]
+        keys_per_turn: Option<u32>,
+    },
     /// Delete a track (by index) from a clip. Inverse: re-insert the captured track.
     DeleteTrack { clip: AssetId, track: usize },
     /// Re-insert a captured track at its original index (the inverse of
@@ -1096,6 +1165,7 @@ impl EditorCommand {
                 | EditorCommand::SetClipDirection { .. }
                 // Tracks.
                 | EditorCommand::AddTrack { .. }
+                | EditorCommand::AddSpinTrack { .. }
                 | EditorCommand::DeleteTrack { .. }
                 | EditorCommand::RestoreTrack { .. }
                 | EditorCommand::SetTrackSampler { .. }
@@ -1144,8 +1214,10 @@ impl EditorCommand {
                 | EditorCommand::SetVertexPositions { .. }
                 | EditorCommand::SoftTransformVertices { .. }
                 | EditorCommand::CollapseMeshStack { .. }
+                | EditorCommand::SeparateMesh { .. }
                 | EditorCommand::PaintVertexColors { .. }
                 | EditorCommand::SetVertexNormals { .. }
+                | EditorCommand::SetVertexUvs { .. }
                 | EditorCommand::SetVertexOverrides { .. }
                 | EditorCommand::BakeAll {}
         )
@@ -1208,10 +1280,12 @@ impl EditorCommand {
             EditorCommand::SetVertexPositions { .. } => "Move vertices",
             EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
             EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",
+            EditorCommand::SeparateMesh { .. } => "Separate mesh",
             EditorCommand::PaintVertexColors { .. } => "Paint vertex colors",
             EditorCommand::PaintVerticesWhere { .. } => "Paint vertices (where)",
             EditorCommand::TransformVerticesWhere { .. } => "Transform vertices (where)",
             EditorCommand::SetVertexNormals { .. } => "Set vertex normals",
+            EditorCommand::SetVertexUvs { .. } => "Set vertex UVs",
             EditorCommand::DisplaceFromTexture { .. } => "Displace from texture",
             EditorCommand::SetVertexOverrides { .. } => "Set vertex overrides",
             EditorCommand::BakeAll {} => "Bake all meshes",
@@ -1252,6 +1326,7 @@ impl EditorCommand {
             EditorCommand::SetClipDirection { .. } => "Set direction",
             EditorCommand::SetClipColor { .. } => "Set clip color",
             EditorCommand::AddTrack { .. } => "Add track",
+            EditorCommand::AddSpinTrack { .. } => "Add spin track",
             EditorCommand::DeleteTrack { .. } | EditorCommand::RestoreTrack { .. } => {
                 "Delete track"
             }

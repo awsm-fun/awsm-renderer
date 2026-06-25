@@ -75,13 +75,17 @@ space, w is the bitangent sign (`±1`); reconstruct the bitangent via
 for the field order + alignment rules. The shape is identical across both
 alpha modes.
 
-**Per-vertex UVs + colours.** Any `TEXCOORD_n` / `COLOR_n` the mesh carries is
-forwarded as an interpolated field and read with the same accessors as the opaque
-path — declare the matching `fragment_inputs` (`["uv"]` / `["vertex_color"]`):
+**Per-vertex UVs + colours.** Any `TEXCOORD_n` / `COLOR_n` the mesh carries is read
+with the same accessors as the opaque path. Each is emitted only when you declare
+its **shader-include** (`set_material_includes`) — `material_uv` needs `"textures"`,
+`material_vertex_color` needs `"vertex_color"`. ⚠️ These are includes, NOT
+`fragment_inputs` — declaring `fragment_inputs:["uv"]` does not bring `material_uv`
+into scope (it only affects the vertex-attribute layout).
 
 ```wgsl
-let uv1 = material_uv(input, 1u);            // interpolated TEXCOORD_1
-let c0  = material_vertex_color(input, 0u);  // interpolated COLOR_0
+// set_material_includes ["textures", "vertex_color"]
+let uv1 = material_uv(input, 1u);            // interpolated TEXCOORD_1  (needs "textures")
+let c0  = material_vertex_color(input, 0u);  // interpolated COLOR_0     (needs "vertex_color")
 ```
 
 A set the mesh lacks returns a benign default (`vec2(0)` / `vec4(1)`) — there is

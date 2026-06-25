@@ -377,6 +377,12 @@ pub enum EditorQuery {
         offset: Option<u32>,
         #[serde(default)]
         limit: Option<u32>,
+        /// When true, each returned vertex also carries a `source` block marking,
+        /// per channel, whether the value is a per-vertex **override** or rides the
+        /// **base** (evaluated) geometry — i.e. which channels an authoring op
+        /// actually wrote. Off by default to keep the payload compact.
+        #[serde(default)]
+        include_source: bool,
     },
     /// The **layer summary** of a node's resolved mesh: the base kind
     /// (primitive/lathe/superquadric/sweep/sdf/captured), the ordered modifier
@@ -385,6 +391,56 @@ pub enum EditorQuery {
     /// live (still procedural) vs locked (frozen-topology authoring)" perceive.
     /// MCP: `get_mesh_layers`.
     GetMeshLayers { node: NodeId },
+    /// Read a node's resolved-mesh **topology**: the triangle index buffer, paged
+    /// by triangle via `offset`/`limit` (the new payload — large index buffers
+    /// overflow the token cap), plus `vertex_count`, `triangle_count`, and the
+    /// local-space `bbox`. The read counterpart to `set_mesh_data` and the
+    /// connectivity source for loop-ordering / adjacency / arc-length. Per-vertex
+    /// attributes (position/normal/uv/color) come from `get_vertex_data` — this
+    /// deliberately returns only indices + metadata to stay compact. MCP:
+    /// `get_mesh_data`.
+    GetMeshData {
+        node: NodeId,
+        #[serde(default)]
+        offset: Option<u32>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// HEURISTIC strip/loop parameterization of a vertex band: returns, per
+    /// selected vertex, normalized `(along, across)` coords to feed straight into
+    /// `set_vertex_uvs` for a conveyor / tread / road. `along` ∈ [0,1) is the
+    /// angle about the axle (monotonic travel around the loop); `across` ∈ [0,1]
+    /// is the lateral position along the axle. `axis` is the axle (normalized);
+    /// when omitted it's fitted as the band's least-variance PCA direction. The
+    /// target band is a `selection` HANDLE, an explicit `indices` list, or — when
+    /// both are empty — the whole mesh. A heuristic (assumes a surface of
+    /// revolution about the axle), not a geodesic unwrap; the winding/polarity may
+    /// be flipped (the response notes this). MCP: `strip_parameterize`.
+    StripParameterize {
+        node: NodeId,
+        #[serde(default)]
+        selection: Option<u32>,
+        #[serde(default)]
+        indices: Vec<u32>,
+        #[serde(default)]
+        axis: Option<[f32; 3]>,
+    },
+    /// The UV-layout overlay of a node's resolved mesh (UV set `uv_set`, default
+    /// 0): `{ has_uv, uv_set, island_count, bounds:{min,max}, islands:[{count,
+    /// min,max}], edge_count, edges:[[[u,v],[u,v]],…] }`. Diagnoses "atlas vs
+    /// strip" in one read — a contiguous strip UV is ONE island spanning ~[0,1];
+    /// a packed atlas is MANY small islands. `edges` (the UV wireframe, for
+    /// drawing the overlay) are paged by `offset`/`limit` since they can be large;
+    /// island summaries are always returned in full. MCP: `get_uv_layout`.
+    UvLayout {
+        node: NodeId,
+        #[serde(default)]
+        uv_set: Option<u32>,
+        #[serde(default)]
+        offset: Option<u32>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     /// The mesh asset's modifier-stack **recipe** (`{ base, modifiers }`),
     /// serialized as JSON in a `QueryResult::Text`. `null` when the mesh has no
     /// recipe (a raw captured/converted mesh) — call `set_mesh_modifiers` to give
@@ -446,6 +502,12 @@ pub enum VertexPredicate {
     /// Inside the axis-aligned box `[min, max]` (inclusive), in the mesh's local
     /// space — region selection by area (pairs with `get_node_bounds`).
     WithinAabb { min: [f32; 3], max: [f32; 3] },
+    /// Every vertex in the connected **piece(s)** containing `seed` — topology
+    /// (island) selection, not geometry. Position-welded so a UV/normal seam
+    /// doesn't fragment one solid piece. Use it to grab "this whole bolt / belt /
+    /// panel" from a single seed vertex (e.g. the nearest vertex to a click, or
+    /// any index from another predicate). The companion to `separate_mesh`.
+    ConnectedToSeed { seed: Vec<u32> },
 }
 
 /// What a [`EditorQuery::SampleClipTimeseries`] frame reads.
