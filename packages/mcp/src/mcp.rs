@@ -4163,6 +4163,13 @@ fn json_arg<T: serde::de::DeserializeOwned>(
     v: serde_json::Value,
     what: &str,
 ) -> Result<T, McpError> {
+    // A bare JSON string arg is itself JSON (some clients double-encode); parse it
+    // to a Value first, then deserialize. Integer-keyed maps inside tagged-enum
+    // commands (e.g. `set_vertex_overrides {overrides:{uvs:{"0":[u,v]}}}`) are
+    // handled at the field level in `VertexOverrides` (a string-or-int key
+    // deserializer that survives serde's internally-tagged `Content` buffering) —
+    // `from_str` alone does NOT fix them, because the `#[serde(tag="cmd")]` enum
+    // buffers the variant into `Content`, which can't coerce a string key to u32.
     let v = match v {
         serde_json::Value::String(s) => serde_json::from_str(&s)
             .map_err(|e| McpError::invalid_params(format!("bad {what}: {e}"), None))?,
@@ -4446,4 +4453,45 @@ fn fmt_diag_errors(errors: &[CompileError]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `json_arg` must deserialize an `EditorCommand` carrying an
+    /// integer-keyed map (`VertexOverrides.uvs: HashMap<u32,…>`) whose JSON keys
+    /// are strings. The old `from_value` path rejected this with
+    /// "invalid type: string \"0\", expected u32", making every integer-keyed-map
+    /// command un-drivable over dispatch_command. `from_str` parses it.
+    #[test]
+    fn json_arg_parses_integer_keyed_map_command() {
+        let v = serde_json::json!({
+            "cmd": "set_vertex_overrides",
+            "mesh": "00000000-0000-0000-0000-000000000001",
+            "overrides": { "uvs": { "0": [0.1, 0.2], "7": [0.3, 0.4] } }
+        });
+        let cmd: EditorCommand = json_arg(v, "command").expect("integer-keyed map should parse");
+        match cmd {
+            EditorCommand::SetVertexOverrides { overrides, .. } => {
+                assert_eq!(overrides.uvs.get(&0), Some(&[0.1, 0.2]));
+                assert_eq!(overrides.uvs.get(&7), Some(&[0.3, 0.4]));
+            }
+            other => panic!("expected SetVertexOverrides, got {other:?}"),
+        }
+    }
+
+    /// The String-wrapped form (a JSON-encoded string arg) must still work.
+    #[test]
+    fn json_arg_parses_string_wrapped_command() {
+        let inner = r#"{"cmd":"set_vertex_overrides","mesh":"00000000-0000-0000-0000-000000000001","overrides":{"uvs":{"3":[0.5,0.6]}}}"#;
+        let v = serde_json::Value::String(inner.to_string());
+        let cmd: EditorCommand = json_arg(v, "command").expect("string-wrapped should parse");
+        match cmd {
+            EditorCommand::SetVertexOverrides { overrides, .. } => {
+                assert_eq!(overrides.uvs.get(&3), Some(&[0.5, 0.6]));
+            }
+            other => panic!("expected SetVertexOverrides, got {other:?}"),
+        }
+    }
 }

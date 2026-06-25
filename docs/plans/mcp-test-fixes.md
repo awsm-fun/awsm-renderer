@@ -417,7 +417,7 @@ Maintain a checklist here as items land (status + the live-verify proof per item
 Append, don't rewrite.
 
 - [x] Item 1 — set_vertex_uvs — STATIC: clippy/fmt clean, full `cargo test --all-features` green (46 binaries), +2 roundtrip tests (`vertex_overrides_uvs_roundtrip`, `set_vertex_uvs_command_json_roundtrip`). LIVE: on a box mesh, headless `editor_dispatch_json {cmd:set_vertex_uvs, indices:[0,1,2], uvs:[[.11,.22],[.33,.44],[.55,.66]]}` → "ok"; `get_vertex_data` confirmed uv changed `[[0,0],[0,1],[1,1]]` → `[[.11,.22],[.33,.44],[.55,.66]]`. New typed tool also re-registered after full server restart.
-- [ ] Item 1b — integer-keyed-map dispatch fix
+- [x] Item 1b — integer-keyed-map dispatch fix — ROOT CAUSE corrected: `from_str` does NOT fix it (proven by test) — the `#[serde(tag="cmd")]` enum buffers into serde `Content`, which rejects string→u32 keys regardless of from_str/from_value; the WS transport re-deserializes on the editor side too (2nd chokepoint). Real fix: a field-level `deserialize_with` on all four `VertexOverrides` maps that branches on `is_human_readable()` — `deserialize_any` (string-or-int keys) for JSON/Content, native `u32` for bitcode (which rejects `deserialize_any`). STATIC: clippy/fmt clean, full test green, +2 mcp unit tests (`json_arg_parses_integer_keyed_map_command`, `json_arg_parses_string_wrapped_command`), existing bitcode roundtrip still green. LIVE: real MCP `dispatch_command {cmd:set_vertex_overrides, overrides:{uvs:{"0":[.77,.88],"2":[.12,.34]}}}` → "ok" (previously errored "expected u32"); `get_vertex_data` confirmed v0=[.77,.88], v2=[.12,.34], v1 untouched.
 - [ ] Item 2 — get_mesh_data
 - [ ] Item 3 — set_mesh_data empty guard
 - [ ] Item 4 — get_vertex_data source flag
