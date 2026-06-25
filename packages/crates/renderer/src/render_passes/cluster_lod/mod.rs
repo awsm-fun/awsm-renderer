@@ -13,3 +13,5 @@ pub mod buffers;
 pub mod pipeline;
 pub mod render_pass;
 pub mod shader;
+
+pub use render_pass::ClusterPagingInit;

@@ -123,6 +123,29 @@ multi-file GPU build — realistically multi-day):**
    table, init residency = the coarse antichain in slots (verify still watertight); (iv) per-frame
    stream/evict + re-clamp driven by `plan_stream_evict` → dolly-in refine on-device → A2.
 
+   **Step 20b-iii DONE (load-path manager enrichment — prep, no GPU/draw change).** The
+   `cluster_paging` load path now seeds the manager fully: `select_resident_clusters` also returns
+   the chosen cm-cluster ids (slot order); `ClusterPagingInit { pages(full DAG), positions, normals,
+   indices, slot_cluster }` arms `ClusterPaging` with the CPU geometry the streamer gathers slot
+   verts from + the residency bookkeeping (`resident[]` full-DAG, `slot_cluster[]`, `slot_last_used[]`,
+   `pool_slots`). The GPU upload is UNCHANGED from step 2 (same 785-frontier pages / identity resident
+   table / 785-slot M), so the rendered state is byte-identical to step 2; the new manager fields are
+   `#[allow(dead_code)]` until the per-frame streamer (20b-iv) consumes them. On-device (`?vg&paging`):
+   cluster mesh loads with NO PANIC (13065 clusters / 785 resident), page pool builds (785 slots/29322
+   tris), and the manager fires (`desired cut = 187`). Gate green; flag-off byte-identical.
+
+   **🚨 BLOCKER (must resolve before 20b-iv / A2 — elevated this iter):** the one-shot GPU readback
+   logs `cluster compaction (GPU): draw_args.index_count = 0 (0 tris) over 785 clusters` on frame 1,
+   and `load_player_bundle` resets the scene to empty so `screenshot_scene` shows the (empty) editor —
+   i.e. there is currently NO positive on-device signal that the cluster draw is non-zero / pixels
+   appear. The clamped frontier pages (lod_error0/parent_errorMAX) should pass the cut at any camera,
+   so 0 is most likely a frame-1 transient (resident table / bind group not yet effective for that
+   first cut), but THIS IS UNPROVEN. Next iteration MUST settle it FIRST: e.g. make the cut/compaction
+   count log on a LATER/steady frame (not one-shot frame-1), or find a persistent viewable cluster
+   scene (frame_node / non-reset load), and confirm draw_args.index_count ≈ 29322*3 + a visible
+   sphere. A2's dolly-in-refine demo is impossible to verify without this. (Pre-existing — not caused
+   by 20a/20b-i/ii/iii, which add no draw-path change — but blocking.)
+
    **Step 20b-ii DONE (renderer slot-write API).** `AwsmRenderer::write_cluster_slot(slot, &[u8])`
    `queue.writeBuffer`s one slot's exploded records into M's visibility-data section of the merged
    geometry pool (`COPY_DST` confirmed) at `mesh_data_offset + slot*slot_bytes` (pure helper

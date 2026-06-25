@@ -54,25 +54,104 @@ pub struct ClusterLodRenderPass {
 pub struct ClusterPaging {
     /// The full DAG's un-clamped cluster pages (`lod_error`/`parent_error` are the
     /// bake's real interval — NOT the resident frontier's clamped `0`/`MAX`). The
-    /// CPU cut's input.
+    /// CPU cut's input. Each page's `first_index`/`index_count` index into
+    /// [`Self::indices`] (the original `cm.indices`).
     pub pages: Vec<ClusterPage>,
     /// Reused scratch for the per-frame desired cut (cluster ids). Cleared+refilled
     /// each frame ⇒ no per-frame allocation.
     desired: Vec<u32>,
-    /// Frames the paging update has run (diagnostics + future LRU timestamps).
+    /// Frames the paging update has run (diagnostics + LRU timestamps).
     frame: u64,
     /// Last desired-count we logged — log only on change, so the on-device console
     /// shows the cut tracking the camera without per-frame spam.
     last_desired_logged: usize,
+
+    // ── CPU geometry, to build a streamed slot's exploded bytes (consumed in 20b-iv) ──
+    /// Original unique-vertex positions (`cm.positions`); a slot's exploded verts
+    /// gather these by `indices[page.first_index + k]`.
+    #[allow(dead_code)] // read by the per-frame streamer (step 20b-iv)
+    positions: Vec<[f32; 3]>,
+    /// Original unique-vertex normals (`cm.normals`); empty ⇒ the streamer defaults.
+    #[allow(dead_code)] // read by the per-frame streamer (step 20b-iv)
+    normals: Vec<[f32; 3]>,
+    /// Original triangle index buffer (`cm.indices`) the pages' spans address.
+    #[allow(dead_code)] // read by the per-frame streamer (step 20b-iv)
+    indices: Vec<u32>,
+
+    // ── residency bookkeeping in FULL-DAG cluster space (the page-pool state) ──
+    /// `resident[cluster_id]` = its page-pool slot, or `-1` (absent). Length =
+    /// `pages.len()`.
+    #[allow(dead_code)] // mutated by the per-frame streamer (step 20b-iv)
+    resident: Vec<i32>,
+    /// `slot_cluster[slot]` = the full-DAG cluster currently in that slot, or `-1`
+    /// (free). Length = `pool_slots`.
+    #[allow(dead_code)] // mutated by the per-frame streamer (step 20b-iv)
+    slot_cluster: Vec<i32>,
+    /// `slot_last_used[slot]` = the `frame` the slot was last in the desired cut
+    /// (LRU eviction key). Length = `pool_slots`.
+    #[allow(dead_code)] // mutated by the per-frame streamer (step 20b-iv)
+    slot_last_used: Vec<u64>,
+    /// Fixed page-pool capacity (slots) — the VRAM bound.
+    #[allow(dead_code)] // read by the per-frame streamer (step 20b-iv)
+    pool_slots: usize,
+
+    // ── pooled per-frame scratch (no per-frame heap allocation in 20b-iv) ──
+    /// One slot's exploded visibility bytes (`PAGE_VERTS*56`).
+    #[allow(dead_code)] // reused by the per-frame streamer (step 20b-iv)
+    slot_bytes_scratch: Vec<u8>,
+    /// One slot's triangle-order corner indices (`PAGE_VERTS`) + slot-relative
+    /// source indices, reused per stream.
+    #[allow(dead_code)] // reused by the per-frame streamer (step 20b-iv)
+    corner_scratch: Vec<u32>,
+    #[allow(dead_code)] // reused by the per-frame streamer (step 20b-iv)
+    src_idx_scratch: Vec<u32>,
+}
+
+/// Geometry + initial residency seed for the paging manager (step 20b-iii). Keeps
+/// [`ClusterLodRenderPass::init_paging`] from growing an unwieldy argument list.
+pub struct ClusterPagingInit {
+    /// Full-DAG un-clamped pages (`first_index`/`index_count` into `indices`).
+    pub pages: Vec<ClusterPage>,
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+    /// `slot_cluster[slot]` = the full-DAG cluster id initially uploaded into that
+    /// slot (the load-time frontier, in slot order). Its length is the pool size.
+    pub slot_cluster: Vec<i32>,
 }
 
 impl ClusterPaging {
-    fn new(pages: Vec<ClusterPage>) -> Self {
+    fn new(init: ClusterPagingInit) -> Self {
+        let ClusterPagingInit {
+            pages,
+            positions,
+            normals,
+            indices,
+            slot_cluster,
+        } = init;
+        let pool_slots = slot_cluster.len();
+        // Invert slot_cluster → resident (full-DAG cluster space).
+        let mut resident = vec![-1i32; pages.len()];
+        for (slot, &cid) in slot_cluster.iter().enumerate() {
+            if cid >= 0 && (cid as usize) < resident.len() {
+                resident[cid as usize] = slot as i32;
+            }
+        }
         Self {
             pages,
             desired: Vec::new(),
             frame: 0,
             last_desired_logged: usize::MAX,
+            positions,
+            normals,
+            indices,
+            resident,
+            slot_cluster,
+            slot_last_used: vec![0u64; pool_slots],
+            pool_slots,
+            slot_bytes_scratch: Vec::new(),
+            corner_scratch: Vec::new(),
+            src_idx_scratch: Vec::new(),
         }
     }
 }
@@ -97,12 +176,14 @@ impl ClusterLodRenderPass {
         })
     }
 
-    /// Install the Gap-B paging manager with the FULL un-clamped DAG pages (called
-    /// at mesh load, only under `cluster_paging`). Idempotent per mesh: replaces any
-    /// prior state. The drawn frontier is still whatever [`Self::upload_pages`]
-    /// uploaded — this only arms the per-frame CPU cut (step 20a).
-    pub fn init_paging(&mut self, pages: Vec<ClusterPage>) {
-        self.paging = Some(ClusterPaging::new(pages));
+    /// Install the Gap-B paging manager with the full DAG + CPU geometry + the
+    /// initial residency seed (called at mesh load, only under `cluster_paging`).
+    /// Idempotent per mesh: replaces any prior state. The drawn set is still
+    /// whatever [`Self::upload_pages`] uploaded (the load-time frontier in slots);
+    /// this arms the per-frame CPU cut (step 20a) and seeds the page-pool residency
+    /// bookkeeping + CPU geometry the per-frame streamer (step 20b-iv) consumes.
+    pub fn init_paging(&mut self, init: ClusterPagingInit) {
+        self.paging = Some(ClusterPaging::new(init));
     }
 
     /// Per-frame Gap-B paging update (CPU-driven). No-op unless paging is armed.

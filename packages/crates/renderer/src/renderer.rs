@@ -2357,14 +2357,19 @@ impl AwsmRenderer {
         Ok(())
     }
 
-    /// Arm the Gap-B dynamic-paging manager with the FULL un-clamped DAG pages
-    /// (cluster_lod's `ClusterPage`s with the bake's real `[lod_error,
-    /// parent_error)`, not the resident frontier's clamped values). Call after
-    /// [`Self::upload_cluster_pages`]; only the `cluster_paging` loader path calls
-    /// it, so the shipped path stays byte-identical. No-op unless the pass exists.
-    pub fn init_cluster_paging(&mut self, pages: Vec<crate::cluster_lod::ClusterPage>) {
+    /// Arm the Gap-B dynamic-paging manager with the full DAG + CPU geometry + the
+    /// initial residency seed (see
+    /// [`crate::render_passes::cluster_lod::ClusterPagingInit`]). The pages carry the
+    /// bake's real `[lod_error, parent_error)` (NOT the resident frontier's clamped
+    /// values). Call after [`Self::upload_cluster_pages`]; only the `cluster_paging`
+    /// loader path calls it, so the shipped path stays byte-identical. No-op unless
+    /// the pass exists.
+    pub fn init_cluster_paging(
+        &mut self,
+        init: crate::render_passes::cluster_lod::ClusterPagingInit,
+    ) {
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.init_paging(pages);
+            pass.init_paging(init);
         }
     }
 

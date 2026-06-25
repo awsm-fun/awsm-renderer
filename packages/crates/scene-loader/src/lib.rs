@@ -1860,7 +1860,11 @@ const CLUSTER_STREAMING_BUDGET_TRIS: usize = 1_000_000;
 fn select_resident_clusters(
     cm: &awsm_renderer_lod_bake::ClusterMesh,
     budget_tris: usize,
-) -> (Vec<awsm_renderer::cluster_lod::ClusterPage>, Vec<u32>) {
+) -> (
+    Vec<awsm_renderer::cluster_lod::ClusterPage>,
+    Vec<u32>,
+    Vec<usize>,
+) {
     let to_page = |c: &awsm_renderer_lod_bake::ClusterPage, first_index: u32, lod_error: f32| {
         awsm_renderer::cluster_lod::ClusterPage {
             center: c.center,
@@ -1881,7 +1885,8 @@ fn select_resident_clusters(
             .iter()
             .map(|c| to_page(c, c.first_index, c.lod_error))
             .collect();
-        return (pages, cm.indices.clone());
+        let ids = (0..cm.clusters.len()).collect();
+        return (pages, cm.indices.clone(), ids);
     }
     // Pick a COMPLETE-ANTICHAIN frontier, not a hard-tri partial cut. The runtime
     // per-cluster cut at a uniform error threshold `T` selects exactly
@@ -1939,7 +1944,9 @@ fn select_resident_clusters(
         page.parent_error = f32::MAX;
         pages.push(page);
     }
-    (pages, m_indices)
+    // `sel` is the chosen antichain's cm-cluster ids, in the SAME order as `pages`
+    // (⇒ as the page-pool slots), so the caller can seed `slot_cluster`.
+    (pages, m_indices, sel)
 }
 
 /// Exploded vertices per page slot: a bake cluster is ≤128 triangles, and the
@@ -2187,7 +2194,7 @@ async fn load_cluster_lod(
     } else {
         usize::MAX
     };
-    let (gpu_pages, m_indices) = select_resident_clusters(&cm, budget);
+    let (gpu_pages, m_indices, resident_cluster_ids) = select_resident_clusters(&cm, budget);
     let resident_tris = m_indices.len() / 3;
     let capped = m_indices.len() < cm.indices.len();
 
@@ -2218,12 +2225,17 @@ async fn load_cluster_lod(
             build_slot_geometry(&page_spans, &m_indices, &plan.resident, CLUSTER_PAGE_VERTS);
         renderer.upload_cluster_pages(&gpu_pages, &slot_source)?;
         renderer.upload_cluster_resident(&plan.resident)?;
-        // Arm the Gap-B paging manager with the FULL un-clamped DAG (the bake's
-        // real `[lod_error, parent_error)` per cluster — NOT the clamped resident
-        // frontier `gpu_pages`), so the per-frame CPU cut can refine within the
-        // pool. Only the `cluster_paging` path reaches here ⇒ shipped path
-        // unaffected. (Step 20a: drives the desired-cut compute + logging; geometry
-        // streaming into slots lands in the next slice.)
+        // Arm the Gap-B paging manager (step 20a/20b-iii) with: the FULL un-clamped
+        // DAG (the bake's real `[lod_error, parent_error)` per cluster — NOT the
+        // clamped frontier `gpu_pages`) for the per-frame CPU cut; the CPU geometry
+        // (positions/normals/indices) the per-frame streamer (20b-iv) gathers a
+        // slot's exploded verts from; and the INITIAL residency seed
+        // `slot_cluster[slot] = resident_cluster_ids[slot]` (the load-time frontier,
+        // in slot order — `build_slot_geometry` packs `gpu_pages`/`resident_cluster_ids`
+        // in order, so slot s holds full-DAG cluster `resident_cluster_ids[s]`). Only
+        // the `cluster_paging` path reaches here ⇒ shipped path unaffected. The GPU
+        // upload above is UNCHANGED from step 2 (the watertight frontier) — this slice
+        // only enriches CPU manager state; per-frame streaming lands in 20b-iv.
         let original_pages: Vec<awsm_renderer::cluster_lod::ClusterPage> = cm
             .clusters
             .iter()
@@ -2240,7 +2252,14 @@ async fn load_cluster_lod(
                 index_count: c.index_count,
             })
             .collect();
-        renderer.init_cluster_paging(original_pages);
+        let slot_cluster: Vec<i32> = resident_cluster_ids.iter().map(|&c| c as i32).collect();
+        renderer.init_cluster_paging(awsm_renderer::render_passes::cluster_lod::ClusterPagingInit {
+            pages: original_pages,
+            positions: cm.positions.clone(),
+            normals: cm.normals.clone(),
+            indices: cm.indices.clone(),
+            slot_cluster,
+        });
         tracing::info!(
             "cluster paging (Gap B): page pool — {} slots × {} verts/slot = {} slot verts ({} resident tris capped to budget {}); cut draws the capped frontier crack-free",
             plan.slots_used,
@@ -3180,7 +3199,7 @@ mod cluster_streaming_tests {
 
         let full_tris = cm.indices.len() / 3;
         let budget = full_tris / 4; // aggressive: forces a partial frontier today
-        let (pages, m_indices) = select_resident_clusters(&cm, budget);
+        let (pages, m_indices, _ids) = select_resident_clusters(&cm, budget);
 
         // Simulate the runtime per-cluster cut at the closest camera (threshold 0):
         // select resident pages whose error interval contains 0 (the clamped
@@ -3239,7 +3258,7 @@ mod cluster_streaming_tests {
     #[test]
     fn under_budget_is_verbatim_passthrough() {
         let cm = fixture();
-        let (pages, m_indices) = select_resident_clusters(&cm, 100);
+        let (pages, m_indices, _ids) = select_resident_clusters(&cm, 100);
         // Every cluster, indices verbatim, nothing remapped or clamped — must be
         // byte-identical to the non-streaming path.
         assert_eq!(m_indices, cm.indices);
@@ -3255,7 +3274,7 @@ mod cluster_streaming_tests {
         let cm = fixture();
         // Budget 1 tri: coarsest-first keeps only the root C2; with no resident
         // child its lod_error clamps to 0 so close-up stays covered.
-        let (pages, m_indices) = select_resident_clusters(&cm, 1);
+        let (pages, m_indices, _ids) = select_resident_clusters(&cm, 1);
         assert_eq!(pages.len(), 1);
         assert_eq!(m_indices, vec![6, 7, 8]); // C2's slice, remapped to front
         assert_eq!(pages[0].first_index, 0);
@@ -3270,7 +3289,7 @@ mod cluster_streaming_tests {
         // {C0, C1} (2 tris) — NOT the old partial {root C2 + one leaf C0}, which
         // tore (C1's region covered only by the coarse root while C0 was fine).
         // The whole leaf level tiles the surface ⇒ crack-free; budget honoured.
-        let (pages, m_indices) = select_resident_clusters(&cm, 2);
+        let (pages, m_indices, _ids) = select_resident_clusters(&cm, 2);
         assert_eq!(pages.len(), 2);
         assert_eq!(m_indices, vec![0, 1, 2, 3, 4, 5]); // C0 then C1, remapped
         for p in &pages {
