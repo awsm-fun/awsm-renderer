@@ -193,6 +193,57 @@ impl ClusterLodBuffers {
         )
     }
 
+    /// Gap-B dynamic paging: overwrite a span of the compaction's `source_indices`
+    /// (the slot-relative vertex indices the compaction copies into the draw stream)
+    /// so a re-paged cluster's page points at its new slot. `first_index` is the
+    /// page's `first_index` into `source_indices` (element index, ×4 = byte offset);
+    /// `values` is its new slot-relative index list. Only the `cluster_paging`
+    /// per-frame stream path calls this. (Serializes into a local `Vec`; the wired
+    /// per-frame caller batches via a pooled buffer — see step 20b-iv.)
+    pub fn write_source_indices_span(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        first_index: u32,
+        values: &[u32],
+    ) -> Result<(), AwsmCoreError> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        let mut bytes = Vec::with_capacity(values.len() * 4);
+        for &v in values {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        gpu.write_buffer(
+            &self.source_indices_buffer,
+            Some(first_index as usize * 4),
+            bytes.as_slice(),
+            None,
+            None,
+        )
+    }
+
+    /// Gap-B dynamic paging: set one cluster's residency-table entry
+    /// (`cluster_id → slot`, `-1` = absent) in place — a single 4-byte
+    /// `writeBuffer` at `cluster_id*4`, no realloc. No-op if the resident buffer
+    /// isn't allocated yet (call after [`Self::write_resident`] has sized it).
+    pub fn write_resident_entry(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        cluster_id: usize,
+        slot: i32,
+    ) -> Result<(), AwsmCoreError> {
+        let Some(buf) = self.resident_buffer.as_ref() else {
+            return Ok(());
+        };
+        gpu.write_buffer(
+            buf,
+            Some(cluster_id * 4),
+            slot.to_le_bytes().as_slice(),
+            None,
+            None,
+        )
+    }
+
     /// Grows to hold `needed` clusters / `needed_indices` indices (2× headroom).
     /// Returns `true` when a resize happened, so the caller rebuilds the bind
     /// group.

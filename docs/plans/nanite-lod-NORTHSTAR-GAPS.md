@@ -123,6 +123,16 @@ multi-file GPU build — realistically multi-day):**
    table, init residency = the coarse antichain in slots (verify still watertight); (iv) per-frame
    stream/evict + re-clamp driven by `plan_stream_evict` → dolly-in refine on-device → A2.
 
+   **Step 20b-ii DONE (renderer slot-write API).** `AwsmRenderer::write_cluster_slot(slot, &[u8])`
+   `queue.writeBuffer`s one slot's exploded records into M's visibility-data section of the merged
+   geometry pool (`COPY_DST` confirmed) at `mesh_data_offset + slot*slot_bytes` (pure helper
+   `cluster_slot_data_offset`, unit-tested: contiguous, non-overlapping slots).
+   `write_cluster_source_indices_span(first_index, &[u32])` + `write_cluster_resident_entry(cluster_id,
+   slot)` overwrite a page's slot-relative draw indices + a single residency entry in place
+   (`ClusterLodBuffers::write_source_indices_span` / `write_resident_entry`). Pure + UNWIRED (no
+   per-frame call) ⇒ byte-identical; tests + wasm build green. (Per-frame caller in 20b-iv pools the
+   source_indices serialization — noted in the API.)
+
    *(Superseded GPU-feedback design (A) kept below for reference.)*
 
    **Key constraint (found analysing it):** the GPU cut CANNOT "walk up to the nearest

@@ -2377,6 +2377,68 @@ impl AwsmRenderer {
         }
     }
 
+    /// Gap-B dynamic paging: overwrite ONE page-pool slot's exploded visibility
+    /// vertices in the cluster render mesh `M`'s visibility-data section.
+    /// `data_bytes` is exactly one slot's packed records (`CLUSTER_PAGE_VERTS*56` B
+    /// from [`crate::mesh_pack::pack_visibility_slot_bytes`]); the slot stride is
+    /// `data_bytes.len()`, so slot `s` lands at `mesh_data_offset + s*len` in the
+    /// merged geometry pool (`COPY_DST`). Only the `cluster_paging` per-frame stream
+    /// path calls this; no-op without a cluster render mesh / pass. (`queue.writeBuffer`
+    /// is ordered before the frame's submitted passes, so streaming here lands this
+    /// frame.)
+    pub fn write_cluster_slot(&self, slot: usize, data_bytes: &[u8]) -> crate::error::Result<()> {
+        let Some(pass) = self.render_passes.cluster_lod.as_ref() else {
+            return Ok(());
+        };
+        let Some(mesh_key) = pass.render_mesh else {
+            return Ok(());
+        };
+        if data_bytes.is_empty() {
+            return Ok(());
+        }
+        let base = self.meshes.visibility_geometry_data_buffer_offset(mesh_key)?;
+        let offset = cluster_slot_data_offset(base, slot, data_bytes.len());
+        self.gpu.write_buffer(
+            self.meshes.visibility_geometry_data_gpu_buffer(),
+            Some(offset),
+            data_bytes,
+            None,
+            None,
+        )?;
+        Ok(())
+    }
+
+    /// Gap-B dynamic paging: overwrite a re-paged cluster page's `source_indices`
+    /// span (slot-relative draw indices) — see
+    /// [`crate::render_passes::cluster_lod::buffers::ClusterLodBuffers::write_source_indices_span`].
+    pub fn write_cluster_source_indices_span(
+        &self,
+        first_index: u32,
+        values: &[u32],
+    ) -> crate::error::Result<()> {
+        if let Some(pass) = self.render_passes.cluster_lod.as_ref() {
+            if let Some(buffers) = pass.buffers.as_ref() {
+                buffers.write_source_indices_span(&self.gpu, first_index, values)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Gap-B dynamic paging: set one residency-table entry (`cluster_id → slot`,
+    /// `-1` = absent) in place (single 4-byte write).
+    pub fn write_cluster_resident_entry(
+        &self,
+        cluster_id: usize,
+        slot: i32,
+    ) -> crate::error::Result<()> {
+        if let Some(pass) = self.render_passes.cluster_lod.as_ref() {
+            if let Some(buffers) = pass.buffers.as_ref() {
+                buffers.write_resident_entry(&self.gpu, cluster_id, slot)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Submit a batch of pipeline groups for compile. Returns ids
     /// immediately in `Pending` state; transitions to `Ready` /
     /// `Failed` surface via [`Self::drain_pipeline_status_events`] or
@@ -2874,4 +2936,46 @@ impl AwsmRenderer {
 /// the sync scope). This unlocks Priority 3 end-to-end.
 pub fn edge_resolve_supported(_gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu) -> bool {
     true
+}
+
+/// Absolute byte offset of page-pool slot `slot` in the cluster render mesh's
+/// visibility-data section (Gap-B dynamic paging): `mesh_data_offset +
+/// slot*slot_bytes`, where `slot_bytes` is one slot's packed length
+/// (`CLUSTER_PAGE_VERTS*56`). Pure ⇒ unit-tested without a device; the slot stride
+/// equals the data length so every slot is interchangeable (the paging invariant).
+pub(crate) fn cluster_slot_data_offset(
+    mesh_data_offset: usize,
+    slot: usize,
+    slot_bytes: usize,
+) -> usize {
+    mesh_data_offset + slot * slot_bytes
+}
+
+#[cfg(test)]
+mod cluster_slot_tests {
+    use super::cluster_slot_data_offset;
+
+    #[test]
+    fn slot_data_offset_is_base_plus_slot_stride() {
+        // One slot = CLUSTER_PAGE_VERTS(384) * 56 B = 21504 B.
+        let slot_bytes = 384 * 56;
+        assert_eq!(cluster_slot_data_offset(0, 0, slot_bytes), 0);
+        assert_eq!(cluster_slot_data_offset(0, 1, slot_bytes), 21504);
+        assert_eq!(cluster_slot_data_offset(0, 5, slot_bytes), 5 * 21504);
+        // A non-zero mesh section base (the pool packs many meshes) just shifts it.
+        let base = 1_000_000;
+        assert_eq!(cluster_slot_data_offset(base, 0, slot_bytes), base);
+        assert_eq!(
+            cluster_slot_data_offset(base, 3, slot_bytes),
+            base + 3 * 21504
+        );
+        // Slots are contiguous + non-overlapping: slot s ends exactly where s+1
+        // begins.
+        for s in 0..8usize {
+            assert_eq!(
+                cluster_slot_data_offset(base, s, slot_bytes) + slot_bytes,
+                cluster_slot_data_offset(base, s + 1, slot_bytes)
+            );
+        }
+    }
 }
