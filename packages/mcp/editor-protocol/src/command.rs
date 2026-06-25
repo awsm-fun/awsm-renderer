@@ -552,7 +552,20 @@ pub enum EditorCommand {
     /// collapsed modifier bake). The bridge re-materializes every referencing
     /// `NodeKind::Mesh` node via the mesh-revision observer. Inverse: restore the
     /// prior geometry (a `SetMeshData` carrying the previous `CapturedMesh`).
-    SetMeshData { mesh: AssetId, data: CapturedMesh },
+    ///
+    /// Validated before it stores: empty/degenerate geometry is REJECTED (an
+    /// errant `{positions:[], indices:[]}` used to silently wipe a mesh and
+    /// return `ok`). `indices` must be a multiple of 3 and in range for
+    /// `positions`, and any present optional channel must be vertex-aligned. Set
+    /// `allow_empty:true` to deliberately clear a mesh to empty geometry (the
+    /// internal undo-restore path passes it so a legitimately-empty prior can
+    /// round-trip).
+    SetMeshData {
+        mesh: AssetId,
+        data: CapturedMesh,
+        #[serde(default)]
+        allow_empty: bool,
+    },
     /// Replace an editable mesh's procedural **recipe** wholesale (modifier
     /// stack: base + ordered deformers) — the idempotent, coalescing idiom of
     /// `SetCustomMaterialLayout`. The handler re-evaluates the stack to triangles

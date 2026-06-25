@@ -521,7 +521,11 @@ impl EditorController {
         }
         let mut inv = vec![restore_stack];
         if let Some(bytes) = prior_bytes {
-            inv.push(EditorCommand::SetMeshData { mesh, data: bytes });
+            inv.push(EditorCommand::SetMeshData {
+                mesh,
+                data: bytes,
+                allow_empty: true,
+            });
         }
         inv.push(EditorCommand::SetVertexOverrides {
             mesh,
@@ -1482,14 +1486,27 @@ impl EditorController {
                 let _ = (node, mesh);
                 Ok(None)
             }
-            EditorCommand::SetMeshData { mesh, data } => {
+            EditorCommand::SetMeshData {
+                mesh,
+                data,
+                allow_empty,
+            } => {
                 use crate::engine::bridge::mesh_cache;
+                // Reject the silent mesh-wipe footgun + structurally-broken input
+                // BEFORE storing (undo can't help if we never warned).
+                data.validate(allow_empty)
+                    .map_err(crate::error::EditorError::msg)?;
                 let prior = mesh_cache::get_captured(mesh);
                 mesh_cache::store_with_id(mesh, data);
                 self.scene.bump_revision();
                 // Inverse restores the prior geometry; if there was none (the mesh
-                // didn't exist), the edit isn't undoable.
-                Ok(prior.map(|data| EditorCommand::SetMeshData { mesh, data }))
+                // didn't exist), the edit isn't undoable. allow_empty:true so a
+                // legitimately-empty prior round-trips through the guard.
+                Ok(prior.map(|data| EditorCommand::SetMeshData {
+                    mesh,
+                    data,
+                    allow_empty: true,
+                }))
             }
             EditorCommand::SetMeshModifiers { mesh, stack } => {
                 Ok(self.apply_mesh_stack(mesh, stack))
@@ -1799,6 +1816,7 @@ impl EditorController {
                     EditorCommand::SetMeshData {
                         mesh,
                         data: prior_bytes,
+                        allow_empty: true,
                     },
                 ])))
             }

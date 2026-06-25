@@ -301,6 +301,67 @@ fn set_vertex_uvs_command_json_roundtrip() {
 }
 
 #[test]
+fn captured_mesh_validate_rejects_empty_and_degenerate() {
+    // The set_mesh_data guard (Item 3): empty/degenerate geometry must be
+    // rejected unless allow_empty, and structural invariants always hold.
+    let good = sample_captured_mesh();
+    assert!(good.validate(false).is_ok(), "valid mesh should pass");
+
+    // Empty wipe — rejected by default, allowed with allow_empty.
+    let empty = CapturedMesh {
+        positions: vec![],
+        normals: None,
+        uvs: None,
+        uvs1: None,
+        colors: None,
+        indices: vec![],
+    };
+    assert!(empty.validate(false).is_err(), "empty should be rejected");
+    assert!(
+        empty.validate(true).is_ok(),
+        "empty allowed with allow_empty"
+    );
+
+    // Indices not a multiple of 3.
+    let mut bad = sample_captured_mesh();
+    bad.indices = vec![0, 1];
+    assert!(
+        bad.validate(false).is_err(),
+        "non-triangle indices rejected"
+    );
+    assert!(
+        bad.validate(true).is_err(),
+        "allow_empty does NOT waive structural checks"
+    );
+
+    // Index out of range for positions (4 verts → max valid index 3).
+    let mut oor = sample_captured_mesh();
+    oor.indices = vec![0, 1, 99];
+    assert!(oor.validate(false).is_err(), "out-of-range index rejected");
+
+    // Misaligned optional channel (normals shorter than positions).
+    let mut mis = sample_captured_mesh();
+    mis.normals = Some(vec![[0.0, 0.0, 1.0]]);
+    assert!(mis.validate(false).is_err(), "misaligned normals rejected");
+}
+
+#[test]
+fn set_mesh_data_command_allow_empty_defaults_false() {
+    // allow_empty is #[serde(default)] — omitting it deserializes to false so the
+    // guard is on by default; older project JSON without the field round-trips.
+    use awsm_renderer_editor_protocol::EditorCommand;
+    let json = format!(
+        "{{\"cmd\":\"set_mesh_data\",\"mesh\":\"{}\",\"data\":{{\"positions\":[[0,0,0],[1,0,0],[0,1,0]],\"normals\":null,\"uvs\":null,\"colors\":null,\"indices\":[0,1,2]}}}}",
+        AssetId::new()
+    );
+    let cmd: EditorCommand = serde_json::from_str(&json).expect("deserialize");
+    match cmd {
+        EditorCommand::SetMeshData { allow_empty, .. } => assert!(!allow_empty),
+        other => panic!("expected SetMeshData, got {other:?}"),
+    }
+}
+
+#[test]
 fn mesh_asset_filename_is_stable() {
     // The filename helper is the side-table addressing contract — it
     // must produce the same string for the same AssetId on every call,

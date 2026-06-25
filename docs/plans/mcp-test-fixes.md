@@ -371,6 +371,15 @@ via chrome-devtools `evaluate_script` on the `:9085` page, call
 - `window.wasmBindings.editor_query_json('{"query":"get_mesh_data", …}')` — same
   query handler.
 
+⚠️ **`editor_dispatch_json` is FIRE-AND-FORGET.** It returns `"ok"` as soon as the
+command JSON *decodes* and runs the apply in a detached `spawn_local`; an apply
+**error** is only logged to the browser console (`tracing::error! "dispatch failed: …"`),
+never returned. So `"ok"` from it ≠ apply success. To verify an **error/rejection
+path** (e.g. the set_mesh_data guard), use the MCP `dispatch_command` tool instead —
+it awaits the WS apply result and surfaces the error as an MCP error. For
+**success-with-readback** verification, `editor_dispatch_json` then
+`editor_query_json` is fine (the query awaits and shows the mutated state).
+
 ⚠️ **Both exports are `async` and return a JSON *string*.** You MUST `await` them
 inside an `async () => { … }` evaluate_script function — an un-awaited call
 serializes as `{}` (the Promise), which looks like an empty result but isn't. Then
@@ -419,7 +428,7 @@ Append, don't rewrite.
 - [x] Item 1 — set_vertex_uvs — STATIC: clippy/fmt clean, full `cargo test --all-features` green (46 binaries), +2 roundtrip tests (`vertex_overrides_uvs_roundtrip`, `set_vertex_uvs_command_json_roundtrip`). LIVE: on a box mesh, headless `editor_dispatch_json {cmd:set_vertex_uvs, indices:[0,1,2], uvs:[[.11,.22],[.33,.44],[.55,.66]]}` → "ok"; `get_vertex_data` confirmed uv changed `[[0,0],[0,1],[1,1]]` → `[[.11,.22],[.33,.44],[.55,.66]]`. New typed tool also re-registered after full server restart.
 - [x] Item 1b — integer-keyed-map dispatch fix — ROOT CAUSE corrected: `from_str` does NOT fix it (proven by test) — the `#[serde(tag="cmd")]` enum buffers into serde `Content`, which rejects string→u32 keys regardless of from_str/from_value; the WS transport re-deserializes on the editor side too (2nd chokepoint). Real fix: a field-level `deserialize_with` on all four `VertexOverrides` maps that branches on `is_human_readable()` — `deserialize_any` (string-or-int keys) for JSON/Content, native `u32` for bitcode (which rejects `deserialize_any`). STATIC: clippy/fmt clean, full test green, +2 mcp unit tests (`json_arg_parses_integer_keyed_map_command`, `json_arg_parses_string_wrapped_command`), existing bitcode roundtrip still green. LIVE: real MCP `dispatch_command {cmd:set_vertex_overrides, overrides:{uvs:{"0":[.77,.88],"2":[.12,.34]}}}` → "ok" (previously errored "expected u32"); `get_vertex_data` confirmed v0=[.77,.88], v2=[.12,.34], v1 untouched.
 - [x] Item 2 — get_mesh_data — STATIC: clippy/fmt clean, full test green (47 binaries), +2 query roundtrip tests. LIVE: headless `get_mesh_data` on a box → vertex_count 24, triangle_count 12, bbox [-.5,-.5,-.5]→[.5,.5,.5]; paging offset0/limit2 → [[0,1,2],[0,2,3]], offset2/limit2 → [[4,5,6],[4,6,7]] (disjoint). Committed with Item 4 (shared read-path files, interleaved hunks — both independently verified).
-- [ ] Item 3 — set_mesh_data empty guard
+- [x] Item 3 — set_mesh_data empty guard — STATIC: clippy/fmt clean, full test green, +2 protocol tests (`captured_mesh_validate_rejects_empty_and_degenerate`, `set_mesh_data_command_allow_empty_defaults_false`). Validation as `CapturedMesh::validate(allow_empty)` (testable in protocol crate); `allow_empty` field (#[serde(default)] = on-by-default guard); internal undo-restore sites pass allow_empty:true. LIVE (via MCP dispatch_command, which awaits apply — editor_dispatch_json is fire-and-forget): empty `{positions:[],indices:[]}` → REJECTED "refusing to store empty/degenerate geometry"; mesh unchanged (get_mesh_data still 12 tris/24 verts); non-triangle indices `[0,1]` → REJECTED "not a multiple of 3"; `allow_empty:true` empty → "ok".
 - [x] Item 4 — get_vertex_data source flag — STATIC: clippy/fmt clean, full test green, +1 query roundtrip test (`get_vertex_data_include_source_roundtrip`). LIVE: wrote a UV override on box vertex 0, then `get_vertex_data {include_source:true}` → v0 `source.uv:"override"` (position/normal/color "base"), v1 all "base". Committed with Item 2.
 - [ ] Item 5 — add_spin_track
 - [ ] Item 6 — strip_parameterize (heuristic ok)

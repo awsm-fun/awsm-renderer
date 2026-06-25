@@ -190,3 +190,55 @@ pub struct CapturedMesh {
     pub colors: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
 }
+
+impl CapturedMesh {
+    /// Validate geometry before a `SetMeshData` stores it. Rejects the silent
+    /// mesh-wipe footgun (`{positions:[], indices:[]}` used to overwrite a real
+    /// mesh and return `ok`) and structurally-broken input. With `allow_empty`,
+    /// empty geometry is permitted (a deliberate clear / the undo-restore path)
+    /// but the structural invariants below still hold for any non-empty buffer.
+    ///
+    /// Always enforced: `indices.len()` a multiple of 3; every index in range for
+    /// `positions`; any present optional channel (`normals`/`uvs`/`uvs1`/`colors`)
+    /// vertex-aligned with `positions`.
+    pub fn validate(&self, allow_empty: bool) -> Result<(), String> {
+        if !allow_empty && (self.positions.is_empty() || self.indices.is_empty()) {
+            return Err(format!(
+                "set_mesh_data: refusing to store empty/degenerate geometry \
+                 ({} positions, {} indices) — pass allow_empty:true to clear a mesh deliberately",
+                self.positions.len(),
+                self.indices.len()
+            ));
+        }
+        if self.indices.len() % 3 != 0 {
+            return Err(format!(
+                "set_mesh_data: indices length {} is not a multiple of 3 (not a triangle list)",
+                self.indices.len()
+            ));
+        }
+        let vcount = self.positions.len() as u32;
+        if let Some(&max) = self.indices.iter().max() {
+            if max >= vcount {
+                return Err(format!(
+                    "set_mesh_data: index {max} out of range for {vcount} vertices"
+                ));
+            }
+        }
+        let check = |name: &str, len: Option<usize>| -> Result<(), String> {
+            if let Some(n) = len {
+                if n != self.positions.len() {
+                    return Err(format!(
+                        "set_mesh_data: {name} length {n} != positions length {}",
+                        self.positions.len()
+                    ));
+                }
+            }
+            Ok(())
+        };
+        check("normals", self.normals.as_ref().map(|v| v.len()))?;
+        check("uvs", self.uvs.as_ref().map(|v| v.len()))?;
+        check("uvs1", self.uvs1.as_ref().map(|v| v.len()))?;
+        check("colors", self.colors.as_ref().map(|v| v.len()))?;
+        Ok(())
+    }
+}
