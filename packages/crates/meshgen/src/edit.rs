@@ -206,7 +206,12 @@ pub fn strip_parameterize(
     let (mut amin, mut amax) = (f32::INFINITY, f32::NEG_INFINITY);
     for p in positions {
         let d = Vec3::from_array(*p) - centroid;
-        let along = (d.dot(e2).atan2(d.dot(e1)) + std::f32::consts::PI) / std::f32::consts::TAU;
+        // `atan2` ∈ (-π, π], so the raw value lands in (0, 1]; wrap the seam back
+        // into [0, 1) so a point on the negative-e1 axis (atan2 == π, exactly on
+        // some platforms) maps to 0 rather than 1.
+        let along =
+            ((d.dot(e2).atan2(d.dot(e1)) + std::f32::consts::PI) / std::f32::consts::TAU)
+                .rem_euclid(1.0);
         let across = d.dot(axle);
         amin = amin.min(across);
         amax = amax.max(across);
