@@ -158,7 +158,11 @@ pub fn build_cluster_dag(positions: &[[f32; 3]], indices: &[u32], opts: &DagOpti
             let (local_pos, local_idx, local_to_orig) = compact_submesh(positions, &group_indices);
             let group_tris = local_idx.len() / 3;
             let target = ((group_tris as f32 * opts.simplify_ratio).round() as usize).max(1);
-            let sm = simplify(&local_pos, &local_idx, SimplifyOptions::with_target(target));
+            let sm = simplify(
+                &local_pos,
+                &local_idx,
+                SimplifyOptions::with_target_locked(target),
+            );
 
             // Group sphere: the shared bounds all the group's clusters project
             // their flip threshold against, so they switch together (crack-free).
@@ -411,12 +415,11 @@ mod tests {
     /// welded by position — must be a closed surface (no hole edges). A torn coarse
     /// level (the reported subdivided-sphere holes) shows up here as open edges.
     ///
-    /// REPRODUCES the Gap-A defect: today the first coarse level tears ~21 hole
-    /// edges (index-based adjacency in `simplify`/`cluster` treats the coincident
-    /// seam/pole duplicates as open boundaries and mis-collapses them). Ignored
-    /// until the bake is made position-aware; un-ignore in the fix commit.
+    /// Was the Gap-A reproduction (the first coarse level tore ~21 hole edges
+    /// because index-based adjacency treated the coincident seam/pole duplicates
+    /// as open boundaries). Fixed by position-welding the simplifier's topology
+    /// (`simplify::weld_coincident`).
     #[test]
-    #[ignore = "north-star gap: A1 — cluster bake tears holes on non-watertight (seam/pole) input; fix in progress"]
     fn non_watertight_sphere_cut_is_closed_at_every_level() {
         let (pos, indices) = uv_sphere(48, 32); // 48*32*2 = 3072 tris, multi-level DAG
         let eps = 1e-3;
@@ -470,6 +473,22 @@ mod tests {
                  not crack-free on non-watertight (seam/pole) input (A1)"
             );
         }
+
+        // The fix must not "succeed" by refusing to simplify: the coarsest cut
+        // (just below the largest cluster error) must be a real LOD reduction.
+        let max_err = dag
+            .clusters
+            .iter()
+            .filter(|c| c.parent_error < ROOT_PARENT_ERROR)
+            .map(|c| c.lod_error)
+            .fold(0.0f32, f32::max);
+        let coarsest = cut_triangles(&dag, max_err).len();
+        let source = indices.len() / 3;
+        assert!(
+            coarsest < source * 3 / 4,
+            "coarsest cut {coarsest} is not a real reduction from {source} \
+             (locked-boundary simplify must still coarsen the sphere)"
+        );
     }
 
     #[test]

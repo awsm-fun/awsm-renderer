@@ -33,6 +33,16 @@ pub struct SimplifyOptions {
     /// fold-overs that produce visible artefacts while still allowing aggressive
     /// simplification of flat-ish regions.
     pub flip_threshold: f64,
+    /// Fully lock **every** boundary vertex (never remove or slide it), instead
+    /// of letting straight-seam ("Boundary") vertices slide along the seam. The
+    /// **cluster DAG** needs this: it simplifies each group in isolation, and two
+    /// adjacent groups must lock their shared boundary *identically* or the cut
+    /// cracks between them. Sliding lets them disagree ⇒ holes. Because the DAG
+    /// path position-welds first (attribute seams become interior edges, no longer
+    /// one-sided), locking the *remaining* true boundaries no longer re-triggers
+    /// the seam-plateau that motivated sliding. The discrete LOD chain leaves this
+    /// `false` (whole-mesh, no cross-group seams) to keep its simplification rate.
+    pub lock_boundaries: bool,
 }
 
 impl SimplifyOptions {
@@ -40,6 +50,16 @@ impl SimplifyOptions {
         Self {
             target_triangles: target_triangles.max(1),
             flip_threshold: 0.2,
+            lock_boundaries: false,
+        }
+    }
+
+    /// Like [`Self::with_target`] but fully locks boundary vertices — the
+    /// crack-free mode used by the cluster-DAG group simplify.
+    pub fn with_target_locked(target_triangles: usize) -> Self {
+        Self {
+            lock_boundaries: true,
+            ..Self::with_target(target_triangles)
         }
     }
 }
@@ -134,9 +154,29 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
         .map(|p| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64))
         .collect();
 
-    // Mutable triangle table (current vertex ids) + removal flags.
+    // Weld coincident positions for TOPOLOGY. Index-based adjacency would
+    // otherwise treat a UV/attribute seam (two coincident-but-distinct columns)
+    // or a pole fan (many coincident vertices) as an *open boundary*: the two
+    // sides then classify as boundary, simplify independently, and tear holes on
+    // non-watertight / subdivided meshes (e.g. a UV sphere). Mapping every vertex
+    // to one canonical id per location makes a geometric seam two-sided
+    // (interior) so it collapses consistently, while genuine open edges stay
+    // one-sided. Survivors are canonical ids — still a subset of the input
+    // vertices (coincident twins share a position, so gathering an attribute from
+    // the canonical one is exact for skin/morph; only a duplicated attribute
+    // *seam value*, e.g. a UV, is dropped at the coarser level). Dup-free
+    // watertight meshes weld to identity ⇒ their bake output is unchanged.
+    let weld = weld_coincident(&pos);
+
+    // Mutable triangle table (canonical vertex ids) + removal flags.
     let mut tris: Vec<[u32; 3]> = (0..tri_count)
-        .map(|t| [indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2]])
+        .map(|t| {
+            [
+                weld[indices[t * 3] as usize],
+                weld[indices[t * 3 + 1] as usize],
+                weld[indices[t * 3 + 2] as usize],
+            ]
+        })
         .collect();
     let mut tri_dead = vec![false; tri_count];
 
@@ -186,7 +226,17 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
             boundary_nbrs[*b as usize].push(*a);
         }
     }
-    let class = classify_vertices(&boundary_nbrs, &pos);
+    let mut class = classify_vertices(&boundary_nbrs, &pos);
+    if opts.lock_boundaries {
+        // Crack-free cluster mode: a group's external boundary must be preserved
+        // exactly so the adjacent group's matching boundary stays welded to it.
+        // Promote every sliding "Boundary" vertex to a locked "Corner".
+        for c in class.iter_mut() {
+            if *c == VertClass::Boundary {
+                *c = VertClass::Corner;
+            }
+        }
+    }
 
     // Union-find over vertices: parent[v] == v while alive; otherwise points at
     // the vertex it was collapsed into.
@@ -308,6 +358,38 @@ fn undirected(a: u32, b: u32) -> (u32, u32) {
     } else {
         (b, a)
     }
+}
+
+/// Map each vertex to a canonical id shared by all vertices at the same location
+/// (within an extent-relative epsilon). The canonical id is the lowest input id
+/// at that location, so the result is deterministic (required for content-hash
+/// caching). Vertices with a unique position map to themselves ⇒ a mesh with no
+/// coincident duplicates welds to the identity.
+fn weld_coincident(pos: &[DVec3]) -> Vec<u32> {
+    let mut lo = DVec3::splat(f64::INFINITY);
+    let mut hi = DVec3::splat(f64::NEG_INFINITY);
+    for p in pos {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    // Quantise to a grid fine enough to separate genuinely-distinct vertices
+    // (real meshes' min spacing ≫ extent·1e-5) yet coarse enough to unify
+    // coincident duplicates that differ only by float round-off (e.g. a sphere
+    // seam at phi=0 vs phi=2π).
+    let eps = ((hi - lo).length() * 1e-5).max(1e-12);
+    let inv = 1.0 / eps;
+    let mut map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    pos.iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let key = (
+                (p.x * inv).round() as i64,
+                (p.y * inv).round() as i64,
+                (p.z * inv).round() as i64,
+            );
+            *map.entry(key).or_insert(i as u32)
+        })
+        .collect()
 }
 
 /// How a vertex is allowed to move during collapse.

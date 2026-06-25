@@ -32,15 +32,16 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
   watertight at orbit radius ~2, both uncapped and `?streambudget`; cut-coverage
   GPU readback shows every surface region has a selected cluster. Real-asset
   (DamagedHelmet) output **unchanged** (regression guard).
-  _Current: **reproduced deterministically at the bake level** — `dag.rs`
-  `non_watertight_sphere_cut_is_closed_at_every_level` (currently `#[ignore]`d,
-  north-star gap A1) bakes a UV sphere (closed by position, non-watertight by index:
-  duplicated seam column + pole rows, exactly `meshgen::sphere_mesh`) and cuts at
-  every error threshold; the SOURCE welds closed and level-0 reconstructs the source,
-  but the **first coarse level tears 21 hole edges** (index-based adjacency/boundary
-  classification in `simplify.rs:166-189` / `cluster.rs` mis-collapses the coincident
-  seam/pole duplicates). Fix = make the bake position-aware (weld for topology while
-  preserving attribute seams); un-ignore on fix. → unmet (Gap A)._
+  _Current: **bake-level fix LANDED + test PASSING.** `simplify::weld_coincident`
+  position-welds the simplifier's topology (a seam/pole duplicate becomes an interior
+  edge, not a false open boundary) and a new `lock_boundaries` mode (used by the
+  cluster-DAG group simplify via `with_target_locked`) fully locks the remaining true
+  boundaries so adjacent groups can't slide a shared boundary apart. The reproduction
+  test `non_watertight_sphere_cut_is_closed_at_every_level` now passes: 0 hole edges
+  at every cut threshold AND a real reduction (coarsest cut < ¾ source). Dup-free
+  watertight meshes weld to identity ⇒ real-asset output unchanged. **A1 still
+  UNTICKED** pending on-device confirmation of the actual editor subdivided sphere
+  under `?vg` (full detail) and `?streambudget` (capped)._
 
 - [ ] **A2 — Dynamic, camera-driven streaming residency.**
   A genuinely multi-million-tri asset renders full detail near the camera within a
@@ -177,3 +178,11 @@ honestly true. Grouped; each cites its verification.
   coarse threshold). Diagnosed via `meshgen::sphere_mesh` topology (duplicated seam
   column + pole rows; `subdivide` preserves it). Next: position-aware bake fix +
   un-ignore. **Still 0/6 headline verified.**
+- 2026-06-25 — Gap A **bake fix landed**: `simplify::weld_coincident` (position-weld
+  topology) reduced the tear 21→6; the residual 6 were cross-group cracks from the
+  "Boundary slide" rule, fixed by a `lock_boundaries` simplify mode the cluster DAG
+  uses (`with_target_locked`) — safe now because welding already turned attribute
+  seams interior, so locking the remaining true boundaries no longer re-triggers the
+  seam plateau. Test un-ignored and passing (0 holes at every cut level + real
+  reduction). Bake/renderer suites green (33/301/34/36), fmt + clippy clean. A1 tick
+  pending on-device. **Still 0/6 headline verified** (no tick without on-device).
