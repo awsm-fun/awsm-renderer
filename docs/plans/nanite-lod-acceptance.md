@@ -77,7 +77,7 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
   console-readback of `selected`/drawn-index count at two source densities.
   _Current: depends on A2 (true multi-M source needs paging) → unmet._
 
-- [ ] **A4 — Deforming meshes use the discrete chain, per-instance, skin/morph carried.**
+- [x] **A4 — Deforming meshes use the discrete chain, per-instance, skin/morph carried.** ✅
   Skinned / morph-target meshes use the discrete LOD chain selected **per instance**;
   skin weights + morph targets are carried through to the simplified levels (each
   level is a strict vertex subset that still skins/morphs like level 0). A mixed
@@ -87,7 +87,19 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
   with remapped skin weights + morph targets present and consistent. (2) On-device
   mixed-scene screenshot at near/far distances showing per-instance level swaps with
   skinning/morph intact; console readback of selected level per instance.
-  _Current: shipped Phase A; re-verify on-device in this loop._
+  _Current: **✅ VERIFIED.** (1) Skin/morph carry-through: new bake test
+  `discrete_lod_carries_skin_and_morph_verbatim` (lib.rs) builds a discrete chain and
+  asserts gathered skin joints (u16×4) + weights (f32×4) + morph deltas (f32×3) are the
+  survivor's value **bit-identical** (subset, no interpolation). (2) Per-instance
+  selection: committed `lod::select_level` (lod.rs, coarsest level within a screen-error
+  px threshold; 6 tests) applied per instance by `update_lod_selection` (render.rs:2394);
+  skinned LOD via `skin_lod::period_for_distance` (tested). (3) On-device (2026-06-25,
+  `?vg&lod`): mixed scene = imported **CesiumMan** (skinned) + **AnimatedMorphCube**
+  (morph, kind `skinned_mesh`) + subdivided **Sphere** (static). Console shows the
+  **only** `cluster LOD (GPU)` line is the Sphere (30979b0a…, 13065 clusters) — the
+  deforming meshes are ABSENT from cluster LOD ⇒ routed to the discrete/deforming path,
+  not clusters. Screenshot: all three coexist + render correctly (textured morph cube,
+  skinned figure) in one frame. → **A4 ✅ MET.**_
 
 - [x] **A5 — Flags off ⇒ byte-identical (no non-LOD regression).** ✅
   With `lod` / `virtual_geometry` / `cluster_streaming` (and any new paging flag) all
@@ -226,3 +238,11 @@ honestly true. Grouped; each cites its verification.
   scene compiles NO Cluster Cut/Compaction pipelines (vs `?vg`), base mesh renders
   whole. Suites 301/34/36/34 green, fmt+clippy clean. **2/6 headline verified (A1, A5).**
   Next: A4 (mixed skinned/morph), then Gap B (A2/A3).
+- 2026-06-25 — **A4 ✅** deforming → discrete chain. New bake test
+  `discrete_lod_carries_skin_and_morph_verbatim` (bit-exact skin joints/weights + morph
+  delta carry-through); per-instance selection covered by committed `lod::select_level`
+  + `skin_lod` tests. On-device (`?vg&lod`): mixed CesiumMan (skinned) + AnimatedMorphCube
+  (morph) + static Sphere — only the Sphere is in `cluster LOD (GPU)`; deforming meshes
+  route to the discrete path; all three coexist + render. Suites 301/35/36/34 green, 0
+  ignored, fmt+clippy clean. **3/6 headline verified (A1, A4, A5).** Remaining: A2/A3
+  (Gap B dynamic paging) + A6 (benchmark).

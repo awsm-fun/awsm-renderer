@@ -141,6 +141,51 @@ mod tests {
         assert_eq!(gathered, m.surviving);
     }
 
+    /// A4 (north-star): the discrete LOD chain for deforming meshes carries skin
+    /// JOINTS/WEIGHTS and morph-target deltas through to a reduced level *verbatim*
+    /// — the simplifier only ever removes vertices, so a level is a strict subset
+    /// and `gather` re-indexes any per-vertex attribute with no interpolation (a
+    /// blended skin weight or corrupted morph delta would break deformation). This
+    /// pins exactly that for realistic skin/morph attribute types.
+    #[test]
+    fn discrete_lod_carries_skin_and_morph_verbatim() {
+        let (pos, indices) = grid(8, 8); // 128 tris, 81 verts
+        let n = pos.len();
+        // Realistic per-vertex deform attributes, each tagged by vertex id so a
+        // mismatch is detectable: skin joints (u16x4), skin weights (f32x4,
+        // normalized), and a morph-target delta (f32x3).
+        let joints: Vec<[u16; 4]> = (0..n as u16).map(|i| [i, i + 1, i + 2, i + 3]).collect();
+        let weights: Vec<[f32; 4]> = (0..n)
+            .map(|i| [i as f32, i as f32 + 0.5, 0.25, 0.75])
+            .collect();
+        let morph: Vec<[f32; 3]> = (0..n)
+            .map(|i| [i as f32 * 2.0, -(i as f32), i as f32 + 7.0])
+            .collect();
+
+        let levels = build_lod_chain(&pos, &indices, &[0.5, 0.25]);
+        assert_eq!(levels.len(), 2);
+        for lvl in &levels {
+            assert!(
+                lvl.triangle_count() < indices.len() / 3,
+                "level must reduce"
+            );
+            let gj = lvl.gather(&joints);
+            let gw = lvl.gather(&weights);
+            let gm = lvl.gather(&morph);
+            assert_eq!(gj.len(), lvl.surviving.len());
+            assert_eq!(gw.len(), lvl.surviving.len());
+            assert_eq!(gm.len(), lvl.surviving.len());
+            // Each gathered attribute is EXACTLY the survivor's original value —
+            // bit-identical, no interpolation, no reordering.
+            for (k, &orig) in lvl.surviving.iter().enumerate() {
+                let o = orig as usize;
+                assert_eq!(gj[k], joints[o], "joints corrupted at survivor {k}");
+                assert_eq!(gw[k], weights[o], "skin weights corrupted at survivor {k}");
+                assert_eq!(gm[k], morph[o], "morph delta corrupted at survivor {k}");
+            }
+        }
+    }
+
     #[test]
     fn target_at_or_above_base_is_identity() {
         let (pos, indices) = grid(3, 3);
