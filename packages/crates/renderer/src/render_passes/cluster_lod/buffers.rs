@@ -205,18 +205,20 @@ impl ClusterLodBuffers {
         gpu: &AwsmRendererWebGpu,
         first_index: u32,
         values: &[u32],
+        scratch: &mut Vec<u8>,
     ) -> Result<(), AwsmCoreError> {
         if values.is_empty() {
             return Ok(());
         }
-        let mut bytes = Vec::with_capacity(values.len() * 4);
+        // Serialize into the caller's pooled scratch — no per-frame heap alloc.
+        scratch.clear();
         for &v in values {
-            bytes.extend_from_slice(&v.to_le_bytes());
+            scratch.extend_from_slice(&v.to_le_bytes());
         }
         gpu.write_buffer(
             &self.source_indices_buffer,
             Some(first_index as usize * 4),
-            bytes.as_slice(),
+            scratch.as_slice(),
             None,
             None,
         )
@@ -259,13 +261,15 @@ impl ClusterLodBuffers {
         gpu: &AwsmRendererWebGpu,
         slot: usize,
         page: &ClusterPage,
+        scratch: &mut Vec<u8>,
     ) -> Result<(), AwsmCoreError> {
-        let mut bytes = Vec::with_capacity(CLUSTER_PAGE_GPU_STRIDE);
-        write_cluster_page_gpu(page, &mut bytes);
+        // Serialize into the caller's pooled scratch — no per-frame heap alloc.
+        scratch.clear();
+        write_cluster_page_gpu(page, scratch);
         gpu.write_buffer(
             &self.pages_buffer,
             Some(slot * CLUSTER_PAGE_GPU_STRIDE),
-            bytes.as_slice(),
+            scratch.as_slice(),
             None,
             None,
         )

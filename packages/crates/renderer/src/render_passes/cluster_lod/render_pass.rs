@@ -103,6 +103,10 @@ pub struct ClusterPaging {
     /// source indices, reused per stream.
     corner_scratch: Vec<u32>,
     src_idx_scratch: Vec<u32>,
+    /// Pooled byte staging for the per-slot GPU writes (page entry + source-indices
+    /// span), reused every stream so the buffer-write helpers don't allocate.
+    page_bytes_scratch: Vec<u8>,
+    src_bytes_scratch: Vec<u8>,
     /// `desired_flag[cluster_id]` = is this cluster in the current frame's desired
     /// cut. Pooled membership test for the eviction sweep (length = full DAG). Set
     /// from `desired` at the top of `stream_paging`, cleared at the end — so it is
@@ -162,6 +166,8 @@ impl ClusterPaging {
             slot_bytes_scratch: Vec::new(),
             corner_scratch: Vec::new(),
             src_idx_scratch: Vec::new(),
+            page_bytes_scratch: Vec::new(),
+            src_bytes_scratch: Vec::new(),
             desired_flag: vec![false; pages_len],
             page_verts,
         }
@@ -317,13 +323,17 @@ impl ClusterLodRenderPass {
             gp.parent_error = f32::MAX;
             gp.first_index = (slot * pv) as u32;
             gp.index_count = ic as u32;
-            buffers.write_page_entry(gpu, slot, &gp)?;
+            buffers.write_page_entry(gpu, slot, &gp, &mut p.page_bytes_scratch)?;
             p.src_idx_scratch.clear();
             for k in 0..ic {
                 p.src_idx_scratch.push((slot * pv + k) as u32);
             }
-            buffers
-                .write_source_indices_span(gpu, (slot * pv) as u32, &p.src_idx_scratch)?;
+            buffers.write_source_indices_span(
+                gpu,
+                (slot * pv) as u32,
+                &p.src_idx_scratch,
+                &mut p.src_bytes_scratch,
+            )?;
             // GPU resident is SLOT-indexed: mark this slot drawable (value = slot).
             buffers.write_resident_entry(gpu, slot, slot as i32)?;
             p.resident[cluster] = slot as i32;

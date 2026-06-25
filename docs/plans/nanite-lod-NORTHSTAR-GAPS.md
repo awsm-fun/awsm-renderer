@@ -170,7 +170,31 @@ restore the real cut; then the cut should select the CPU count.
 
 ---
 
-## A2 — dynamic per-frame paging (Gap B). UNMET (2 of 3 components verified on-device).
+## A2 — dynamic per-frame paging (Gap B). UNMET — functional core VERIFIED on-device; only the no-per-frame-alloc bar remains.
+
+**iter 36 — the per-frame stream/evict loop now WORKS bidirectionally, crack-free, in the bounded pool (commit `39162d0f`).**
+`ClusterLodRenderPass::stream_paging` (replaces the no-op `paging_update`): each frame it runs
+`select_cut_per_cluster` over the FULL DAG → `desired`, streams desired-not-resident clusters into
+free slots (capped MAX_LOADS=96/frame), and — once the whole desired cut is resident — evicts the
+resident-but-no-longer-desired slots so the resident set converges to EXACTLY the crack-free
+antichain. Two bugs fixed to make it take effect: (a) the GPU `resident` array is SLOT-indexed
+(shader reads `resident[i]` at the same `i` as `pages[i]`, sized to `pool_slots`) but
+`write_resident_entry` wrote at `cluster_id*4` (full-DAG ids ~10k) → overflowed the slot-sized
+buffer → GPUValidationError → write dropped → streaming silently no-op'd; now writes at `slot*4`.
+(b) eviction was missing (free-slots-only ⇒ draw could only rise + pool exhausts); eviction-when-
+stable added. **On-device (`?vg&paging`, 393k-tri subdivided sphere, WheelEvent dolly, browser
+healthy — 6478+ distinct colors, watertight screenshots): far `desired=294 draw=9450 (3150 tris)` →
+zoom-IN `desired=675 draw=34614 (11538 tris)` RISES → zoom-OUT `desired=268 draw=8736 (2912 tris)`
+FALLS, every frame watertight, all within the bounded `pool=1962` slots (full DAG=18030).**
+
+**Why STILL unmet (the one remaining bar): no per-frame heap allocations.** `stream_paging` itself
+uses pooled scratch (`slot_bytes_scratch`/`corner_scratch`/`src_idx_scratch`/`desired_flag`,
+`desired` reused), but the `buffers` write helpers it calls per streamed slot still allocate a
+`Vec<u8>` each (`write_source_indices_span`, `write_page_entry` serialize into a local `Vec`) — up to
+~96 allocs/frame. That violates `avoid-per-frame-allocations-standard`. **A2 is NOT ticked until
+those writes are pooled AND no-alloc is verified on-device via `?stress=N` + `?trace=sub-frame`.**
+(LRU is effectively moot — eviction only ever drops NON-desired slots, so which non-desired goes
+first doesn't affect correctness; `slot_last_used` is tracked if strict-LRU ordering is wanted.)
 
 **iter 31 on-device verification (browser healthy) — what's PROVEN working:**
 1. **Camera-driven cut refinement ✅** (`?vg`): dolly the camera IN ⇒ the drawn cut

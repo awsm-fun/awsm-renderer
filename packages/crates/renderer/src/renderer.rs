@@ -2436,7 +2436,12 @@ impl AwsmRenderer {
     ) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_ref() {
             if let Some(buffers) = pass.buffers.as_ref() {
-                buffers.write_source_indices_span(&self.gpu, first_index, values)?;
+                buffers.write_source_indices_span(
+                    &self.gpu,
+                    first_index,
+                    values,
+                    &mut Vec::new(),
+                )?;
             }
         }
         Ok(())
@@ -2469,7 +2474,7 @@ impl AwsmRenderer {
     ) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_ref() {
             if let Some(buffers) = pass.buffers.as_ref() {
-                buffers.write_page_entry(&self.gpu, slot, page)?;
+                buffers.write_page_entry(&self.gpu, slot, page, &mut Vec::new())?;
             }
         }
         Ok(())
