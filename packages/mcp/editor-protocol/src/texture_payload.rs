@@ -127,46 +127,10 @@ fn decode_b64_or_datauri(data: &str) -> Result<(Vec<u8>, Option<String>), String
     }
 }
 
-/// Build a solid-color `width × height` RGBA8 buffer (row-major, top-left
-/// origin) — each channel of `color` (`[0,1]` linear) clamped + quantized to a
-/// byte. The placeholder fill for `BakeMaterialToTexture` (a real material bake
-/// renders the shaded surface in UV space; that is the deferred GPU work — see
-/// the command docs). `bytes.len() == width * height * 4`.
-pub fn solid_rgba8(width: u32, height: u32, color: [f32; 4]) -> Vec<u8> {
-    let px: [u8; 4] = [
-        (color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
-    ];
-    let count = (width as usize) * (height as usize);
-    let mut out = Vec::with_capacity(count * 4);
-    for _ in 0..count {
-        out.extend_from_slice(&px);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use base64::Engine;
-
-    #[test]
-    fn solid_rgba8_fills_uniformly() {
-        let bytes = solid_rgba8(4, 2, [1.0, 0.0, 0.5, 1.0]);
-        assert_eq!(bytes.len(), 4 * 2 * 4);
-        // Every pixel is the same RGBA (red=255, green=0, blue≈128, alpha=255).
-        for px in bytes.chunks_exact(4) {
-            assert_eq!(px[0], 255);
-            assert_eq!(px[1], 0);
-            assert_eq!(px[2], 128);
-            assert_eq!(px[3], 255);
-        }
-        // Out-of-range channels clamp.
-        let clamped = solid_rgba8(1, 1, [2.0, -1.0, 0.0, 5.0]);
-        assert_eq!(clamped, vec![255, 0, 0, 255]);
-    }
 
     fn b64(bytes: &[u8]) -> String {
         base64::engine::general_purpose::STANDARD.encode(bytes)

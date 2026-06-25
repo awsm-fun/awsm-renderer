@@ -1957,68 +1957,6 @@ impl EditorController {
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::Batch(inverse)))
             }
-            EditorCommand::BakeMaterialToTexture {
-                node,
-                width,
-                height,
-                color,
-                out,
-            } => {
-                use awsm_renderer_editor_protocol::{solid_rgba8, TexturePayload};
-                // Bounds: reject degenerate / oversized targets up front.
-                if width == 0 || height == 0 || width > 4096 || height > 4096 {
-                    return Err(crate::error::EditorError::msg(format!(
-                        "bake_material_to_texture: width/height {width}x{height} out of range (1..=4096)"
-                    )));
-                }
-                // Resolve the fill: explicit `color` > the node's built-in
-                // base_color > mid-gray. (PLACEHOLDER — a real material bake
-                // renders the shaded surface in UV space; that offscreen
-                // UV-space pass is deferred, see the command docs / plan.)
-                let color = color.unwrap_or_else(|| {
-                    mutate::find_by_id(&self.scene, node)
-                        .and_then(|n| match n.kind.get_cloned() {
-                            NodeKind::Mesh {
-                                material: Some(mi), ..
-                            } => Some(mi.inline.base_color),
-                            _ => None,
-                        })
-                        .unwrap_or([0.5, 0.5, 0.5, 1.0])
-                });
-                let id = out.unwrap_or_else(AssetId::new);
-                if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
-                    return Ok(None); // idempotent replay
-                }
-                let bytes = solid_rgba8(width, height, color);
-                let _activity =
-                    crate::engine::activity::begin_activity("Baking material to texture…");
-                match crate::engine::bridge::material::create_texture(
-                    id,
-                    TexturePayload::RawRgba8 {
-                        bytes,
-                        width,
-                        height,
-                    },
-                    false,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        self.scene.assets.lock().unwrap().entries.insert(
-                            id,
-                            AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
-                                display_name: format!("baked-{}", &id.to_string()[..8]),
-                            })),
-                        );
-                        self.scene.bump_revision();
-                        self.asset_selection.set(Some(id));
-                        self.dirty.set_neq(true);
-                        Toast::info("Baked material → texture (solid placeholder)");
-                        Ok(Some(EditorCommand::DeleteAsset { id }))
-                    }
-                    Err(e) => Err(crate::error::EditorError::msg(format!("bake failed: {e}"))),
-                }
-            }
             EditorCommand::SetAssetSelection { id } => {
                 self.asset_selection.set(id);
                 Ok(None)

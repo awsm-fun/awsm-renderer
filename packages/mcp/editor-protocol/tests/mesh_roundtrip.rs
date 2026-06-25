@@ -411,49 +411,6 @@ fn separate_mesh_command_json_roundtrip() {
 }
 
 #[test]
-fn bake_material_to_texture_command_json_roundtrip() {
-    use awsm_renderer_editor_protocol::{EditorCommand, NodeId};
-    let cmd = EditorCommand::BakeMaterialToTexture {
-        node: NodeId::new(),
-        width: 256,
-        height: 256,
-        color: Some([0.1, 0.2, 0.3, 1.0]),
-        out: Some(AssetId::new()),
-    };
-    let json = serde_json::to_string(&cmd).expect("serialize");
-    assert!(
-        json.contains("\"cmd\":\"bake_material_to_texture\""),
-        "tag missing: {json}"
-    );
-    let back: EditorCommand = serde_json::from_str(&json).expect("deserialize");
-    match back {
-        EditorCommand::BakeMaterialToTexture {
-            width,
-            height,
-            color,
-            ..
-        } => {
-            assert_eq!((width, height), (256, 256));
-            assert_eq!(color, Some([0.1, 0.2, 0.3, 1.0]));
-        }
-        other => panic!("expected BakeMaterialToTexture, got {other:?}"),
-    }
-    // Minimal form: color/out default to None.
-    let json = format!(
-        "{{\"cmd\":\"bake_material_to_texture\",\"node\":\"{}\",\"width\":64,\"height\":64}}",
-        NodeId::new()
-    );
-    let back: EditorCommand = serde_json::from_str(&json).expect("deserialize minimal");
-    match back {
-        EditorCommand::BakeMaterialToTexture { color, out, .. } => {
-            assert!(color.is_none());
-            assert!(out.is_none());
-        }
-        other => panic!("expected BakeMaterialToTexture, got {other:?}"),
-    }
-}
-
-#[test]
 fn mesh_asset_filename_is_stable() {
     // The filename helper is the side-table addressing contract — it
     // must produce the same string for the same AssetId on every call,

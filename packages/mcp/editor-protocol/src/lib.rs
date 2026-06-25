@@ -54,7 +54,7 @@ pub use query::{
     SettledResult, StatsResult, TextureSnapshot, TimeseriesFrame, TimeseriesResult, TrackSnapshot,
     VertexPredicate,
 };
-pub use texture_payload::{decode_texture_payload, solid_rgba8, TexturePayload};
+pub use texture_payload::{decode_texture_payload, TexturePayload};
 pub use transport::{EditorEvent, PngHandle, Request, Response, WsClientMsg, WsServerMsg};
 
 // Re-export the meshgen recipe types so editor + mcp callers that build/send a
