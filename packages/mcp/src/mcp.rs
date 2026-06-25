@@ -301,6 +301,21 @@ pub struct SetVertexNormalsParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetVertexUvsParams {
+    /// UUID of the editable mesh asset.
+    pub mesh: String,
+    /// Vertex indices to set UVs on (omit when using `selection`).
+    #[serde(default)]
+    pub indices: Vec<u32>,
+    /// UV coordinates [u, v], aligned with `indices` (or with the `selection`
+    /// handle's stored order). `uvs[k]` is written to vertex `indices[k]`.
+    pub uvs: Vec<[f32; 2]>,
+    /// §10: a selection HANDLE id supplying the target indices instead of `indices`.
+    #[serde(default)]
+    pub selection: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DisplaceFromTextureParams {
     /// UUID of the geometry node to displace.
     pub node: String,
@@ -2307,6 +2322,22 @@ impl EditorMcp {
             mesh: parse_asset(&p.mesh)?,
             indices: p.indices,
             normal: p.normal,
+            selection: p.selection,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Author per-vertex UVs (TEXCOORD_0) on an editable mesh — the write verb that completes the per-vertex authoring family (positions/colors/normals already had one). `mesh` is the mesh asset UUID; `indices` are vertex indices (into the resolved/baked topology — get them from select_vertices_where or get_mesh_data); `uvs[k]` is the [u,v] written to `indices[k]` (per-vertex parallel arrays, so a whole continuous strip parameterization lands in one call). Use this to lay a continuous strip UV (travel along one axis) for conveyor/tread/road scrolling — see the 'Geometry-locked scroll' recipe in `awsm://docs/material-recipes`, and pair with strip_parameterize to compute (along, across) coords. TERMINAL/COLLAPSE: the first per-vertex authoring op freezes the procedural stack to a Captured base (topology locks). The bake creates the UV channel if the mesh had none. Single UV set (0). Re-bakes; verify with get_vertex_data."
+    )]
+    async fn set_vertex_uvs(
+        &self,
+        Parameters(p): Parameters<SetVertexUvsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetVertexUvs {
+            mesh: parse_asset(&p.mesh)?,
+            indices: p.indices,
+            uvs: p.uvs,
             selection: p.selection,
         })
         .await

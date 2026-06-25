@@ -1642,6 +1642,25 @@ impl EditorController {
                 })?;
                 Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
             }
+            EditorCommand::SetVertexUvs {
+                mesh,
+                indices,
+                uvs,
+                selection,
+            } => {
+                let indices = resolve_vertex_selection_or(selection, indices)?;
+                // Per-index parallel-array write (mirrors SetVertexPositions): the
+                // bake applies `overrides.uvs`, creating the UV channel if absent.
+                let collapse = self.ensure_authorable(mesh)?;
+                let prior = self.apply_vertex_overrides(mesh, |ov| {
+                    for (k, &idx) in indices.iter().enumerate() {
+                        if let Some(uv) = uvs.get(k) {
+                            ov.uvs.insert(idx, *uv);
+                        }
+                    }
+                })?;
+                Ok(Some(self.overrides_inverse(mesh, prior, collapse)))
+            }
             EditorCommand::SetVertexOverrides { mesh, overrides } => {
                 let collapse = self.ensure_authorable(mesh)?;
                 let prior = self.apply_vertex_overrides(mesh, |ov| {

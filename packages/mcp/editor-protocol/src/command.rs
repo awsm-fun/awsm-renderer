@@ -647,6 +647,23 @@ pub enum EditorCommand {
         #[serde(default)]
         selection: Option<u32>,
     },
+    /// Set the per-vertex **UV** override (TEXCOORD_0) of `indices` to `uvs`.
+    /// `indices[k]` gets `uvs[k]` — a per-vertex parallel-array write (mirrors
+    /// `SetVertexPositions`), so a continuous strip parameterization can be
+    /// authored in one call. The closing gap in the per-vertex authoring family:
+    /// positions/colors/normals already had verbs, UVs did not. Same
+    /// collapse-first / re-bake / terminal semantics as the others (the bake
+    /// already consumes `overrides.uvs`, creating the channel if absent). Inverse:
+    /// restore the prior overrides. Single UV set (0) only.
+    SetVertexUvs {
+        mesh: AssetId,
+        #[serde(default)]
+        indices: Vec<u32>,
+        uvs: Vec<[f32; 2]>,
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
+    },
     /// §16: displace a node's mesh by an agent-authored **heightmap image** — the
     /// generic "supply your own heightfield" hook. `data` is a base64 / `data:`
     /// image (decoded to RGBA in the bridge); each vertex is offset along its
@@ -1146,6 +1163,7 @@ impl EditorCommand {
                 | EditorCommand::CollapseMeshStack { .. }
                 | EditorCommand::PaintVertexColors { .. }
                 | EditorCommand::SetVertexNormals { .. }
+                | EditorCommand::SetVertexUvs { .. }
                 | EditorCommand::SetVertexOverrides { .. }
                 | EditorCommand::BakeAll {}
         )
@@ -1212,6 +1230,7 @@ impl EditorCommand {
             EditorCommand::PaintVerticesWhere { .. } => "Paint vertices (where)",
             EditorCommand::TransformVerticesWhere { .. } => "Transform vertices (where)",
             EditorCommand::SetVertexNormals { .. } => "Set vertex normals",
+            EditorCommand::SetVertexUvs { .. } => "Set vertex UVs",
             EditorCommand::DisplaceFromTexture { .. } => "Displace from texture",
             EditorCommand::SetVertexOverrides { .. } => "Set vertex overrides",
             EditorCommand::BakeAll {} => "Bake all meshes",

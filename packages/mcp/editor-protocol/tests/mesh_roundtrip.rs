@@ -252,6 +252,55 @@ fn mesh_asset_with_source_roundtrip() {
 }
 
 #[test]
+fn vertex_overrides_uvs_roundtrip() {
+    // The UV override channel is what `SetVertexUvs` writes (the closing gap in
+    // the per-vertex authoring family). A "drop the uvs map" regression would
+    // silently lose authored strip parameterizations — exercise JSON + bitcode.
+    use awsm_renderer_editor_protocol::VertexOverrides;
+    let mut ov = VertexOverrides::default();
+    ov.uvs.insert(0, [0.0, 0.0]);
+    ov.uvs.insert(1, [1.0, 0.0]);
+    ov.uvs.insert(7, [0.5, 0.25]);
+    ov.colors.insert(3, [1.0, 0.0, 0.0, 1.0]);
+
+    let json = serde_json::to_string(&ov).expect("json serialize");
+    let back: VertexOverrides = serde_json::from_str(&json).expect("json deserialize");
+    assert_eq!(ov, back, "JSON drift");
+    assert_eq!(back.uvs.get(&7), Some(&[0.5, 0.25]));
+
+    let bytes = bitcode::serialize(&ov).expect("bitcode serialize");
+    let back: VertexOverrides = bitcode::deserialize(&bytes).expect("bitcode deserialize");
+    assert_eq!(ov, back, "bitcode drift");
+    assert!(!back.is_empty());
+}
+
+#[test]
+fn set_vertex_uvs_command_json_roundtrip() {
+    // The new write verb must survive the dispatch wire (serde-tagged JSON).
+    use awsm_renderer_editor_protocol::EditorCommand;
+    let cmd = EditorCommand::SetVertexUvs {
+        mesh: AssetId::new(),
+        indices: vec![0, 1, 2],
+        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        selection: None,
+    };
+    let json = serde_json::to_string(&cmd).expect("json serialize");
+    // Tagged with `cmd` like every other EditorCommand.
+    assert!(
+        json.contains("\"cmd\":\"set_vertex_uvs\""),
+        "tag missing: {json}"
+    );
+    let back: EditorCommand = serde_json::from_str(&json).expect("json deserialize");
+    match back {
+        EditorCommand::SetVertexUvs { indices, uvs, .. } => {
+            assert_eq!(indices, vec![0, 1, 2]);
+            assert_eq!(uvs, vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]);
+        }
+        other => panic!("expected SetVertexUvs, got {other:?}"),
+    }
+}
+
+#[test]
 fn mesh_asset_filename_is_stable() {
     // The filename helper is the side-table addressing contract — it
     // must produce the same string for the same AssetId on every call,

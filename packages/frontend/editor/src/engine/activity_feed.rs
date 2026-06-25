@@ -213,6 +213,7 @@ pub fn command_mode(cmd: &EditorCommand) -> Option<EditorMode> {
         | C::RemoveModifier { .. }
         | C::SetVertexPositions { .. }
         | C::SetVertexNormals { .. }
+        | C::SetVertexUvs { .. }
         | C::PaintVertexColors { .. }
         | C::SoftTransformVertices { .. }
         | C::SetVertexOverrides { .. }
@@ -349,6 +350,9 @@ fn describe(cmd: &EditorCommand) -> Option<(FocusTarget, String)> {
             F::Viewport,
             format!("set normals on {}", verts(indices.len())),
         ),
+        EditorCommand::SetVertexUvs { indices, .. } => {
+            (F::Viewport, format!("set UVs on {}", verts(indices.len())))
+        }
         EditorCommand::SetVertexOverrides { .. } => (F::Viewport, "edited vertex data".to_string()),
         EditorCommand::CollapseMeshStack { .. } => (F::Viewport, "baked a mesh".to_string()),
         EditorCommand::BakeAll {} => (F::Viewport, "baked all meshes".to_string()),
