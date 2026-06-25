@@ -2038,9 +2038,15 @@ fn build_slot_geometry(
     resident: &[i32],
     page_verts: usize,
 ) -> (Vec<u32>, Vec<u32>) {
+    // Allocate `num_slots` slots (slot ids are 0..num_slots-1 for the contiguous
+    // identity residency the loader builds). BOTH buffers are SLOT-ALIGNED: slot `s`
+    // owns `[s*page_verts, (s+1)*page_verts)` in each. That lets the per-frame
+    // streamer rewrite ONE slot's geometry + draw-indices independently (Gap B
+    // 20b-iv). A page's `first_index` is therefore `slot*page_verts` (set by the
+    // caller), and the compaction reads its first `index_count` entries.
     let num_slots = resident.iter().filter(|&&s| s >= 0).count();
     let mut slot_indices = vec![0u32; num_slots * page_verts];
-    let mut source_indices: Vec<u32> = Vec::new();
+    let mut source_indices = vec![0u32; num_slots * page_verts];
     for (c, &(first_index, index_count)) in page_spans.iter().enumerate() {
         let slot = resident[c];
         if slot < 0 {
@@ -2052,9 +2058,9 @@ fn build_slot_geometry(
         let pad = if ic > 0 { m_indices[f] } else { 0 };
         for k in 0..page_verts {
             slot_indices[base + k] = if k < ic { m_indices[f + k] } else { pad };
-        }
-        for k in 0..ic {
-            source_indices.push((base + k) as u32);
+            // Slot-relative draw index for k<ic; the slot's remaining region is
+            // padding the page (index_count=ic) never reads — point it at the slot base.
+            source_indices[base + k] = (base + if k < ic { k } else { 0 }) as u32;
         }
     }
     (slot_indices, source_indices)
@@ -2230,10 +2236,12 @@ async fn load_cluster_lod(
             .iter()
             .map(|p| (p.first_index, p.index_count))
             .collect();
-        let (mut slot_indices, slot_source) =
+        let (mut slot_indices, mut slot_source) =
             build_slot_geometry(&page_spans, &m_indices, &plan.resident, CLUSTER_PAGE_VERTS);
-        // Pad M to `pool_slots` (spare slots = empty exploded verts, never drawn).
+        // Pad M + slot-aligned source_indices to `pool_slots` (spare slots = empty
+        // exploded verts + unused source region, never drawn; filled on stream-in).
         slot_indices.resize(pool_slots * CLUSTER_PAGE_VERTS, 0);
+        slot_source.resize(pool_slots * CLUSTER_PAGE_VERTS, 0);
         // Pad the GPU pages + resident table to `pool_slots`: spare pages draw nothing
         // (index_count 0) and are skipped by the cut (resident `-1`).
         let spare_page = awsm_renderer::cluster_lod::ClusterPage {
@@ -2250,6 +2258,12 @@ async fn load_cluster_lod(
         };
         let mut gpu_pages_pool = gpu_pages.clone();
         gpu_pages_pool.resize(pool_slots, spare_page);
+        // source_indices is now SLOT-ALIGNED ⇒ each frontier page's draw span starts at
+        // its slot: first_index = slot*PAGE_VERTS (was the m_indices offset). Residency
+        // is identity here (resident[c]=c), so page c lives in slot c.
+        for (c, page) in gpu_pages_pool.iter_mut().take(frontier).enumerate() {
+            page.first_index = (c * CLUSTER_PAGE_VERTS) as u32;
+        }
         let mut resident_pool = plan.resident.clone();
         resident_pool.resize(pool_slots, -1);
         renderer.upload_cluster_pages(&gpu_pages_pool, &slot_source)?;
@@ -3088,13 +3102,16 @@ mod cluster_streaming_tests {
         let (slot_indices, source_indices) = build_slot_geometry(&spans, &m_indices, &resident, 4);
         // slot 0 = C0 verts + pad(first=10); slot 1 = C1 verts + pad(first=20).
         assert_eq!(slot_indices, vec![10, 11, 12, 10, 20, 21, 22, 20]);
-        // source is per-cluster-contiguous (page order) with SLOT-RELATIVE values.
-        assert_eq!(source_indices, vec![0, 1, 2, 4, 5, 6]);
-        // Round-trip: each page's [first_index, +index_count) of source, mapped
-        // through slot_indices, reconstructs the cluster's ORIGINAL position indices.
-        for &(f, ic) in &spans {
+        // source is SLOT-ALIGNED now (slot s owns [s*4, s*4+4)), slot-relative values;
+        // the per-slot pad entry (k>=ic) points at the slot base (never read by the cut).
+        assert_eq!(source_indices, vec![0, 1, 2, 0, 4, 5, 6, 4]);
+        // Round-trip: each page's source span is [slot*page_verts, +index_count) (the
+        // loader sets page.first_index = slot*page_verts); mapped through slot_indices
+        // it reconstructs the cluster's ORIGINAL position indices.
+        for (c, &(f, ic)) in spans.iter().enumerate() {
             let (f, ic) = (f as usize, ic as usize);
-            let drawn: Vec<u32> = source_indices[f..f + ic]
+            let slot_first = resident[c] as usize * 4;
+            let drawn: Vec<u32> = source_indices[slot_first..slot_first + ic]
                 .iter()
                 .map(|&s| slot_indices[s as usize])
                 .collect();
