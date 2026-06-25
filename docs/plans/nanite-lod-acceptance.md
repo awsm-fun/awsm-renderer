@@ -20,7 +20,7 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
 
 ## Mandated headline claims (A1–A6)
 
-- [ ] **A1 — Per-cluster cluster cut, crack-free, incl. non-watertight / subdivided.**
+- [x] **A1 — Per-cluster cluster cut, crack-free, incl. non-watertight / subdivided.** ✅
   Static rigid meshes render via the per-cluster GPU cut with no cracks, *including*
   non-watertight / midpoint-subdivided meshes. The subdivided-sphere repro
   (`meshgen sphere` + `Subdivide×4`, ~262k→550k-DAG-tris) renders **watertight at
@@ -32,7 +32,7 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
   watertight at orbit radius ~2, both uncapped and `?streambudget`; cut-coverage
   GPU readback shows every surface region has a selected cluster. Real-asset
   (DamagedHelmet) output **unchanged** (regression guard).
-  _Current: **UNCAPPED verified (bake fix + on-device); CAPPED still tears → A1 UNTICKED.**
+  _Current: **✅ VERIFIED — uncapped AND capped crack-free (on-device + unit tests).**
   (1) Bake fix landed (`simplify::weld_coincident` + `lock_boundaries` via
   `with_target_locked`); unit test `non_watertight_sphere_cut_is_closed_at_every_level`
   passes (0 holes at every cut level + real reduction). (2) **On-device (2026-06-25):**
@@ -44,10 +44,15 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
   583768 source). (3) **CAPPED FAILS:** under `?streambudget=8000` the sphere renders
   with **visible holes / sliver tears** — the static cap's PARTIAL frontier (hard tri
   budget cutting mid-level) borders coarser-only regions and seams. Reproduced
-  deterministically: `scene-loader` `capped_resident_cut_is_crack_free` (`#[ignore]`d,
-  A1-capped gap) → 50 hole edges at budget 1512. Fix = make `select_resident_clusters`
-  pick a COMPLETE antichain frontier (finest uniform-threshold cut within budget; soft
-  budget), not a hard-tri partial cut. → A1 unmet until capped is crack-free._
+  deterministically (`capped_resident_cut_is_crack_free`, 50 hole edges @ budget 1512).
+  **FIXED:** `select_resident_clusters` now selects the finest COMPLETE-antichain cut
+  within budget (soft budget; frontier emitted always-drawn, lod_error=0/parent_error=MAX)
+  instead of a hard-tri partial frontier; the capped test passes (`cap_to_two_tris…`
+  updated to expect the complete leaf antichain). **On-device re-verify (editor rebuilt):**
+  `?vg&streambudget=8000` renders **watertight** (screenshot, no holes); console
+  `cluster LOD (GPU): …(476 resident), M = 7996 tris (CAPPED from 583768 — budget 8000),
+  per-cluster cut drives draw`. Over-budget branch only — flag-off/under-budget stays
+  verbatim passthrough (no regression). → **A1 ✅ MET.**_
 
 - [ ] **A2 — Dynamic, camera-driven streaming residency.**
   A genuinely multi-million-tri asset renders full detail near the camera within a
@@ -200,3 +205,11 @@ honestly true. Grouped; each cites its verification.
   seam in `select_resident_clusters`). Encoded as `#[ignore]`d failing test
   `capped_resident_cut_is_crack_free` (50 hole edges @ budget 1512). A1 stays UNTICKED;
   next = complete-antichain residency fix. **Still 0/6 headline verified.**
+- 2026-06-25 — **A1 ✅ COMPLETE.** Fixed the capped frontier seam:
+  `select_resident_clusters` now selects the finest complete-antichain cut within
+  budget (soft budget, always-drawn frontier) — `capped_resident_cut_is_crack_free`
+  passes, `cap_to_two_tris…` updated. On-device (editor rebuilt): `?streambudget=8000`
+  subdivided sphere renders **watertight** (476 resident clusters, M=7996/8000 tris,
+  per-cluster cut drives draw). Both A1 clauses now verified. Suites green
+  (301/34/36/34, 0 ignored), fmt+clippy clean. **1/6 headline verified (A1).** Next: Gap B
+  (A2/A3 dynamic per-frame paging) behind a default-off flag.

@@ -1852,12 +1852,11 @@ const CLUSTER_STREAMING_BUDGET_TRIS: usize = 1_000_000;
 /// flag off, or a small mesh), returns every cluster with `cm.indices` verbatim,
 /// so the result is byte-identical to the non-streaming path.
 ///
-/// A child cluster `x` records `x.parent_error == parent.lod_error` (the DAG's
-/// tiling invariant), so "cluster `c` has a resident child" ⇔ `c.lod_error` is
-/// some resident cluster's `parent_error`. Residency is an `lod_error` frontier,
-/// so it follows the cut's own error ordering; any seam at the frontier between
-/// differing resident levels is the documented residual gap that true per-frame
-/// paging (stream finer clusters on demand) closes.
+/// Over budget, the resident set is the finest **complete-antichain** cut that
+/// fits (a uniform-error-threshold cut over the DAG, which the bake guarantees is
+/// crack-free) — a SOFT budget. This is watertight at every camera distance, unlike
+/// the older hard-tri cap that left a partial frontier and seamed. Per-frame paging
+/// (Gap B) later restores *within-mesh* camera-driven detail on top of this.
 fn select_resident_clusters(
     cm: &awsm_renderer_lod_bake::ClusterMesh,
     budget_tris: usize,
@@ -1884,54 +1883,61 @@ fn select_resident_clusters(
             .collect();
         return (pages, cm.indices.clone());
     }
-    // Accumulate the resident set coarsest-first (largest lod_error) until the
-    // triangle budget — a HARD cap (not an `lod_error >= E_min` threshold, which
-    // would re-include the whole frontier level and bust the budget). Coarse
-    // levels are tiny so they all fit; the budget cuts off partway through the
-    // finest included level, so only that frontier level is partial. Always keep
-    // at least the single coarsest cluster.
-    let mut by_err: Vec<usize> = (0..cm.clusters.len()).collect();
-    by_err.sort_by(|&a, &b| {
-        cm.clusters[b]
-            .lod_error
-            .partial_cmp(&cm.clusters[a].lod_error)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Pick a COMPLETE-ANTICHAIN frontier, not a hard-tri partial cut. The runtime
+    // per-cluster cut at a uniform error threshold `T` selects exactly
+    // `{c : c.lod_error <= T < c.parent_error}` — a crack-free antichain, because
+    // the bake guarantees each root→leaf path's `[lod_error, parent_error)`
+    // intervals tile `[0, ∞)` (one cluster per path contains `T`). A *partial*
+    // frontier (the old hard-tri cap, which cut off mid-level) borders coarser-only
+    // regions and tears; a whole antichain never does. So: evaluate the cut at each
+    // candidate threshold and keep the FINEST (smallest `T` ⇒ most detail) whose
+    // triangle count fits the budget — a SOFT budget (we may undershoot to stay
+    // whole). Candidate thresholds are the clusters' own `lod_error` breakpoints
+    // (the level boundaries); ascending `T` ⇒ monotonically coarser/cheaper cuts.
+    let mut thresholds: Vec<f32> = cm.clusters.iter().map(|c| c.lod_error).collect();
+    thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    thresholds.dedup();
+
     let budget_idx = budget_tris * 3;
-    let mut resident = vec![false; cm.clusters.len()];
-    let mut acc = 0usize;
-    for &i in &by_err {
-        let ic = cm.clusters[i].index_count as usize;
-        if acc > 0 && acc + ic > budget_idx {
+    let cut_at = |t: f32| -> (usize, Vec<usize>) {
+        let mut idx = 0usize;
+        let mut sel = Vec::new();
+        for (i, c) in cm.clusters.iter().enumerate() {
+            if c.lod_error <= t && t < c.parent_error {
+                idx += c.index_count as usize;
+                sel.push(i);
+            }
+        }
+        (idx, sel)
+    };
+
+    // Finest threshold whose whole cut fits; fall back to the coarsest cut (the
+    // roots — always tiny) if even that overflows, so we never return empty.
+    let mut chosen: Option<Vec<usize>> = None;
+    for &t in &thresholds {
+        let (idx, sel) = cut_at(t);
+        if idx <= budget_idx && !sel.is_empty() {
+            chosen = Some(sel);
             break;
         }
-        resident[i] = true;
-        acc += ic;
     }
-    // A resident cluster is a LEAF (no resident DAG child) iff its `lod_error` is
-    // not some resident cluster's `parent_error`. Leaves clamp to 0 so the cut
-    // covers all budgets below them (watertight close-up at the capped detail).
-    // (Seams where the partial frontier level borders coarser-only regions are the
-    // documented residual gap that per-frame paging closes.)
-    let resident_parent_errors: std::collections::HashSet<u32> = cm
-        .clusters
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| resident[*i])
-        .map(|(_, c)| c.parent_error.to_bits())
-        .collect();
-    let mut m_indices: Vec<u32> = Vec::with_capacity(acc);
+    let sel = chosen.unwrap_or_else(|| cut_at(*thresholds.last().unwrap()).1);
+
+    // Emit the frontier as an always-drawn cut: `lod_error = 0` and
+    // `parent_error = MAX` so the runtime selects every resident cluster at any
+    // camera distance (the resident set is the *only* representation — never
+    // refined past it, never coarsened below it). The antichain tiles the surface,
+    // so the draw is watertight at all distances and bounded by the budget.
+    let mut m_indices: Vec<u32> = Vec::new();
     let mut pages = Vec::new();
-    for (i, c) in cm.clusters.iter().enumerate() {
-        if !resident[i] {
-            continue;
-        }
+    for &i in &sel {
+        let c = &cm.clusters[i];
         let first_index = m_indices.len() as u32;
         let s = c.first_index as usize;
         m_indices.extend_from_slice(&cm.indices[s..s + c.index_count as usize]);
-        let is_leaf = !resident_parent_errors.contains(&c.lod_error.to_bits());
-        let lod_error = if is_leaf { 0.0 } else { c.lod_error };
-        pages.push(to_page(c, first_index, lod_error));
+        let mut page = to_page(c, first_index, 0.0);
+        page.parent_error = f32::MAX;
+        pages.push(page);
     }
     (pages, m_indices)
 }
@@ -2728,11 +2734,10 @@ mod cluster_streaming_tests {
     /// still be crack-free. The capped resident set, cut at the closest camera
     /// (threshold 0 ⇒ all resident leaves), must weld to a closed surface — a torn
     /// "partial frontier" (a hard tri budget cutting mid-level) shows up as open
-    /// edges. REPRODUCES the on-device subdivided-sphere holes seen under
-    /// `?streambudget=8000` (full/uncapped cut is already crack-free after the bake
-    /// fix). Fix = make the resident set a COMPLETE antichain (soft budget).
+    /// edges. Was the on-device subdivided-sphere holes under `?streambudget=8000`;
+    /// fixed by selecting a COMPLETE antichain (`select_resident_clusters`, soft
+    /// budget) instead of a hard-tri partial frontier.
     #[test]
-    #[ignore = "north-star gap: A1 capped — static cap leaves a partial frontier that tears; needs complete-antichain residency"]
     fn capped_resident_cut_is_crack_free() {
         let (pos, indices) = uv_sphere(48, 32);
         let weld = weld_ids(&pos, 1e-3);
@@ -2825,19 +2830,18 @@ mod cluster_streaming_tests {
     }
 
     #[test]
-    fn cap_to_two_tris_partial_finest_level_remaps_and_clamps_leaves() {
+    fn cap_to_two_tris_selects_the_complete_leaf_antichain() {
         let cm = fixture();
-        // Budget 2 tris: root C2 + one finest leaf C0. C2 now HAS a resident child
-        // (C0), so it is not clamped; C0 is a leaf (error already 0). Hard cap is
-        // honoured (2 resident tris, C1 dropped).
+        // Budget 2 tris: the finest complete antichain that fits is BOTH leaves
+        // {C0, C1} (2 tris) — NOT the old partial {root C2 + one leaf C0}, which
+        // tore (C1's region covered only by the coarse root while C0 was fine).
+        // The whole leaf level tiles the surface ⇒ crack-free; budget honoured.
         let (pages, m_indices) = select_resident_clusters(&cm, 2);
         assert_eq!(pages.len(), 2);
-        assert_eq!(m_indices.len(), 6); // 2 tris, budget honoured
-                                        // Pages are emitted in cluster order (C0 then C2), remapped contiguously.
-        assert_eq!(m_indices, vec![0, 1, 2, 6, 7, 8]);
-        assert_eq!(pages[0].first_index, 0);
-        assert_eq!(pages[0].lod_error, 0.0); // C0 leaf
-        assert_eq!(pages[1].first_index, 3);
-        assert_eq!(pages[1].lod_error, 5.0); // C2 NOT clamped (has resident child C0)
+        assert_eq!(m_indices, vec![0, 1, 2, 3, 4, 5]); // C0 then C1, remapped
+        for p in &pages {
+            assert_eq!(p.lod_error, 0.0); // always-drawn frontier
+            assert_eq!(p.parent_error, f32::MAX);
+        }
     }
 }
