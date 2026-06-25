@@ -1996,6 +1996,55 @@ fn plan_page_pool(
     }
 }
 
+/// Pack each resident cluster's geometry into a fixed `page_verts`-sized page-pool
+/// slot (Gap B step 2). Returns `(slot_indices, source_indices)`:
+/// - `slot_indices`: the vertex-attribute index buffer for the cluster render mesh
+///   `M`, padded so slot `s` occupies `[s*page_verts, s*page_verts+page_verts)`;
+///   a cluster's `index_count` indices sit at the slot start, the remainder repeats
+///   the first (a degenerate vert that is never indexed by the draw). The renderer
+///   explodes `M` in this order, so slot `s`'s exploded verts are self-contained
+///   and swappable independently — the basis of paging.
+/// - `source_indices`: per-cluster-contiguous (page order, so each page's existing
+///   `first_index` still addresses it), with **slot-relative values**
+///   `s*page_verts + k` that the compaction copies into the draw stream.
+///
+/// Under full residency (`resident[c] = c`'s slot, no `-1`) the drawn triangle set
+/// is unchanged — only the vertex buffer is slot-laid-out + padded — so the render
+/// is identical; eviction later overwrites a slot without touching its neighbours.
+/// `page_spans[c] = (first_index, index_count)` of cluster `c` in `m_indices`
+/// (each `ClusterPage`'s span). Decoupled from `ClusterPage` so it's testable
+/// without constructing GPU page structs.
+// Wired into `load_cluster_lod` under `cluster_paging` in step 2b (slot-relative
+// upload); unit-tested now.
+#[allow(dead_code)]
+fn build_slot_geometry(
+    page_spans: &[(u32, u32)],
+    m_indices: &[u32],
+    resident: &[i32],
+    page_verts: usize,
+) -> (Vec<u32>, Vec<u32>) {
+    let num_slots = resident.iter().filter(|&&s| s >= 0).count();
+    let mut slot_indices = vec![0u32; num_slots * page_verts];
+    let mut source_indices: Vec<u32> = Vec::new();
+    for (c, &(first_index, index_count)) in page_spans.iter().enumerate() {
+        let slot = resident[c];
+        if slot < 0 {
+            continue;
+        }
+        let base = slot as usize * page_verts;
+        let f = first_index as usize;
+        let ic = (index_count as usize).min(page_verts);
+        let pad = if ic > 0 { m_indices[f] } else { 0 };
+        for k in 0..page_verts {
+            slot_indices[base + k] = if k < ic { m_indices[f + k] } else { pad };
+        }
+        for k in 0..ic {
+            source_indices.push((base + k) as u32);
+        }
+    }
+    (slot_indices, source_indices)
+}
+
 async fn load_cluster_lod(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -2751,8 +2800,31 @@ mod cluster_streaming_tests {
     //! pure CPU core that bounds the cluster render mesh `M` to a triangle budget.
     //! The GPU upload/draw around it needs a device (browser round-trip), but the
     //! resident-set choice + `first_index` remap + leaf clamp are device-free.
-    use super::{plan_page_pool, select_resident_clusters};
+    use super::{build_slot_geometry, plan_page_pool, select_resident_clusters};
     use awsm_renderer_lod_bake::{build_cluster_dag, ClusterMesh, ClusterPage, DagOptions};
+
+    #[test]
+    fn slot_geometry_packs_padded_slots_and_preserves_triangles() {
+        // 2 clusters (1 tri each), full residency, tiny PAGE_VERTS=4 (ic=3 + 1 pad).
+        let spans = [(0u32, 3u32), (3, 3)]; // (first_index, index_count) per cluster
+        let m_indices = vec![10u32, 11, 12, 20, 21, 22];
+        let resident = vec![0i32, 1];
+        let (slot_indices, source_indices) = build_slot_geometry(&spans, &m_indices, &resident, 4);
+        // slot 0 = C0 verts + pad(first=10); slot 1 = C1 verts + pad(first=20).
+        assert_eq!(slot_indices, vec![10, 11, 12, 10, 20, 21, 22, 20]);
+        // source is per-cluster-contiguous (page order) with SLOT-RELATIVE values.
+        assert_eq!(source_indices, vec![0, 1, 2, 4, 5, 6]);
+        // Round-trip: each page's [first_index, +index_count) of source, mapped
+        // through slot_indices, reconstructs the cluster's ORIGINAL position indices.
+        for &(f, ic) in &spans {
+            let (f, ic) = (f as usize, ic as usize);
+            let drawn: Vec<u32> = source_indices[f..f + ic]
+                .iter()
+                .map(|&s| slot_indices[s as usize])
+                .collect();
+            assert_eq!(drawn, m_indices[f..f + ic].to_vec());
+        }
+    }
 
     #[test]
     fn page_pool_assigns_one_slot_per_resident_cluster() {
