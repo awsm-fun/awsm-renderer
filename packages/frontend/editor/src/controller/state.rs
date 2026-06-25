@@ -5028,6 +5028,99 @@ impl EditorController {
                     entries,
                 })
             }
+            EditorQuery::UvLayout {
+                node,
+                uv_set,
+                offset,
+                limit,
+            } => {
+                use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                let Some(md) = mesh else {
+                    return QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    };
+                };
+                let set = uv_set.unwrap_or(0) as usize;
+                let Some(uvs) = md.uvs.get(set) else {
+                    let mut entries = std::collections::BTreeMap::new();
+                    entries.insert("has_uv".to_string(), json!(false));
+                    entries.insert("uv_set".to_string(), json!(set));
+                    return QueryResult::Map(query::MapResult {
+                        kind: "uv_layout".to_string(),
+                        entries,
+                    });
+                };
+                let (island_of, count) = awsm_renderer_meshgen::edit::uv_islands(uvs, &md.indices);
+                // Per-island vertex count + UV bounds; overall bounds.
+                let mut isl_min = vec![[f32::INFINITY; 2]; count as usize];
+                let mut isl_max = vec![[f32::NEG_INFINITY; 2]; count as usize];
+                let mut isl_n = vec![0u32; count as usize];
+                let (mut omin, mut omax) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+                for (i, uv) in uvs.iter().enumerate() {
+                    let c = island_of[i] as usize;
+                    isl_n[c] += 1;
+                    for k in 0..2 {
+                        isl_min[c][k] = isl_min[c][k].min(uv[k]);
+                        isl_max[c][k] = isl_max[c][k].max(uv[k]);
+                        omin[k] = omin[k].min(uv[k]);
+                        omax[k] = omax[k].max(uv[k]);
+                    }
+                }
+                let islands: Vec<serde_json::Value> = (0..count as usize)
+                    .map(|c| json!({ "count": isl_n[c], "min": isl_min[c], "max": isl_max[c] }))
+                    .collect();
+                // Unique undirected UV edges (the wireframe), paged.
+                let mut seen = std::collections::HashSet::new();
+                let mut all_edges: Vec<[u32; 2]> = Vec::new();
+                for tri in md.indices.chunks_exact(3) {
+                    for &(a, b) in &[(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                        let e = if a < b { (a, b) } else { (b, a) };
+                        if seen.insert(e) {
+                            all_edges.push([e.0, e.1]);
+                        }
+                    }
+                }
+                let edge_count = all_edges.len();
+                let start = offset.unwrap_or(0) as usize;
+                let page = match limit {
+                    Some(l) => all_edges
+                        .iter()
+                        .skip(start)
+                        .take(l as usize)
+                        .collect::<Vec<_>>(),
+                    None => all_edges.iter().skip(start).collect::<Vec<_>>(),
+                };
+                let edges: Vec<serde_json::Value> = page
+                    .iter()
+                    .filter_map(|e| {
+                        let a = uvs.get(e[0] as usize)?;
+                        let b = uvs.get(e[1] as usize)?;
+                        Some(json!([a, b]))
+                    })
+                    .collect();
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("has_uv".to_string(), json!(true));
+                entries.insert("uv_set".to_string(), json!(set));
+                entries.insert("island_count".to_string(), json!(count));
+                entries.insert("bounds".to_string(), json!({ "min": omin, "max": omax }));
+                entries.insert("islands".to_string(), json!(islands));
+                entries.insert("edge_count".to_string(), json!(edge_count));
+                entries.insert("offset".to_string(), json!(start));
+                entries.insert("returned".to_string(), json!(edges.len()));
+                entries.insert("edges".to_string(), json!(edges));
+                QueryResult::Map(query::MapResult {
+                    kind: "uv_layout".to_string(),
+                    entries,
+                })
+            }
             EditorQuery::WaitRenderSettled { max_ms } => self.wait_render_settled(max_ms).await,
             EditorQuery::NodeTransforms { nodes } => self.node_transforms(&nodes).await,
             EditorQuery::NodeKindDetails { nodes } => {

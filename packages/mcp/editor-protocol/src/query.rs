@@ -425,6 +425,22 @@ pub enum EditorQuery {
         #[serde(default)]
         axis: Option<[f32; 3]>,
     },
+    /// The UV-layout overlay of a node's resolved mesh (UV set `uv_set`, default
+    /// 0): `{ has_uv, uv_set, island_count, bounds:{min,max}, islands:[{count,
+    /// min,max}], edge_count, edges:[[[u,v],[u,v]],…] }`. Diagnoses "atlas vs
+    /// strip" in one read — a contiguous strip UV is ONE island spanning ~[0,1];
+    /// a packed atlas is MANY small islands. `edges` (the UV wireframe, for
+    /// drawing the overlay) are paged by `offset`/`limit` since they can be large;
+    /// island summaries are always returned in full. MCP: `get_uv_layout`.
+    UvLayout {
+        node: NodeId,
+        #[serde(default)]
+        uv_set: Option<u32>,
+        #[serde(default)]
+        offset: Option<u32>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     /// The mesh asset's modifier-stack **recipe** (`{ base, modifiers }`),
     /// serialized as JSON in a `QueryResult::Text`. `null` when the mesh has no
     /// recipe (a raw captured/converted mesh) — call `set_mesh_modifiers` to give

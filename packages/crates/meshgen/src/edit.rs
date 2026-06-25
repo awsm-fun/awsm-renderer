@@ -298,31 +298,19 @@ fn pca_smallest_axis(positions: &[[f32; 3]], centroid: Vec3) -> Vec3 {
 /// (which duplicates a vertex per face) doesn't fragment one solid piece into
 /// many components. The backbone of [`connected_component_of`] /
 /// [`connected_components`].
-fn weld_components(mesh: &MeshData) -> (Vec<u32>, u32) {
+/// Union-find core: given a per-vertex **weld representative** array (vertices
+/// sharing a rep are pre-merged) and a triangle index buffer, return a dense
+/// component id per ORIGINAL vertex + the component count. Shared by
+/// position-welded ([`weld_components`]) and UV-welded ([`uv_islands`]) island
+/// detection — only the weld key differs.
+fn components_from_weld(weld: &[u32], indices: &[u32]) -> (Vec<u32>, u32) {
     use std::collections::HashMap;
-    let n = mesh.positions.len();
-    // 1. Weld by quantized position → a representative original index per cell.
-    let q = 1.0e4_f32;
-    let key = |p: &[f32; 3]| {
-        (
-            (p[0] * q).round() as i64,
-            (p[1] * q).round() as i64,
-            (p[2] * q).round() as i64,
-        )
-    };
-    let mut pos_rep: HashMap<(i64, i64, i64), u32> = HashMap::new();
-    let mut weld = vec![0u32; n];
-    for (i, p) in mesh.positions.iter().enumerate() {
-        let rep = *pos_rep.entry(key(p)).or_insert(i as u32);
-        weld[i] = rep;
-    }
-    // 2. Union-find over the welded reps, joined by triangle edges.
+    let n = weld.len();
     fn find(parent: &mut [u32], x: u32) -> u32 {
         let mut r = x;
         while parent[r as usize] != r {
             r = parent[r as usize];
         }
-        // Path-compress.
         let mut c = x;
         while parent[c as usize] != r {
             let next = parent[c as usize];
@@ -339,14 +327,13 @@ fn weld_components(mesh: &MeshData) -> (Vec<u32>, u32) {
         }
     }
     let mut parent: Vec<u32> = (0..n as u32).collect();
-    for tri in mesh.indices.chunks_exact(3) {
+    for tri in indices.chunks_exact(3) {
         let a = weld[tri[0] as usize];
         let b = weld[tri[1] as usize];
         let c = weld[tri[2] as usize];
         union(&mut parent, a, b);
         union(&mut parent, b, c);
     }
-    // 3. Dense component id per ORIGINAL vertex (via its weld rep's root).
     let mut comp_ids: HashMap<u32, u32> = HashMap::new();
     let mut next = 0u32;
     let mut comp_of = vec![0u32; n];
@@ -359,6 +346,46 @@ fn weld_components(mesh: &MeshData) -> (Vec<u32>, u32) {
         });
     }
     (comp_of, next)
+}
+
+/// Position-welded connected-component id per ORIGINAL vertex index, plus the
+/// component count. Vertices at the same position (within a quantization epsilon)
+/// are **welded** before union-find over triangle edges — so a UV/normal seam
+/// (which duplicates a vertex per face) doesn't fragment one solid piece into
+/// many components. The backbone of [`connected_component_of`] /
+/// [`connected_components`].
+fn weld_components(mesh: &MeshData) -> (Vec<u32>, u32) {
+    use std::collections::HashMap;
+    let q = 1.0e4_f32;
+    let mut pos_rep: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    let mut weld = vec![0u32; mesh.positions.len()];
+    for (i, p) in mesh.positions.iter().enumerate() {
+        let cell = (
+            (p[0] * q).round() as i64,
+            (p[1] * q).round() as i64,
+            (p[2] * q).round() as i64,
+        );
+        weld[i] = *pos_rep.entry(cell).or_insert(i as u32);
+    }
+    components_from_weld(&weld, &mesh.indices)
+}
+
+/// UV-space connected components (**islands**): vertices whose UV coincides
+/// (within a quantization epsilon) are welded, then union-find runs over the
+/// triangle edges. Returns `(island_id per vertex, island_count)`. This is what
+/// distinguishes a contiguous **strip** UV (one island spanning ~[0,1]) from a
+/// packed **atlas** (many small islands) — the UV-layout overlay's core. `uvs`
+/// is one UV set, vertex-aligned with the index buffer.
+pub fn uv_islands(uvs: &[[f32; 2]], indices: &[u32]) -> (Vec<u32>, u32) {
+    use std::collections::HashMap;
+    let q = 1.0e4_f32;
+    let mut uv_rep: HashMap<(i64, i64), u32> = HashMap::new();
+    let mut weld = vec![0u32; uvs.len()];
+    for (i, uv) in uvs.iter().enumerate() {
+        let cell = ((uv[0] * q).round() as i64, (uv[1] * q).round() as i64);
+        weld[i] = *uv_rep.entry(cell).or_insert(i as u32);
+    }
+    components_from_weld(&weld, indices)
 }
 
 /// All vertex indices in the connected component(s) containing `seeds` (the
@@ -600,6 +627,32 @@ mod tests {
         // Empty / out-of-range seeds → empty.
         assert!(connected_component_of(&m, &[]).is_empty());
         assert!(connected_component_of(&m, &[9999]).is_empty());
+    }
+
+    #[test]
+    fn uv_islands_distinguishes_contiguous_vs_split() {
+        // One quad with a contiguous UV square → one island.
+        let uvs = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let indices = vec![0, 1, 2, 0, 2, 3];
+        let (_, count) = uv_islands(&uvs, &indices);
+        assert_eq!(count, 1, "a single contiguous quad is one UV island");
+
+        // Two quads whose UVs don't touch → two islands.
+        let uvs2 = vec![
+            [0.0, 0.0],
+            [0.4, 0.0],
+            [0.4, 0.4],
+            [0.0, 0.4], // island A
+            [0.6, 0.6],
+            [1.0, 0.6],
+            [1.0, 1.0],
+            [0.6, 1.0], // island B
+        ];
+        let indices2 = vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+        let (island_of, count2) = uv_islands(&uvs2, &indices2);
+        assert_eq!(count2, 2, "two disjoint UV quads are two islands");
+        assert_ne!(island_of[0], island_of[4], "the two quads differ");
+        assert_eq!(island_of[0], island_of[3], "quad A is one island");
     }
 
     #[test]

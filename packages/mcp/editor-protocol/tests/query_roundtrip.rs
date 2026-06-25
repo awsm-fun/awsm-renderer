@@ -63,6 +63,45 @@ fn get_mesh_data_defaults_when_paging_omitted() {
 }
 
 #[test]
+fn uv_layout_query_roundtrip() {
+    let q = EditorQuery::UvLayout {
+        node: NodeId::new(),
+        uv_set: Some(1),
+        offset: Some(0),
+        limit: Some(500),
+    };
+    let json = serde_json::to_string(&q).expect("serialize");
+    assert!(
+        json.contains("\"query\":\"uv_layout\""),
+        "tag missing: {json}"
+    );
+    let back: EditorQuery = serde_json::from_str(&json).expect("deserialize");
+    match back {
+        EditorQuery::UvLayout { uv_set, limit, .. } => {
+            assert_eq!(uv_set, Some(1));
+            assert_eq!(limit, Some(500));
+        }
+        other => panic!("expected UvLayout, got {other:?}"),
+    }
+    // Minimal form defaults cleanly.
+    let json = format!("{{\"query\":\"uv_layout\",\"node\":\"{}\"}}", NodeId::new());
+    let back: EditorQuery = serde_json::from_str(&json).expect("deserialize minimal");
+    match back {
+        EditorQuery::UvLayout {
+            uv_set,
+            offset,
+            limit,
+            ..
+        } => {
+            assert_eq!(uv_set, None);
+            assert_eq!(offset, None);
+            assert_eq!(limit, None);
+        }
+        other => panic!("expected UvLayout, got {other:?}"),
+    }
+}
+
+#[test]
 fn strip_parameterize_query_roundtrip() {
     let q = EditorQuery::StripParameterize {
         node: NodeId::new(),

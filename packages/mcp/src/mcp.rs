@@ -388,6 +388,21 @@ pub struct GetMeshDataParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UvLayoutParams {
+    /// UUID of the node whose UV layout to read.
+    pub node: String,
+    /// UV set (TEXCOORD_n), default 0.
+    #[serde(default)]
+    pub uv_set: Option<u32>,
+    /// Page the UV-edge wireframe (start edge).
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Page the UV-edge wireframe (max edges returned).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct StripParameterizeParams {
     /// UUID of the node whose resolved mesh to parameterize.
     pub node: String,
@@ -2513,6 +2528,23 @@ impl EditorMcp {
             selection: p.selection,
             indices: p.indices,
             axis: p.axis,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "UV-layout overlay of a node's resolved mesh (UV set `uv_set`, default 0): `{ has_uv, uv_set, island_count, bounds:{min,max}, islands:[{count,min,max}], edge_count, edges:[[[u,v],[u,v]],…] }`. Diagnoses 'atlas vs strip' in ONE read — a continuous strip UV is ONE island spanning ~[0,1] (good for scrolling/tiling); a baked atlas is MANY small islands (scrolling slides samples onto unrelated content). `edges` is the UV wireframe for drawing the overlay, paged by `offset`/`limit` (can be large); the island summaries are always full. `has_uv:false` means the mesh carries no such UV set."
+    )]
+    async fn get_uv_layout(
+        &self,
+        Parameters(p): Parameters<UvLayoutParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::UvLayout {
+            node: parse_node(&p.node)?,
+            uv_set: p.uv_set,
+            offset: p.offset,
+            limit: p.limit,
         })
         .await
     }
