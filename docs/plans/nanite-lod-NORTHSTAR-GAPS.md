@@ -170,7 +170,27 @@ restore the real cut; then the cut should select the CPU count.
 
 ---
 
-## A2 — dynamic per-frame paging (Gap B). UNMET.
+## A2 — dynamic per-frame paging (Gap B). UNMET (2 of 3 components verified on-device).
+
+**iter 31 on-device verification (browser healthy) — what's PROVEN working:**
+1. **Camera-driven cut refinement ✅** (`?vg`): dolly the camera IN ⇒ the drawn cut
+   RISES. Measured via the periodic readback: far `draw_args = 1696 tris` → after
+   wheel-zoom-in `15845 tris` (9.3×). The per-cluster GPU cut adapts detail to the
+   camera live. (Also CPU-unit-tested: `per_cluster_cut_varies_detail_by_distance`.)
+2. **Bounded VRAM ✅** (`?vg&paging`): 785 resident / 13065 clusters, render mesh M
+   **capped to 29322 tris from 583768** — the bounded slot pool (step 2) renders.
+3. **MISSING = the DYNAMIC combination:** `?vg` refines but uploads everything (OOMs
+   at 2.55M — hit the 1GiB GPU-cap guard); `?vg&paging` is bounded but its frontier is
+   clamped always-draw (camera-INVARIANT: draw stays 29322 at any distance). A2 needs
+   BOTH: camera-driven refinement *within* the bounded pool via per-frame streaming
+   (20b-iv) so multi-M-tri assets refine near the camera at bounded VRAM.
+
+**🛟 HARNESS: driving the cut camera.** `set_camera_orbit` (MCP) does NOT move the
+player/cut camera in round-trip mode (draw stays fixed across dist 0.4–9; view
+unchanged). What WORKS: dispatch a `WheelEvent` on the `<canvas>` via chrome-devtools
+`evaluate_script` (zoom) — it drives the live viewport camera, which the cut reads
+(verified: zoomed a tiny dot to full-screen + drove draw 1696→15845). Also useful:
+`window.wasmBindings.editor_query_scene_png` (direct GPU→PNG) + `editor_dispatch_json`.
 
 **Why unmet.** The shipped streaming is **static** (Step 1 / `cluster_streaming`):
 it caps residency once at load to a crack-free complete-antichain frontier (now
