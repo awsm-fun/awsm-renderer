@@ -316,6 +316,162 @@ mod tests {
         (pos, indices)
     }
 
+    /// A lat/long UV sphere — **geometrically closed** but **non-watertight by
+    /// index**: the longitude seam column is duplicated (phi=0 vs phi=TAU are
+    /// coincident positions with distinct indices) and the pole rows are coincident
+    /// duplicates. This mirrors `meshgen::primitives::sphere_mesh` exactly (the
+    /// shape the editor's "sphere + Subdivide" repro feeds the bake). Index-based
+    /// adjacency therefore sees the seam as an open boundary, which is the
+    /// non-watertight input class the cluster bake must stay crack-free on (A1).
+    fn uv_sphere(segments_long: usize, segments_lat: usize) -> (Vec<[f32; 3]>, Vec<u32>) {
+        use std::f32::consts::PI;
+        const TAU: f32 = 2.0 * PI;
+        let mut pos = Vec::new();
+        for lat in 0..=segments_lat {
+            let theta = (lat as f32 / segments_lat as f32) * PI;
+            let (sin_t, cos_t) = (theta.sin(), theta.cos());
+            for lon in 0..=segments_long {
+                let phi = (lon as f32 / segments_long as f32) * TAU;
+                let (sin_p, cos_p) = (phi.sin(), phi.cos());
+                pos.push([sin_t * cos_p, cos_t, sin_t * sin_p]);
+            }
+        }
+        let stride = segments_long + 1;
+        let mut indices = Vec::new();
+        for lat in 0..segments_lat {
+            for lon in 0..segments_long {
+                let a = (lat * stride + lon) as u32;
+                let b = (lat * stride + lon + 1) as u32;
+                let c = ((lat + 1) * stride + lon + 1) as u32;
+                let d = ((lat + 1) * stride + lon) as u32;
+                indices.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        (pos, indices)
+    }
+
+    /// Weld positions onto an epsilon grid → a canonical vertex id per location,
+    /// so coincident-but-distinct seam/pole vertices unify. Returns one welded id
+    /// per input vertex index.
+    fn weld_ids(pos: &[[f32; 3]], eps: f32) -> Vec<u32> {
+        use std::collections::HashMap;
+        let mut map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+        let q = |v: f32| (v / eps).round() as i64;
+        pos.iter()
+            .map(|p| {
+                let key = (q(p[0]), q(p[1]), q(p[2]));
+                let n = map.len() as u32;
+                *map.entry(key).or_insert(n)
+            })
+            .collect()
+    }
+
+    /// Count undirected edges used by exactly one (welded, non-degenerate)
+    /// triangle — i.e. **hole / boundary edges**. Zero ⇒ the surface is closed
+    /// (crack-free); any open edge on a closed source is a torn hole.
+    fn boundary_edge_count(tris: &[[u32; 3]], weld: &[u32]) -> usize {
+        use std::collections::HashMap;
+        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        for tri in tris {
+            let w = [
+                weld[tri[0] as usize],
+                weld[tri[1] as usize],
+                weld[tri[2] as usize],
+            ];
+            // Drop triangles that became degenerate after welding (e.g. pole
+            // slivers whose two pole verts unify) — they are not real surface.
+            if w[0] == w[1] || w[1] == w[2] || w[0] == w[2] {
+                continue;
+            }
+            for (a, b) in [(w[0], w[1]), (w[1], w[2]), (w[2], w[0])] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edges.entry(key).or_insert(0) += 1;
+            }
+        }
+        edges.values().filter(|&&c| c == 1).count()
+    }
+
+    /// Simulate the runtime per-cluster cut at a scalar error `threshold`: select
+    /// each cluster whose error interval `[lod_error, parent_error)` contains it
+    /// (exactly the GPU rule, minus the screen-space projection). Returns the
+    /// selected clusters' triangles.
+    fn cut_triangles(dag: &ClusterDag, threshold: f32) -> Vec<[u32; 3]> {
+        let mut out = Vec::new();
+        for c in &dag.clusters {
+            if c.lod_error <= threshold && threshold < c.parent_error {
+                out.extend_from_slice(&c.triangles);
+            }
+        }
+        out
+    }
+
+    /// A1 (north-star): a geometrically-closed but **non-watertight-by-index**
+    /// mesh (UV sphere: duplicated seam column + pole rows) must stay **crack-free
+    /// at every LOD level**. Cut at any error threshold, the selected antichain —
+    /// welded by position — must be a closed surface (no hole edges). A torn coarse
+    /// level (the reported subdivided-sphere holes) shows up here as open edges.
+    ///
+    /// REPRODUCES the Gap-A defect: today the first coarse level tears ~21 hole
+    /// edges (index-based adjacency in `simplify`/`cluster` treats the coincident
+    /// seam/pole duplicates as open boundaries and mis-collapses them). Ignored
+    /// until the bake is made position-aware; un-ignore in the fix commit.
+    #[test]
+    #[ignore = "north-star gap: A1 — cluster bake tears holes on non-watertight (seam/pole) input; fix in progress"]
+    fn non_watertight_sphere_cut_is_closed_at_every_level() {
+        let (pos, indices) = uv_sphere(48, 32); // 48*32*2 = 3072 tris, multi-level DAG
+        let eps = 1e-3;
+        let weld = weld_ids(&pos, eps);
+
+        // Sanity: the SOURCE, welded, is a closed manifold (no hole edges).
+        let src_tris: Vec<[u32; 3]> = indices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        assert_eq!(
+            boundary_edge_count(&src_tris, &weld),
+            0,
+            "source UV sphere must be geometrically closed once welded"
+        );
+
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+
+        // Level-0 reconstructs the source triangles exactly (no dropped coverage).
+        let l0: usize = dag
+            .clusters
+            .iter()
+            .filter(|c| c.lod_error == 0.0)
+            .map(|c| c.triangles.len())
+            .sum();
+        assert_eq!(
+            l0,
+            indices.len() / 3,
+            "level-0 must cover every source triangle"
+        );
+
+        // Sweep every error breakpoint in the DAG (each cluster's lod_error, plus
+        // just above it) — the cut must be a closed surface at all of them.
+        let mut breakpoints: Vec<f32> = vec![0.0];
+        for c in &dag.clusters {
+            breakpoints.push(c.lod_error);
+            if c.parent_error < ROOT_PARENT_ERROR {
+                breakpoints.push((c.lod_error + c.parent_error) * 0.5);
+            }
+        }
+        breakpoints.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        breakpoints.dedup();
+
+        for &t in &breakpoints {
+            let tris = cut_triangles(&dag, t);
+            assert!(!tris.is_empty(), "cut at threshold {t} selected nothing");
+            let holes = boundary_edge_count(&tris, &weld);
+            assert_eq!(
+                holes, 0,
+                "cluster cut at error threshold {t} tore {holes} hole edge(s) — \
+                 not crack-free on non-watertight (seam/pole) input (A1)"
+            );
+        }
+    }
+
     #[test]
     fn dag_builds_levels_and_is_monotone() {
         let (pos, indices) = grid(24); // 1152 tris

@@ -32,7 +32,15 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
   watertight at orbit radius ~2, both uncapped and `?streambudget`; cut-coverage
   GPU readback shows every surface region has a selected cluster. Real-asset
   (DamagedHelmet) output **unchanged** (regression guard).
-  _Current: shipped Phase B has a reproduced HOLE bug on this input → unmet (Gap A)._
+  _Current: **reproduced deterministically at the bake level** — `dag.rs`
+  `non_watertight_sphere_cut_is_closed_at_every_level` (currently `#[ignore]`d,
+  north-star gap A1) bakes a UV sphere (closed by position, non-watertight by index:
+  duplicated seam column + pole rows, exactly `meshgen::sphere_mesh`) and cuts at
+  every error threshold; the SOURCE welds closed and level-0 reconstructs the source,
+  but the **first coarse level tears 21 hole edges** (index-based adjacency/boundary
+  classification in `simplify.rs:166-189` / `cluster.rs` mis-collapses the coincident
+  seam/pole duplicates). Fix = make the bake position-aware (weld for topology while
+  preserving attribute seams); un-ignore on fix. → unmet (Gap A)._
 
 - [ ] **A2 — Dynamic, camera-driven streaming residency.**
   A genuinely multi-million-tri asset renders full detail near the camera within a
@@ -162,3 +170,10 @@ honestly true. Grouped; each cites its verification.
   Current truth: Gap A (A1) reproduced-bug → unmet; Gap B (A2/A3) absent → unmet;
   A6 blocked on A1+A2; A4/A5 shipped, pending in-loop re-verification. **0/6 headline
   claims verified in this loop.**
+- 2026-06-25 — Gap A **reproduced deterministically at the bake level** (no GPU):
+  added `non_watertight_sphere_cut_is_closed_at_every_level` (`#[ignore]`d, A1 gap).
+  Root cause localized: index-based adjacency treats coincident seam/pole duplicates
+  as open boundaries → coarse-level simplify tears holes (21 hole edges at the first
+  coarse threshold). Diagnosed via `meshgen::sphere_mesh` topology (duplicated seam
+  column + pole rows; `subdivide` preserves it). Next: position-aware bake fix +
+  un-ignore. **Still 0/6 headline verified.**
