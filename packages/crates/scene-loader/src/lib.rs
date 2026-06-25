@@ -2083,6 +2083,54 @@ fn cluster_finer_group(lod_keys: &[DagGroupKey], parent_keys: &[DagGroupKey]) ->
     children
 }
 
+/// CPU-driven streaming step (Gap B step 3, CPU-driven design): decide which
+/// clusters to page into which slots this frame. The CPU has the camera + DAG, so
+/// it runs the cut itself (cheap at our scale — ≤~80k clusters for a 5–10M-tri
+/// asset) and diffs the `desired` resident set against the current residency,
+/// rather than a GPU feedback/readback loop (which only pays off at 100s-of-millions
+/// of clusters). Reuses free slots first, then evicts the COLDEST non-desired slots
+/// (LRU), within a per-step upload cap so a big camera jump doesn't hitch.
+///
+/// Pure + deterministic (ties broken by slot index) ⇒ unit-testable without a GPU.
+/// Returns `loads: (cluster_id, slot)` to writeBuffer this step. Covers both the
+/// stream-in (step 3d) and LRU eviction (step 4) decisions.
+#[allow(dead_code)] // wired into the per-frame paging update next
+fn plan_stream_evict(
+    desired: &[bool],     // per cluster: in the camera's cut this frame?
+    resident: &[i32],     // cluster_id -> slot, or -1 (absent)
+    slot_cluster: &[i32], // slot -> cluster_id, or -1 (free)
+    slot_last_used: &[u64],
+    max_loads: usize,
+) -> Vec<(usize, usize)> {
+    // Wanted = desired but not yet resident.
+    let wanted: Vec<usize> = (0..desired.len())
+        .filter(|&c| desired[c] && resident[c] < 0)
+        .collect();
+    // Recycle order: free slots (lowest index first), then non-desired resident
+    // slots coldest-first (LRU). A desired slot is never recycled.
+    let mut free: Vec<usize> = (0..slot_cluster.len())
+        .filter(|&s| slot_cluster[s] < 0)
+        .collect();
+    free.sort_unstable();
+    let mut evictable: Vec<usize> = (0..slot_cluster.len())
+        .filter(|&s| {
+            let c = slot_cluster[s];
+            c >= 0 && !desired[c as usize]
+        })
+        .collect();
+    evictable.sort_by_key(|&s| (slot_last_used[s], s)); // coldest first, deterministic
+    let mut recycle = free.into_iter().chain(evictable);
+
+    let mut loads = Vec::new();
+    for &c in wanted.iter().take(max_loads) {
+        match recycle.next() {
+            Some(slot) => loads.push((c, slot)),
+            None => break, // pool full of desired-resident clusters; nothing to recycle
+        }
+    }
+    loads
+}
+
 async fn load_cluster_lod(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -2851,8 +2899,42 @@ mod cluster_streaming_tests {
     //! The GPU upload/draw around it needs a device (browser round-trip), but the
     //! resident-set choice + `first_index` remap + leaf clamp are device-free.
     use super::{
-        build_slot_geometry, cluster_finer_group, plan_page_pool, select_resident_clusters,
+        build_slot_geometry, cluster_finer_group, plan_page_pool, plan_stream_evict,
+        select_resident_clusters,
     };
+
+    #[test]
+    fn stream_evict_fills_free_slots_first() {
+        // clusters 0 & 1 wanted (desired, absent), 2 free slots, none resident.
+        let loads = plan_stream_evict(&[true, true, false], &[-1, -1, -1], &[-1, -1], &[0, 0], 10);
+        assert_eq!(loads, vec![(0, 0), (1, 1)]); // free slots 0,1 in order
+    }
+
+    #[test]
+    fn stream_evict_evicts_coldest_non_desired_when_full() {
+        // cluster 0 wanted; both slots full of NON-desired (c1 in slot0 hot, c2 in slot1 cold).
+        let loads = plan_stream_evict(
+            &[true, false, false],
+            &[-1, 0, 1], // c1->slot0, c2->slot1
+            &[1, 2],     // slot0->c1, slot1->c2
+            &[5, 2],     // slot1 colder
+            10,
+        );
+        assert_eq!(loads, vec![(0, 1)]); // evict coldest slot1, load cluster 0 there
+    }
+
+    #[test]
+    fn stream_evict_honours_max_loads_and_skips_resident() {
+        // 4 clusters all desired; c3 already resident (slot0). 3 free slots, cap 2.
+        let loads = plan_stream_evict(
+            &[true, true, true, true],
+            &[-1, -1, -1, 0],
+            &[3, -1, -1, -1],
+            &[9, 0, 0, 0],
+            2,
+        );
+        assert_eq!(loads, vec![(0, 1), (1, 2)]); // cap honoured; resident c3 skipped
+    }
     use awsm_renderer_lod_bake::{
         build_cluster_dag, ClusterMesh, ClusterPage, DagOptions, ROOT_PARENT_ERROR,
     };

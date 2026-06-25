@@ -57,8 +57,26 @@ multi-file GPU build — realistically multi-day):**
    *(History: a first attempt at FULL residency blew the 512 MB GPU buffer cap (~1 GiB,
    loud-panic) — full-residency-through-fixed-slots is infeasible; the pool must be
    bounded, hence the budget. The renderer's guard caught it; reverted then re-done.)*
-3. **Feedback + readback + CPU stream (the dynamic-paging core — DESIGN, the bulk of
-   remaining A2 effort; multi-iteration).**
+3. **Dynamic streaming (the A2 core — multi-iteration). PIVOTED to CPU-driven (simpler).**
+
+   **PIVOT (2026-06-25):** drop the GPU feedback/readback loop. At our scale (≤~80k
+   clusters for a 5–10M-tri asset) the CPU can run the cut itself each frame
+   (sub-ms) and diff the desired resident set against current residency — GPU feedback
+   only pays off at 100s-of-millions of clusters. This removes the feedback buffer +
+   atomic + async readback + cut-shader-write entirely. Plan: a per-frame CPU "paging
+   update" (has camera + DAG + residency state) computes the desired cut
+   (`cluster_lod::select_cut_per_cluster`), then `plan_stream_evict` (DONE, tested)
+   decides loads/evicts (free slots first, then coldest non-desired LRU, capped per
+   step); the CPU `writeBuffer`s each loaded cluster's geometry into its slot, updates
+   `resident[]`, re-clamps the deepest-resident frontier (always-drawn ⇒ crack-free),
+   re-uploads the resident table. The GPU cut is unchanged (draws the resident
+   frontier, step 2). CPU bricks DONE + unit-tested: `cluster_finer_group` (3a),
+   `plan_stream_evict` (LRU stream/evict, covers 3d+4). REMAINING: the per-frame paging
+   manager (persistent residency state + camera hook in the renderer + per-slot
+   writeBuffer + re-frontier), then on-device dolly-in refine verify + `?stress=N`
+   no-per-frame-allocs → A2.
+
+   *(Superseded GPU-feedback design (A) kept below for reference.)*
 
    **Key constraint (found analysing it):** the GPU cut CANNOT "walk up to the nearest
    resident ancestor" when a wanted cluster is absent — `ClusterPage` has bounds/errors
