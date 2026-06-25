@@ -2762,7 +2762,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the FragmentInputs (interpolants) a custom material's WGSL reads (`keys`). Legal: normals, tangents, uv, lights, view_dir, vertex_color. Unknown keys are dropped."
+        description = "Set the FragmentInputs (interpolants) a custom material's WGSL reads (`keys`). Legal: normals, tangents, uv, lights, view_dir, vertex_color. Unknown keys are dropped. NOTE: the per-vertex ACCESSOR functions are gated on SHADER-INCLUDES, not these inputs — `material_uv(input, n)` needs `set_material_includes [\"textures\"]` and `material_vertex_color(input, n)` needs `[\"vertex_color\"]`; declaring fragment_inputs:[\"uv\"] does NOT bring `material_uv` into scope (it only sets the vertex-attribute layout)."
     )]
     async fn set_material_fragment_inputs(
         &self,

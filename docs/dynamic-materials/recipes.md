@@ -127,9 +127,13 @@ V=0↔1 is invisible. Authoring that strip UV is the job of `set_vertex_uvs` +
 ### Fallback (custom WGSL, no UV authoring) — vertex-color scroll coordinate
 When you can't author UVs, smuggle the along-belt arc-length through a **vertex-color**
 channel and scroll stripes in the shader. Bake `along` into `COLOR_0.r` (across into
-`.g`) with `paint_vertex_colors`, assign a custom material that reads
-`material_vertex_color(input, 0u)` + `frame_globals.time`:
+`.g`) with `paint_vertex_colors`, assign a custom material (declare
+`set_material_includes ["vertex_color"]` so `material_vertex_color` is in scope —
+for the clean-path variant that reads the strip UV instead, use `material_uv` with
+the `"textures"` include) that reads `material_vertex_color(input, 0u)` +
+`frame_globals.time`:
 ```wgsl
+// set_material_includes ["vertex_color"]
 let g = frame_globals_from_raw(frame_globals_raw);
 let vc = material_vertex_color(input, 0u);       // .r = along-belt arc-length [0,1]
 let v = fract(vc.r * CLEATS - g.time * SPEED);   // CLEATS = grousers per loop
