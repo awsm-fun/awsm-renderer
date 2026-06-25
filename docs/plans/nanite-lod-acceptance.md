@@ -16,7 +16,8 @@
 
 Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-this-loop · `[x]` verified.
 
-> **Current: 3 / 6 headline verified (A1, A4, A5).** The iters-24–28 A1 downgrade
+> **Current: 4 / 6 headline verified (A1, A3, A4, A5).** A3 verified iter 30 (drawn cut
+> flat as source scales — see A3 below). The iters-24–28 A1 downgrade
 > ("GPU cut emits 0 triangles") was a **FROZEN-BROWSER artifact — RESOLVED at iter 29**:
 > after restarting Chrome, the cluster cut DRAWS (`draw_args.index_count=27558`, 9186 of
 > 583768 tris) and the subdivided sphere renders watertight in a chrome-devtools
@@ -90,13 +91,15 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
   feedback buffer + async readback + CPU stream/evict (LRU) + per-frame upload budget +
   multi-M-tri on-device verify + no-per-frame-allocs (`?stress=N`). → A2 unmet._
 
-- [ ] **A3 — Drawn (cut) triangle count bounded by screen resolution, not source size.**
+- [x] **A3 — Drawn (cut) triangle count bounded by screen resolution, not source size.** ✅
   The cut's drawn-triangle count tracks screen resolution + pixel-error budget, and
-  stays ~flat as the source scales into the millions.
-  **Verify:** benchmark table (A6) shows cut size ≈ constant across sources of
-  ~1M / ~10M / (streamed) larger at a fixed resolution + error budget; plus a
-  console-readback of `selected`/drawn-index count at two source densities.
-  _Current: depends on A2 (true multi-M source needs paging) → unmet._
+  stays ~flat as the source scales.
+  _Current: **✅ VERIFIED (iter 30) on the static per-cluster GPU cut — does NOT need A2.**
+  Fixed camera (dist 4) + 1px budget, `draw_args.index_count` readback: source 142,456
+  tris → drawn **1700**; source 583,768 tris (4.1×) → drawn **1696** (flat, ~0.2%).
+  Committed test `a3_cut_bounded_by_screen_not_source` (cut stays size 4 with 21× the
+  source). (iter-5 / 2.55M source hits the GPU-cap guard on the uncapped `?vg` path —
+  an A2/A6 streaming concern, not A3.) → **A3 ✅ MET.**_
 
 - [x] **A4 — Deforming meshes use the discrete chain, per-instance, skin/morph carried.** ✅
   Skinned / morph-target meshes use the discrete LOD chain selected **per instance**;

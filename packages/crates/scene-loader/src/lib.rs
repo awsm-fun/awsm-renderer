@@ -3109,10 +3109,59 @@ mod cluster_streaming_tests {
         unimplemented!("Gap B dynamic paging — see nanite-lod-NORTHSTAR-GAPS.md");
     }
 
+    /// A3 — the drawn cut is bounded by the screen-space error budget, NOT the source
+    /// triangle count. Adding FINER levels below the cut (more source detail) leaves
+    /// the selected antichain unchanged at a fixed budget, so the cut size stays flat
+    /// as source scales. (On-device confirmation, iter 30, fixed camera @ dist 4, 1px:
+    /// source 142,456 tris → drawn 1700; source 583,768 tris [4.1×] → drawn 1696 — the
+    /// drawn cut is flat while source grows 4×.)
     #[test]
-    #[ignore = "north-star gap: A3 — cut-size-stays-flat-as-source-scales is only shown at one scale; needs the multi-source-density benchmark (depends on A2)"]
     fn a3_cut_bounded_by_screen_not_source() {
-        unimplemented!("needs A2 + multi-scale benchmark — see NORTHSTAR-GAPS.md");
+        use awsm_renderer::cluster_lod::{select_cut, ClusterPage};
+        let page = |lod: f32, parent: f32, first_index: u32| ClusterPage {
+            center: [0.0; 3],
+            radius: 1.0,
+            lod_error: lod,
+            parent_error: parent,
+            lod_bounds_center: [0.0; 3],
+            lod_bounds_radius: 1.0,
+            parent_bounds_center: [0.0; 3],
+            parent_bounds_radius: 1.0,
+            first_index,
+            index_count: 384,
+        };
+        // "Coarse" surface = a complete antichain of 4 regions at error interval
+        // [1, ∞). At a budget threshold T=1.5 every region's coarse cluster is the
+        // one selected ⇒ cut = 4.
+        let coarse: Vec<ClusterPage> = (0..4).map(|r| page(1.0, f32::INFINITY, r * 384)).collect();
+        let mut cut = Vec::new();
+        select_cut(&coarse, 1.5, &mut cut);
+        assert_eq!(cut.len(), 4, "coarse DAG: 4 regions selected at T=1.5");
+
+        // "Refined" = the SAME 4 regions PLUS finer children under each (lots more
+        // SOURCE: 4 children/region in [0,1), then 4 grandchildren/child in [0,0.5)).
+        // 4 coarse + 16 children + 64 grandchildren = 84 clusters (21× the source).
+        let mut refined = coarse.clone();
+        for r in 0..4u32 {
+            for c in 0..4u32 {
+                refined.push(page(0.0, 1.0, 10_000 + r * 100 + c)); // child: [0,1)
+                for g in 0..4u32 {
+                    refined.push(page(0.0, 0.5, 50_000 + r * 1000 + c * 10 + g)); // [0,0.5)
+                }
+            }
+        }
+        assert_eq!(refined.len(), 84, "refined DAG has 21× the source clusters");
+
+        // At the SAME budget T=1.5, the finer levels (intervals below 1.5) are NOT
+        // selected — only the 4 coarse clusters are. The cut is identical: bounded by
+        // the budget (screen-space error), invariant to the source size.
+        select_cut(&refined, 1.5, &mut cut);
+        assert_eq!(
+            cut.len(),
+            4,
+            "refined DAG: cut stays 4 at T=1.5 despite 21× the source — bounded by \
+             screen-space error budget, not source size"
+        );
     }
 
     #[test]

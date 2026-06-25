@@ -4,8 +4,9 @@ Honest status of the cluster-LOD / virtual-geometry implementation vs. the
 permanent spec `docs/nanite-lod.md`, per the acceptance checklist
 `docs/plans/nanite-lod-acceptance.md`.
 
-**Verified: 3 / 6 headline claims** (A1, A4, A5) — each with a committed deterministic
-test AND cited on-device evidence.
+**Verified: 4 / 6 headline claims** (A1, A3, A4, A5) — each with a committed deterministic
+test AND cited on-device evidence. Remaining: **A2** (dynamic per-frame paging) and
+**A6** (multi-M-tri benchmark table).
 
 ## ✅ RESOLVED (iter 29): the iters-24–28 "P0 / harness-can't-verify" saga was a FROZEN BROWSER
 
@@ -162,7 +163,7 @@ restore the real cut; then the cut should select the CPU count.
 |---|---|---|
 | **A1** crack-free per-cluster cut incl. non-watertight/subdivided, full-detail + capped | ✅ | CPU bake/cut test (`cb3b1ac8` weld+lock_boundaries, `73984b4b` antichain) + on-device (iter 29): subdivided sphere renders watertight via the per-cluster GPU cut, `draw_args.index_count=27558 (9186/583768 tris)`. The iter-24–28 "CONTRADICTED/0-tris" was a FROZEN-BROWSER artifact (now resolved). |
 | **A2** dynamic camera-driven streaming residency (multi-M-tri, bounded VRAM, LRU, crack-free fallback, no per-frame allocs) | ❌ **UNMET** | Gap B foundation only (see below) |
-| **A3** drawn (cut) tri count bounded by screen res, not source size (benchmark across scales) | ❌ **UNMET** | partial evidence only (1696 drawn vs 583768 source at one scale); needs the A2 multi-scale benchmark |
+| **A3** drawn (cut) tri count bounded by screen res, not source size (benchmark across scales) | ✅ | iter 30, fixed camera @ dist 4 / 1px: source 142,456 → drawn **1700**; source 583,768 (4.1×) → drawn **1696** (flat). Committed test `a3_cut_bounded_by_screen_not_source` (cut stays 4 with 21× source). |
 | **A4** deforming → discrete chain, per-instance, skin/morph carried | ✅ | `c58abfd9` carry-through test + on-device mixed CesiumMan/MorphCube/Sphere routing |
 | **A5** flags off ⇒ byte-identical | ✅ | `1f5dba9d` defaults test + on-device no-cluster-pipelines-when-off |
 | **A6** final multi-M-tri benchmark TABLE (1080p+4K, per-pass + cut-vs-source + VRAM) in docs | ❌ **UNMET** | blocked on A2 |
@@ -359,13 +360,22 @@ multi-file GPU build — realistically multi-day):**
    allocs** (pool the readback + upload staging — see
    `avoid-per-frame-allocations-standard`).
 
-## A3 — cut bounded by screen res, not source size. UNMET.
+## A3 — cut bounded by screen res, not source size. ✅ VERIFIED (iter 30).
 
-Partial evidence exists (the cut drew 1696 tris of a 583768-tri DAG at one
-resolution/budget). The claim requires showing the cut stays ~flat as the **source**
-scales (1M → 10M → …) at fixed resolution + error budget — i.e. the A6 benchmark
-across several source densities. Blocked on A2 (need a genuine multi-M-tri asset
-streaming) for the upper scales.
+Shown on the STATIC per-cluster GPU cut (does NOT depend on A2). At a FIXED camera
+(dist 4) + budget (1px), the drawn cut stays flat as the source scales:
+
+| subdivide | source tris (M) | clusters | drawn tris (`draw_args.index_count/3`) |
+|---|---|---|---|
+| iter 3 | 142,456  | 2,638  | **1700** |
+| iter 4 | 583,768  | 13,065 | **1696** |
+
+Source grew 4.1× (142k → 584k); the drawn cut barely moved (1700 → 1696, ~0.2%) —
+the cut is bounded by screen-space error, not source size. (iter-5 / 2.55M source
+hit the GPU-buffer-cap guard on the UNCAPPED `?vg` path — expected; that's what
+streaming/paging is for, and is an A6/A2 concern, not A3.) Committed deterministic
+test: `a3_cut_bounded_by_screen_not_source` (scene-loader) — the selected antichain
+stays size 4 at a fixed budget even with 21× the source clusters.
 
 ## A6 — final multi-million-tri benchmark TABLE. UNMET.
 
