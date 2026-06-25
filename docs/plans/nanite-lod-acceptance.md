@@ -16,6 +16,14 @@
 
 Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-this-loop · `[x]` verified.
 
+> **Current: 3 / 6 headline verified (A1, A4, A5).** The unmet A2 / A3 / A6 (the
+> large Gap-B dynamic-paging build + its benchmark) are documented in
+> [`nanite-lod-NORTHSTAR-GAPS.md`](./nanite-lod-NORTHSTAR-GAPS.md) and flagged in
+> `cargo test` by `#[ignore]`d markers `a2_dynamic_camera_driven_paging`,
+> `a3_cut_bounded_by_screen_not_source`, `a6_benchmark_table_recorded`
+> (scene-loader). Gap B foundation (flag + planner + `?paging`) is in, gated +
+> byte-identical; the GPU page-pool + dynamic swap remain.
+
 ---
 
 ## Mandated headline claims (A1–A6)

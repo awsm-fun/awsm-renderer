@@ -2767,6 +2767,29 @@ mod cluster_streaming_tests {
         assert_eq!(plan.slots_used, 2);
         assert_eq!(plan.overflow, 0);
     }
+
+    // --- North-star gap markers (docs/plans/nanite-lod-NORTHSTAR-GAPS.md) ---
+    // These #[ignore]d tests keep the unmet A2/A3/A6 claims visible in `cargo test`
+    // (run with `--ignored` to see them fail). Replace each with a real assertion
+    // as the behavior lands; delete when docs/nanite-lod.md is fully met.
+
+    #[test]
+    #[ignore = "north-star gap: A2 — dynamic per-frame cluster paging (GPU page pool + resident table + cut variant + feedback/readback + LRU evict + multi-M-tri, no per-frame allocs) not yet built; only the gated planner foundation exists"]
+    fn a2_dynamic_camera_driven_paging() {
+        unimplemented!("Gap B dynamic paging — see nanite-lod-NORTHSTAR-GAPS.md");
+    }
+
+    #[test]
+    #[ignore = "north-star gap: A3 — cut-size-stays-flat-as-source-scales is only shown at one scale; needs the multi-source-density benchmark (depends on A2)"]
+    fn a3_cut_bounded_by_screen_not_source() {
+        unimplemented!("needs A2 + multi-scale benchmark — see NORTHSTAR-GAPS.md");
+    }
+
+    #[test]
+    #[ignore = "north-star gap: A6 — required multi-million-tri benchmark table (1080p+4K, per-pass + cut-vs-source + VRAM) not yet recorded; depends on A2"]
+    fn a6_benchmark_table_recorded() {
+        unimplemented!("needs A2 — see NORTHSTAR-GAPS.md");
+    }
     use std::collections::HashMap;
 
     // --- A1 capped crack-free helpers (mirror the bake's dag.rs test harness) ---
