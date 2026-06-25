@@ -5,11 +5,47 @@ permanent spec `docs/nanite-lod.md`, per the acceptance checklist
 `docs/plans/nanite-lod-acceptance.md`.
 
 **Verified: 2 / 6 headline claims** (A4, A5) — each with a committed deterministic
-test AND cited on-device evidence. **A1 DOWNGRADED (see 🚨 P0 below):** its CPU
-bake/cut test still passes, but its on-device "watertight GPU draw" evidence is now
-CONTRADICTED — the GPU cluster cut emits 0 triangles on-device.
+test AND cited on-device evidence. **A1 = `[~]` (CPU-verified; on-device pending):**
+its CPU bake/cut test passes; the iter-24 "CONTRADICTED on-device" downgrade was
+WITHDRAWN at iter 27 (it rested on a readback that's proven unreliable in this
+headless harness — see the RETRACTED P0 block below). A1's on-device GPU draw is
+unverifiable in the current harness, NOT confirmed-broken.
 
-## 🚨 P0 — the GPU cluster cut selects 0 clusters on-device (cut shader ≠ CPU reference)
+## ⚠️ RETRACTED (iter 27): the "P0" below was a MEASUREMENT ARTIFACT — the headless harness's GPU readback + screenshot are both UNRELIABLE
+
+**Decisive evidence (iter 27):** the readback decoded `draw_args.instance_count = 0`,
+but `instance_count` is CPU-written to `1` every frame by `init_draw_args`
+(`queue.writeBuffer`) and the **compaction shader provably never touches it** (it only
+`atomicAdd`s `index_count`). A value that must be `1` reading back as `0` ⇒ **the GPU
+readback returns zeros in this MCP/headless-Chrome harness regardless of true buffer
+content.** Separately, `screenshot_scene` is **all-black (1 colour) for even a PLAIN
+non-cluster sphere** ⇒ it does not capture the rendered scene here either.
+
+⇒ The "GPU cluster cut emits 0 triangles" finding (iters 24–26) was produced ENTIRELY
+by these two broken signals. It is **NOT established** that the cluster draw is broken.
+The cut shader / params / pages were all confirmed correct; the cut very likely WORKS.
+
+**Correction to A1:** the iter-24 downgrade to ⚠️ "CONTRADICTED on-device" was based on
+the unreliable readback and is **WITHDRAWN**. A1's CPU bake/cut test passes; its
+on-device GPU draw is **UNVERIFIABLE in this headless harness** (both readback and
+screenshot are non-functional for it) — neither confirmed-broken NOR re-confirmed here.
+A1 is therefore `[~]` (CPU-verified; on-device pending a working harness), not ❌.
+
+**Open question for next iter (the real crux):** is the readback failure a HEADLESS-CHROME
+limitation (all `mapAsync` readbacks return zeros here) or a CLUSTER-readback-specific
+code bug? Decisive cheap test: read back a buffer with KNOWN non-zero content (e.g.
+`pages_buffer[0..20]`, which holds the uploaded errors) via the same path — if it reads
+zeros ⇒ harness-wide readback limitation (cluster draw likely fine; proceed with Gap B
+on CPU+code basis, flag on-device GPU verification as harness-blocked); if it reads the
+real page bytes ⇒ the readback works and `instance_count=0` is a REAL bug to chase.
+Also try a non-headless/real browser, or `window.wasmBindings` GPU-readback exports, for
+a trustworthy signal.
+
+The original (now-doubted) P0 write-up is kept below for the diagnostic trail.
+
+---
+
+## 🚨 P0 (RETRACTED — see above) — the GPU cluster cut selects 0 clusters on-device (cut shader ≠ CPU reference)
 
 Found iter 24 via a periodic `draw_args.index_count` readback (render.rs, fires
 frame 5 then every 30 — was one-shot frame-1, which hid this). On a subdivided-sphere
@@ -102,7 +138,7 @@ restore the real cut; then the cut should select the CPU count.
 
 | Claim | Status | Evidence |
 |---|---|---|
-| **A1** crack-free per-cluster cut incl. non-watertight/subdivided, full-detail + capped | ⚠️ **CONTRADICTED on-device** | CPU bake/cut test still passes (`cb3b1ac8` weld+lock_boundaries, `73984b4b` antichain). BUT the on-device watertight claim is FALSE as of iter 24 — the GPU cut emits 0 tris (🚨 P0 above). Re-verify after the GPU-cut fix. |
+| **A1** crack-free per-cluster cut incl. non-watertight/subdivided, full-detail + capped | `[~]` CPU-verified; on-device pending | CPU bake/cut test passes (`cb3b1ac8` weld+lock_boundaries, `73984b4b` antichain). The iter-24 ⚠️"CONTRADICTED" downgrade was WITHDRAWN (iter 27) — it rested on the headless harness's unreliable readback/screenshot (RETRACTED P0 block). On-device GPU draw unverifiable in this harness; not confirmed-broken. |
 | **A2** dynamic camera-driven streaming residency (multi-M-tri, bounded VRAM, LRU, crack-free fallback, no per-frame allocs) | ❌ **UNMET** | Gap B foundation only (see below) |
 | **A3** drawn (cut) tri count bounded by screen res, not source size (benchmark across scales) | ❌ **UNMET** | partial evidence only (1696 drawn vs 583768 source at one scale); needs the A2 multi-scale benchmark |
 | **A4** deforming → discrete chain, per-instance, skin/morph carried | ✅ | `c58abfd9` carry-through test + on-device mixed CesiumMan/MorphCube/Sphere routing |

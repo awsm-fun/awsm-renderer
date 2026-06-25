@@ -893,30 +893,19 @@ impl AwsmRenderer {
                                 })
                                 .unwrap_or(0);
                             cluster_pass.dispatch_compaction(&ctx, first_instance)?;
-                            // Readback verification of draw_args.index_count. Re-fires
-                            // on a cadence (frame 5, then every 30) so the STEADY draw
-                            // count is observable past the frame-1 resident-upload
-                            // transient (NORTHSTAR-GAPS blocker); the async handler logs
-                            // only on change.
+                            // One-shot readback verification of draw_args.index_count.
                             let want = {
-                                let mut st = self.cluster_cut_readback.lock().unwrap();
-                                st.frames += 1;
-                                !st.inflight && (st.frames == 5 || st.frames % 30 == 0)
+                                let st = self.cluster_cut_readback.lock().unwrap();
+                                !st.inflight && !st.logged
                             };
                             if want {
                                 if let Some(buffers) = cluster_pass.buffers.as_ref() {
-                                    // P0 SPLIT DIAGNOSTIC: read the cut's `selected`
-                                    // buffer (1u/0u per cluster) so we can count how many
-                                    // the CUT chose — vs the compaction's draw_args
-                                    // index_count (=0). selected_sum>0 ⇒ compaction bug;
-                                    // selected_sum=0 ⇒ cut/params/pages bug.
-                                    let n = cluster_pass.cluster_count;
                                     ctx.command_encoder.copy_buffer_to_buffer(
-                                        &buffers.selected_buffer,
+                                        &buffers.draw_args_buffer,
                                         0,
                                         &buffers.readback_buffer,
                                         0,
-                                        n * 4,
+                                        4,
                                     )?;
                                     cluster_cut_kick = Some((
                                         buffers.readback_buffer.clone(),
@@ -1681,25 +1670,18 @@ impl AwsmRenderer {
         if let Some((readback_buffer, total)) = cluster_cut_kick {
             let state = std::sync::Arc::clone(&self.cluster_cut_readback);
             state.lock().unwrap().inflight = true;
-            let n_bytes = total * 4;
             wasm_bindgen_futures::spawn_local(async move {
-                match crate::core::buffers::extract_buffer_vec(&readback_buffer, Some(n_bytes)).await
-                {
+                match crate::core::buffers::extract_buffer_vec(&readback_buffer, Some(4)).await {
                     Ok(bytes) if bytes.len() >= 4 => {
-                        // P0 split: count the cut's selected (==1u) clusters.
-                        let selected: u32 = bytes
-                            .chunks_exact(4)
-                            .filter(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) != 0)
-                            .count() as u32;
+                        let index_count =
+                            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                        tracing::info!(
+                            "cluster compaction (GPU): draw_args.index_count = {index_count} \
+                             ({} tris) over {total} clusters",
+                            index_count / 3
+                        );
                         let mut s = state.lock().unwrap();
-                        if s.last_value != selected as i64 {
-                            s.last_value = selected as i64;
-                            tracing::info!(
-                                "cluster cut (GPU): selected = {selected} / {total} clusters \
-                                 [frame {}] (CPU reference select_cut_per_cluster ~187)",
-                                s.frames
-                            );
-                        }
+                        s.logged = true;
                         s.inflight = false;
                     }
                     Ok(_) => {

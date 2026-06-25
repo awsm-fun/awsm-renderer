@@ -16,12 +16,13 @@
 
 Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-this-loop · `[x]` verified.
 
-> **Current: 2 / 6 headline verified (A4, A5).** **A1 was DOWNGRADED at iter 24** —
-> its CPU bake/cut unit test still passes, but a periodic GPU `draw_args.index_count`
-> readback proved the on-device GPU cluster cut emits **0 triangles** (in both `?vg`
-> and `?vg&paging`), so its "watertight on-device" evidence is contradicted. This is
-> a 🚨 P0 (GPU cut shader / params disagree with the tested CPU `select_cut_per_cluster`,
-> which selects 187) and BLOCKS all of Gap B — see
+> **Current: 2 / 6 headline verified (A4, A5); A1 = `[~]` CPU-verified, on-device pending.**
+> The iter-24 A1 downgrade ("GPU cut emits 0 triangles") was **RETRACTED at iter 27**:
+> it rested on the headless harness's GPU readback, which is proven UNRELIABLE here
+> (it decoded `draw_args.instance_count=0` though that field is CPU-written to 1 and the
+> compaction never touches it), and `screenshot_scene` is all-black for even a plain
+> sphere. So the cluster GPU draw is UNVERIFIABLE in this harness — NOT confirmed-broken.
+> A1's CPU bake/cut test passes. See the RETRACTED-P0 block in
 > [`nanite-lod-NORTHSTAR-GAPS.md`](./nanite-lod-NORTHSTAR-GAPS.md). The unmet A2 / A3 / A6 (the
 > large Gap-B dynamic-paging build + its benchmark) are documented in
 > [`nanite-lod-NORTHSTAR-GAPS.md`](./nanite-lod-NORTHSTAR-GAPS.md) and flagged in
@@ -34,7 +35,7 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
 
 ## Mandated headline claims (A1–A6)
 
-- [~] **A1 — Per-cluster cluster cut, crack-free, incl. non-watertight / subdivided.** ⚠️ CONTRADICTED on-device (iter 24): the GPU cut emits 0 tris — CPU bake/cut test still passes, but the on-device watertight GPU draw is FALSE. 🚨 P0; re-verify after the GPU-cut fix.
+- [~] **A1 — Per-cluster cluster cut, crack-free, incl. non-watertight / subdivided.** CPU bake/cut test passes; on-device GPU draw UNVERIFIABLE in the current headless harness (readback + screenshot both non-functional — iter-24 "CONTRADICTED" was RETRACTED at iter 27). Not confirmed-broken; needs a working on-device signal to re-confirm ✅.
   Static rigid meshes render via the per-cluster GPU cut with no cracks, *including*
   non-watertight / midpoint-subdivided meshes. The subdivided-sphere repro
   (`meshgen sphere` + `Subdivide×4`, ~262k→550k-DAG-tris) renders **watertight at

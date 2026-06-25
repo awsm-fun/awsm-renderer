@@ -57,27 +57,14 @@ pub struct CoverageReadbackState {
     pub pending_snapshot: Option<Vec<(MeshKey, u32)>>,
 }
 
-/// Verification of the Phase B per-cluster GPU cut: read `draw_args.index_count`
-/// back and log how many triangles the GPU cut+compaction emitted (a sanity check
-/// vs the tested `select_cut_per_cluster` — non-zero at a normal camera distance).
-/// `inflight` single-buffers the `mapAsync`. Re-fires on a cadence (not one-shot,
-/// so the STEADY draw count is observable past the frame-1 upload transient — see
-/// NORTHSTAR-GAPS blocker) and the async handler logs only when the value changes
-/// (`last_value`, init `-1`).
+/// One-shot verification of the Phase B per-cluster GPU cut: read the `selected`
+/// flags back once and log how many clusters the GPU cut chose (a sanity check
+/// vs the tested `select_cut_per_cluster` — non-zero and ≤ cluster_count).
+/// `inflight` single-buffers the `mapAsync`; `logged` fires it only once.
+#[derive(Default)]
 pub struct ClusterCutReadback {
     pub inflight: bool,
-    pub frames: u64,
-    pub last_value: i64,
-}
-
-impl Default for ClusterCutReadback {
-    fn default() -> Self {
-        Self {
-            inflight: false,
-            frames: 0,
-            last_value: -1,
-        }
-    }
+    pub logged: bool,
 }
 
 /// Per-frame state for the MSAA edge-budget overflow readback loop.
