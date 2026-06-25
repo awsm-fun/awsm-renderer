@@ -344,12 +344,30 @@ pub struct GetVertexDataParams {
     /// Page the result (max returned).
     #[serde(default)]
     pub limit: Option<u32>,
+    /// When true, add a per-vertex `source` block tagging each channel
+    /// (position/normal/color/uv) as `"override"` or `"base"` — verify which
+    /// channels an authoring op actually wrote.
+    #[serde(default)]
+    pub include_source: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetMeshLayersParams {
     /// UUID of the node whose mesh layer summary to read.
     pub node: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetMeshDataParams {
+    /// UUID of the node whose resolved-mesh topology to read.
+    pub node: String,
+    /// Page the triangle list (start triangle) — a full index buffer overflows
+    /// the token cap.
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// Page the triangle list (max triangles returned).
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2367,7 +2385,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Read the FINAL (post-eval + override) per-vertex data for specific indices of a node's resolved mesh: returns `{ vertex_count, vertices: [{ index, position, normal, color, uv }] }` (color/uv null when the mesh has no such channel). The read counterpart to paint_vertex_colors / set_vertex_normals / set_vertex_positions — confirm what your last authoring op actually produced. `node` is the node UUID; `indices` the verts to read."
+        description = "Read the FINAL (post-eval + override) per-vertex data for specific indices of a node's resolved mesh: returns `{ vertex_count, vertices: [{ index, position, normal, color, uv }] }` (color/uv null when the mesh has no such channel). The read counterpart to paint_vertex_colors / set_vertex_normals / set_vertex_positions / set_vertex_uvs — confirm what your last authoring op actually produced. `node` is the node UUID; `indices` the verts to read. Pass `include_source:true` to also get a per-vertex `source:{position,normal,color,uv}` block tagging each channel `\"override\"` (authored) or `\"base\"` (rides the evaluated geometry)."
     )]
     async fn get_vertex_data(
         &self,
@@ -2379,6 +2397,7 @@ impl EditorMcp {
             selection: p.selection,
             offset: p.offset,
             limit: p.limit,
+            include_source: p.include_source,
         })
         .await
     }
@@ -2393,6 +2412,22 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::GetMeshLayers {
             node: parse_node(&p.node)?,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Read a node's resolved-mesh TOPOLOGY: `{ vertex_count, triangle_count, triangles:[[a,b,c],…], offset, returned, bbox:{min,max} }` — the triangle index buffer (paged by triangle via `offset`/`limit`, since a full index buffer overflows the token cap) plus counts and the local-space bounding box. The read counterpart to set_mesh_data and the connectivity source for loop-ordering / edge-adjacency / arc-length (e.g. ordering a conveyor belt loop before set_vertex_uvs). Per-vertex attributes (position/normal/uv/color) come from get_vertex_data — this returns only indices + metadata to stay compact. `node` is the node UUID."
+    )]
+    async fn get_mesh_data(
+        &self,
+        Parameters(p): Parameters<GetMeshDataParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::GetMeshData {
+            node: parse_node(&p.node)?,
+            offset: p.offset,
+            limit: p.limit,
         })
         .await
     }

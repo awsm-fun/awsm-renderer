@@ -377,6 +377,12 @@ pub enum EditorQuery {
         offset: Option<u32>,
         #[serde(default)]
         limit: Option<u32>,
+        /// When true, each returned vertex also carries a `source` block marking,
+        /// per channel, whether the value is a per-vertex **override** or rides the
+        /// **base** (evaluated) geometry — i.e. which channels an authoring op
+        /// actually wrote. Off by default to keep the payload compact.
+        #[serde(default)]
+        include_source: bool,
     },
     /// The **layer summary** of a node's resolved mesh: the base kind
     /// (primitive/lathe/superquadric/sweep/sdf/captured), the ordered modifier
@@ -385,6 +391,21 @@ pub enum EditorQuery {
     /// live (still procedural) vs locked (frozen-topology authoring)" perceive.
     /// MCP: `get_mesh_layers`.
     GetMeshLayers { node: NodeId },
+    /// Read a node's resolved-mesh **topology**: the triangle index buffer, paged
+    /// by triangle via `offset`/`limit` (the new payload — large index buffers
+    /// overflow the token cap), plus `vertex_count`, `triangle_count`, and the
+    /// local-space `bbox`. The read counterpart to `set_mesh_data` and the
+    /// connectivity source for loop-ordering / adjacency / arc-length. Per-vertex
+    /// attributes (position/normal/uv/color) come from `get_vertex_data` — this
+    /// deliberately returns only indices + metadata to stay compact. MCP:
+    /// `get_mesh_data`.
+    GetMeshData {
+        node: NodeId,
+        #[serde(default)]
+        offset: Option<u32>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     /// The mesh asset's modifier-stack **recipe** (`{ base, modifiers }`),
     /// serialized as JSON in a `QueryResult::Text`. `null` when the mesh has no
     /// recipe (a raw captured/converted mesh) — call `set_mesh_modifiers` to give

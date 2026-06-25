@@ -4542,6 +4542,7 @@ impl EditorController {
                 selection,
                 offset,
                 limit,
+                include_source,
             } => {
                 use serde_json::json;
                 if node_is_skinned(&self.scene, node) {
@@ -4549,6 +4550,25 @@ impl EditorController {
                         error: skinned_edit_error(node),
                     };
                 }
+                // §P3: optionally tag each channel base-vs-override. Resolve the
+                // mesh def's sparse override maps once (same node→mesh→def path as
+                // get_mesh_layers); a vertex index present in a channel's map was
+                // authored, otherwise it rides the evaluated base.
+                let overrides = if include_source {
+                    mutate::find_by_id(&self.scene, node)
+                        .and_then(|n| match n.kind.get_cloned() {
+                            NodeKind::Mesh { mesh, .. } => Some(mesh.0),
+                            _ => None,
+                        })
+                        .and_then(|id| {
+                            match self.scene.assets.lock().unwrap().get(id).map(|e| &e.source) {
+                                Some(SceneAssetSource::Mesh(def)) => Some(def.overrides.clone()),
+                                _ => None,
+                            }
+                        })
+                } else {
+                    None
+                };
                 // §10: a `selection` handle's indices win over an explicit list; a
                 // dangling handle errors loudly.
                 let target: Vec<u32> = match selection {
@@ -4584,13 +4604,24 @@ impl EditorController {
                             .iter()
                             .map(|&i| {
                                 let idx = i as usize;
-                                json!({
+                                let mut v = json!({
                                     "index": i,
                                     "position": md.positions.get(idx),
                                     "normal": md.normals.as_ref().and_then(|n| n.get(idx)),
                                     "color": md.colors.as_ref().and_then(|c| c.get(idx)),
                                     "uv": md.uvs.first().and_then(|u| u.get(idx)),
-                                })
+                                });
+                                if let Some(ov) = &overrides {
+                                    let src =
+                                        |present: bool| if present { "override" } else { "base" };
+                                    v["source"] = json!({
+                                        "position": src(ov.positions.contains_key(&i)),
+                                        "normal": src(ov.normals.contains_key(&i)),
+                                        "color": src(ov.colors.contains_key(&i)),
+                                        "uv": src(ov.uvs.contains_key(&i)),
+                                    });
+                                }
+                                v
                             })
                             .collect();
                         let mut entries = std::collections::BTreeMap::new();
@@ -4675,6 +4706,66 @@ impl EditorController {
                     }
                     None => QueryResult::Error {
                         error: format!("node {node} is not a Mesh / has no resolvable mesh asset"),
+                    },
+                }
+            }
+            EditorQuery::GetMeshData {
+                node,
+                offset,
+                limit,
+            } => {
+                use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                match mesh {
+                    Some(md) => {
+                        let tri_count = md.indices.len() / 3;
+                        let start = offset.unwrap_or(0) as usize;
+                        // Page over WHOLE triangles (the new payload). Each chunk is
+                        // [a,b,c] vertex indices; per-vertex attrs come from
+                        // get_vertex_data (kept out here to stay compact).
+                        let tris_iter = md.indices.chunks_exact(3).skip(start);
+                        let tris: Vec<[u32; 3]> = match limit {
+                            Some(l) => tris_iter
+                                .take(l as usize)
+                                .map(|c| [c[0], c[1], c[2]])
+                                .collect(),
+                            None => tris_iter.map(|c| [c[0], c[1], c[2]]).collect(),
+                        };
+                        // Local-space bbox over positions.
+                        let bbox = if md.positions.is_empty() {
+                            json!(null)
+                        } else {
+                            let mut min = [f32::INFINITY; 3];
+                            let mut max = [f32::NEG_INFINITY; 3];
+                            for p in &md.positions {
+                                for k in 0..3 {
+                                    min[k] = min[k].min(p[k]);
+                                    max[k] = max[k].max(p[k]);
+                                }
+                            }
+                            json!({ "min": min, "max": max })
+                        };
+                        let mut entries = std::collections::BTreeMap::new();
+                        entries.insert("vertex_count".to_string(), json!(md.positions.len()));
+                        entries.insert("triangle_count".to_string(), json!(tri_count));
+                        entries.insert("offset".to_string(), json!(start));
+                        entries.insert("returned".to_string(), json!(tris.len()));
+                        entries.insert("triangles".to_string(), json!(tris));
+                        entries.insert("bbox".to_string(), bbox);
+                        QueryResult::Map(query::MapResult {
+                            kind: "mesh_data".to_string(),
+                            entries,
+                        })
+                    }
+                    None => QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
                     },
                 }
             }
