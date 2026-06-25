@@ -70,6 +70,33 @@ jump to the CPU count; then fix draw + re-verify A1. (HARNESS: chrome
 list_console_messages buffer resets on heavy MCP ops — read it RIGHT after the scene
 build, or prefer the MCP `get_console_logs` regex grep used in iter 25.)
 
+### iter 26 — NARROWED HARD: cut compute writes DON'T reach the readback (not predicate/uniform)
+
+Ran 3 shader probes (temporary, reverted; fresh-wasm CONFIRMED via a `PROBE-v3`
+sentinel in the PARAMS log — so NOT the deterministic-stale-wasm trap):
+- PROBE 1 `if (i<cluster_count && i<arrayLength) selected[i]=1` → `selected=0`.
+- PROBE 2 `if (i<arrayLength(&selected)) selected[i]=1` → `selected=0`.
+- PROBE 3 thread-0 raw sentinels → **`selected[0]=arrayLen=0, selected[1]=cluster_count=0,
+  selected[2]=sentinel=0 (want 12345)`**.
+
+The UNCONDITIONAL `selected[2]=12345u` (thread 0, no guard) does NOT appear in the
+readback. ⇒ **the cut compute's writes to `selected` never reach the buffer the
+readback copies** — NOT a predicate, uniform-layout, or `cluster_count` bug (all
+downstream of writes landing). The readback DOES resolve (the copy ran ⇒ the encoder
+was submitted ⇒ the cut compute, recorded earlier in the same encoder, also ran), so
+the leading cause is a **buffer-instance mismatch**: the cut bind group's
+`@binding(1) selected` ≠ the `buffers.selected_buffer` the readback copies. Both the
+cut's `selected` AND the compaction's `draw_args` read 0 ⇒ a shared root cause.
+
+**Next:** verify buffer identity — does `upload_pages`/`ensure_capacity` recreate
+`self.buffers` (new `selected_buffer`) AFTER the cut bind group was built, leaving it
+stale? does the round-trip load the cluster mesh twice (second `upload_pages` not
+re-recreating BOTH bind groups)? Log the bound buffer vs the readback buffer identity.
+Also confirm the cut compute pass is in the SAME submitted encoder (not a separate
+never-submitted one). Fix the recreate ordering so the cut + compaction bind groups
+always reference the live buffers; re-run the probe to confirm sentinel=12345 lands;
+restore the real cut; then the cut should select the CPU count.
+
 ---
 
 
