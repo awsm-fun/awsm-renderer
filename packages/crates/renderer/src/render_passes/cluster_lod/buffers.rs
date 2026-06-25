@@ -54,9 +54,8 @@ pub struct ClusterLodBuffers {
     /// Gap-B dynamic paging: cluster_id → page-pool slot (`-1` = absent),
     /// `array<i32>`. Lazily created only when [`Self::write_resident`] is called
     /// (i.e. only under `cluster_paging`), so the non-paging path allocates nothing
-    /// — byte-identical. Bound into the cut as a paging shader variant in the next
-    /// step (step 1c-ii); for now it is uploaded + validated end-to-end.
-    #[allow(dead_code)]
+    /// — byte-identical. Bound into the cut's paging shader variant at @binding(3)
+    /// by [`super::bind_group::ClusterCutBindGroups::recreate`].
     pub resident_buffer: Option<web_sys::GpuBuffer>,
 }
 

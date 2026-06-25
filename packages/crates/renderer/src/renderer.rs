@@ -2352,7 +2352,7 @@ impl AwsmRenderer {
     /// path calls it (so the non-paging path allocates no resident buffer).
     pub fn upload_cluster_resident(&mut self, resident: &[i32]) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.upload_resident(&self.gpu, resident)?;
+            pass.upload_resident(&self.gpu, &self.bind_group_layouts, resident)?;
         }
         Ok(())
     }

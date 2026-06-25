@@ -94,10 +94,20 @@ impl ClusterLodRenderPass {
     /// Upload the Gap-B residency table (`cluster_id → slot`). Must be called after
     /// [`Self::upload_pages`] (the buffers must exist). No-op if no cluster mesh is
     /// loaded. Only the `cluster_paging` path calls this.
-    pub fn upload_resident(&mut self, gpu: &AwsmRendererWebGpu, resident: &[i32]) -> Result<()> {
-        if let Some(buffers) = self.buffers.as_mut() {
-            buffers.write_resident(gpu, resident)?;
-        }
+    pub fn upload_resident(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        layouts: &BindGroupLayouts,
+        resident: &[i32],
+    ) -> Result<()> {
+        let Some(buffers) = self.buffers.as_mut() else {
+            return Ok(());
+        };
+        buffers.write_resident(gpu, resident)?;
+        // The paging cut bind group has a `resident` entry that could only be
+        // bound once the table existed — (re)build it now that it does.
+        let buffers = self.buffers.as_ref().unwrap();
+        self.bind_groups.recreate(gpu, layouts, buffers)?;
         Ok(())
     }
 

@@ -27,17 +27,22 @@ use crate::render_passes::RenderPassInitContext;
 pub struct ClusterCutBindGroups {
     pub layout_key: BindGroupLayoutKey,
     bind_group: Option<web_sys::GpuBindGroup>,
+    /// Gap-B dynamic paging: when on, the layout has a 4th entry (`resident`
+    /// table) and [`Self::recreate`] binds it. Read once at construction from
+    /// `features.cluster_paging` and remembered (recreate has no `ctx`).
+    paging: bool,
 }
 
 impl ClusterCutBindGroups {
     pub fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
+        let paging = ctx.features.cluster_paging;
         let compute_only = |resource| BindGroupLayoutCacheKeyEntry {
             resource,
             visibility_vertex: false,
             visibility_fragment: false,
             visibility_compute: true,
         };
-        let entries = vec![
+        let mut entries = vec![
             // pages — storage RO
             compute_only(BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
@@ -51,12 +56,20 @@ impl ClusterCutBindGroups {
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
             )),
         ];
+        if paging {
+            // resident (cluster_id → slot) — storage RO. Only present in the
+            // paging variant so the non-paging cut layout is unchanged.
+            entries.push(compute_only(BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+            )));
+        }
         let layout_key = ctx
             .bind_group_layouts
             .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?;
         Ok(Self {
             layout_key,
             bind_group: None,
+            paging,
         })
     }
 
@@ -76,7 +89,7 @@ impl ClusterCutBindGroups {
         layouts: &BindGroupLayouts,
         buffers: &ClusterLodBuffers,
     ) -> Result<()> {
-        let entries = vec![
+        let mut entries = vec![
             BindGroupEntry::new(
                 0,
                 BindGroupResource::Buffer(BufferBinding::new(&buffers.pages_buffer)),
@@ -90,6 +103,18 @@ impl ClusterCutBindGroups {
                 BindGroupResource::Buffer(BufferBinding::new(&buffers.params_buffer)),
             ),
         ];
+        if self.paging {
+            // The layout has a 4th entry (resident); we can only build the bind
+            // group once the residency table has been uploaded. Defer until then
+            // (the loader calls `upload_resident` → `recreate` right after pages).
+            match buffers.resident_buffer.as_ref() {
+                Some(resident) => entries.push(BindGroupEntry::new(
+                    3,
+                    BindGroupResource::Buffer(BufferBinding::new(resident)),
+                )),
+                None => return Ok(()),
+            }
+        }
         let descriptor =
             BindGroupDescriptor::new(layouts.get(self.layout_key)?, Some("ClusterCut"), entries);
         self.bind_group = Some(gpu.create_bind_group(&descriptor.into()));
