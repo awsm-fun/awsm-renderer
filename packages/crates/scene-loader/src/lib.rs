@@ -2660,7 +2660,110 @@ mod cluster_streaming_tests {
     //! The GPU upload/draw around it needs a device (browser round-trip), but the
     //! resident-set choice + `first_index` remap + leaf clamp are device-free.
     use super::select_resident_clusters;
-    use awsm_renderer_lod_bake::{ClusterMesh, ClusterPage};
+    use awsm_renderer_lod_bake::{build_cluster_dag, ClusterMesh, ClusterPage, DagOptions};
+    use std::collections::HashMap;
+
+    // --- A1 capped crack-free helpers (mirror the bake's dag.rs test harness) ---
+
+    /// UV sphere: geometrically closed, non-watertight by index (seam + poles).
+    fn uv_sphere(long: usize, lat: usize) -> (Vec<[f32; 3]>, Vec<u32>) {
+        use std::f32::consts::PI;
+        const TAU: f32 = 2.0 * PI;
+        let mut pos = Vec::new();
+        for la in 0..=lat {
+            let theta = (la as f32 / lat as f32) * PI;
+            let (st, ct) = (theta.sin(), theta.cos());
+            for lo in 0..=long {
+                let phi = (lo as f32 / long as f32) * TAU;
+                pos.push([st * phi.cos(), ct, st * phi.sin()]);
+            }
+        }
+        let stride = long + 1;
+        let mut idx = Vec::new();
+        for la in 0..lat {
+            for lo in 0..long {
+                let a = (la * stride + lo) as u32;
+                let b = (la * stride + lo + 1) as u32;
+                let c = ((la + 1) * stride + lo + 1) as u32;
+                let d = ((la + 1) * stride + lo) as u32;
+                idx.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        (pos, idx)
+    }
+
+    fn weld_ids(pos: &[[f32; 3]], eps: f32) -> Vec<u32> {
+        let mut map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+        let q = |v: f32| (v / eps).round() as i64;
+        pos.iter()
+            .map(|p| {
+                let key = (q(p[0]), q(p[1]), q(p[2]));
+                let n = map.len() as u32;
+                *map.entry(key).or_insert(n)
+            })
+            .collect()
+    }
+
+    /// Hole/boundary edges (used by exactly one welded, non-degenerate triangle).
+    fn boundary_edges(tris: &[[u32; 3]], weld: &[u32]) -> usize {
+        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in tris {
+            let w = [
+                weld[t[0] as usize],
+                weld[t[1] as usize],
+                weld[t[2] as usize],
+            ];
+            if w[0] == w[1] || w[1] == w[2] || w[0] == w[2] {
+                continue;
+            }
+            for (a, b) in [(w[0], w[1]), (w[1], w[2]), (w[2], w[0])] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edges.entry(key).or_insert(0) += 1;
+            }
+        }
+        edges.values().filter(|&&c| c == 1).count()
+    }
+
+    /// A1 (north-star, CAPPED clause): under `?streambudget` the cluster cut must
+    /// still be crack-free. The capped resident set, cut at the closest camera
+    /// (threshold 0 ⇒ all resident leaves), must weld to a closed surface — a torn
+    /// "partial frontier" (a hard tri budget cutting mid-level) shows up as open
+    /// edges. REPRODUCES the on-device subdivided-sphere holes seen under
+    /// `?streambudget=8000` (full/uncapped cut is already crack-free after the bake
+    /// fix). Fix = make the resident set a COMPLETE antichain (soft budget).
+    #[test]
+    #[ignore = "north-star gap: A1 capped — static cap leaves a partial frontier that tears; needs complete-antichain residency"]
+    fn capped_resident_cut_is_crack_free() {
+        let (pos, indices) = uv_sphere(48, 32);
+        let weld = weld_ids(&pos, 1e-3);
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+        let cm = ClusterMesh::from_dag(&dag, pos, vec![], vec![], vec![]);
+
+        let full_tris = cm.indices.len() / 3;
+        let budget = full_tris / 4; // aggressive: forces a partial frontier today
+        let (pages, m_indices) = select_resident_clusters(&cm, budget);
+
+        // Simulate the runtime per-cluster cut at the closest camera (threshold 0):
+        // select resident pages whose error interval contains 0 (the clamped
+        // leaves). Reconstruct their triangles and check for holes.
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+        for p in &pages {
+            if p.lod_error <= 0.0 && 0.0 < p.parent_error {
+                let s = p.first_index as usize;
+                let e = s + p.index_count as usize;
+                for c in m_indices[s..e].chunks_exact(3) {
+                    tris.push([c[0], c[1], c[2]]);
+                }
+            }
+        }
+        assert!(!tris.is_empty(), "capped cut selected no leaves");
+        let holes = boundary_edges(&tris, &weld);
+        assert_eq!(
+            holes, 0,
+            "capped cluster cut (budget {budget} tris) tore {holes} hole edge(s) — \
+             partial-frontier seam; resident set must be a complete antichain (A1 capped)"
+        );
+    }
 
     fn page(lod_error: f32, parent_error: f32, first_index: u32, index_count: u32) -> ClusterPage {
         ClusterPage {

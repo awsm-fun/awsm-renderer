@@ -32,16 +32,22 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
   watertight at orbit radius ~2, both uncapped and `?streambudget`; cut-coverage
   GPU readback shows every surface region has a selected cluster. Real-asset
   (DamagedHelmet) output **unchanged** (regression guard).
-  _Current: **bake-level fix LANDED + test PASSING.** `simplify::weld_coincident`
-  position-welds the simplifier's topology (a seam/pole duplicate becomes an interior
-  edge, not a false open boundary) and a new `lock_boundaries` mode (used by the
-  cluster-DAG group simplify via `with_target_locked`) fully locks the remaining true
-  boundaries so adjacent groups can't slide a shared boundary apart. The reproduction
-  test `non_watertight_sphere_cut_is_closed_at_every_level` now passes: 0 hole edges
-  at every cut threshold AND a real reduction (coarsest cut < ¾ source). Dup-free
-  watertight meshes weld to identity ⇒ real-asset output unchanged. **A1 still
-  UNTICKED** pending on-device confirmation of the actual editor subdivided sphere
-  under `?vg` (full detail) and `?streambudget` (capped)._
+  _Current: **UNCAPPED verified (bake fix + on-device); CAPPED still tears → A1 UNTICKED.**
+  (1) Bake fix landed (`simplify::weld_coincident` + `lock_boundaries` via
+  `with_target_locked`); unit test `non_watertight_sphere_cut_is_closed_at_every_level`
+  passes (0 holes at every cut level + real reduction). (2) **On-device (2026-06-25):**
+  editor rebuilt with the fix; sphere + Subdivide×4 → `load_player_bundle` under `?vg`.
+  Browser console: `cluster LOD (GPU): …13065 clusters, render mesh M = 583768 tris,
+  per-cluster cut drives draw` and `cluster compaction (GPU): …1696 tris over 13065
+  clusters` — the per-cluster cut drives the draw; screenshots at orbit radius 2 and
+  1.08 show a **complete, hole-free** sphere (also bonus A3 evidence: 1696 drawn vs
+  583768 source). (3) **CAPPED FAILS:** under `?streambudget=8000` the sphere renders
+  with **visible holes / sliver tears** — the static cap's PARTIAL frontier (hard tri
+  budget cutting mid-level) borders coarser-only regions and seams. Reproduced
+  deterministically: `scene-loader` `capped_resident_cut_is_crack_free` (`#[ignore]`d,
+  A1-capped gap) → 50 hole edges at budget 1512. Fix = make `select_resident_clusters`
+  pick a COMPLETE antichain frontier (finest uniform-threshold cut within budget; soft
+  budget), not a hard-tri partial cut. → A1 unmet until capped is crack-free._
 
 - [ ] **A2 — Dynamic, camera-driven streaming residency.**
   A genuinely multi-million-tri asset renders full detail near the camera within a
@@ -186,3 +192,11 @@ honestly true. Grouped; each cites its verification.
   seam plateau. Test un-ignored and passing (0 holes at every cut level + real
   reduction). Bake/renderer suites green (33/301/34/36), fmt + clippy clean. A1 tick
   pending on-device. **Still 0/6 headline verified** (no tick without on-device).
+- 2026-06-25 — **On-device A1 verification (editor rebuilt with fix):** UNCAPPED `?vg`
+  subdivided sphere renders crack-free via the per-cluster cut (console: per-cluster
+  cut drives draw, M=583768 tris/13065 clusters, 1696 drawn; screenshots radius 2 +
+  1.08 hole-free). Built reusable `/tmp/mcp.py` MCP HTTP client to drive the editor.
+  **CAUGHT a real remaining defect:** `?streambudget=8000` still tears (partial-frontier
+  seam in `select_resident_clusters`). Encoded as `#[ignore]`d failing test
+  `capped_resident_cut_is_crack_free` (50 hole edges @ budget 1512). A1 stays UNTICKED;
+  next = complete-antichain residency fix. **Still 0/6 headline verified.**
