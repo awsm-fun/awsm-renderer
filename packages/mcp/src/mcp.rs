@@ -198,6 +198,20 @@ pub struct MeshIdParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BakeMaterialParams {
+    /// UUID of the node whose material to bake.
+    pub node: String,
+    /// Output texture width in px (1..=4096).
+    pub width: u32,
+    /// Output texture height in px (1..=4096).
+    pub height: u32,
+    /// Fill color [r,g,b,a] in 0..1 (placeholder bake). Omit to use the node's
+    /// built-in base_color, else mid-gray.
+    #[serde(default)]
+    pub color: Option<[f32; 4]>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SeparateMeshParams {
     /// UUID of the source mesh node to detach a region from.
     pub node: String,
@@ -2342,6 +2356,23 @@ impl EditorMcp {
             selection: p.selection,
             new_node: None,
             keep_remainder: p.keep_remainder,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Bake a node's material into a new texture asset (width x height); returns ok and selects the new texture (bind it with set_node_texture). NOTE — PLACEHOLDER: this currently flattens to a SOLID color (the node's built-in base_color, or `color` [r,g,b,a] if given, else mid-gray). A true material bake renders the shaded surface in UV space, which needs a new offscreen UV-space render pass — DEFERRED for human review (the renderer shades materials in a compute kernel over a visibility buffer, so there's no fragment shader to repoint at UV-space clip coords). The command + asset-creation + GPU-upload plumbing is real and reusable; only the UV-space material rendering is stubbed."
+    )]
+    async fn bake_material_to_texture(
+        &self,
+        Parameters(p): Parameters<BakeMaterialParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::BakeMaterialToTexture {
+            node: parse_node(&p.node)?,
+            width: p.width,
+            height: p.height,
+            color: p.color,
+            out: None,
         })
         .await
     }

@@ -232,5 +232,30 @@ Append per item as it lands (status + the live-verify proof). Don't rewrite.
 - [x] Item 1 — connectivity / island selection predicates — STATIC: clippy/fmt clean, full test green (48 binaries), +2 meshgen connectivity tests (`connected_components_finds_two_disjoint_boxes`, `connected_component_welds_split_seam_vertices`) + 1 predicate roundtrip test. `meshgen::edit::connected_component_of` / `connected_components` (position-welded union-find over triangle edges, so UV/normal seams don't fragment a piece); new `VertexPredicate::ConnectedToSeed { seed }` wired through `select_vertices_by_predicate`; select_vertices_where tool description extended. LIVE: box + Array(count:2) modifier → 48 verts (two 24-vert islands); `select_vertices_where {connected_to_seed, seed:[0]}` → 24 (one island), `seed:[47]` → 24 (the other), disjoint.
 - [x] Item 2 — separate_mesh — STATIC: clippy/fmt clean, full test green (48 binaries), +2 meshgen tests (`extract_faces_splits_two_boxes`, `extract_faces_partial_face_stays_in_remainder`) + 1 command roundtrip test. `meshgen::edit::extract_faces(mesh, selected) -> (extracted, remainder)` (face moves when all 3 verts selected; compacted+remapped sub-meshes carrying normals/uvs/colors); `EditorCommand::SeparateMesh { node, indices|selection, new_node?, keep_remainder }` mints a fresh Captured mesh asset + sibling Mesh node (inherits source transform+material), and when keep_remainder replaces the source with the remainder (clears stale overrides); inverse = Batch(delete new node+asset, restore source recipe/bytes/overrides). MCP separate_mesh tool. LIVE: box + Array(count:2) (48v/2 islands) → select connected_to_seed island (handle) → separate_mesh {keep_remainder:true} → two sibling nodes: source "Box" now 24v/12t (remainder), new "Separated" node 24v/12t (the extracted island). Clean 24+24 split.
 - [x] Item 3 — UV-layout overlay (query form) — STATIC: clippy/fmt clean, full test green (48 binaries), +1 meshgen test (`uv_islands_distinguishes_contiguous_vs_split`) + 1 query roundtrip test. Refactored the union-find into a shared `components_from_weld` core; new `meshgen::edit::uv_islands(uvs, indices)` (UV-welded islands). `EditorQuery::UvLayout { node, uv_set?, offset?, limit? }` → `{ has_uv, island_count, bounds, islands:[{count,min,max}], edge_count, edges:[[[u,v],[u,v]]] }` (UV wireframe paged); `get_uv_layout` MCP tool. LIVE: cylinder → 1 island spanning ~[0,1] (259 edges), box → 1 island [0,1]² (30 edges), per-island counts + paged edges all coherent. (Primitives are single-island unwraps; the multi-island/atlas case is proven by the unit test — 2 disjoint UV quads → 2 islands — since no atlas-UV import is loaded here.)
-- [ ] Item 4 — bake_material_to_texture (full, or green partial + review flag)
-- [ ] Final — full gate green + summary
+- [x] Item 4 — bake_material_to_texture — SHIPPED AS SCAFFOLDING + flagged for human review (see "Deferred within Item 4" below). STATIC: clippy/fmt clean, full test green (48 binaries), +1 pure helper test (`solid_rgba8_fills_uniformly`) + 1 command roundtrip test. `editor_protocol::solid_rgba8(w,h,color)` pure fill; `EditorCommand::BakeMaterialToTexture { node, width, height, color?, out? }` resolves color (param > node base_color > gray), builds the RGBA8 buffer, and mints a real GPU texture asset via the existing `bridge::material::create_texture` path (bounds 1..=4096; inverse DeleteAsset). MCP bake_material_to_texture tool. LIVE: `dispatch_command bake_material_to_texture {width:64,height:64,color:[.92,.45,.12,1]}` → "ok"; `screenshot_texture` shows a solid orange 64² texture — the command → asset → GPU-upload → bindable-texture plumbing is real and verified.
+- [x] Final — full gate green (fmt --check / clippy -D warnings / cargo test --all-features = 48 binaries) + summary written.
+
+## Deferred within Item 4 — the real material bake (human review)
+
+What shipped is the reusable command/asset/GPU-upload surface with a SOLID-color
+placeholder fill. The actual material rendering (shade the surface and write it into
+the texture's UV layout) is **deferred** for a focused, human-reviewed change because
+of a renderer-architecture constraint found during the audit:
+
+- The renderer is **specialize-only and shades materials in a COMPUTE kernel over a
+  visibility buffer** (`material_opaque/.../compute.wgsl`), not a vertex/fragment
+  pipeline. There is therefore **no fragment shader to repoint at UV-space clip
+  coordinates** (`clip = vec4(uv*2-1,0,1)`) — the naive "render the mesh in UV space
+  with its material in the fragment stage" doesn't map onto this design.
+- A correct bake needs one of: (a) a **UV-space visibility rasterization** (rasterize
+  triangle ids + barycentrics into a UV-layout target) followed by a **re-dispatch of
+  the material compute kernel** against that target; or (b) a **separate
+  vertex/fragment material path** authored just for baking. Both are real features
+  touching the core render-pass architecture.
+- Reusable pieces confirmed present for whoever picks this up:
+  `renderer-core/src/texture/exporter.rs` (`export_texture_as_rgba8` /
+  `copy_texture_for_readback` — MAP_READ readback), `editor/src/engine/preview.rs`
+  (an offscreen 2nd `AwsmRenderer` + material registration), `editor/src/engine/query.rs`
+  (`capture_scene_rgba`/`poll_scene_capture` render-loop request/poll + settle barrier),
+  and the `create_texture` bridge (output asset). The placeholder command already wires
+  the output half.

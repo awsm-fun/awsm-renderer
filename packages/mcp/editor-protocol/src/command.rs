@@ -643,6 +643,26 @@ pub enum EditorCommand {
         #[serde(default)]
         keep_remainder: bool,
     },
+    /// Bake a node's material into a new solid-color texture asset (`width ×
+    /// height`). `color` overrides the fill; when omitted it uses the node's
+    /// built-in `base_color`, else mid-gray. **Scaffolding / placeholder:** this
+    /// currently flattens to a SOLID color — a true material bake renders the
+    /// shaded surface in UV space, which needs a new offscreen UV-space pass
+    /// (the renderer shades materials in a COMPUTE kernel over a visibility
+    /// buffer, not a fragment pipeline, so there's no fragment shader to repoint
+    /// at UV-space clip coords — a real feature, deferred for human review). The
+    /// command/asset surface + GPU upload are real; bind the result with
+    /// `set_node_texture`. Inverse: `DeleteAsset`.
+    BakeMaterialToTexture {
+        node: NodeId,
+        width: u32,
+        height: u32,
+        #[serde(default)]
+        color: Option<[f32; 4]>,
+        /// Deterministic id for the new texture asset (minted when omitted).
+        #[serde(default)]
+        out: Option<AssetId>,
+    },
     /// Bake an editable mesh's modifier stack into raw triangles and clear the
     /// recipe (the deliberate heavy snapshot). Inverse:
     /// `Batch[SetMeshModifiers(prior), SetMeshData(prior_bytes)]`.
@@ -1281,6 +1301,7 @@ impl EditorCommand {
             EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
             EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",
             EditorCommand::SeparateMesh { .. } => "Separate mesh",
+            EditorCommand::BakeMaterialToTexture { .. } => "Bake material to texture",
             EditorCommand::PaintVertexColors { .. } => "Paint vertex colors",
             EditorCommand::PaintVerticesWhere { .. } => "Paint vertices (where)",
             EditorCommand::TransformVerticesWhere { .. } => "Transform vertices (where)",
