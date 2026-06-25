@@ -198,7 +198,7 @@ tasks:
     cmds:
       - |
         set -eu
-        CRATES="awsm-renderer-curves awsm-renderer-geometry awsm-renderer-tangents awsm-renderer-scene awsm-renderer-core awsm-renderer-materials awsm-renderer-particles awsm-renderer-meshgen awsm-renderer awsm-renderer-glb-export awsm-renderer-gltf awsm-renderer-gltf-convert awsm-renderer-scene-loader"
+        CRATES="awsm-renderer-curves awsm-renderer-geometry awsm-renderer-tangents awsm-renderer-scene awsm-renderer-core awsm-renderer-materials awsm-renderer-particles awsm-renderer-meshgen awsm-renderer awsm-renderer-glb-export awsm-renderer-gltf awsm-renderer-gltf-convert awsm-renderer-lod-bake awsm-renderer-scene-loader"
         # Workspace version (first `version = "…"` inside [workspace.package]).
         VERSION="$(awk '/^\[workspace\.package\]/{f=1} f&&/^version = /{gsub(/[",]/,"");print $3;exit}' Cargo.toml)"
         case "{{.PUBLISH_ARGS}}" in *--dry-run*) DRY=1;; *) DRY=0;; esac
