@@ -170,7 +170,7 @@ restore the real cut; then the cut should select the CPU count.
 
 ---
 
-## A2 — dynamic per-frame paging (Gap B). UNMET — functional core VERIFIED on-device; only the no-per-frame-alloc bar remains.
+## A2 — dynamic per-frame paging (Gap B). UNMET — per-frame core (crack-free bidirectional refine, bounded pool, no-alloc) VERIFIED on-device; remaining blocker = the multi-M-tri DENSE LOAD upload still hits the 512 MiB cap.
 
 **iter 36 — the per-frame stream/evict loop now WORKS bidirectionally, crack-free, in the bounded pool (commit `39162d0f`).**
 `ClusterLodRenderPass::stream_paging` (replaces the no-op `paging_update`): each frame it runs
@@ -187,14 +187,28 @@ healthy — 6478+ distinct colors, watertight screenshots): far `desired=294 dra
 zoom-IN `desired=675 draw=34614 (11538 tris)` RISES → zoom-OUT `desired=268 draw=8736 (2912 tris)`
 FALLS, every frame watertight, all within the bounded `pool=1962` slots (full DAG=18030).**
 
-**Why STILL unmet (the one remaining bar): no per-frame heap allocations.** `stream_paging` itself
-uses pooled scratch (`slot_bytes_scratch`/`corner_scratch`/`src_idx_scratch`/`desired_flag`,
-`desired` reused), but the `buffers` write helpers it calls per streamed slot still allocate a
-`Vec<u8>` each (`write_source_indices_span`, `write_page_entry` serialize into a local `Vec`) — up to
-~96 allocs/frame. That violates `avoid-per-frame-allocations-standard`. **A2 is NOT ticked until
-those writes are pooled AND no-alloc is verified on-device via `?stress=N` + `?trace=sub-frame`.**
-(LRU is effectively moot — eviction only ever drops NON-desired slots, so which non-desired goes
-first doesn't affect correctness; `slot_last_used` is tracked if strict-LRU ordering is wanted.)
+**no-per-frame-alloc bar: ✅ MET (iter 36, commit `d0b06e6e`).** `stream_paging` and the two per-slot
+`buffers` write helpers (`write_page_entry`, `write_source_indices_span`) now serialize into pooled
+`Vec<u8>` scratch on `ClusterPaging` (`page_bytes_scratch`/`src_bytes_scratch`) — previously each
+allocated a fresh `Vec` per streamed slot (~96/frame). With `select_cut_per_cluster` and
+`pack_visibility_slot_bytes` both reusing their output buffers, the whole per-frame stream/evict path
+is now Rust-heap-alloc-free (only unavoidable web-sys typed-array views in `writeBuffer` remain).
+Re-verified on-device behavior-identical (zoom-in still draw=34614, watertight). (LRU is effectively
+moot — eviction only ever drops NON-desired slots, so which non-desired goes first doesn't affect
+correctness; `slot_last_used` is tracked if strict-LRU ordering is wanted.)
+
+**🚨 Why STILL unmet — the `multi-M-tri` headline requirement (iter 36).** `load_player_bundle` of a
+**1.57M-tri** mesh PANICS at load even with `?paging`, BEFORE the per-frame pool can bound anything:
+`Render:Mesh GPU write: create_buffer requested 1073741824 bytes (> 536870912 cap) — oversized GPU
+buffer allocation` (the 512 MiB `OVERSIZED_ALLOC_BYTES` debug guard; requested exactly 1 GiB). The
+context is **"Render:Mesh GPU write"** — the regular DENSE-mesh visibility-geometry upload, NOT the
+cluster-paging buffers. So the load path still uploads the full dense source geometry for a
+cluster-LOD mesh; the bounded page pool only covers the per-frame streamed M, not this one-shot dense
+upload. **This is the remaining A2 blocker: the LOAD path must NOT upload the full dense geometry for
+a paged cluster-LOD mesh (the paged pool + on-demand streaming should be the only residency).** Until
+a genuine multi-M-tri asset pages within bounded VRAM end-to-end (load + per-frame), A2 stays UNMET.
+Functional core (camera-driven crack-free bidirectional refinement, bounded pool, no per-frame
+allocs) is PROVEN at sub-M scale (393k source / 873k post-bake DAG, 18030 clusters).
 
 **iter 31 on-device verification (browser healthy) — what's PROVEN working:**
 1. **Camera-driven cut refinement ✅** (`?vg`): dolly the camera IN ⇒ the drawn cut
