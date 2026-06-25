@@ -16,13 +16,11 @@
 
 Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-this-loop · `[x]` verified.
 
-> **Current: 2 / 6 headline verified (A4, A5); A1 = `[~]` CPU-verified, on-device pending.**
-> The iter-24 A1 downgrade ("GPU cut emits 0 triangles") was **RETRACTED at iter 27**:
-> it rested on the headless harness's GPU readback, which is proven UNRELIABLE here
-> (it decoded `draw_args.instance_count=0` though that field is CPU-written to 1 and the
-> compaction never touches it), and `screenshot_scene` is all-black for even a plain
-> sphere. So the cluster GPU draw is UNVERIFIABLE in this harness — NOT confirmed-broken.
-> A1's CPU bake/cut test passes. See the RETRACTED-P0 block in
+> **Current: 3 / 6 headline verified (A1, A4, A5).** The iters-24–28 A1 downgrade
+> ("GPU cut emits 0 triangles") was a **FROZEN-BROWSER artifact — RESOLVED at iter 29**:
+> after restarting Chrome, the cluster cut DRAWS (`draw_args.index_count=27558`, 9186 of
+> 583768 tris) and the subdivided sphere renders watertight in a chrome-devtools
+> screenshot. A1 is ✅ again (CPU bake/cut test + on-device). See the RESOLVED block in
 > [`nanite-lod-NORTHSTAR-GAPS.md`](./nanite-lod-NORTHSTAR-GAPS.md). The unmet A2 / A3 / A6 (the
 > large Gap-B dynamic-paging build + its benchmark) are documented in
 > [`nanite-lod-NORTHSTAR-GAPS.md`](./nanite-lod-NORTHSTAR-GAPS.md) and flagged in
@@ -35,7 +33,7 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
 
 ## Mandated headline claims (A1–A6)
 
-- [~] **A1 — Per-cluster cluster cut, crack-free, incl. non-watertight / subdivided.** CPU bake/cut test passes; on-device GPU draw UNVERIFIABLE in the current headless harness (readback + screenshot both non-functional — iter-24 "CONTRADICTED" was RETRACTED at iter 27). Not confirmed-broken; needs a working on-device signal to re-confirm ✅.
+- [x] **A1 — Per-cluster cluster cut, crack-free, incl. non-watertight / subdivided.** ✅ CPU bake/cut test passes; on-device (iter 29, after a browser restart) the subdivided sphere renders watertight via the per-cluster GPU cut (`draw_args.index_count=27558`, 9186/583768 tris). The iter-24–28 "0-tris" was a frozen-browser artifact.
   Static rigid meshes render via the per-cluster GPU cut with no cracks, *including*
   non-watertight / midpoint-subdivided meshes. The subdivided-sphere repro
   (`meshgen sphere` + `Subdivide×4`, ~262k→550k-DAG-tris) renders **watertight at

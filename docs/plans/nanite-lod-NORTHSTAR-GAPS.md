@@ -4,39 +4,32 @@ Honest status of the cluster-LOD / virtual-geometry implementation vs. the
 permanent spec `docs/nanite-lod.md`, per the acceptance checklist
 `docs/plans/nanite-lod-acceptance.md`.
 
-**Verified: 2 / 6 headline claims** (A4, A5) — each with a committed deterministic
-test AND cited on-device evidence. **A1 = `[~]` (CPU-verified; on-device pending):**
-its CPU bake/cut test passes; the iter-24 "CONTRADICTED on-device" downgrade was
-WITHDRAWN at iter 27 (it rested on a readback that's proven unreliable in this
-headless harness — see the RETRACTED P0 block below). A1's on-device GPU draw is
-unverifiable in the current harness, NOT confirmed-broken.
+**Verified: 3 / 6 headline claims** (A1, A4, A5) — each with a committed deterministic
+test AND cited on-device evidence.
 
-## 🧱 CONFIRMED HARNESS LIMITATION (iter 28): this headless harness cannot observe ANY GPU output
+## ✅ RESOLVED (iter 29): the iters-24–28 "P0 / harness-can't-verify" saga was a FROZEN BROWSER
 
-Definitive tests:
-- **GPU buffer readback returns zeros regardless of content.** Read back
-  `pages_buffer[0..16]` (cluster 0's center+radius — GPU-resident, uploaded with real
-  non-zero values, NOT CPU-written-per-frame) → decoded `center=(0,0,0) radius=0`. A
-  real cluster page ALWAYS has radius>0 (and the iter-25 upload log showed p0
-  parent=1.19e-7 etc. were uploaded). ⇒ `mapAsync`/`extract_buffer_vec` returns zeros
-  in this MCP/headless-Chrome context, regardless of true buffer content.
-- **`screenshot_scene` returns an all-black (1-colour) PNG** for even a PLAIN sphere
-  WITH a light + a framed camera (`insert_light` + `frame_node`). ⇒ the canvas is not
-  captured here (headless WebGPU canvas-capture limitation).
+The Chrome instance driven by chrome-devtools had **frozen** (its GPU/render process
+hung — likely from the heavy 583k-tri WebGPU work + many rapid reloads). A frozen
+browser still answers `take_snapshot` (cached DOM/accessibility tree) but:
+- every GPU **readback returns zeros** (`draw_args.index_count`, `instance_count`, etc.),
+- every **screenshot is blank** (chrome `take_screenshot` = white; `screenshot_scene` = black),
+even for a plain lit sphere. That produced the false "cut emits 0 triangles" + "harness
+can't observe GPU" conclusions across iters 24–28. **All of it was the freeze.**
 
-⇒ **On-device GPU verification (pixels OR buffer values) is IMPOSSIBLE in this headless
-`task mcp-dev` + chrome-devtools harness.** It worked in prior sessions (per memory
-lod-nanite-overnight-outcome) — likely a real/non-headless browser. The cluster cut /
-draw cannot be confirmed-working OR confirmed-broken here; the implementation is
-CPU-tested + code-correct. To verify A1's crack-free pixels, A2's refine, A3's cut-size,
-A6's benchmark on-device, a DIFFERENT environment (real browser, or a harness where
-WebGPU readback/screenshot work) is REQUIRED — this is an environmental blocker the user
-should be aware of, not something fixable in the renderer.
+**After restarting the browser (iter 29):** screenshots + readback work. The cluster cut
+DRAWS: on `?vg` with a subdivided sphere, `cluster compaction (GPU): draw_args.index_count
+= 27558 (9186 tris) over 13065 clusters` (a real LOD cut — 9186 of 583768 source tris),
+and the **sphere renders watertight** in a chrome-devtools screenshot. A1's original ✅ was
+correct; the iter-24 downgrade is fully WITHDRAWN. Back to 3/6.
 
-**Consequence for the loop:** GPU-output-dependent verification (A1 pixel demo, A2/A3/A6
-on-device) is blocked. CPU-side correctness (bake crack-free test, the GPU-cut shader as
-a tested transliteration of `select_cut_per_cluster`, params/page layout tests, Gap-B CPU
-planners) IS verifiable and is where remaining progress can be made + claimed.
+**🛟 HARNESS LESSON (critical):** if GPU readbacks return zeros AND screenshots go blank
+(white from chrome `take_screenshot`, black from `screenshot_scene`) while `take_snapshot`
+still shows a full DOM ⇒ **the browser is FROZEN. Restart it** (close the tab + open a
+fresh one, or have the user reconnect the chrome MCP) — do NOT conclude the renderer is
+broken. Avoid freezing it: don't hammer reloads on a 500k-tri scene; let frames settle.
+
+The iters-24–28 RETRACTED-P0 write-up below is kept as the (now-explained) trail.
 
 ---
 
@@ -167,7 +160,7 @@ restore the real cut; then the cut should select the CPU count.
 
 | Claim | Status | Evidence |
 |---|---|---|
-| **A1** crack-free per-cluster cut incl. non-watertight/subdivided, full-detail + capped | `[~]` CPU-verified; on-device pending | CPU bake/cut test passes (`cb3b1ac8` weld+lock_boundaries, `73984b4b` antichain). The iter-24 ⚠️"CONTRADICTED" downgrade was WITHDRAWN (iter 27) — it rested on the headless harness's unreliable readback/screenshot (RETRACTED P0 block). On-device GPU draw unverifiable in this harness; not confirmed-broken. |
+| **A1** crack-free per-cluster cut incl. non-watertight/subdivided, full-detail + capped | ✅ | CPU bake/cut test (`cb3b1ac8` weld+lock_boundaries, `73984b4b` antichain) + on-device (iter 29): subdivided sphere renders watertight via the per-cluster GPU cut, `draw_args.index_count=27558 (9186/583768 tris)`. The iter-24–28 "CONTRADICTED/0-tris" was a FROZEN-BROWSER artifact (now resolved). |
 | **A2** dynamic camera-driven streaming residency (multi-M-tri, bounded VRAM, LRU, crack-free fallback, no per-frame allocs) | ❌ **UNMET** | Gap B foundation only (see below) |
 | **A3** drawn (cut) tri count bounded by screen res, not source size (benchmark across scales) | ❌ **UNMET** | partial evidence only (1696 drawn vs 583768 source at one scale); needs the A2 multi-scale benchmark |
 | **A4** deforming → discrete chain, per-instance, skin/morph carried | ✅ | `c58abfd9` carry-through test + on-device mixed CesiumMan/MorphCube/Sphere routing |
