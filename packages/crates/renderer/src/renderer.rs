@@ -2442,16 +2442,17 @@ impl AwsmRenderer {
         Ok(())
     }
 
-    /// Gap-B dynamic paging: set one residency-table entry (`cluster_id → slot`,
-    /// `-1` = absent) in place (single 4-byte write).
+    /// Gap-B dynamic paging: set one page-pool **slot's** residency entry
+    /// (`value >= 0` ⇒ drawable, `-1` ⇒ free/evicted) in place (single 4-byte
+    /// write at `slot*4`). The GPU `resident` array is slot-indexed.
     pub fn write_cluster_resident_entry(
         &self,
-        cluster_id: usize,
-        slot: i32,
+        slot: usize,
+        value: i32,
     ) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_ref() {
             if let Some(buffers) = pass.buffers.as_ref() {
-                buffers.write_resident_entry(&self.gpu, cluster_id, slot)?;
+                buffers.write_resident_entry(&self.gpu, slot, value)?;
             }
         }
         Ok(())

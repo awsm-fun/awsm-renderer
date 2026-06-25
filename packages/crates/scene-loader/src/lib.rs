@@ -2305,6 +2305,7 @@ async fn load_cluster_lod(
             normals: cm.normals.clone(),
             indices: cm.indices.clone(),
             slot_cluster,
+            page_verts: CLUSTER_PAGE_VERTS,
         });
         tracing::info!(
             "cluster paging (Gap B): page pool — {} slots × {} verts/slot = {} slot verts ({} resident tris capped to budget {}); cut draws the capped frontier crack-free",

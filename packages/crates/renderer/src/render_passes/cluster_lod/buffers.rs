@@ -222,23 +222,27 @@ impl ClusterLodBuffers {
         )
     }
 
-    /// Gap-B dynamic paging: set one cluster's residency-table entry
-    /// (`cluster_id → slot`, `-1` = absent) in place — a single 4-byte
-    /// `writeBuffer` at `cluster_id*4`, no realloc. No-op if the resident buffer
-    /// isn't allocated yet (call after [`Self::write_resident`] has sized it).
+    /// Gap-B dynamic paging: set one page-pool **slot's** residency entry in place
+    /// — a single 4-byte `writeBuffer` at `slot*4`, no realloc. The GPU `resident`
+    /// array is SLOT-indexed (the cut shader reads `resident[i]` at the same `i` as
+    /// `pages[i]`): `value >= 0` ⇒ the slot holds a drawable page, `-1` ⇒ free/
+    /// evicted (the shader skips it). `value` is conventionally the slot id on
+    /// stream-in and `-1` on evict; only its sign matters to the shader. No-op if
+    /// the resident buffer isn't allocated yet (call after [`Self::write_resident`]
+    /// has sized it to `pool_slots`).
     pub fn write_resident_entry(
         &self,
         gpu: &AwsmRendererWebGpu,
-        cluster_id: usize,
-        slot: i32,
+        slot: usize,
+        value: i32,
     ) -> Result<(), AwsmCoreError> {
         let Some(buf) = self.resident_buffer.as_ref() else {
             return Ok(());
         };
         gpu.write_buffer(
             buf,
-            Some(cluster_id * 4),
-            slot.to_le_bytes().as_slice(),
+            Some(slot * 4),
+            value.to_le_bytes().as_slice(),
             None,
             None,
         )

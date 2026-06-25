@@ -101,10 +101,16 @@ pub struct ClusterPaging {
     slot_bytes_scratch: Vec<u8>,
     /// One slot's triangle-order corner indices (`PAGE_VERTS`) + slot-relative
     /// source indices, reused per stream.
-    #[allow(dead_code)] // reused by the per-frame streamer (step 20b-iv)
     corner_scratch: Vec<u32>,
-    #[allow(dead_code)] // reused by the per-frame streamer (step 20b-iv)
     src_idx_scratch: Vec<u32>,
+    /// `desired_flag[cluster_id]` = is this cluster in the current frame's desired
+    /// cut. Pooled membership test for the eviction sweep (length = full DAG). Set
+    /// from `desired` at the top of `stream_paging`, cleared at the end — so it is
+    /// `false` everywhere between frames (no per-frame alloc, no per-frame clear of
+    /// the whole vector).
+    desired_flag: Vec<bool>,
+    /// Exploded verts per page-pool slot (= `CLUSTER_PAGE_VERTS`); the slot byte math.
+    page_verts: usize,
 }
 
 /// Geometry + initial residency seed for the paging manager (step 20b-iii). Keeps
@@ -118,6 +124,8 @@ pub struct ClusterPagingInit {
     /// `slot_cluster[slot]` = the full-DAG cluster id initially uploaded into that
     /// slot (the load-time frontier, in slot order). Its length is the pool size.
     pub slot_cluster: Vec<i32>,
+    /// Exploded verts per slot (`CLUSTER_PAGE_VERTS` from the loader).
+    pub page_verts: usize,
 }
 
 impl ClusterPaging {
@@ -128,10 +136,12 @@ impl ClusterPaging {
             normals,
             indices,
             slot_cluster,
+            page_verts,
         } = init;
         let pool_slots = slot_cluster.len();
+        let pages_len = pages.len();
         // Invert slot_cluster → resident (full-DAG cluster space).
-        let mut resident = vec![-1i32; pages.len()];
+        let mut resident = vec![-1i32; pages_len];
         for (slot, &cid) in slot_cluster.iter().enumerate() {
             if cid >= 0 && (cid as usize) < resident.len() {
                 resident[cid as usize] = slot as i32;
@@ -152,6 +162,8 @@ impl ClusterPaging {
             slot_bytes_scratch: Vec::new(),
             corner_scratch: Vec::new(),
             src_idx_scratch: Vec::new(),
+            desired_flag: vec![false; pages_len],
+            page_verts,
         }
     }
 }
@@ -186,22 +198,33 @@ impl ClusterLodRenderPass {
         self.paging = Some(ClusterPaging::new(init));
     }
 
-    /// Per-frame Gap-B paging update (CPU-driven). No-op unless paging is armed.
-    /// Runs the LOD cut over the full DAG at the live camera into pooled scratch
-    /// and logs how the desired cut tracks the camera (logs only when the count
-    /// changes). Step 20a does NOT stream geometry yet, so the render is unchanged;
-    /// later slices act on `desired` to page slots in/out. Allocation-free in steady
-    /// state (the scratch `Vec` is reused).
-    pub fn paging_update(
+    /// Per-frame Gap-B dynamic paging (CPU-driven; step 20b-iv-b-2b). No-op unless
+    /// paging is armed + a cluster render mesh + buffers exist.
+    ///
+    /// Computes the camera-adaptive complete antichain (`select_cut_per_cluster` over
+    /// the full DAG), then STREAMS the desired clusters that aren't resident yet into
+    /// FREE page-pool slots — writing the slot's exploded visibility verts, its GPU
+    /// page (clamped always-draw), its slot-aligned source indices, and its residency
+    /// entry. Free-slots-only ⇒ it only ADDS coverage, never removes it ⇒ crack-free
+    /// (the coarser ancestor stays resident+drawn until its region is fully refined;
+    /// at most a transient z-fight overlap, never a hole). Bounded: refinement caps at
+    /// `pool_slots` (coarser where it doesn't fit). LRU eviction (to recycle slots that
+    /// leave the antichain) is the next layer (20b-iv-b-2c). All scratch is pooled.
+    pub fn stream_paging(
         &mut self,
+        gpu: &AwsmRendererWebGpu,
+        meshes: &crate::meshes::Meshes,
         cam_pos: Vec3,
         tan_half_fov_y: f32,
         viewport_h: f32,
         pixel_budget: f32,
-    ) {
-        let resident_frontier = self.cluster_count as usize;
-        let Some(p) = self.paging.as_mut() else {
-            return;
+    ) -> Result<()> {
+        let Some(render_mesh) = self.render_mesh else {
+            return Ok(());
+        };
+        let (buffers, p) = match (self.buffers.as_ref(), self.paging.as_mut()) {
+            (Some(b), Some(p)) => (b, p),
+            _ => return Ok(()),
         };
         p.frame += 1;
         select_cut_per_cluster(
@@ -213,17 +236,141 @@ impl ClusterLodRenderPass {
             pixel_budget,
             &mut p.desired,
         );
+
+        let data_buf = meshes.visibility_geometry_data_gpu_buffer();
+        let data_off = meshes.visibility_geometry_data_buffer_offset(render_mesh)?;
+        let pv = p.page_verts;
+        const STRIDE: usize = 56; // visibility vertex bytes
+        const MAX_LOADS: usize = 96; // cap streams/frame so a camera jump doesn't hitch
+
+        // Mark this frame's desired cut for the membership test the eviction sweep
+        // (below) needs. Cleared again at the end of the frame so `desired_flag` is
+        // all-false between frames — no per-frame alloc, no full-vector clear.
+        for &c in &p.desired {
+            p.desired_flag[c as usize] = true;
+        }
+
+        let mut next_free = 0usize; // free-slot scan cursor (monotone within a frame)
+        let mut streamed = 0usize;
+        // True once every desired cluster is resident — only then is it crack-free to
+        // evict the resident-but-no-longer-desired slots (resident becomes EXACTLY the
+        // antichain `desired`). While loads are still pending we keep the coarser
+        // ancestors resident (transient overlap = z-fight, never holes).
+        let mut all_desired_resident = true;
+        let mut i = 0usize;
+        while i < p.desired.len() {
+            let cluster = p.desired[i] as usize;
+            i += 1;
+            if p.resident[cluster] >= 0 {
+                p.slot_last_used[p.resident[cluster] as usize] = p.frame; // keep warm
+                continue;
+            }
+            if streamed >= MAX_LOADS {
+                all_desired_resident = false; // capped this frame ⇒ more to stream next
+                continue;
+            }
+            // Find a FREE slot (stream-into-free-before-evict ⇒ crack-free).
+            while next_free < p.pool_slots && p.slot_cluster[next_free] >= 0 {
+                next_free += 1;
+            }
+            if next_free >= p.pool_slots {
+                all_desired_resident = false; // pool full — bounded partial refinement
+                break;
+            }
+            let slot = next_free;
+            next_free += 1;
+
+            let page = p.pages[cluster];
+            let ic = (page.index_count as usize).min(pv);
+            let f = page.first_index as usize;
+            // Slot corner indices (triangle order), padded to a full slot.
+            p.corner_scratch.clear();
+            for k in 0..pv {
+                let v = if k < ic {
+                    p.indices[f + k]
+                } else if ic > 0 {
+                    p.indices[f]
+                } else {
+                    0
+                };
+                p.corner_scratch.push(v);
+            }
+            crate::mesh_pack::pack_visibility_slot_bytes(
+                &p.positions,
+                &p.normals,
+                &p.corner_scratch,
+                slot,
+                pv,
+                awsm_renderer_core::pipeline::primitive::FrontFace::Ccw,
+                &mut p.slot_bytes_scratch,
+            );
+            gpu.write_buffer(
+                data_buf,
+                Some(data_off + slot * pv * STRIDE),
+                p.slot_bytes_scratch.as_slice(),
+                None,
+                None,
+            )?;
+            // The slot's GPU page: clamp always-draw, slot-aligned source span.
+            let mut gp = page;
+            gp.lod_error = 0.0;
+            gp.parent_error = f32::MAX;
+            gp.first_index = (slot * pv) as u32;
+            gp.index_count = ic as u32;
+            buffers.write_page_entry(gpu, slot, &gp)?;
+            p.src_idx_scratch.clear();
+            for k in 0..ic {
+                p.src_idx_scratch.push((slot * pv + k) as u32);
+            }
+            buffers
+                .write_source_indices_span(gpu, (slot * pv) as u32, &p.src_idx_scratch)?;
+            // GPU resident is SLOT-indexed: mark this slot drawable (value = slot).
+            buffers.write_resident_entry(gpu, slot, slot as i32)?;
+            p.resident[cluster] = slot as i32;
+            p.slot_cluster[slot] = cluster as i32;
+            p.slot_last_used[slot] = p.frame;
+            streamed += 1;
+        }
+
+        // Eviction sweep — only when the whole desired cut is resident, so dropping
+        // the no-longer-desired slots leaves EXACTLY the crack-free antichain. This is
+        // what makes the draw FALL on zoom-out and recycles slots within the bounded
+        // pool. Capped per frame; pages stay always-draw so a free slot simply isn't
+        // selected by the cut (resident < 0).
+        let mut evicted = 0usize;
+        if all_desired_resident {
+            for slot in 0..p.pool_slots {
+                if evicted >= MAX_LOADS {
+                    break;
+                }
+                let c = p.slot_cluster[slot];
+                if c >= 0 && !p.desired_flag[c as usize] {
+                    buffers.write_resident_entry(gpu, slot, -1)?;
+                    p.resident[c as usize] = -1;
+                    p.slot_cluster[slot] = -1;
+                    evicted += 1;
+                }
+            }
+        }
+
+        // Clear this frame's desired marks (keep `desired_flag` all-false between
+        // frames without a full-vector reset).
+        for &c in &p.desired {
+            p.desired_flag[c as usize] = false;
+        }
+
         let desired = p.desired.len();
-        if desired != p.last_desired_logged {
+        if streamed > 0 || evicted > 0 || desired != p.last_desired_logged {
             p.last_desired_logged = desired;
             tracing::info!(
-                "cluster paging (Gap B, frame {}): desired cut = {desired} clusters \
-                 (full DAG = {}, resident frontier = {resident_frontier}) — \
-                 camera-driven cut tracking [step 20a: log only, no streaming yet]",
+                "cluster paging (Gap B, frame {}): desired={desired} (full DAG={}, pool={}), \
+                 streamed {streamed}, evicted {evicted} [20b-iv-b-2b]",
                 p.frame,
                 p.pages.len(),
+                p.pool_slots,
             );
         }
+        Ok(())
     }
 
     /// Upload a cluster mesh's pages (once, at mesh load): (re)allocate the

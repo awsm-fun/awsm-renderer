@@ -2424,13 +2424,20 @@ impl AwsmRenderer {
             Ok((_, h)) => h as f32,
             Err(_) => return,
         };
+        // Disjoint inline field borrows: gpu + meshes (shared) vs render_passes (mut).
+        let gpu = &self.gpu;
+        let meshes = &self.meshes;
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.paging_update(
+            if let Err(e) = pass.stream_paging(
+                gpu,
+                meshes,
                 cam_pos,
                 tan_half_fov_y,
                 viewport_h,
                 Self::LOD_ERROR_THRESHOLD_PX,
-            );
+            ) {
+                tracing::warn!("cluster paging stream_paging failed: {e:?}");
+            }
         }
     }
 
