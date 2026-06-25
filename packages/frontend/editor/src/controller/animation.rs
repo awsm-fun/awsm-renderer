@@ -30,9 +30,9 @@ use crate::engine::scene::{AssetId, NodeId};
 // `StoredMaterial` lives in scene-schema). Re-exported here so the rest of the
 // editor (commands / query / bridge) references them via `controller::animation`.
 pub use awsm_renderer_editor_protocol::animation::{
-    BuiltinParamKind, CameraParamKind, ClipDirection, ClipLoop, Interp, Keyframe, LayerDoc,
-    LayerModeDoc, LightParamKind, MixerDoc, SamplerKind, StoredAnimation, StoredTrack, StripDoc,
-    TexSlot, TexTransformProp, TrackTarget, TrackValue, TransformProp,
+    spin_keyframes, BuiltinParamKind, CameraParamKind, ClipDirection, ClipLoop, Interp, Keyframe,
+    LayerDoc, LayerModeDoc, LightParamKind, MixerDoc, SamplerKind, StoredAnimation, StoredTrack,
+    StripDoc, TexSlot, TexTransformProp, TrackTarget, TrackValue, TransformProp,
 };
 
 /// The matching per-keyframe interp for a sampler kind (seeding fresh keyframes).

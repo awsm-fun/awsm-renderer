@@ -3012,6 +3012,49 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::AddSpinTrack {
+                clip,
+                node,
+                axis,
+                turns,
+                duration,
+                keys_per_turn,
+            } => {
+                // Validate the node exists (mirrors AddTrack) before building.
+                if mutate::find_by_id(&self.scene, node).is_none() {
+                    Toast::error("Can't add a spin track — its target node no longer exists.");
+                    return Ok(None);
+                }
+                match find_clip(&self.custom_animations, clip) {
+                    Some(c) => {
+                        let (times, keys) = animation::spin_keyframes(
+                            axis,
+                            turns,
+                            duration,
+                            keys_per_turn.unwrap_or(4),
+                        );
+                        let st = animation::StoredTrack {
+                            target: animation::TrackTarget::Transform {
+                                node,
+                                prop: animation::TransformProp::Rotation,
+                            },
+                            sampler: animation::SamplerKind::Linear,
+                            mute: false,
+                            solo: false,
+                            expanded: false,
+                            times,
+                            keys,
+                        };
+                        let live = animation::stored_track_to_live(&st);
+                        let index = c.tracks.lock_ref().len();
+                        c.tracks.lock_mut().push_cloned(live);
+                        self.dirty.set_neq(true);
+                        Toast::info(format!("Added spin track ({turns} turn(s))"));
+                        Ok(Some(EditorCommand::DeleteTrack { clip, track: index }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::DeleteTrack { clip, track } => {
                 match find_clip(&self.custom_animations, clip) {
                     Some(c) => {

@@ -884,6 +884,22 @@ pub enum EditorCommand {
     // ───────────────────────── Animation: tracks ─────────────────────────────
     /// Add a track to a clip, bound to `target`. Inverse: `DeleteTrack`.
     AddTrack { clip: AssetId, target: TrackTarget },
+    /// Convenience: add a **rotation** Transform track on `node` that spins
+    /// `turns` full revolutions about (normalized) local `axis` over `duration`
+    /// seconds, expanded to evenly-spaced quaternion keyframes (`keys_per_turn`
+    /// per revolution, default 4; `Linear`). Collapses the verbose
+    /// "hand-author N quarter-turn quats" workflow into one call (wheels, rotors,
+    /// fans). Plays/reverses via `set_clip_speed` / `set_clip_direction`. Inverse:
+    /// `DeleteTrack` (it adds exactly one track).
+    AddSpinTrack {
+        clip: AssetId,
+        node: NodeId,
+        axis: [f32; 3],
+        turns: f32,
+        duration: f64,
+        #[serde(default)]
+        keys_per_turn: Option<u32>,
+    },
     /// Delete a track (by index) from a clip. Inverse: re-insert the captured track.
     DeleteTrack { clip: AssetId, track: usize },
     /// Re-insert a captured track at its original index (the inverse of
@@ -1126,6 +1142,7 @@ impl EditorCommand {
                 | EditorCommand::SetClipDirection { .. }
                 // Tracks.
                 | EditorCommand::AddTrack { .. }
+                | EditorCommand::AddSpinTrack { .. }
                 | EditorCommand::DeleteTrack { .. }
                 | EditorCommand::RestoreTrack { .. }
                 | EditorCommand::SetTrackSampler { .. }
@@ -1284,6 +1301,7 @@ impl EditorCommand {
             EditorCommand::SetClipDirection { .. } => "Set direction",
             EditorCommand::SetClipColor { .. } => "Set clip color",
             EditorCommand::AddTrack { .. } => "Add track",
+            EditorCommand::AddSpinTrack { .. } => "Add spin track",
             EditorCommand::DeleteTrack { .. } | EditorCommand::RestoreTrack { .. } => {
                 "Delete track"
             }

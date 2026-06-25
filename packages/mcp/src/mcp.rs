@@ -1065,6 +1065,23 @@ pub struct AddTrackParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddSpinTrackParams {
+    /// UUID of the clip to add the spin track to.
+    pub clip: String,
+    /// UUID of the node to spin (a rotation Transform track is created on it).
+    pub node: String,
+    /// Local rotation axis [x, y, z] (normalized internally; degenerate → +Y).
+    pub axis: [f32; 3],
+    /// Number of full revolutions over `duration` (fractional / negative allowed).
+    pub turns: f32,
+    /// Clip-time span of the spin, in seconds.
+    pub duration: f64,
+    /// Keyframes generated per revolution (default 4 = 90° steps).
+    #[serde(default)]
+    pub keys_per_turn: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct AddKeyframeParams {
     pub clip: String,
     pub track: u32,
@@ -3555,6 +3572,24 @@ impl EditorMcp {
         self.dispatch(EditorCommand::AddTrack {
             clip: parse_asset(&p.clip)?,
             target: build_track_target(&p.target)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Add a one-line SPIN: a rotation Transform track on `node` that turns `turns` full revolutions about local `axis` [x,y,z] over `duration` seconds, expanded to evenly-spaced quaternion keyframes (`keys_per_turn` per revolution, default 4; linear). Collapses the verbose hand-author-N-quarter-turn-quats workflow for wheels / rotors / fans. `turns` may be fractional (0.25 = a quarter turn) or negative (reverse). Plays/reverses further via set_clip_speed / set_clip_direction. Appends one track (its index = prior track count); undo removes it."
+    )]
+    async fn add_spin_track(
+        &self,
+        Parameters(p): Parameters<AddSpinTrackParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::AddSpinTrack {
+            clip: parse_asset(&p.clip)?,
+            node: parse_node(&p.node)?,
+            axis: p.axis,
+            turns: p.turns,
+            duration: p.duration,
+            keys_per_turn: p.keys_per_turn,
         })
         .await
     }
