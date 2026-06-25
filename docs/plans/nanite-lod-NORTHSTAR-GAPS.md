@@ -57,10 +57,51 @@ multi-file GPU build — realistically multi-day):**
    *(History: a first attempt at FULL residency blew the 512 MB GPU buffer cap (~1 GiB,
    loud-panic) — full-residency-through-fixed-slots is infeasible; the pool must be
    bounded, hence the budget. The renderer's guard caught it; reverted then re-done.)*
-3. **Feedback + readback.** `feedback` buffer (atomicOr/append wanted-but-absent
-   cluster ids) + async readback (reuse `render.rs:1661-1686 extract_buffer_vec`) +
-   CPU upload-into-slot (grow-only); crack-free coarse fallback to nearest resident
-   ancestor.
+3. **Feedback + readback + CPU stream (the dynamic-paging core — DESIGN, the bulk of
+   remaining A2 effort; multi-iteration).**
+
+   **Key constraint (found analysing it):** the GPU cut CANNOT "walk up to the nearest
+   resident ancestor" when a wanted cluster is absent — `ClusterPage` has bounds/errors
+   but NO parent/child cluster *indices*. So crack-free fallback must NOT be a GPU
+   parent-walk. Two viable designs:
+
+   **(A) CPU-managed always-drawn frontier (preferred — no bake format change, no GPU
+   parent-walk).** Keep the resident set a COMPLETE ANTICHAIN ("frontier") whose leaves
+   are clamped always-drawn (lod_error=0/parent_error=MAX, as Step-1 does) ⇒ always
+   crack-free. Make it *camera-adaptive* by streaming:
+   - Upload ALL cluster pages to the cut (not just the resident subset) so the cut can
+     evaluate finer-than-frontier clusters. Add each resident frontier leaf's ORIGINAL
+     lod_error (a field) so the cut can tell when the camera out-resolves it.
+   - Cut, per resident frontier leaf F: if `projected(F.original_lod_error) > budget`
+     (camera wants finer than F), append F to a `feedback` buffer (atomicAdd counter +
+     id list, capped). Still draw F (clamped) this frame ⇒ crack-free now.
+   - CPU (one-frame-latent, pooled readback — no per-frame alloc): for each fed-back F,
+     stream F's CHILDREN into free slots, set their resident slots, make them the new
+     frontier leaves (clamp them), un-clamp/remove F from the drawn set. Frontier stays
+     a complete antichain ⇒ crack-free across the transition; refines over a frame/two.
+   - Needs CPU **DAG group links**. The DAG is GROUP-based: clusters simplified
+     together share a group sphere (`lod_bounds`) and flip together (crack-free), so
+     the unit of refinement is the GROUP, not one cluster. The finer clusters whose
+     group produced F satisfy `c.parent_bounds == F.lod_bounds && c.parent_error ==
+     F.lod_error` (exact f32 — the bake assigns the same group sphere/error to both
+     sides, so an exact-bits match works, no epsilon). Refining F streams ALL those
+     finer clusters in as a group (and the whole frontier group F belongs to refines
+     together) ⇒ the new frontier stays a valid antichain ⇒ crack-free. Build this on
+     the ORIGINAL bake `cm.clusters` (NOT the post-`select_resident_clusters` pages,
+     whose lod_error/parent_error are clamped to 0/MAX). Cleaner alternative: emit
+     explicit group/child ids in the bake (a lod-bake format change + re-bake).
+   - Eviction (step 4): when the camera pulls back, fed-back-stale leaves coarsen —
+     evict their slots (LRU) and re-clamp the parent. 
+
+   **(B) Encode parent/child ids in the bake** so the GPU cut walks to the nearest
+   resident ancestor directly. Simpler shader logic but a bake format change + re-bake
+   and a per-cluster GPU walk. Heavier; only if (A) proves insufficient.
+
+   Implement (A) as small gated/tested/on-device commits: (3a) CPU DAG-links +
+   frontier-refine planner (pure, unit-tested); (3b) feedback buffer + cut writes
+   too-coarse leaves (bind into paging variant); (3c) pooled async readback; (3d) CPU
+   stream children into slots (writeBuffer at slot offset) + re-frontier; verify
+   on-device that dollying in REFINES detail crack-free with no per-frame allocs.
 4. **LRU eviction** (slot `last_used_frame`, skip slots used this frame) + per-frame
    upload byte budget so a camera jump doesn't hitch.
 5. **Multi-million-tri on-device verify** (subdivide to ≥5–10M source tris or instance
