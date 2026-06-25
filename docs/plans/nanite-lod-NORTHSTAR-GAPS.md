@@ -11,6 +11,35 @@ WITHDRAWN at iter 27 (it rested on a readback that's proven unreliable in this
 headless harness — see the RETRACTED P0 block below). A1's on-device GPU draw is
 unverifiable in the current harness, NOT confirmed-broken.
 
+## 🧱 CONFIRMED HARNESS LIMITATION (iter 28): this headless harness cannot observe ANY GPU output
+
+Definitive tests:
+- **GPU buffer readback returns zeros regardless of content.** Read back
+  `pages_buffer[0..16]` (cluster 0's center+radius — GPU-resident, uploaded with real
+  non-zero values, NOT CPU-written-per-frame) → decoded `center=(0,0,0) radius=0`. A
+  real cluster page ALWAYS has radius>0 (and the iter-25 upload log showed p0
+  parent=1.19e-7 etc. were uploaded). ⇒ `mapAsync`/`extract_buffer_vec` returns zeros
+  in this MCP/headless-Chrome context, regardless of true buffer content.
+- **`screenshot_scene` returns an all-black (1-colour) PNG** for even a PLAIN sphere
+  WITH a light + a framed camera (`insert_light` + `frame_node`). ⇒ the canvas is not
+  captured here (headless WebGPU canvas-capture limitation).
+
+⇒ **On-device GPU verification (pixels OR buffer values) is IMPOSSIBLE in this headless
+`task mcp-dev` + chrome-devtools harness.** It worked in prior sessions (per memory
+lod-nanite-overnight-outcome) — likely a real/non-headless browser. The cluster cut /
+draw cannot be confirmed-working OR confirmed-broken here; the implementation is
+CPU-tested + code-correct. To verify A1's crack-free pixels, A2's refine, A3's cut-size,
+A6's benchmark on-device, a DIFFERENT environment (real browser, or a harness where
+WebGPU readback/screenshot work) is REQUIRED — this is an environmental blocker the user
+should be aware of, not something fixable in the renderer.
+
+**Consequence for the loop:** GPU-output-dependent verification (A1 pixel demo, A2/A3/A6
+on-device) is blocked. CPU-side correctness (bake crack-free test, the GPU-cut shader as
+a tested transliteration of `select_cut_per_cluster`, params/page layout tests, Gap-B CPU
+planners) IS verifiable and is where remaining progress can be made + claimed.
+
+---
+
 ## ⚠️ RETRACTED (iter 27): the "P0" below was a MEASUREMENT ARTIFACT — the headless harness's GPU readback + screenshot are both UNRELIABLE
 
 **Decisive evidence (iter 27):** the readback decoded `draw_args.instance_count = 0`,
