@@ -198,6 +198,23 @@ pub struct MeshIdParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SeparateMeshParams {
+    /// UUID of the source mesh node to detach a region from.
+    pub node: String,
+    /// Vertex indices of the region (a face moves when all 3 verts are selected).
+    /// Omit when using `selection`.
+    #[serde(default)]
+    pub indices: Vec<u32>,
+    /// §10: a stored selection HANDLE supplying the region indices.
+    #[serde(default)]
+    pub selection: Option<u32>,
+    /// When true, also REMOVE the extracted faces from the source (source ←
+    /// remainder). Default false (source untouched; the new node is a copy).
+    #[serde(default)]
+    pub keep_remainder: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetVertexPositionsParams {
     pub mesh: String,
     /// Vertex indices to move (omit when using `selection`).
@@ -2293,6 +2310,23 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::CollapseMeshStack {
             mesh: parse_asset(&p.mesh)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Detach the faces fully covered by a vertex selection into a NEW sibling Mesh node — region isolation, e.g. to give one region (a belt, a panel, a bolt) its own material. A triangle moves when ALL 3 of its vertices are selected; pick the region with select_vertices_where (the {\"kind\":\"connected_to_seed\"} predicate grabs a whole connected piece). `node` is the source node UUID; pass `selection` (a stored handle) or `indices`. By default the source is left intact (the new node is an extracted COPY); pass `keep_remainder:true` to also REMOVE those faces from the source (no overlap / z-fighting). The new node inherits the source's transform + material — assign_material a different material to it next. Undoable. Returns ok."
+    )]
+    async fn separate_mesh(
+        &self,
+        Parameters(p): Parameters<SeparateMeshParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SeparateMesh {
+            node: parse_node(&p.node)?,
+            indices: p.indices,
+            selection: p.selection,
+            new_node: None,
+            keep_remainder: p.keep_remainder,
         })
         .await
     }

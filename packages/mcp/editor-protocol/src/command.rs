@@ -620,6 +620,29 @@ pub enum EditorCommand {
         #[serde(default)]
         selection: Option<u32>,
     },
+    /// Detach the faces fully covered by a vertex selection into a NEW sibling
+    /// `Mesh` node — region isolation (e.g. give that region its own material).
+    /// A triangle moves when all 3 of its vertices are selected. The new node
+    /// inherits the source's transform + material; its geometry is a frozen
+    /// `Captured` mesh (a fresh asset, id derived from `new_node`). When
+    /// `keep_remainder` is true the extracted faces are ALSO removed from the
+    /// source (source ← remainder); otherwise the source is untouched (the new
+    /// node is an extracted copy). Inverse: delete the new node + its asset and
+    /// (if remainder was applied) restore the source geometry — a `Batch`.
+    SeparateMesh {
+        node: NodeId,
+        #[serde(default)]
+        indices: Vec<u32>,
+        /// §10: target indices from a stored selection HANDLE instead of `indices`.
+        #[serde(default)]
+        selection: Option<u32>,
+        /// Deterministic id for the new node (asset id derives from it). Minted
+        /// when omitted.
+        #[serde(default)]
+        new_node: Option<NodeId>,
+        #[serde(default)]
+        keep_remainder: bool,
+    },
     /// Bake an editable mesh's modifier stack into raw triangles and clear the
     /// recipe (the deliberate heavy snapshot). Inverse:
     /// `Batch[SetMeshModifiers(prior), SetMeshData(prior_bytes)]`.
@@ -1191,6 +1214,7 @@ impl EditorCommand {
                 | EditorCommand::SetVertexPositions { .. }
                 | EditorCommand::SoftTransformVertices { .. }
                 | EditorCommand::CollapseMeshStack { .. }
+                | EditorCommand::SeparateMesh { .. }
                 | EditorCommand::PaintVertexColors { .. }
                 | EditorCommand::SetVertexNormals { .. }
                 | EditorCommand::SetVertexUvs { .. }
@@ -1256,6 +1280,7 @@ impl EditorCommand {
             EditorCommand::SetVertexPositions { .. } => "Move vertices",
             EditorCommand::SoftTransformVertices { .. } => "Soft-transform vertices",
             EditorCommand::CollapseMeshStack { .. } => "Collapse mesh stack",
+            EditorCommand::SeparateMesh { .. } => "Separate mesh",
             EditorCommand::PaintVertexColors { .. } => "Paint vertex colors",
             EditorCommand::PaintVerticesWhere { .. } => "Paint vertices (where)",
             EditorCommand::TransformVerticesWhere { .. } => "Transform vertices (where)",

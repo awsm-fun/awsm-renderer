@@ -1820,6 +1820,143 @@ impl EditorController {
                     },
                 ])))
             }
+            EditorCommand::SeparateMesh {
+                node,
+                indices,
+                selection,
+                new_node,
+                keep_remainder,
+            } => {
+                use crate::engine::bridge::mesh_cache;
+                use crate::engine::scene::node::Node;
+                use awsm_renderer_editor_protocol::{
+                    CapturedSource, MeshBase, MeshDef, MeshRef, ModifierStack,
+                };
+
+                let (src_mesh, md) = match self.node_editable_mesh(node) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        Toast::error(e);
+                        return Ok(None);
+                    }
+                };
+                let sel = resolve_vertex_selection_or(selection, indices)?;
+                if sel.is_empty() {
+                    Toast::error("separate_mesh: empty selection");
+                    return Ok(None);
+                }
+                let (extracted, remainder) = awsm_renderer_meshgen::edit::extract_faces(&md, &sel);
+                if extracted.positions.is_empty() {
+                    Toast::error("separate_mesh: selection contains no complete face");
+                    return Ok(None);
+                }
+                // Source transform + material to inherit onto the new node.
+                let (src_trs, src_material) = match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => match n.kind.get_cloned() {
+                        NodeKind::Mesh { material, .. } => (n.transform.get(), material),
+                        _ => return Ok(None),
+                    },
+                    None => return Ok(None),
+                };
+                // Mint the new node + asset (deterministic id ⇒ idempotent replay).
+                let new_node_id = new_node.unwrap_or_else(NodeId::new);
+                if mutate::find_by_id(&self.scene, new_node_id).is_some() {
+                    return Ok(None);
+                }
+                let new_mesh_id = AssetId(new_node_id.0);
+                mesh_cache::store_with_id(new_mesh_id, mesh_cache::from_mesh_data(extracted));
+                self.scene.assets.lock().unwrap().entries.insert(
+                    new_mesh_id,
+                    AssetEntry::new(SceneAssetSource::Mesh(MeshDef {
+                        label: "Separated".to_string(),
+                        source: Some(CapturedSource::Editable),
+                        editable: true,
+                        stack: ModifierStack {
+                            base: MeshBase::Captured(MeshRef(new_mesh_id)),
+                            modifiers: vec![],
+                        },
+                        overrides: Default::default(),
+                    })),
+                );
+                let mut newn = Node::new_with_transform_and_kind(
+                    "Separated",
+                    src_trs,
+                    NodeKind::Mesh {
+                        mesh: MeshRef(new_mesh_id),
+                        material: src_material,
+                        shadow: Default::default(),
+                        lod: Default::default(),
+                    },
+                );
+                std::sync::Arc::get_mut(&mut newn)
+                    .expect("freshly built node is sole-owned")
+                    .id = new_node_id;
+                let parent = mutate::find_parent(&self.scene, node).map(|p| p.id);
+                if !mutate::insert_under(&self.scene, parent, newn) {
+                    return Ok(None);
+                }
+
+                // Inverse: drop the new node + asset (and, below, restore the source).
+                let mut inverse = vec![EditorCommand::Batch(vec![
+                    EditorCommand::Delete { id: new_node_id },
+                    EditorCommand::DeleteAsset { id: new_mesh_id },
+                ])];
+
+                if keep_remainder {
+                    // Capture source prior state for a wholesale undo restore.
+                    let (prior_stack, prior_overrides) = {
+                        let assets = self.scene.assets.lock().unwrap();
+                        match assets.get(src_mesh).map(|e| &e.source) {
+                            Some(SceneAssetSource::Mesh(def)) => {
+                                (def.stack.clone(), def.overrides.clone())
+                            }
+                            _ => (
+                                ModifierStack {
+                                    base: MeshBase::Captured(MeshRef(src_mesh)),
+                                    modifiers: vec![],
+                                },
+                                Default::default(),
+                            ),
+                        }
+                    };
+                    let prior_bytes = mesh_cache::get_captured(src_mesh);
+                    // Source ← remainder: flatten to a bare capture, clear overrides
+                    // (they index the now-stale topology).
+                    {
+                        let mut assets = self.scene.assets.lock().unwrap();
+                        if let Some(entry) = assets.entries.get_mut(&src_mesh) {
+                            if let SceneAssetSource::Mesh(def) = &mut entry.source {
+                                def.stack = ModifierStack {
+                                    base: MeshBase::Captured(MeshRef(src_mesh)),
+                                    modifiers: vec![],
+                                };
+                                def.overrides = Default::default();
+                                def.editable = true;
+                            }
+                        }
+                    }
+                    mesh_cache::store_with_id(src_mesh, mesh_cache::from_mesh_data(remainder));
+                    // Restore source on undo: recipe → exact bytes → overrides.
+                    let mut restore = vec![EditorCommand::SetMeshModifiers {
+                        mesh: src_mesh,
+                        stack: prior_stack,
+                    }];
+                    if let Some(bytes) = prior_bytes {
+                        restore.push(EditorCommand::SetMeshData {
+                            mesh: src_mesh,
+                            data: bytes,
+                            allow_empty: true,
+                        });
+                    }
+                    restore.push(EditorCommand::SetVertexOverrides {
+                        mesh: src_mesh,
+                        overrides: prior_overrides,
+                    });
+                    inverse.push(EditorCommand::Batch(restore));
+                }
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::Batch(inverse)))
+            }
             EditorCommand::SetAssetSelection { id } => {
                 self.asset_selection.set(id);
                 Ok(None)

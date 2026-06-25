@@ -394,6 +394,90 @@ pub fn connected_components(mesh: &MeshData) -> Vec<Vec<u32>> {
     out
 }
 
+/// Builds one compacted sub-mesh (only the vertices its pushed triangles use,
+/// indices remapped, attributes carried through). Backs [`extract_faces`].
+struct SubMeshBuilder<'a> {
+    src: &'a MeshData,
+    remap: std::collections::HashMap<u32, u32>,
+    positions: Vec<[f32; 3]>,
+    normals: Option<Vec<[f32; 3]>>,
+    uvs: Vec<Vec<[f32; 2]>>,
+    colors: Option<Vec<[f32; 4]>>,
+    indices: Vec<u32>,
+}
+
+impl<'a> SubMeshBuilder<'a> {
+    fn new(src: &'a MeshData) -> Self {
+        Self {
+            src,
+            remap: std::collections::HashMap::new(),
+            positions: Vec::new(),
+            normals: src.normals.as_ref().map(|_| Vec::new()),
+            uvs: src.uvs.iter().map(|_| Vec::new()).collect(),
+            colors: src.colors.as_ref().map(|_| Vec::new()),
+            indices: Vec::new(),
+        }
+    }
+    /// Map an original vertex index to this sub-mesh's compacted index, copying
+    /// its attributes on first use.
+    fn map(&mut self, i: u32) -> u32 {
+        if let Some(&n) = self.remap.get(&i) {
+            return n;
+        }
+        let n = self.positions.len() as u32;
+        self.remap.insert(i, n);
+        let iu = i as usize;
+        self.positions.push(self.src.positions[iu]);
+        if let (Some(dst), Some(s)) = (self.normals.as_mut(), self.src.normals.as_ref()) {
+            dst.push(s[iu]);
+        }
+        for (k, dst) in self.uvs.iter_mut().enumerate() {
+            dst.push(self.src.uvs[k][iu]);
+        }
+        if let (Some(dst), Some(s)) = (self.colors.as_mut(), self.src.colors.as_ref()) {
+            dst.push(s[iu]);
+        }
+        n
+    }
+    fn push_tri(&mut self, a: u32, b: u32, c: u32) {
+        let a = self.map(a);
+        let b = self.map(b);
+        let c = self.map(c);
+        self.indices.extend([a, b, c]);
+    }
+    fn finish(self) -> MeshData {
+        MeshData {
+            positions: self.positions,
+            normals: self.normals,
+            uvs: self.uvs,
+            colors: self.colors,
+            indices: self.indices,
+        }
+    }
+}
+
+/// Split a mesh into `(extracted, remainder)` by a vertex selection: a triangle
+/// goes to `extracted` when **all three** of its vertices are selected, else to
+/// `remainder`. Each side is a compacted sub-mesh (only the vertices its
+/// triangles reference, indices remapped, normals/uvs/colors carried through).
+/// The backbone of the editor's `SeparateMesh` command — detach a region into a
+/// new node. Either side may be empty (selection covered no complete face, or
+/// covered everything).
+pub fn extract_faces(mesh: &MeshData, selected: &[u32]) -> (MeshData, MeshData) {
+    let sel: std::collections::HashSet<u32> = selected.iter().copied().collect();
+    let mut ext = SubMeshBuilder::new(mesh);
+    let mut rem = SubMeshBuilder::new(mesh);
+    for tri in mesh.indices.chunks_exact(3) {
+        let target = if tri.iter().all(|i| sel.contains(i)) {
+            &mut ext
+        } else {
+            &mut rem
+        };
+        target.push_tri(tri[0], tri[1], tri[2]);
+    }
+    (ext.finish(), rem.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,6 +600,52 @@ mod tests {
         // Empty / out-of-range seeds → empty.
         assert!(connected_component_of(&m, &[]).is_empty());
         assert!(connected_component_of(&m, &[9999]).is_empty());
+    }
+
+    #[test]
+    fn extract_faces_splits_two_boxes() {
+        // Two disjoint boxes in one buffer; selecting box A's vertex range must
+        // extract exactly box A and leave box B as the remainder.
+        let a = box_mesh(Vec3::splat(1.0));
+        let mut b = box_mesh(Vec3::splat(1.0));
+        for p in &mut b.positions {
+            p[0] += 100.0;
+        }
+        let na = a.positions.len() as u32;
+        let tris_a = a.indices.len();
+        let tris_b = b.indices.len();
+        let merged = merge(&a, &b);
+
+        let sel: Vec<u32> = (0..na).collect(); // all of box A
+        let (ext, rem) = extract_faces(&merged, &sel);
+
+        // Extracted = box A; remainder = box B. Triangle counts preserved.
+        assert_eq!(ext.indices.len(), tris_a);
+        assert_eq!(rem.indices.len(), tris_b);
+        assert_eq!(ext.positions.len(), a.positions.len());
+        assert_eq!(rem.positions.len(), b.positions.len());
+        // No dangling indices on either side.
+        assert!(ext
+            .indices
+            .iter()
+            .all(|&i| (i as usize) < ext.positions.len()));
+        assert!(rem
+            .indices
+            .iter()
+            .all(|&i| (i as usize) < rem.positions.len()));
+        // The remainder's geometry is box B (shifted +100 in x).
+        assert!(rem.positions.iter().all(|p| p[0] > 50.0));
+        assert!(ext.positions.iter().all(|p| p[0] < 50.0));
+    }
+
+    #[test]
+    fn extract_faces_partial_face_stays_in_remainder() {
+        // A face is extracted only when ALL its verts are selected. Selecting a
+        // strict subset of a single box's verts extracts nothing whole.
+        let m = box_mesh(Vec3::splat(2.0));
+        let (ext, rem) = extract_faces(&m, &[0]); // one vertex only
+        assert!(ext.indices.is_empty(), "no complete face selected");
+        assert_eq!(rem.indices.len(), m.indices.len());
     }
 
     #[test]

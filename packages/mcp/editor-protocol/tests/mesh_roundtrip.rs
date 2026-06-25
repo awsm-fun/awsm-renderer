@@ -362,6 +362,55 @@ fn set_mesh_data_command_allow_empty_defaults_false() {
 }
 
 #[test]
+fn separate_mesh_command_json_roundtrip() {
+    use awsm_renderer_editor_protocol::{EditorCommand, NodeId};
+    let cmd = EditorCommand::SeparateMesh {
+        node: NodeId::new(),
+        indices: vec![0, 1, 2, 3],
+        selection: None,
+        new_node: Some(NodeId::new()),
+        keep_remainder: true,
+    };
+    let json = serde_json::to_string(&cmd).expect("serialize");
+    assert!(
+        json.contains("\"cmd\":\"separate_mesh\""),
+        "tag missing: {json}"
+    );
+    let back: EditorCommand = serde_json::from_str(&json).expect("deserialize");
+    match back {
+        EditorCommand::SeparateMesh {
+            indices,
+            keep_remainder,
+            new_node,
+            ..
+        } => {
+            assert_eq!(indices, vec![0, 1, 2, 3]);
+            assert!(keep_remainder);
+            assert!(new_node.is_some());
+        }
+        other => panic!("expected SeparateMesh, got {other:?}"),
+    }
+
+    // Minimal form: indices/selection/new_node/keep_remainder all default.
+    let json = format!(
+        "{{\"cmd\":\"separate_mesh\",\"node\":\"{}\"}}",
+        NodeId::new()
+    );
+    let back: EditorCommand = serde_json::from_str(&json).expect("deserialize minimal");
+    match back {
+        EditorCommand::SeparateMesh {
+            keep_remainder,
+            new_node,
+            ..
+        } => {
+            assert!(!keep_remainder);
+            assert!(new_node.is_none());
+        }
+        other => panic!("expected SeparateMesh, got {other:?}"),
+    }
+}
+
+#[test]
 fn mesh_asset_filename_is_stable() {
     // The filename helper is the side-table addressing contract — it
     // must produce the same string for the same AssetId on every call,
