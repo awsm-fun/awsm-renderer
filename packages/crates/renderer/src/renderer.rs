@@ -2346,6 +2346,17 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Upload the Gap-B dynamic-paging residency table (`cluster_id → page-pool
+    /// slot`, `-1` = absent). Call after [`Self::upload_cluster_pages`]. No-op
+    /// unless `virtual_geometry` built the pass; only the `cluster_paging` loader
+    /// path calls it (so the non-paging path allocates no resident buffer).
+    pub fn upload_cluster_resident(&mut self, resident: &[i32]) -> crate::error::Result<()> {
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.upload_resident(&self.gpu, resident)?;
+        }
+        Ok(())
+    }
+
     /// Register the cluster render mesh `M` (the full cluster geometry) whose
     /// exploded vertex buffer the compacted indirect stream draws into. No-op
     /// unless `virtual_geometry` built the pass.

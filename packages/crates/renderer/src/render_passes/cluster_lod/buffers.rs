@@ -51,6 +51,13 @@ pub struct ClusterLodBuffers {
     pub index_capacity: u32,
     /// Reused page-serialisation scratch (no per-upload allocation).
     staging: Vec<u8>,
+    /// Gap-B dynamic paging: cluster_id → page-pool slot (`-1` = absent),
+    /// `array<i32>`. Lazily created only when [`Self::write_resident`] is called
+    /// (i.e. only under `cluster_paging`), so the non-paging path allocates nothing
+    /// — byte-identical. Bound into the cut as a paging shader variant in the next
+    /// step (step 1c-ii); for now it is uploaded + validated end-to-end.
+    #[allow(dead_code)]
+    pub resident_buffer: Option<web_sys::GpuBuffer>,
 }
 
 impl ClusterLodBuffers {
@@ -141,7 +148,50 @@ impl ClusterLodBuffers {
             capacity,
             index_capacity,
             staging: vec![0u8; pages_bytes],
+            resident_buffer: None,
         })
+    }
+
+    /// Upload the Gap-B dynamic-paging residency table (`cluster_id → slot`, `-1` =
+    /// absent), lazily (re)creating `resident_buffer` to fit. Only called under
+    /// `cluster_paging`; the non-paging path never allocates it. One-shot at load
+    /// (and later per stream/evict); a single staging `Vec` is fine.
+    pub fn write_resident(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        resident: &[i32],
+    ) -> Result<(), AwsmCoreError> {
+        if resident.is_empty() {
+            return Ok(());
+        }
+        let bytes_len = resident.len() * 4;
+        let needs_alloc = match &self.resident_buffer {
+            Some(b) => (b.size() as usize) < bytes_len,
+            None => true,
+        };
+        if needs_alloc {
+            self.resident_buffer = Some(
+                gpu.create_buffer(
+                    &BufferDescriptor::new(
+                        Some("ClusterLodResident"),
+                        bytes_len,
+                        BufferUsage::new().with_storage().with_copy_dst(),
+                    )
+                    .into(),
+                )?,
+            );
+        }
+        let mut bytes = Vec::with_capacity(bytes_len);
+        for &r in resident {
+            bytes.extend_from_slice(&r.to_le_bytes());
+        }
+        gpu.write_buffer(
+            self.resident_buffer.as_ref().unwrap(),
+            None,
+            bytes.as_slice(),
+            None,
+            None,
+        )
     }
 
     /// Grows to hold `needed` clusters / `needed_indices` indices (2× headroom).

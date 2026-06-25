@@ -2045,23 +2045,6 @@ async fn load_cluster_lod(
     let resident_tris = m_indices.len() / 3;
     let capped = m_indices.len() < cm.indices.len();
 
-    // Gap B step 1 (dynamic paging foundation): when `cluster_paging` is on, plan
-    // the fixed-slot page pool for the resident set and report occupancy. No render
-    // change yet (the GPU page-pool buffers + cut-shader `resident` read land in the
-    // next steps) — so this stays byte-identical to the `virtual_geometry` path; it
-    // only validates + surfaces the residency plan on-device.
-    if renderer.features().cluster_paging {
-        let resident_ids: Vec<usize> = (0..gpu_pages.len()).collect();
-        let plan = plan_page_pool(gpu_pages.len(), &resident_ids, CLUSTER_PAGE_POOL_SLOTS);
-        tracing::info!(
-            "cluster paging (Gap B): page pool plan — {} resident clusters → {} slots used / {} capacity ({} verts/slot), overflow {}",
-            gpu_pages.len(),
-            plan.slots_used,
-            CLUSTER_PAGE_POOL_SLOTS,
-            CLUSTER_PAGE_VERTS,
-            plan.overflow,
-        );
-    }
     // The compaction's `source_indices` is the EXPLODED raster index space, not
     // `cm.indices`: the renderer explodes geometry (pack_visibility_bytes) so
     // triangle t's corners are exploded vertices [3t,3t+1,3t+2]. Cluster pages are
@@ -2071,6 +2054,37 @@ async fn load_cluster_lod(
     // exploded buffer.
     let identity_indices: Vec<u32> = (0..m_indices.len() as u32).collect();
     renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
+
+    // Gap B step 1c (dynamic paging): when `cluster_paging` is on, upload the
+    // residency table (cluster_id → page-pool slot). Step 1c uses FULL residency —
+    // a pool sized to the resident set, so every cluster gets its own slot and the
+    // table is the identity (no `-1`), which the cut variant (next step) reads as
+    // "all resident" ⇒ render identical to the non-paging path. Bounded-pool
+    // eviction (CLUSTER_PAGE_POOL_SLOTS) lands with LRU streaming later. No-op /
+    // no allocation when the flag is off ⇒ byte-identical.
+    if renderer.features().cluster_paging {
+        let plan = plan_page_pool(
+            gpu_pages.len(),
+            &(0..gpu_pages.len()).collect::<Vec<_>>(),
+            gpu_pages.len().max(1),
+        );
+        renderer.upload_cluster_resident(&plan.resident)?;
+        // Also report what the *bounded* default pool would hold (the working set
+        // eviction will manage once LRU streaming lands).
+        let bounded = plan_page_pool(
+            gpu_pages.len(),
+            &(0..gpu_pages.len()).collect::<Vec<_>>(),
+            CLUSTER_PAGE_POOL_SLOTS,
+        );
+        tracing::info!(
+            "cluster paging (Gap B): resident table uploaded — {} entries (full residency); bounded pool {} slots ({} verts/slot) would hold {} / overflow {}",
+            plan.resident.len(),
+            CLUSTER_PAGE_POOL_SLOTS,
+            CLUSTER_PAGE_VERTS,
+            bounded.slots_used,
+            bounded.overflow,
+        );
+    }
 
     // Cluster render mesh M = the (resident) cluster geometry as an ordinary mesh,
     // so its exploded vertex buffer is in m_indices triangle order with
