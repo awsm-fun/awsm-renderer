@@ -49,6 +49,12 @@ struct ClusterCutParams {
 @group(0) @binding(0) var<storage, read> pages: array<ClusterPage>;
 @group(0) @binding(1) var<storage, read_write> selected: array<u32>;
 @group(0) @binding(2) var<uniform> params: ClusterCutParams;
+{% if paging %}
+// Gap-B dynamic paging: cluster_id → page-pool slot, or -1 when the wanted page
+// is not yet resident. An absent cluster is skipped here (the coarser resident
+// ancestor covers it crack-free); the absent ids are fed back for streaming.
+@group(0) @binding(3) var<storage, read> resident: array<i32>;
+{% endif %}
 
 // Project an object-space error at `world_center` to screen pixels. Returns a
 // huge value for a degenerate distance/FOV (matches the CPU `+inf`), so a
@@ -72,6 +78,15 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= params.cluster_count) {
         return;
     }
+    {% if paging %}
+    // Not yet resident in the page pool ⇒ don't draw it; its nearest resident
+    // (coarser) ancestor covers the region. Full residency ⇒ every entry ≥0 ⇒
+    // identical to the non-paging cut.
+    if (resident[i] < 0) {
+        selected[i] = 0u;
+        return;
+    }
+    {% endif %}
     let page = pages[i];
 
     let proj_lod = projected_error(page.lod_error, to_world(page.lod_bounds_center));

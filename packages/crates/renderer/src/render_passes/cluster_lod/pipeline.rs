@@ -39,7 +39,7 @@ impl ClusterLodPipelines {
         )?;
         let cut_shader = ctx
             .shaders
-            .get_key(ctx.gpu, ShaderCacheKeyClusterCut)
+            .get_key(ctx.gpu, ShaderCacheKeyClusterCut { paging: false })
             .await?;
         let compaction_shader = ctx
             .shaders
@@ -66,7 +66,7 @@ impl ClusterLodPipelines {
 
     pub fn shader_cache_keys() -> Vec<ShaderCacheKey> {
         vec![
-            ShaderCacheKey::from(ShaderCacheKeyClusterCut),
+            ShaderCacheKey::from(ShaderCacheKeyClusterCut { paging: false }),
             ShaderCacheKey::from(ShaderCacheKeyClusterCompaction),
         ]
     }
