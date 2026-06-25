@@ -4830,6 +4830,67 @@ impl EditorController {
                     },
                 }
             }
+            EditorQuery::StripParameterize {
+                node,
+                selection,
+                indices,
+                axis,
+            } => {
+                use serde_json::json;
+                if node_is_skinned(&self.scene, node) {
+                    return QueryResult::Error {
+                        error: skinned_edit_error(node),
+                    };
+                }
+                let mesh = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                    crate::controller::export::node_mesh(&self.scene, &n.kind.get_cloned())
+                });
+                let Some(md) = mesh else {
+                    return QueryResult::Error {
+                        error: format!("node {node} has no resolvable mesh"),
+                    };
+                };
+                // Resolve the band: selection handle > explicit indices > whole mesh.
+                let target: Vec<u32> = match selection {
+                    Some(id) => match lookup_vertex_selection(id) {
+                        Some(v) => v,
+                        None => {
+                            return QueryResult::Error {
+                                error: format!("no vertex-selection handle {id}"),
+                            }
+                        }
+                    },
+                    None if !indices.is_empty() => indices,
+                    None => (0..md.positions.len() as u32).collect(),
+                };
+                // Gather the band's positions (skip any out-of-range index).
+                let positions: Vec<[f32; 3]> = target
+                    .iter()
+                    .filter_map(|&i| md.positions.get(i as usize).copied())
+                    .collect();
+                let (resolved_axis, coords) =
+                    awsm_renderer_meshgen::edit::strip_parameterize(&positions, axis);
+                // Pair each in-range index with its (along, across).
+                let verts: Vec<serde_json::Value> = target
+                    .iter()
+                    .filter(|&&i| (i as usize) < md.positions.len())
+                    .zip(coords.iter())
+                    .map(|(&i, c)| json!({ "index": i, "along": c[0], "across": c[1] }))
+                    .collect();
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert("axis".to_string(), json!(resolved_axis));
+                entries.insert("count".to_string(), json!(verts.len()));
+                entries.insert("heuristic".to_string(), json!(true));
+                entries.insert(
+                    "note".to_string(),
+                    json!("along=travel about axle [0,1); across=lateral along axle [0,1]; winding/polarity may be flipped — flip axis or use 1-coord if needed"),
+                );
+                entries.insert("vertices".to_string(), json!(verts));
+                QueryResult::Map(query::MapResult {
+                    kind: "strip_parameterize".to_string(),
+                    entries,
+                })
+            }
             EditorQuery::WaitRenderSettled { max_ms } => self.wait_render_settled(max_ms).await,
             EditorQuery::NodeTransforms { nodes } => self.node_transforms(&nodes).await,
             EditorQuery::NodeKindDetails { nodes } => {

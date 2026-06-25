@@ -156,12 +156,203 @@ pub fn select_within_aabb(mesh: &MeshData, min: [f32; 3], max: [f32; 3]) -> Vec<
         .collect()
 }
 
+/// Heuristic **strip / loop parameterization** for conveyor / tread / road UV
+/// authoring. Given the positions of a band of vertices, returns
+/// `(axis, coords)` where `axis` is the resolved axle and `coords[i] = [along,
+/// across]` for `positions[i]`, normalized so they feed straight into
+/// `set_vertex_uvs`:
+/// - `along` ∈ `[0,1)` = the vertex's angle **about** `axis` (through the band
+///   centroid), mapped from `atan2` — monotonic travel around a belt loop;
+/// - `across` ∈ `[0,1]` = the vertex's normalized projection **onto** `axis` —
+///   lateral position across the belt width.
+///
+/// `axis` is the supplied vector (normalized) or, when `None`, the
+/// least-variance PCA direction of the band (the axle of a roughly
+/// surface-of-revolution belt). This is a HEURISTIC, not a geodesic unwrap: it
+/// assumes the band wraps around `axis`. The eigenvector sign is arbitrary, so
+/// the `along` winding direction and the `across` polarity may be flipped from a
+/// caller's expectation (flip `axis` or `1-coord` to correct).
+pub fn strip_parameterize(
+    positions: &[[f32; 3]],
+    axis: Option<[f32; 3]>,
+) -> ([f32; 3], Vec<[f32; 2]>) {
+    let n = positions.len();
+    if n == 0 {
+        return (axis.unwrap_or([0.0, 1.0, 0.0]), Vec::new());
+    }
+    let mut centroid = Vec3::ZERO;
+    for p in positions {
+        centroid += Vec3::from_array(*p);
+    }
+    centroid /= n as f32;
+
+    let axle = match axis {
+        Some(a) => {
+            let v = Vec3::from_array(a);
+            if v.length() > 1.0e-6 {
+                v.normalize()
+            } else {
+                Vec3::Y
+            }
+        }
+        None => pca_smallest_axis(positions, centroid),
+    };
+    // Orthonormal basis for the plane ⟂ axle.
+    let helper = if axle.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let e1 = axle.cross(helper).normalize();
+    let e2 = axle.cross(e1).normalize();
+
+    let mut coords = Vec::with_capacity(n);
+    let (mut amin, mut amax) = (f32::INFINITY, f32::NEG_INFINITY);
+    for p in positions {
+        let d = Vec3::from_array(*p) - centroid;
+        let along = (d.dot(e2).atan2(d.dot(e1)) + std::f32::consts::PI) / std::f32::consts::TAU;
+        let across = d.dot(axle);
+        amin = amin.min(across);
+        amax = amax.max(across);
+        coords.push([along, across]);
+    }
+    let span = (amax - amin).max(1.0e-6);
+    for c in &mut coords {
+        c[1] = (c[1] - amin) / span;
+    }
+    (axle.to_array(), coords)
+}
+
+/// The least-variance principal axis of a point set (the PCA eigenvector of the
+/// smallest covariance eigenvalue) — the "axle" of a roughly planar/tubular
+/// band. Classic cyclic Jacobi eigensolver on the symmetric 3×3 covariance
+/// (f64 for stability). Used by [`strip_parameterize`] when no axis is given.
+fn pca_smallest_axis(positions: &[[f32; 3]], centroid: Vec3) -> Vec3 {
+    let mut a = [[0.0f64; 3]; 3];
+    for p in positions {
+        let d = Vec3::from_array(*p) - centroid;
+        let da = [d.x as f64, d.y as f64, d.z as f64];
+        for i in 0..3 {
+            for j in 0..3 {
+                a[i][j] += da[i] * da[j];
+            }
+        }
+    }
+    let mut v = [[0.0f64; 3]; 3];
+    for (i, row) in v.iter_mut().enumerate() {
+        row[i] = 1.0;
+    }
+    for _sweep in 0..50 {
+        let off = a[0][1].abs() + a[0][2].abs() + a[1][2].abs();
+        if off < 1.0e-12 {
+            break;
+        }
+        for (p, q) in [(0, 1), (0, 2), (1, 2)] {
+            if a[p][q].abs() < 1.0e-15 {
+                continue;
+            }
+            let theta = 0.5 * (a[q][q] - a[p][p]) / a[p][q];
+            let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+            let c = 1.0 / (t * t + 1.0).sqrt();
+            let s = t * c;
+            // A ← Jᵀ A J (rotate columns p,q over every row, then rows p,q).
+            for row in a.iter_mut() {
+                let akp = row[p];
+                let akq = row[q];
+                row[p] = c * akp - s * akq;
+                row[q] = s * akp + c * akq;
+            }
+            let mut rp = a[p];
+            let mut rq = a[q];
+            for (xp, xq) in rp.iter_mut().zip(rq.iter_mut()) {
+                let apk = *xp;
+                let aqk = *xq;
+                *xp = c * apk - s * aqk;
+                *xq = s * apk + c * aqk;
+            }
+            a[p] = rp;
+            a[q] = rq;
+            // V ← V J.
+            for row in v.iter_mut() {
+                let vp = row[p];
+                let vq = row[q];
+                row[p] = c * vp - s * vq;
+                row[q] = s * vp + c * vq;
+            }
+        }
+    }
+    let eig = [a[0][0], a[1][1], a[2][2]];
+    let mut min_i = 0;
+    for i in 1..3 {
+        if eig[i] < eig[min_i] {
+            min_i = i;
+        }
+    }
+    let col = Vec3::new(v[0][min_i] as f32, v[1][min_i] as f32, v[2][min_i] as f32);
+    if col.length() > 1.0e-6 {
+        col.normalize()
+    } else {
+        Vec3::Y
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::modifiers::lathe;
     use crate::primitives::box_mesh;
     use std::f32::consts::TAU;
+
+    #[test]
+    fn strip_parameterize_cylinder_band_about_y() {
+        // A band on a unit-radius cylinder about Y: 16 angles × 2 heights (±0.2).
+        // Loop (X/Z) variance ≫ height (Y) variance ⇒ PCA axle = Y.
+        let mut pts = Vec::new();
+        for i in 0..16 {
+            let th = i as f32 / 16.0 * TAU;
+            for &h in &[-0.2f32, 0.2] {
+                pts.push([th.cos(), h, th.sin()]);
+            }
+        }
+        let (axis, coords) = strip_parameterize(&pts, None);
+        // Resolved axle ≈ ±Y.
+        assert!(
+            axis[1].abs() > 0.99 && axis[0].abs() < 0.05 && axis[2].abs() < 0.05,
+            "axle should be ~Y, got {axis:?}"
+        );
+        assert_eq!(coords.len(), pts.len());
+        // along spans a wide range around the loop; across hits both extremes.
+        let along_min = coords.iter().map(|c| c[0]).fold(f32::INFINITY, f32::min);
+        let along_max = coords
+            .iter()
+            .map(|c| c[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(along_max - along_min > 0.8, "along should span the loop");
+        let across_min = coords.iter().map(|c| c[1]).fold(f32::INFINITY, f32::min);
+        let across_max = coords
+            .iter()
+            .map(|c| c[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            across_min < 0.01 && across_max > 0.99,
+            "across should span [0,1]"
+        );
+        // The two heights form two tight across-clusters (lateral position).
+        for (p, c) in pts.iter().zip(&coords) {
+            let near0 = c[1] < 0.01;
+            let near1 = c[1] > 0.99;
+            assert!(near0 || near1, "across should be ~0 or ~1, got {}", c[1]);
+            // same height ⇒ same cluster (sign may flip which height is which).
+            let _ = p;
+        }
+    }
+
+    #[test]
+    fn strip_parameterize_respects_supplied_axis() {
+        let pts = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]];
+        let (axis, coords) = strip_parameterize(&pts, Some([0.0, 2.0, 0.0]));
+        // Supplied axis is normalized.
+        assert!((axis[1] - 1.0).abs() < 1.0e-6 && axis[0].abs() < 1.0e-6);
+        assert_eq!(coords.len(), 3);
+        // all `along` in [0,1).
+        assert!(coords.iter().all(|c| c[0] >= 0.0 && c[0] < 1.0));
+    }
 
     #[test]
     fn within_aabb_selects_the_box_region() {

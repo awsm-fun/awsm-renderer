@@ -371,6 +371,23 @@ pub struct GetMeshDataParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StripParameterizeParams {
+    /// UUID of the node whose resolved mesh to parameterize.
+    pub node: String,
+    /// §10: a selection HANDLE id naming the band (preferred for big bands).
+    #[serde(default)]
+    pub selection: Option<u32>,
+    /// Explicit vertex indices of the band (used when no `selection`). Both empty
+    /// ⇒ the whole mesh.
+    #[serde(default)]
+    pub indices: Vec<u32>,
+    /// The axle [x, y, z] (normalized internally). Omit to auto-fit the band's
+    /// least-variance PCA direction.
+    #[serde(default)]
+    pub axis: Option<[f32; 3]>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RenameParams {
     pub node: String,
     pub name: String,
@@ -2445,6 +2462,23 @@ impl EditorMcp {
             node: parse_node(&p.node)?,
             offset: p.offset,
             limit: p.limit,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "HEURISTIC strip/loop parameterization of a vertex band → normalized (along, across) UVs to feed straight into set_vertex_uvs for a conveyor / tread / road. Returns `{ axis, count, vertices:[{index, along, across}], heuristic:true, note }`: `along` ∈ [0,1) = angle about the axle (monotonic travel around the loop), `across` ∈ [0,1] = lateral position along the axle. `axis` is the axle [x,y,z] (normalized); omit to auto-fit it as the band's least-variance PCA direction. Target band: a `selection` HANDLE (from select_vertices_where {store:true}), an explicit `indices` list, or — both omitted — the whole mesh. It's a heuristic (assumes a surface of revolution about the axle, not a true geodesic unwrap); the winding direction / polarity may come out flipped — pass an explicit `axis`, or use `1-along`/`1-across`, to correct. Pairs with set_vertex_uvs (write the coords) + a texture_transform V-scroll."
+    )]
+    async fn strip_parameterize(
+        &self,
+        Parameters(p): Parameters<StripParameterizeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::StripParameterize {
+            node: parse_node(&p.node)?,
+            selection: p.selection,
+            indices: p.indices,
+            axis: p.axis,
         })
         .await
     }

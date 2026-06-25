@@ -406,6 +406,25 @@ pub enum EditorQuery {
         #[serde(default)]
         limit: Option<u32>,
     },
+    /// HEURISTIC strip/loop parameterization of a vertex band: returns, per
+    /// selected vertex, normalized `(along, across)` coords to feed straight into
+    /// `set_vertex_uvs` for a conveyor / tread / road. `along` ∈ [0,1) is the
+    /// angle about the axle (monotonic travel around the loop); `across` ∈ [0,1]
+    /// is the lateral position along the axle. `axis` is the axle (normalized);
+    /// when omitted it's fitted as the band's least-variance PCA direction. The
+    /// target band is a `selection` HANDLE, an explicit `indices` list, or — when
+    /// both are empty — the whole mesh. A heuristic (assumes a surface of
+    /// revolution about the axle), not a geodesic unwrap; the winding/polarity may
+    /// be flipped (the response notes this). MCP: `strip_parameterize`.
+    StripParameterize {
+        node: NodeId,
+        #[serde(default)]
+        selection: Option<u32>,
+        #[serde(default)]
+        indices: Vec<u32>,
+        #[serde(default)]
+        axis: Option<[f32; 3]>,
+    },
     /// The mesh asset's modifier-stack **recipe** (`{ base, modifiers }`),
     /// serialized as JSON in a `QueryResult::Text`. `null` when the mesh has no
     /// recipe (a raw captured/converted mesh) — call `set_mesh_modifiers` to give
