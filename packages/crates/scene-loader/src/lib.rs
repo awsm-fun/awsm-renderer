@@ -1942,6 +1942,60 @@ fn select_resident_clusters(
     (pages, m_indices)
 }
 
+/// Exploded vertices per page slot: a bake cluster is ≤128 triangles, and the
+/// raster geometry is exploded (3 unique verts / triangle), so a slot must hold
+/// ≤ 384 verts. Fixed so every slot is interchangeable (the basis of paging).
+const CLUSTER_PAGE_VERTS: usize = 384;
+
+/// Default page-pool capacity (slots) for dynamic paging (Gap B). 8192 slots ×
+/// 384 verts × 56 B ≈ 168 MB — the VRAM-budget knob. A host can size it; this is
+/// the default ceiling the working set evicts against.
+const CLUSTER_PAGE_POOL_SLOTS: usize = 8192;
+
+/// A static page-pool residency plan: which slot each cluster occupies (`-1` =
+/// not resident / overflowed) plus occupancy stats. This is the CPU side of the
+/// Gap-B page pool — the fixed-slot indirection that lets clusters stream in/out
+/// independently. Step 1 builds + validates it; the GPU upload + cut-shader read
+/// of `resident` + dynamic swap land in the following steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PagePoolPlan {
+    /// `resident[cluster_id]` = slot index, or `-1` if not resident.
+    resident: Vec<i32>,
+    /// Slots actually occupied (= residents that fit).
+    slots_used: usize,
+    /// Resident clusters that didn't fit `pool_slots` (working set too big for
+    /// the VRAM budget — these fall back to a coarser resident ancestor at runtime).
+    overflow: usize,
+}
+
+/// Assign each resident cluster a page-pool slot, in order, up to `pool_slots`.
+/// Pure + deterministic (the GPU-free core of paging, unit-tested without a device).
+fn plan_page_pool(
+    cluster_count: usize,
+    resident_cluster_ids: &[usize],
+    pool_slots: usize,
+) -> PagePoolPlan {
+    let mut resident = vec![-1i32; cluster_count];
+    let mut slots_used = 0usize;
+    let mut overflow = 0usize;
+    for &c in resident_cluster_ids {
+        if c >= cluster_count {
+            continue; // defensive: ignore out-of-range ids
+        }
+        if slots_used < pool_slots {
+            resident[c] = slots_used as i32;
+            slots_used += 1;
+        } else {
+            overflow += 1;
+        }
+    }
+    PagePoolPlan {
+        resident,
+        slots_used,
+        overflow,
+    }
+}
+
 async fn load_cluster_lod(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -1990,6 +2044,24 @@ async fn load_cluster_lod(
     let (gpu_pages, m_indices) = select_resident_clusters(&cm, budget);
     let resident_tris = m_indices.len() / 3;
     let capped = m_indices.len() < cm.indices.len();
+
+    // Gap B step 1 (dynamic paging foundation): when `cluster_paging` is on, plan
+    // the fixed-slot page pool for the resident set and report occupancy. No render
+    // change yet (the GPU page-pool buffers + cut-shader `resident` read land in the
+    // next steps) — so this stays byte-identical to the `virtual_geometry` path; it
+    // only validates + surfaces the residency plan on-device.
+    if renderer.features().cluster_paging {
+        let resident_ids: Vec<usize> = (0..gpu_pages.len()).collect();
+        let plan = plan_page_pool(gpu_pages.len(), &resident_ids, CLUSTER_PAGE_POOL_SLOTS);
+        tracing::info!(
+            "cluster paging (Gap B): page pool plan — {} resident clusters → {} slots used / {} capacity ({} verts/slot), overflow {}",
+            gpu_pages.len(),
+            plan.slots_used,
+            CLUSTER_PAGE_POOL_SLOTS,
+            CLUSTER_PAGE_VERTS,
+            plan.overflow,
+        );
+    }
     // The compaction's `source_indices` is the EXPLODED raster index space, not
     // `cm.indices`: the renderer explodes geometry (pack_visibility_bytes) so
     // triangle t's corners are exploded vertices [3t,3t+1,3t+2]. Cluster pages are
@@ -2665,8 +2737,36 @@ mod cluster_streaming_tests {
     //! pure CPU core that bounds the cluster render mesh `M` to a triangle budget.
     //! The GPU upload/draw around it needs a device (browser round-trip), but the
     //! resident-set choice + `first_index` remap + leaf clamp are device-free.
-    use super::select_resident_clusters;
+    use super::{plan_page_pool, select_resident_clusters};
     use awsm_renderer_lod_bake::{build_cluster_dag, ClusterMesh, ClusterPage, DagOptions};
+
+    #[test]
+    fn page_pool_assigns_one_slot_per_resident_cluster() {
+        // 5 clusters, 3 resident (ids 0,2,4), ample pool → each gets a distinct
+        // slot in order; non-resident stay -1; no overflow.
+        let plan = plan_page_pool(5, &[0, 2, 4], 8);
+        assert_eq!(plan.resident, vec![0, -1, 1, -1, 2]);
+        assert_eq!(plan.slots_used, 3);
+        assert_eq!(plan.overflow, 0);
+    }
+
+    #[test]
+    fn page_pool_overflows_past_capacity() {
+        // 4 residents but only 2 slots → first 2 get slots, rest overflow.
+        let plan = plan_page_pool(4, &[0, 1, 2, 3], 2);
+        assert_eq!(plan.slots_used, 2);
+        assert_eq!(plan.overflow, 2);
+        assert_eq!(plan.resident, vec![0, 1, -1, -1]);
+    }
+
+    #[test]
+    fn page_pool_ignores_out_of_range_ids() {
+        // Defensive: an id >= cluster_count is skipped, not panicking / OOB.
+        let plan = plan_page_pool(2, &[0, 9, 1], 8);
+        assert_eq!(plan.resident, vec![0, 1]);
+        assert_eq!(plan.slots_used, 2);
+        assert_eq!(plan.overflow, 0);
+    }
     use std::collections::HashMap;
 
     // --- A1 capped crack-free helpers (mirror the bake's dag.rs test harness) ---

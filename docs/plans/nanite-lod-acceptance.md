@@ -67,7 +67,15 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
   `?trace=sub-frame`: no per-frame heap allocations attributable to the paging path
   (pooled readback + upload staging). (3) Committed test(s) for the
   residency table / LRU eviction / slot-recycle logic (CPU-side, scene-loader/renderer).
-  _Current: only Step 1 static cap shipped; dynamic per-frame paging absent → unmet (Gap B)._
+  _Current: **Gap B IN PROGRESS (foundation laid) → still UNMET.** Step 1a done:
+  `cluster_paging` default-off feature flag (features.rs, asserted off by
+  `default_features_are_all_off`) + a pure, unit-tested CPU page-pool planner
+  `plan_page_pool` (scene-loader: cluster→slot `resident` table, occupancy, overflow;
+  3 tests) wired behind the flag in `load_cluster_lod` to log pool occupancy (no render
+  change yet ⇒ byte-identical). STILL TO BUILD: GPU page-pool slot buffer + `resident`
+  table upload + cut/compaction shader read of `resident` (slot-relative indices) +
+  feedback buffer + async readback + CPU stream/evict (LRU) + per-frame upload budget +
+  multi-M-tri on-device verify + no-per-frame-allocs (`?stress=N`). → A2 unmet._
 
 - [ ] **A3 — Drawn (cut) triangle count bounded by screen resolution, not source size.**
   The cut's drawn-triangle count tracks screen resolution + pixel-error budget, and
@@ -246,3 +254,9 @@ honestly true. Grouped; each cites its verification.
   route to the discrete path; all three coexist + render. Suites 301/35/36/34 green, 0
   ignored, fmt+clippy clean. **3/6 headline verified (A1, A4, A5).** Remaining: A2/A3
   (Gap B dynamic paging) + A6 (benchmark).
+- 2026-06-25 — **Gap B step 1a (foundation)**: added `cluster_paging` default-off flag
+  (features.rs + defaults test) and a pure, unit-tested `plan_page_pool` (scene-loader:
+  cluster→slot resident table + occupancy/overflow; 3 tests), wired behind the flag to
+  log pool occupancy — NO render change (byte-identical). Suites 301/35/36/37 green, 0
+  ignored, fmt+clippy clean. **Still 3/6 verified** (A2 needs the GPU page pool + dynamic
+  swap, next). Next step: GPU slot buffer + resident upload + cut-shader read.
