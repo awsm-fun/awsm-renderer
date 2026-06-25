@@ -905,12 +905,18 @@ impl AwsmRenderer {
                             };
                             if want {
                                 if let Some(buffers) = cluster_pass.buffers.as_ref() {
+                                    // P0 SPLIT DIAGNOSTIC: read the cut's `selected`
+                                    // buffer (1u/0u per cluster) so we can count how many
+                                    // the CUT chose — vs the compaction's draw_args
+                                    // index_count (=0). selected_sum>0 ⇒ compaction bug;
+                                    // selected_sum=0 ⇒ cut/params/pages bug.
+                                    let n = cluster_pass.cluster_count;
                                     ctx.command_encoder.copy_buffer_to_buffer(
-                                        &buffers.draw_args_buffer,
+                                        &buffers.selected_buffer,
                                         0,
                                         &buffers.readback_buffer,
                                         0,
-                                        4,
+                                        n * 4,
                                     )?;
                                     cluster_cut_kick = Some((
                                         buffers.readback_buffer.clone(),
@@ -1675,18 +1681,22 @@ impl AwsmRenderer {
         if let Some((readback_buffer, total)) = cluster_cut_kick {
             let state = std::sync::Arc::clone(&self.cluster_cut_readback);
             state.lock().unwrap().inflight = true;
+            let n_bytes = total * 4;
             wasm_bindgen_futures::spawn_local(async move {
-                match crate::core::buffers::extract_buffer_vec(&readback_buffer, Some(4)).await {
+                match crate::core::buffers::extract_buffer_vec(&readback_buffer, Some(n_bytes)).await
+                {
                     Ok(bytes) if bytes.len() >= 4 => {
-                        let index_count =
-                            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                        // P0 split: count the cut's selected (==1u) clusters.
+                        let selected: u32 = bytes
+                            .chunks_exact(4)
+                            .filter(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) != 0)
+                            .count() as u32;
                         let mut s = state.lock().unwrap();
-                        if s.last_value != index_count as i64 {
-                            s.last_value = index_count as i64;
+                        if s.last_value != selected as i64 {
+                            s.last_value = selected as i64;
                             tracing::info!(
-                                "cluster compaction (GPU): draw_args.index_count = {index_count} \
-                                 ({} tris) over {total} clusters [frame {}]",
-                                index_count / 3,
+                                "cluster cut (GPU): selected = {selected} / {total} clusters \
+                                 [frame {}] (CPU reference select_cut_per_cluster ~187)",
                                 s.frames
                             );
                         }

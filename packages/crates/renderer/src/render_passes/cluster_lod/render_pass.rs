@@ -38,6 +38,8 @@ pub struct ClusterLodRenderPass {
     /// (set at load via [`Self::init_paging`]); `None` keeps the shipped path
     /// byte-identical. Holds the FULL un-clamped DAG and drives per-frame residency.
     pub paging: Option<ClusterPaging>,
+    /// P0 diagnostic one-shot: log the cut params once (cut selects 0 on-device).
+    params_logged: std::cell::Cell<bool>,
 }
 
 /// Gap-B dynamic-paging manager (CPU-driven design — see NORTHSTAR-GAPS step 3).
@@ -173,6 +175,7 @@ impl ClusterLodRenderPass {
             cluster_count: 0,
             render_mesh: None,
             paging: None,
+            params_logged: std::cell::Cell::new(false),
         })
     }
 
@@ -254,6 +257,25 @@ impl ClusterLodRenderPass {
         };
         buffers.write_pages(gpu, pages)?;
         buffers.write_source_indices(gpu, indices)?;
+        // P0 DIAGNOSTIC (cut selects 0 on-device): dump a few uploaded page values
+        // to confirm the pages buffer is NOT zeros (the zero-pages hypothesis ⇒
+        // parent_error 0 ⇒ predicate `budget < 0` false ⇒ 0 selected).
+        if let (Some(p0), Some(pm), Some(pl)) =
+            (pages.first(), pages.get(pages.len() / 2), pages.last())
+        {
+            tracing::info!(
+                "cluster pages UPLOAD: count={count} indices={index_count} | \
+                 p0(lod={} parent={} fi={} ic={}) pmid(lod={} parent={}) plast(lod={} parent={})",
+                p0.lod_error,
+                p0.parent_error,
+                p0.first_index,
+                p0.index_count,
+                pm.lod_error,
+                pm.parent_error,
+                pl.lod_error,
+                pl.parent_error,
+            );
+        }
         self.cluster_count = count;
         let buffers = self.buffers.as_ref().unwrap();
         self.bind_groups.recreate(gpu, layouts, buffers)?;
@@ -300,6 +322,17 @@ impl ClusterLodRenderPass {
         };
         if self.cluster_count == 0 {
             return Ok(());
+        }
+        if !self.params_logged.replace(true) {
+            // P0 DIAGNOSTIC (cut selects 0 on-device): the exact params handed to the
+            // cut. The CPU select_cut_per_cluster with these selects ~187; the GPU
+            // selects 0 ⇒ compare these against the shader's reads.
+            tracing::info!(
+                "cluster cut PARAMS: cam_pos={cam_pos:?} tan_half_fov_y={tan_half_fov_y} \
+                 viewport_h={viewport_h} pixel_budget={pixel_budget} world_scale=1.0 \
+                 cluster_count={}",
+                self.cluster_count
+            );
         }
         buffers.write_params(
             ctx.gpu,

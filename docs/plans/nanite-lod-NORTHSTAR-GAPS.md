@@ -39,6 +39,37 @@ GPU `index_count` ≈ the CPU `desired cut` (e.g. ~187 → ~561 indices… actua
 clusters × their tri counts), and a real screenshot shows the sphere. Only then
 resume Gap B. Re-verify A1 on-device after the fix.
 
+### iter 25 — narrowed: the CUT selects 0 with CONFIRMED-correct inputs (GPU-side exec bug)
+
+Added the split diagnostics (committed). On-device `?vg` (non-paging, 13065 pages):
+- **CUT (not compaction) selects 0**: `cluster cut (GPU): selected = 0 / 13065`.
+- **Pages upload correctly** (CPU-side dump): `p0(lod=0 parent=1.19e-7 ic=384)`,
+  `pmid(lod=5.96e-7 parent=7.15e-7)`, `plast(lod=3.81e-6 parent=3.4e38)` — real
+  non-zero errors + the f32::MAX root sentinel. So NOT zero-pages.
+- **Params CPU-side correct**: `cam_pos=(0,11.26,36.4)` (dist≈38, the default editor
+  camera at the one-shot frame-5 log), `tan=0.4142`, `viewport_h=1028`,
+  `pixel_budget=1`, `world_scale=1.0`, `cluster_count=13065`.
+
+So with verified-correct pages + params the GPU cut still emits 0. Even at dist 38
+the ROOTS (parent=3.4e38 ⇒ proj_parent overflows to +inf; proj_lod≈1.2e-4 ≤ 1)
+should pass ⇒ ≥1 expected, but 0. ⇒ the bug is in **GPU-side execution**, NOT the
+data we hand it. Prime suspects (in order):
+  (1) the shader reads `params.cluster_count` wrong (uniform std140/std430 layout the
+      CPU-bytes `cut_params_layout` test can't catch) ⇒ `i >= cluster_count` true for
+      all threads ⇒ early-return ⇒ `selected` keeps its zero-init ⇒ 0. **Test next:
+      read the params_buffer BACK from the GPU and decode cluster_count/pixel_budget/
+      world_scale/viewport_h — confirm the SHADER sees 13065/1/1/1028, not 0/garbage.**
+  (2) the camera the cut reads is the player's, possibly a stale/degenerate matrix
+      (couldn't confirm set_camera_orbit moves the cut camera — chrome console keeps
+      resetting on heavy ops). Make the params log re-fire (not one-shot) to see if
+      cam tracks orbits.
+  (3) a `selected`/pages binding mismatch in the paging-vs-nonpaging pipeline variant
+      (but non-paging is the simplest path and still 0).
+Once the GPU sees correct params and the predicate matches the CPU, selected should
+jump to the CPU count; then fix draw + re-verify A1. (HARNESS: chrome
+list_console_messages buffer resets on heavy MCP ops — read it RIGHT after the scene
+build, or prefer the MCP `get_console_logs` regex grep used in iter 25.)
+
 ---
 
 
