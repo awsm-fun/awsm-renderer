@@ -2053,6 +2053,36 @@ fn build_slot_geometry(
     (slot_indices, source_indices)
 }
 
+/// DAG group key: exact f32 bits of a (sphere center+radius, error) — used to match
+/// a cluster's `parent_*` to another cluster's `lod_*` (the bake assigns the same
+/// group sphere/error to both sides, so exact-bits compares).
+type DagGroupKey = [u32; 5];
+
+/// For each cluster `F` (by index), the finer clusters whose group produced it —
+/// `F`'s refinement set for dynamic paging (Gap B step 3). The DAG is GROUP-based:
+/// clusters created by one group share `F`'s lod key and flip together (crack-free),
+/// so a finer cluster `c` is a child of `F` iff `c`'s PARENT key == `F`'s LOD key.
+/// Refining `F` streams its whole finer group in. Keyed (decoupled from `ClusterPage`)
+/// so it's unit-testable without GPU structs. Build on the ORIGINAL bake clusters
+/// (the resident pages' lod/parent errors are clamped to 0/MAX).
+#[allow(dead_code)] // wired into the step-3 stream/refine path
+fn cluster_finer_group(lod_keys: &[DagGroupKey], parent_keys: &[DagGroupKey]) -> Vec<Vec<usize>> {
+    use std::collections::HashMap;
+    let mut by_lod: HashMap<DagGroupKey, Vec<usize>> = HashMap::new();
+    for (i, k) in lod_keys.iter().enumerate() {
+        by_lod.entry(*k).or_default().push(i);
+    }
+    let mut children = vec![Vec::new(); lod_keys.len()];
+    for (c, pk) in parent_keys.iter().enumerate() {
+        if let Some(parents) = by_lod.get(pk) {
+            for &f in parents {
+                children[f].push(c);
+            }
+        }
+    }
+    children
+}
+
 async fn load_cluster_lod(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -2820,8 +2850,78 @@ mod cluster_streaming_tests {
     //! pure CPU core that bounds the cluster render mesh `M` to a triangle budget.
     //! The GPU upload/draw around it needs a device (browser round-trip), but the
     //! resident-set choice + `first_index` remap + leaf clamp are device-free.
-    use super::{build_slot_geometry, plan_page_pool, select_resident_clusters};
-    use awsm_renderer_lod_bake::{build_cluster_dag, ClusterMesh, ClusterPage, DagOptions};
+    use super::{
+        build_slot_geometry, cluster_finer_group, plan_page_pool, select_resident_clusters,
+    };
+    use awsm_renderer_lod_bake::{
+        build_cluster_dag, ClusterMesh, ClusterPage, DagOptions, ROOT_PARENT_ERROR,
+    };
+
+    #[test]
+    fn finer_group_links_synthetic_two_level_dag() {
+        // C0, C1 leaves (lod K0,K1; parent = group KG); C2 root (lod KG; parent ROOT).
+        let k0 = [0u32, 0, 0, 0, 0];
+        let k1 = [1u32, 0, 0, 0, 0];
+        let kg = [9u32, 9, 9, 9, 9];
+        let kroot = [u32::MAX; 5];
+        let lod = vec![k0, k1, kg];
+        let par = vec![kg, kg, kroot];
+        let ch = cluster_finer_group(&lod, &par);
+        assert_eq!(ch[0], Vec::<usize>::new()); // leaf: no finer group
+        assert_eq!(ch[1], Vec::<usize>::new());
+        assert_eq!(ch[2], vec![0, 1]); // root's finer group = both leaves (the group)
+    }
+
+    #[test]
+    fn finer_group_links_real_dag_cover_all_non_roots() {
+        let (pos, idx) = uv_sphere(24, 16);
+        let dag = build_cluster_dag(&pos, &idx, &DagOptions::default());
+        let key = |e: f32, c: [f32; 3], r: f32| {
+            [
+                e.to_bits(),
+                c[0].to_bits(),
+                c[1].to_bits(),
+                c[2].to_bits(),
+                r.to_bits(),
+            ]
+        };
+        let lod: Vec<_> = dag
+            .clusters
+            .iter()
+            .map(|c| key(c.lod_error, c.lod_bounds_center, c.lod_bounds_radius))
+            .collect();
+        let par: Vec<_> = dag
+            .clusters
+            .iter()
+            .map(|c| {
+                key(
+                    c.parent_error,
+                    c.parent_bounds_center,
+                    c.parent_bounds_radius,
+                )
+            })
+            .collect();
+        let ch = cluster_finer_group(&lod, &par);
+        assert!(
+            ch.iter().any(|g| !g.is_empty()),
+            "DAG must have refinement groups"
+        );
+        // Every non-root cluster is the finer-child of >=1 cluster (valid inverse).
+        let mut is_child = vec![false; dag.clusters.len()];
+        for g in &ch {
+            for &c in g {
+                is_child[c] = true;
+            }
+        }
+        for (i, c) in dag.clusters.iter().enumerate() {
+            if c.parent_error < ROOT_PARENT_ERROR {
+                assert!(
+                    is_child[i],
+                    "non-root cluster {i} must be in some finer-group"
+                );
+            }
+        }
+    }
 
     #[test]
     fn slot_geometry_packs_padded_slots_and_preserves_triangles() {
