@@ -4,12 +4,47 @@ Honest status of the cluster-LOD / virtual-geometry implementation vs. the
 permanent spec `docs/nanite-lod.md`, per the acceptance checklist
 `docs/plans/nanite-lod-acceptance.md`.
 
-**Verified: 3 / 6 headline claims** (A1, A4, A5) — each with a committed
-deterministic test AND cited on-device evidence.
+**Verified: 2 / 6 headline claims** (A4, A5) — each with a committed deterministic
+test AND cited on-device evidence. **A1 DOWNGRADED (see 🚨 P0 below):** its CPU
+bake/cut test still passes, but its on-device "watertight GPU draw" evidence is now
+CONTRADICTED — the GPU cluster cut emits 0 triangles on-device.
+
+## 🚨 P0 — the GPU cluster cut selects 0 clusters on-device (cut shader ≠ CPU reference)
+
+Found iter 24 via a periodic `draw_args.index_count` readback (render.rs, fires
+frame 5 then every 30 — was one-shot frame-1, which hid this). On a subdivided-sphere
+cluster bundle, steadily across thousands of frames:
+`cluster compaction (GPU): draw_args.index_count = 0 (0 tris)` — in BOTH `?vg`
+(non-paging, 13065 real-error pages) AND `?vg&paging` (785 clamped frontier). The
+readback is reliable (the `copy_buffer_to_buffer(draw_args)` is recorded after the
+compaction compute pass in the same encoder ⇒ WebGPU auto-barriers it).
+
+**Decisive cross-check:** the CPU `paging_update` (step 20a) logs `desired cut = 187
+clusters` using the SAME camera (`cam.position_world`) the GPU cut reads — so the
+camera is NOT degenerate and the tested CPU `select_cut_per_cluster` selects 187.
+The GPU cut selecting 0 vs the CPU reference's 187 ⇒ a bug in the **GPU cluster-cut
+shader** (`cluster_cut.wgsl`) or its **params/page upload** (`ClusterCutParams` /
+`ClusterPage` GPU layout), NOT the camera, NOT paging (reproduces with paging off).
+
+**Consequence:** the cluster-LOD GPU draw has been rendering NOTHING on-device.
+A1's "on-device subdivided sphere watertight under ?vg" evidence is false/regressed.
+ALL of Gap B (A2 streaming) is moot until the GPU cut draws the CPU-reference cut.
+
+**Next (top priority):** root-cause the GPU-cut-vs-CPU-reference divergence. Add a
+one-shot log of the cut's `selected` count (not just compaction draw_args) to split
+cut-bug vs compaction-bug; dump `ClusterCutParams` bytes + a couple of `ClusterPage`
+GPU records vs the CPU structs to check the std430 layout the shader reads; re-derive
+the cut predicate in `cluster_cut.wgsl` against `select_cut_per_cluster`. Fix so the
+GPU `index_count` ≈ the CPU `desired cut` (e.g. ~187 → ~561 indices… actually 187
+clusters × their tri counts), and a real screenshot shows the sphere. Only then
+resume Gap B. Re-verify A1 on-device after the fix.
+
+---
+
 
 | Claim | Status | Evidence |
 |---|---|---|
-| **A1** crack-free per-cluster cut incl. non-watertight/subdivided, full-detail + capped | ✅ | `cb3b1ac8` bake weld+lock_boundaries, `73984b4b` capped complete-antichain; on-device subdivided sphere watertight under `?vg` and `?streambudget=8000` |
+| **A1** crack-free per-cluster cut incl. non-watertight/subdivided, full-detail + capped | ⚠️ **CONTRADICTED on-device** | CPU bake/cut test still passes (`cb3b1ac8` weld+lock_boundaries, `73984b4b` antichain). BUT the on-device watertight claim is FALSE as of iter 24 — the GPU cut emits 0 tris (🚨 P0 above). Re-verify after the GPU-cut fix. |
 | **A2** dynamic camera-driven streaming residency (multi-M-tri, bounded VRAM, LRU, crack-free fallback, no per-frame allocs) | ❌ **UNMET** | Gap B foundation only (see below) |
 | **A3** drawn (cut) tri count bounded by screen res, not source size (benchmark across scales) | ❌ **UNMET** | partial evidence only (1696 drawn vs 583768 source at one scale); needs the A2 multi-scale benchmark |
 | **A4** deforming → discrete chain, per-instance, skin/morph carried | ✅ | `c58abfd9` carry-through test + on-device mixed CesiumMan/MorphCube/Sphere routing |

@@ -16,7 +16,13 @@
 
 Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-this-loop · `[x]` verified.
 
-> **Current: 3 / 6 headline verified (A1, A4, A5).** The unmet A2 / A3 / A6 (the
+> **Current: 2 / 6 headline verified (A4, A5).** **A1 was DOWNGRADED at iter 24** —
+> its CPU bake/cut unit test still passes, but a periodic GPU `draw_args.index_count`
+> readback proved the on-device GPU cluster cut emits **0 triangles** (in both `?vg`
+> and `?vg&paging`), so its "watertight on-device" evidence is contradicted. This is
+> a 🚨 P0 (GPU cut shader / params disagree with the tested CPU `select_cut_per_cluster`,
+> which selects 187) and BLOCKS all of Gap B — see
+> [`nanite-lod-NORTHSTAR-GAPS.md`](./nanite-lod-NORTHSTAR-GAPS.md). The unmet A2 / A3 / A6 (the
 > large Gap-B dynamic-paging build + its benchmark) are documented in
 > [`nanite-lod-NORTHSTAR-GAPS.md`](./nanite-lod-NORTHSTAR-GAPS.md) and flagged in
 > `cargo test` by `#[ignore]`d markers `a2_dynamic_camera_driven_paging`,
@@ -28,7 +34,7 @@ Status legend: `[ ]` unmet · `[~]` partial / shipped-but-not-re-verified-in-thi
 
 ## Mandated headline claims (A1–A6)
 
-- [x] **A1 — Per-cluster cluster cut, crack-free, incl. non-watertight / subdivided.** ✅
+- [~] **A1 — Per-cluster cluster cut, crack-free, incl. non-watertight / subdivided.** ⚠️ CONTRADICTED on-device (iter 24): the GPU cut emits 0 tris — CPU bake/cut test still passes, but the on-device watertight GPU draw is FALSE. 🚨 P0; re-verify after the GPU-cut fix.
   Static rigid meshes render via the per-cluster GPU cut with no cracks, *including*
   non-watertight / midpoint-subdivided meshes. The subdivided-sphere repro
   (`meshgen sphere` + `Subdivide×4`, ~262k→550k-DAG-tris) renders **watertight at

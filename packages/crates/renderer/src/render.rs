@@ -893,10 +893,15 @@ impl AwsmRenderer {
                                 })
                                 .unwrap_or(0);
                             cluster_pass.dispatch_compaction(&ctx, first_instance)?;
-                            // One-shot readback verification of draw_args.index_count.
+                            // Readback verification of draw_args.index_count. Re-fires
+                            // on a cadence (frame 5, then every 30) so the STEADY draw
+                            // count is observable past the frame-1 resident-upload
+                            // transient (NORTHSTAR-GAPS blocker); the async handler logs
+                            // only on change.
                             let want = {
-                                let st = self.cluster_cut_readback.lock().unwrap();
-                                !st.inflight && !st.logged
+                                let mut st = self.cluster_cut_readback.lock().unwrap();
+                                st.frames += 1;
+                                !st.inflight && (st.frames == 5 || st.frames % 30 == 0)
                             };
                             if want {
                                 if let Some(buffers) = cluster_pass.buffers.as_ref() {
@@ -1675,13 +1680,16 @@ impl AwsmRenderer {
                     Ok(bytes) if bytes.len() >= 4 => {
                         let index_count =
                             u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                        tracing::info!(
-                            "cluster compaction (GPU): draw_args.index_count = {index_count} \
-                             ({} tris) over {total} clusters",
-                            index_count / 3
-                        );
                         let mut s = state.lock().unwrap();
-                        s.logged = true;
+                        if s.last_value != index_count as i64 {
+                            s.last_value = index_count as i64;
+                            tracing::info!(
+                                "cluster compaction (GPU): draw_args.index_count = {index_count} \
+                                 ({} tris) over {total} clusters [frame {}]",
+                                index_count / 3,
+                                s.frames
+                            );
+                        }
                         s.inflight = false;
                     }
                     Ok(_) => {
