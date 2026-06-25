@@ -223,6 +223,10 @@ fn editor_features() -> RendererFeatures {
         // Default off ⇒ byte-identical; only bites above the budget.
         cluster_streaming: url_has_flag("stream") || url_flag_value("streambudget").is_some(),
         cluster_streaming_budget: url_flag_value("streambudget").and_then(|v| v.parse().ok()),
+        // Cluster-LOD dynamic per-frame paging (Phase 5 Step 2 / Gap B). Opt in
+        // with `?paging`. Default off ⇒ byte-identical; the page pool / resident
+        // table is only built when on.
+        cluster_paging: url_has_flag("paging"),
         indirect_first_instance: FeatureToggle::Auto,
     }
 }

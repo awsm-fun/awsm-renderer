@@ -260,3 +260,12 @@ honestly true. Grouped; each cites its verification.
   log pool occupancy — NO render change (byte-identical). Suites 301/35/36/37 green, 0
   ignored, fmt+clippy clean. **Still 3/6 verified** (A2 needs the GPU page pool + dynamic
   swap, next). Next step: GPU slot buffer + resident upload + cut-shader read.
+- 2026-06-25 — **Gap B step 1b**: added `?paging` editor URL flag (context.rs →
+  `cluster_paging`; preview.rs full-literal updated). On-device (editor rebuilt,
+  `?vg&paging`, subdivided sphere): console `cluster paging (Gap B): page pool plan —
+  13065 resident clusters → 8192 slots used / 8192 capacity, overflow 4873`, and the
+  render is **byte-identical** to `?vg` alone (same `cluster LOD (GPU)` 13065/M=583768
+  + `cluster compaction` 1696 tris; hole-free screenshot). The flag is now end-to-end
+  usable + verified zero-regression; the overflow signal (working set > pool) is what
+  eviction will manage. Suites 301/35/36/37 green. **Still 3/6** (A2 still needs the GPU
+  page-pool buffers + cut-shader resident read + dynamic swap)._
