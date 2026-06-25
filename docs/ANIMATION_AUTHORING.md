@@ -66,6 +66,18 @@ Quaternion cheat-sheet (axis-angle → xyzw): for angle θ about a unit axis
 180° about Y = `[0, 1, 0, 0]`; 90° about Y = `[0, 0.7071, 0, 0.7071]`. Prefer
 `set_rotation_euler` for static poses; use quats only in keyframes.
 
+### Shortcut — `add_spin_track` (wheels / rotors / fans)
+The whole spin above collapses to ONE call: it generates a rotation track with
+evenly-spaced, hemisphere-continuous quaternion keyframes for you (no hand-authored
+quats):
+```jsonc
+add_spin_track { "clip":<clip>, "node":<node>, "axis":[0,1,0], "turns":1.0,
+                 "duration":2.0, "keys_per_turn":4 }   // 4 keys/rev = 90° steps (default 4)
+```
+`turns` may be fractional (`0.25` = a quarter turn) or negative (reverse). Play it
+back faster/slower or reversed with `set_clip_speed` / `set_clip_direction`. Undo
+removes the one track.
+
 ## Worked example — pulse a material's emissive color
 
 ```jsonc

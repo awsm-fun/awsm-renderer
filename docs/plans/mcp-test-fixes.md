@@ -420,6 +420,35 @@ the cached tool-list. (Brand-new query *variants* may also be reachable via
   `roll-forward`/`roll-backward`, and capture a screenshot showing the tread reads as
   travel (not atlas garbage). Record it in the final log.
 
+## Deferred (P2 — separate follow-up, deliberately out of scope)
+
+Two findings-doc P2 items were intentionally not attempted in this pass. Both
+require substantial **new machinery** that doesn't exist in the codebase yet, which
+makes them too large/risky for the autonomous run and better suited to their own
+focused PRs:
+
+- **`bake_material_to_texture` (render-to-texture / material bake).** Baking the
+  shaded/material result into a new texture under a target UV layout (re-atlas /
+  make-tileable / flatten-to-texture) needs an **offscreen GPU render target +
+  UV-space rasterization** path. The renderer today is canvas-only (`scene_png` /
+  `screenshot_*` read the live viewport; there is no offscreen material-bake target).
+  Standing up that render path, picking output formats, and handling normal/AO
+  re-baking is a feature in its own right. *Workaround that exists today:* the GLB
+  round-trip (`export_node_glb` → re-UV + bake tileable in Blender → `import_model_from_url`).
+- **`separate_mesh` / per-submesh materials.** Texturing one region of a mesh
+  differently needs either a mesh **split** op (detach a vertex selection into a new
+  sibling node — no such op exists; all mesh ops mutate in place) or **per-primitive
+  material binding** (the model is one `MaterialInstance` per mesh node; glTF
+  primitive→material splits are merged on import). Both touch the core scene/material
+  binding model and the import path. A connectivity / UV-island / material-group
+  selection predicate would accompany it. *Partial mitigation today:* the
+  vertex-color-as-mask splat technique (one material, per-vertex blend) covers some
+  region-shading cases without a true split.
+
+The P0/P1 blockers and the cheap P3 QoL that **were** in scope are all shipped
+(below); the original tread task is unblocked via the clean `set_vertex_uvs` +
+`strip_parameterize` → `texture_transform` path.
+
 ## Progress log
 
 Maintain a checklist here as items land (status + the live-verify proof per item).
@@ -432,5 +461,5 @@ Append, don't rewrite.
 - [x] Item 4 — get_vertex_data source flag — STATIC: clippy/fmt clean, full test green, +1 query roundtrip test (`get_vertex_data_include_source_roundtrip`). LIVE: wrote a UV override on box vertex 0, then `get_vertex_data {include_source:true}` → v0 `source.uv:"override"` (position/normal/color "base"), v1 all "base". Committed with Item 2.
 - [x] Item 5 — add_spin_track — STATIC: clippy/fmt clean, full test green (48 binaries), +2 generator unit tests (`spin_keyframes_one_full_turn`, `spin_keyframes_degenerate_axis_and_quarter_turn`) in scene crate, +2 command roundtrip tests. Pure `spin_keyframes(axis,turns,duration,keys_per_turn)` generator in scene/animation.rs (hemisphere-continuous quats for correct linear interp); `EditorCommand::AddSpinTrack` builds a rotation Transform track via stored_track_to_live; undo = DeleteTrack. LIVE: headless `add_spin_track {axis:[0,1,0],turns:1,duration:2,keys_per_turn:4}` on a cylinder, then `get_track_data` → 5 quat keys at times [0,.5,1,1.5,2]: [0,0,0,1]→[0,.707,0,.707]→[0,1,0,~0]→[0,.707,0,-.707]→[0,~0,0,-1] (90° steps, continuity-flipped negative-w as designed), target transform/rotation, sampler linear.
 - [x] Item 6 — strip_parameterize (heuristic, shipped with documented limit) — STATIC: clippy/fmt clean, full test green (48 binaries), +2 meshgen math tests (`strip_parameterize_cylinder_band_about_y`, `strip_parameterize_respects_supplied_axis`, behind `authoring` feature — covered by `--all-features`), +1 query roundtrip test. Pure `meshgen::edit::strip_parameterize(positions, axis)` returns (axle, per-vertex [along,across]); axle auto-fit via a cyclic-Jacobi 3×3 PCA (least-variance eigenvector). LIVE on a cylinder: explicit `axis:[0,1,0]` → axis [0,1,0], 134 verts, along [0.027,0.995] (full loop), across [0,1] (full height); coords ROUND-TRIP into set_vertex_uvs (wrote [0.25,0]→readback [0.25,0]) — the conveyor pipeline works end-to-end. LIMIT (documented, did NOT block): auto-fit (axis omitted) is unreliable when the band's aspect ratio is near-isotropic — on the default cylinder (height≈diameter) PCA returned Z instead of Y, since the axle and a radial direction have comparable variance. Pass an explicit `axis` for treads (the agent knows the belt's axle). To be documented in MESH_TOOLS.md (Item 7).
-- [ ] Item 7 — discoverability docs + cross-links
-- [ ] Final — full gate green + end-to-end tread proof + Deferred section written
+- [x] Item 7 — discoverability docs + cross-links — STATIC: clippy/fmt clean, full test green (48 binaries). New 'Geometry-locked scroll (conveyor / tread / road)' recipe in recipes.md (clean set_vertex_uvs+strip_parameterize path AND vertex-color-WGSL fallback, with the tileable-strip-UV prerequisite); the old 'Scrolling texture (animated UV)' recipe relabelled screen-space/normal-derived + cross-linked. Point-of-use cross-links added to set_node_texture_transform / set_vertex_uvs / set_material_uniform tool descriptions (+ 'See also' back-links in the recipe); strip_parameterize description gained the auto-fit best-effort caveat. MESH_TOOLS.md documents set_vertex_uvs / get_mesh_data / get_vertex_data{include_source} / strip_parameterize (incl. its limit) / set_mesh_data allow_empty; ANIMATION_AUTHORING.md documents add_spin_track; MCP.md got a typed-tool-coverage consistency note. LIVE: docs are include_str!-embedded and the rebuilt binary compiled (recipes.md/MESH_TOOLS/ANIMATION/MCP all embed); tool-description cross-links live in the rebuilt server.
+- [x] Final — STATIC gate green on the final tree (fmt --check clean; clippy --all --all-features --tests -D warnings clean; cargo test --all-features = 48 binaries ok). Deferred section written (P2 bake + separate_mesh, with rationale). END-TO-END TREAD PROOF (representative belt — robot-001 is the upstream author's temp scene, not loadable here, as anticipated): cylinder belt → strip_parameterize {axis:[0,1,0]} → set_vertex_uvs (134 verts, override-confirmed) → tileable 16×16 cleat tile via create_texture → unlit built-in material + set_node_texture base_color (wrap repeat, scale [1,6]) + texture_transform flow [0,0.25]. Screenshot shows evenly-spaced grouser cleat bands wrapping the belt loop cleanly (reads as a tread — NOT atlas garbage), proving the clean conveyor pipeline the original task was blocked on. (Note: a custom-WGSL visualization hit `material_uv` not resolving even with fragment_inputs ["uv"] + include "vertex_color" — a possible ABI/discoverability gap worth a follow-up; the built-in-texture path proved the pipeline regardless.)

@@ -470,6 +470,19 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
 
 ---
 
+## Typed-tool coverage (escape hatches serve the long tail, not core features)
+
+A capability you can only reach by reverse-engineering a contract doc or hand-rolling
+a raw `dispatch_command` / `run_query` isn't really discoverable. The rule: every
+**core** capability gets a typed tool + a recipe + a point-of-use link, and typed
+coverage is kept **complete and consistent across a family** so absence is never a
+surprise. In particular, **every per-vertex attribute now has a typed authoring verb**
+— `set_vertex_positions` / `paint_vertex_colors` / `set_vertex_normals` /
+`set_vertex_uvs` (UVs were the missing one), with the matching read
+`get_vertex_data { include_source }` and topology read `get_mesh_data`.
+`dispatch_command` / `run_query` remain for the genuine long tail (uncommitted
+commands, NLA mixer ops, one-off queries) — not as the only path to a real feature.
+
 ## Known limitations / future
 
 - **Per-tab isolation.** Each editor tab (one `/editor` socket) and each MCP agent

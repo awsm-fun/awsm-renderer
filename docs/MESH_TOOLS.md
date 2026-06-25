@@ -165,6 +165,14 @@ modifiers) or already frozen (terminal authoring).
 - `set_vertex_normals { mesh, indices, normal:[x,y,z] }` — author per-vertex
   **normals** (e.g. flatten a face / fake a crease); an explicit normal override
   always wins over the sculpt auto-recompute.
+- `set_vertex_uvs { mesh, indices, uvs:[[u,v]...] }` — author per-vertex **UVs**
+  (TEXCOORD_0), `uvs[k]` ↦ `indices[k]` (per-index parallel arrays, unlike the
+  single-value color/normal verbs). This is the verb that lets you lay a
+  **continuous strip UV** for conveyor/tread/road scrolling — pair it with
+  `strip_parameterize` (below) to compute the coords, then a `texture_transform`
+  V-scroll. With this, every vertex attribute (positions/colors/normals/**uvs**)
+  now has a typed authoring verb. See the *Geometry-locked scroll* recipe in
+  `awsm://docs/material-recipes`.
 - `collapse_mesh_stack { mesh }` — explicitly bake one mesh's modifier recipe →
   frozen `captured` (the authoring verbs do this implicitly on first use).
 - `bake_all {}` — project-wide finalize: collapse **every** Mesh's stack (freeze
@@ -194,14 +202,37 @@ modifiers) or already frozen (terminal authoring).
 - `get_mesh_cross_section { node, axis, samples }` → `[[height, radius]...]` (the
   silhouette profile; pairs with a lathe profile). Empty bins read `0` when the
   mesh has no vertices at that height — use a denser mesh or fewer `samples`.
-- `get_vertex_data { node, indices }` → the **final** (post-eval + override)
-  per-vertex data: `{ vertex_count, vertices:[{ index, position, normal, color,
-  uv }] }` (`color`/`uv` null when the mesh has no such channel). The read
-  counterpart to the paint/sculpt verbs — verify what your last op produced.
+- `get_vertex_data { node, indices, include_source? }` → the **final** (post-eval
+  + override) per-vertex data: `{ vertex_count, vertices:[{ index, position,
+  normal, color, uv }] }` (`color`/`uv` null when the mesh has no such channel).
+  The read counterpart to the paint/sculpt verbs — verify what your last op
+  produced. Pass `include_source:true` to add a per-vertex
+  `source:{position,normal,color,uv}` block tagging each channel `"override"`
+  (authored) or `"base"` (rides the evaluated geometry) — confirm *which* channels
+  an op actually wrote.
+- `get_mesh_data { node, offset?, limit? }` → mesh **topology**: the triangle index
+  buffer (`triangles:[[a,b,c]...]`, paged by triangle — a full buffer overflows the
+  token cap) plus `vertex_count`, `triangle_count`, `bbox`. The read counterpart to
+  `set_mesh_data` and the connectivity source for loop-ordering / adjacency /
+  arc-length. Per-vertex attributes come from `get_vertex_data`.
+- `strip_parameterize { node, selection?|indices?, axis? }` → HEURISTIC conveyor/
+  tread/road UV helper: per selected vertex, normalized `(along, across)` to feed
+  straight into `set_vertex_uvs` (`along` = travel about the axle [0,1); `across` =
+  lateral [0,1]). Band = selection handle / explicit indices / whole mesh.
+  ⚠️ **Pass an explicit `axis` (the belt's axle) for treads** — the auto-fit (omit
+  `axis`) uses a least-variance PCA direction and is **unreliable on near-isotropic
+  bands** (a tube whose height ≈ diameter fits a radial direction instead of the
+  axle). Winding/polarity may also come out flipped (flip `axis` or use `1-coord`).
 - `get_mesh_layers { node }` → the layer summary / "what's live vs locked":
   `{ base, modifiers, modifier_count, frozen_topology, has_overrides,
   override_counts:{positions,colors,normals,uvs} }`. `frozen_topology:true` means
   per-vertex authoring already collapsed the stack (terminal).
+
+> **`set_mesh_data` safety (escape-hatch via `dispatch_command`):** replacing a
+> mesh's geometry wholesale now **validates** before storing — empty/degenerate
+> input (`positions:[]`/`indices:[]`), a non-multiple-of-3 index count, or an
+> out-of-range index is **rejected** (it used to silently wipe the mesh and return
+> `ok`). Pass `allow_empty:true` to deliberately clear a mesh to empty geometry.
 
 ---
 

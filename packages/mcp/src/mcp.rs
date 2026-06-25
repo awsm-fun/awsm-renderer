@@ -2468,7 +2468,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "HEURISTIC strip/loop parameterization of a vertex band → normalized (along, across) UVs to feed straight into set_vertex_uvs for a conveyor / tread / road. Returns `{ axis, count, vertices:[{index, along, across}], heuristic:true, note }`: `along` ∈ [0,1) = angle about the axle (monotonic travel around the loop), `across` ∈ [0,1] = lateral position along the axle. `axis` is the axle [x,y,z] (normalized); omit to auto-fit it as the band's least-variance PCA direction. Target band: a `selection` HANDLE (from select_vertices_where {store:true}), an explicit `indices` list, or — both omitted — the whole mesh. It's a heuristic (assumes a surface of revolution about the axle, not a true geodesic unwrap); the winding direction / polarity may come out flipped — pass an explicit `axis`, or use `1-along`/`1-across`, to correct. Pairs with set_vertex_uvs (write the coords) + a texture_transform V-scroll."
+        description = "HEURISTIC strip/loop parameterization of a vertex band → normalized (along, across) UVs to feed straight into set_vertex_uvs for a conveyor / tread / road. Returns `{ axis, count, vertices:[{index, along, across}], heuristic:true, note }`: `along` ∈ [0,1) = angle about the axle (monotonic travel around the loop), `across` ∈ [0,1] = lateral position along the axle. `axis` is the axle [x,y,z] (normalized); omit to auto-fit it as the band's least-variance PCA direction — but auto-fit is BEST-EFFORT and unreliable on near-isotropic bands (e.g. a tube whose height ≈ diameter, where the axle and a radial direction have comparable variance), so PREFER passing an explicit `axis` for treads/belts (you usually know the axle, e.g. split L/R belts by x and spin about the wheel axle). Target band: a `selection` HANDLE (from select_vertices_where {store:true}), an explicit `indices` list, or — both omitted — the whole mesh. It's a heuristic (assumes a surface of revolution about the axle, not a true geodesic unwrap); the winding direction / polarity may come out flipped — pass an explicit `axis`, or use `1-along`/`1-across`, to correct. Pairs with set_vertex_uvs (write the coords) + a texture_transform V-scroll."
     )]
     async fn strip_parameterize(
         &self,
@@ -2776,7 +2776,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the default value of a custom material's declared uniform slot (by name). `value` is comma-separated (e.g. \"0.6, 0.7, 1.0\"). The writable counterpart of reading a uniform back."
+        description = "Set the default value of a custom material's declared uniform slot (by name). `value` is comma-separated (e.g. \"0.6, 0.7, 1.0\"). The writable counterpart of reading a uniform back. A uniform (e.g. a scroll `speed` / time multiplier) is the usual handle a custom-WGSL scroll animates — see the 'Geometry-locked scroll (conveyor / tread / road)' recipe in awsm://docs/material-recipes for the geometry-locked vs normal-derived distinction."
     )]
     async fn set_material_uniform(
         &self,
@@ -3008,7 +3008,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the UV transform / flow / wrap of a mesh node's BUILT-IN (inline PBR) texture slot (base_color | metallic_roughness | normal | occlusion | emissive). Patch-style: only the fields you pass change. offset/scale/rotation set the KHR_texture_transform (scale>1 tiles); flow=[u,v] auto-scrolls the texture (UV-units/sec — conveyors/water/lava — set [0,0] to stop); wrap_u/wrap_v = repeat|clamp_to_edge|mirrored_repeat; uv_set picks the TEXCOORD set. The slot must already have a texture bound (set_node_texture first) — an empty slot is rejected, not silently ignored. Renders immediately. For a directional/keyframed scroll use a texture_transform animation track instead."
+        description = "Set the UV transform / flow / wrap of a mesh node's BUILT-IN (inline PBR) texture slot (base_color | metallic_roughness | normal | occlusion | emissive). Patch-style: only the fields you pass change. offset/scale/rotation set the KHR_texture_transform (scale>1 tiles); flow=[u,v] auto-scrolls the texture (UV-units/sec — conveyors/water/lava — set [0,0] to stop); wrap_u/wrap_v = repeat|clamp_to_edge|mirrored_repeat; uv_set picks the TEXCOORD set. The slot must already have a texture bound (set_node_texture first) — an empty slot is rejected, not silently ignored. Renders immediately. For a directional/keyframed scroll use a texture_transform animation track instead. NOTE: scrolling only reads as travel on a GEOMETRY-LOCKED strip UV (one axis = travel) + a tileable texture — on a baked atlas UV it slides samples onto unrelated content. See the 'Geometry-locked scroll (conveyor / tread / road)' recipe in awsm://docs/material-recipes (author the strip UV with set_vertex_uvs + strip_parameterize first)."
     )]
     async fn set_node_texture_transform(
         &self,

@@ -77,7 +77,13 @@ return OpaqueShadingOutput(color, 1.0);
 `material_sample_<slot>(input.material, uv)` is the generated sampler — no
 offset math, correct sampler, returns black for an unbound slot.
 
-## 4. Scrolling texture (animated UV)
+## 4. Scrolling texture (animated UV) — **screen-space / normal-derived**
+⚠️ This recipe derives the UV from the surface **normal**, not from the mesh's own
+parameterization. It's great for a **glowing panel / forcefield / sky** look where
+the texture just needs to drift, but it is **NOT** a conveyor/tread/road scroll: the
+UV isn't anchored to the geometry, so it won't read as the surface *travelling*. For
+a belt that scrolls **along its own surface**, see **§4b. Geometry-locked scroll**.
+
 Layout: `textures:[{name:"tex",ty:"texture_2d<f32>"}]`,
 `uniforms:[{name:"speed",ty:"vec2<f32>",val:"0.1,0.0"}]`, fragment_inputs `["normals"]`.
 ```wgsl
@@ -88,6 +94,54 @@ let uv = fract(uv0 + input.material.speed * g.time);
 let color = material_sample_tex(input.material, uv).rgb;
 return OpaqueShadingOutput(color, 1.0);
 ```
+
+## 4b. Geometry-locked scroll (conveyor / tread / road)
+Make a surface look like it's **travelling along itself** — tank treads, conveyor
+belts, flowing roads/rivers. The motion rides the mesh's **own** UV, so it reads as
+real travel (unlike §4, which drifts a normal-derived UV).
+
+**Prerequisite — a continuous, tileable strip UV.** A baked atlas UV (each face packed
+into its own island) is useless here: scrolling slides every sample off its island
+onto unrelated atlas content. The belt needs UVs where **one axis = travel** (V along
+the loop, U across the width), paired with a **tileable** texture so the seam at
+V=0↔1 is invisible. Authoring that strip UV is the job of `set_vertex_uvs` +
+`strip_parameterize` (below) — it's the step that makes scrolling possible at all.
+
+### Clean path (built-in material, no custom WGSL)
+1. **Select the belt band.** `select_vertices_where {store:true}` (e.g. an AABB around
+   one belt's outer face) → a selection handle.
+2. **Parameterize it.** `strip_parameterize { node, selection, axis:[..] }` → per-vertex
+   `(along, across)` in `[0,1]`. **Pass the belt's axle explicitly** — auto-fit is
+   best-effort and unreliable on near-isotropic bands (see `awsm://docs/mesh-tools`).
+   Use `along` for V (travel), `across` for U; scale V by the number of cleats so the
+   tile repeats once per grouser.
+3. **Write the UVs.** `set_vertex_uvs { mesh, indices, uvs }` (the handle's vertices in
+   stored order; read them back with `get_vertex_data { selection }`).
+4. **Bind a tileable tile.** `create_texture` a small seamless grouser tile (+ normal
+   map), `set_node_texture` it with `wrap_v:"repeat"`.
+5. **Scroll V over time.** Either a `texture_transform` **offset** animation track
+   (`add_track` target `texture_transform` / prop `offset`, keyframe V 0→1, loop), or
+   the auto-scroll `flow` field on `set_node_texture_transform` (monotonic renderer
+   time — no clip needed). Reverse via `set_clip_direction` / `set_clip_speed`.
+
+### Fallback (custom WGSL, no UV authoring) — vertex-color scroll coordinate
+When you can't author UVs, smuggle the along-belt arc-length through a **vertex-color**
+channel and scroll stripes in the shader. Bake `along` into `COLOR_0.r` (across into
+`.g`) with `paint_vertex_colors`, assign a custom material that reads
+`material_vertex_color(input, 0u)` + `frame_globals.time`:
+```wgsl
+let g = frame_globals_from_raw(frame_globals_raw);
+let vc = material_vertex_color(input, 0u);       // .r = along-belt arc-length [0,1]
+let v = fract(vc.r * CLEATS - g.time * SPEED);   // CLEATS = grousers per loop
+let stripe = step(0.5, fract(v));                 // or sample a tileable tile at (vc.g, v)
+return OpaqueShadingOutput(mix(DARK, LIGHT, stripe), 1.0);
+```
+Caveats: `paint_vertex_colors` is terminal (freezes the mesh stack) and replaces the
+node's material; you lose any baked PBR look. Prefer the clean path now that
+`set_vertex_uvs` exists.
+
+**See also:** `set_vertex_uvs`, `strip_parameterize`, `set_node_texture_transform`,
+`set_material_uniform`; `awsm://docs/mesh-tools` (vertex authoring), `awsm://docs/animation`.
 
 ## 5. Pulsing emissive (time)
 fragment_inputs `["view_dir"]`, uniforms `[{name:"color",ty:"vec3<f32>",val:"0.2,0.8,1.0"}]`.
