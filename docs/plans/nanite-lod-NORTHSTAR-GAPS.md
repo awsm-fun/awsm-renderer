@@ -170,7 +170,7 @@ restore the real cut; then the cut should select the CPU count.
 
 ---
 
-## A2 — dynamic per-frame paging (Gap B). UNMET — per-frame core (crack-free bidirectional refine, bounded pool, no-alloc) VERIFIED on-device; remaining blocker = the multi-M-tri DENSE LOAD upload still hits the 512 MiB cap.
+## A2 — dynamic per-frame paging (Gap B). UNMET — runtime cluster path is BOUNDED + crack-free + no-alloc (verified, pages a 0.87M-tri DAG in 44 MB); remaining = demonstrate a genuine >1M-SOURCE end-to-end (blocked by the EDITOR authoring tool's dense ?vg render, NOT the runtime path).
 
 **iter 36 — the per-frame stream/evict loop now WORKS bidirectionally, crack-free, in the bounded pool (commit `39162d0f`).**
 `ClusterLodRenderPass::stream_paging` (replaces the no-op `paging_update`): each frame it runs
@@ -197,18 +197,33 @@ Re-verified on-device behavior-identical (zoom-in still draw=34614, watertight).
 moot — eviction only ever drops NON-desired slots, so which non-desired goes first doesn't affect
 correctness; `slot_last_used` is tracked if strict-LRU ordering is wanted.)
 
-**🚨 Why STILL unmet — the `multi-M-tri` headline requirement (iter 36).** `load_player_bundle` of a
-**1.57M-tri** mesh PANICS at load even with `?paging`, BEFORE the per-frame pool can bound anything:
-`Render:Mesh GPU write: create_buffer requested 1073741824 bytes (> 536870912 cap) — oversized GPU
-buffer allocation` (the 512 MiB `OVERSIZED_ALLOC_BYTES` debug guard; requested exactly 1 GiB). The
-context is **"Render:Mesh GPU write"** — the regular DENSE-mesh visibility-geometry upload, NOT the
-cluster-paging buffers. So the load path still uploads the full dense source geometry for a
-cluster-LOD mesh; the bounded page pool only covers the per-frame streamed M, not this one-shot dense
-upload. **This is the remaining A2 blocker: the LOAD path must NOT upload the full dense geometry for
-a paged cluster-LOD mesh (the paged pool + on-demand streaming should be the only residency).** Until
-a genuine multi-M-tri asset pages within bounded VRAM end-to-end (load + per-frame), A2 stays UNMET.
-Functional core (camera-driven crack-free bidirectional refinement, bounded pool, no per-frame
-allocs) is PROVEN at sub-M scale (393k source / 873k post-bake DAG, 18030 clusters).
+**iter 37 — DIAGNOSED the 1 GiB panic precisely (temp instrumentation, now reverted; HEAD 07a53fca).**
+The runtime cluster-LOD paging path is **fully bounded and is NOT the cause of the panic.** Measured
+on the WORKING 393k case (`MESHPOOL DIAG` / `load_cluster_lod ENTER` / `cluster LOD DIAG` logs):
+- `load_cluster_lod`: full DAG = **873,662 tris / 18,030 clusters**, but `cm.positions` is only
+  **197,505 verts** (the cluster mesh shares ONE compact vertex pool across all LOD levels — it does
+  NOT scale with DAG tri count). The render mesh M = `pool_slots(1962) × 384 = 753,408` exploded verts
+  → **attrs 4 MB + visibility-exploded 40 MB = ~44 MB total, bounded by the 30k-tri paging budget,
+  independent of source/DAG size.** This is exactly the north-star "bounded by a residency budget, not
+  the asset size."
+- The 1 GiB allocation is `MeshGeometryPool resize -> 1073741824 bytes`, and **`load_cluster_lod ENTER`
+  never prints before it** — so it is NOT the cluster path. It is the **EDITOR authoring tool densely
+  exploding the raw editable mesh's visibility geometry** (`?vg`): 393k editable ⇒ pool 256 MB (ok);
+  1.57M editable ⇒ pool 1 GiB ⇒ trips the 512 MiB `OVERSIZED_ALLOC_BYTES` guard. The runtime player
+  load of a baked cluster GLB *skips the base glb* (scene-loader line ~942) and only uploads the
+  bounded M, so the runtime is unaffected.
+
+**🚨 Why STILL unmet — the `multi-M-tri` headline.** The runtime path is multi-M-capable BY
+CONSTRUCTION (bounded M ⊥ source size; proven pages an 0.87M-tri DAG in 44 MB), but a genuine **>1M
+SOURCE** end-to-end demo is blocked by the **editor/export authoring harness**: building a 1.57M-tri
+editable mesh in the editor explodes its dense `?vg` visibility geometry (~1 GiB) and panics the
+512 MiB guard BEFORE it can be exported to the player cluster path. NEXT: get a real multi-M source
+THROUGH the player path without the editor dense-rendering it — e.g. load a pre-baked multi-M cluster
+GLB via `import_model_from_url`/`load_project_from_url` (player path, no editor dense explode), or
+(scoped editor change) stop densely exploding huge editable meshes / raise the authoring guard for the
+cluster-LOD case. Until a true >1M source pages within bounded VRAM end-to-end, A2 stays UNMET.
+Functional core (camera-driven crack-free bidirectional refinement, bounded pool, no per-frame allocs,
+0.87M-tri DAG in 44 MB) is PROVEN on-device (iter 36).
 
 **iter 31 on-device verification (browser healthy) — what's PROVEN working:**
 1. **Camera-driven cut refinement ✅** (`?vg`): dolly the camera IN ⇒ the drawn cut
