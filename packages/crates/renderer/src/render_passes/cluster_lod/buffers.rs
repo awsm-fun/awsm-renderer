@@ -244,6 +244,29 @@ impl ClusterLodBuffers {
         )
     }
 
+    /// Gap-B dynamic paging: overwrite ONE cluster page (slot) in `pages_buffer` in
+    /// place — the cut reads `pages[slot]` for its bounds/errors/index-slice, so this
+    /// is how a streamed cluster's page (its real or clamped errors + its
+    /// source-indices span) lands without rewriting all pages. A single 64-B
+    /// `writeBuffer` at `slot*CLUSTER_PAGE_GPU_STRIDE` (`pages_buffer` is `COPY_DST`).
+    /// Only the `cluster_paging` per-frame stream path calls this.
+    pub fn write_page_entry(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        slot: usize,
+        page: &ClusterPage,
+    ) -> Result<(), AwsmCoreError> {
+        let mut bytes = Vec::with_capacity(CLUSTER_PAGE_GPU_STRIDE);
+        write_cluster_page_gpu(page, &mut bytes);
+        gpu.write_buffer(
+            &self.pages_buffer,
+            Some(slot * CLUSTER_PAGE_GPU_STRIDE),
+            bytes.as_slice(),
+            None,
+            None,
+        )
+    }
+
     /// Grows to hold `needed` clusters / `needed_indices` indices (2× headroom).
     /// Returns `true` when a resize happened, so the caller rebuilds the bind
     /// group.

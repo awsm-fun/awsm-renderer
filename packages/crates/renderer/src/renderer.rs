@@ -2457,6 +2457,23 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Gap-B dynamic paging: overwrite ONE slot's GPU cluster page (its bounds /
+    /// errors / source-indices span) — the cut reads `pages[slot]`, so this is how a
+    /// streamed cluster's page lands. See
+    /// [`crate::render_passes::cluster_lod::buffers::ClusterLodBuffers::write_page_entry`].
+    pub fn write_cluster_page_entry(
+        &self,
+        slot: usize,
+        page: &crate::cluster_lod::ClusterPage,
+    ) -> crate::error::Result<()> {
+        if let Some(pass) = self.render_passes.cluster_lod.as_ref() {
+            if let Some(buffers) = pass.buffers.as_ref() {
+                buffers.write_page_entry(&self.gpu, slot, page)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Submit a batch of pipeline groups for compile. Returns ids
     /// immediately in `Pending` state; transitions to `Ready` /
     /// `Failed` surface via [`Self::drain_pipeline_status_events`] or
