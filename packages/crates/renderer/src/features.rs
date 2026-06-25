@@ -222,6 +222,14 @@ mod tests {
             !features.virtual_geometry,
             "virtual_geometry must default to false (byte-identical without cluster LOD)"
         );
+        assert!(
+            !features.cluster_streaming,
+            "cluster_streaming must default to false (byte-identical without streaming residency)"
+        );
+        assert_eq!(
+            features.cluster_streaming_budget, None,
+            "cluster_streaming_budget must default to None so the cap never bites unless asked"
+        );
         assert_eq!(
             features.indirect_first_instance,
             FeatureToggle::Auto,
