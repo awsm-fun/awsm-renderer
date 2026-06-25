@@ -2215,16 +2215,45 @@ async fn load_cluster_lod(
     //    resident*page_verts verts — kept under the GPU cap by the conservative
     //    paging budget. Upload the resident table (identity) the cut variant reads.
     let m_geometry_indices: Vec<u32> = if renderer.features().cluster_paging {
-        let resident_ids: Vec<usize> = (0..gpu_pages.len()).collect();
-        let plan = plan_page_pool(gpu_pages.len(), &resident_ids, gpu_pages.len().max(1));
+        // Gap B 20b-iv-b-1: a page pool with HEADROOM. The load-time frontier occupies
+        // slots `0..frontier` (clamped, drawn); the pool has `pool_slots > frontier`
+        // total so the per-frame streamer (20b-iv-b-2) can stream finer clusters into
+        // the SPARE slots BEFORE evicting the coarse ones (crack-free transitions).
+        // Spare slots/pages are non-drawn (resident `-1` ⇒ the cut's paging variant
+        // skips them; index_count 0). The pool is bounded (the VRAM cap): the drawn
+        // cut + the streamed working set both stay within `pool_slots`.
+        let frontier = gpu_pages.len();
+        let pool_slots = (frontier * 2).max(frontier + 1);
+        let resident_ids: Vec<usize> = (0..frontier).collect();
+        let plan = plan_page_pool(frontier, &resident_ids, frontier.max(1));
         let page_spans: Vec<(u32, u32)> = gpu_pages
             .iter()
             .map(|p| (p.first_index, p.index_count))
             .collect();
-        let (slot_indices, slot_source) =
+        let (mut slot_indices, slot_source) =
             build_slot_geometry(&page_spans, &m_indices, &plan.resident, CLUSTER_PAGE_VERTS);
-        renderer.upload_cluster_pages(&gpu_pages, &slot_source)?;
-        renderer.upload_cluster_resident(&plan.resident)?;
+        // Pad M to `pool_slots` (spare slots = empty exploded verts, never drawn).
+        slot_indices.resize(pool_slots * CLUSTER_PAGE_VERTS, 0);
+        // Pad the GPU pages + resident table to `pool_slots`: spare pages draw nothing
+        // (index_count 0) and are skipped by the cut (resident `-1`).
+        let spare_page = awsm_renderer::cluster_lod::ClusterPage {
+            center: [0.0; 3],
+            radius: 0.0,
+            lod_error: 0.0,
+            parent_error: 0.0,
+            lod_bounds_center: [0.0; 3],
+            lod_bounds_radius: 0.0,
+            parent_bounds_center: [0.0; 3],
+            parent_bounds_radius: 0.0,
+            first_index: 0,
+            index_count: 0,
+        };
+        let mut gpu_pages_pool = gpu_pages.clone();
+        gpu_pages_pool.resize(pool_slots, spare_page);
+        let mut resident_pool = plan.resident.clone();
+        resident_pool.resize(pool_slots, -1);
+        renderer.upload_cluster_pages(&gpu_pages_pool, &slot_source)?;
+        renderer.upload_cluster_resident(&resident_pool)?;
         // Arm the Gap-B paging manager (step 20a/20b-iii) with: the FULL un-clamped
         // DAG (the bake's real `[lod_error, parent_error)` per cluster — NOT the
         // clamped frontier `gpu_pages`) for the per-frame CPU cut; the CPU geometry
@@ -2252,7 +2281,10 @@ async fn load_cluster_lod(
                 index_count: c.index_count,
             })
             .collect();
-        let slot_cluster: Vec<i32> = resident_cluster_ids.iter().map(|&c| c as i32).collect();
+        // Manager residency seed: slot_cluster has `pool_slots` entries — the frontier
+        // clusters in slots `0..frontier`, the rest `-1` (free, available to stream into).
+        let mut slot_cluster: Vec<i32> = resident_cluster_ids.iter().map(|&c| c as i32).collect();
+        slot_cluster.resize(pool_slots, -1);
         renderer.init_cluster_paging(awsm_renderer::render_passes::cluster_lod::ClusterPagingInit {
             pages: original_pages,
             positions: cm.positions.clone(),
