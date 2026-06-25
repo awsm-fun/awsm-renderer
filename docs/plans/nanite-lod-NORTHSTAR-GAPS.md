@@ -47,20 +47,16 @@ multi-file GPU build — realistically multi-day):**
    `bind_group.rs`, `shader/{cache_key,template}.rs` + `cluster_cut.wgsl`,
    `pipeline.rs`, `render.rs`, scene-loader. (Started here; reverted as a single
    slice was too wide to land + verify safely in one step.)
-2. **Slot-relative geometry.** Pack resident clusters into `CLUSTER_PAGE_VERTS`-padded
-   pool slots; compaction emits `slot*PAGE_VERTS`-relative indices.
-   **FINDING (2026-06-25, step 2b attempt):** wiring this with FULL residency on the
-   subdivided sphere (13065 clusters) blew the GPU buffer cap — padding every cluster
-   to a fixed 384-vert slot inflated M's exploded vertex buffer to ~1 GiB (> the
-   512 MB cap); the renderer's guard loud-panicked (`oversized GPU buffer allocation`)
-   and the wiring was reverted (the pure `build_slot_geometry` builder is kept +
-   unit-tested). **Correction:** the page pool must be **bounded** (P slots sized to a
-   VRAM budget, P ≪ all clusters) and paired with a *capped/streamed* resident set —
-   NOT full residency. So step 2 can't be a "full residency ⇒ identical render"
-   checkpoint; it must go straight to: bounded pool + the capped frontier
-   (`select_resident_clusters`) packed into slots (renders the **capped** detail,
-   crack-free, like Step 1), then streaming (step 3) refines toward full detail near
-   the camera. Re-plan step 2 around a bounded pool before re-wiring.
+2. **Slot-relative geometry — ✅ DONE (bounded pool).** `cluster_paging` now implies a
+   residency budget (`CLUSTER_PAGING_BUDGET_TRIS=30k`, `?streambudget=N` overrides) so
+   the resident set is bounded; `build_slot_geometry` packs it into a fixed
+   `CLUSTER_PAGE_VERTS`-slot pool (sized to the resident count), M = the slot buffer,
+   compaction emits slot-relative indices, resident table uploaded. On-device
+   (`?vg&paging`): 785 slots × 384 verts (29322 capped tris), **watertight, no OOM** —
+   the cluster geometry now lives in independently-swappable slots.
+   *(History: a first attempt at FULL residency blew the 512 MB GPU buffer cap (~1 GiB,
+   loud-panic) — full-residency-through-fixed-slots is infeasible; the pool must be
+   bounded, hence the budget. The renderer's guard caught it; reverted then re-done.)*
 3. **Feedback + readback.** `feedback` buffer (atomicOr/append wanted-but-absent
    cluster ids) + async readback (reuse `render.rs:1661-1686 extract_buffer_vec`) +
    CPU upload-into-slot (grow-only); crack-free coarse fallback to nearest resident

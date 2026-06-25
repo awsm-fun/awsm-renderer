@@ -1950,7 +1950,18 @@ const CLUSTER_PAGE_VERTS: usize = 384;
 /// Default page-pool capacity (slots) for dynamic paging (Gap B). 8192 slots ×
 /// 384 verts × 56 B ≈ 168 MB — the VRAM-budget knob. A host can size it; this is
 /// the default ceiling the working set evicts against.
+// Used by the fixed-pool + LRU eviction path (Gap B step 3/4); step 2 sizes the
+// pool to the (bounded) resident count.
+#[allow(dead_code)]
 const CLUSTER_PAGE_POOL_SLOTS: usize = 8192;
+
+/// Default residency budget (triangles) when `cluster_paging` is on (Gap B step 2).
+/// The page pool pads each resident cluster to a fixed `CLUSTER_PAGE_VERTS` slot, so
+/// the resident set must stay small enough that `slots * page_verts * vertex_stride`
+/// fits well under the GPU buffer cap (~512 MB). 30k tris → a few-hundred to ~2k
+/// resident clusters ⇒ a slot buffer comfortably in budget. `?streambudget=N`
+/// overrides. (Camera-driven streaming later refines detail within this pool.)
+const CLUSTER_PAGING_BUDGET_TRIS: usize = 30_000;
 
 /// A static page-pool residency plan: which slot each cluster occupies (`-1` =
 /// not resident / overflowed) plus occupancy stats. This is the CPU side of the
@@ -2014,10 +2025,6 @@ fn plan_page_pool(
 /// `page_spans[c] = (first_index, index_count)` of cluster `c` in `m_indices`
 /// (each `ClusterPage`'s span). Decoupled from `ClusterPage` so it's testable
 /// without constructing GPU page structs.
-// Not yet wired: full-residency slot padding exceeds the GPU buffer cap (see
-// NORTHSTAR-GAPS.md); the page pool must be bounded + paired with a capped/streamed
-// resident set. Unit-tested; kept for that wiring.
-#[allow(dead_code)]
 fn build_slot_geometry(
     page_spans: &[(u32, u32)],
     m_indices: &[u32],
@@ -2083,7 +2090,18 @@ async fn load_cluster_lod(
     // `cluster_streaming` is on, so a multi-million-tri asset loads instead of
     // overflowing the GPU pool. Off ⇒ budget = MAX ⇒ every cluster resident with
     // `cm.indices` verbatim, byte-identical to the non-streaming path.
-    let budget = if renderer.features().cluster_streaming {
+    // `cluster_paging` (Gap B) implies a residency budget too: the page pool packs
+    // each resident cluster into a fixed CLUSTER_PAGE_VERTS slot (build_slot_geometry
+    // below), so the resident set MUST stay small enough that the padded slot buffer
+    // fits VRAM (full residency = ~1 GiB > the 512 MB GPU buffer cap — see
+    // NORTHSTAR-GAPS). A conservative default keeps the bounded antichain comfortably
+    // under the cap; `?streambudget=N` overrides it.
+    let budget = if renderer.features().cluster_paging {
+        renderer
+            .features()
+            .cluster_streaming_budget
+            .unwrap_or(CLUSTER_PAGING_BUDGET_TRIS)
+    } else if renderer.features().cluster_streaming {
         renderer
             .features()
             .cluster_streaming_budget
@@ -2102,31 +2120,40 @@ async fn load_cluster_lod(
     // raster indices for a page [F,C) are exactly the identity range [F,F+C) —
     // feed identity and the unchanged compaction emits a drawable stream into M's
     // exploded buffer.
-    // source_indices = identity into M's exploded buffer (page [F,C) ⇒ [F,F+C)).
-    let identity_indices: Vec<u32> = (0..m_indices.len() as u32).collect();
-    renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
-
-    // Gap B step 1c: upload the residency table the cut variant reads. Full
-    // residency (pool sized to the resident set) ⇒ identity ⇒ render identical.
-    // (Step 2 slot-relative geometry is NOT wired: padding every cluster to a fixed
-    // CLUSTER_PAGE_VERTS slot inflated M's exploded buffer past the GPU buffer cap —
-    // the page pool must be BOUNDED, holding only the working set, not full
-    // residency. See docs/plans/nanite-lod-NORTHSTAR-GAPS.md.)
-    if renderer.features().cluster_paging {
+    // Geometry layout for the cluster render mesh M + compaction `source_indices`:
+    //  - NON-PAGING (shipped): contiguous M; identity source (page [F,C) ⇒ [F,F+C)).
+    //  - PAGING (Gap B step 2): pack the BOUNDED resident set (capped by the paging
+    //    budget above) into a fixed CLUSTER_PAGE_VERTS slot pool sized to exactly the
+    //    resident count (every cluster gets a slot ⇒ no overflow ⇒ crack-free), so
+    //    slots are independently swappable for streaming. The drawn cut equals the
+    //    capped frontier (like `?streambudget`), crack-free. Slot buffer =
+    //    resident*page_verts verts — kept under the GPU cap by the conservative
+    //    paging budget. Upload the resident table (identity) the cut variant reads.
+    let m_geometry_indices: Vec<u32> = if renderer.features().cluster_paging {
         let resident_ids: Vec<usize> = (0..gpu_pages.len()).collect();
         let plan = plan_page_pool(gpu_pages.len(), &resident_ids, gpu_pages.len().max(1));
+        let page_spans: Vec<(u32, u32)> = gpu_pages
+            .iter()
+            .map(|p| (p.first_index, p.index_count))
+            .collect();
+        let (slot_indices, slot_source) =
+            build_slot_geometry(&page_spans, &m_indices, &plan.resident, CLUSTER_PAGE_VERTS);
+        renderer.upload_cluster_pages(&gpu_pages, &slot_source)?;
         renderer.upload_cluster_resident(&plan.resident)?;
-        let bounded = plan_page_pool(gpu_pages.len(), &resident_ids, CLUSTER_PAGE_POOL_SLOTS);
         tracing::info!(
-            "cluster paging (Gap B): resident table uploaded — {} entries (full residency); bounded pool {} slots ({} verts/slot) would hold {} / overflow {}",
-            plan.resident.len(),
-            CLUSTER_PAGE_POOL_SLOTS,
+            "cluster paging (Gap B): page pool — {} slots × {} verts/slot = {} slot verts ({} resident tris capped to budget {}); cut draws the capped frontier crack-free",
+            plan.slots_used,
             CLUSTER_PAGE_VERTS,
-            bounded.slots_used,
-            bounded.overflow,
+            slot_indices.len(),
+            resident_tris,
+            budget,
         );
-    }
-    let m_geometry_indices = m_indices;
+        slot_indices
+    } else {
+        let identity_indices: Vec<u32> = (0..m_indices.len() as u32).collect();
+        renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
+        m_indices
+    };
 
     // Cluster render mesh M = the (resident) cluster geometry as an ordinary mesh,
     // so its exploded vertex buffer is in m_indices triangle order with
