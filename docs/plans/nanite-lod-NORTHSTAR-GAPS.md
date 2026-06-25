@@ -71,10 +71,31 @@ multi-file GPU build — realistically multi-day):**
    `resident[]`, re-clamps the deepest-resident frontier (always-drawn ⇒ crack-free),
    re-uploads the resident table. The GPU cut is unchanged (draws the resident
    frontier, step 2). CPU bricks DONE + unit-tested: `cluster_finer_group` (3a),
-   `plan_stream_evict` (LRU stream/evict, covers 3d+4). REMAINING: the per-frame paging
-   manager (persistent residency state + camera hook in the renderer + per-slot
-   writeBuffer + re-frontier), then on-device dolly-in refine verify + `?stress=N`
-   no-per-frame-allocs → A2.
+   `plan_stream_evict` (LRU stream/evict, covers 3d+4).
+
+   **Step 20a DONE (per-frame paging manager scaffold).** `ClusterPaging` now lives on
+   `ClusterLodRenderPass` (`renderer/src/render_passes/cluster_lod/render_pass.rs`),
+   armed at load with the FULL un-clamped DAG via `init_cluster_paging` (scene-loader,
+   only under `cluster_paging`). `AwsmRenderer::update_cluster_paging` (render.rs, called
+   before `ctx` is built — `ctx` borrows `self.render_passes`, so the per-frame mutation
+   must precede it) runs the CPU per-cluster cut over the full DAG each frame into pooled
+   scratch and logs it on change. On-device (`?vg&paging`, subdivided sphere): the manager
+   armed with **13065 clusters**, and the per-frame cut logged **`desired cut = 187
+   clusters (full DAG = 13065, resident frontier = 785)`** — the camera-driven CPU cut
+   runs live. Gated default-off ⇒ byte-identical (no GPU/draw-path change; log + CPU only).
+
+   **REMAINING for A2 — step 20b: geometry streaming into slots.** The decisive
+   capability: page a cluster into a reused slot by overwriting that slot's EXPLODED
+   vertex sub-range in M's visibility-geometry data buffer (the buffer + per-mesh offset
+   exist — `meshes::visibility_geometry_data_gpu_buffer` + `..._buffer_offset`; needs a
+   renderer API to `queue.writeBuffer` a `[slot*PAGE_VERTS, +PAGE_VERTS)` sub-range of
+   exploded attrs) plus rewrite that slot's `source_indices` span + the resident table.
+   Then drive it per-frame from the desired cut via `plan_stream_evict`. Manager must hold
+   the cluster geometry CPU-side (cm) to build a slot's exploded verts. After that:
+   on-device dolly-in refine (crack-free) + `?stress=N` no-per-frame-allocs → A2.
+   (Harness note: `load_player_bundle` is a reset-to-empty round-trip self-test ⇒ the
+   scene tree ends empty; getting a *visible* cluster screenshot to confirm refinement
+   needs a persistent scene path — resolve as part of 20b's on-device verify.)
 
    *(Superseded GPU-feedback design (A) kept below for reference.)*
 

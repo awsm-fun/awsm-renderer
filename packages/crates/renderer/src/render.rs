@@ -703,6 +703,15 @@ impl AwsmRenderer {
         // immutable references into `self`.
         self.collect_renderables()?;
 
+        // Gap-B dynamic paging (CPU-driven): run the per-frame residency update
+        // here — `self` is still fully mutable (before `ctx` pins `&self.render_passes`).
+        // No-op unless `cluster_paging` armed the manager at load; step 20a only
+        // computes + logs the desired cut against the live camera (no geometry
+        // streaming yet), so the cut dispatch later still draws the unchanged
+        // frontier ⇒ byte-identical render. `queue.writeBuffer`-based streaming in
+        // later slices is also valid here (ordered before the submitted pass).
+        self.update_cluster_paging();
+
         // Take the reused per-frame cull-path scratch out of `self` BEFORE the
         // `renderables`/`ctx` borrows below pin `&self` — it's restored at the end
         // of the frame (after those borrows release), so its two Vecs keep their
@@ -2384,6 +2393,39 @@ fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
 impl AwsmRenderer {
     /// Geometric-error budget for discrete-LOD level selection, in screen pixels.
     const LOD_ERROR_THRESHOLD_PX: f32 = 1.0;
+
+    /// Per-frame Gap-B dynamic-paging update (CPU-driven). No-op unless
+    /// `cluster_paging` armed the manager at load. Reads the live camera, then runs
+    /// the manager's per-frame cut over the full DAG (pooled scratch ⇒ no per-frame
+    /// allocation). Step 20a logs how the desired cut tracks the camera and does NOT
+    /// stream geometry, so the render stays byte-identical; later slices act on the
+    /// computed desired set to page slots in/out.
+    pub(crate) fn update_cluster_paging(&mut self) {
+        if !self.features.cluster_paging {
+            return;
+        }
+        let Some(cam) = self.camera.last_matrices.as_ref() else {
+            return;
+        };
+        let cam_pos = cam.position_world;
+        let proj_yy = cam.projection.y_axis.y.abs();
+        if proj_yy <= 1e-6 {
+            return;
+        }
+        let tan_half_fov_y = 1.0 / proj_yy;
+        let viewport_h = match self.gpu.current_context_texture_size() {
+            Ok((_, h)) => h as f32,
+            Err(_) => return,
+        };
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.paging_update(
+                cam_pos,
+                tan_half_fov_y,
+                viewport_h,
+                Self::LOD_ERROR_THRESHOLD_PX,
+            );
+        }
+    }
 
     /// Per-frame discrete-LOD level selection (visibility-swap). For each
     /// registered chain, pick a level by projected screen-space error and show

@@ -2218,6 +2218,29 @@ async fn load_cluster_lod(
             build_slot_geometry(&page_spans, &m_indices, &plan.resident, CLUSTER_PAGE_VERTS);
         renderer.upload_cluster_pages(&gpu_pages, &slot_source)?;
         renderer.upload_cluster_resident(&plan.resident)?;
+        // Arm the Gap-B paging manager with the FULL un-clamped DAG (the bake's
+        // real `[lod_error, parent_error)` per cluster — NOT the clamped resident
+        // frontier `gpu_pages`), so the per-frame CPU cut can refine within the
+        // pool. Only the `cluster_paging` path reaches here ⇒ shipped path
+        // unaffected. (Step 20a: drives the desired-cut compute + logging; geometry
+        // streaming into slots lands in the next slice.)
+        let original_pages: Vec<awsm_renderer::cluster_lod::ClusterPage> = cm
+            .clusters
+            .iter()
+            .map(|c| awsm_renderer::cluster_lod::ClusterPage {
+                center: c.center,
+                radius: c.radius,
+                lod_error: c.lod_error,
+                parent_error: c.parent_error,
+                lod_bounds_center: c.lod_bounds_center,
+                lod_bounds_radius: c.lod_bounds_radius,
+                parent_bounds_center: c.parent_bounds_center,
+                parent_bounds_radius: c.parent_bounds_radius,
+                first_index: c.first_index,
+                index_count: c.index_count,
+            })
+            .collect();
+        renderer.init_cluster_paging(original_pages);
         tracing::info!(
             "cluster paging (Gap B): page pool — {} slots × {} verts/slot = {} slot verts ({} resident tris capped to budget {}); cut draws the capped frontier crack-free",
             plan.slots_used,

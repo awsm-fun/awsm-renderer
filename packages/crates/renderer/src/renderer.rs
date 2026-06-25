@@ -2357,6 +2357,17 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Arm the Gap-B dynamic-paging manager with the FULL un-clamped DAG pages
+    /// (cluster_lod's `ClusterPage`s with the bake's real `[lod_error,
+    /// parent_error)`, not the resident frontier's clamped values). Call after
+    /// [`Self::upload_cluster_pages`]; only the `cluster_paging` loader path calls
+    /// it, so the shipped path stays byte-identical. No-op unless the pass exists.
+    pub fn init_cluster_paging(&mut self, pages: Vec<crate::cluster_lod::ClusterPage>) {
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.init_paging(pages);
+        }
+    }
+
     /// Register the cluster render mesh `M` (the full cluster geometry) whose
     /// exploded vertex buffer the compacted indirect stream draws into. No-op
     /// unless `virtual_geometry` built the pass.
