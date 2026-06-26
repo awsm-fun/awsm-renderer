@@ -203,6 +203,16 @@ every command/query, and each tool self-describes over the MCP schema.
 **Project / import / history**
 - `new_project` (seeds a key light + IBL), `load_project_from_url { base_url }`,
   `import_model_from_url { url }`, `undo`, `redo`.
+- `import_nanite_asset { clusters_url }` — import a **pre-baked nanite / cluster-LOD**
+  asset as a **view-only** mesh, rendered through the bounded cluster pipeline (the
+  same path the player uses). Use this instead of `import_model_from_url` for **heavy
+  static meshes**: it renders multi-million-triangle geometry without the dense
+  visibility-geometry explode that would otherwise crash the editor. `clusters_url`
+  points at a `<id>.clusters.bin` produced offline by the `awsm-lod-bake` CLI
+  (`awsm-lod-bake model.glb --out ./assets`). The node is **not editable** (no
+  geometry stack — it IS the LOD); move/scale it and assign a material like any node.
+  Per-mesh LOD for *editable* meshes is the separate `set_mesh_lod { node, enabled }`
+  opt-out (consumed by the export bake).
 
 **Materials**
 - `add_builtin_material { shading }` (pbr/unlit), `add_custom_material` — **return

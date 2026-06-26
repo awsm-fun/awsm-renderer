@@ -208,3 +208,59 @@ these gates are exposed as URL flags on the editor's player preview.
   resolution, and the resident geometry by a VRAM budget.
 - LOD is **opt-out per mesh** in the editor and **feature-gated per build**, with
   flag-off being byte-identical to a renderer without LOD.
+
+---
+
+## Tooling & integration
+
+### Offline pre-bake — `awsm-lod-bake` CLI
+Baking a heavy mesh in the browser is slow and can exceed GPU buffer limits. The
+`awsm-lod-bake` binary (crate `awsm-lod-bake-cli`) converts a glTF/GLB **offline**
+into nanite-ready assets, reusing the exact crates the editor's export bake uses
+(so output is identical to an in-editor bake):
+
+```
+awsm-lod-bake my-model.glb --out ./assets
+```
+
+Per mesh node it writes `<id>.glb` (base), `<id>.lod{N}.glb` + `<id>.lod.toml`
+(discrete chain), and `<id>.clusters.bin` (the cluster DAG, JSON). The DAG builder
+welds coincident positions for adjacency (`DagOptions::weld_eps`) so split-vertex
+glTF (UV/normal seams) clusters cleanly instead of degenerating to ~1 tri/cluster.
+
+### Editor — view-only nanite import
+A pre-baked asset imports into the editor as a **view-only** `NodeKind::ClusterMesh`
+(a third geometry category alongside `Mesh` and `SkinnedMesh` — not editable; it IS
+the LOD). It renders through the **same cluster pipeline the player uses**
+(`scene-loader::materialize_cluster_mesh`) — no in-editor re-baking and no dense
+visibility-geometry explode — so a multi-million-triangle mesh views as nanite,
+bounded, without crashing the editor. Drive it with the `import_nanite_asset` MCP
+tool (or `EditorCommand::ImportNaniteAsset { clusters_url }`). The editor enables
+`virtual_geometry` + `cluster_paging` by default for this (escape: `?novg` /
+`?nopaging`); per-frame cost stays zero for scenes with no resident cluster mesh.
+
+### Build & runtime gating
+- **Compile-time:** `lod` is a default-on Cargo feature on `awsm-renderer` (+
+  `awsm-renderer-scene-loader`). Build with `default-features = false` and ALL LOD
+  code is `#[cfg]`-compiled out — modules, the cluster render pass, the per-frame
+  cut/paging/selection, the scene-loader load paths, and the `lod-bake` dependency.
+- **Runtime:** the `RendererFeatures` flags (`lod`, `virtual_geometry`,
+  `cluster_streaming`, `cluster_paging`) on `AwsmRendererBuilder::with_features`
+  gate work per renderer; a scene with no LOD meshes pays nothing per frame (the cut
+  early-outs at `cluster_count == 0`, paging early-returns with no resident mesh).
+
+## Status & verification
+All six headline acceptance claims (crack-free per-cluster cut incl. non-watertight;
+multi-million-tri streaming residency; cut bounded by screen not source; deforming →
+discrete chain; flags-off byte-identical; the benchmark) are **shipped + verified**
+with committed tests + on-device evidence. The multi-M benchmark is recorded in
+[`nanite-lod-benchmark.md`](./nanite-lod-benchmark.md) (a 1,081,344-tri source /
+2,393,468-tri DAG → ~83 MB bounded pool, M capped to 29,850 tris, cut 4.9k–14.8k tris
+scaling with viewport height) and pinned by the `a6_benchmark_table_recorded` test.
+
+**Known follow-ups (not regressions):** (1) editor cluster-asset persistence — the
+import cache is session-local, so a project Save→reload needs the `.clusters.bin`
+written into `assets/` + re-read (same TODO as `skinned_bake_cache`); (2) one cluster
+render mesh is resident at a time (multiple simultaneous nanite meshes is future
+work); (3) cluster-cut robustness on pathological/degenerate source topology (the
+weld-for-adjacency fix covers the common split-vertex case).

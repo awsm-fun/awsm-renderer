@@ -3254,7 +3254,7 @@ mod cluster_streaming_tests {
         assert_eq!(plan.overflow, 0);
     }
 
-    // --- North-star gap markers (docs/plans/nanite-lod-NORTHSTAR-GAPS.md) ---
+    // --- North-star gap markers (docs/nanite-lod.md) ---
     // These #[ignore]d tests keep the unmet A2/A3/A6 claims visible in `cargo test`
     // (run with `--ignored` to see them fail). Replace each with a real assertion
     // as the behavior lands; delete when docs/nanite-lod.md is fully met.
@@ -3267,7 +3267,7 @@ mod cluster_streaming_tests {
     /// stream/evict cut is camera-driven and crack-free (watertight): far desired=509
     /// draw=4,908 tris → zoom-IN desired=1,260 draw=14,650 (rises) → zoom-OUT
     /// desired=381 draw=3,860 (falls), with NO per-frame heap allocations (iter 36).
-    /// See docs/plans/nanite-lod-NORTHSTAR-GAPS.md.
+    /// See docs/nanite-lod.md.
     ///
     /// This asserts the CPU invariant underpinning the bounded-VRAM claim: the
     /// resident render mesh M's triangle count is capped by the residency BUDGET,
@@ -3364,7 +3364,7 @@ mod cluster_streaming_tests {
     }
 
     /// A6 — the multi-million-triangle benchmark TABLE is recorded. VERIFIED + committed
-    /// (iter 39): `docs/plans/nanite-lod-benchmark.md` records, on a genuine 1,081,344-tri
+    /// (iter 39): `docs/nanite-lod-benchmark.md` records, on a genuine 1,081,344-tri
     /// source (2,393,468-tri DAG / 51,753 clusters) through the player cluster path:
     /// bounded VRAM (~83 MB pool, M capped to 29,850 tris) and bounded draw (cut 4,908–14,835
     /// tris = 0.2–0.6% of the DAG, scaling with viewport height + camera, independent of
@@ -3373,7 +3373,7 @@ mod cluster_streaming_tests {
     /// silently drift or vanish.
     #[test]
     fn a6_benchmark_table_recorded() {
-        const BENCH: &str = include_str!("../../../../docs/plans/nanite-lod-benchmark.md");
+        const BENCH: &str = include_str!("../../../../docs/nanite-lod-benchmark.md");
         for needle in [
             "1,081,344",   // source tris
             "2,393,468",   // full DAG tris
@@ -3385,7 +3385,7 @@ mod cluster_streaming_tests {
             assert!(
                 BENCH.contains(needle),
                 "A6 benchmark table missing verified figure `{needle}` — \
-                 docs/plans/nanite-lod-benchmark.md must record the multi-M-tri bench"
+                 docs/nanite-lod-benchmark.md must record the multi-M-tri bench"
             );
         }
     }
