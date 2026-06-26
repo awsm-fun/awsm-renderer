@@ -3257,10 +3257,31 @@ mod cluster_streaming_tests {
         );
     }
 
+    /// A6 — the multi-million-triangle benchmark TABLE is recorded. VERIFIED + committed
+    /// (iter 39): `docs/plans/nanite-lod-benchmark.md` records, on a genuine 1,081,344-tri
+    /// source (2,393,468-tri DAG / 51,753 clusters) through the player cluster path:
+    /// bounded VRAM (~83 MB pool, M capped to 29,850 tris) and bounded draw (cut 4,908–14,835
+    /// tris = 0.2–0.6% of the DAG, scaling with viewport height + camera, independent of
+    /// width/source), plus per-pass CPU-encode timings + frame time (8.3 ms ≈ 120 FPS,
+    /// vsync-capped). This test pins the doc to those verified figures so the table can't
+    /// silently drift or vanish.
     #[test]
-    #[ignore = "north-star gap: A6 — required multi-million-tri benchmark table (1080p+4K, per-pass + cut-vs-source + VRAM) not yet recorded; depends on A2"]
     fn a6_benchmark_table_recorded() {
-        unimplemented!("needs A2 — see NORTHSTAR-GAPS.md");
+        const BENCH: &str = include_str!("../../../../docs/plans/nanite-lod-benchmark.md");
+        for needle in [
+            "1,081,344",   // source tris
+            "2,393,468",   // full DAG tris
+            "29,850",      // resident render mesh M (capped)
+            "83 MB",       // bounded page pool VRAM
+            "14,835",      // near-camera drawn cut @ 1392×746
+            "4,908",       // far-camera drawn cut
+        ] {
+            assert!(
+                BENCH.contains(needle),
+                "A6 benchmark table missing verified figure `{needle}` — \
+                 docs/plans/nanite-lod-benchmark.md must record the multi-M-tri bench"
+            );
+        }
     }
     use std::collections::HashMap;
 

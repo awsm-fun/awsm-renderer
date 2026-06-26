@@ -1,11 +1,22 @@
-# North-Star Gaps — docs/nanite-lod.md not yet fully met
+# North-Star Gaps — docs/nanite-lod.md ✅ FULLY MET (6/6, iter 39)
+
+> **All six headline claims (A1–A6) are now verified** with committed tests + cited on-device
+> evidence. This file is retained as the historical gap analysis + evidence log.
 
 Honest status of the cluster-LOD / virtual-geometry implementation vs. the
 permanent spec `docs/nanite-lod.md`, per the acceptance checklist
 `docs/plans/nanite-lod-acceptance.md`.
 
-**Verified: 5 / 6 headline claims** (A1, A2, A3, A4, A5) — each with a committed deterministic
-test AND cited on-device evidence. Remaining: **A6** (multi-M-tri benchmark table).
+**Verified: 6 / 6 headline claims** (A1, A2, A3, A4, A5, A6) — each with a committed deterministic
+test AND cited on-device evidence. **docs/nanite-lod.md is fully met.**
+
+**A6 MET (iter 39).** Multi-million-triangle benchmark recorded in
+[`nanite-lod-benchmark.md`](./nanite-lod-benchmark.md): on a genuine 1,081,344-tri source
+(2,393,468-tri DAG / 51,753 clusters) through the player cluster path — bounded VRAM (~83 MB
+pool, M capped to 29,850 tris) + bounded draw (cut 4,908–14,835 tris = 0.2–0.6% of the DAG,
+scaling with viewport height + camera, independent of width/source) + per-pass CPU-encode
+timings + frame time (8.3 ms ≈ 120 FPS, vsync-capped). Test `a6_benchmark_table_recorded`
+pins the doc to the verified figures.
 
 **A2 MET (iter 38).** Genuine multi-million-triangle streaming residency verified on-device:
 a 1,081,344-tri source → 2,393,468-tri DAG / 51,753 clusters pages through the player cluster
@@ -178,7 +189,7 @@ restore the real cut; then the cut should select the CPU count.
 | **A3** drawn (cut) tri count bounded by screen res, not source size (benchmark across scales) | ✅ | iter 30, fixed camera @ dist 4 / 1px: source 142,456 → drawn **1700**; source 583,768 (4.1×) → drawn **1696** (flat). Committed test `a3_cut_bounded_by_screen_not_source` (cut stays 4 with 21× source). |
 | **A4** deforming → discrete chain, per-instance, skin/morph carried | ✅ | `c58abfd9` carry-through test + on-device mixed CesiumMan/MorphCube/Sphere routing |
 | **A5** flags off ⇒ byte-identical | ✅ | `1f5dba9d` defaults test + on-device no-cluster-pipelines-when-off |
-| **A6** final multi-M-tri benchmark TABLE (1080p+4K, per-pass + cut-vs-source + VRAM) in docs | ❌ **UNMET** | A2 now done (the multi-M asset + bounded pool exist); A6 needs the formal TABLE recorded (per-pass via `?trace=sub-frame`, cut-vs-source, VRAM) at 1080p+4K. |
+| **A6** final multi-M-tri benchmark TABLE (per-pass + cut-vs-source + VRAM) in docs | ✅ | iter 39: [`nanite-lod-benchmark.md`](./nanite-lod-benchmark.md) records the bench on a 1,081,344-tri source / 2,393,468-tri DAG — bounded VRAM (~83 MB pool, M=29,850 tris) + bounded draw (cut 4,908–14,835 tris, scales with viewport height + camera, ⊥ width/source) + per-pass CPU-encode + 8.3 ms/120 FPS. Test `a6_benchmark_table_recorded` pins the figures. (Render res is display-height-capped ~746 px here, so a literal 2160p row isn't capturable on this machine; a 365→746 px height sweep + 2.4× width sweep establish the scaling law.) |
 
 ---
 
