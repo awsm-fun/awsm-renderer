@@ -1,21 +1,26 @@
-//! The Help modal — a tabbed guide to the editor, the renderer, the LOD/nanite
+//! The Help modal — a guide to the editor, the renderer, the LOD/nanite
 //! pipeline, building a player, and driving it all over MCP. Opened from the
 //! top-bar Help button, and (deep-linked to the MCP tab) from the MCP connect
 //! modal's Help button.
+//!
+//! Layout is a left **tab rail** (vertical, so labels never wrap) + a scrolling
+//! content pane. Content is built from a small set of typography helpers
+//! (`lede`/`h`/`p`/`bullets`/`command`/`code`) so every tab reads consistently;
+//! `rich()` turns `\`backtick\`` spans into inline-code chips.
 
 use crate::prelude::*;
 
-/// One Help tab: its label + the builder for its body.
-type HelpTab = (&'static str, fn() -> Dom);
+/// One Help tab: label, rail icon, and the builder for its body.
+type HelpTab = (&'static str, &'static str, fn() -> Dom);
 
-/// Tab order. `open_help_mcp` deep-links to [`Tab::Mcp`].
+/// Tab order. `open_help_mcp` deep-links to the MCP tab.
 const TABS: &[HelpTab] = &[
-    ("Overview", overview_section),
-    ("Editor", editor_section),
-    ("Renderer", renderer_section),
-    ("LOD & Nanite", lod_section),
-    ("Player", player_section),
-    ("Using the MCP", mcp_section),
+    ("Overview", "grid", overview_section),
+    ("Editor", "sliders", editor_section),
+    ("Renderer", "cube", renderer_section),
+    ("LOD & Nanite", "layers", lod_section),
+    ("Player", "code", player_section),
+    ("Using the MCP", "link", mcp_section),
 ];
 /// Index of the MCP tab in [`TABS`] (deep-link target).
 const MCP_TAB: usize = 5;
@@ -32,30 +37,55 @@ pub fn open_help_mcp() {
 }
 
 fn open_help_at(tab: usize) {
-    Modal::open(move || {
+    // Wide host: the two-pane (rail + content) layout needs the room, and it
+    // keeps every tab label on one line.
+    Modal::open_sized(ModalSize::Wide, move || {
         let active = Mutable::new(tab);
         ModalCard::new("Help")
-            .width(680.0)
+            .width(880.0)
             .child(html!("div", {
                 .style("display", "flex")
-                .style("flex-direction", "column")
-                .style("gap", "16px")
-                // Tab bar (rebuilt on change so the active tab reads as Primary).
-                .child_signal(active.signal().map(clone!(active => move |cur| Some(html!("div", {
+                .style("gap", "20px")
+                .style("align-items", "stretch")
+                // ── tab rail (vertical) ──────────────────────────────────────
+                .child(html!("div", {
                     .style("display", "flex")
-                    .style("flex-wrap", "wrap")
-                    .style("gap", "6px")
-                    .children(TABS.iter().enumerate().map(|(i, (label, _))| {
-                        tab_btn(&active, i, label, cur == i)
+                    .style("flex-direction", "column")
+                    .style("gap", "2px")
+                    .style("flex", "0 0 auto")
+                    .style("width", "176px")
+                    .style("border-right", "1px solid var(--line-soft)")
+                    .style("padding-right", "12px")
+                    .children(TABS.iter().enumerate().map(|(i, (label, icon, _))| {
+                        rail_btn(&active, i, label, icon)
                     }).collect::<Vec<_>>())
-                })))))
-                // Body — the active tab's content (scrolls if tall).
-                .child_signal(active.signal().map(|cur| Some(html!("div", {
-                    .style("max-height", "62vh")
-                    .style("overflow-y", "auto")
-                    .style("padding-right", "4px")
-                    .child(TABS.get(cur).map(|(_, render)| render()).unwrap_or_else(overview_section))
-                }))))
+                }))
+                // ── content pane (scrolls) ───────────────────────────────────
+                .child(html!("div", {
+                    .style("flex", "1")
+                    .style("min-width", "0")
+                    .child_signal(active.signal().map(|cur| {
+                        let (label, _icon, render) = *TABS.get(cur).unwrap_or(&TABS[0]);
+                        Some(html!("div", {
+                            .style("max-height", "62vh")
+                            .style("overflow-y", "auto")
+                            .style("padding-right", "10px")
+                            .style("display", "flex")
+                            .style("flex-direction", "column")
+                            .style("gap", "11px")
+                            // The active tab's title, as a content header.
+                            .child(html!("div", {
+                                .style("font-size", "15px")
+                                .style("font-weight", "650")
+                                .style("color", "var(--text-0)")
+                                .style("padding-bottom", "10px")
+                                .style("border-bottom", "1px solid var(--line-soft)")
+                                .text(label)
+                            }))
+                            .child(render())
+                        }))
+                    }))
+                }))
             }))
             .footer(
                 Btn::new()
@@ -68,41 +98,134 @@ fn open_help_at(tab: usize) {
     });
 }
 
-fn tab_btn(active: &Mutable<usize>, idx: usize, label: &str, is_active: bool) -> Dom {
+/// One vertical rail entry. Reactive to `active` (highlight) and local hover, so
+/// the rail never rebuilds on selection.
+fn rail_btn(active: &Mutable<usize>, idx: usize, label: &str, icon: &str) -> Dom {
     let active = active.clone();
-    Btn::new()
-        .label(label)
-        .variant(if is_active {
-            BtnVariant::Primary
-        } else {
-            BtnVariant::Ghost
+    let hover = Mutable::new(false);
+    let label = label.to_string();
+    let icon = icon.to_string();
+    html!("button", {
+        .class("t")
+        .style("display", "flex")
+        .style("align-items", "center")
+        .style("gap", "9px")
+        .style("width", "100%")
+        .style("text-align", "left")
+        .style("cursor", "pointer")
+        .style("padding", "7px 9px")
+        .style("border-radius", "var(--r1)")
+        .style("border-style", "none")
+        .style("border-left-style", "solid")
+        .style("border-left-width", "2px")
+        .style("font-size", "12.5px")
+        .style_signal("border-left-color", active.signal().map(move |a| {
+            if a == idx { "var(--accent-bright)" } else { "transparent" }
+        }))
+        .style_signal("font-weight", active.signal().map(move |a| {
+            if a == idx { "600" } else { "500" }
+        }))
+        .style_signal("color", map_ref! {
+            let a = active.signal(), let h = hover.signal() =>
+            if *a == idx { "var(--text-0)" } else if *h { "var(--text-1)" } else { "var(--text-2)" }
         })
-        .size(BtnSize::Sm)
-        .on_click(move || active.set_neq(idx))
-        .render()
+        .style_signal("background", map_ref! {
+            let a = active.signal(), let h = hover.signal() =>
+            if *a == idx { "var(--accent-ghost)" } else if *h { "var(--bg-3)" } else { "transparent" }
+        })
+        .event(clone!(hover => move |_: events::MouseEnter| hover.set_neq(true)))
+        .event(clone!(hover => move |_: events::MouseLeave| hover.set_neq(false)))
+        .event(clone!(active => move |_: events::Click| active.set_neq(idx)))
+        .child(Icon::new(icon).size(15.0).render())
+        .child(html!("span", { .text(&label) }))
+    })
 }
 
 // ── content helpers ─────────────────────────────────────────────────────────
 
-/// A section heading.
+/// Split `text` into inline runs, rendering `\`backtick\`` spans as inline-code
+/// chips and everything else as plain text. Returns the run nodes for use as the
+/// children of a paragraph / list item.
+fn rich(text: &str) -> Vec<Dom> {
+    text.split('`')
+        .enumerate()
+        .filter(|(_, seg)| !seg.is_empty())
+        .map(|(i, seg)| {
+            if i % 2 == 1 {
+                html!("code", {
+                    .class("mono")
+                    .style("font-size", "0.88em")
+                    .style("background", "var(--bg-3)")
+                    .style("border", "1px solid var(--line-soft)")
+                    .style("border-radius", "4px")
+                    .style("padding", "0.5px 4px")
+                    .style("color", "var(--text-0)")
+                    .style("white-space", "nowrap")
+                    .text(seg)
+                })
+            } else {
+                html!("span", { .text(seg) })
+            }
+        })
+        .collect()
+}
+
+/// The lead paragraph of a tab — slightly larger, higher-contrast.
+fn lede(text: &str) -> Dom {
+    html!("p", {
+        .style("margin", "0")
+        .style("font-size", "13.5px")
+        .style("color", "var(--text-0)")
+        .style("line-height", "1.6")
+        .children(rich(text))
+    })
+}
+
+/// A section heading — a compact uppercase accent kicker that cleanly separates
+/// the dense body blocks.
 fn h(text: &str) -> Dom {
     html!("div", {
-        .style("font-size", "13.5px")
-        .style("font-weight", "650")
-        .style("color", "var(--text-0)")
-        .style("margin-top", "4px")
+        .style("font-size", "11px")
+        .style("font-weight", "700")
+        .style("letter-spacing", "0.07em")
+        .style("text-transform", "uppercase")
+        .style("color", "var(--accent-bright)")
+        .style("margin-top", "8px")
         .text(text)
     })
 }
 
-/// A body paragraph.
+/// A body paragraph (with inline-code support).
 fn p(text: &str) -> Dom {
     html!("p", {
         .style("margin", "0")
-        .style("font-size", "12.5px")
+        .style("font-size", "13px")
         .style("color", "var(--text-1)")
-        .style("line-height", "1.55")
-        .text(text)
+        .style("line-height", "1.65")
+        .children(rich(text))
+    })
+}
+
+/// A bulleted list — proper hanging indents instead of `•`-prefixed run-on text.
+fn bullets(items: Vec<&str>) -> Dom {
+    html!("div", {
+        .style("display", "flex")
+        .style("flex-direction", "column")
+        .style("gap", "7px")
+        .children(items.into_iter().map(|t| html!("div", {
+            .style("display", "flex")
+            .style("gap", "9px")
+            .style("align-items", "baseline")
+            .style("font-size", "13px")
+            .style("color", "var(--text-1)")
+            .style("line-height", "1.6")
+            .child(html!("span", {
+                .style("flex", "0 0 auto")
+                .style("color", "var(--accent-bright)")
+                .text("\u{2022}")
+            }))
+            .child(html!("span", { .style("flex", "1").style("min-width", "0").children(rich(t)) }))
+        })).collect::<Vec<_>>())
     })
 }
 
@@ -115,15 +238,16 @@ fn code(text: &'static str) -> Dom {
         .style("position", "relative")
         .child(html!("div", {
             .class("mono")
-            .style("font-size", "11.5px")
+            .style("font-size", "12px")
             .style("color", "var(--text-1)")
             .style("background", "var(--bg-3)")
             .style("border", "1px solid var(--line-soft)")
             .style("border-radius", "var(--r1)")
             // Extra right padding so long lines don't run under the copy button.
-            .style("padding", "7px 34px 7px 9px")
+            .style("padding", "8px 34px 8px 10px")
             .style("overflow-x", "auto")
             .style("white-space", "pre")
+            .style("line-height", "1.5")
             .text(text)
         }))
         .child(html!("button", {
@@ -166,9 +290,10 @@ fn command(caption: &str, cmd: &'static str) -> Dom {
     html!("div", {
         .style("display", "flex")
         .style("flex-direction", "column")
-        .style("gap", "4px")
+        .style("gap", "5px")
         .child(html!("div", {
             .style("font-size", "11px")
+            .style("font-weight", "600")
             .style("color", "var(--text-3)")
             .text(caption)
         }))
@@ -192,7 +317,7 @@ fn stack(children: Vec<Dom>) -> Dom {
     html!("div", {
         .style("display", "flex")
         .style("flex-direction", "column")
-        .style("gap", "10px")
+        .style("gap", "11px")
         .children(children)
     })
 }
@@ -201,21 +326,21 @@ fn stack(children: Vec<Dom>) -> Dom {
 
 fn overview_section() -> Dom {
     stack(vec![
-        p(
+        lede(
             "AwsmRenderer is a WebGPU renderer with a built-in scene, material & animation \
            editor that runs entirely in your browser (Chrome, Edge, Arc, or Brave — it needs \
            two Chromium-only features). You author here, export a compact bundle, and load \
            it in your own game/app with a few lines of Rust.",
         ),
         h("How the pieces fit"),
-        p(
-            "• Editor — author scenes, meshes, materials, animation (this app).\n\
-           • Renderer — the WebGPU engine the editor and your player both run.\n\
-           • Player — your shipped app: load an exported scene with `populate_awsm_scene`.\n\
-           • MCP — let an AI agent drive the editor through typed tool calls.\n\
-           • LOD / Nanite — bounded draw + VRAM for heavy meshes, with an offline pre-bake CLI.",
-        ),
-        p("Each has its own tab above. Start with “Editor” to author, “Player” to ship."),
+        bullets(vec![
+            "Editor — author scenes, meshes, materials, animation (this app).",
+            "Renderer — the WebGPU engine the editor and your player both run.",
+            "Player — your shipped app: load an exported scene with `populate_awsm_scene`.",
+            "MCP — let an AI agent drive the editor through typed tool calls, via a local MCP server CLI.",
+            "LOD / Nanite — bounded draw + VRAM for heavy meshes, with an offline pre-bake CLI.",
+        ]),
+        p("Each has its own tab in the sidebar. Start with \u{201c}Editor\u{201d} to author, \u{201c}Player\u{201d} to ship."),
         h("The basics"),
         p(
             "Switch between Scene, Material, and Animation with the segmented control in \
@@ -272,14 +397,14 @@ fn renderer_section() -> Dom {
            cost scales with screen pixels, not scene complexity.",
         ),
         h("Features"),
-        p(
-            "• PBR materials + custom WGSL materials (with a typed contract).\n\
-           • GPU-driven culling with hierarchical-Z occlusion.\n\
-           • Shadows (cascaded sun + point), image-based lighting / environment.\n\
-           • MSAA with an edge-resolve pass; decals; GPU particles.\n\
-           • Skinning + morph targets; instancing.\n\
-           • LOD: discrete level chains + cluster “virtual geometry” (nanite-style).",
-        ),
+        bullets(vec![
+            "PBR materials + custom WGSL materials (with a typed contract).",
+            "GPU-driven culling with hierarchical-Z occlusion.",
+            "Shadows (cascaded sun + point), image-based lighting / environment.",
+            "MSAA with an edge-resolve pass; decals; GPU particles.",
+            "Skinning + morph targets; instancing.",
+            "LOD: discrete level chains + cluster \u{201c}virtual geometry\u{201d} (nanite-style).",
+        ]),
         h("Bounded by the screen, not the asset"),
         p(
             "With cluster LOD, the drawn triangle count tracks screen resolution + a pixel-error \
@@ -299,13 +424,13 @@ fn renderer_section() -> Dom {
 fn lod_section() -> Dom {
     stack(vec![
         h("Two LOD systems"),
-        p(
-            "• Discrete chains — simplified level meshes selected per-instance by screen-space \
-           error (great for skinned/deforming and mid-size meshes).\n\
-           • Cluster “virtual geometry” (nanite-style) — a per-cluster GPU cut over a baked \
-           DAG, with streaming residency so multi-million-triangle static meshes render with \
-           BOUNDED draw + BOUNDED VRAM.",
-        ),
+        bullets(vec![
+            "Discrete chains — simplified level meshes selected per-instance by screen-space \
+             error (great for skinned/deforming and mid-size meshes).",
+            "Cluster \u{201c}virtual geometry\u{201d} (nanite-style) — a per-cluster GPU cut over a \
+             baked DAG, with streaming residency so multi-million-triangle static meshes render \
+             with BOUNDED draw + BOUNDED VRAM.",
+        ]),
         h("Per-mesh toggle"),
         p(
             "Every mesh has a LOD toggle (inspector → LOD → Enabled), on by default. When on, \
@@ -314,14 +439,20 @@ fn lod_section() -> Dom {
         ),
         h("Pre-bake offline (the CLI)"),
         p(
-            "Baking a huge mesh in the browser is slow. The `awsm-lod-bake` CLI converts a \
-           glTF/GLB into nanite-ready assets OFFLINE — a base glb, the discrete levels + \
+            "Baking a huge mesh in the browser is slow. The `awsm-renderer-lod-bake` CLI converts \
+           a glTF/GLB into nanite-ready assets OFFLINE — a base glb, the discrete levels + \
            manifest, and the cluster DAG — so you import pre-baked instead of converting \
-           in-editor:",
+           in-editor.",
         ),
+        h("Install the CLI"),
+        p("Prebuilt binaries — no toolchain needed (installs the `awsm-renderer-lod-bake` command):"),
+        command("macOS / Linux", "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-renderer-lod-bake-cli-installer.sh | sh"),
+        command("Windows (PowerShell)", "powershell -ExecutionPolicy Bypass -c \"irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-renderer-lod-bake-cli-installer.ps1 | iex\""),
+        command("From source (needs Rust)", "cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-renderer-lod-bake-cli"),
+        h("Run it"),
         command(
-            "Pre-bake a model (writes <name>.nanite/)",
-            "awsm-lod-bake my-model.glb --out ./assets",
+            "Pre-bake a model (writes the base glb + levels + cluster DAG into ./assets)",
+            "awsm-renderer-lod-bake my-model.glb --out ./assets",
         ),
         p(
             "It reuses the exact bake the editor uses, so the output is identical to an \
@@ -373,13 +504,13 @@ fn player_section() -> Dom {
              renderer.render(None)?;",
         ),
         h("Notes"),
-        p(
-            "• `assets` is a map of bundle-relative path → already-fetched bytes — the loader \
-           never fetches for you. A primitive-only scene uses an empty map.\n\
-           • The renderer is matrices-only: you supply the camera matrices and drive the loop \
-           from requestAnimationFrame.\n\
-           • Full setup (canvas, GPU device, camera) is in docs/PLAYER-GUIDE.md.",
-        ),
+        bullets(vec![
+            "`assets` is a map of bundle-relative path → already-fetched bytes — the loader \
+             never fetches for you. A primitive-only scene uses an empty map.",
+            "The renderer is matrices-only: you supply the camera matrices and drive the loop \
+             from requestAnimationFrame.",
+            "Full setup (canvas, GPU device, camera) is in docs/PLAYER-GUIDE.md.",
+        ]),
     ])
 }
 
@@ -407,13 +538,15 @@ fn mcp_section() -> Dom {
 
         h("3 · Connect this editor"),
         p("Two ways to attach this tab to a running server:"),
-        p("• Click the MCP button in the top bar, check the address, then Connect."),
-        p("• Or open the editor with a ?mcp= parameter to auto-connect:"),
+        bullets(vec![
+            "Click the MCP button in the top bar, check the address, then Connect.",
+            "Or open the editor with a `?mcp=` parameter to auto-connect:",
+        ]),
         code("http://localhost:9085/?mcp=http://127.0.0.1:9086"),
-        p("For a TLS-terminated remote server, tick “Use TLS” in the connect modal. \
+        p("For a TLS-terminated remote server, tick \u{201c}Use TLS\u{201d} in the connect modal. \
            When the server has more than one tab/agent it asks for a pairing code — the \
            agent prints it; enter it in the modal or append &pair=<code> to the URL. \
-           Attached, the MCP button shows “MCP ✓” and a 🤖 chip tells you when the agent \
+           Attached, the MCP button shows \u{201c}MCP \u{2713}\u{201d} and a 🤖 chip tells you when the agent \
            is editing."),
 
         h("4 · Point your agent at it"),
@@ -424,13 +557,13 @@ fn mcp_section() -> Dom {
            your agent does — for example:"),
         command("Claude Code", "claude mcp add --transport http awsm-renderer-scene http://127.0.0.1:9086/mcp"),
         command(".mcp.json (Claude Code / Cursor / others)", "{ \"mcpServers\": { \"awsm-renderer-scene\": { \"type\": \"http\", \"url\": \"http://127.0.0.1:9086/mcp\" } } }"),
-        p("Then just ask: “add a tessellated sphere with a brushed-metal material”, or \
-           “rough up that mesh and screenshot it”. The agent discovers every node and \
-           command from the server's typed schema — no guesswork. If it reports “no \
-           editor is paired”, have it call its pairing_status tool to get the code."),
+        p("Then just ask: \u{201c}add a tessellated sphere with a brushed-metal material\u{201d}, or \
+           \u{201c}rough up that mesh and screenshot it\u{201d}. The agent discovers every node and \
+           command from the server's typed schema — no guesswork. If it reports \u{201c}no \
+           editor is paired\u{201d}, have it call its pairing_status tool to get the code."),
 
         h("5 · Watch it work"),
-        p("While the agent drives, the 🤖 chip pulses and the “Agent activity feed” \
+        p("While the agent drives, the 🤖 chip pulses and the \u{201c}Agent activity feed\u{201d} \
            narrates each edit and briefly spotlights the panel it touched. Toggle it \
            under Settings → Agent activity feed."),
     ])

@@ -1,12 +1,23 @@
 [package]
-name = "awsm-lod-bake-cli"
-version = "0.4.1"
+# `awsm-renderer-lod-bake` (no `-cli`) is the LIBRARY crate this wraps, so the
+# binary package takes the `-cli` suffix; the shipped binary itself is named
+# `awsm-renderer-lod-bake` (see `[[bin]]`).
+name = "awsm-renderer-lod-bake-cli"
+version.workspace = true
 edition = "2021"
 description = "Offline CLI that pre-bakes a glTF/GLB mesh into nanite-ready cluster-LOD (.clusters.bin) + discrete-LOD (.lodN.glb + .lod.toml) assets, so the editor can import pre-baked instead of converting in-browser."
 license = "MIT OR Apache-2.0"
+publish = false
+
+# Opt this crate into cargo-dist, exactly like the MCP server: it's a binary tool
+# (`publish = false`, never a crates.io library), which dist otherwise reads as
+# "don't ship" — but we DO want its prebuilt binary + installers on GitHub
+# Releases. `precise-builds = true` (root) keeps dist off the rest of the workspace.
+[package.metadata.dist]
+dist = true
 
 [[bin]]
-name = "awsm-lod-bake"
+name = "awsm-renderer-lod-bake"
 path = "src/main.rs"
 
 [dependencies]

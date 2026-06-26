@@ -213,14 +213,28 @@ these gates are exposed as URL flags on the editor's player preview.
 
 ## Tooling & integration
 
-### Offline pre-bake — `awsm-lod-bake` CLI
+### Offline pre-bake — `awsm-renderer-lod-bake` CLI
 Baking a heavy mesh in the browser is slow and can exceed GPU buffer limits. The
-`awsm-lod-bake` binary (crate `awsm-lod-bake-cli`) converts a glTF/GLB **offline**
-into nanite-ready assets, reusing the exact crates the editor's export bake uses
-(so output is identical to an in-editor bake):
+`awsm-renderer-lod-bake` binary (crate `awsm-renderer-lod-bake-cli`, in `packages/tools/lod-bake-cli`)
+converts a glTF/GLB **offline** into nanite-ready assets, reusing the exact crates
+the editor's export bake uses (so output is identical to an in-editor bake).
+
+Install it the same way as the MCP server — prebuilt binaries on GitHub Releases
+(driven by cargo-dist), or from source:
 
 ```
-awsm-lod-bake my-model.glb --out ./assets
+# macOS / Linux (prebuilt)
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-renderer-lod-bake-cli-installer.sh | sh
+# Windows (PowerShell, prebuilt)
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/awsm-fun/awsm-renderer/releases/latest/download/awsm-renderer-lod-bake-cli-installer.ps1 | iex"
+# From source (needs Rust)
+cargo install --git https://github.com/awsm-fun/awsm-renderer awsm-renderer-lod-bake-cli
+```
+
+Then run it:
+
+```
+awsm-renderer-lod-bake my-model.glb --out ./assets
 ```
 
 Per mesh node it writes `<id>.glb` (base), `<id>.lod{N}.glb` + `<id>.lod.toml`

@@ -298,7 +298,7 @@ pub enum EditorCommand {
     /// variant `ImportModelFromFile`.
     ImportModelFromUrl { url: String },
 
-    /// Import a PRE-BAKED nanite/cluster-LOD asset (from the `awsm-lod-bake` CLI) as
+    /// Import a PRE-BAKED nanite/cluster-LOD asset (from the `awsm-renderer-lod-bake` CLI) as
     /// a VIEW-ONLY [`crate::tree::NodeKind::ClusterMesh`] node. `clusters_url` points
     /// at the baked `<id>.clusters.bin`; the editor fetches + parses it, renders it
     /// through the bounded cluster pipeline (the SAME path the player uses — no

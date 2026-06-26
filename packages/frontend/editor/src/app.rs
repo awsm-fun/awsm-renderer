@@ -37,18 +37,10 @@ pub fn render() -> Dom {
         .style("font-size", "13px")
         .style("background-color", "var(--bg-0)")
         .style("color", "var(--text-0)")
-        // ⌘K / Ctrl-K toggles the command palette from anywhere.
         // Bare Q/W/E/R/T switch the gizmo tool (Select/Move/Rotate/Scale/
         // Universal) — but only when not typing into a field.
         .global_event(|e: events::KeyDown| {
             use crate::engine::gizmo::{gizmo_mode, GizmoMode};
-            // `ctrl_key()` here already covers ⌘ (it OR's meta_key).
-            if e.key() == "k" && e.ctrl_key() {
-                e.prevent_default();
-                let o = controller().cmdk_open.clone();
-                o.set_neq(!o.get());
-                return;
-            }
             // Don't hijack typing: ignore single-letter tool shortcuts while a
             // text field / editor / contenteditable holds focus, or with any
             // modifier held.
@@ -78,7 +70,6 @@ pub fn render() -> Dom {
         .child(top_bar(&ctrl))
         .child(workspace(&ctrl))
         .child(stats_bar())
-        .child(crate::command_palette::render())
         .child(busy_overlay())
         .child(agent_feed())
         .child_signal(ctrl.settings_open.signal().map(|open| if open { Some(settings_drawer()) } else { None }))
@@ -715,35 +706,17 @@ fn brand() -> Dom {
     })
 }
 
-fn cmdk_button() -> Dom {
-    html!("button", {
-        .class("t")
-        .attr("title", "Command palette")
-        .style("display", "flex")
-        .style("align-items", "center")
-        .style("gap", "8px")
-        .style("height", "28px")
-        .style("padding", "0 9px 0 11px")
-        .style("margin-left", "4px")
-        .style("cursor", "pointer")
-        .style("border", "1px solid var(--line-soft)")
-        .style("border-radius", "var(--r2)")
-        .style("background", "var(--bg-3)")
-        .style("color", "var(--text-2)")
-        .style("font-size", "12px")
-        .event(|_: events::Click| crate::command_palette::set_open(true))
-        .child(Icon::new("search").size(14.0).render())
-        .child(html!("span", { .style("min-width", "60px").style("text-align", "left").text("Search\u{2026}") }))
-        .child(html!("span", {
-            .class("mono")
-            .style("font-size", "10px")
-            .style("color", "var(--text-3)")
-            .style("border", "1px solid var(--line)")
-            .style("border-radius", "4px")
-            .style("padding", "1px 5px")
-            .text("\u{2318}K")
-        }))
-    })
+/// Top-bar Help button — a full labelled `(?) Help` button (not a bare icon),
+/// sitting next to the MCP button. Opens the Help modal on its Overview tab.
+fn help_button() -> Dom {
+    Btn::new()
+        .icon("help")
+        .label("Help")
+        .variant(BtnVariant::Ghost)
+        .size(BtnSize::Sm)
+        .title("Open the help guide")
+        .on_click(crate::help_modal::open_help)
+        .render()
 }
 
 /// Top-bar MCP cluster: a `MCP` / `MCP…` / `MCP ✓` status button (opens the
@@ -1096,9 +1069,7 @@ fn top_bar(ctrl: &EditorController) -> Dom {
         ], false, false))
         .child(IconBtn::new("settings").title("Settings")
             .on_click(|| controller().settings_open.set_neq(true)).render())
-        .child(IconBtn::new("help").title("Help")
-            .on_click(crate::help_modal::open_help).render())
-        .child(cmdk_button())
+        .child(help_button())
         .child(mcp_button())
         .child(html!("div", { .style("flex", "1") }))
         .child(project_label(ctrl))

@@ -253,7 +253,7 @@ pub enum NodeKind {
     /// A **pre-baked cluster-LOD ("nanite") mesh** — a third, deliberately
     /// **view-only** geometry category (like [`Self::SkinnedMesh`], not editable):
     /// no `MeshDef`/stack, rendered + cut by the renderer's cluster pipeline from a
-    /// baked `assets/<source>.clusters.bin`. Brought in via the offline `awsm-lod-bake`
+    /// baked `assets/<source>.clusters.bin`. Brought in via the offline `awsm-renderer-lod-bake`
     /// pre-bake so a huge mesh views as nanite in-editor (bounded) without re-baking
     /// or a dense explode. No `lod` toggle — it IS the LOD.
     ClusterMesh {

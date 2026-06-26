@@ -262,7 +262,7 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
                 "A pre-baked cluster-LOD mesh, rendered as nanite (bounded draw + VRAM) \
                  via the renderer's cluster pipeline — the same path the player uses, no \
                  in-editor re-baking. View-only: it has no editable geometry stack (bake \
-                 it offline with the awsm-lod-bake CLI). Move/scale it like any node and \
+                 it offline with the awsm-renderer-lod-bake CLI). Move/scale it like any node and \
                  assign a material below.",
             ))
             .child(material_editor(node, &inline_of(&material), material.is_some()))

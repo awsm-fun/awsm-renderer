@@ -182,8 +182,6 @@ pub struct EditorController {
     pub mesh_revision: Mutable<u32>,
     /// Which timeline editor the dock shows (Dope / Curves / Mixer).
     pub anim_view: Mutable<AnimView>,
-    /// Whether the ⌘K command palette is open (view state).
-    pub cmdk_open: Mutable<bool>,
     /// Editor (view-only) settings — viewport toggles, units, etc. Not saved
     /// into the project file.
     pub settings: Settings,
@@ -275,7 +273,6 @@ impl EditorController {
             anim_revision: Mutable::new(0),
             mesh_revision: Mutable::new(0),
             anim_view: Mutable::new(AnimView::default()),
-            cmdk_open: Mutable::new(false),
             settings: Settings::default(),
             settings_open: Mutable::new(false),
             undo: Rc::new(RefCell::new(BoundedHistory::with_default_budget())),
@@ -2896,7 +2893,7 @@ impl EditorController {
                 self.finish_model_import(result);
                 Ok(None)
             }
-            // Import a PRE-BAKED nanite asset (awsm-lod-bake CLI output) as a
+            // Import a PRE-BAKED nanite asset (awsm-renderer-lod-bake CLI output) as a
             // VIEW-ONLY ClusterMesh node, rendered via the bounded cluster pipeline
             // (the player path). No in-editor bake, no dense explode — large meshes
             // come in without crashing. Geometry is non-editable (it IS the LOD).
@@ -6026,7 +6023,7 @@ thread_local! {
 }
 
 /// Fetch + parse a pre-baked cluster-LOD ("nanite") DAG (`<id>.clusters.bin`, JSON)
-/// from a URL — the `awsm-lod-bake` CLI output the `ImportNaniteAsset` command brings
+/// from a URL — the `awsm-renderer-lod-bake` CLI output the `ImportNaniteAsset` command brings
 /// into the editor as a view-only [`NodeKind::ClusterMesh`].
 async fn fetch_cluster_mesh(url: &str) -> Result<awsm_renderer_lod_bake::ClusterMesh, String> {
     let resp = gloo_net::http::Request::get(url)
