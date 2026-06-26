@@ -6,6 +6,7 @@
 
 pub mod animation_sync;
 pub mod asset_template;
+pub mod cluster_cache;
 pub mod collider_wire;
 pub mod dynamic;
 pub mod env_sync;

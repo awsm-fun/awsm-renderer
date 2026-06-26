@@ -1030,7 +1030,7 @@ async fn materialize(
                 match serde_json::from_slice::<awsm_renderer_lod_bake::ClusterMesh>(&bytes) {
                     Ok(cm) => {
                         if let Some(key) =
-                            materialize_cluster_mesh(renderer, cm, &id, tk, mat).await?
+                            materialize_cluster_mesh(renderer, &cm, &id, tk, mat).await?
                         {
                             maps.meshes.entry(node.id).or_insert(key);
                             maps.node_meshes.entry(node.id).or_default().push(key);
@@ -2223,7 +2223,7 @@ async fn load_cluster_lod(
             return Ok(None);
         }
     };
-    materialize_cluster_mesh(renderer, cm, asset_id, tk, mat).await
+    materialize_cluster_mesh(renderer, &cm, asset_id, tk, mat).await
 }
 
 /// Materialize a parsed [`awsm_renderer_lod_bake::ClusterMesh`] into a bounded
@@ -2238,7 +2238,7 @@ async fn load_cluster_lod(
 #[cfg(feature = "lod")]
 pub async fn materialize_cluster_mesh(
     renderer: &mut AwsmRenderer,
-    cm: awsm_renderer_lod_bake::ClusterMesh,
+    cm: &awsm_renderer_lod_bake::ClusterMesh,
     asset_label: &str,
     tk: TransformKey,
     mat: MaterialKey,
@@ -2278,7 +2278,7 @@ pub async fn materialize_cluster_mesh(
     } else {
         usize::MAX
     };
-    let (gpu_pages, m_indices, resident_cluster_ids) = select_resident_clusters(&cm, budget);
+    let (gpu_pages, m_indices, resident_cluster_ids) = select_resident_clusters(cm, budget);
     let resident_tris = m_indices.len() / 3;
     let capped = m_indices.len() < cm.indices.len();
 
