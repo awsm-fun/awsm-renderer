@@ -75,6 +75,12 @@ struct Args {
     /// to 0). Useful for testing small meshes.
     #[arg(long)]
     force: bool,
+
+    /// Write the cluster bake even when it looks DEGENERATE (pathological topology
+    /// that didn't cluster well — see the guard in [`bake_one`]). Off by default so
+    /// a bad source never ships a useless, oversized `.clusters.bin`.
+    #[arg(long)]
+    allow_degenerate_clusters: bool,
 }
 
 fn main() -> Result<()> {
@@ -166,13 +172,33 @@ fn bake_one(out_dir: &Path, asset_id: &str, mesh: &MeshData, args: &Args) -> Res
             mesh.uvs.first().cloned().unwrap_or_default(),
             mesh.colors.clone().unwrap_or_default(),
         );
-        let bytes = serde_json::to_vec(&cm).context("serializing ClusterMesh")?;
-        written += write_file(out_dir, &cluster_mesh_filename(asset_id), &bytes)?;
-        eprintln!(
-            "  {asset_id}: {tris} tris → cluster DAG: {} clusters ({} DAG tris)",
-            cm.clusters.len(),
-            cm.indices.len() / 3
-        );
+        // Degeneracy guard. A healthy DAG averages dozens of tris/cluster and ~2×
+        // the source in total (each coarser level ~halves). Pathological source
+        // topology (non-manifold / unweldable) can defeat clustering even after the
+        // weld-for-adjacency pass → ~1 tri/cluster and a DAG that balloons many× the
+        // source, i.e. a huge, useless `.clusters.bin`. Skip writing it (the mesh
+        // still gets the discrete chain) unless explicitly allowed.
+        let cluster_count = cm.clusters.len();
+        let dag_tris = cm.indices.len() / 3;
+        let avg_tpc = dag_tris as f32 / cluster_count.max(1) as f32;
+        let dag_ratio = dag_tris as f32 / tris.max(1) as f32;
+        let degenerate = avg_tpc < 8.0 || dag_ratio > 6.0;
+        if degenerate && !args.allow_degenerate_clusters {
+            eprintln!(
+                "  {asset_id}: ⚠ DEGENERATE clustering ({cluster_count} clusters, \
+                 {avg_tpc:.1} tris/cluster, DAG {dag_ratio:.1}× source) — SKIPPING cluster bake \
+                 (discrete LOD still emitted). The source topology didn't cluster well \
+                 (non-manifold / unweldable?). Re-run with --allow-degenerate-clusters to force."
+            );
+        } else {
+            let bytes = serde_json::to_vec(&cm).context("serializing ClusterMesh")?;
+            written += write_file(out_dir, &cluster_mesh_filename(asset_id), &bytes)?;
+            eprintln!(
+                "  {asset_id}: {tris} tris → cluster DAG: {cluster_count} clusters \
+                 ({dag_tris} DAG tris, {avg_tpc:.1} tris/cluster){}",
+                if degenerate { " [forced — degenerate]" } else { "" }
+            );
+        }
     } else if !args.no_clusters {
         eprintln!("  {asset_id}: {tris} tris < cluster-min {} — no cluster bake", args.cluster_min);
     }
