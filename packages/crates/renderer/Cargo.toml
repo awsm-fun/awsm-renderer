@@ -17,10 +17,20 @@ rustc-args = ["--cfg=web_sys_unstable_apis"]
 rustdoc-args = ["--cfg=web_sys_unstable_apis"]
 
 [features]
-default = ["animation"]
-all = ["animation", "awsm-renderer-core/all", "scene-schema"]
+default = ["animation", "lod"]
+all = ["animation", "lod", "awsm-renderer-core/all", "scene-schema"]
 # specifics
 animation = []
+# Level-of-detail (discrete chain + cluster "virtual geometry" / nanite + paging).
+# Default-on. With the feature OFF (`--no-default-features`), ALL LOD code is
+# compiled out — the `lod`/`cluster_lod` modules, the cluster_lod render pass +
+# its per-frame cut/compaction/paging, the discrete-LOD selection, and the
+# renderer's cluster upload/paging methods — so a build without LOD pays nothing
+# (zero binary + zero per-frame cost). The `RendererFeatures` LOD flags still
+# exist for API stability but are inert (nothing reads them) when the feature is
+# off. Mirrors the runtime opt-in: `lod` cargo-off ⇒ even setting the flags is a
+# no-op.
+lod = []
 # Compiles the in-shader debug VIEW overlays — global unlit/flat view mode,
 # wireframe overlay, and the froxel light-count heatmap — into the material
 # shaders. OFF by default so game builds pay nothing: with the feature off the

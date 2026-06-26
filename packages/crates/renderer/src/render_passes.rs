@@ -1,5 +1,6 @@
 //! Render pass orchestration and initialization.
 
+#[cfg(feature = "lod")]
 pub mod cluster_lod;
 pub mod coverage;
 pub mod display;
@@ -36,7 +37,7 @@ use crate::{
     pipeline_layouts::PipelineLayouts,
     pipelines::Pipelines,
     render_passes::{
-        cluster_lod::render_pass::ClusterLodRenderPass, coverage::render_pass::CoverageRenderPass,
+        coverage::render_pass::CoverageRenderPass,
         display::render_pass::DisplayRenderPass, geometry::render_pass::GeometryRenderPass,
         hzb::render_pass::HzbRenderPass, light_culling::render_pass::LightCullingRenderPass,
         material_classify::render_pass::MaterialClassifyRenderPass,
@@ -50,6 +51,9 @@ use crate::{
     shaders::Shaders,
     textures::Textures,
 };
+
+#[cfg(feature = "lod")]
+use crate::render_passes::cluster_lod::render_pass::ClusterLodRenderPass;
 
 /// Collection of render passes used by the renderer.
 pub struct RenderPasses {
@@ -92,6 +96,7 @@ pub struct RenderPasses {
     /// `features.virtual_geometry == false`. Built eagerly; holds the cut
     /// pipeline + bind-group layout (creating it validates `cluster_cut.wgsl`
     /// on-device). Inert until a cluster mesh loads its buffers.
+    #[cfg(feature = "lod")]
     pub cluster_lod: Option<ClusterLodRenderPass>,
     pub light_culling: LightCullingRenderPass,
     pub material_classify: MaterialClassifyRenderPass,
@@ -158,6 +163,7 @@ struct RenderPassesBindings {
     light_culling: LightCullingRenderPass,
     /// Built eagerly + gated by `virtual_geometry`; passed straight through to
     /// `from_resolved`.
+    #[cfg(feature = "lod")]
     cluster_lod: Option<ClusterLodRenderPass>,
     /// Built eagerly (like `light_culling`) and passed straight through to
     /// `from_resolved`. Always `Some` (prep is unconditional).
@@ -412,6 +418,7 @@ impl RenderPasses {
         // Cluster-LOD cut pass (Phase B). Eager + gated; creating its pipeline
         // validates `cluster_cut.wgsl` on-device. Buffers/bind-group instance
         // come when a cluster mesh loads.
+        #[cfg(feature = "lod")]
         let cluster_lod = if features.virtual_geometry {
             Some(ClusterLodRenderPass::new(ctx).await?)
         } else {
@@ -516,6 +523,7 @@ impl RenderPasses {
                 occlusion_bg,
                 compaction_bg,
                 light_culling,
+                #[cfg(feature = "lod")]
                 cluster_lod,
                 material_prep,
                 classify_bg,
@@ -754,6 +762,7 @@ impl RenderPasses {
             occlusion_bg,
             compaction_bg,
             light_culling,
+            #[cfg(feature = "lod")]
             cluster_lod,
             material_prep,
             classify_bg,
@@ -923,6 +932,7 @@ impl RenderPasses {
             hzb,
             occlusion,
             occlusion_compaction,
+            #[cfg(feature = "lod")]
             cluster_lod,
             light_culling,
             material_classify,

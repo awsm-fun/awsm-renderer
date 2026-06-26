@@ -6,6 +6,7 @@ pub mod geometry;
 pub mod mesh;
 pub mod meta;
 pub mod morphs;
+#[cfg(feature = "lod")]
 pub mod skin_lod;
 pub mod skins;
 

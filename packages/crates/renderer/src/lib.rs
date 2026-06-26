@@ -40,6 +40,7 @@ pub mod bounds;
 pub mod buffer;
 pub mod camera;
 pub mod cameras;
+#[cfg(feature = "lod")]
 pub mod cluster_lod;
 pub mod coverage;
 pub mod debug;
@@ -55,6 +56,7 @@ pub mod light_buckets;
 pub mod lights;
 pub mod load_phase;
 pub mod loading;
+#[cfg(feature = "lod")]
 pub mod lod;
 pub mod materials;
 pub mod mesh_pack;

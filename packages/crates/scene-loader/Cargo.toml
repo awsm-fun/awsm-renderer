@@ -7,6 +7,15 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["lod"]
+# Level-of-detail loading (discrete chain + cluster "virtual geometry"). Default-on.
+# With it OFF, the LOD load paths (`load_cluster_lod`, `load_static_lod_chain`,
+# `select_resident_clusters`, the page-pool planner) and the `awsm-renderer-lod-bake`
+# dependency are compiled out, matching `awsm-renderer/lod` — a player built without
+# LOD pulls in none of it.
+lod = ["awsm-renderer/lod", "dep:awsm-renderer-lod-bake"]
+
 [dependencies]
 # The core renderer (GPU) + the glTF loader we reuse for the per-mesh glbs.
 # `scene-schema` pulls in the reusable animation lowering
@@ -28,7 +37,7 @@ awsm-renderer-particles = { workspace = true }
 # The runtime Scene schema we load.
 awsm-renderer-scene = { workspace = true }
 # Discrete-LOD manifest (`MeshLodManifest`) parsed from each bundle's `.lod.toml`.
-awsm-renderer-lod-bake = { workspace = true, features = ["serde"] }
+awsm-renderer-lod-bake = { workspace = true, features = ["serde"], optional = true }
 # Extract per-node skin/morph from a level rig glb (skinned LOD rebind).
 awsm-renderer-glb-export = { workspace = true }
 glam = { workspace = true }

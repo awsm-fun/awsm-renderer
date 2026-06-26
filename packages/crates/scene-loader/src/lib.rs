@@ -110,6 +110,7 @@ use awsm_renderer::animation::AnimationClipKey;
 use awsm_renderer::cameras::CameraKey;
 use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
+#[cfg(feature = "lod")]
 use awsm_renderer::lod::{LodChain, LodLevel};
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
@@ -1838,6 +1839,7 @@ fn warn_decal_feature_off() {
 /// to this many triangles when `cluster_streaming` is on, so a multi-million-tri
 /// asset loads instead of overflowing the GPU pool (the exploded vertex buffer is
 /// `M`'s dominant cost at 56 B / index). Tunable.
+#[cfg(feature = "lod")]
 const CLUSTER_STREAMING_BUDGET_TRIS: usize = 1_000_000;
 
 /// Select the resident cluster set for capped streaming (Phase 5).
@@ -1857,6 +1859,7 @@ const CLUSTER_STREAMING_BUDGET_TRIS: usize = 1_000_000;
 /// crack-free) — a SOFT budget. This is watertight at every camera distance, unlike
 /// the older hard-tri cap that left a partial frontier and seamed. Per-frame paging
 /// (Gap B) later restores *within-mesh* camera-driven detail on top of this.
+#[cfg(feature = "lod")]
 fn select_resident_clusters(
     cm: &awsm_renderer_lod_bake::ClusterMesh,
     budget_tris: usize,
@@ -1952,6 +1955,7 @@ fn select_resident_clusters(
 /// Exploded vertices per page slot: a bake cluster is ≤128 triangles, and the
 /// raster geometry is exploded (3 unique verts / triangle), so a slot must hold
 /// ≤ 384 verts. Fixed so every slot is interchangeable (the basis of paging).
+#[cfg(feature = "lod")]
 const CLUSTER_PAGE_VERTS: usize = 384;
 
 /// Default page-pool capacity (slots) for dynamic paging (Gap B). 8192 slots ×
@@ -1960,6 +1964,7 @@ const CLUSTER_PAGE_VERTS: usize = 384;
 // Used by the fixed-pool + LRU eviction path (Gap B step 3/4); step 2 sizes the
 // pool to the (bounded) resident count.
 #[allow(dead_code)]
+#[cfg(feature = "lod")]
 const CLUSTER_PAGE_POOL_SLOTS: usize = 8192;
 
 /// Default residency budget (triangles) when `cluster_paging` is on (Gap B step 2).
@@ -1968,6 +1973,7 @@ const CLUSTER_PAGE_POOL_SLOTS: usize = 8192;
 /// fits well under the GPU buffer cap (~512 MB). 30k tris → a few-hundred to ~2k
 /// resident clusters ⇒ a slot buffer comfortably in budget. `?streambudget=N`
 /// overrides. (Camera-driven streaming later refines detail within this pool.)
+#[cfg(feature = "lod")]
 const CLUSTER_PAGING_BUDGET_TRIS: usize = 30_000;
 
 /// A static page-pool residency plan: which slot each cluster occupies (`-1` =
@@ -1976,6 +1982,7 @@ const CLUSTER_PAGING_BUDGET_TRIS: usize = 30_000;
 /// independently. Step 1 builds + validates it; the GPU upload + cut-shader read
 /// of `resident` + dynamic swap land in the following steps.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "lod")]
 struct PagePoolPlan {
     /// `resident[cluster_id]` = slot index, or `-1` if not resident.
     resident: Vec<i32>,
@@ -1988,6 +1995,7 @@ struct PagePoolPlan {
 
 /// Assign each resident cluster a page-pool slot, in order, up to `pool_slots`.
 /// Pure + deterministic (the GPU-free core of paging, unit-tested without a device).
+#[cfg(feature = "lod")]
 fn plan_page_pool(
     cluster_count: usize,
     resident_cluster_ids: &[usize],
@@ -2032,6 +2040,7 @@ fn plan_page_pool(
 /// `page_spans[c] = (first_index, index_count)` of cluster `c` in `m_indices`
 /// (each `ClusterPage`'s span). Decoupled from `ClusterPage` so it's testable
 /// without constructing GPU page structs.
+#[cfg(feature = "lod")]
 fn build_slot_geometry(
     page_spans: &[(u32, u32)],
     m_indices: &[u32],
@@ -2069,6 +2078,7 @@ fn build_slot_geometry(
 /// DAG group key: exact f32 bits of a (sphere center+radius, error) — used to match
 /// a cluster's `parent_*` to another cluster's `lod_*` (the bake assigns the same
 /// group sphere/error to both sides, so exact-bits compares).
+#[cfg(feature = "lod")]
 type DagGroupKey = [u32; 5];
 
 /// For each cluster `F` (by index), the finer clusters whose group produced it —
@@ -2079,6 +2089,7 @@ type DagGroupKey = [u32; 5];
 /// so it's unit-testable without GPU structs. Build on the ORIGINAL bake clusters
 /// (the resident pages' lod/parent errors are clamped to 0/MAX).
 #[allow(dead_code)] // wired into the step-3 stream/refine path
+#[cfg(feature = "lod")]
 fn cluster_finer_group(lod_keys: &[DagGroupKey], parent_keys: &[DagGroupKey]) -> Vec<Vec<usize>> {
     use std::collections::HashMap;
     let mut by_lod: HashMap<DagGroupKey, Vec<usize>> = HashMap::new();
@@ -2108,6 +2119,7 @@ fn cluster_finer_group(lod_keys: &[DagGroupKey], parent_keys: &[DagGroupKey]) ->
 /// Returns `loads: (cluster_id, slot)` to writeBuffer this step. Covers both the
 /// stream-in (step 3d) and LRU eviction (step 4) decisions.
 #[allow(dead_code)] // wired into the per-frame paging update next
+#[cfg(feature = "lod")]
 fn plan_stream_evict(
     desired: &[bool],     // per cluster: in the camera's cut this frame?
     resident: &[i32],     // cluster_id -> slot, or -1 (absent)
@@ -2144,6 +2156,20 @@ fn plan_stream_evict(
     loads
 }
 
+/// LOD-off stub: no cluster data is loaded, so the caller falls through to the
+/// base glb (every instance draws its base mesh).
+#[cfg(not(feature = "lod"))]
+async fn load_cluster_lod(
+    _renderer: &mut AwsmRenderer,
+    _assets: &impl SceneAssets,
+    _asset_id: &str,
+    _tk: TransformKey,
+    _mat: MaterialKey,
+) -> Result<Option<MeshKey>> {
+    Ok(None)
+}
+
+#[cfg(feature = "lod")]
 async fn load_cluster_lod(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -2382,6 +2408,20 @@ fn node_lod_enabled(kind: &NodeKind) -> bool {
 /// A no-op when the `lod` feature is off, or when the mesh has no `.lod.toml`
 /// manifest (most meshes — below the bake floor or LOD-disabled). Skinned/morph
 /// LOD selection runs on a separate path (shared skeleton) and is not loaded here.
+/// LOD-off stub.
+#[cfg(not(feature = "lod"))]
+async fn load_static_lod_chain(
+    _renderer: &mut AwsmRenderer,
+    _assets: &impl SceneAssets,
+    _asset_id: &str,
+    _base_key: MeshKey,
+    _tk: TransformKey,
+    _mat: MaterialKey,
+) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "lod")]
 async fn load_static_lod_chain(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -2456,6 +2496,20 @@ async fn load_static_lod_chain(
 /// No-op when `lod` is off / no manifest. Scoped to the common single-mesh-node
 /// skinned case: the chain is keyed on `base_key` and tracks each level's first
 /// mesh node (multi-mesh skinned LOD is a follow-up).
+/// LOD-off stub.
+#[cfg(not(feature = "lod"))]
+async fn load_skinned_lod_chain(
+    _renderer: &mut AwsmRenderer,
+    _assets: &impl SceneAssets,
+    _source_id: &str,
+    _base_key: MeshKey,
+    _node_index_transforms: &HashMap<usize, TransformKey>,
+    _mat: MaterialKey,
+) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "lod")]
 async fn load_skinned_lod_chain(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -2981,7 +3035,7 @@ mod prefab_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lod"))]
 mod cluster_streaming_tests {
     //! Phase 5 capped-residency selection ([`select_resident_clusters`]) — the
     //! pure CPU core that bounds the cluster render mesh `M` to a triangle budget.

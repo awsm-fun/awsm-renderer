@@ -231,6 +231,7 @@ pub struct AwsmRenderer {
     /// scene loader only when `features.lod` is on (otherwise empty, and every
     /// instance draws its base mesh). The per-frame selection pass reads this to
     /// choose a level per instance. See [`crate::lod`].
+    #[cfg(feature = "lod")]
     pub lod: crate::lod::LodRegistry,
     /// GPU coverage producer buffers. The producer pass
     /// (`render_passes/coverage/`) atomic-adds per-pixel into
@@ -2133,6 +2134,7 @@ impl AwsmRendererBuilder {
             decal_classify_buffers,
             compaction_buffers,
             coverage: coverage::MeshCoverage::default(),
+            #[cfg(feature = "lod")]
             lod: crate::lod::LodRegistry::default(),
             coverage_buffers,
             coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
@@ -2343,6 +2345,10 @@ impl AwsmRendererBuilder {
 //   render loop's pre-frame phase.
 // - `wait_for_pipelines_ready` is the test-only helper.
 
+/// Cluster-LOD (virtual geometry) GPU upload + paging wrappers. Compiled only
+/// with the `lod` feature; the scene-loader's calls to these are gated the same
+/// way, so a no-LOD build omits them entirely.
+#[cfg(feature = "lod")]
 impl AwsmRenderer {
     /// Upload a cluster mesh's pages into the cluster-LOD cut pass (Phase B,
     /// B.2). No-op unless `virtual_geometry` built the pass. Called once at mesh
@@ -2479,7 +2485,9 @@ impl AwsmRenderer {
         }
         Ok(())
     }
+}
 
+impl AwsmRenderer {
     /// Submit a batch of pipeline groups for compile. Returns ids
     /// immediately in `Pending` state; transitions to `Ready` /
     /// `Failed` surface via [`Self::drain_pipeline_status_events`] or
@@ -2984,6 +2992,7 @@ pub fn edge_resolve_supported(_gpu: &awsm_renderer_core::renderer::AwsmRendererW
 /// slot*slot_bytes`, where `slot_bytes` is one slot's packed length
 /// (`CLUSTER_PAGE_VERTS*56`). Pure ⇒ unit-tested without a device; the slot stride
 /// equals the data length so every slot is interchangeable (the paging invariant).
+#[cfg(feature = "lod")]
 pub(crate) fn cluster_slot_data_offset(
     mesh_data_offset: usize,
     slot: usize,
@@ -2992,7 +3001,7 @@ pub(crate) fn cluster_slot_data_offset(
     mesh_data_offset + slot * slot_bytes
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lod"))]
 mod cluster_slot_tests {
     use super::cluster_slot_data_offset;
 

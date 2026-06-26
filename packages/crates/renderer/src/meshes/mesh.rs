@@ -294,6 +294,7 @@ impl Mesh {
         // `draw_args.first_instance == M.mesh_meta_idx` routes the material.
         // Requires the storage-meta path; gated on `mesh_key == M` ⇒ no effect on
         // any other mesh, and inert while M is hidden.
+        #[cfg(feature = "lod")]
         if use_storage_meta {
             if let Some(cluster_pass) = ctx
                 .render_passes

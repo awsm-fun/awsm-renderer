@@ -695,6 +695,7 @@ impl AwsmRenderer {
         // BEFORE `collect_renderables` reads the `!hidden` set, so this frame's
         // renderables already reflect the selection. No-op unless the `lod`
         // feature loaded chains.
+        #[cfg(feature = "lod")]
         self.update_lod_selection();
 
         // Populate the pooled renderable lists BEFORE building the
@@ -710,6 +711,7 @@ impl AwsmRenderer {
         // streaming yet), so the cut dispatch later still draws the unchanged
         // frontier ⇒ byte-identical render. `queue.writeBuffer`-based streaming in
         // later slices is also valid here (ordered before the submitted pass).
+        #[cfg(feature = "lod")]
         self.update_cluster_paging();
 
         // Take the reused per-frame cull-path scratch out of `self` BEFORE the
@@ -866,7 +868,9 @@ impl AwsmRenderer {
         // geometry pass's cluster draw override (mesh.rs) reads them THIS frame.
         // Gated by `virtual_geometry` + a loaded cluster mesh; independent of
         // `gpu_occlusion`.
+        #[cfg(feature = "lod")]
         let mut cluster_cut_kick: Option<(web_sys::GpuBuffer, u32)> = None;
+        #[cfg(feature = "lod")]
         if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
             if cluster_pass.cluster_count > 0 {
                 if let Some(cam) = self.camera.last_matrices.as_ref() {
@@ -1671,6 +1675,7 @@ impl AwsmRenderer {
         // coverage readback shape). Logs how many clusters the GPU cut selected —
         // a sanity check vs the tested `select_cut_per_cluster` (expect non-zero
         // and < total at a normal camera distance).
+        #[cfg(feature = "lod")]
         if let Some((readback_buffer, total)) = cluster_cut_kick {
             let state = std::sync::Arc::clone(&self.cluster_cut_readback);
             state.lock().unwrap().inflight = true;
@@ -2390,6 +2395,7 @@ fn camera_near_far_from_projection(
 
 /// Largest world-space axis scale of an object→world transform — used to project
 /// a mesh's object-space LOD error to world (and thence screen) size.
+#[cfg(feature = "lod")]
 fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
     let sx = m.x_axis.truncate().length();
     let sy = m.y_axis.truncate().length();
@@ -2397,6 +2403,7 @@ fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
     sx.max(sy).max(sz)
 }
 
+#[cfg(feature = "lod")]
 impl AwsmRenderer {
     /// Geometric-error budget for discrete-LOD level selection, in screen pixels.
     const LOD_ERROR_THRESHOLD_PX: f32 = 1.0;
