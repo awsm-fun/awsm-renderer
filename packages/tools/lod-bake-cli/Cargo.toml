@@ -1,0 +1,19 @@
+[package]
+name = "awsm-lod-bake-cli"
+version = "0.4.1"
+edition = "2021"
+description = "Offline CLI that pre-bakes a glTF/GLB mesh into nanite-ready cluster-LOD (.clusters.bin) + discrete-LOD (.lodN.glb + .lod.toml) assets, so the editor can import pre-baked instead of converting in-browser."
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "awsm-lod-bake"
+path = "src/main.rs"
+
+[dependencies]
+awsm-renderer-lod-bake = { workspace = true, features = ["serde"] }
+awsm-renderer-glb-export = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+toml = "0.8"
+gltf = { workspace = true }

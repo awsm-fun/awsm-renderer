@@ -186,6 +186,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-lod-bake-cli"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "awsm-renderer-glb-export",
+ "awsm-renderer-lod-bake",
+ "clap",
+ "gltf",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "awsm-renderer"
 version = "0.4.1"
 dependencies = [

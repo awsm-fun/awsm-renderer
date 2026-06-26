@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use glam::DVec3;
 
-use crate::cluster::{build_cluster_graph, build_clusters, group_clusters, Meshlet};
+use crate::cluster::{build_cluster_graph, build_clusters_welded, group_clusters, Meshlet};
 use crate::simplify::{simplify, SimplifyOptions};
 
 /// `parent_error` for a root cluster (never simplified further). A large finite
@@ -77,6 +77,15 @@ pub struct DagOptions {
     pub simplify_ratio: f32,
     /// Safety cap on DAG levels.
     pub max_levels: usize,
+    /// Position-weld epsilon for ADJACENCY only. Triangles that share a geometric
+    /// edge but reference distinct vertex indices (UV/normal seams — extremely
+    /// common in imported glTF) are otherwise seen as disconnected, so clustering
+    /// degenerates to ~1 triangle per cluster. Welding coincident positions onto an
+    /// `eps` grid restores adjacency so triangles group properly. `None` disables
+    /// welding (raw-index adjacency). Output triangle indices are ALWAYS the
+    /// originals — welding never merges vertices in the geometry, so split
+    /// normals/uvs survive. Default `Some(1e-5)`.
+    pub weld_eps: Option<f32>,
 }
 
 impl Default for DagOptions {
@@ -86,8 +95,26 @@ impl Default for DagOptions {
             group_size: 4,
             simplify_ratio: 0.5,
             max_levels: 32,
+            weld_eps: Some(1e-5),
         }
     }
+}
+
+/// Weld positions onto an `eps` grid → a canonical vertex id per location, so
+/// coincident-but-distinct seam/pole vertices unify. One welded id per input
+/// vertex. Used for ADJACENCY ONLY (see [`DagOptions::weld_eps`]).
+pub(crate) fn weld_ids(positions: &[[f32; 3]], eps: f32) -> Vec<u32> {
+    use std::collections::HashMap;
+    let mut map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    let q = |v: f32| (v / eps).round() as i64;
+    positions
+        .iter()
+        .map(|p| {
+            let key = (q(p[0]), q(p[1]), q(p[2]));
+            let n = map.len() as u32;
+            *map.entry(key).or_insert(n)
+        })
+        .collect()
 }
 
 /// Build the cluster LOD DAG for `(positions, indices)`.
@@ -99,9 +126,16 @@ pub fn build_cluster_dag(positions: &[[f32; 3]], indices: &[u32], opts: &DagOpti
 
     let mut clusters: Vec<DagCluster> = Vec::new();
 
+    // Weld coincident positions for ADJACENCY ONLY (seam/pole split verts —
+    // ubiquitous in imported glTF — otherwise break edge adjacency and clustering
+    // degenerates to ~1 tri/cluster). Output triangles always use the ORIGINAL
+    // indices, so split normals/uvs survive. `welded(&buf)` relabels an index
+    // buffer through the weld map (identity when welding is off).
+    let weld = opts.weld_eps.map(|eps| weld_ids(positions, eps));
+
     // Level 0: clusters straight from the input, zero error.
     let mut current: Vec<usize> = Vec::new();
-    for m in build_clusters(positions, indices, opts.cluster_target) {
+    for m in build_clusters_welded(positions, indices, opts.cluster_target, weld.as_deref()) {
         let tris: Vec<[u32; 3]> = m
             .triangles
             .iter()
@@ -126,7 +160,11 @@ pub fn build_cluster_dag(positions: &[[f32; 3]], indices: &[u32], opts: &DagOpti
         for &ci in &current {
             let start = combined.len() / 3;
             for tri in &clusters[ci].triangles {
-                combined.extend_from_slice(tri);
+                // Welded ids for the graph's edge adjacency (output unaffected).
+                match &weld {
+                    Some(w) => combined.extend(tri.iter().map(|&v| w[v as usize])),
+                    None => combined.extend_from_slice(tri),
+                }
             }
             let tri_ids: Vec<u32> = (start as u32..(combined.len() / 3) as u32).collect();
             level_meshlets.push(Meshlet {
@@ -192,7 +230,8 @@ pub fn build_cluster_dag(positions: &[[f32; 3]], indices: &[u32], opts: &DagOpti
 
             // Re-split the simplified group into coarser clusters.
             let flat: Vec<u32> = simplified.iter().flatten().copied().collect();
-            for nm in build_clusters(positions, &flat, opts.cluster_target) {
+            for nm in build_clusters_welded(positions, &flat, opts.cluster_target, weld.as_deref())
+            {
                 let tris: Vec<[u32; 3]> = nm
                     .triangles
                     .iter()
@@ -499,6 +538,7 @@ mod tests {
             group_size: 4,
             simplify_ratio: 0.5,
             max_levels: 16,
+            weld_eps: Some(1e-5),
         };
         let dag = build_cluster_dag(&pos, &indices, &opts);
         assert!(!dag.clusters.is_empty());
@@ -529,6 +569,56 @@ mod tests {
         }
         assert!(level0 > 0, "must have level-0 clusters");
         assert!(coarser > 0, "DAG must build at least one coarser level");
+    }
+
+    /// Imported glTF commonly splits vertices at UV/normal seams, so triangles
+    /// that share a geometric edge reference DISTINCT indices. Without
+    /// weld-for-adjacency the clusterer sees them as disconnected and degenerates
+    /// to ~1 triangle per cluster (and the DAG explodes). `weld_eps` (default on)
+    /// must restore adjacency: far fewer clusters, far healthier tris/cluster.
+    #[test]
+    fn weld_adjacency_fixes_split_vertex_degeneracy() {
+        // A welded grid, then fully un-welded (every triangle gets its own 3 verts
+        // → zero shared indices), keeping identical positions.
+        let (pos, indices) = grid(24); // 1152 tris, shared verts
+        let tris = indices.len() / 3;
+        let mut split_pos: Vec<[f32; 3]> = Vec::with_capacity(indices.len());
+        let mut split_idx: Vec<u32> = Vec::with_capacity(indices.len());
+        for (k, &i) in indices.iter().enumerate() {
+            split_pos.push(pos[i as usize]);
+            split_idx.push(k as u32);
+        }
+
+        let off = DagOptions {
+            weld_eps: None,
+            ..DagOptions::default()
+        };
+        let on = DagOptions::default(); // weld_eps: Some(1e-5)
+
+        let degen = build_cluster_dag(&split_pos, &split_idx, &off);
+        let welded = build_cluster_dag(&split_pos, &split_idx, &on);
+        let baseline = build_cluster_dag(&pos, &indices, &on); // already-shared grid
+
+        let l0 = |d: &ClusterDag| d.clusters.iter().filter(|c| c.lod_error == 0.0).count();
+        let (degen_l0, welded_l0, base_l0) = (l0(&degen), l0(&welded), l0(&baseline));
+
+        // Welding the split mesh recovers ~the same level-0 cluster count as the
+        // already-shared grid, and is dramatically better than raw-index adjacency.
+        assert!(
+            welded_l0 * 4 < degen_l0,
+            "weld should cut level-0 clusters ≥4× (split-vert degeneracy): \
+             welded={welded_l0} vs raw={degen_l0}"
+        );
+        assert!(
+            welded_l0 <= base_l0 * 2,
+            "welded split mesh ({welded_l0}) should cluster ~like the shared grid ({base_l0})"
+        );
+        // Healthy average: welded ≥ 16 tris/cluster; degenerate ≈ 1.
+        assert!(
+            tris / welded_l0.max(1) >= 16,
+            "welded avg tris/cluster too low: {} ({tris} tris / {welded_l0} clusters)",
+            tris / welded_l0.max(1)
+        );
     }
 
     #[test]
