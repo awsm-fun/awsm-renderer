@@ -45,6 +45,7 @@ impl Scene {
                     NodeKind::Camera(_) => stats.cameras += 1,
                     NodeKind::Mesh { .. } => stats.primitives += 1,
                     NodeKind::SkinnedMesh { .. } => stats.primitives += 1,
+                    NodeKind::ClusterMesh { .. } => stats.primitives += 1,
                     NodeKind::Curve(_) => stats.curves += 1,
                     NodeKind::InstancesAlongCurve(_) => stats.instances += 1,
                     NodeKind::Line(_) => stats.lines += 1,

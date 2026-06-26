@@ -1016,6 +1016,35 @@ async fn materialize(
         // composing a user's *repositioning* of the whole rig (it self-places at the
         // renderer root, so moving the scene node doesn't move it) — separate from
         // the now-working joint animation.
+        // Pre-baked cluster ("nanite") mesh — fetch its baked DAG side file and
+        // materialize through the bounded cluster pipeline (same path the editor's
+        // view-only import uses). A no-op stub when the `lod` feature is off.
+        #[cfg(feature = "lod")]
+        NodeKind::ClusterMesh { cluster, .. } => {
+            let id = cluster.source.0.to_string();
+            let path = format!(
+                "{ASSETS_DIR}/{}",
+                awsm_renderer_lod_bake::cluster_mesh_filename(&id)
+            );
+            if let Ok(bytes) = assets.fetch(&path).await {
+                match serde_json::from_slice::<awsm_renderer_lod_bake::ClusterMesh>(&bytes) {
+                    Ok(cm) => {
+                        if let Some(key) =
+                            materialize_cluster_mesh(renderer, cm, &id, tk, mat).await?
+                        {
+                            maps.meshes.entry(node.id).or_insert(key);
+                            maps.node_meshes.entry(node.id).or_default().push(key);
+                            loaded.meshes.push(key);
+                        }
+                    }
+                    Err(e) => tracing::warn!("cluster mesh `{path}`: unreadable: {e}"),
+                }
+            } else {
+                tracing::warn!("cluster mesh asset `{path}` not found");
+            }
+        }
+        #[cfg(not(feature = "lod"))]
+        NodeKind::ClusterMesh { .. } => {}
         NodeKind::SkinnedMesh { skin, .. } => {
             let (keys, node_index_transforms) =
                 load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)

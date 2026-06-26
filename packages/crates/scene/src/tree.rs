@@ -179,6 +179,25 @@ pub struct SkinJoint {
     pub index: u32,
 }
 
+/// Reference to a **pre-baked cluster-LOD ("nanite") mesh**: the imported source
+/// asset whose baked cluster DAG (`assets/<source>.clusters.bin`) + base geometry
+/// (`assets/<source>.glb`) the renderer streams through the bounded cluster
+/// pipeline. Like [`SkinnedMeshRef`], this is a deliberately **view-only**,
+/// renderer-managed geometry category — it is NOT a `MeshDef`/`ModifierStack`, so
+/// it carries no editable stack/overrides. It exists so a large mesh can be brought
+/// into the editor and rendered as nanite (bounded draw + VRAM) via the SAME path
+/// the player uses, without the dense visibility-geometry explode that would
+/// otherwise crash on a multi-million-triangle mesh.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct ClusterMeshRef {
+    /// The imported source asset's `AssetId`. Its baked cluster DAG side file
+    /// (`assets/<source>.clusters.bin`) is loaded + materialized by the cluster
+    /// pipeline (`scene-loader::materialize_cluster_mesh`).
+    pub source: AssetId,
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 // `Mesh` (the common, dominant variant) inlines a `MaterialInstance`, which makes
@@ -230,6 +249,20 @@ pub enum NodeKind {
         /// Per-mesh LOD opt-out (default on). See [`MeshLodConfig`].
         #[serde(default)]
         lod: MeshLodConfig,
+    },
+    /// A **pre-baked cluster-LOD ("nanite") mesh** — a third, deliberately
+    /// **view-only** geometry category (like [`Self::SkinnedMesh`], not editable):
+    /// no `MeshDef`/stack, rendered + cut by the renderer's cluster pipeline from a
+    /// baked `assets/<source>.clusters.bin`. Brought in via the offline `awsm-lod-bake`
+    /// pre-bake so a huge mesh views as nanite in-editor (bounded) without re-baking
+    /// or a dense explode. No `lod` toggle — it IS the LOD.
+    ClusterMesh {
+        cluster: ClusterMeshRef,
+        /// Single material assignment; `None` renders flat magenta.
+        #[serde(default)]
+        material: Option<MaterialInstance>,
+        #[serde(default)]
+        shadow: MeshShadowConfig,
     },
     /// Catmull-Rom curve (control points + closed + tension). Emits no renderer
     /// node directly; consumed by sweep / instance / camera nodes.
@@ -327,6 +360,7 @@ impl NodeKind {
             Self::Camera(_) => "camera",
             Self::Mesh { .. } => "mesh",
             Self::SkinnedMesh { .. } => "skinned_mesh",
+            Self::ClusterMesh { .. } => "cluster_mesh",
             Self::Curve(_) => "curve",
             Self::InstancesAlongCurve(_) => "instances",
             Self::Line(_) => "line",

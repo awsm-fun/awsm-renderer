@@ -250,6 +250,24 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
                 }))
             })
         }
+        // A pre-baked cluster ("nanite") mesh: view-only, rendered via the bounded
+        // cluster pipeline from its baked DAG (same path the player uses). Not
+        // editable — no modifier stack / per-vertex ops; it IS the LOD. Shows the
+        // material + shadow surface only.
+        NodeKind::ClusterMesh {
+            material, shadow, ..
+        } => html!("div", {
+            .child(info_section(
+                "Nanite Mesh",
+                "A pre-baked cluster-LOD mesh, rendered as nanite (bounded draw + VRAM) \
+                 via the renderer's cluster pipeline — the same path the player uses, no \
+                 in-editor re-baking. View-only: it has no editable geometry stack (bake \
+                 it offline with the awsm-lod-bake CLI). Move/scale it like any node and \
+                 assign a material below.",
+            ))
+            .child(material_editor(node, &inline_of(&material), material.is_some()))
+            .child(mesh_shadow_editor(node, shadow))
+        }),
         // A Group is purely an organisational transform parent — name + transform
         // (above) are its full property set.
         NodeKind::Group => info_section("Group", "An organizational parent. Its children inherit this node's transform; it has no geometry of its own."),
