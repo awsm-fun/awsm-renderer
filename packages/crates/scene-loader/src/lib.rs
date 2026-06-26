@@ -2194,6 +2194,29 @@ async fn load_cluster_lod(
             return Ok(None);
         }
     };
+    materialize_cluster_mesh(renderer, cm, asset_id, tk, mat).await
+}
+
+/// Materialize a parsed [`awsm_renderer_lod_bake::ClusterMesh`] into a bounded
+/// cluster-LOD render mesh on the renderer (uploads the cluster pages, caps the
+/// resident set to the active streaming/paging budget, builds the page pool when
+/// paging, and registers the cluster render mesh `M`). This is the post-fetch core
+/// shared by the player load path ([`load_cluster_lod`]) AND the editor's
+/// pre-baked nanite import — the editor fetches the `.clusters.bin` its own way
+/// and calls this directly. Returns the render mesh key, or `None` when
+/// `virtual_geometry` is off or the cluster mesh is empty. `asset_label` is only
+/// used for the diagnostic log line.
+#[cfg(feature = "lod")]
+pub async fn materialize_cluster_mesh(
+    renderer: &mut AwsmRenderer,
+    cm: awsm_renderer_lod_bake::ClusterMesh,
+    asset_label: &str,
+    tk: TransformKey,
+    mat: MaterialKey,
+) -> Result<Option<MeshKey>> {
+    if !renderer.features().virtual_geometry {
+        return Ok(None);
+    }
     if cm.positions.is_empty() || cm.clusters.is_empty() {
         return Ok(None);
     }
@@ -2372,7 +2395,7 @@ async fn load_cluster_lod(
     let m_key = renderer.add_raw_mesh(m_raw, tk, mat)?;
     renderer.set_cluster_render_mesh(m_key);
     tracing::info!(
-        "cluster LOD (GPU): {asset_id} {} clusters ({} resident), render mesh M = {} tris{}, per-cluster cut drives draw",
+        "cluster LOD (GPU): {asset_label} {} clusters ({} resident), render mesh M = {} tris{}, per-cluster cut drives draw",
         cm.cluster_count(),
         gpu_pages.len(),
         resident_tris,
