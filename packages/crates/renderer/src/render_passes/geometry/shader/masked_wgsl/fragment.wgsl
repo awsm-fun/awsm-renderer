@@ -15,8 +15,13 @@ fn mask_bary_at(b: vec2<f32>, dbx: vec2<f32>, dby: vec2<f32>, ox: f32, oy: f32) 
 struct FragmentInput {
     @location(0) @interpolate(flat) triangle_index: u32,
     @location(1) barycentric: vec2<f32>,
-    @location(2) world_normal: vec3<f32>,
-    @location(3) world_tangent: vec4<f32>,
+    // Centroid-sampled to match the (shared) geometry vertex output qualifier —
+    // the masked variant reuses geometry_wgsl/vertex.wgsl, so a mismatch here is
+    // a pipeline-creation validation error. See that vertex struct for the why
+    // (silhouette normals stay on-surface under MSAA). `barycentric` stays
+    // center-sampled — its derivatives drive texture-LOD.
+    @location(2) @interpolate(perspective, centroid) world_normal: vec3<f32>,
+    @location(3) @interpolate(perspective, centroid) world_tangent: vec4<f32>,
     @location(4) @interpolate(flat) instance_id: u32,
     @location(5) @interpolate(flat) material_mesh_meta_offset: u32,
     // See the plain geometry fragment: flip the normal for back faces so

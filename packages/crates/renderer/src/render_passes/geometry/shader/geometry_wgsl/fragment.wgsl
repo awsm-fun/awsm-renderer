@@ -4,8 +4,14 @@
 struct FragmentInput {
     @location(0) @interpolate(flat) triangle_index: u32,
     @location(1) barycentric: vec2<f32>,  // Full barycentric coordinates
-    @location(2) world_normal: vec3<f32>,     // Transformed world-space normal
-    @location(3) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
+    // Centroid-sampled to match the vertex output qualifier (WGSL cross-stage
+    // interpolation rule — mismatch is a pipeline-creation validation error).
+    // See the vertex struct for why: keeps the silhouette normal/tangent
+    // on-surface under MSAA instead of extrapolating past the triangle edge.
+    // `barycentric` above stays center-sampled on purpose — derivatives of it
+    // drive texture-LOD and centroid breaks screen-space derivatives.
+    @location(2) @interpolate(perspective, centroid) world_normal: vec3<f32>,     // Transformed world-space normal
+    @location(3) @interpolate(perspective, centroid) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
     @location(4) @interpolate(flat) instance_id: u32, // U32_MAX for non-instanced draws
     // Forwarded from vertex so the fragment doesn't have to
     // re-read `geometry_mesh_meta`. The

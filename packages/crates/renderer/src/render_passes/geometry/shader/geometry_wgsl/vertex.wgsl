@@ -35,8 +35,19 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) @interpolate(flat) triangle_index: u32,
     @location(1) barycentric: vec2<f32>,  // Full barycentric coordinates
-    @location(2) world_normal: vec3<f32>,     // Transformed world-space normal
-    @location(3) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
+    // Centroid-sampled: under MSAA, a silhouette pixel whose center falls outside
+    // the covered triangle would otherwise *extrapolate* the normal/tangent past
+    // the triangle edge, spiking specular / mis-lighting the partially-covered
+    // samples that the edge resolve then averages in. Centroid evaluates the
+    // attribute at the centroid of the covered samples, keeping it on-surface.
+    // Identical to center for fully-covered pixels (interiors) → free there. Must
+    // match the fragment-input qualifier on these locations (WGSL cross-stage
+    // interpolation rule); the plain + custom-vertex + masked variants all share
+    // these structs. Deliberately NOT applied to `barycentric` above — the
+    // fragment takes dpdx/dpdy of it for texture-LOD, and centroid breaks
+    // screen-space derivatives.
+    @location(2) @interpolate(perspective, centroid) world_normal: vec3<f32>,     // Transformed world-space normal
+    @location(3) @interpolate(perspective, centroid) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
     // Stage-1 leaves this at U32_MAX always; Stage-2 wires
     // `geometry_mesh_meta.instance_attr_base + @builtin(instance_index)`.
     @location(4) @interpolate(flat) instance_id: u32,

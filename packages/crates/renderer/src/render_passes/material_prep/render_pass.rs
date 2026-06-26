@@ -140,6 +140,18 @@ impl MaterialPrepRenderPass {
     /// under MSAA (the pipeline + texture are `None` otherwise). No-op when the
     /// edge buffers / layout uniform aren't allocated (non-MSAA).
     pub fn render_edge(&self, ctx: &RenderContext) -> Result<()> {
+        // cs_prep_edge is MSAA-only: its pipeline layout binds the *multisampled*
+        // prep main BGL at group(0), so it must never run while the live prep main
+        // bind group is single-sampled (that mismatch invalidates the whole frame's
+        // command buffer). `set_anti_aliasing` now tears `material_edge_buffers`
+        // down on an MSAA on→off flip, so the buffer-presence guard below already
+        // no-ops when MSAA is off — but this pass keys off the live MSAA state
+        // directly rather than trusting that invariant, mirroring the classify
+        // pass's `if msaa` discipline. Defense-in-depth: an MSAA-only pass enforces
+        // its own contract regardless of edge-buffer lifecycle.
+        if ctx.anti_aliasing.msaa_sample_count.is_none() {
+            return Ok(());
+        }
         let (edge_pipeline_key, edge_shadow) =
             match (self.edge_pipeline_key, self.edge_shadow.as_ref()) {
                 (Some(k), Some(b)) => (k, b),
