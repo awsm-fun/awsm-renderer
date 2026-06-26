@@ -1254,6 +1254,10 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                // View-only cluster ("nanite") DAGs live only in `cluster_cache`;
+                // drop it too so the round-trip exercises the real save→reload
+                // restore (`restore_cluster_meshes` re-reads the persisted DAG).
+                crate::engine::bridge::cluster_cache::clear();
                 persistence::apply_inmem(self, toml, mesh_map).await?;
                 Toast::info("Round-trip: project reloaded in-memory (cold caches)");
                 Ok(None)
@@ -2897,19 +2901,16 @@ impl EditorController {
             // (the player path). No in-editor bake, no dense explode — large meshes
             // come in without crashing. Geometry is non-editable (it IS the LOD).
             EditorCommand::ImportNaniteAsset { clusters_url } => {
-                let _activity =
-                    crate::engine::activity::begin_activity("Importing nanite asset…");
+                let _activity = crate::engine::activity::begin_activity("Importing nanite asset…");
                 match fetch_cluster_mesh(&clusters_url).await {
                     Ok(cm) => {
                         // Register an asset so the node's `ClusterMeshRef` resolves
                         // (and the project round-trips the source reference).
                         let asset_id = AssetId::new();
-                        self.scene
-                            .assets
-                            .lock()
-                            .unwrap()
-                            .entries
-                            .insert(asset_id, AssetEntry::new(SceneAssetSource::Url(clusters_url)));
+                        self.scene.assets.lock().unwrap().entries.insert(
+                            asset_id,
+                            AssetEntry::new(SceneAssetSource::Url(clusters_url)),
+                        );
                         // Stash the parsed DAG for the bridge materializer (must be in
                         // the cache BEFORE the node is inserted + observed).
                         crate::engine::bridge::cluster_cache::insert(asset_id, cm);

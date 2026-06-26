@@ -522,6 +522,99 @@ where
     }
 }
 
+/// Filename for a view-only cluster ("nanite") asset's baked DAG side file
+/// (`<source>.clusters.bin`). The SAME name the runtime player fetches
+/// (`scene-loader`'s `NodeKind::ClusterMesh` arm via `cluster_mesh_filename`), so
+/// one written file serves BOTH editor reload AND the player bundle.
+fn cluster_filename(source: AssetId) -> String {
+    awsm_renderer_lod_bake::cluster_mesh_filename(&source.0.to_string())
+}
+
+/// The cluster ("nanite") source ids referenced by the LIVE scene's
+/// `NodeKind::ClusterMesh` nodes (one baked DAG per source, shared across nodes).
+fn cluster_sources(ctrl: &EditorController) -> std::collections::HashSet<AssetId> {
+    use crate::engine::scene::NodeKind;
+    fn walk(node: &Arc<Node>, out: &mut std::collections::HashSet<AssetId>) {
+        if let NodeKind::ClusterMesh { cluster, .. } = node.kind.get_cloned() {
+            out.insert(cluster.source);
+        }
+        for c in node.children.lock_ref().iter() {
+            walk(c, out);
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    for n in ctrl.scene.nodes.lock_ref().iter() {
+        walk(n, &mut out);
+    }
+    out
+}
+
+/// The cluster source ids referenced by a PARSED project's `ClusterMesh` nodes
+/// (before the scene is applied) — so their DAGs can be re-read into the
+/// `cluster_cache` BEFORE the nodes materialize. Mirror of [`cluster_sources`]
+/// over the serialized `EditorNode` tree.
+fn cluster_sources_from_project(project: &EditorProject) -> std::collections::HashSet<AssetId> {
+    use crate::engine::scene::NodeKind;
+    fn walk(
+        node: &awsm_renderer_editor_protocol::EditorNode,
+        out: &mut std::collections::HashSet<AssetId>,
+    ) {
+        if let NodeKind::ClusterMesh { cluster, .. } = &node.kind {
+            out.insert(cluster.source);
+        }
+        for c in &node.children {
+            walk(c, out);
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    for n in &project.nodes {
+        walk(n, &mut out);
+    }
+    out
+}
+
+/// Per-cluster-source side files (`assets/<source>.clusters.bin`) — the serialized
+/// `ClusterMesh` DAG for every live `ClusterMesh` node, read from the session-local
+/// [`cluster_cache`](crate::engine::bridge::cluster_cache). JSON (the exact
+/// `serde_json` form the `awsm-lod-bake` CLI writes + the runtime fetches), so one
+/// file serves editor reload AND the player bundle. Closes the cluster half of the
+/// session-local-only persistence gap: a view-only nanite import now survives
+/// Save → reload (and ships in the player bundle).
+pub fn cluster_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
+    use crate::engine::bridge::cluster_cache;
+    let mut out = Vec::new();
+    for src in cluster_sources(ctrl) {
+        if let Some(cm) = cluster_cache::get(src) {
+            if let Ok(bytes) = serde_json::to_vec(&*cm) {
+                out.push((format!("assets/{}", cluster_filename(src)), bytes));
+            }
+        }
+    }
+    out
+}
+
+/// Restore each cluster source's baked DAG into the [`cluster_cache`] from a loaded
+/// project (via `read`), reading `assets/<source>.clusters.bin`. Call BEFORE
+/// [`apply_project`] so `ClusterMesh` nodes find their DAG the first time they
+/// materialize (the bridge materializer reads `cluster_cache`) — a DECLARED LOAD
+/// INPUT, not a post-hoc re-materialise. Missing files are skipped (older projects /
+/// never-saved imports).
+async fn restore_cluster_meshes<F, Fut>(project: &EditorProject, mut read: F)
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    for src in cluster_sources_from_project(project) {
+        let path = format!("assets/{}", cluster_filename(src));
+        if let Ok(bytes) = read(path).await {
+            match serde_json::from_slice::<awsm_renderer_lod_bake::ClusterMesh>(&bytes) {
+                Ok(cm) => crate::engine::bridge::cluster_cache::insert(src, cm),
+                Err(e) => tracing::warn!("cluster {src:?}: bad .clusters.bin ({e})"),
+            }
+        }
+    }
+}
+
 /// Per-clip animation side files — the full authored model serialized as TOML
 /// (mirrors `material_files`). Each path matches the `CustomAnimationRef.file` in
 /// `project.toml` via the shared [`animation_file_path`] (so the writer can't
@@ -665,6 +758,11 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
             .await
             .map_err(|e| EditorError::Msg(e.to_string()))?;
     }
+    for (name, bytes) in cluster_files(ctrl) {
+        dir.write_bytes(&name, &bytes)
+            .await
+            .map_err(|e| EditorError::Msg(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -693,6 +791,12 @@ pub async fn load_from_dir(
     .await;
     // Re-upload imported textures BEFORE the scene materialises (declared input).
     restore_textures(&project, |path| async move {
+        dir.read_bytes(&path).await.map_err(|e| e.to_string())
+    })
+    .await;
+    // Re-read view-only cluster ("nanite") DAGs into the cluster_cache BEFORE the
+    // scene materialises, so ClusterMesh nodes render after a cold reload.
+    restore_cluster_meshes(&project, |path| async move {
         dir.read_bytes(&path).await.map_err(|e| e.to_string())
     })
     .await;
@@ -731,6 +835,7 @@ pub fn serialize_inmem(
     byte_files.extend(rig_glb_files(ctrl));
     byte_files.extend(bind_pose_files(ctrl));
     byte_files.extend(texture_files(ctrl));
+    byte_files.extend(cluster_files(ctrl));
     Ok((toml, byte_files))
 }
 
@@ -766,6 +871,14 @@ pub async fn apply_inmem(
     restore_textures(&project, |path| {
         let bytes = byte_files.get(&path).cloned();
         async move { bytes.ok_or_else(|| format!("missing in-memory texture: {path}")) }
+    })
+    .await;
+    // Re-read view-only cluster ("nanite") DAGs into the cluster_cache BEFORE the
+    // scene materialises (declared input), so ClusterMesh nodes render after the
+    // round-trip reload.
+    restore_cluster_meshes(&project, |path| {
+        let bytes = byte_files.get(&path).cloned();
+        async move { bytes.ok_or_else(|| format!("missing in-memory cluster DAG: {path}")) }
     })
     .await;
     apply_project(ctrl, project);
@@ -845,6 +958,8 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
     restore_skinned_templates(&project, http_bytes!()).await;
     // Re-upload imported textures BEFORE apply_project (declared load input).
     restore_textures(&project, http_bytes!()).await;
+    // Re-read cluster ("nanite") DAGs BEFORE apply_project (so ClusterMesh nodes render).
+    restore_cluster_meshes(&project, http_bytes!()).await;
     apply_project(ctrl, project);
     // Restore rig glb (bundle export) + bind poses (drop_skinning) AFTER apply.
     restore_rig_glb(ctrl, http_bytes!()).await;

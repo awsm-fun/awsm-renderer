@@ -316,7 +316,10 @@ fn lod_section() -> Dom {
            manifest, and the cluster DAG — so you import pre-baked instead of converting \
            in-editor:",
         ),
-        command("Pre-bake a model (writes <name>.nanite/)", "awsm-lod-bake my-model.glb --out ./assets"),
+        command(
+            "Pre-bake a model (writes <name>.nanite/)",
+            "awsm-lod-bake my-model.glb --out ./assets",
+        ),
         p(
             "It reuses the exact bake the editor uses, so the output is identical to an \
            in-editor bake — just done once, up front.",

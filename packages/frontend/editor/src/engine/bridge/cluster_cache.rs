@@ -8,11 +8,13 @@
 //! materializer ([`super::node_sync`]) reads it to drive
 //! `scene-loader::materialize_cluster_mesh` — the SAME path the player uses.
 //!
-//! TODO(cross-reload persistence): like `skinned_bake_cache`, this is session-local
-//! — it does NOT survive a project Save → reload. Full persistence would write the
-//! `.clusters.bin` into the project's `assets/` on Save and re-read it on Load (and
-//! re-populate this cache). For now a reloaded project's `ClusterMesh` nodes
-//! re-render only after the source is re-imported.
+//! Cross-reload persistence (like `skinned_bake_cache`): the cache itself is
+//! session-local, but [`crate::controller::persistence::cluster_files`] writes each
+//! referenced DAG to `assets/<source>.clusters.bin` on Save, and
+//! `restore_cluster_meshes` re-reads it back into this cache BEFORE the scene
+//! materializes on Load — so a `ClusterMesh` node survives Save → reload. The same
+//! file ships in the player bundle (`export::bake_player_bundle`), where the runtime
+//! `NodeKind::ClusterMesh` arm fetches it under the identical name.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,4 +44,11 @@ pub fn remove(source: AssetId) {
     CLUSTER_MESHES.with(|c| {
         c.borrow_mut().remove(&source);
     });
+}
+
+/// Drop ALL cached cluster meshes — models a cold page reload (used by the
+/// `ReloadProjectInMemory` round-trip self-test, which then re-reads each DAG from
+/// the persisted `assets/<source>.clusters.bin` via `restore_cluster_meshes`).
+pub fn clear() {
+    CLUSTER_MESHES.with(|c| c.borrow_mut().clear());
 }
