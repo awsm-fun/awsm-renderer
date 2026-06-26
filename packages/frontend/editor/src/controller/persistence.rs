@@ -576,7 +576,7 @@ fn cluster_sources_from_project(project: &EditorProject) -> std::collections::Ha
 /// Per-cluster-source side files (`assets/<source>.clusters.bin`) — the serialized
 /// `ClusterMesh` DAG for every live `ClusterMesh` node, read from the session-local
 /// [`cluster_cache`](crate::engine::bridge::cluster_cache). JSON (the exact
-/// `serde_json` form the `awsm-lod-bake` CLI writes + the runtime fetches), so one
+/// `serde_json` form the `awsm-renderer-lod-bake` CLI writes + the runtime fetches), so one
 /// file serves editor reload AND the player bundle. Closes the cluster half of the
 /// session-local-only persistence gap: a view-only nanite import now survives
 /// Save → reload (and ships in the player bundle).

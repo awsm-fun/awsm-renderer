@@ -530,7 +530,7 @@ pub struct UrlParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportNaniteParams {
     /// URL of a pre-baked cluster-LOD DAG file (`<id>.clusters.bin`) produced by the
-    /// `awsm-lod-bake` CLI. The editor fetches + renders it as a view-only nanite mesh.
+    /// `awsm-renderer-lod-bake` CLI. The editor fetches + renders it as a view-only nanite mesh.
     pub clusters_url: String,
 }
 
@@ -2121,7 +2121,7 @@ impl EditorMcp {
 
     #[tool(
         description = "Import a PRE-BAKED nanite / cluster-LOD asset as a VIEW-ONLY mesh. \
-        `clusters_url` points at a `<id>.clusters.bin` produced offline by the `awsm-lod-bake` \
+        `clusters_url` points at a `<id>.clusters.bin` produced offline by the `awsm-renderer-lod-bake` \
         CLI (which converts a glTF/GLB). The editor renders it through the bounded cluster \
         pipeline — the same path the player uses — so a multi-million-triangle mesh views as \
         nanite (bounded draw + VRAM) without the dense explode that would otherwise crash the \

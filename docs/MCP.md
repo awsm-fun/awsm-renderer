@@ -208,8 +208,8 @@ every command/query, and each tool self-describes over the MCP schema.
   same path the player uses). Use this instead of `import_model_from_url` for **heavy
   static meshes**: it renders multi-million-triangle geometry without the dense
   visibility-geometry explode that would otherwise crash the editor. `clusters_url`
-  points at a `<id>.clusters.bin` produced offline by the `awsm-lod-bake` CLI
-  (`awsm-lod-bake model.glb --out ./assets`). The node is **not editable** (no
+  points at a `<id>.clusters.bin` produced offline by the `awsm-renderer-lod-bake` CLI
+  (`awsm-renderer-lod-bake model.glb --out ./assets`). The node is **not editable** (no
   geometry stack — it IS the LOD); move/scale it and assign a material like any node.
   Per-mesh LOD for *editable* meshes is the separate `set_mesh_lod { node, enabled }`
   opt-out (consumed by the export bake).

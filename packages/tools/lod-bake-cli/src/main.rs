@@ -1,4 +1,4 @@
-//! `awsm-lod-bake` — offline nanite/LOD pre-processor.
+//! `awsm-renderer-lod-bake` — offline nanite/LOD pre-processor.
 //!
 //! Reads a glTF/GLB mesh and writes the same pre-baked assets the editor's
 //! export-time bake produces ([`controller::lod_bake`] in the editor crate),
@@ -35,7 +35,7 @@ const LOD_RATIOS: &[f32] = &[0.5, 0.25, 0.125];
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "awsm-lod-bake",
+    name = "awsm-renderer-lod-bake",
     about = "Pre-bake a glTF/GLB mesh into nanite-ready cluster-LOD + discrete-LOD assets (offline)."
 )]
 struct Args {
@@ -124,7 +124,7 @@ fn main() -> Result<()> {
     }
     let multi = mesh_nodes.len() > 1;
     eprintln!(
-        "awsm-lod-bake: {} → {} ({} mesh node{})",
+        "awsm-renderer-lod-bake: {} → {} ({} mesh node{})",
         args.input.display(),
         out_dir.display(),
         mesh_nodes.len(),
@@ -146,7 +146,7 @@ fn main() -> Result<()> {
     }
 
     eprintln!(
-        "awsm-lod-bake: wrote {total_files} file(s) to {}",
+        "awsm-renderer-lod-bake: wrote {total_files} file(s) to {}",
         out_dir.display()
     );
     Ok(())

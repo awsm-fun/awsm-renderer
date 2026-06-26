@@ -7,7 +7,6 @@
 
 mod animation_mode;
 mod app;
-mod command_palette;
 mod controller;
 mod engine;
 mod error;

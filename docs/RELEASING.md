@@ -7,7 +7,7 @@ releasing one doesn't touch the others:
 |---|----------|---------|-------------|
 | 1 | **Frontend editor** | `task editor:deploy` | Cloudflare Pages (`awsm-scene-editor` → scene.awsm.fun) |
 | 2 | **Library crates** (`awsm-renderer-scene`, `awsm-renderer`, …) | `task crates-publish` | crates.io |
-| 3 | **MCP server** (`awsm-renderer-scene-mcp`) | push a `v<version>` git tag | GitHub Releases |
+| 3 | **Native binaries** (`awsm-renderer-scene-mcp`, `awsm-renderer-lod-bake`) | push a `v<version>` git tag | GitHub Releases |
 
 Versions across the workspace move in lockstep (`version` under
 `[workspace.package]` in the root `Cargo.toml`, mirrored into the internal
@@ -38,16 +38,25 @@ task crates-publish             # publish for real
 ```
 
 `cargo publish --workspace` publishes every member in dependency order and skips
-the `publish = false` members (the frontends, `awsm-renderer-web-shared`, `debugging`, and
-the MCP server). The MCP server is **not** a crates.io crate — it ships as a
-binary (track 3).
+the `publish = false` members (the frontends, `awsm-renderer-web-shared`, `debugging`,
+the MCP server, and the `awsm-renderer-lod-bake-cli` package). Those two binaries are **not**
+crates.io crates — they ship as native binaries (track 3).
 
-## 3. MCP server → GitHub Releases
+## 3. Native binaries → GitHub Releases
 
-The native MCP server ships as prebuilt binaries on **GitHub Releases**, driven by
-[cargo-dist](https://opensource.axo.dev/cargo-dist/) (the `dist` CLI). A release is
-triggered by pushing a **version git tag**; CI builds every platform and publishes
-the binaries plus the `curl`/PowerShell installers.
+Two binary tools ship as prebuilt binaries on **GitHub Releases**, driven by
+[cargo-dist](https://opensource.axo.dev/cargo-dist/) (the `dist` CLI):
+
+- `awsm-renderer-scene-mcp` — the native MCP server.
+- `awsm-renderer-lod-bake` — the offline LOD/nanite pre-bake CLI.
+
+Both opt in via `[package.metadata.dist] dist = true` in their `Cargo.toml`
+(they're `publish = false`, so dist needs the explicit opt-in); `precise-builds`
+in the root `Cargo.toml` keeps dist off the rest of the (wasm-only) workspace. A
+release is triggered by pushing a **version git tag**; CI builds every platform and
+publishes both binaries plus their `curl`/PowerShell installers. After editing the
+dist config or adding a dist-able package, regenerate the workflow with `dist
+generate`.
 
 ### Cut a release (all three tracks)
 
@@ -106,10 +115,11 @@ keep working across versions with no edits.
 
 - **`[workspace.metadata.dist]`** in the root `Cargo.toml` holds the dist config
   (targets, installers, `precise-builds`). **`precise-builds = true`** is
-  important: it builds only the `awsm-renderer-scene-mcp` package, so dist never tries to
-  host-compile the wasm-only editor crate. The MCP crate opts in with
-  `[package.metadata.dist] dist = true` (it's `publish = false`, which dist
-  otherwise treats as "don't ship").
+  important: it builds only the dist-opted-in packages, so dist never tries to
+  host-compile the wasm-only editor crate. Each shipped crate opts in with
+  `[package.metadata.dist] dist = true` (both are `publish = false`, which dist
+  otherwise treats as "don't ship"): `awsm-renderer-scene-mcp` (the server) and
+  `awsm-renderer-lod-bake-cli` (the LOD/nanite pre-bake CLI).
 
 After editing that config, regenerate the CI workflow so it stays in sync:
 
