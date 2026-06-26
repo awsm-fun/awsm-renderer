@@ -3,13 +3,17 @@
 // Fragment input from vertex shader
 struct FragmentInput {
     @location(0) @interpolate(flat) triangle_index: u32,
-    @location(1) barycentric: vec2<f32>,  // Full barycentric coordinates
+    // Centroid-sampled → used to reconstruct/pack the texel UV (on-surface, so the
+    // [0,1] clamp never corrupts it at coplanar tessellation seams). See vertex.wgsl.
+    @location(1) @interpolate(perspective, centroid) barycentric: vec2<f32>,
+    // Center-sampled copy → source for dpdx/dpdy (texture-LOD gradients). Keeps the
+    // derivatives well-defined/bit-identical to the pre-centroid behaviour; you
+    // can't take meaningful screen-space derivatives of a centroid varying.
+    @location(6) @interpolate(perspective, center) barycentric_center: vec2<f32>,
     // Centroid-sampled to match the vertex output qualifier (WGSL cross-stage
     // interpolation rule — mismatch is a pipeline-creation validation error).
-    // See the vertex struct for why: keeps the silhouette normal/tangent
-    // on-surface under MSAA instead of extrapolating past the triangle edge.
-    // `barycentric` above stays center-sampled on purpose — derivatives of it
-    // drive texture-LOD and centroid breaks screen-space derivatives.
+    // See the vertex struct: keeps the silhouette normal/tangent on-surface under
+    // MSAA instead of extrapolating past the triangle edge.
     @location(2) @interpolate(perspective, centroid) world_normal: vec3<f32>,     // Transformed world-space normal
     @location(3) @interpolate(perspective, centroid) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
     @location(4) @interpolate(flat) instance_id: u32, // U32_MAX for non-instanced draws
@@ -84,9 +88,11 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     }
     out.normal_tangent = pack_normal_tangent(N, T, s);
 
-    // perspective-correct barycentrics by default:
-    let ddx = dpdx(input.barycentric);          // (db1/dx, db2/dx)
-    let ddy = dpdy(input.barycentric);          // (db1/dy, db2/dy)
+    // perspective-correct barycentrics by default. Derivatives are taken of the
+    // CENTER-sampled copy (the centroid `barycentric` used for UV has undefined
+    // screen-space derivatives).
+    let ddx = dpdx(input.barycentric_center);          // (db1/dx, db2/dx)
+    let ddy = dpdy(input.barycentric_center);          // (db1/dy, db2/dy)
 
     out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);
 

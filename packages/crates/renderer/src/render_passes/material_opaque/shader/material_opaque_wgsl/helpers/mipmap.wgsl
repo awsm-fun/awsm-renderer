@@ -2,23 +2,24 @@
 // mipmap.wgsl — Gradient-based texture sampling for compute shaders
 // ============================================================================
 //
-// This implementation computes UV derivatives (gradients) for anisotropic filtering:
-// 1. Transform triangle vertices to screen space
-// 2. Compute barycentric derivatives analytically: d(bary)/d(screen)
-//    - This has been verified to match hardware dFdx/dFdy
-// 3. Handle texture address modes (repeat/mirror) by unwrapping UVs:
-//    - For repeat mode: make UVs continuous across 0→1 boundaries
-//    - For mirror mode: convert to texture space, then unwrap
-//    - This fixes mip selection when UVs cross wrapping boundaries
-// 4. Apply chain rule: d(UV)/d(screen) = d(UV)/d(bary) × d(bary)/d(screen)
-// 5. Pass gradients to textureSampleGrad for hardware mip selection
+// Deferred shading happens in a compute pass, which has no fixed-function
+// dpdx/dpdy. So the geometry (visibility-buffer) pass computes the screen-space
+// barycentric derivatives there — where hardware derivatives DO exist — and
+// stores them in the `barycentric_derivatives` G-buffer. This helper turns those
+// stored d(bary)/d(screen) into UV gradients for `textureSampleGrad`:
+// 1. Read the per-pixel d(bary)/d(screen) from the G-buffer (`bary_derivs` arg).
+//    (Geometry takes them from a CENTER-sampled barycentric — `barycentric_center`
+//    in geometry_wgsl — since derivatives of a centroid varying are undefined.)
+// 2. Apply chain rule: d(UV)/d(screen) = d(UV)/d(bary) × d(bary)/d(screen),
+//    using the triangle's three vertex UVs.
+// 3. Hand the gradients to textureSampleGrad → hardware mip / anisotropic
+//    selection (no manual LOD, no triangle seams).
 //
-// Benefits:
-// - Hardware handles mip selection (anisotropic filtering, etc.)
-// - No manual LOD calculation needed
-// - No triangle seams
-// - Correct gradients even when UVs wrap/repeat
-// - Mathematically correct gradient computation
+// NOTE: an earlier revision computed the barycentric derivatives analytically
+// from screen-space-projected triangle vertices; that was replaced by the stored
+// hardware derivatives above. (UV address-mode unwrapping for repeat/mirror was
+// also tried here and removed — see `unwrap_repeat`/`mirror_*` below, kept unused
+// for reference.)
 // ============================================================================
 
 // ─────────────────────────────────────────────────────────────────────────────
