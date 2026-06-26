@@ -24,6 +24,7 @@ use crate::error::Result;
 use crate::render_passes::cluster_lod::buffers::ClusterLodBuffers;
 use crate::render_passes::RenderPassInitContext;
 
+#[derive(Clone)]
 pub struct ClusterCutBindGroups {
     pub layout_key: BindGroupLayoutKey,
     bind_group: Option<web_sys::GpuBindGroup>,
@@ -125,6 +126,7 @@ impl ClusterCutBindGroups {
 /// Bind group for the compaction pass: pages(RO), selected(RO), source_indices
 /// (RO), compacted_indices(RW), draw_args(RW), params(uniform — reused cut
 /// params, only `cluster_count` read). All compute-visible.
+#[derive(Clone)]
 pub struct ClusterCompactionBindGroups {
     pub layout_key: BindGroupLayoutKey,
     bind_group: Option<web_sys::GpuBindGroup>,

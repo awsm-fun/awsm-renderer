@@ -872,55 +872,22 @@ impl AwsmRenderer {
         let mut cluster_cut_kick: Option<(web_sys::GpuBuffer, u32)> = None;
         #[cfg(feature = "lod")]
         if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
-            if cluster_pass.cluster_count > 0 {
+            if !cluster_pass.states.is_empty() {
                 if let Some(cam) = self.camera.last_matrices.as_ref() {
                     let proj_yy = cam.projection.y_axis.y.abs();
                     if proj_yy > 1e-6 {
                         if let Ok((_, vh)) = self.gpu.current_context_texture_size() {
-                            cluster_pass.dispatch(
+                            // Cut + compaction for EVERY resident cluster mesh; returns
+                            // the diagnostics readback kick (first resident mesh, on
+                            // cadence) for the async consumer further below.
+                            cluster_cut_kick = cluster_pass.dispatch_all(
                                 &ctx,
+                                &self.cluster_cut_readback,
                                 cam.position_world,
                                 1.0 / proj_yy,
                                 vh as f32,
                                 Self::LOD_ERROR_THRESHOLD_PX,
                             )?;
-                            // first_instance = the render mesh M's meta slot, so the
-                            // indirect draw's vertex shader resolves M's material
-                            // meta (geometry_mesh_metas[instance_index]).
-                            let first_instance = cluster_pass
-                                .render_mesh
-                                .and_then(|m| ctx.meshes.meta.geometry_buffer_offset(m).ok())
-                                .map(|off| {
-                                    off as u32
-                                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
-                                            as u32
-                                })
-                                .unwrap_or(0);
-                            cluster_pass.dispatch_compaction(&ctx, first_instance)?;
-                            // Readback verification of draw_args.index_count. Re-fires
-                            // on a cadence (frame 5, then every 30) so the drawn cut is
-                            // observable as the camera/scene change; the async handler
-                            // logs only on change.
-                            let want = {
-                                let mut st = self.cluster_cut_readback.lock().unwrap();
-                                st.frames += 1;
-                                !st.inflight && (st.frames == 5 || st.frames % 30 == 0)
-                            };
-                            if want {
-                                if let Some(buffers) = cluster_pass.buffers.as_ref() {
-                                    ctx.command_encoder.copy_buffer_to_buffer(
-                                        &buffers.draw_args_buffer,
-                                        0,
-                                        &buffers.readback_buffer,
-                                        0,
-                                        4,
-                                    )?;
-                                    cluster_cut_kick = Some((
-                                        buffers.readback_buffer.clone(),
-                                        cluster_pass.cluster_count,
-                                    ));
-                                }
-                            }
                         }
                     }
                 }

@@ -109,7 +109,11 @@ pub fn pack_visibility_slot_bytes(
     out: &mut Vec<u8>,
 ) {
     out.clear();
-    debug_assert_eq!(corner_indices.len(), page_verts, "slot must be page_verts long");
+    debug_assert_eq!(
+        corner_indices.len(),
+        page_verts,
+        "slot must be page_verts long"
+    );
     let corner_order: [usize; 3] = match front_face {
         FrontFace::Cw => [0, 2, 1],
         _ => [0, 1, 2],
@@ -370,7 +374,7 @@ mod tests {
             [0.6, 0.0, 0.4],
         ];
         let page_verts = 6usize; // 2 triangles per slot
-        // Slot's triangle-order corner indices (one cluster's two triangles).
+                                 // Slot's triangle-order corner indices (one cluster's two triangles).
         let slot_indices = vec![0u32, 1, 2, 1, 4, 5];
 
         // Slot 0 must be byte-identical to the full-mesh packer (synthetic tangents,
@@ -411,7 +415,11 @@ mod tests {
             );
             // All other bytes (before + after the 4-byte triangle_index) match slot 0.
             assert_eq!(slot3[o..o + 12], slot0[o..o + 12], "record {rec} pos");
-            assert_eq!(slot3[o + 16..o + 56], slot0[o + 16..o + 56], "record {rec} rest");
+            assert_eq!(
+                slot3[o + 16..o + 56],
+                slot0[o + 16..o + 56],
+                "record {rec} rest"
+            );
         }
 
         // out is reused (cleared) — a second pack of a smaller-base slot leaves no

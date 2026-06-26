@@ -2356,11 +2356,18 @@ impl AwsmRenderer {
     /// bind group. Disjoint sub-borrows of `self` (pass vs gpu vs layouts).
     pub fn upload_cluster_pages(
         &mut self,
+        render_mesh: crate::meshes::MeshKey,
         pages: &[crate::cluster_lod::ClusterPage],
         indices: &[u32],
     ) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.upload_pages(&self.gpu, &self.bind_group_layouts, pages, indices)?;
+            pass.upload_pages(
+                render_mesh,
+                &self.gpu,
+                &self.bind_group_layouts,
+                pages,
+                indices,
+            )?;
         }
         Ok(())
     }
@@ -2369,9 +2376,13 @@ impl AwsmRenderer {
     /// slot`, `-1` = absent). Call after [`Self::upload_cluster_pages`]. No-op
     /// unless `virtual_geometry` built the pass; only the `cluster_paging` loader
     /// path calls it (so the non-paging path allocates no resident buffer).
-    pub fn upload_cluster_resident(&mut self, resident: &[i32]) -> crate::error::Result<()> {
+    pub fn upload_cluster_resident(
+        &mut self,
+        render_mesh: crate::meshes::MeshKey,
+        resident: &[i32],
+    ) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.upload_resident(&self.gpu, &self.bind_group_layouts, resident)?;
+            pass.upload_resident(render_mesh, &self.gpu, &self.bind_group_layouts, resident)?;
         }
         Ok(())
     }
@@ -2385,105 +2396,12 @@ impl AwsmRenderer {
     /// the pass exists.
     pub fn init_cluster_paging(
         &mut self,
+        render_mesh: crate::meshes::MeshKey,
         init: crate::render_passes::cluster_lod::ClusterPagingInit,
     ) {
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.init_paging(init);
+            pass.init_paging(render_mesh, init);
         }
-    }
-
-    /// Register the cluster render mesh `M` (the full cluster geometry) whose
-    /// exploded vertex buffer the compacted indirect stream draws into. No-op
-    /// unless `virtual_geometry` built the pass.
-    pub fn set_cluster_render_mesh(&mut self, mesh_key: crate::meshes::MeshKey) {
-        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.render_mesh = Some(mesh_key);
-        }
-    }
-
-    /// Gap-B dynamic paging: overwrite ONE page-pool slot's exploded visibility
-    /// vertices in the cluster render mesh `M`'s visibility-data section.
-    /// `data_bytes` is exactly one slot's packed records (`CLUSTER_PAGE_VERTS*56` B
-    /// from [`crate::mesh_pack::pack_visibility_slot_bytes`]); the slot stride is
-    /// `data_bytes.len()`, so slot `s` lands at `mesh_data_offset + s*len` in the
-    /// merged geometry pool (`COPY_DST`). Only the `cluster_paging` per-frame stream
-    /// path calls this; no-op without a cluster render mesh / pass. (`queue.writeBuffer`
-    /// is ordered before the frame's submitted passes, so streaming here lands this
-    /// frame.)
-    pub fn write_cluster_slot(&self, slot: usize, data_bytes: &[u8]) -> crate::error::Result<()> {
-        let Some(pass) = self.render_passes.cluster_lod.as_ref() else {
-            return Ok(());
-        };
-        let Some(mesh_key) = pass.render_mesh else {
-            return Ok(());
-        };
-        if data_bytes.is_empty() {
-            return Ok(());
-        }
-        let base = self.meshes.visibility_geometry_data_buffer_offset(mesh_key)?;
-        let offset = cluster_slot_data_offset(base, slot, data_bytes.len());
-        self.gpu.write_buffer(
-            self.meshes.visibility_geometry_data_gpu_buffer(),
-            Some(offset),
-            data_bytes,
-            None,
-            None,
-        )?;
-        Ok(())
-    }
-
-    /// Gap-B dynamic paging: overwrite a re-paged cluster page's `source_indices`
-    /// span (slot-relative draw indices) — see
-    /// [`crate::render_passes::cluster_lod::buffers::ClusterLodBuffers::write_source_indices_span`].
-    pub fn write_cluster_source_indices_span(
-        &self,
-        first_index: u32,
-        values: &[u32],
-    ) -> crate::error::Result<()> {
-        if let Some(pass) = self.render_passes.cluster_lod.as_ref() {
-            if let Some(buffers) = pass.buffers.as_ref() {
-                buffers.write_source_indices_span(
-                    &self.gpu,
-                    first_index,
-                    values,
-                    &mut Vec::new(),
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Gap-B dynamic paging: set one page-pool **slot's** residency entry
-    /// (`value >= 0` ⇒ drawable, `-1` ⇒ free/evicted) in place (single 4-byte
-    /// write at `slot*4`). The GPU `resident` array is slot-indexed.
-    pub fn write_cluster_resident_entry(
-        &self,
-        slot: usize,
-        value: i32,
-    ) -> crate::error::Result<()> {
-        if let Some(pass) = self.render_passes.cluster_lod.as_ref() {
-            if let Some(buffers) = pass.buffers.as_ref() {
-                buffers.write_resident_entry(&self.gpu, slot, value)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Gap-B dynamic paging: overwrite ONE slot's GPU cluster page (its bounds /
-    /// errors / source-indices span) — the cut reads `pages[slot]`, so this is how a
-    /// streamed cluster's page lands. See
-    /// [`crate::render_passes::cluster_lod::buffers::ClusterLodBuffers::write_page_entry`].
-    pub fn write_cluster_page_entry(
-        &self,
-        slot: usize,
-        page: &crate::cluster_lod::ClusterPage,
-    ) -> crate::error::Result<()> {
-        if let Some(pass) = self.render_passes.cluster_lod.as_ref() {
-            if let Some(buffers) = pass.buffers.as_ref() {
-                buffers.write_page_entry(&self.gpu, slot, page, &mut Vec::new())?;
-            }
-        }
-        Ok(())
     }
 }
 

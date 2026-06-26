@@ -37,9 +37,9 @@ use crate::{
     pipeline_layouts::PipelineLayouts,
     pipelines::Pipelines,
     render_passes::{
-        coverage::render_pass::CoverageRenderPass,
-        display::render_pass::DisplayRenderPass, geometry::render_pass::GeometryRenderPass,
-        hzb::render_pass::HzbRenderPass, light_culling::render_pass::LightCullingRenderPass,
+        coverage::render_pass::CoverageRenderPass, display::render_pass::DisplayRenderPass,
+        geometry::render_pass::GeometryRenderPass, hzb::render_pass::HzbRenderPass,
+        light_culling::render_pass::LightCullingRenderPass,
         material_classify::render_pass::MaterialClassifyRenderPass,
         material_decal::render_pass::MaterialDecalRenderPass,
         material_opaque::render_pass::MaterialOpaqueRenderPass,

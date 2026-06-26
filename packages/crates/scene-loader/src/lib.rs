@@ -2281,6 +2281,24 @@ pub async fn materialize_cluster_mesh(
     let (gpu_pages, m_indices, resident_cluster_ids) = select_resident_clusters(cm, budget);
     let resident_tris = m_indices.len() / 3;
     let capped = m_indices.len() < cm.indices.len();
+    let resident_page_count = gpu_pages.len();
+
+    // The cluster-LOD GPU state is keyed by the render mesh `M`, but `M`'s key only
+    // exists after `add_raw_mesh` (below) — which needs `m_geometry_indices` from
+    // this block. So the block computes the upload payload and DEFERS the actual
+    // upload until `m_key` is known (right after `add_raw_mesh`).
+    enum ClusterUploads {
+        Paging {
+            gpu_pages_pool: Vec<awsm_renderer::cluster_lod::ClusterPage>,
+            slot_source: Vec<u32>,
+            resident_pool: Vec<i32>,
+            init: awsm_renderer::render_passes::cluster_lod::ClusterPagingInit,
+        },
+        Simple {
+            gpu_pages: Vec<awsm_renderer::cluster_lod::ClusterPage>,
+            identity_indices: Vec<u32>,
+        },
+    }
 
     // The compaction's `source_indices` is the EXPLODED raster index space, not
     // `cm.indices`: the renderer explodes geometry (pack_visibility_bytes) so
@@ -2298,7 +2316,10 @@ pub async fn materialize_cluster_mesh(
     //    capped frontier (like `?streambudget`), crack-free. Slot buffer =
     //    resident*page_verts verts — kept under the GPU cap by the conservative
     //    paging budget. Upload the resident table (identity) the cut variant reads.
-    let m_geometry_indices: Vec<u32> = if renderer.features().cluster_paging {
+    let (m_geometry_indices, uploads): (Vec<u32>, ClusterUploads) = if renderer
+        .features()
+        .cluster_paging
+    {
         // Gap B 20b-iv-b-1: a page pool with HEADROOM. The load-time frontier occupies
         // slots `0..frontier` (clamped, drawn); the pool has `pool_slots > frontier`
         // total so the per-frame streamer (20b-iv-b-2) can stream finer clusters into
@@ -2344,8 +2365,6 @@ pub async fn materialize_cluster_mesh(
         }
         let mut resident_pool = plan.resident.clone();
         resident_pool.resize(pool_slots, -1);
-        renderer.upload_cluster_pages(&gpu_pages_pool, &slot_source)?;
-        renderer.upload_cluster_resident(&resident_pool)?;
         // Arm the Gap-B paging manager (step 20a/20b-iii) with: the FULL un-clamped
         // DAG (the bake's real `[lod_error, parent_error)` per cluster — NOT the
         // clamped frontier `gpu_pages`) for the per-frame CPU cut; the CPU geometry
@@ -2377,14 +2396,14 @@ pub async fn materialize_cluster_mesh(
         // clusters in slots `0..frontier`, the rest `-1` (free, available to stream into).
         let mut slot_cluster: Vec<i32> = resident_cluster_ids.iter().map(|&c| c as i32).collect();
         slot_cluster.resize(pool_slots, -1);
-        renderer.init_cluster_paging(awsm_renderer::render_passes::cluster_lod::ClusterPagingInit {
+        let init = awsm_renderer::render_passes::cluster_lod::ClusterPagingInit {
             pages: original_pages,
             positions: cm.positions.clone(),
             normals: cm.normals.clone(),
             indices: cm.indices.clone(),
             slot_cluster,
             page_verts: CLUSTER_PAGE_VERTS,
-        });
+        };
         tracing::info!(
             "cluster paging (Gap B): page pool — {} slots × {} verts/slot = {} slot verts ({} resident tris capped to budget {}); cut draws the capped frontier crack-free",
             plan.slots_used,
@@ -2393,11 +2412,24 @@ pub async fn materialize_cluster_mesh(
             resident_tris,
             budget,
         );
-        slot_indices
+        (
+            slot_indices,
+            ClusterUploads::Paging {
+                gpu_pages_pool,
+                slot_source,
+                resident_pool,
+                init,
+            },
+        )
     } else {
         let identity_indices: Vec<u32> = (0..m_indices.len() as u32).collect();
-        renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
-        m_indices
+        (
+            m_indices,
+            ClusterUploads::Simple {
+                gpu_pages,
+                identity_indices,
+            },
+        )
     };
 
     // Cluster render mesh M = the (resident) cluster geometry as an ordinary mesh,
@@ -2405,7 +2437,7 @@ pub async fn materialize_cluster_mesh(
     // vertex_attribute_indices = m_indices (the normal material path). M is the
     // node's visible mesh; the GPU per-cluster cut's compacted indirect stream
     // draws into M's buffer (the geometry-pass override in mesh.rs keys on
-    // `cluster_lod.render_mesh == mesh_key`), so detail varies WITHIN the mesh by
+    // `cluster_lod.state(mesh_key)`), so detail varies WITHIN the mesh by
     // per-cluster distance. (load_cluster_lod is only reached when
     // virtual_geometry is on.)
     let m_raw = RawMeshData {
@@ -2422,11 +2454,30 @@ pub async fn materialize_cluster_mesh(
         morph: None,
     };
     let m_key = renderer.add_raw_mesh(m_raw, tk, mat)?;
-    renderer.set_cluster_render_mesh(m_key);
+    // Now that M exists, apply the deferred GPU uploads keyed by `m_key` so SEVERAL
+    // cluster meshes can be resident at once (each owns its cut/compaction state).
+    match uploads {
+        ClusterUploads::Paging {
+            gpu_pages_pool,
+            slot_source,
+            resident_pool,
+            init,
+        } => {
+            renderer.upload_cluster_pages(m_key, &gpu_pages_pool, &slot_source)?;
+            renderer.upload_cluster_resident(m_key, &resident_pool)?;
+            renderer.init_cluster_paging(m_key, init);
+        }
+        ClusterUploads::Simple {
+            gpu_pages,
+            identity_indices,
+        } => {
+            renderer.upload_cluster_pages(m_key, &gpu_pages, &identity_indices)?;
+        }
+    }
     tracing::info!(
         "cluster LOD (GPU): {asset_label} {} clusters ({} resident), render mesh M = {} tris{}, per-cluster cut drives draw",
         cm.cluster_count(),
-        gpu_pages.len(),
+        resident_page_count,
         resident_tris,
         if capped {
             // Print the EFFECTIVE budget actually applied (URL override or the
@@ -3345,7 +3396,8 @@ mod cluster_streaming_tests {
             for c in 0..4u32 {
                 refined.push(page(0.0, 1.0, 10_000 + r * 100 + c)); // child: [0,1)
                 for g in 0..4u32 {
-                    refined.push(page(0.0, 0.5, 50_000 + r * 1000 + c * 10 + g)); // [0,0.5)
+                    refined.push(page(0.0, 0.5, 50_000 + r * 1000 + c * 10 + g));
+                    // [0,0.5)
                 }
             }
         }
@@ -3375,12 +3427,12 @@ mod cluster_streaming_tests {
     fn a6_benchmark_table_recorded() {
         const BENCH: &str = include_str!("../../../../docs/nanite-lod-benchmark.md");
         for needle in [
-            "1,081,344",   // source tris
-            "2,393,468",   // full DAG tris
-            "29,850",      // resident render mesh M (capped)
-            "83 MB",       // bounded page pool VRAM
-            "14,835",      // near-camera drawn cut @ 1392×746
-            "4,908",       // far-camera drawn cut
+            "1,081,344", // source tris
+            "2,393,468", // full DAG tris
+            "29,850",    // resident render mesh M (capped)
+            "83 MB",     // bounded page pool VRAM
+            "14,835",    // near-camera drawn cut @ 1392×746
+            "4,908",     // far-camera drawn cut
         ] {
             assert!(
                 BENCH.contains(needle),
