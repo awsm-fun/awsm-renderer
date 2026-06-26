@@ -6,6 +6,7 @@ pub mod geometry;
 pub mod mesh;
 pub mod meta;
 pub mod morphs;
+#[cfg(feature = "lod")]
 pub mod skin_lod;
 pub mod skins;
 
@@ -232,6 +233,7 @@ impl AwsmRenderer {
                 .pipelines
                 .remove_render_pipeline_key(*mesh_key);
             self.drop_spatial_for_mesh(*mesh_key);
+            self.drop_cluster_lod_for_mesh(*mesh_key);
         }
 
         mesh_keys
@@ -247,10 +249,25 @@ impl AwsmRenderer {
                 .pipelines
                 .remove_render_pipeline_key(mesh_key);
             self.drop_spatial_for_mesh(mesh_key);
+            self.drop_cluster_lod_for_mesh(mesh_key);
         }
 
         removed
     }
+
+    /// Drop any cluster-LOD ("nanite") render state keyed by this mesh — so a
+    /// removed cluster render mesh `M` doesn't leave a dangling
+    /// [`crate::render_passes::cluster_lod::ClusterMeshState`] whose per-frame
+    /// paging/cut would then hit `MeshNotFound`. No-op without the `lod` feature or
+    /// when `mesh_key` isn't a cluster render mesh.
+    #[cfg(feature = "lod")]
+    fn drop_cluster_lod_for_mesh(&mut self, mesh_key: MeshKey) {
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.remove_mesh(mesh_key);
+        }
+    }
+    #[cfg(not(feature = "lod"))]
+    fn drop_cluster_lod_for_mesh(&mut self, _mesh_key: MeshKey) {}
 
     /// Splits a mesh out to a new transform key.
     pub fn split_mesh(&mut self, mesh_key: MeshKey) -> crate::error::Result<TransformKey> {

@@ -124,6 +124,7 @@ pub fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Camera(_) => "camera",
         NodeKind::Mesh { .. } => "mesh",
         NodeKind::SkinnedMesh { .. } => "skinned_mesh",
+        NodeKind::ClusterMesh { .. } => "cluster_mesh",
         NodeKind::Curve(_) => "curve",
         NodeKind::InstancesAlongCurve(_) => "instances",
         NodeKind::Line(_) => "line",

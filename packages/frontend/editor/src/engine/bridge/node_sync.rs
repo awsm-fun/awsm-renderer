@@ -603,6 +603,12 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         NodeKind::SkinnedMesh { skin, material, .. } => {
             materialize_skinned_mesh(entry.clone(), skin, material, declare_only).await
         }
+        // A view-only pre-baked nanite mesh: materialize through the SAME cluster
+        // path the player uses (no in-editor re-bake, no dense explode). Cluster
+        // data comes from the import-time `cluster_cache`.
+        NodeKind::ClusterMesh {
+            cluster, material, ..
+        } => materialize_cluster_mesh_node(entry.clone(), cluster, material, declare_only).await,
         NodeKind::Camera(cfg) => materialize_camera(entry.clone(), cfg).await,
         // Group: no procedural geometry, no renderer resource.
         _ => {}
@@ -1031,6 +1037,75 @@ async fn materialize_skinned_mesh(
             r.transforms.remove(sub_tk);
             r.remove_material(mat_key);
             tracing::error!("materialize skinned mesh (rig) failed: {e}");
+        }
+    }
+}
+
+/// Materialize a view-only [`NodeKind::ClusterMesh`] through the renderer's cluster
+/// pipeline — the SAME `scene-loader::materialize_cluster_mesh` the player uses, so a
+/// huge mesh renders as nanite (bounded draw + VRAM) with no in-editor re-bake and
+/// no dense visibility-geometry explode. The cluster DAG comes from the import-time
+/// [`super::cluster_cache`]; the render mesh rides a child of the NODE's transform so
+/// moving/scaling the node moves it. Tracked in `model_*` for teardown like any node.
+async fn materialize_cluster_mesh_node(
+    entry: Arc<RendererNode>,
+    cluster: awsm_renderer_editor_protocol::ClusterMeshRef,
+    material: Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
+    declare_only: bool,
+) {
+    let Some(cm) = super::cluster_cache::get(cluster.source) else {
+        tracing::warn!(
+            "ClusterMesh source {:?}: not in the cluster cache (re-import the nanite asset) — renders empty",
+            cluster.source
+        );
+        return;
+    };
+    let visible = entry.node.visible.get();
+    let shadow_cfg = entry
+        .node
+        .kind
+        .get_cloned()
+        .mesh_shadow()
+        .copied()
+        .unwrap_or_default();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
+    let parent_tk = entry.transform_key;
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    let mat_key = resolve_assigned_material(&mut r, material.as_ref(), None);
+    let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(parent_tk));
+    let label = cluster.source.0.to_string();
+    match awsm_renderer_scene_loader::materialize_cluster_mesh(&mut r, &cm, &label, sub_tk, mat_key)
+        .await
+    {
+        Ok(Some(mk)) => {
+            let _ = r.set_mesh_hidden(mk, !visible);
+            let _ = r.set_mesh_shadow_flags(mk, shadow_flags);
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("commit_load (cluster mesh): {e}");
+                }
+            }
+            drop(r);
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(sub_tk);
+            entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
+        }
+        Ok(None) => {
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::warn!(
+                "ClusterMesh {label}: materialize returned None (virtual_geometry off / empty mesh)"
+            );
+        }
+        Err(e) => {
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::error!("materialize cluster mesh failed: {e}");
         }
     }
 }

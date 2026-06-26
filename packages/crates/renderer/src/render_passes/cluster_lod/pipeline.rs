@@ -24,8 +24,9 @@ impl ClusterLodPipelines {
         cut_bg: &ClusterCutBindGroups,
         compaction_bg: &ClusterCompactionBindGroups,
     ) -> Result<Self> {
+        let paging = ctx.features.cluster_paging;
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys())
+            .ensure_keys(ctx.gpu, Self::shader_cache_keys(paging))
             .await?;
         let cut_layout = ctx.pipeline_layouts.get_key(
             ctx.gpu,
@@ -39,7 +40,7 @@ impl ClusterLodPipelines {
         )?;
         let cut_shader = ctx
             .shaders
-            .get_key(ctx.gpu, ShaderCacheKeyClusterCut)
+            .get_key(ctx.gpu, ShaderCacheKeyClusterCut { paging })
             .await?;
         let compaction_shader = ctx
             .shaders
@@ -64,9 +65,9 @@ impl ClusterLodPipelines {
         })
     }
 
-    pub fn shader_cache_keys() -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys(paging: bool) -> Vec<ShaderCacheKey> {
         vec![
-            ShaderCacheKey::from(ShaderCacheKeyClusterCut),
+            ShaderCacheKey::from(ShaderCacheKeyClusterCut { paging }),
             ShaderCacheKey::from(ShaderCacheKeyClusterCompaction),
         ]
     }

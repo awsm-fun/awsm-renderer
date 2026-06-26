@@ -140,7 +140,7 @@ pub struct RendererFeatures {
     /// the budget (which currently fail to fit), so flag-off is byte-identical.
     /// Requires [`Self::virtual_geometry`]. This is the **intermediate** residency
     /// win; true per-frame paging (stream finer clusters on demand) is the
-    /// follow-up — see `docs/plans/nanite-software-rasterize.md` Phase 5.
+    /// follow-up — see `docs/nanite-lod.md (streaming residency).
     pub cluster_streaming: bool,
 
     /// Optional override for the cluster-streaming triangle budget (Phase 5). When
@@ -150,6 +150,20 @@ pub struct RendererFeatures {
     /// `?streambudget=N` URL flag) can tune the cap without a rebuild — handy for
     /// forcing the cap on a small asset to exercise the path.
     pub cluster_streaming_budget: Option<usize>,
+
+    /// Enable cluster-LOD **dynamic per-frame paging** (Phase 5 Step 2 / Gap B):
+    /// hold cluster geometry in a fixed-capacity GPU page pool of equal-size slots
+    /// and a `resident: array<i32>` cluster→slot table, so a multi-million-triangle
+    /// asset shows full detail near the camera within a bounded VRAM budget — the
+    /// cut asks for finer pages where the camera is close, the CPU streams them in
+    /// and evicts cold ones (LRU), and where a wanted page isn't yet resident the
+    /// cut falls back to the nearest resident (coarser) ancestor, refining over the
+    /// next frame or two. Builds on [`Self::cluster_streaming`]'s residency cap (the
+    /// static intermediate); this makes residency camera-driven. When `false` (the
+    /// default), no page pool / resident table / feedback buffer is built and the
+    /// cluster path is exactly the `virtual_geometry` (+ optional `cluster_streaming`)
+    /// path — byte-identical. Requires [`Self::virtual_geometry`].
+    pub cluster_paging: bool,
 
     /// Whether to use the WebGPU `indirect-first-instance` feature for
     /// the non-instanced geometry pass's drawIndirect path.
@@ -221,6 +235,18 @@ mod tests {
         assert!(
             !features.virtual_geometry,
             "virtual_geometry must default to false (byte-identical without cluster LOD)"
+        );
+        assert!(
+            !features.cluster_streaming,
+            "cluster_streaming must default to false (byte-identical without streaming residency)"
+        );
+        assert_eq!(
+            features.cluster_streaming_budget, None,
+            "cluster_streaming_budget must default to None so the cap never bites unless asked"
+        );
+        assert!(
+            !features.cluster_paging,
+            "cluster_paging must default to false (byte-identical without dynamic paging)"
         );
         assert_eq!(
             features.indirect_first_instance,

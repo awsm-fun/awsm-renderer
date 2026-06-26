@@ -1254,6 +1254,10 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                // View-only cluster ("nanite") DAGs live only in `cluster_cache`;
+                // drop it too so the round-trip exercises the real save→reload
+                // restore (`restore_cluster_meshes` re-reads the persisted DAG).
+                crate::engine::bridge::cluster_cache::clear();
                 persistence::apply_inmem(self, toml, mesh_map).await?;
                 Toast::info("Round-trip: project reloaded in-memory (cold caches)");
                 Ok(None)
@@ -2891,6 +2895,55 @@ impl EditorController {
                 let _ = web_sys::Url::revoke_object_url(&url);
                 self.finish_model_import(result);
                 Ok(None)
+            }
+            // Import a PRE-BAKED nanite asset (awsm-lod-bake CLI output) as a
+            // VIEW-ONLY ClusterMesh node, rendered via the bounded cluster pipeline
+            // (the player path). No in-editor bake, no dense explode — large meshes
+            // come in without crashing. Geometry is non-editable (it IS the LOD).
+            EditorCommand::ImportNaniteAsset { clusters_url } => {
+                let _activity = crate::engine::activity::begin_activity("Importing nanite asset…");
+                match fetch_cluster_mesh(&clusters_url).await {
+                    Ok(cm) => {
+                        // Register an asset so the node's `ClusterMeshRef` resolves
+                        // (and the project round-trips the source reference).
+                        let asset_id = AssetId::new();
+                        self.scene.assets.lock().unwrap().entries.insert(
+                            asset_id,
+                            AssetEntry::new(SceneAssetSource::Url(clusters_url)),
+                        );
+                        // Stash the parsed DAG for the bridge materializer (must be in
+                        // the cache BEFORE the node is inserted + observed).
+                        crate::engine::bridge::cluster_cache::insert(asset_id, cm);
+                        // Build + insert the view-only node at the scene root; the
+                        // bridge observer materializes it through the cluster path.
+                        let node_id = NodeId::new();
+                        let spec = crate::controller::node_spec::NodeSpec {
+                            id: node_id,
+                            name: "Nanite Mesh".to_string(),
+                            transform: awsm_renderer_editor_protocol::Trs::default(),
+                            kind: NodeKind::ClusterMesh {
+                                cluster: awsm_renderer_editor_protocol::ClusterMeshRef {
+                                    source: asset_id,
+                                },
+                                material: None,
+                                shadow: Default::default(),
+                            },
+                            locked: false,
+                            visible: true,
+                            prefab: false,
+                            children: vec![],
+                        };
+                        let node = crate::controller::node_spec::node_from_spec(&spec);
+                        mutate::insert_under(&self.scene, None, node);
+                        self.scene.bump_revision();
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::Delete { id: node_id }))
+                    }
+                    Err(e) => {
+                        Toast::error(format!("Nanite import failed: {e}"));
+                        Ok(None)
+                    }
+                }
             }
             EditorCommand::ImportTextureFromUrl { id, url } => {
                 // Idempotent: skip if this id already exists (cross-tab replay).
@@ -5970,6 +6023,24 @@ thread_local! {
         Vec<awsm_renderer::lights::LightKey>,
         Vec<awsm_renderer::animation::AnimationClipKey>,
     )> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+}
+
+/// Fetch + parse a pre-baked cluster-LOD ("nanite") DAG (`<id>.clusters.bin`, JSON)
+/// from a URL — the `awsm-lod-bake` CLI output the `ImportNaniteAsset` command brings
+/// into the editor as a view-only [`NodeKind::ClusterMesh`].
+async fn fetch_cluster_mesh(url: &str) -> Result<awsm_renderer_lod_bake::ClusterMesh, String> {
+    let resp = gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch {url}: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("fetch {url}: HTTP {}", resp.status()));
+    }
+    let bytes = resp
+        .binary()
+        .await
+        .map_err(|e| format!("read {url}: {e}"))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("parse {url}: {e}"))
 }
 
 /// Record the resources a `LoadPlayerBundle` populate just created, so the next

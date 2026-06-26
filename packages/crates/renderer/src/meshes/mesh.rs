@@ -294,23 +294,22 @@ impl Mesh {
         // `draw_args.first_instance == M.mesh_meta_idx` routes the material.
         // Requires the storage-meta path; gated on `mesh_key == M` ⇒ no effect on
         // any other mesh, and inert while M is hidden.
+        #[cfg(feature = "lod")]
         if use_storage_meta {
-            if let Some(cluster_pass) = ctx
+            if let Some(state) = ctx
                 .render_passes
                 .cluster_lod
                 .as_ref()
-                .filter(|cp| cp.render_mesh == Some(mesh_key))
+                .and_then(|cp| cp.state(mesh_key))
             {
-                if let Some(buffers) = cluster_pass.buffers.as_ref() {
-                    render_pass.set_index_buffer(
-                        &buffers.compacted_indices_buffer,
-                        IndexFormat::Uint32,
-                        None,
-                        None,
-                    );
-                    render_pass.draw_indexed_indirect_with_f64(&buffers.draw_args_buffer, 0.0);
-                    return Ok(());
-                }
+                render_pass.set_index_buffer(
+                    &state.buffers.compacted_indices_buffer,
+                    IndexFormat::Uint32,
+                    None,
+                    None,
+                );
+                render_pass.draw_indexed_indirect_with_f64(&state.buffers.draw_args_buffer, 0.0);
+                return Ok(());
             }
         }
 

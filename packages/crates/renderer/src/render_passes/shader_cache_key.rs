@@ -1,7 +1,10 @@
 //! Render-pass shader cache keys.
 
+#[cfg(feature = "lod")]
+use crate::render_passes::cluster_lod::shader::cache_key::{
+    ShaderCacheKeyClusterCompaction, ShaderCacheKeyClusterCut,
+};
 use crate::render_passes::{
-    cluster_lod::shader::cache_key::{ShaderCacheKeyClusterCompaction, ShaderCacheKeyClusterCut},
     coverage::shader::cache_key::ShaderCacheKeyCoverage,
     display::shader::cache_key::ShaderCacheKeyDisplay,
     effects::shader::cache_key::ShaderCacheKeyEffects,
@@ -54,8 +57,10 @@ pub enum ShaderCacheKeyRenderPass {
     OcclusionCull(ShaderCacheKeyOcclusionCull),
     OcclusionCompaction(ShaderCacheKeyOcclusionCompaction),
     /// Cluster-LOD per-cluster cut compute (Phase B, B.2; `virtual_geometry`).
+    #[cfg(feature = "lod")]
     ClusterCut(ShaderCacheKeyClusterCut),
     /// Cluster-LOD compaction compute (Phase B, B.2; `virtual_geometry`).
+    #[cfg(feature = "lod")]
     ClusterCompaction(ShaderCacheKeyClusterCompaction),
     Effects(ShaderCacheKeyEffects),
     Display(ShaderCacheKeyDisplay),

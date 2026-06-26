@@ -57,14 +57,27 @@ pub struct CoverageReadbackState {
     pub pending_snapshot: Option<Vec<(MeshKey, u32)>>,
 }
 
-/// One-shot verification of the Phase B per-cluster GPU cut: read the `selected`
-/// flags back once and log how many clusters the GPU cut chose (a sanity check
-/// vs the tested `select_cut_per_cluster` — non-zero and ≤ cluster_count).
-/// `inflight` single-buffers the `mapAsync`; `logged` fires it only once.
-#[derive(Default)]
+/// Verification of the Phase B per-cluster GPU cut+compaction: reads
+/// `draw_args.index_count` back and logs the drawn cut size (a sanity check vs the
+/// tested `select_cut_per_cluster`). `inflight` single-buffers the `mapAsync`.
+/// Re-fires on a cadence (frame 5, then every 30) — NOT one-shot — so the drawn cut
+/// is observable as the camera/scene change (Gap-B paging A2 + the A3 cut-vs-source
+/// numbers); the async handler logs only when the value changes (`last_value`,
+/// init `-1`).
 pub struct ClusterCutReadback {
     pub inflight: bool,
-    pub logged: bool,
+    pub frames: u64,
+    pub last_value: i64,
+}
+
+impl Default for ClusterCutReadback {
+    fn default() -> Self {
+        Self {
+            inflight: false,
+            frames: 0,
+            last_value: -1,
+        }
+    }
 }
 
 /// Per-frame state for the MSAA edge-budget overflow readback loop.
@@ -218,6 +231,7 @@ pub struct AwsmRenderer {
     /// scene loader only when `features.lod` is on (otherwise empty, and every
     /// instance draws its base mesh). The per-frame selection pass reads this to
     /// choose a level per instance. See [`crate::lod`].
+    #[cfg(feature = "lod")]
     pub lod: crate::lod::LodRegistry,
     /// GPU coverage producer buffers. The producer pass
     /// (`render_passes/coverage/`) atomic-adds per-pixel into
@@ -2120,6 +2134,7 @@ impl AwsmRendererBuilder {
             decal_classify_buffers,
             compaction_buffers,
             coverage: coverage::MeshCoverage::default(),
+            #[cfg(feature = "lod")]
             lod: crate::lod::LodRegistry::default(),
             coverage_buffers,
             coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
@@ -2330,6 +2345,10 @@ impl AwsmRendererBuilder {
 //   render loop's pre-frame phase.
 // - `wait_for_pipelines_ready` is the test-only helper.
 
+/// Cluster-LOD (virtual geometry) GPU upload + paging wrappers. Compiled only
+/// with the `lod` feature; the scene-loader's calls to these are gated the same
+/// way, so a no-LOD build omits them entirely.
+#[cfg(feature = "lod")]
 impl AwsmRenderer {
     /// Upload a cluster mesh's pages into the cluster-LOD cut pass (Phase B,
     /// B.2). No-op unless `virtual_geometry` built the pass. Called once at mesh
@@ -2337,24 +2356,56 @@ impl AwsmRenderer {
     /// bind group. Disjoint sub-borrows of `self` (pass vs gpu vs layouts).
     pub fn upload_cluster_pages(
         &mut self,
+        render_mesh: crate::meshes::MeshKey,
         pages: &[crate::cluster_lod::ClusterPage],
         indices: &[u32],
     ) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.upload_pages(&self.gpu, &self.bind_group_layouts, pages, indices)?;
+            pass.upload_pages(
+                render_mesh,
+                &self.gpu,
+                &self.bind_group_layouts,
+                pages,
+                indices,
+            )?;
         }
         Ok(())
     }
 
-    /// Register the cluster render mesh `M` (the full cluster geometry) whose
-    /// exploded vertex buffer the compacted indirect stream draws into. No-op
-    /// unless `virtual_geometry` built the pass.
-    pub fn set_cluster_render_mesh(&mut self, mesh_key: crate::meshes::MeshKey) {
+    /// Upload the Gap-B dynamic-paging residency table (`cluster_id → page-pool
+    /// slot`, `-1` = absent). Call after [`Self::upload_cluster_pages`]. No-op
+    /// unless `virtual_geometry` built the pass; only the `cluster_paging` loader
+    /// path calls it (so the non-paging path allocates no resident buffer).
+    pub fn upload_cluster_resident(
+        &mut self,
+        render_mesh: crate::meshes::MeshKey,
+        resident: &[i32],
+    ) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
-            pass.render_mesh = Some(mesh_key);
+            pass.upload_resident(render_mesh, &self.gpu, &self.bind_group_layouts, resident)?;
         }
+        Ok(())
     }
 
+    /// Arm the Gap-B dynamic-paging manager with the full DAG + CPU geometry + the
+    /// initial residency seed (see
+    /// [`crate::render_passes::cluster_lod::ClusterPagingInit`]). The pages carry the
+    /// bake's real `[lod_error, parent_error)` (NOT the resident frontier's clamped
+    /// values). Call after [`Self::upload_cluster_pages`]; only the `cluster_paging`
+    /// loader path calls it, so the shipped path stays byte-identical. No-op unless
+    /// the pass exists.
+    pub fn init_cluster_paging(
+        &mut self,
+        render_mesh: crate::meshes::MeshKey,
+        init: crate::render_passes::cluster_lod::ClusterPagingInit,
+    ) {
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.init_paging(render_mesh, init);
+        }
+    }
+}
+
+impl AwsmRenderer {
     /// Submit a batch of pipeline groups for compile. Returns ids
     /// immediately in `Pending` state; transitions to `Ready` /
     /// `Failed` surface via [`Self::drain_pipeline_status_events`] or
@@ -2852,4 +2903,47 @@ impl AwsmRenderer {
 /// the sync scope). This unlocks Priority 3 end-to-end.
 pub fn edge_resolve_supported(_gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu) -> bool {
     true
+}
+
+/// Absolute byte offset of page-pool slot `slot` in the cluster render mesh's
+/// visibility-data section (Gap-B dynamic paging): `mesh_data_offset +
+/// slot*slot_bytes`, where `slot_bytes` is one slot's packed length
+/// (`CLUSTER_PAGE_VERTS*56`). Pure ⇒ unit-tested without a device; the slot stride
+/// equals the data length so every slot is interchangeable (the paging invariant).
+#[cfg(feature = "lod")]
+pub(crate) fn cluster_slot_data_offset(
+    mesh_data_offset: usize,
+    slot: usize,
+    slot_bytes: usize,
+) -> usize {
+    mesh_data_offset + slot * slot_bytes
+}
+
+#[cfg(all(test, feature = "lod"))]
+mod cluster_slot_tests {
+    use super::cluster_slot_data_offset;
+
+    #[test]
+    fn slot_data_offset_is_base_plus_slot_stride() {
+        // One slot = CLUSTER_PAGE_VERTS(384) * 56 B = 21504 B.
+        let slot_bytes = 384 * 56;
+        assert_eq!(cluster_slot_data_offset(0, 0, slot_bytes), 0);
+        assert_eq!(cluster_slot_data_offset(0, 1, slot_bytes), 21504);
+        assert_eq!(cluster_slot_data_offset(0, 5, slot_bytes), 5 * 21504);
+        // A non-zero mesh section base (the pool packs many meshes) just shifts it.
+        let base = 1_000_000;
+        assert_eq!(cluster_slot_data_offset(base, 0, slot_bytes), base);
+        assert_eq!(
+            cluster_slot_data_offset(base, 3, slot_bytes),
+            base + 3 * 21504
+        );
+        // Slots are contiguous + non-overlapping: slot s ends exactly where s+1
+        // begins.
+        for s in 0..8usize {
+            assert_eq!(
+                cluster_slot_data_offset(base, s, slot_bytes) + slot_bytes,
+                cluster_slot_data_offset(base, s + 1, slot_bytes)
+            );
+        }
+    }
 }

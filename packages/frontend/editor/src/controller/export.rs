@@ -208,6 +208,14 @@ pub async fn bake_player_bundle(
         }
     }
 
+    // 5. View-only cluster ("nanite") meshes: the pre-baked DAG per `ClusterMesh`
+    //    node, read from the session-local `cluster_cache`. `cluster_files` returns
+    //    paths already rooted at `assets/<source>.clusters.bin` — the SAME name the
+    //    runtime `NodeKind::ClusterMesh` arm fetches — so they go in verbatim.
+    for (path, bytes) in crate::controller::persistence::cluster_files(ctrl) {
+        files.push(BundleFile::new(path, bytes));
+    }
+
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
 }
 

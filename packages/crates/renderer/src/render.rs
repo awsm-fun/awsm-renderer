@@ -695,6 +695,7 @@ impl AwsmRenderer {
         // BEFORE `collect_renderables` reads the `!hidden` set, so this frame's
         // renderables already reflect the selection. No-op unless the `lod`
         // feature loaded chains.
+        #[cfg(feature = "lod")]
         self.update_lod_selection();
 
         // Populate the pooled renderable lists BEFORE building the
@@ -702,6 +703,16 @@ impl AwsmRenderer {
         // clear-and-extend the pool's Vecs in place, while ctx holds
         // immutable references into `self`.
         self.collect_renderables()?;
+
+        // Gap-B dynamic paging (CPU-driven): run the per-frame residency update
+        // here — `self` is still fully mutable (before `ctx` pins `&self.render_passes`).
+        // No-op unless `cluster_paging` armed the manager at load; step 20a only
+        // computes + logs the desired cut against the live camera (no geometry
+        // streaming yet), so the cut dispatch later still draws the unchanged
+        // frontier ⇒ byte-identical render. `queue.writeBuffer`-based streaming in
+        // later slices is also valid here (ordered before the submitted pass).
+        #[cfg(feature = "lod")]
+        self.update_cluster_paging();
 
         // Take the reused per-frame cull-path scratch out of `self` BEFORE the
         // `renderables`/`ctx` borrows below pin `&self` — it's restored at the end
@@ -857,53 +868,26 @@ impl AwsmRenderer {
         // geometry pass's cluster draw override (mesh.rs) reads them THIS frame.
         // Gated by `virtual_geometry` + a loaded cluster mesh; independent of
         // `gpu_occlusion`.
+        #[cfg(feature = "lod")]
         let mut cluster_cut_kick: Option<(web_sys::GpuBuffer, u32)> = None;
+        #[cfg(feature = "lod")]
         if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
-            if cluster_pass.cluster_count > 0 {
+            if !cluster_pass.states.is_empty() {
                 if let Some(cam) = self.camera.last_matrices.as_ref() {
                     let proj_yy = cam.projection.y_axis.y.abs();
                     if proj_yy > 1e-6 {
                         if let Ok((_, vh)) = self.gpu.current_context_texture_size() {
-                            cluster_pass.dispatch(
+                            // Cut + compaction for EVERY resident cluster mesh; returns
+                            // the diagnostics readback kick (first resident mesh, on
+                            // cadence) for the async consumer further below.
+                            cluster_cut_kick = cluster_pass.dispatch_all(
                                 &ctx,
+                                &self.cluster_cut_readback,
                                 cam.position_world,
                                 1.0 / proj_yy,
                                 vh as f32,
                                 Self::LOD_ERROR_THRESHOLD_PX,
                             )?;
-                            // first_instance = the render mesh M's meta slot, so the
-                            // indirect draw's vertex shader resolves M's material
-                            // meta (geometry_mesh_metas[instance_index]).
-                            let first_instance = cluster_pass
-                                .render_mesh
-                                .and_then(|m| ctx.meshes.meta.geometry_buffer_offset(m).ok())
-                                .map(|off| {
-                                    off as u32
-                                        / crate::meshes::meta::geometry_meta::GEOMETRY_MESH_META_BYTE_ALIGNMENT
-                                            as u32
-                                })
-                                .unwrap_or(0);
-                            cluster_pass.dispatch_compaction(&ctx, first_instance)?;
-                            // One-shot readback verification of draw_args.index_count.
-                            let want = {
-                                let st = self.cluster_cut_readback.lock().unwrap();
-                                !st.inflight && !st.logged
-                            };
-                            if want {
-                                if let Some(buffers) = cluster_pass.buffers.as_ref() {
-                                    ctx.command_encoder.copy_buffer_to_buffer(
-                                        &buffers.draw_args_buffer,
-                                        0,
-                                        &buffers.readback_buffer,
-                                        0,
-                                        4,
-                                    )?;
-                                    cluster_cut_kick = Some((
-                                        buffers.readback_buffer.clone(),
-                                        cluster_pass.cluster_count,
-                                    ));
-                                }
-                            }
                         }
                     }
                 }
@@ -1658,6 +1642,7 @@ impl AwsmRenderer {
         // coverage readback shape). Logs how many clusters the GPU cut selected —
         // a sanity check vs the tested `select_cut_per_cluster` (expect non-zero
         // and < total at a normal camera distance).
+        #[cfg(feature = "lod")]
         if let Some((readback_buffer, total)) = cluster_cut_kick {
             let state = std::sync::Arc::clone(&self.cluster_cut_readback);
             state.lock().unwrap().inflight = true;
@@ -1666,13 +1651,16 @@ impl AwsmRenderer {
                     Ok(bytes) if bytes.len() >= 4 => {
                         let index_count =
                             u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                        tracing::info!(
-                            "cluster compaction (GPU): draw_args.index_count = {index_count} \
-                             ({} tris) over {total} clusters",
-                            index_count / 3
-                        );
                         let mut s = state.lock().unwrap();
-                        s.logged = true;
+                        if s.last_value != index_count as i64 {
+                            s.last_value = index_count as i64;
+                            tracing::info!(
+                                "cluster compaction (GPU): draw_args.index_count = {index_count} \
+                                 ({} tris) over {total} clusters [frame {}]",
+                                index_count / 3,
+                                s.frames
+                            );
+                        }
                         s.inflight = false;
                     }
                     Ok(_) => {
@@ -2374,6 +2362,7 @@ fn camera_near_far_from_projection(
 
 /// Largest world-space axis scale of an object→world transform — used to project
 /// a mesh's object-space LOD error to world (and thence screen) size.
+#[cfg(feature = "lod")]
 fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
     let sx = m.x_axis.truncate().length();
     let sy = m.y_axis.truncate().length();
@@ -2381,9 +2370,50 @@ fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
     sx.max(sy).max(sz)
 }
 
+#[cfg(feature = "lod")]
 impl AwsmRenderer {
     /// Geometric-error budget for discrete-LOD level selection, in screen pixels.
     const LOD_ERROR_THRESHOLD_PX: f32 = 1.0;
+
+    /// Per-frame Gap-B dynamic-paging update (CPU-driven). No-op unless
+    /// `cluster_paging` armed the manager at load. Reads the live camera, then runs
+    /// the manager's per-frame cut over the full DAG (pooled scratch ⇒ no per-frame
+    /// allocation). Step 20a logs how the desired cut tracks the camera and does NOT
+    /// stream geometry, so the render stays byte-identical; later slices act on the
+    /// computed desired set to page slots in/out.
+    pub(crate) fn update_cluster_paging(&mut self) {
+        if !self.features.cluster_paging {
+            return;
+        }
+        let Some(cam) = self.camera.last_matrices.as_ref() else {
+            return;
+        };
+        let cam_pos = cam.position_world;
+        let proj_yy = cam.projection.y_axis.y.abs();
+        if proj_yy <= 1e-6 {
+            return;
+        }
+        let tan_half_fov_y = 1.0 / proj_yy;
+        let viewport_h = match self.gpu.current_context_texture_size() {
+            Ok((_, h)) => h as f32,
+            Err(_) => return,
+        };
+        // Disjoint inline field borrows: gpu + meshes (shared) vs render_passes (mut).
+        let gpu = &self.gpu;
+        let meshes = &self.meshes;
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            if let Err(e) = pass.stream_paging(
+                gpu,
+                meshes,
+                cam_pos,
+                tan_half_fov_y,
+                viewport_h,
+                Self::LOD_ERROR_THRESHOLD_PX,
+            ) {
+                tracing::warn!("cluster paging stream_paging failed: {e:?}");
+            }
+        }
+    }
 
     /// Per-frame discrete-LOD level selection (visibility-swap). For each
     /// registered chain, pick a level by projected screen-space error and show

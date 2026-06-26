@@ -110,6 +110,7 @@ use awsm_renderer::animation::AnimationClipKey;
 use awsm_renderer::cameras::CameraKey;
 use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
+#[cfg(feature = "lod")]
 use awsm_renderer::lod::{LodChain, LodLevel};
 use awsm_renderer::materials::unlit::UnlitMaterial;
 use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialKey};
@@ -1015,6 +1016,35 @@ async fn materialize(
         // composing a user's *repositioning* of the whole rig (it self-places at the
         // renderer root, so moving the scene node doesn't move it) — separate from
         // the now-working joint animation.
+        // Pre-baked cluster ("nanite") mesh — fetch its baked DAG side file and
+        // materialize through the bounded cluster pipeline (same path the editor's
+        // view-only import uses). A no-op stub when the `lod` feature is off.
+        #[cfg(feature = "lod")]
+        NodeKind::ClusterMesh { cluster, .. } => {
+            let id = cluster.source.0.to_string();
+            let path = format!(
+                "{ASSETS_DIR}/{}",
+                awsm_renderer_lod_bake::cluster_mesh_filename(&id)
+            );
+            if let Ok(bytes) = assets.fetch(&path).await {
+                match serde_json::from_slice::<awsm_renderer_lod_bake::ClusterMesh>(&bytes) {
+                    Ok(cm) => {
+                        if let Some(key) =
+                            materialize_cluster_mesh(renderer, &cm, &id, tk, mat).await?
+                        {
+                            maps.meshes.entry(node.id).or_insert(key);
+                            maps.node_meshes.entry(node.id).or_default().push(key);
+                            loaded.meshes.push(key);
+                        }
+                    }
+                    Err(e) => tracing::warn!("cluster mesh `{path}`: unreadable: {e}"),
+                }
+            } else {
+                tracing::warn!("cluster mesh asset `{path}` not found");
+            }
+        }
+        #[cfg(not(feature = "lod"))]
+        NodeKind::ClusterMesh { .. } => {}
         NodeKind::SkinnedMesh { skin, .. } => {
             let (keys, node_index_transforms) =
                 load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
@@ -1838,6 +1868,7 @@ fn warn_decal_feature_off() {
 /// to this many triangles when `cluster_streaming` is on, so a multi-million-tri
 /// asset loads instead of overflowing the GPU pool (the exploded vertex buffer is
 /// `M`'s dominant cost at 56 B / index). Tunable.
+#[cfg(feature = "lod")]
 const CLUSTER_STREAMING_BUDGET_TRIS: usize = 1_000_000;
 
 /// Select the resident cluster set for capped streaming (Phase 5).
@@ -1852,16 +1883,20 @@ const CLUSTER_STREAMING_BUDGET_TRIS: usize = 1_000_000;
 /// flag off, or a small mesh), returns every cluster with `cm.indices` verbatim,
 /// so the result is byte-identical to the non-streaming path.
 ///
-/// A child cluster `x` records `x.parent_error == parent.lod_error` (the DAG's
-/// tiling invariant), so "cluster `c` has a resident child" ⇔ `c.lod_error` is
-/// some resident cluster's `parent_error`. Residency is an `lod_error` frontier,
-/// so it follows the cut's own error ordering; any seam at the frontier between
-/// differing resident levels is the documented residual gap that true per-frame
-/// paging (stream finer clusters on demand) closes.
+/// Over budget, the resident set is the finest **complete-antichain** cut that
+/// fits (a uniform-error-threshold cut over the DAG, which the bake guarantees is
+/// crack-free) — a SOFT budget. This is watertight at every camera distance, unlike
+/// the older hard-tri cap that left a partial frontier and seamed. Per-frame paging
+/// (Gap B) later restores *within-mesh* camera-driven detail on top of this.
+#[cfg(feature = "lod")]
 fn select_resident_clusters(
     cm: &awsm_renderer_lod_bake::ClusterMesh,
     budget_tris: usize,
-) -> (Vec<awsm_renderer::cluster_lod::ClusterPage>, Vec<u32>) {
+) -> (
+    Vec<awsm_renderer::cluster_lod::ClusterPage>,
+    Vec<u32>,
+    Vec<usize>,
+) {
     let to_page = |c: &awsm_renderer_lod_bake::ClusterPage, first_index: u32, lod_error: f32| {
         awsm_renderer::cluster_lod::ClusterPage {
             center: c.center,
@@ -1882,60 +1917,288 @@ fn select_resident_clusters(
             .iter()
             .map(|c| to_page(c, c.first_index, c.lod_error))
             .collect();
-        return (pages, cm.indices.clone());
+        let ids = (0..cm.clusters.len()).collect();
+        return (pages, cm.indices.clone(), ids);
     }
-    // Accumulate the resident set coarsest-first (largest lod_error) until the
-    // triangle budget — a HARD cap (not an `lod_error >= E_min` threshold, which
-    // would re-include the whole frontier level and bust the budget). Coarse
-    // levels are tiny so they all fit; the budget cuts off partway through the
-    // finest included level, so only that frontier level is partial. Always keep
-    // at least the single coarsest cluster.
-    let mut by_err: Vec<usize> = (0..cm.clusters.len()).collect();
-    by_err.sort_by(|&a, &b| {
-        cm.clusters[b]
-            .lod_error
-            .partial_cmp(&cm.clusters[a].lod_error)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Pick a COMPLETE-ANTICHAIN frontier, not a hard-tri partial cut. The runtime
+    // per-cluster cut at a uniform error threshold `T` selects exactly
+    // `{c : c.lod_error <= T < c.parent_error}` — a crack-free antichain, because
+    // the bake guarantees each root→leaf path's `[lod_error, parent_error)`
+    // intervals tile `[0, ∞)` (one cluster per path contains `T`). A *partial*
+    // frontier (the old hard-tri cap, which cut off mid-level) borders coarser-only
+    // regions and tears; a whole antichain never does. So: evaluate the cut at each
+    // candidate threshold and keep the FINEST (smallest `T` ⇒ most detail) whose
+    // triangle count fits the budget — a SOFT budget (we may undershoot to stay
+    // whole). Candidate thresholds are the clusters' own `lod_error` breakpoints
+    // (the level boundaries); ascending `T` ⇒ monotonically coarser/cheaper cuts.
+    let mut thresholds: Vec<f32> = cm.clusters.iter().map(|c| c.lod_error).collect();
+    thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    thresholds.dedup();
+
     let budget_idx = budget_tris * 3;
-    let mut resident = vec![false; cm.clusters.len()];
-    let mut acc = 0usize;
-    for &i in &by_err {
-        let ic = cm.clusters[i].index_count as usize;
-        if acc > 0 && acc + ic > budget_idx {
+    let cut_at = |t: f32| -> (usize, Vec<usize>) {
+        let mut idx = 0usize;
+        let mut sel = Vec::new();
+        for (i, c) in cm.clusters.iter().enumerate() {
+            if c.lod_error <= t && t < c.parent_error {
+                idx += c.index_count as usize;
+                sel.push(i);
+            }
+        }
+        (idx, sel)
+    };
+
+    // Finest threshold whose whole cut fits; fall back to the coarsest cut (the
+    // roots — always tiny) if even that overflows, so we never return empty.
+    let mut chosen: Option<Vec<usize>> = None;
+    for &t in &thresholds {
+        let (idx, sel) = cut_at(t);
+        if idx <= budget_idx && !sel.is_empty() {
+            chosen = Some(sel);
             break;
         }
-        resident[i] = true;
-        acc += ic;
     }
-    // A resident cluster is a LEAF (no resident DAG child) iff its `lod_error` is
-    // not some resident cluster's `parent_error`. Leaves clamp to 0 so the cut
-    // covers all budgets below them (watertight close-up at the capped detail).
-    // (Seams where the partial frontier level borders coarser-only regions are the
-    // documented residual gap that per-frame paging closes.)
-    let resident_parent_errors: std::collections::HashSet<u32> = cm
-        .clusters
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| resident[*i])
-        .map(|(_, c)| c.parent_error.to_bits())
-        .collect();
-    let mut m_indices: Vec<u32> = Vec::with_capacity(acc);
+    let sel = chosen.unwrap_or_else(|| cut_at(*thresholds.last().unwrap()).1);
+
+    // Emit the frontier as an always-drawn cut: `lod_error = 0` and
+    // `parent_error = MAX` so the runtime selects every resident cluster at any
+    // camera distance (the resident set is the *only* representation — never
+    // refined past it, never coarsened below it). The antichain tiles the surface,
+    // so the draw is watertight at all distances and bounded by the budget.
+    let mut m_indices: Vec<u32> = Vec::new();
     let mut pages = Vec::new();
-    for (i, c) in cm.clusters.iter().enumerate() {
-        if !resident[i] {
-            continue;
-        }
+    for &i in &sel {
+        let c = &cm.clusters[i];
         let first_index = m_indices.len() as u32;
         let s = c.first_index as usize;
         m_indices.extend_from_slice(&cm.indices[s..s + c.index_count as usize]);
-        let is_leaf = !resident_parent_errors.contains(&c.lod_error.to_bits());
-        let lod_error = if is_leaf { 0.0 } else { c.lod_error };
-        pages.push(to_page(c, first_index, lod_error));
+        let mut page = to_page(c, first_index, 0.0);
+        page.parent_error = f32::MAX;
+        pages.push(page);
     }
-    (pages, m_indices)
+    // `sel` is the chosen antichain's cm-cluster ids, in the SAME order as `pages`
+    // (⇒ as the page-pool slots), so the caller can seed `slot_cluster`.
+    (pages, m_indices, sel)
 }
 
+/// Exploded vertices per page slot: a bake cluster is ≤128 triangles, and the
+/// raster geometry is exploded (3 unique verts / triangle), so a slot must hold
+/// ≤ 384 verts. Fixed so every slot is interchangeable (the basis of paging).
+#[cfg(feature = "lod")]
+const CLUSTER_PAGE_VERTS: usize = 384;
+
+/// Default page-pool capacity (slots) for dynamic paging (Gap B). 8192 slots ×
+/// 384 verts × 56 B ≈ 168 MB — the VRAM-budget knob. A host can size it; this is
+/// the default ceiling the working set evicts against.
+// Used by the fixed-pool + LRU eviction path (Gap B step 3/4); step 2 sizes the
+// pool to the (bounded) resident count.
+#[allow(dead_code)]
+#[cfg(feature = "lod")]
+const CLUSTER_PAGE_POOL_SLOTS: usize = 8192;
+
+/// Default residency budget (triangles) when `cluster_paging` is on (Gap B step 2).
+/// The page pool pads each resident cluster to a fixed `CLUSTER_PAGE_VERTS` slot, so
+/// the resident set must stay small enough that `slots * page_verts * vertex_stride`
+/// fits well under the GPU buffer cap (~512 MB). 30k tris → a few-hundred to ~2k
+/// resident clusters ⇒ a slot buffer comfortably in budget. `?streambudget=N`
+/// overrides. (Camera-driven streaming later refines detail within this pool.)
+#[cfg(feature = "lod")]
+const CLUSTER_PAGING_BUDGET_TRIS: usize = 30_000;
+
+/// A static page-pool residency plan: which slot each cluster occupies (`-1` =
+/// not resident / overflowed) plus occupancy stats. This is the CPU side of the
+/// Gap-B page pool — the fixed-slot indirection that lets clusters stream in/out
+/// independently. Step 1 builds + validates it; the GPU upload + cut-shader read
+/// of `resident` + dynamic swap land in the following steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "lod")]
+struct PagePoolPlan {
+    /// `resident[cluster_id]` = slot index, or `-1` if not resident.
+    resident: Vec<i32>,
+    /// Slots actually occupied (= residents that fit).
+    slots_used: usize,
+    /// Resident clusters that didn't fit `pool_slots` (working set too big for
+    /// the VRAM budget — these fall back to a coarser resident ancestor at runtime).
+    overflow: usize,
+}
+
+/// Assign each resident cluster a page-pool slot, in order, up to `pool_slots`.
+/// Pure + deterministic (the GPU-free core of paging, unit-tested without a device).
+#[cfg(feature = "lod")]
+fn plan_page_pool(
+    cluster_count: usize,
+    resident_cluster_ids: &[usize],
+    pool_slots: usize,
+) -> PagePoolPlan {
+    let mut resident = vec![-1i32; cluster_count];
+    let mut slots_used = 0usize;
+    let mut overflow = 0usize;
+    for &c in resident_cluster_ids {
+        if c >= cluster_count {
+            continue; // defensive: ignore out-of-range ids
+        }
+        if slots_used < pool_slots {
+            resident[c] = slots_used as i32;
+            slots_used += 1;
+        } else {
+            overflow += 1;
+        }
+    }
+    PagePoolPlan {
+        resident,
+        slots_used,
+        overflow,
+    }
+}
+
+/// Pack each resident cluster's geometry into a fixed `page_verts`-sized page-pool
+/// slot (Gap B step 2). Returns `(slot_indices, source_indices)`:
+/// - `slot_indices`: the vertex-attribute index buffer for the cluster render mesh
+///   `M`, padded so slot `s` occupies `[s*page_verts, s*page_verts+page_verts)`;
+///   a cluster's `index_count` indices sit at the slot start, the remainder repeats
+///   the first (a degenerate vert that is never indexed by the draw). The renderer
+///   explodes `M` in this order, so slot `s`'s exploded verts are self-contained
+///   and swappable independently — the basis of paging.
+/// - `source_indices`: per-cluster-contiguous (page order, so each page's existing
+///   `first_index` still addresses it), with **slot-relative values**
+///   `s*page_verts + k` that the compaction copies into the draw stream.
+///
+/// Under full residency (`resident[c] = c`'s slot, no `-1`) the drawn triangle set
+/// is unchanged — only the vertex buffer is slot-laid-out + padded — so the render
+/// is identical; eviction later overwrites a slot without touching its neighbours.
+/// `page_spans[c] = (first_index, index_count)` of cluster `c` in `m_indices`
+/// (each `ClusterPage`'s span). Decoupled from `ClusterPage` so it's testable
+/// without constructing GPU page structs.
+#[cfg(feature = "lod")]
+fn build_slot_geometry(
+    page_spans: &[(u32, u32)],
+    m_indices: &[u32],
+    resident: &[i32],
+    page_verts: usize,
+) -> (Vec<u32>, Vec<u32>) {
+    // Allocate `num_slots` slots (slot ids are 0..num_slots-1 for the contiguous
+    // identity residency the loader builds). BOTH buffers are SLOT-ALIGNED: slot `s`
+    // owns `[s*page_verts, (s+1)*page_verts)` in each. That lets the per-frame
+    // streamer rewrite ONE slot's geometry + draw-indices independently (Gap B
+    // 20b-iv). A page's `first_index` is therefore `slot*page_verts` (set by the
+    // caller), and the compaction reads its first `index_count` entries.
+    let num_slots = resident.iter().filter(|&&s| s >= 0).count();
+    let mut slot_indices = vec![0u32; num_slots * page_verts];
+    let mut source_indices = vec![0u32; num_slots * page_verts];
+    for (c, &(first_index, index_count)) in page_spans.iter().enumerate() {
+        let slot = resident[c];
+        if slot < 0 {
+            continue;
+        }
+        let base = slot as usize * page_verts;
+        let f = first_index as usize;
+        let ic = (index_count as usize).min(page_verts);
+        let pad = if ic > 0 { m_indices[f] } else { 0 };
+        for k in 0..page_verts {
+            slot_indices[base + k] = if k < ic { m_indices[f + k] } else { pad };
+            // Slot-relative draw index for k<ic; the slot's remaining region is
+            // padding the page (index_count=ic) never reads — point it at the slot base.
+            source_indices[base + k] = (base + if k < ic { k } else { 0 }) as u32;
+        }
+    }
+    (slot_indices, source_indices)
+}
+
+/// DAG group key: exact f32 bits of a (sphere center+radius, error) — used to match
+/// a cluster's `parent_*` to another cluster's `lod_*` (the bake assigns the same
+/// group sphere/error to both sides, so exact-bits compares).
+#[cfg(feature = "lod")]
+type DagGroupKey = [u32; 5];
+
+/// For each cluster `F` (by index), the finer clusters whose group produced it —
+/// `F`'s refinement set for dynamic paging (Gap B step 3). The DAG is GROUP-based:
+/// clusters created by one group share `F`'s lod key and flip together (crack-free),
+/// so a finer cluster `c` is a child of `F` iff `c`'s PARENT key == `F`'s LOD key.
+/// Refining `F` streams its whole finer group in. Keyed (decoupled from `ClusterPage`)
+/// so it's unit-testable without GPU structs. Build on the ORIGINAL bake clusters
+/// (the resident pages' lod/parent errors are clamped to 0/MAX).
+#[allow(dead_code)] // wired into the step-3 stream/refine path
+#[cfg(feature = "lod")]
+fn cluster_finer_group(lod_keys: &[DagGroupKey], parent_keys: &[DagGroupKey]) -> Vec<Vec<usize>> {
+    use std::collections::HashMap;
+    let mut by_lod: HashMap<DagGroupKey, Vec<usize>> = HashMap::new();
+    for (i, k) in lod_keys.iter().enumerate() {
+        by_lod.entry(*k).or_default().push(i);
+    }
+    let mut children = vec![Vec::new(); lod_keys.len()];
+    for (c, pk) in parent_keys.iter().enumerate() {
+        if let Some(parents) = by_lod.get(pk) {
+            for &f in parents {
+                children[f].push(c);
+            }
+        }
+    }
+    children
+}
+
+/// CPU-driven streaming step (Gap B step 3, CPU-driven design): decide which
+/// clusters to page into which slots this frame. The CPU has the camera + DAG, so
+/// it runs the cut itself (cheap at our scale — ≤~80k clusters for a 5–10M-tri
+/// asset) and diffs the `desired` resident set against the current residency,
+/// rather than a GPU feedback/readback loop (which only pays off at 100s-of-millions
+/// of clusters). Reuses free slots first, then evicts the COLDEST non-desired slots
+/// (LRU), within a per-step upload cap so a big camera jump doesn't hitch.
+///
+/// Pure + deterministic (ties broken by slot index) ⇒ unit-testable without a GPU.
+/// Returns `loads: (cluster_id, slot)` to writeBuffer this step. Covers both the
+/// stream-in (step 3d) and LRU eviction (step 4) decisions.
+#[allow(dead_code)] // wired into the per-frame paging update next
+#[cfg(feature = "lod")]
+fn plan_stream_evict(
+    desired: &[bool],     // per cluster: in the camera's cut this frame?
+    resident: &[i32],     // cluster_id -> slot, or -1 (absent)
+    slot_cluster: &[i32], // slot -> cluster_id, or -1 (free)
+    slot_last_used: &[u64],
+    max_loads: usize,
+) -> Vec<(usize, usize)> {
+    // Wanted = desired but not yet resident.
+    let wanted: Vec<usize> = (0..desired.len())
+        .filter(|&c| desired[c] && resident[c] < 0)
+        .collect();
+    // Recycle order: free slots (lowest index first), then non-desired resident
+    // slots coldest-first (LRU). A desired slot is never recycled.
+    let mut free: Vec<usize> = (0..slot_cluster.len())
+        .filter(|&s| slot_cluster[s] < 0)
+        .collect();
+    free.sort_unstable();
+    let mut evictable: Vec<usize> = (0..slot_cluster.len())
+        .filter(|&s| {
+            let c = slot_cluster[s];
+            c >= 0 && !desired[c as usize]
+        })
+        .collect();
+    evictable.sort_by_key(|&s| (slot_last_used[s], s)); // coldest first, deterministic
+    let mut recycle = free.into_iter().chain(evictable);
+
+    let mut loads = Vec::new();
+    for &c in wanted.iter().take(max_loads) {
+        match recycle.next() {
+            Some(slot) => loads.push((c, slot)),
+            None => break, // pool full of desired-resident clusters; nothing to recycle
+        }
+    }
+    loads
+}
+
+/// LOD-off stub: no cluster data is loaded, so the caller falls through to the
+/// base glb (every instance draws its base mesh).
+#[cfg(not(feature = "lod"))]
+async fn load_cluster_lod(
+    _renderer: &mut AwsmRenderer,
+    _assets: &impl SceneAssets,
+    _asset_id: &str,
+    _tk: TransformKey,
+    _mat: MaterialKey,
+) -> Result<Option<MeshKey>> {
+    Ok(None)
+}
+
+#[cfg(feature = "lod")]
 async fn load_cluster_lod(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -1960,6 +2223,29 @@ async fn load_cluster_lod(
             return Ok(None);
         }
     };
+    materialize_cluster_mesh(renderer, &cm, asset_id, tk, mat).await
+}
+
+/// Materialize a parsed [`awsm_renderer_lod_bake::ClusterMesh`] into a bounded
+/// cluster-LOD render mesh on the renderer (uploads the cluster pages, caps the
+/// resident set to the active streaming/paging budget, builds the page pool when
+/// paging, and registers the cluster render mesh `M`). This is the post-fetch core
+/// shared by the player load path ([`load_cluster_lod`]) AND the editor's
+/// pre-baked nanite import — the editor fetches the `.clusters.bin` its own way
+/// and calls this directly. Returns the render mesh key, or `None` when
+/// `virtual_geometry` is off or the cluster mesh is empty. `asset_label` is only
+/// used for the diagnostic log line.
+#[cfg(feature = "lod")]
+pub async fn materialize_cluster_mesh(
+    renderer: &mut AwsmRenderer,
+    cm: &awsm_renderer_lod_bake::ClusterMesh,
+    asset_label: &str,
+    tk: TransformKey,
+    mat: MaterialKey,
+) -> Result<Option<MeshKey>> {
+    if !renderer.features().virtual_geometry {
+        return Ok(None);
+    }
     if cm.positions.is_empty() || cm.clusters.is_empty() {
         return Ok(None);
     }
@@ -1973,7 +2259,18 @@ async fn load_cluster_lod(
     // `cluster_streaming` is on, so a multi-million-tri asset loads instead of
     // overflowing the GPU pool. Off ⇒ budget = MAX ⇒ every cluster resident with
     // `cm.indices` verbatim, byte-identical to the non-streaming path.
-    let budget = if renderer.features().cluster_streaming {
+    // `cluster_paging` (Gap B) implies a residency budget too: the page pool packs
+    // each resident cluster into a fixed CLUSTER_PAGE_VERTS slot (build_slot_geometry
+    // below), so the resident set MUST stay small enough that the padded slot buffer
+    // fits VRAM (full residency = ~1 GiB > the 512 MB GPU buffer cap — see
+    // NORTHSTAR-GAPS). A conservative default keeps the bounded antichain comfortably
+    // under the cap; `?streambudget=N` overrides it.
+    let budget = if renderer.features().cluster_paging {
+        renderer
+            .features()
+            .cluster_streaming_budget
+            .unwrap_or(CLUSTER_PAGING_BUDGET_TRIS)
+    } else if renderer.features().cluster_streaming {
         renderer
             .features()
             .cluster_streaming_budget
@@ -1981,9 +2278,28 @@ async fn load_cluster_lod(
     } else {
         usize::MAX
     };
-    let (gpu_pages, m_indices) = select_resident_clusters(&cm, budget);
+    let (gpu_pages, m_indices, resident_cluster_ids) = select_resident_clusters(cm, budget);
     let resident_tris = m_indices.len() / 3;
     let capped = m_indices.len() < cm.indices.len();
+    let resident_page_count = gpu_pages.len();
+
+    // The cluster-LOD GPU state is keyed by the render mesh `M`, but `M`'s key only
+    // exists after `add_raw_mesh` (below) — which needs `m_geometry_indices` from
+    // this block. So the block computes the upload payload and DEFERS the actual
+    // upload until `m_key` is known (right after `add_raw_mesh`).
+    enum ClusterUploads {
+        Paging {
+            gpu_pages_pool: Vec<awsm_renderer::cluster_lod::ClusterPage>,
+            slot_source: Vec<u32>,
+            resident_pool: Vec<i32>,
+            init: awsm_renderer::render_passes::cluster_lod::ClusterPagingInit,
+        },
+        Simple {
+            gpu_pages: Vec<awsm_renderer::cluster_lod::ClusterPage>,
+            identity_indices: Vec<u32>,
+        },
+    }
+
     // The compaction's `source_indices` is the EXPLODED raster index space, not
     // `cm.indices`: the renderer explodes geometry (pack_visibility_bytes) so
     // triangle t's corners are exploded vertices [3t,3t+1,3t+2]. Cluster pages are
@@ -1991,15 +2307,137 @@ async fn load_cluster_lod(
     // raster indices for a page [F,C) are exactly the identity range [F,F+C) —
     // feed identity and the unchanged compaction emits a drawable stream into M's
     // exploded buffer.
-    let identity_indices: Vec<u32> = (0..m_indices.len() as u32).collect();
-    renderer.upload_cluster_pages(&gpu_pages, &identity_indices)?;
+    // Geometry layout for the cluster render mesh M + compaction `source_indices`:
+    //  - NON-PAGING (shipped): contiguous M; identity source (page [F,C) ⇒ [F,F+C)).
+    //  - PAGING (Gap B step 2): pack the BOUNDED resident set (capped by the paging
+    //    budget above) into a fixed CLUSTER_PAGE_VERTS slot pool sized to exactly the
+    //    resident count (every cluster gets a slot ⇒ no overflow ⇒ crack-free), so
+    //    slots are independently swappable for streaming. The drawn cut equals the
+    //    capped frontier (like `?streambudget`), crack-free. Slot buffer =
+    //    resident*page_verts verts — kept under the GPU cap by the conservative
+    //    paging budget. Upload the resident table (identity) the cut variant reads.
+    let (m_geometry_indices, uploads): (Vec<u32>, ClusterUploads) = if renderer
+        .features()
+        .cluster_paging
+    {
+        // Gap B 20b-iv-b-1: a page pool with HEADROOM. The load-time frontier occupies
+        // slots `0..frontier` (clamped, drawn); the pool has `pool_slots > frontier`
+        // total so the per-frame streamer (20b-iv-b-2) can stream finer clusters into
+        // the SPARE slots BEFORE evicting the coarse ones (crack-free transitions).
+        // Spare slots/pages are non-drawn (resident `-1` ⇒ the cut's paging variant
+        // skips them; index_count 0). The pool is bounded (the VRAM cap): the drawn
+        // cut + the streamed working set both stay within `pool_slots`.
+        let frontier = gpu_pages.len();
+        let pool_slots = (frontier * 2).max(frontier + 1);
+        let resident_ids: Vec<usize> = (0..frontier).collect();
+        let plan = plan_page_pool(frontier, &resident_ids, frontier.max(1));
+        let page_spans: Vec<(u32, u32)> = gpu_pages
+            .iter()
+            .map(|p| (p.first_index, p.index_count))
+            .collect();
+        let (mut slot_indices, mut slot_source) =
+            build_slot_geometry(&page_spans, &m_indices, &plan.resident, CLUSTER_PAGE_VERTS);
+        // Pad M + slot-aligned source_indices to `pool_slots` (spare slots = empty
+        // exploded verts + unused source region, never drawn; filled on stream-in).
+        slot_indices.resize(pool_slots * CLUSTER_PAGE_VERTS, 0);
+        slot_source.resize(pool_slots * CLUSTER_PAGE_VERTS, 0);
+        // Pad the GPU pages + resident table to `pool_slots`: spare pages draw nothing
+        // (index_count 0) and are skipped by the cut (resident `-1`).
+        let spare_page = awsm_renderer::cluster_lod::ClusterPage {
+            center: [0.0; 3],
+            radius: 0.0,
+            lod_error: 0.0,
+            parent_error: 0.0,
+            lod_bounds_center: [0.0; 3],
+            lod_bounds_radius: 0.0,
+            parent_bounds_center: [0.0; 3],
+            parent_bounds_radius: 0.0,
+            first_index: 0,
+            index_count: 0,
+        };
+        let mut gpu_pages_pool = gpu_pages.clone();
+        gpu_pages_pool.resize(pool_slots, spare_page);
+        // source_indices is now SLOT-ALIGNED ⇒ each frontier page's draw span starts at
+        // its slot: first_index = slot*PAGE_VERTS (was the m_indices offset). Residency
+        // is identity here (resident[c]=c), so page c lives in slot c.
+        for (c, page) in gpu_pages_pool.iter_mut().take(frontier).enumerate() {
+            page.first_index = (c * CLUSTER_PAGE_VERTS) as u32;
+        }
+        let mut resident_pool = plan.resident.clone();
+        resident_pool.resize(pool_slots, -1);
+        // Arm the Gap-B paging manager (step 20a/20b-iii) with: the FULL un-clamped
+        // DAG (the bake's real `[lod_error, parent_error)` per cluster — NOT the
+        // clamped frontier `gpu_pages`) for the per-frame CPU cut; the CPU geometry
+        // (positions/normals/indices) the per-frame streamer (20b-iv) gathers a
+        // slot's exploded verts from; and the INITIAL residency seed
+        // `slot_cluster[slot] = resident_cluster_ids[slot]` (the load-time frontier,
+        // in slot order — `build_slot_geometry` packs `gpu_pages`/`resident_cluster_ids`
+        // in order, so slot s holds full-DAG cluster `resident_cluster_ids[s]`). Only
+        // the `cluster_paging` path reaches here ⇒ shipped path unaffected. The GPU
+        // upload above is UNCHANGED from step 2 (the watertight frontier) — this slice
+        // only enriches CPU manager state; per-frame streaming lands in 20b-iv.
+        let original_pages: Vec<awsm_renderer::cluster_lod::ClusterPage> = cm
+            .clusters
+            .iter()
+            .map(|c| awsm_renderer::cluster_lod::ClusterPage {
+                center: c.center,
+                radius: c.radius,
+                lod_error: c.lod_error,
+                parent_error: c.parent_error,
+                lod_bounds_center: c.lod_bounds_center,
+                lod_bounds_radius: c.lod_bounds_radius,
+                parent_bounds_center: c.parent_bounds_center,
+                parent_bounds_radius: c.parent_bounds_radius,
+                first_index: c.first_index,
+                index_count: c.index_count,
+            })
+            .collect();
+        // Manager residency seed: slot_cluster has `pool_slots` entries — the frontier
+        // clusters in slots `0..frontier`, the rest `-1` (free, available to stream into).
+        let mut slot_cluster: Vec<i32> = resident_cluster_ids.iter().map(|&c| c as i32).collect();
+        slot_cluster.resize(pool_slots, -1);
+        let init = awsm_renderer::render_passes::cluster_lod::ClusterPagingInit {
+            pages: original_pages,
+            positions: cm.positions.clone(),
+            normals: cm.normals.clone(),
+            indices: cm.indices.clone(),
+            slot_cluster,
+            page_verts: CLUSTER_PAGE_VERTS,
+        };
+        tracing::info!(
+            "cluster paging (Gap B): page pool — {} slots × {} verts/slot = {} slot verts ({} resident tris capped to budget {}); cut draws the capped frontier crack-free",
+            plan.slots_used,
+            CLUSTER_PAGE_VERTS,
+            slot_indices.len(),
+            resident_tris,
+            budget,
+        );
+        (
+            slot_indices,
+            ClusterUploads::Paging {
+                gpu_pages_pool,
+                slot_source,
+                resident_pool,
+                init,
+            },
+        )
+    } else {
+        let identity_indices: Vec<u32> = (0..m_indices.len() as u32).collect();
+        (
+            m_indices,
+            ClusterUploads::Simple {
+                gpu_pages,
+                identity_indices,
+            },
+        )
+    };
 
     // Cluster render mesh M = the (resident) cluster geometry as an ordinary mesh,
     // so its exploded vertex buffer is in m_indices triangle order with
     // vertex_attribute_indices = m_indices (the normal material path). M is the
     // node's visible mesh; the GPU per-cluster cut's compacted indirect stream
     // draws into M's buffer (the geometry-pass override in mesh.rs keys on
-    // `cluster_lod.render_mesh == mesh_key`), so detail varies WITHIN the mesh by
+    // `cluster_lod.state(mesh_key)`), so detail varies WITHIN the mesh by
     // per-cluster distance. (load_cluster_lod is only reached when
     // virtual_geometry is on.)
     let m_raw = RawMeshData {
@@ -2011,16 +2449,35 @@ async fn load_cluster_lod(
             vec![cm.uvs.clone()]
         },
         colors: (!cm.colors.is_empty()).then(|| cm.colors.clone()),
-        indices: m_indices,
+        indices: m_geometry_indices,
         skin: None,
         morph: None,
     };
     let m_key = renderer.add_raw_mesh(m_raw, tk, mat)?;
-    renderer.set_cluster_render_mesh(m_key);
+    // Now that M exists, apply the deferred GPU uploads keyed by `m_key` so SEVERAL
+    // cluster meshes can be resident at once (each owns its cut/compaction state).
+    match uploads {
+        ClusterUploads::Paging {
+            gpu_pages_pool,
+            slot_source,
+            resident_pool,
+            init,
+        } => {
+            renderer.upload_cluster_pages(m_key, &gpu_pages_pool, &slot_source)?;
+            renderer.upload_cluster_resident(m_key, &resident_pool)?;
+            renderer.init_cluster_paging(m_key, init);
+        }
+        ClusterUploads::Simple {
+            gpu_pages,
+            identity_indices,
+        } => {
+            renderer.upload_cluster_pages(m_key, &gpu_pages, &identity_indices)?;
+        }
+    }
     tracing::info!(
-        "cluster LOD (GPU): {asset_id} {} clusters ({} resident), render mesh M = {} tris{}, per-cluster cut drives draw",
+        "cluster LOD (GPU): {asset_label} {} clusters ({} resident), render mesh M = {} tris{}, per-cluster cut drives draw",
         cm.cluster_count(),
-        gpu_pages.len(),
+        resident_page_count,
         resident_tris,
         if capped {
             // Print the EFFECTIVE budget actually applied (URL override or the
@@ -2054,6 +2511,20 @@ fn node_lod_enabled(kind: &NodeKind) -> bool {
 /// A no-op when the `lod` feature is off, or when the mesh has no `.lod.toml`
 /// manifest (most meshes — below the bake floor or LOD-disabled). Skinned/morph
 /// LOD selection runs on a separate path (shared skeleton) and is not loaded here.
+/// LOD-off stub.
+#[cfg(not(feature = "lod"))]
+async fn load_static_lod_chain(
+    _renderer: &mut AwsmRenderer,
+    _assets: &impl SceneAssets,
+    _asset_id: &str,
+    _base_key: MeshKey,
+    _tk: TransformKey,
+    _mat: MaterialKey,
+) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "lod")]
 async fn load_static_lod_chain(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -2128,6 +2599,20 @@ async fn load_static_lod_chain(
 /// No-op when `lod` is off / no manifest. Scoped to the common single-mesh-node
 /// skinned case: the chain is keyed on `base_key` and tracks each level's first
 /// mesh node (multi-mesh skinned LOD is a follow-up).
+/// LOD-off stub.
+#[cfg(not(feature = "lod"))]
+async fn load_skinned_lod_chain(
+    _renderer: &mut AwsmRenderer,
+    _assets: &impl SceneAssets,
+    _source_id: &str,
+    _base_key: MeshKey,
+    _node_index_transforms: &HashMap<usize, TransformKey>,
+    _mat: MaterialKey,
+) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "lod")]
 async fn load_skinned_lod_chain(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -2653,14 +3138,411 @@ mod prefab_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lod"))]
 mod cluster_streaming_tests {
     //! Phase 5 capped-residency selection ([`select_resident_clusters`]) — the
     //! pure CPU core that bounds the cluster render mesh `M` to a triangle budget.
     //! The GPU upload/draw around it needs a device (browser round-trip), but the
     //! resident-set choice + `first_index` remap + leaf clamp are device-free.
-    use super::select_resident_clusters;
-    use awsm_renderer_lod_bake::{ClusterMesh, ClusterPage};
+    use super::{
+        build_slot_geometry, cluster_finer_group, plan_page_pool, plan_stream_evict,
+        select_resident_clusters,
+    };
+
+    #[test]
+    fn stream_evict_fills_free_slots_first() {
+        // clusters 0 & 1 wanted (desired, absent), 2 free slots, none resident.
+        let loads = plan_stream_evict(&[true, true, false], &[-1, -1, -1], &[-1, -1], &[0, 0], 10);
+        assert_eq!(loads, vec![(0, 0), (1, 1)]); // free slots 0,1 in order
+    }
+
+    #[test]
+    fn stream_evict_evicts_coldest_non_desired_when_full() {
+        // cluster 0 wanted; both slots full of NON-desired (c1 in slot0 hot, c2 in slot1 cold).
+        let loads = plan_stream_evict(
+            &[true, false, false],
+            &[-1, 0, 1], // c1->slot0, c2->slot1
+            &[1, 2],     // slot0->c1, slot1->c2
+            &[5, 2],     // slot1 colder
+            10,
+        );
+        assert_eq!(loads, vec![(0, 1)]); // evict coldest slot1, load cluster 0 there
+    }
+
+    #[test]
+    fn stream_evict_honours_max_loads_and_skips_resident() {
+        // 4 clusters all desired; c3 already resident (slot0). 3 free slots, cap 2.
+        let loads = plan_stream_evict(
+            &[true, true, true, true],
+            &[-1, -1, -1, 0],
+            &[3, -1, -1, -1],
+            &[9, 0, 0, 0],
+            2,
+        );
+        assert_eq!(loads, vec![(0, 1), (1, 2)]); // cap honoured; resident c3 skipped
+    }
+    use awsm_renderer_lod_bake::{
+        build_cluster_dag, ClusterMesh, ClusterPage, DagOptions, ROOT_PARENT_ERROR,
+    };
+
+    #[test]
+    fn finer_group_links_synthetic_two_level_dag() {
+        // C0, C1 leaves (lod K0,K1; parent = group KG); C2 root (lod KG; parent ROOT).
+        let k0 = [0u32, 0, 0, 0, 0];
+        let k1 = [1u32, 0, 0, 0, 0];
+        let kg = [9u32, 9, 9, 9, 9];
+        let kroot = [u32::MAX; 5];
+        let lod = vec![k0, k1, kg];
+        let par = vec![kg, kg, kroot];
+        let ch = cluster_finer_group(&lod, &par);
+        assert_eq!(ch[0], Vec::<usize>::new()); // leaf: no finer group
+        assert_eq!(ch[1], Vec::<usize>::new());
+        assert_eq!(ch[2], vec![0, 1]); // root's finer group = both leaves (the group)
+    }
+
+    #[test]
+    fn finer_group_links_real_dag_cover_all_non_roots() {
+        let (pos, idx) = uv_sphere(24, 16);
+        let dag = build_cluster_dag(&pos, &idx, &DagOptions::default());
+        let key = |e: f32, c: [f32; 3], r: f32| {
+            [
+                e.to_bits(),
+                c[0].to_bits(),
+                c[1].to_bits(),
+                c[2].to_bits(),
+                r.to_bits(),
+            ]
+        };
+        let lod: Vec<_> = dag
+            .clusters
+            .iter()
+            .map(|c| key(c.lod_error, c.lod_bounds_center, c.lod_bounds_radius))
+            .collect();
+        let par: Vec<_> = dag
+            .clusters
+            .iter()
+            .map(|c| {
+                key(
+                    c.parent_error,
+                    c.parent_bounds_center,
+                    c.parent_bounds_radius,
+                )
+            })
+            .collect();
+        let ch = cluster_finer_group(&lod, &par);
+        assert!(
+            ch.iter().any(|g| !g.is_empty()),
+            "DAG must have refinement groups"
+        );
+        // Every non-root cluster is the finer-child of >=1 cluster (valid inverse).
+        let mut is_child = vec![false; dag.clusters.len()];
+        for g in &ch {
+            for &c in g {
+                is_child[c] = true;
+            }
+        }
+        for (i, c) in dag.clusters.iter().enumerate() {
+            if c.parent_error < ROOT_PARENT_ERROR {
+                assert!(
+                    is_child[i],
+                    "non-root cluster {i} must be in some finer-group"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn slot_geometry_packs_padded_slots_and_preserves_triangles() {
+        // 2 clusters (1 tri each), full residency, tiny PAGE_VERTS=4 (ic=3 + 1 pad).
+        let spans = [(0u32, 3u32), (3, 3)]; // (first_index, index_count) per cluster
+        let m_indices = vec![10u32, 11, 12, 20, 21, 22];
+        let resident = vec![0i32, 1];
+        let (slot_indices, source_indices) = build_slot_geometry(&spans, &m_indices, &resident, 4);
+        // slot 0 = C0 verts + pad(first=10); slot 1 = C1 verts + pad(first=20).
+        assert_eq!(slot_indices, vec![10, 11, 12, 10, 20, 21, 22, 20]);
+        // source is SLOT-ALIGNED now (slot s owns [s*4, s*4+4)), slot-relative values;
+        // the per-slot pad entry (k>=ic) points at the slot base (never read by the cut).
+        assert_eq!(source_indices, vec![0, 1, 2, 0, 4, 5, 6, 4]);
+        // Round-trip: each page's source span is [slot*page_verts, +index_count) (the
+        // loader sets page.first_index = slot*page_verts); mapped through slot_indices
+        // it reconstructs the cluster's ORIGINAL position indices.
+        for (c, &(f, ic)) in spans.iter().enumerate() {
+            let (f, ic) = (f as usize, ic as usize);
+            let slot_first = resident[c] as usize * 4;
+            let drawn: Vec<u32> = source_indices[slot_first..slot_first + ic]
+                .iter()
+                .map(|&s| slot_indices[s as usize])
+                .collect();
+            assert_eq!(drawn, m_indices[f..f + ic].to_vec());
+        }
+    }
+
+    #[test]
+    fn page_pool_assigns_one_slot_per_resident_cluster() {
+        // 5 clusters, 3 resident (ids 0,2,4), ample pool → each gets a distinct
+        // slot in order; non-resident stay -1; no overflow.
+        let plan = plan_page_pool(5, &[0, 2, 4], 8);
+        assert_eq!(plan.resident, vec![0, -1, 1, -1, 2]);
+        assert_eq!(plan.slots_used, 3);
+        assert_eq!(plan.overflow, 0);
+    }
+
+    #[test]
+    fn page_pool_overflows_past_capacity() {
+        // 4 residents but only 2 slots → first 2 get slots, rest overflow.
+        let plan = plan_page_pool(4, &[0, 1, 2, 3], 2);
+        assert_eq!(plan.slots_used, 2);
+        assert_eq!(plan.overflow, 2);
+        assert_eq!(plan.resident, vec![0, 1, -1, -1]);
+    }
+
+    #[test]
+    fn page_pool_ignores_out_of_range_ids() {
+        // Defensive: an id >= cluster_count is skipped, not panicking / OOB.
+        let plan = plan_page_pool(2, &[0, 9, 1], 8);
+        assert_eq!(plan.resident, vec![0, 1]);
+        assert_eq!(plan.slots_used, 2);
+        assert_eq!(plan.overflow, 0);
+    }
+
+    // --- North-star gap markers (docs/nanite-lod.md) ---
+    // These #[ignore]d tests keep the unmet A2/A3/A6 claims visible in `cargo test`
+    // (run with `--ignored` to see them fail). Replace each with a real assertion
+    // as the behavior lands; delete when docs/nanite-lod.md is fully met.
+
+    /// A2 — dynamic camera-driven streaming residency. VERIFIED ON-DEVICE (iter 38,
+    /// `?vg&paging`, browser un-frozen): a genuine multi-million-triangle asset
+    /// (1,081,344-tri source → 2,393,468-tri DAG / 51,753 clusters) pages through the
+    /// player cluster path with the render mesh M **CAPPED to 29,850 tris** (budget
+    /// 30,000) in a **bounded ~83 MB page pool** (3,862 slots); the per-frame
+    /// stream/evict cut is camera-driven and crack-free (watertight): far desired=509
+    /// draw=4,908 tris → zoom-IN desired=1,260 draw=14,650 (rises) → zoom-OUT
+    /// desired=381 draw=3,860 (falls), with NO per-frame heap allocations (iter 36).
+    /// See docs/nanite-lod.md.
+    ///
+    /// This asserts the CPU invariant underpinning the bounded-VRAM claim: the
+    /// resident render mesh M's triangle count is capped by the residency BUDGET,
+    /// **independent of source size** — a much larger source DAG yields the same
+    /// capped M (so VRAM tracks the budget, not the asset).
+    #[test]
+    fn a2_residency_is_bounded_by_budget_not_source() {
+        let budget = 2_000usize;
+        let m_tris = |long: usize, lat: usize| -> (usize, usize) {
+            let (pos, indices) = uv_sphere(long, lat);
+            let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+            let cm = ClusterMesh::from_dag(&dag, pos, vec![], vec![], vec![]);
+            let full = cm.indices.len() / 3;
+            let (_pages, m_indices, _ids) = select_resident_clusters(&cm, budget);
+            (full, m_indices.len() / 3)
+        };
+        let (full_small, m_small) = m_tris(48, 32);
+        let (full_big, m_big) = m_tris(96, 64); // ~4x the source DAG
+        assert!(
+            full_big > full_small * 2,
+            "test setup: big DAG ({full_big}) should dwarf small ({full_small})"
+        );
+        // The capped resident M stays within the budget for BOTH — VRAM is bounded by
+        // the budget, not the source. (Soft budget: a complete antichain may undershoot
+        // but must never exceed.)
+        assert!(
+            m_small <= budget,
+            "small source M={m_small} exceeded budget {budget}"
+        );
+        assert!(
+            m_big <= budget,
+            "big source M={m_big} exceeded budget {budget}"
+        );
+        // The 4x-larger source does NOT inflate the resident set beyond the budget.
+        assert!(
+            m_big <= budget && m_small <= budget,
+            "residency must track the budget, not source size (m_small={m_small}, m_big={m_big}, budget={budget})"
+        );
+    }
+
+    /// A3 — the drawn cut is bounded by the screen-space error budget, NOT the source
+    /// triangle count. Adding FINER levels below the cut (more source detail) leaves
+    /// the selected antichain unchanged at a fixed budget, so the cut size stays flat
+    /// as source scales. (On-device confirmation, iter 30, fixed camera @ dist 4, 1px:
+    /// source 142,456 tris → drawn 1700; source 583,768 tris [4.1×] → drawn 1696 — the
+    /// drawn cut is flat while source grows 4×.)
+    #[test]
+    fn a3_cut_bounded_by_screen_not_source() {
+        use awsm_renderer::cluster_lod::{select_cut, ClusterPage};
+        let page = |lod: f32, parent: f32, first_index: u32| ClusterPage {
+            center: [0.0; 3],
+            radius: 1.0,
+            lod_error: lod,
+            parent_error: parent,
+            lod_bounds_center: [0.0; 3],
+            lod_bounds_radius: 1.0,
+            parent_bounds_center: [0.0; 3],
+            parent_bounds_radius: 1.0,
+            first_index,
+            index_count: 384,
+        };
+        // "Coarse" surface = a complete antichain of 4 regions at error interval
+        // [1, ∞). At a budget threshold T=1.5 every region's coarse cluster is the
+        // one selected ⇒ cut = 4.
+        let coarse: Vec<ClusterPage> = (0..4).map(|r| page(1.0, f32::INFINITY, r * 384)).collect();
+        let mut cut = Vec::new();
+        select_cut(&coarse, 1.5, &mut cut);
+        assert_eq!(cut.len(), 4, "coarse DAG: 4 regions selected at T=1.5");
+
+        // "Refined" = the SAME 4 regions PLUS finer children under each (lots more
+        // SOURCE: 4 children/region in [0,1), then 4 grandchildren/child in [0,0.5)).
+        // 4 coarse + 16 children + 64 grandchildren = 84 clusters (21× the source).
+        let mut refined = coarse.clone();
+        for r in 0..4u32 {
+            for c in 0..4u32 {
+                refined.push(page(0.0, 1.0, 10_000 + r * 100 + c)); // child: [0,1)
+                for g in 0..4u32 {
+                    refined.push(page(0.0, 0.5, 50_000 + r * 1000 + c * 10 + g));
+                    // [0,0.5)
+                }
+            }
+        }
+        assert_eq!(refined.len(), 84, "refined DAG has 21× the source clusters");
+
+        // At the SAME budget T=1.5, the finer levels (intervals below 1.5) are NOT
+        // selected — only the 4 coarse clusters are. The cut is identical: bounded by
+        // the budget (screen-space error), invariant to the source size.
+        select_cut(&refined, 1.5, &mut cut);
+        assert_eq!(
+            cut.len(),
+            4,
+            "refined DAG: cut stays 4 at T=1.5 despite 21× the source — bounded by \
+             screen-space error budget, not source size"
+        );
+    }
+
+    /// A6 — the multi-million-triangle benchmark TABLE is recorded. VERIFIED + committed
+    /// (iter 39): `docs/nanite-lod-benchmark.md` records, on a genuine 1,081,344-tri
+    /// source (2,393,468-tri DAG / 51,753 clusters) through the player cluster path:
+    /// bounded VRAM (~83 MB pool, M capped to 29,850 tris) and bounded draw (cut 4,908–14,835
+    /// tris = 0.2–0.6% of the DAG, scaling with viewport height + camera, independent of
+    /// width/source), plus per-pass CPU-encode timings + frame time (8.3 ms ≈ 120 FPS,
+    /// vsync-capped). This test pins the doc to those verified figures so the table can't
+    /// silently drift or vanish.
+    #[test]
+    fn a6_benchmark_table_recorded() {
+        const BENCH: &str = include_str!("../../../../docs/nanite-lod-benchmark.md");
+        for needle in [
+            "1,081,344", // source tris
+            "2,393,468", // full DAG tris
+            "29,850",    // resident render mesh M (capped)
+            "83 MB",     // bounded page pool VRAM
+            "14,835",    // near-camera drawn cut @ 1392×746
+            "4,908",     // far-camera drawn cut
+        ] {
+            assert!(
+                BENCH.contains(needle),
+                "A6 benchmark table missing verified figure `{needle}` — \
+                 docs/nanite-lod-benchmark.md must record the multi-M-tri bench"
+            );
+        }
+    }
+    use std::collections::HashMap;
+
+    // --- A1 capped crack-free helpers (mirror the bake's dag.rs test harness) ---
+
+    /// UV sphere: geometrically closed, non-watertight by index (seam + poles).
+    fn uv_sphere(long: usize, lat: usize) -> (Vec<[f32; 3]>, Vec<u32>) {
+        use std::f32::consts::PI;
+        const TAU: f32 = 2.0 * PI;
+        let mut pos = Vec::new();
+        for la in 0..=lat {
+            let theta = (la as f32 / lat as f32) * PI;
+            let (st, ct) = (theta.sin(), theta.cos());
+            for lo in 0..=long {
+                let phi = (lo as f32 / long as f32) * TAU;
+                pos.push([st * phi.cos(), ct, st * phi.sin()]);
+            }
+        }
+        let stride = long + 1;
+        let mut idx = Vec::new();
+        for la in 0..lat {
+            for lo in 0..long {
+                let a = (la * stride + lo) as u32;
+                let b = (la * stride + lo + 1) as u32;
+                let c = ((la + 1) * stride + lo + 1) as u32;
+                let d = ((la + 1) * stride + lo) as u32;
+                idx.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        (pos, idx)
+    }
+
+    fn weld_ids(pos: &[[f32; 3]], eps: f32) -> Vec<u32> {
+        let mut map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+        let q = |v: f32| (v / eps).round() as i64;
+        pos.iter()
+            .map(|p| {
+                let key = (q(p[0]), q(p[1]), q(p[2]));
+                let n = map.len() as u32;
+                *map.entry(key).or_insert(n)
+            })
+            .collect()
+    }
+
+    /// Hole/boundary edges (used by exactly one welded, non-degenerate triangle).
+    fn boundary_edges(tris: &[[u32; 3]], weld: &[u32]) -> usize {
+        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in tris {
+            let w = [
+                weld[t[0] as usize],
+                weld[t[1] as usize],
+                weld[t[2] as usize],
+            ];
+            if w[0] == w[1] || w[1] == w[2] || w[0] == w[2] {
+                continue;
+            }
+            for (a, b) in [(w[0], w[1]), (w[1], w[2]), (w[2], w[0])] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edges.entry(key).or_insert(0) += 1;
+            }
+        }
+        edges.values().filter(|&&c| c == 1).count()
+    }
+
+    /// A1 (north-star, CAPPED clause): under `?streambudget` the cluster cut must
+    /// still be crack-free. The capped resident set, cut at the closest camera
+    /// (threshold 0 ⇒ all resident leaves), must weld to a closed surface — a torn
+    /// "partial frontier" (a hard tri budget cutting mid-level) shows up as open
+    /// edges. Was the on-device subdivided-sphere holes under `?streambudget=8000`;
+    /// fixed by selecting a COMPLETE antichain (`select_resident_clusters`, soft
+    /// budget) instead of a hard-tri partial frontier.
+    #[test]
+    fn capped_resident_cut_is_crack_free() {
+        let (pos, indices) = uv_sphere(48, 32);
+        let weld = weld_ids(&pos, 1e-3);
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+        let cm = ClusterMesh::from_dag(&dag, pos, vec![], vec![], vec![]);
+
+        let full_tris = cm.indices.len() / 3;
+        let budget = full_tris / 4; // aggressive: forces a partial frontier today
+        let (pages, m_indices, _ids) = select_resident_clusters(&cm, budget);
+
+        // Simulate the runtime per-cluster cut at the closest camera (threshold 0):
+        // select resident pages whose error interval contains 0 (the clamped
+        // leaves). Reconstruct their triangles and check for holes.
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+        for p in &pages {
+            if p.lod_error <= 0.0 && 0.0 < p.parent_error {
+                let s = p.first_index as usize;
+                let e = s + p.index_count as usize;
+                for c in m_indices[s..e].chunks_exact(3) {
+                    tris.push([c[0], c[1], c[2]]);
+                }
+            }
+        }
+        assert!(!tris.is_empty(), "capped cut selected no leaves");
+        let holes = boundary_edges(&tris, &weld);
+        assert_eq!(
+            holes, 0,
+            "capped cluster cut (budget {budget} tris) tore {holes} hole edge(s) — \
+             partial-frontier seam; resident set must be a complete antichain (A1 capped)"
+        );
+    }
 
     fn page(lod_error: f32, parent_error: f32, first_index: u32, index_count: u32) -> ClusterPage {
         ClusterPage {
@@ -2697,7 +3579,7 @@ mod cluster_streaming_tests {
     #[test]
     fn under_budget_is_verbatim_passthrough() {
         let cm = fixture();
-        let (pages, m_indices) = select_resident_clusters(&cm, 100);
+        let (pages, m_indices, _ids) = select_resident_clusters(&cm, 100);
         // Every cluster, indices verbatim, nothing remapped or clamped — must be
         // byte-identical to the non-streaming path.
         assert_eq!(m_indices, cm.indices);
@@ -2713,7 +3595,7 @@ mod cluster_streaming_tests {
         let cm = fixture();
         // Budget 1 tri: coarsest-first keeps only the root C2; with no resident
         // child its lod_error clamps to 0 so close-up stays covered.
-        let (pages, m_indices) = select_resident_clusters(&cm, 1);
+        let (pages, m_indices, _ids) = select_resident_clusters(&cm, 1);
         assert_eq!(pages.len(), 1);
         assert_eq!(m_indices, vec![6, 7, 8]); // C2's slice, remapped to front
         assert_eq!(pages[0].first_index, 0);
@@ -2722,19 +3604,18 @@ mod cluster_streaming_tests {
     }
 
     #[test]
-    fn cap_to_two_tris_partial_finest_level_remaps_and_clamps_leaves() {
+    fn cap_to_two_tris_selects_the_complete_leaf_antichain() {
         let cm = fixture();
-        // Budget 2 tris: root C2 + one finest leaf C0. C2 now HAS a resident child
-        // (C0), so it is not clamped; C0 is a leaf (error already 0). Hard cap is
-        // honoured (2 resident tris, C1 dropped).
-        let (pages, m_indices) = select_resident_clusters(&cm, 2);
+        // Budget 2 tris: the finest complete antichain that fits is BOTH leaves
+        // {C0, C1} (2 tris) — NOT the old partial {root C2 + one leaf C0}, which
+        // tore (C1's region covered only by the coarse root while C0 was fine).
+        // The whole leaf level tiles the surface ⇒ crack-free; budget honoured.
+        let (pages, m_indices, _ids) = select_resident_clusters(&cm, 2);
         assert_eq!(pages.len(), 2);
-        assert_eq!(m_indices.len(), 6); // 2 tris, budget honoured
-                                        // Pages are emitted in cluster order (C0 then C2), remapped contiguously.
-        assert_eq!(m_indices, vec![0, 1, 2, 6, 7, 8]);
-        assert_eq!(pages[0].first_index, 0);
-        assert_eq!(pages[0].lod_error, 0.0); // C0 leaf
-        assert_eq!(pages[1].first_index, 3);
-        assert_eq!(pages[1].lod_error, 5.0); // C2 NOT clamped (has resident child C0)
+        assert_eq!(m_indices, vec![0, 1, 2, 3, 4, 5]); // C0 then C1, remapped
+        for p in &pages {
+            assert_eq!(p.lod_error, 0.0); // always-drawn frontier
+            assert_eq!(p.parent_error, f32::MAX);
+        }
     }
 }

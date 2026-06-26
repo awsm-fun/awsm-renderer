@@ -215,14 +215,24 @@ fn editor_features() -> RendererFeatures {
         // round-trip (the editable scene registers no chains, so it stays a no-op
         // there regardless).
         lod: url_has_flag("lod"),
-        // Cluster LOD (Phase B) — player-bundle path, exercised via `?vg`.
-        virtual_geometry: url_has_flag("vg"),
+        // Cluster LOD (Phase B). ON by default in the editor so a PRE-BAKED nanite
+        // asset imported into the editable scene renders through the bounded cluster
+        // pipeline (no dense `?vg` explode) without a reload. The per-frame cost is
+        // zero for scenes with no cluster mesh (the cut early-outs at
+        // `cluster_count == 0`); only a couple of compute-pipeline compiles at
+        // startup. `?novg` forces it off.
+        virtual_geometry: !url_has_flag("novg"),
         // Cluster-LOD streaming residency (Phase 5) — cap M's geometry to a
         // triangle budget so multi-million-tri assets load. Opt in with `?stream`,
         // or `?streambudget=N` to also set the cap (which implies `?stream`).
         // Default off ⇒ byte-identical; only bites above the budget.
         cluster_streaming: url_has_flag("stream") || url_flag_value("streambudget").is_some(),
         cluster_streaming_budget: url_flag_value("streambudget").and_then(|v| v.parse().ok()),
+        // Cluster-LOD dynamic per-frame paging (Phase 5 Step 2 / Gap B). ON by
+        // default alongside `virtual_geometry` so imported nanite assets page within
+        // a bounded VRAM budget in-editor. No-op (early-out) when no cluster mesh is
+        // resident, so non-nanite scenes pay nothing per frame. `?nopaging` forces off.
+        cluster_paging: !url_has_flag("nopaging"),
         indirect_first_instance: FeatureToggle::Auto,
     }
 }

@@ -1,10 +1,11 @@
 //! Shader template variants for render passes.
 
+#[cfg(feature = "lod")]
+use crate::render_passes::cluster_lod::shader::template::{
+    ShaderTemplateClusterCompaction, ShaderTemplateClusterCut,
+};
 use crate::{
     render_passes::{
-        cluster_lod::shader::template::{
-            ShaderTemplateClusterCompaction, ShaderTemplateClusterCut,
-        },
         coverage::shader::template::ShaderTemplateCoverage,
         display::shader::template::ShaderTemplateDisplay,
         effects::shader::template::ShaderTemplateEffects,
@@ -48,7 +49,9 @@ pub enum ShaderTemplateRenderPass {
     MaterialTransparent(ShaderTemplateMaterialTransparent),
     OcclusionCull(ShaderTemplateOcclusionCull),
     OcclusionCompaction(ShaderTemplateOcclusionCompaction),
+    #[cfg(feature = "lod")]
     ClusterCut(ShaderTemplateClusterCut),
+    #[cfg(feature = "lod")]
     ClusterCompaction(ShaderTemplateClusterCompaction),
     Effects(ShaderTemplateEffects),
     Display(ShaderTemplateDisplay),
@@ -110,9 +113,11 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::OcclusionCompaction(cache_key) => Ok(
                 ShaderTemplateRenderPass::OcclusionCompaction(cache_key.try_into()?),
             ),
+            #[cfg(feature = "lod")]
             ShaderCacheKeyRenderPass::ClusterCut(cache_key) => {
                 Ok(ShaderTemplateRenderPass::ClusterCut(cache_key.try_into()?))
             }
+            #[cfg(feature = "lod")]
             ShaderCacheKeyRenderPass::ClusterCompaction(cache_key) => Ok(
                 ShaderTemplateRenderPass::ClusterCompaction(cache_key.try_into()?),
             ),
@@ -147,7 +152,9 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::MaterialTransparent(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::OcclusionCull(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::OcclusionCompaction(tmpl) => tmpl.into_source(),
+            #[cfg(feature = "lod")]
             ShaderTemplateRenderPass::ClusterCut(tmpl) => tmpl.into_source(),
+            #[cfg(feature = "lod")]
             ShaderTemplateRenderPass::ClusterCompaction(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.into_source(),
@@ -176,7 +183,9 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::MaterialTransparent(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::OcclusionCull(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::OcclusionCompaction(tmpl) => tmpl.debug_label(),
+            #[cfg(feature = "lod")]
             ShaderTemplateRenderPass::ClusterCut(tmpl) => tmpl.debug_label(),
+            #[cfg(feature = "lod")]
             ShaderTemplateRenderPass::ClusterCompaction(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.debug_label(),

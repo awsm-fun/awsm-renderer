@@ -51,6 +51,12 @@ pub struct ClusterLodBuffers {
     pub index_capacity: u32,
     /// Reused page-serialisation scratch (no per-upload allocation).
     staging: Vec<u8>,
+    /// Gap-B dynamic paging: cluster_id → page-pool slot (`-1` = absent),
+    /// `array<i32>`. Lazily created only when [`Self::write_resident`] is called
+    /// (i.e. only under `cluster_paging`), so the non-paging path allocates nothing
+    /// — byte-identical. Bound into the cut's paging shader variant at @binding(3)
+    /// by [`super::bind_group::ClusterCutBindGroups::recreate`].
+    pub resident_buffer: Option<web_sys::GpuBuffer>,
 }
 
 impl ClusterLodBuffers {
@@ -141,7 +147,132 @@ impl ClusterLodBuffers {
             capacity,
             index_capacity,
             staging: vec![0u8; pages_bytes],
+            resident_buffer: None,
         })
+    }
+
+    /// Upload the Gap-B dynamic-paging residency table (`cluster_id → slot`, `-1` =
+    /// absent), lazily (re)creating `resident_buffer` to fit. Only called under
+    /// `cluster_paging`; the non-paging path never allocates it. One-shot at load
+    /// (and later per stream/evict); a single staging `Vec` is fine.
+    pub fn write_resident(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        resident: &[i32],
+    ) -> Result<(), AwsmCoreError> {
+        if resident.is_empty() {
+            return Ok(());
+        }
+        let bytes_len = resident.len() * 4;
+        let needs_alloc = match &self.resident_buffer {
+            Some(b) => (b.size() as usize) < bytes_len,
+            None => true,
+        };
+        if needs_alloc {
+            self.resident_buffer = Some(
+                gpu.create_buffer(
+                    &BufferDescriptor::new(
+                        Some("ClusterLodResident"),
+                        bytes_len,
+                        BufferUsage::new().with_storage().with_copy_dst(),
+                    )
+                    .into(),
+                )?,
+            );
+        }
+        let mut bytes = Vec::with_capacity(bytes_len);
+        for &r in resident {
+            bytes.extend_from_slice(&r.to_le_bytes());
+        }
+        gpu.write_buffer(
+            self.resident_buffer.as_ref().unwrap(),
+            None,
+            bytes.as_slice(),
+            None,
+            None,
+        )
+    }
+
+    /// Gap-B dynamic paging: overwrite a span of the compaction's `source_indices`
+    /// (the slot-relative vertex indices the compaction copies into the draw stream)
+    /// so a re-paged cluster's page points at its new slot. `first_index` is the
+    /// page's `first_index` into `source_indices` (element index, ×4 = byte offset);
+    /// `values` is its new slot-relative index list. Only the `cluster_paging`
+    /// per-frame stream path calls this. (Serializes into a local `Vec`; the wired
+    /// per-frame caller batches via a pooled buffer — see step 20b-iv.)
+    pub fn write_source_indices_span(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        first_index: u32,
+        values: &[u32],
+        scratch: &mut Vec<u8>,
+    ) -> Result<(), AwsmCoreError> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        // Serialize into the caller's pooled scratch — no per-frame heap alloc.
+        scratch.clear();
+        for &v in values {
+            scratch.extend_from_slice(&v.to_le_bytes());
+        }
+        gpu.write_buffer(
+            &self.source_indices_buffer,
+            Some(first_index as usize * 4),
+            scratch.as_slice(),
+            None,
+            None,
+        )
+    }
+
+    /// Gap-B dynamic paging: set one page-pool **slot's** residency entry in place
+    /// — a single 4-byte `writeBuffer` at `slot*4`, no realloc. The GPU `resident`
+    /// array is SLOT-indexed (the cut shader reads `resident[i]` at the same `i` as
+    /// `pages[i]`): `value >= 0` ⇒ the slot holds a drawable page, `-1` ⇒ free/
+    /// evicted (the shader skips it). `value` is conventionally the slot id on
+    /// stream-in and `-1` on evict; only its sign matters to the shader. No-op if
+    /// the resident buffer isn't allocated yet (call after [`Self::write_resident`]
+    /// has sized it to `pool_slots`).
+    pub fn write_resident_entry(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        slot: usize,
+        value: i32,
+    ) -> Result<(), AwsmCoreError> {
+        let Some(buf) = self.resident_buffer.as_ref() else {
+            return Ok(());
+        };
+        gpu.write_buffer(
+            buf,
+            Some(slot * 4),
+            value.to_le_bytes().as_slice(),
+            None,
+            None,
+        )
+    }
+
+    /// Gap-B dynamic paging: overwrite ONE cluster page (slot) in `pages_buffer` in
+    /// place — the cut reads `pages[slot]` for its bounds/errors/index-slice, so this
+    /// is how a streamed cluster's page (its real or clamped errors + its
+    /// source-indices span) lands without rewriting all pages. A single 64-B
+    /// `writeBuffer` at `slot*CLUSTER_PAGE_GPU_STRIDE` (`pages_buffer` is `COPY_DST`).
+    /// Only the `cluster_paging` per-frame stream path calls this.
+    pub fn write_page_entry(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        slot: usize,
+        page: &ClusterPage,
+        scratch: &mut Vec<u8>,
+    ) -> Result<(), AwsmCoreError> {
+        // Serialize into the caller's pooled scratch — no per-frame heap alloc.
+        scratch.clear();
+        write_cluster_page_gpu(page, scratch);
+        gpu.write_buffer(
+            &self.pages_buffer,
+            Some(slot * CLUSTER_PAGE_GPU_STRIDE),
+            scratch.as_slice(),
+            None,
+            None,
+        )
     }
 
     /// Grows to hold `needed` clusters / `needed_indices` indices (2× headroom).

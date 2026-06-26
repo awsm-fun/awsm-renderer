@@ -1,9 +1,24 @@
-//! The Help modal — a small tabbed guide. The "Using the MCP" tab is the
-//! important one: how to install / run the `awsm-renderer-scene-mcp` server, attach this
-//! editor, and point an agent at it. Opened from the top-bar Help button, and
-//! (deep-linked to the MCP tab) from the MCP connect modal's Help button.
+//! The Help modal — a tabbed guide to the editor, the renderer, the LOD/nanite
+//! pipeline, building a player, and driving it all over MCP. Opened from the
+//! top-bar Help button, and (deep-linked to the MCP tab) from the MCP connect
+//! modal's Help button.
 
 use crate::prelude::*;
+
+/// One Help tab: its label + the builder for its body.
+type HelpTab = (&'static str, fn() -> Dom);
+
+/// Tab order. `open_help_mcp` deep-links to [`Tab::Mcp`].
+const TABS: &[HelpTab] = &[
+    ("Overview", overview_section),
+    ("Editor", editor_section),
+    ("Renderer", renderer_section),
+    ("LOD & Nanite", lod_section),
+    ("Player", player_section),
+    ("Using the MCP", mcp_section),
+];
+/// Index of the MCP tab in [`TABS`] (deep-link target).
+const MCP_TAB: usize = 5;
 
 /// Open the Help modal on its Overview tab (the top-bar Help button).
 pub fn open_help() {
@@ -13,14 +28,14 @@ pub fn open_help() {
 /// Open the Help modal directly on the "Using the MCP" tab (the MCP connect
 /// modal's Help button deep-links here).
 pub fn open_help_mcp() {
-    open_help_at(1);
+    open_help_at(MCP_TAB);
 }
 
 fn open_help_at(tab: usize) {
     Modal::open(move || {
         let active = Mutable::new(tab);
         ModalCard::new("Help")
-            .width(660.0)
+            .width(680.0)
             .child(html!("div", {
                 .style("display", "flex")
                 .style("flex-direction", "column")
@@ -28,15 +43,19 @@ fn open_help_at(tab: usize) {
                 // Tab bar (rebuilt on change so the active tab reads as Primary).
                 .child_signal(active.signal().map(clone!(active => move |cur| Some(html!("div", {
                     .style("display", "flex")
+                    .style("flex-wrap", "wrap")
                     .style("gap", "6px")
-                    .child(tab_btn(&active, 0, "Overview", cur == 0))
-                    .child(tab_btn(&active, 1, "Using the MCP", cur == 1))
+                    .children(TABS.iter().enumerate().map(|(i, (label, _))| {
+                        tab_btn(&active, i, label, cur == i)
+                    }).collect::<Vec<_>>())
                 })))))
-                // Body — the active tab's content.
-                .child_signal(active.signal().map(|cur| Some(match cur {
-                    1 => mcp_section(),
-                    _ => overview_section(),
-                })))
+                // Body — the active tab's content (scrolls if tall).
+                .child_signal(active.signal().map(|cur| Some(html!("div", {
+                    .style("max-height", "62vh")
+                    .style("overflow-y", "auto")
+                    .style("padding-right", "4px")
+                    .child(TABS.get(cur).map(|(_, render)| render()).unwrap_or_else(overview_section))
+                }))))
             }))
             .footer(
                 Btn::new()
@@ -183,9 +202,20 @@ fn stack(children: Vec<Dom>) -> Dom {
 fn overview_section() -> Dom {
     stack(vec![
         p(
-            "A WebGPU scene, material & animation editor that runs entirely in your \
-           browser (Chrome, Edge, Arc, or Brave — it needs two Chromium-only features).",
+            "AwsmRenderer is a WebGPU renderer with a built-in scene, material & animation \
+           editor that runs entirely in your browser (Chrome, Edge, Arc, or Brave — it needs \
+           two Chromium-only features). You author here, export a compact bundle, and load \
+           it in your own game/app with a few lines of Rust.",
         ),
+        h("How the pieces fit"),
+        p(
+            "• Editor — author scenes, meshes, materials, animation (this app).\n\
+           • Renderer — the WebGPU engine the editor and your player both run.\n\
+           • Player — your shipped app: load an exported scene with `populate_awsm_scene`.\n\
+           • MCP — let an AI agent drive the editor through typed tool calls.\n\
+           • LOD / Nanite — bounded draw + VRAM for heavy meshes, with an offline pre-bake CLI.",
+        ),
+        p("Each has its own tab above. Start with “Editor” to author, “Player” to ship."),
         h("The basics"),
         p(
             "Switch between Scene, Material, and Animation with the segmented control in \
@@ -193,11 +223,162 @@ fn overview_section() -> Dom {
            (Settings) controls the viewport + chrome only — those are not saved into the \
            project file.",
         ),
-        h("Drive it with an AI agent"),
+    ])
+}
+
+fn editor_section() -> Dom {
+    stack(vec![
+        h("Three modes"),
         p(
-            "The editor exposes an MCP server, so an AI agent (Claude, Codex, Cursor, …) \
-           can build the scene for you through typed tool calls — on the same canvas \
-           you're looking at. See the “Using the MCP” tab to set it up.",
+            "The top-bar segmented control switches between Scene, Material, and Animation. \
+           Each has its own left panel (tree / library / clips) and inspector.",
+        ),
+        h("Scene mode"),
+        p(
+            "Insert primitives, lights, cameras, curves and visual nodes from the Insert bar. \
+           The Outliner (left) is the node tree; select a node to edit it in the Properties \
+           inspector (right). The viewport toolbar gives Move / Rotate / Scale gizmos and \
+           perspective/ortho toggles. Meshes are non-destructive: each carries a modifier \
+           stack (subdivide, twist, bend, taper, lathe, sweep, displace …) you can reorder \
+           and tweak live, plus per-vertex selection + paint ops.",
+        ),
+        h("Material mode"),
+        p(
+            "Build PBR materials, or write custom WGSL against the material contract (opaque / \
+           transparent / vertex hooks). The Studio previews on a sphere; assign materials to \
+           nodes back in Scene mode.",
+        ),
+        h("Animation mode"),
+        p(
+            "Author clips with tracks + keyframes (transform, morph weights, material params), \
+           scrub the playhead, and blend via mixer layers.",
+        ),
+        h("Load / Save / Export"),
+        p(
+            "Load opens a project directory; Save writes it back. Export produces a player \
+           bundle (a `scene.toml` + an `assets/` folder of glbs/textures) — that's what your \
+           player loads. Settings (the gear) only affects the viewport + chrome and is NOT \
+           saved into the project.",
+        ),
+    ])
+}
+
+fn renderer_section() -> Dom {
+    stack(vec![
+        h("What it is"),
+        p(
+            "A modern WebGPU renderer. The geometry pass is a thin VISIBILITY-BUFFER pass: it \
+           writes only triangle IDs, and all shading is deferred and computed per-pixel — so \
+           cost scales with screen pixels, not scene complexity.",
+        ),
+        h("Features"),
+        p(
+            "• PBR materials + custom WGSL materials (with a typed contract).\n\
+           • GPU-driven culling with hierarchical-Z occlusion.\n\
+           • Shadows (cascaded sun + point), image-based lighting / environment.\n\
+           • MSAA with an edge-resolve pass; decals; GPU particles.\n\
+           • Skinning + morph targets; instancing.\n\
+           • LOD: discrete level chains + cluster “virtual geometry” (nanite-style).",
+        ),
+        h("Bounded by the screen, not the asset"),
+        p(
+            "With cluster LOD, the drawn triangle count tracks screen resolution + a pixel-error \
+           budget — roughly a few hundred thousand to ~2M triangles for typical resolutions — \
+           whether the source mesh is 1M or 500M triangles. A fixed-capacity page pool keeps \
+           VRAM bounded too (see the LOD & Nanite tab).",
+        ),
+        h("Profiles"),
+        p(
+            "Pick a `RendererProfile` (Desktop / Mobile / Cinema) at build time to set \
+           quality + feature defaults; individual features are also togglable via \
+           `RendererFeatures` on the builder.",
+        ),
+    ])
+}
+
+fn lod_section() -> Dom {
+    stack(vec![
+        h("Two LOD systems"),
+        p(
+            "• Discrete chains — simplified level meshes selected per-instance by screen-space \
+           error (great for skinned/deforming and mid-size meshes).\n\
+           • Cluster “virtual geometry” (nanite-style) — a per-cluster GPU cut over a baked \
+           DAG, with streaming residency so multi-million-triangle static meshes render with \
+           BOUNDED draw + BOUNDED VRAM.",
+        ),
+        h("Per-mesh toggle"),
+        p(
+            "Every mesh has a LOD toggle (inspector → LOD → Enabled), on by default. When on, \
+           the export bake generates the simplified levels and — for dense static meshes — a \
+           cluster DAG (`<id>.clusters.bin`). Turn it off to ship a mesh at full detail.",
+        ),
+        h("Pre-bake offline (the CLI)"),
+        p(
+            "Baking a huge mesh in the browser is slow. The `awsm-lod-bake` CLI converts a \
+           glTF/GLB into nanite-ready assets OFFLINE — a base glb, the discrete levels + \
+           manifest, and the cluster DAG — so you import pre-baked instead of converting \
+           in-editor:",
+        ),
+        command(
+            "Pre-bake a model (writes <name>.nanite/)",
+            "awsm-lod-bake my-model.glb --out ./assets",
+        ),
+        p(
+            "It reuses the exact bake the editor uses, so the output is identical to an \
+           in-editor bake — just done once, up front.",
+        ),
+        h("Zero cost when you don't use it"),
+        p(
+            "LOD is a Cargo feature (default-on). Build your player with \
+           `default-features = false` (no `lod`) and ALL LOD code is compiled out. Even with \
+           it on, a scene whose meshes don't use LOD pays nothing per frame — the cluster cut \
+           and paging early-out when no cluster mesh is resident.",
+        ),
+    ])
+}
+
+fn player_section() -> Dom {
+    stack(vec![
+        h("Ship what you authored"),
+        p(
+            "A player is your own Rust app that builds an `AwsmRenderer`, loads the bundle the \
+           editor exported (`scene.toml` + `assets/`), and drives a render loop. The editor \
+           imports arbitrary glTF and refactors it into this compact format; your player loads \
+           that fast path with `populate_awsm_scene`.",
+        ),
+        h("Minimal load + loop"),
+        code(
+            "use awsm_renderer::AwsmRendererBuilder;\n\
+             use awsm_renderer_scene_loader::populate_awsm_scene;\n\
+             use std::collections::HashMap;\n\
+             \n\
+             // 1. Build the renderer onto a <canvas> (GPU setup: see the Player Guide).\n\
+             let mut renderer = AwsmRendererBuilder::new(gpu_builder).build().await?;\n\
+             \n\
+             // 2. Parse the exported scene.toml.\n\
+             let scene = awsm_renderer_scene::scene_from_toml(&scene_toml_text)?;\n\
+             \n\
+             // 3. Pre-fetch every asset the scene references (path -> bytes).\n\
+             //    e.g. \"assets/<id>.glb\", \"assets/<id>.clusters.bin\", textures…\n\
+             let mut assets: HashMap<String, Vec<u8>> = HashMap::new();\n\
+             // assets.insert(\"assets/<id>.glb\".into(), fetch(\"assets/<id>.glb\").await?);\n\
+             \n\
+             // 4. Load it (commits internally — do NOT call commit_load after).\n\
+             let _loaded = populate_awsm_scene(&mut renderer, &scene, &assets, |_p| {}).await?;\n\
+             \n\
+             // 5. Each frame, in order:\n\
+             renderer.update_animations(dt_ms)?;\n\
+             renderer.update_camera(camera_matrices)?;\n\
+             renderer.update_transforms();\n\
+             renderer.render(None)?;",
+        ),
+        h("Notes"),
+        p(
+            "• `assets` is a map of bundle-relative path → already-fetched bytes — the loader \
+           never fetches for you. A primitive-only scene uses an empty map.\n\
+           • The renderer is matrices-only: you supply the camera matrices and drive the loop \
+           from requestAnimationFrame.\n\
+           • Full setup (canvas, GPU device, camera) is in docs/PLAYER-GUIDE.md.",
         ),
     ])
 }

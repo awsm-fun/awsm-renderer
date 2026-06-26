@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use glam::DVec3;
 
-use crate::cluster::{build_cluster_graph, build_clusters, group_clusters, Meshlet};
+use crate::cluster::{build_cluster_graph, build_clusters_welded, group_clusters, Meshlet};
 use crate::simplify::{simplify, SimplifyOptions};
 
 /// `parent_error` for a root cluster (never simplified further). A large finite
@@ -77,6 +77,15 @@ pub struct DagOptions {
     pub simplify_ratio: f32,
     /// Safety cap on DAG levels.
     pub max_levels: usize,
+    /// Position-weld epsilon for ADJACENCY only. Triangles that share a geometric
+    /// edge but reference distinct vertex indices (UV/normal seams — extremely
+    /// common in imported glTF) are otherwise seen as disconnected, so clustering
+    /// degenerates to ~1 triangle per cluster. Welding coincident positions onto an
+    /// `eps` grid restores adjacency so triangles group properly. `None` disables
+    /// welding (raw-index adjacency). Output triangle indices are ALWAYS the
+    /// originals — welding never merges vertices in the geometry, so split
+    /// normals/uvs survive. Default `Some(1e-5)`.
+    pub weld_eps: Option<f32>,
 }
 
 impl Default for DagOptions {
@@ -86,8 +95,26 @@ impl Default for DagOptions {
             group_size: 4,
             simplify_ratio: 0.5,
             max_levels: 32,
+            weld_eps: Some(1e-5),
         }
     }
+}
+
+/// Weld positions onto an `eps` grid → a canonical vertex id per location, so
+/// coincident-but-distinct seam/pole vertices unify. One welded id per input
+/// vertex. Used for ADJACENCY ONLY (see [`DagOptions::weld_eps`]).
+pub(crate) fn weld_ids(positions: &[[f32; 3]], eps: f32) -> Vec<u32> {
+    use std::collections::HashMap;
+    let mut map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    let q = |v: f32| (v / eps).round() as i64;
+    positions
+        .iter()
+        .map(|p| {
+            let key = (q(p[0]), q(p[1]), q(p[2]));
+            let n = map.len() as u32;
+            *map.entry(key).or_insert(n)
+        })
+        .collect()
 }
 
 /// Build the cluster LOD DAG for `(positions, indices)`.
@@ -99,9 +126,16 @@ pub fn build_cluster_dag(positions: &[[f32; 3]], indices: &[u32], opts: &DagOpti
 
     let mut clusters: Vec<DagCluster> = Vec::new();
 
+    // Weld coincident positions for ADJACENCY ONLY (seam/pole split verts —
+    // ubiquitous in imported glTF — otherwise break edge adjacency and clustering
+    // degenerates to ~1 tri/cluster). Output triangles always use the ORIGINAL
+    // indices, so split normals/uvs survive. `welded(&buf)` relabels an index
+    // buffer through the weld map (identity when welding is off).
+    let weld = opts.weld_eps.map(|eps| weld_ids(positions, eps));
+
     // Level 0: clusters straight from the input, zero error.
     let mut current: Vec<usize> = Vec::new();
-    for m in build_clusters(positions, indices, opts.cluster_target) {
+    for m in build_clusters_welded(positions, indices, opts.cluster_target, weld.as_deref()) {
         let tris: Vec<[u32; 3]> = m
             .triangles
             .iter()
@@ -126,7 +160,11 @@ pub fn build_cluster_dag(positions: &[[f32; 3]], indices: &[u32], opts: &DagOpti
         for &ci in &current {
             let start = combined.len() / 3;
             for tri in &clusters[ci].triangles {
-                combined.extend_from_slice(tri);
+                // Welded ids for the graph's edge adjacency (output unaffected).
+                match &weld {
+                    Some(w) => combined.extend(tri.iter().map(|&v| w[v as usize])),
+                    None => combined.extend_from_slice(tri),
+                }
             }
             let tri_ids: Vec<u32> = (start as u32..(combined.len() / 3) as u32).collect();
             level_meshlets.push(Meshlet {
@@ -158,7 +196,11 @@ pub fn build_cluster_dag(positions: &[[f32; 3]], indices: &[u32], opts: &DagOpti
             let (local_pos, local_idx, local_to_orig) = compact_submesh(positions, &group_indices);
             let group_tris = local_idx.len() / 3;
             let target = ((group_tris as f32 * opts.simplify_ratio).round() as usize).max(1);
-            let sm = simplify(&local_pos, &local_idx, SimplifyOptions::with_target(target));
+            let sm = simplify(
+                &local_pos,
+                &local_idx,
+                SimplifyOptions::with_target_locked(target),
+            );
 
             // Group sphere: the shared bounds all the group's clusters project
             // their flip threshold against, so they switch together (crack-free).
@@ -188,7 +230,8 @@ pub fn build_cluster_dag(positions: &[[f32; 3]], indices: &[u32], opts: &DagOpti
 
             // Re-split the simplified group into coarser clusters.
             let flat: Vec<u32> = simplified.iter().flatten().copied().collect();
-            for nm in build_clusters(positions, &flat, opts.cluster_target) {
+            for nm in build_clusters_welded(positions, &flat, opts.cluster_target, weld.as_deref())
+            {
                 let tris: Vec<[u32; 3]> = nm
                     .triangles
                     .iter()
@@ -316,6 +359,177 @@ mod tests {
         (pos, indices)
     }
 
+    /// A lat/long UV sphere — **geometrically closed** but **non-watertight by
+    /// index**: the longitude seam column is duplicated (phi=0 vs phi=TAU are
+    /// coincident positions with distinct indices) and the pole rows are coincident
+    /// duplicates. This mirrors `meshgen::primitives::sphere_mesh` exactly (the
+    /// shape the editor's "sphere + Subdivide" repro feeds the bake). Index-based
+    /// adjacency therefore sees the seam as an open boundary, which is the
+    /// non-watertight input class the cluster bake must stay crack-free on (A1).
+    fn uv_sphere(segments_long: usize, segments_lat: usize) -> (Vec<[f32; 3]>, Vec<u32>) {
+        use std::f32::consts::PI;
+        const TAU: f32 = 2.0 * PI;
+        let mut pos = Vec::new();
+        for lat in 0..=segments_lat {
+            let theta = (lat as f32 / segments_lat as f32) * PI;
+            let (sin_t, cos_t) = (theta.sin(), theta.cos());
+            for lon in 0..=segments_long {
+                let phi = (lon as f32 / segments_long as f32) * TAU;
+                let (sin_p, cos_p) = (phi.sin(), phi.cos());
+                pos.push([sin_t * cos_p, cos_t, sin_t * sin_p]);
+            }
+        }
+        let stride = segments_long + 1;
+        let mut indices = Vec::new();
+        for lat in 0..segments_lat {
+            for lon in 0..segments_long {
+                let a = (lat * stride + lon) as u32;
+                let b = (lat * stride + lon + 1) as u32;
+                let c = ((lat + 1) * stride + lon + 1) as u32;
+                let d = ((lat + 1) * stride + lon) as u32;
+                indices.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        (pos, indices)
+    }
+
+    /// Weld positions onto an epsilon grid → a canonical vertex id per location,
+    /// so coincident-but-distinct seam/pole vertices unify. Returns one welded id
+    /// per input vertex index.
+    fn weld_ids(pos: &[[f32; 3]], eps: f32) -> Vec<u32> {
+        use std::collections::HashMap;
+        let mut map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+        let q = |v: f32| (v / eps).round() as i64;
+        pos.iter()
+            .map(|p| {
+                let key = (q(p[0]), q(p[1]), q(p[2]));
+                let n = map.len() as u32;
+                *map.entry(key).or_insert(n)
+            })
+            .collect()
+    }
+
+    /// Count undirected edges used by exactly one (welded, non-degenerate)
+    /// triangle — i.e. **hole / boundary edges**. Zero ⇒ the surface is closed
+    /// (crack-free); any open edge on a closed source is a torn hole.
+    fn boundary_edge_count(tris: &[[u32; 3]], weld: &[u32]) -> usize {
+        use std::collections::HashMap;
+        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        for tri in tris {
+            let w = [
+                weld[tri[0] as usize],
+                weld[tri[1] as usize],
+                weld[tri[2] as usize],
+            ];
+            // Drop triangles that became degenerate after welding (e.g. pole
+            // slivers whose two pole verts unify) — they are not real surface.
+            if w[0] == w[1] || w[1] == w[2] || w[0] == w[2] {
+                continue;
+            }
+            for (a, b) in [(w[0], w[1]), (w[1], w[2]), (w[2], w[0])] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edges.entry(key).or_insert(0) += 1;
+            }
+        }
+        edges.values().filter(|&&c| c == 1).count()
+    }
+
+    /// Simulate the runtime per-cluster cut at a scalar error `threshold`: select
+    /// each cluster whose error interval `[lod_error, parent_error)` contains it
+    /// (exactly the GPU rule, minus the screen-space projection). Returns the
+    /// selected clusters' triangles.
+    fn cut_triangles(dag: &ClusterDag, threshold: f32) -> Vec<[u32; 3]> {
+        let mut out = Vec::new();
+        for c in &dag.clusters {
+            if c.lod_error <= threshold && threshold < c.parent_error {
+                out.extend_from_slice(&c.triangles);
+            }
+        }
+        out
+    }
+
+    /// A1 (north-star): a geometrically-closed but **non-watertight-by-index**
+    /// mesh (UV sphere: duplicated seam column + pole rows) must stay **crack-free
+    /// at every LOD level**. Cut at any error threshold, the selected antichain —
+    /// welded by position — must be a closed surface (no hole edges). A torn coarse
+    /// level (the reported subdivided-sphere holes) shows up here as open edges.
+    ///
+    /// Was the Gap-A reproduction (the first coarse level tore ~21 hole edges
+    /// because index-based adjacency treated the coincident seam/pole duplicates
+    /// as open boundaries). Fixed by position-welding the simplifier's topology
+    /// (`simplify::weld_coincident`).
+    #[test]
+    fn non_watertight_sphere_cut_is_closed_at_every_level() {
+        let (pos, indices) = uv_sphere(48, 32); // 48*32*2 = 3072 tris, multi-level DAG
+        let eps = 1e-3;
+        let weld = weld_ids(&pos, eps);
+
+        // Sanity: the SOURCE, welded, is a closed manifold (no hole edges).
+        let src_tris: Vec<[u32; 3]> = indices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        assert_eq!(
+            boundary_edge_count(&src_tris, &weld),
+            0,
+            "source UV sphere must be geometrically closed once welded"
+        );
+
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+
+        // Level-0 reconstructs the source triangles exactly (no dropped coverage).
+        let l0: usize = dag
+            .clusters
+            .iter()
+            .filter(|c| c.lod_error == 0.0)
+            .map(|c| c.triangles.len())
+            .sum();
+        assert_eq!(
+            l0,
+            indices.len() / 3,
+            "level-0 must cover every source triangle"
+        );
+
+        // Sweep every error breakpoint in the DAG (each cluster's lod_error, plus
+        // just above it) — the cut must be a closed surface at all of them.
+        let mut breakpoints: Vec<f32> = vec![0.0];
+        for c in &dag.clusters {
+            breakpoints.push(c.lod_error);
+            if c.parent_error < ROOT_PARENT_ERROR {
+                breakpoints.push((c.lod_error + c.parent_error) * 0.5);
+            }
+        }
+        breakpoints.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        breakpoints.dedup();
+
+        for &t in &breakpoints {
+            let tris = cut_triangles(&dag, t);
+            assert!(!tris.is_empty(), "cut at threshold {t} selected nothing");
+            let holes = boundary_edge_count(&tris, &weld);
+            assert_eq!(
+                holes, 0,
+                "cluster cut at error threshold {t} tore {holes} hole edge(s) — \
+                 not crack-free on non-watertight (seam/pole) input (A1)"
+            );
+        }
+
+        // The fix must not "succeed" by refusing to simplify: the coarsest cut
+        // (just below the largest cluster error) must be a real LOD reduction.
+        let max_err = dag
+            .clusters
+            .iter()
+            .filter(|c| c.parent_error < ROOT_PARENT_ERROR)
+            .map(|c| c.lod_error)
+            .fold(0.0f32, f32::max);
+        let coarsest = cut_triangles(&dag, max_err).len();
+        let source = indices.len() / 3;
+        assert!(
+            coarsest < source * 3 / 4,
+            "coarsest cut {coarsest} is not a real reduction from {source} \
+             (locked-boundary simplify must still coarsen the sphere)"
+        );
+    }
+
     #[test]
     fn dag_builds_levels_and_is_monotone() {
         let (pos, indices) = grid(24); // 1152 tris
@@ -324,6 +538,7 @@ mod tests {
             group_size: 4,
             simplify_ratio: 0.5,
             max_levels: 16,
+            weld_eps: Some(1e-5),
         };
         let dag = build_cluster_dag(&pos, &indices, &opts);
         assert!(!dag.clusters.is_empty());
@@ -354,6 +569,56 @@ mod tests {
         }
         assert!(level0 > 0, "must have level-0 clusters");
         assert!(coarser > 0, "DAG must build at least one coarser level");
+    }
+
+    /// Imported glTF commonly splits vertices at UV/normal seams, so triangles
+    /// that share a geometric edge reference DISTINCT indices. Without
+    /// weld-for-adjacency the clusterer sees them as disconnected and degenerates
+    /// to ~1 triangle per cluster (and the DAG explodes). `weld_eps` (default on)
+    /// must restore adjacency: far fewer clusters, far healthier tris/cluster.
+    #[test]
+    fn weld_adjacency_fixes_split_vertex_degeneracy() {
+        // A welded grid, then fully un-welded (every triangle gets its own 3 verts
+        // → zero shared indices), keeping identical positions.
+        let (pos, indices) = grid(24); // 1152 tris, shared verts
+        let tris = indices.len() / 3;
+        let mut split_pos: Vec<[f32; 3]> = Vec::with_capacity(indices.len());
+        let mut split_idx: Vec<u32> = Vec::with_capacity(indices.len());
+        for (k, &i) in indices.iter().enumerate() {
+            split_pos.push(pos[i as usize]);
+            split_idx.push(k as u32);
+        }
+
+        let off = DagOptions {
+            weld_eps: None,
+            ..DagOptions::default()
+        };
+        let on = DagOptions::default(); // weld_eps: Some(1e-5)
+
+        let degen = build_cluster_dag(&split_pos, &split_idx, &off);
+        let welded = build_cluster_dag(&split_pos, &split_idx, &on);
+        let baseline = build_cluster_dag(&pos, &indices, &on); // already-shared grid
+
+        let l0 = |d: &ClusterDag| d.clusters.iter().filter(|c| c.lod_error == 0.0).count();
+        let (degen_l0, welded_l0, base_l0) = (l0(&degen), l0(&welded), l0(&baseline));
+
+        // Welding the split mesh recovers ~the same level-0 cluster count as the
+        // already-shared grid, and is dramatically better than raw-index adjacency.
+        assert!(
+            welded_l0 * 4 < degen_l0,
+            "weld should cut level-0 clusters ≥4× (split-vert degeneracy): \
+             welded={welded_l0} vs raw={degen_l0}"
+        );
+        assert!(
+            welded_l0 <= base_l0 * 2,
+            "welded split mesh ({welded_l0}) should cluster ~like the shared grid ({base_l0})"
+        );
+        // Healthy average: welded ≥ 16 tris/cluster; degenerate ≈ 1.
+        assert!(
+            tris / welded_l0.max(1) >= 16,
+            "welded avg tris/cluster too low: {} ({tris} tris / {welded_l0} clusters)",
+            tris / welded_l0.max(1)
+        );
     }
 
     #[test]

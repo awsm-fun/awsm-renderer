@@ -53,6 +53,22 @@ pub fn build_clusters(
     indices: &[u32],
     target_triangles: usize,
 ) -> Vec<Meshlet> {
+    build_clusters_welded(positions, indices, target_triangles, None)
+}
+
+/// [`build_clusters`] with an optional position-weld map for ADJACENCY ONLY:
+/// `weld[vid]` is the canonical id for coincident positions, so triangles that
+/// share a geometric edge through distinct (seam/pole) indices are still seen as
+/// adjacent. Degeneracy is judged on the ORIGINAL indices (a zero-area triangle
+/// with distinct indices is kept and assigned — coverage is exact); only edges
+/// whose two endpoints weld together are skipped (self-loops). See
+/// [`crate::dag::DagOptions::weld_eps`].
+pub(crate) fn build_clusters_welded(
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    target_triangles: usize,
+    weld: Option<&[u32]>,
+) -> Vec<Meshlet> {
     let target = target_triangles.max(1);
     let tri_count = indices.len() / 3;
     if tri_count == 0 {
@@ -64,26 +80,45 @@ pub fn build_clusters(
         .map(|p| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64))
         .collect();
 
+    // Canonical id for edge keys: welded when a map is supplied, else identity.
+    let vid = |v: u32| -> u32 {
+        match weld {
+            Some(w) => w[v as usize],
+            None => v,
+        }
+    };
+
     // Edge → the (up to two, more if non-manifold) triangles using it.
     let mut edge_tris: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
     let mut degenerate = vec![false; tri_count];
     for t in 0..tri_count as u32 {
         let [a, b, c] = tri_verts(indices, t);
+        // Degeneracy on ORIGINAL indices → zero-area-but-distinct-index triangles
+        // (e.g. UV-sphere pole quads) are KEPT so coverage stays exact.
         if a == b || b == c || a == c {
             degenerate[t as usize] = true;
             continue;
         }
         for (u, v) in [(a, b), (b, c), (c, a)] {
-            edge_tris.entry(edge_key(u, v)).or_default().push(t);
+            let (wu, wv) = (vid(u), vid(v));
+            // Skip an edge that welds to a self-loop (corners coincident in space).
+            if wu == wv {
+                continue;
+            }
+            edge_tris.entry(edge_key(wu, wv)).or_default().push(t);
         }
     }
 
-    // Per-triangle adjacency (triangles sharing an edge).
+    // Per-triangle adjacency (triangles sharing a welded edge).
     let tri_adjacency = |t: u32| -> Vec<u32> {
         let [a, b, c] = tri_verts(indices, t);
         let mut out = Vec::new();
         for (u, v) in [(a, b), (b, c), (c, a)] {
-            if let Some(ts) = edge_tris.get(&edge_key(u, v)) {
+            let (wu, wv) = (vid(u), vid(v));
+            if wu == wv {
+                continue;
+            }
+            if let Some(ts) = edge_tris.get(&edge_key(wu, wv)) {
                 for &other in ts {
                     if other != t && !out.contains(&other) {
                         out.push(other);

@@ -528,6 +528,13 @@ pub struct UrlParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ImportNaniteParams {
+    /// URL of a pre-baked cluster-LOD DAG file (`<id>.clusters.bin`) produced by the
+    /// `awsm-lod-bake` CLI. The editor fetches + renders it as a view-only nanite mesh.
+    pub clusters_url: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct BaseUrlParams {
     pub base_url: String,
 }
@@ -2110,6 +2117,26 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::ImportModelFromUrl { url: p.url })
             .await
+    }
+
+    #[tool(
+        description = "Import a PRE-BAKED nanite / cluster-LOD asset as a VIEW-ONLY mesh. \
+        `clusters_url` points at a `<id>.clusters.bin` produced offline by the `awsm-lod-bake` \
+        CLI (which converts a glTF/GLB). The editor renders it through the bounded cluster \
+        pipeline — the same path the player uses — so a multi-million-triangle mesh views as \
+        nanite (bounded draw + VRAM) without the dense explode that would otherwise crash the \
+        editor. The node is non-editable (no geometry stack / modifiers — it IS the LOD); \
+        move/scale it and assign a material like any node. Use this instead of \
+        `import_model_from_url` for heavy static meshes."
+    )]
+    async fn import_nanite_asset(
+        &self,
+        Parameters(p): Parameters<ImportNaniteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ImportNaniteAsset {
+            clusters_url: p.clusters_url,
+        })
+        .await
     }
 
     #[tool(description = "Undo the last recorded command.")]
