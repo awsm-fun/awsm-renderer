@@ -145,7 +145,10 @@ fn main() -> Result<()> {
         total_files += bake_one(&out_dir, &asset_id, &mesh, &args)?;
     }
 
-    eprintln!("awsm-lod-bake: wrote {total_files} file(s) to {}", out_dir.display());
+    eprintln!(
+        "awsm-lod-bake: wrote {total_files} file(s) to {}",
+        out_dir.display()
+    );
     Ok(())
 }
 
@@ -196,16 +199,28 @@ fn bake_one(out_dir: &Path, asset_id: &str, mesh: &MeshData, args: &Args) -> Res
             eprintln!(
                 "  {asset_id}: {tris} tris → cluster DAG: {cluster_count} clusters \
                  ({dag_tris} DAG tris, {avg_tpc:.1} tris/cluster){}",
-                if degenerate { " [forced — degenerate]" } else { "" }
+                if degenerate {
+                    " [forced — degenerate]"
+                } else {
+                    ""
+                }
             );
         }
     } else if !args.no_clusters {
-        eprintln!("  {asset_id}: {tris} tris < cluster-min {} — no cluster bake", args.cluster_min);
+        eprintln!(
+            "  {asset_id}: {tris} tris < cluster-min {} — no cluster bake",
+            args.cluster_min
+        );
     }
 
     // Discrete-LOD chain.
     if !args.no_discrete && tris >= args.lod_min {
-        let plan = plan_lod_levels(&mesh.positions, &mesh.indices, LOD_RATIOS, args.lod_min.max(1));
+        let plan = plan_lod_levels(
+            &mesh.positions,
+            &mesh.indices,
+            LOD_RATIOS,
+            args.lod_min.max(1),
+        );
         if plan.levels.is_empty() {
             eprintln!("  {asset_id}: no discrete level reduced the triangle count — skipped");
         } else {
@@ -242,7 +257,10 @@ fn bake_one(out_dir: &Path, asset_id: &str, mesh: &MeshData, args: &Args) -> Res
             );
         }
     } else if !args.no_discrete {
-        eprintln!("  {asset_id}: {tris} tris < lod-min {} — no discrete bake", args.lod_min);
+        eprintln!(
+            "  {asset_id}: {tris} tris < lod-min {} — no discrete bake",
+            args.lod_min
+        );
     }
 
     Ok(written)

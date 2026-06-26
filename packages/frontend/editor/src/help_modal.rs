@@ -5,8 +5,11 @@
 
 use crate::prelude::*;
 
+/// One Help tab: its label + the builder for its body.
+type HelpTab = (&'static str, fn() -> Dom);
+
 /// Tab order. `open_help_mcp` deep-links to [`Tab::Mcp`].
-const TABS: &[(&str, fn() -> Dom)] = &[
+const TABS: &[HelpTab] = &[
     ("Overview", overview_section),
     ("Editor", editor_section),
     ("Renderer", renderer_section),
