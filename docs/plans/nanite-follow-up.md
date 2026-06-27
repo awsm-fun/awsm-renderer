@@ -192,7 +192,14 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
   (native) + the wasm build of the call site. On-device verification N/A — the guard
   only fires on deliberately-corrupt input; a fabricated bad file on-device would add
   nothing over the native test.
-- [ ] A0 two-mesh baseline test
+- [x] A0 two-mesh baseline — ALREADY MULTI-MESH (confirmed by code, no change needed):
+  `upload_pages` find-or-creates a `ClusterMeshState` per `render_mesh` MeshKey, each
+  with its own buffers/bind-groups (`render_pass.rs:435`); `dispatch_all` loops every
+  state (`:509`); the per-draw override resolves state by `mesh_key` (`meshes/mesh.rs:299`);
+  nothing clears states or asserts a single one. Each editor `ClusterMesh` node
+  materializes with a fresh MeshKey ⇒ N nodes → N states. No native GPU test harness
+  exists in the renderer (only shader-template unit tests), so the live two-mesh render
+  proof is A4. Real remaining gaps: A1 (readback) + A2 (global budget).
 - [ ] A1 multi-mesh-correct diagnostic readback
 - [ ] A2 global residency budget (tris + bytes) shared across meshes
 - [ ] A3 editor multi-import + Save→reload test
