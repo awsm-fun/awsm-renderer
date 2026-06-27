@@ -112,6 +112,29 @@ impl AwsmRenderer {
             self.material_edge_layout_uniform = Some(uniform);
         }
 
+        // MSAA on → off transition: tear the edge buffers back down, mirroring
+        // the off → on allocation above. This restores the invariant the rest of
+        // the renderer assumes — `material_edge_buffers.is_some()` ⟺ MSAA-on —
+        // which the classify bind group keys off (its multisampled layout
+        // statically declares the edge slots; see `material_classify::bind_group`)
+        // and which the per-frame edge bookkeeping (`reset_header`, the
+        // overflow-readback copy + mapAsync in `render`) uses to skip work. Before
+        // this, those buffers leaked across the flip and ran wasted per-frame work
+        // every MSAA-off frame — and left the multisampled-only `cs_prep_edge` /
+        // `cs_shade` edge bindings able to bind a single-sampled main group.
+        //
+        // Safe to drop synchronously: `MaterialEdgeBuffers` has no `Drop` and
+        // never calls `.destroy()`, so this just releases the `web_sys` GPU-buffer
+        // handles to GC. WebGPU keeps the underlying memory alive for any in-flight
+        // submit, so (unlike `RenderTextures`, which destroys eagerly) no
+        // deferred-destroy is needed. Gated only on `!new_msaa_on`: on devices
+        // without `edge_resolve_supported` the buffers are already `None`, so the
+        // clear is an idempotent no-op.
+        if !new_msaa_on {
+            self.material_edge_buffers = None;
+            self.material_edge_layout_uniform = None;
+        }
+
         self.bind_groups
             .mark_create(BindGroupCreate::AntiAliasingChange);
         self.bind_groups

@@ -14,9 +14,18 @@ fn mask_bary_at(b: vec2<f32>, dbx: vec2<f32>, dby: vec2<f32>, ox: f32, oy: f32) 
 // the SAME visibility buffer; we only add the cutoff discard up front). ──────
 struct FragmentInput {
     @location(0) @interpolate(flat) triangle_index: u32,
-    @location(1) barycentric: vec2<f32>,
-    @location(2) world_normal: vec3<f32>,
-    @location(3) world_tangent: vec4<f32>,
+    // Centroid → texel-UV reconstruction (on-surface, clamp-safe at seams). See vertex.wgsl.
+    @location(1) @interpolate(perspective, centroid) barycentric: vec2<f32>,
+    // Center → source for ALL dpdx/dpdy here: texture-LOD gradients AND the
+    // per-sample cutout sub-offsets below. Keeps cutout coverage + LOD identical
+    // to the pre-centroid behaviour (derivatives of a centroid varying are undefined).
+    @location(6) @interpolate(perspective, center) barycentric_center: vec2<f32>,
+    // Centroid-sampled to match the (shared) geometry vertex output qualifier —
+    // the masked variant reuses geometry_wgsl/vertex.wgsl, so a mismatch here is
+    // a pipeline-creation validation error. See that vertex struct for the why
+    // (silhouette normals stay on-surface under MSAA).
+    @location(2) @interpolate(perspective, centroid) world_normal: vec3<f32>,
+    @location(3) @interpolate(perspective, centroid) world_tangent: vec4<f32>,
     @location(4) @interpolate(flat) instance_id: u32,
     @location(5) @interpolate(flat) material_mesh_meta_offset: u32,
     // See the plain geometry fragment: flip the normal for back faces so
@@ -68,14 +77,14 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     // Standard 4x sample offsets (the exact positions only nudge spatial
     // placement; the resolve blends by covered-sample COUNT, all carrying the
     // shared center data).
-    let dbx = dpdx(input.barycentric);
-    let dby = dpdy(input.barycentric);
+    let dbx = dpdx(input.barycentric_center);
+    let dby = dpdy(input.barycentric_center);
     let cut = mm.alpha_cutoff;
     var coverage_mask = 0u;
-    if mask_alpha_at(mask_bary_at(input.barycentric, dbx, dby, -0.125, -0.375), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 1u; }
-    if mask_alpha_at(mask_bary_at(input.barycentric, dbx, dby,  0.375, -0.125), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 2u; }
-    if mask_alpha_at(mask_bary_at(input.barycentric, dbx, dby, -0.375,  0.125), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 4u; }
-    if mask_alpha_at(mask_bary_at(input.barycentric, dbx, dby,  0.125,  0.375), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 8u; }
+    if mask_alpha_at(mask_bary_at(input.barycentric_center, dbx, dby, -0.125, -0.375), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 1u; }
+    if mask_alpha_at(mask_bary_at(input.barycentric_center, dbx, dby,  0.375, -0.125), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 2u; }
+    if mask_alpha_at(mask_bary_at(input.barycentric_center, dbx, dby, -0.375,  0.125), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 4u; }
+    if mask_alpha_at(mask_bary_at(input.barycentric_center, dbx, dby,  0.125,  0.375), triangle_indices, attribute_data_offset, vertex_attribute_stride, uv_sets_index, color_sets_index, material_offset) >= cut { coverage_mask |= 8u; }
     if coverage_mask == 0u {
         discard;
     }
@@ -110,8 +119,8 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     }
     out.normal_tangent = pack_normal_tangent(N, T, s);
 
-    let ddx = dpdx(input.barycentric);
-    let ddy = dpdy(input.barycentric);
+    let ddx = dpdx(input.barycentric_center);
+    let ddy = dpdy(input.barycentric_center);
     out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);
 
     return out;

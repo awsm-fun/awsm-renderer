@@ -34,9 +34,41 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) @interpolate(flat) triangle_index: u32,
-    @location(1) barycentric: vec2<f32>,  // Full barycentric coordinates
-    @location(2) world_normal: vec3<f32>,     // Transformed world-space normal
-    @location(3) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
+    // CENTROID-sampled — used by the fragment to RECONSTRUCT the texel UV (it is
+    // what gets packed into the barycentric G-buffer). Under MSAA a pixel on a
+    // (coplanar) tessellation seam has the primary/interior pass shade sample-0,
+    // whose covering triangle may differ from the one under the pixel centre.
+    // With center sampling that triangle's barycentric is evaluated AT the centre
+    // (outside it → a negative component), and the `clamp(…,0,1)` pack in the
+    // fragment then corrupts it into a vertex corner → wrong texel (the white/dark
+    // breaks on MorphStressTest's TinyGrid ticks). Centroid evaluates within the
+    // covered samples → on-surface, in-range, nothing for the clamp to destroy.
+    // Identical to center for fully-covered interior pixels → free there.
+    // NOTE: screen-space derivatives (dpdx/dpdy) must NOT be taken of a centroid
+    // varying — they're well-defined only for center sampling. So the fragment's
+    // texture-LOD gradients (and the masked pass's per-sample cutout offsets) read
+    // `barycentric_center` below instead. (Alternative if this ever needs to
+    // collapse back to one varying: drop `barycentric_center`, take derivatives of
+    // this centroid `barycentric`, and accept slightly noisy LOD on partial-
+    // coverage/seam pixels — interiors are unaffected since centroid≡center there.)
+    @location(1) @interpolate(perspective, centroid) barycentric: vec2<f32>,
+    // CENTER-sampled copy of the same barycentric, used ONLY as the source for
+    // dpdx/dpdy (texture-LOD gradients + masked cutout sub-sample offsets) so
+    // those stay bit-identical to the pre-centroid behaviour — i.e. this decouples
+    // "barycentric for UV" (centroid, on-surface) from "barycentric for
+    // derivatives" (center, well-defined). Never packed/stored.
+    @location(6) @interpolate(perspective, center) barycentric_center: vec2<f32>,
+    // Centroid-sampled: under MSAA, a silhouette pixel whose center falls outside
+    // the covered triangle would otherwise *extrapolate* the normal/tangent past
+    // the triangle edge, spiking specular / mis-lighting the partially-covered
+    // samples that the edge resolve then averages in. Centroid evaluates the
+    // attribute at the centroid of the covered samples, keeping it on-surface.
+    // Identical to center for fully-covered pixels (interiors) → free there. Must
+    // match the fragment-input qualifier on these locations (WGSL cross-stage
+    // interpolation rule); the plain + custom-vertex + masked variants all share
+    // these structs.
+    @location(2) @interpolate(perspective, centroid) world_normal: vec3<f32>,     // Transformed world-space normal
+    @location(3) @interpolate(perspective, centroid) world_tangent: vec4<f32>,    // Transformed world-space tangent (w = handedness)
     // Stage-1 leaves this at U32_MAX always; Stage-2 wires
     // `geometry_mesh_meta.instance_attr_base + @builtin(instance_index)`.
     @location(4) @interpolate(flat) instance_id: u32,
@@ -133,7 +165,10 @@ fn vert_main(
 
     // Pass through
     out.triangle_index = input.triangle_index;
+    // Same source value; the two outputs differ only by interpolation qualifier
+    // (centroid for UV reconstruction, center for screen-space derivatives).
     out.barycentric = input.barycentric;
+    out.barycentric_center = input.barycentric;
 
     out.instance_id = instance_id;
 
