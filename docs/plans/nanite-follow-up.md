@@ -162,7 +162,10 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
 27 nodes with `.clusters.bin`) is a ready multi-mesh + varied-topology fixture for A4.
 
 ## Status checklist
-- [ ] B1 shared degeneracy heuristic in `lod-bake` + unit test
+- [x] B1 shared degeneracy heuristic in `lod-bake` + unit test — `ClusterMesh::quality` +
+  `DagQuality` + `MIN_AVG_TRIS_PER_CLUSTER`/`MAX_DAG_TRI_RATIO` consts
+  (`cluster_mesh.rs`); tests `quality_passes_healthy_dag`,
+  `quality_flags_degenerate_unwelded_split_mesh`.
 - [ ] B2 editor bake guard parity + discrete-LOD fallback; CLI refactored to share
 - [ ] B3 non-manifold edge locking + fixture
 - [ ] B4 degenerate/non-manifold tests + extended crack-free coverage

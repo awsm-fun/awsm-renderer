@@ -15,6 +15,36 @@ use serde::{Deserialize, Serialize};
 
 use crate::dag::ClusterDag;
 
+/// Minimum healthy average triangles-per-cluster. A well-clustered DAG averages
+/// dozens (the cluster target is ~128); pathological source topology (non-manifold
+/// or unweldable split-vertices) that defeats clustering even after the
+/// weld-for-adjacency pass collapses to ~1 tri/cluster. Below this we call the bake
+/// degenerate. See [`ClusterMesh::quality`].
+pub const MIN_AVG_TRIS_PER_CLUSTER: f32 = 8.0;
+
+/// Maximum healthy DAG-triangle / source-triangle ratio. A healthy DAG totals ~2×
+/// the source (each coarser level roughly halves), so well under this. A degenerate
+/// clustering balloons many× the source instead of coarsening — a huge, useless
+/// `.clusters.bin` that also tends to cut with holes. See [`ClusterMesh::quality`].
+pub const MAX_DAG_TRI_RATIO: f32 = 6.0;
+
+/// Quality metrics for a baked cluster DAG, with the degeneracy verdict
+/// ([`ClusterMesh::quality`]). The SINGLE source of truth for "is this DAG worth
+/// shipping" — shared by the offline CLI bake (`lod-bake-cli`) and the editor's
+/// export-time bake (`controller::lod_bake::bake_static_clusters`) so the two can't
+/// drift. A degenerate DAG should be dropped (the discrete LOD chain still ships).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DagQuality {
+    pub cluster_count: usize,
+    pub dag_triangles: usize,
+    /// `dag_triangles / cluster_count` — low ⇒ clustering failed.
+    pub avg_tris_per_cluster: f32,
+    /// `dag_triangles / source_triangles` — high ⇒ DAG ballooned instead of coarsening.
+    pub dag_ratio: f32,
+    /// `avg_tris_per_cluster < MIN_AVG_TRIS_PER_CLUSTER || dag_ratio > MAX_DAG_TRI_RATIO`.
+    pub degenerate: bool,
+}
+
 /// One cluster's page: its bounds, LOD errors, and where its indices live.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,6 +145,29 @@ impl ClusterMesh {
             .map(|c| (c.index_count / 3) as usize)
             .sum()
     }
+
+    /// Assess this DAG's clustering quality against the source triangle count and
+    /// return the degeneracy verdict ([`DagQuality`]). `source_triangles` is the
+    /// pre-bake triangle count of the input mesh (use [`Self::finest_triangle_count`]
+    /// if the source count isn't otherwise tracked — the finest cut reconstructs it).
+    ///
+    /// The SINGLE place this heuristic lives: the CLI and the editor bake both call
+    /// it, so a degenerate `.clusters.bin` is dropped consistently in both paths.
+    pub fn quality(&self, source_triangles: usize) -> DagQuality {
+        let cluster_count = self.cluster_count();
+        let dag_triangles = self.triangle_count();
+        let avg_tris_per_cluster = dag_triangles as f32 / cluster_count.max(1) as f32;
+        let dag_ratio = dag_triangles as f32 / source_triangles.max(1) as f32;
+        let degenerate =
+            avg_tris_per_cluster < MIN_AVG_TRIS_PER_CLUSTER || dag_ratio > MAX_DAG_TRI_RATIO;
+        DagQuality {
+            cluster_count,
+            dag_triangles,
+            avg_tris_per_cluster,
+            dag_ratio,
+            degenerate,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +212,53 @@ mod tests {
         assert_eq!(cursor as usize, cm.indices.len());
         // Every index references a real vertex.
         assert!(cm.indices.iter().all(|&i| (i as usize) < pos.len()));
+    }
+
+    /// A normally-built DAG over a welded grid is healthy: dozens of tris/cluster,
+    /// DAG total a small multiple of the source — `quality` must NOT flag it.
+    #[test]
+    fn quality_passes_healthy_dag() {
+        let (pos, indices) = grid(32);
+        let source_tris = indices.len() / 3;
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+        let cm = ClusterMesh::from_dag(&dag, pos, vec![], vec![], vec![]);
+        let q = cm.quality(source_tris);
+        assert!(
+            !q.degenerate,
+            "healthy grid flagged degenerate: {:.1} tris/cluster, {:.1}× source",
+            q.avg_tris_per_cluster, q.dag_ratio
+        );
+        assert!(q.avg_tris_per_cluster >= MIN_AVG_TRIS_PER_CLUSTER);
+        assert!(q.dag_ratio <= MAX_DAG_TRI_RATIO);
+    }
+
+    /// A fully split-vertex mesh (no shared indices) with welding DISABLED can't
+    /// cluster — adjacency collapses to ~1 tri/cluster. `quality` must flag it so
+    /// the bake drops the DAG (the same case the CLI/editor guard catches). The
+    /// healthy default path (welding on) is covered above + by the dag tests.
+    #[test]
+    fn quality_flags_degenerate_unwelded_split_mesh() {
+        let (pos, indices) = grid(24);
+        // Explode into per-triangle vertices so no two triangles share an index.
+        let mut split_pos = Vec::with_capacity(indices.len());
+        let mut split_idx = Vec::with_capacity(indices.len());
+        for (i, &vi) in indices.iter().enumerate() {
+            split_pos.push(pos[vi as usize]);
+            split_idx.push(i as u32);
+        }
+        let source_tris = split_idx.len() / 3;
+        let opts = DagOptions {
+            weld_eps: None, // raw-index adjacency — the degenerate case
+            ..DagOptions::default()
+        };
+        let dag = build_cluster_dag(&split_pos, &split_idx, &opts);
+        let cm = ClusterMesh::from_dag(&dag, split_pos, vec![], vec![], vec![]);
+        let q = cm.quality(source_tris);
+        assert!(
+            q.degenerate,
+            "unwelded split mesh not flagged: {:.1} tris/cluster, {:.1}× source",
+            q.avg_tris_per_cluster, q.dag_ratio
+        );
     }
 
     #[test]
