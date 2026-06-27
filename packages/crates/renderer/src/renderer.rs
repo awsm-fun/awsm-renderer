@@ -2359,6 +2359,7 @@ impl AwsmRenderer {
         render_mesh: crate::meshes::MeshKey,
         pages: &[crate::cluster_lod::ClusterPage],
         indices: &[u32],
+        resident_tris: u32,
     ) -> crate::error::Result<()> {
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
             pass.upload_pages(
@@ -2367,9 +2368,21 @@ impl AwsmRenderer {
                 &self.bind_group_layouts,
                 pages,
                 indices,
+                resident_tris,
             )?;
         }
         Ok(())
+    }
+
+    /// Total resident triangles across every loaded cluster mesh. The scene loader
+    /// reads this before selecting a new cluster mesh's resident set, so it can cap
+    /// itself against the global residency budget (bounded total VRAM, any mesh
+    /// count). `0` when the cluster pass isn't built.
+    pub fn cluster_resident_tris_total(&self) -> usize {
+        self.render_passes
+            .cluster_lod
+            .as_ref()
+            .map_or(0, |pass| pass.resident_tris_total())
     }
 
     /// Upload the Gap-B dynamic-paging residency table (`cluster_id → page-pool

@@ -44,6 +44,12 @@ pub struct ClusterMeshState {
     pub render_mesh: MeshKey,
     /// Page count (the cut dispatch bound).
     pub cluster_count: u32,
+    /// Resident triangle count this mesh charges against the global residency
+    /// budget (the budget-capped resident set selected at load — `m_indices/3`,
+    /// NOT the padded paging pool). Summed across states by
+    /// [`ClusterLodRenderPass::resident_tris_total`] so a later mesh's load can cap
+    /// itself against what's already resident (bounded total VRAM, any mesh count).
+    pub resident_tris: u32,
     pub buffers: ClusterLodBuffers,
     pub bind_groups: ClusterCutBindGroups,
     pub compaction_bind_groups: ClusterCompactionBindGroups,
@@ -211,6 +217,13 @@ impl ClusterLodRenderPass {
         self.states
             .iter_mut()
             .find(|s| s.render_mesh == render_mesh)
+    }
+
+    /// Total resident triangles across every loaded cluster mesh — what a new
+    /// mesh's load caps itself against so the SUM stays within the global residency
+    /// budget regardless of mesh count.
+    pub fn resident_tris_total(&self) -> usize {
+        self.states.iter().map(|s| s.resident_tris as usize).sum()
     }
 
     /// Drop a cluster mesh's GPU state (e.g. when its node is removed).
@@ -427,6 +440,7 @@ impl ClusterLodRenderPass {
         layouts: &BindGroupLayouts,
         pages: &[ClusterPage],
         indices: &[u32],
+        resident_tris: u32,
     ) -> Result<()> {
         let count = pages.len() as u32;
         let index_count = indices.len() as u32;
@@ -439,6 +453,7 @@ impl ClusterLodRenderPass {
             self.states.push(ClusterMeshState {
                 render_mesh,
                 cluster_count: 0,
+                resident_tris: 0,
                 buffers,
                 bind_groups,
                 compaction_bind_groups,
@@ -450,6 +465,7 @@ impl ClusterLodRenderPass {
         state.buffers.write_pages(gpu, pages)?;
         state.buffers.write_source_indices(gpu, indices)?;
         state.cluster_count = count;
+        state.resident_tris = resident_tris;
         state.bind_groups.recreate(gpu, layouts, &state.buffers)?;
         state
             .compaction_bind_groups

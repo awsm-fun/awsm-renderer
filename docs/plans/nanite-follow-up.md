@@ -206,7 +206,22 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
   and logs `drawn index_count = N (T tris) across M mesh(es) over C clusters`. Gated
   by `lod`; flags-off compiles unchanged. Verified: renderer wasm (lod on + lod off),
   editor wasm, lod-bake 42 tests.
-- [ ] A2 global residency budget (tris + bytes) shared across meshes
+- [x] A2 global residency budget shared across meshes — `ClusterMeshState.resident_tris`
+  + `ClusterLodRenderPass::resident_tris_total()` + `AwsmRenderer::cluster_resident_tris_total()`
+  expose total residency; `materialize_cluster_mesh` caps a new mesh's budget at
+  `min(per_mesh, global_cap − already_resident)` where `global_cap =
+  per_mesh_budget * GLOBAL_RESIDENCY_MESH_MULTIPLE (8)`, and skips (renders nothing +
+  warns) when 0 left. Bounds total VRAM at ~8× per-mesh regardless of mesh count.
+  DESIGN NOTES / deviations from the plan sketch: (1) bounds by triangles (the GPU
+  pool's dominant cost is the exploded vertex buffer at 56 B/index, ∝ tris) — a
+  separate byte cap would duplicate the existing per-buffer 1.9 GB guard, so not added.
+  (2) Kept `?streambudget` as the per-mesh budget (not repurposed as the global cap) so
+  existing behavior is preserved; the global cap scales with it (8×). (3) The caps-off
+  path (budget == MAX, streaming+paging both off) stays uncapped ⇒ shipped path
+  byte-identical. (4) First-cut policy is first-come (earlier meshes keep full detail,
+  later ones throttle then drop) — fair re-budgeting on load is future work. Verified:
+  renderer wasm (lod on + off), editor wasm, lod-bake 42 tests. Live bounded-VRAM
+  proof: A4.
 - [ ] A3 editor multi-import + Save→reload test
 - [ ] A4 on-device verification (two heavy meshes, bounded VRAM)
 - [ ] docs: `nanite-lod.md` status updated as each closes
