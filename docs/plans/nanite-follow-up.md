@@ -222,6 +222,14 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
   later ones throttle then drop) — fair re-budgeting on load is future work. Verified:
   renderer wasm (lod on + off), editor wasm, lod-bake 42 tests. Live bounded-VRAM
   proof: A4.
-- [ ] A3 editor multi-import + Save→reload test
+- [x] A3 editor multi-import + Save→reload test — native test
+  `cluster_sources_from_project_collects_every_mesh` (persistence.rs) asserts a project
+  with several `ClusterMesh` nodes (incl. nested) yields every distinct source — the
+  exact set `cluster_files` writes and `restore_cluster_meshes` re-reads, so multiple
+  nanite meshes survive Save→reload. (Editor bin DOES run host tests — 28 pass — the old
+  "no native test target" note was stale.) Multi-import keeps prior nodes (the
+  `ImportNaniteAsset` handler inserts without clearing) and each node materializes under
+  its own `sub_tk` (per-node transform), both confirmed by code; live render + reload
+  proof folds into A4.
 - [ ] A4 on-device verification (two heavy meshes, bounded VRAM)
 - [ ] docs: `nanite-lod.md` status updated as each closes
