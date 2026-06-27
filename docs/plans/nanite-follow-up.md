@@ -166,7 +166,11 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
   `DagQuality` + `MIN_AVG_TRIS_PER_CLUSTER`/`MAX_DAG_TRI_RATIO` consts
   (`cluster_mesh.rs`); tests `quality_passes_healthy_dag`,
   `quality_flags_degenerate_unwelded_split_mesh`.
-- [ ] B2 editor bake guard parity + discrete-LOD fallback; CLI refactored to share
+- [x] B2 editor bake guard parity + discrete-LOD fallback; CLI refactored to share —
+  `bake_static_clusters` now calls `cm.quality(tris)` and returns empty (discrete LOD
+  still ships) on degenerate, with a `tracing::warn!`; CLI `bake_one` uses the same
+  `quality()` instead of its inlined heuristic. No editor escape hatch (an authoring
+  tool must never silently ship a cracking nanite mesh).
 - [ ] B3 non-manifold edge locking + fixture
 - [ ] B4 degenerate/non-manifold tests + extended crack-free coverage
 - [ ] B5 runtime load-time DAG sanity backstop

@@ -45,7 +45,8 @@ pub const CLUSTER_MIN_TRIANGLES: usize = 4096;
 /// (`<id>.clusters.bin`, a JSON `ClusterMesh`) — or empty when below the cluster
 /// floor. Consumed at load only when the `virtual_geometry` feature is on.
 pub fn bake_static_clusters(asset_id: &str, mesh: &MeshData) -> Vec<BundleFile> {
-    if mesh.indices.len() / 3 < CLUSTER_MIN_TRIANGLES {
+    let tris = mesh.indices.len() / 3;
+    if tris < CLUSTER_MIN_TRIANGLES {
         return Vec::new();
     }
     let dag = awsm_renderer_lod_bake::build_cluster_dag(
@@ -60,6 +61,26 @@ pub fn bake_static_clusters(asset_id: &str, mesh: &MeshData) -> Vec<BundleFile> 
         mesh.uvs.first().cloned().unwrap_or_default(),
         mesh.colors.clone().unwrap_or_default(),
     );
+    // Degeneracy guard (same `ClusterMesh::quality` heuristic as the offline CLI,
+    // so the two bakes can't drift). Pathological source topology (non-manifold /
+    // unweldable) that defeats clustering yields a huge, useless DAG that also cuts
+    // with holes — drop it. The mesh still ships its discrete LOD chain
+    // (`bake_static_lod`, baked separately), so this is a graceful fallback, not a
+    // loss. The CLI has `--allow-degenerate-clusters`; the editor bake has no such
+    // escape (an authoring tool should never silently ship a cracking nanite mesh).
+    let q = cm.quality(tris);
+    if q.degenerate {
+        tracing::warn!(
+            "cluster bake: DEGENERATE clustering for {asset_id} \
+             ({} clusters, {:.1} tris/cluster, DAG {:.1}× source) — \
+             skipping cluster DAG, discrete LOD still emitted (source didn't cluster \
+             well: non-manifold / unweldable?)",
+            q.cluster_count,
+            q.avg_tris_per_cluster,
+            q.dag_ratio
+        );
+        return Vec::new();
+    }
     match serde_json::to_vec(&cm) {
         Ok(bytes) => vec![BundleFile::asset(
             awsm_renderer_lod_bake::cluster_mesh_filename(asset_id),
