@@ -72,6 +72,9 @@ pub enum AwsmCoreError {
     #[error("[gpu] failed create buffer: {0}")]
     BufferCreation(String),
 
+    #[error("[gpu] refused oversized buffer allocation: {0}")]
+    OversizedBufferAllocation(String),
+
     #[error("[gpu] failed map buffer: {0}")]
     BufferMap(String),
 
@@ -316,6 +319,17 @@ impl AwsmCoreError {
     /// Creates a buffer creation error from a JS value.
     pub fn buffer_creation(err: JsValue) -> Self {
         Self::BufferCreation(format_err(err))
+    }
+
+    /// Builds the error for a buffer allocation rejected by the always-on
+    /// [`crate::MAX_GPU_BUFFER_BYTES`] hard cap (would otherwise trap the
+    /// renderer process inside PartitionAlloc).
+    pub fn oversized_buffer_allocation(requested: u64, cap: u64) -> Self {
+        Self::OversizedBufferAllocation(format!(
+            "requested {requested} bytes (>= {cap} hard cap); a single GPU buffer this \
+             large would abort the renderer in PartitionAlloc — likely a runaway/overflowed \
+             size computation"
+        ))
     }
 
     /// Creates a buffer map error from a JS value.
