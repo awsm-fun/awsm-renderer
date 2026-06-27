@@ -227,6 +227,18 @@ pub fn simplify(positions: &[[f32; 3]], indices: &[u32], opts: SimplifyOptions) 
         }
     }
     let mut class = classify_vertices(&boundary_nbrs, &pos);
+    // Lock the endpoints of every non-manifold edge (used by 3+ triangles). Such an
+    // edge has no well-defined two-sided collapse: merging across it folds disjoint
+    // sheets together and, in cluster mode, cracks the per-cluster cut where the
+    // sheets meet. count==1 is the open boundary (handled above); count==2 is the
+    // manifold interior; count>=3 is the pathological case this guards. Manifold
+    // meshes have no such edges, so this is a no-op for them.
+    let nonmanifold = nonmanifold_locked(&edge_tris, vert_count);
+    for (v, &nm) in nonmanifold.iter().enumerate() {
+        if nm {
+            class[v] = VertClass::Corner;
+        }
+    }
     if opts.lock_boundaries {
         // Crack-free cluster mode: a group's external boundary must be preserved
         // exactly so the adjacent group's matching boundary stays welded to it.
@@ -390,6 +402,23 @@ fn weld_coincident(pos: &[DVec3]) -> Vec<u32> {
             *map.entry(key).or_insert(i as u32)
         })
         .collect()
+}
+
+/// Mark every vertex that touches a non-manifold edge — one shared by 3 or more
+/// triangles. The simplifier collapses an edge by merging its endpoints; doing
+/// that across a non-manifold edge welds otherwise-disjoint surface sheets and
+/// tears the mesh (and cracks the cluster cut where the sheets meet). Callers lock
+/// the marked vertices. `edge_tris` maps each undirected edge to its incident
+/// triangle count; manifold meshes (all counts 1 or 2) yield an all-`false` mask.
+fn nonmanifold_locked(edge_tris: &HashMap<(u32, u32), u32>, vert_count: usize) -> Vec<bool> {
+    let mut nm = vec![false; vert_count];
+    for ((a, b), &count) in edge_tris {
+        if count >= 3 {
+            nm[*a as usize] = true;
+            nm[*b as usize] = true;
+        }
+    }
+    nm
 }
 
 /// How a vertex is allowed to move during collapse.
@@ -611,5 +640,55 @@ fn finalize(
         surviving,
         indices: out_indices,
         error: max_cost.max(0.0).sqrt() as f32,
+    }
+}
+
+#[cfg(test)]
+mod nonmanifold_tests {
+    use super::*;
+
+    /// The lock mask flags exactly the endpoints of edges used by 3+ triangles;
+    /// manifold (count 1/2) edges leave their vertices unflagged.
+    #[test]
+    fn nonmanifold_locked_flags_only_high_valence_edges() {
+        let mut edge_tris: HashMap<(u32, u32), u32> = HashMap::new();
+        edge_tris.insert((0, 1), 3); // non-manifold spine → 0,1 locked
+        edge_tris.insert((1, 2), 2); // manifold interior
+        edge_tris.insert((2, 3), 1); // open boundary (locked elsewhere, not here)
+        edge_tris.insert((4, 5), 4); // non-manifold → 4,5 locked
+        let nm = nonmanifold_locked(&edge_tris, 6);
+        assert_eq!(nm, vec![true, true, false, false, true, true]);
+    }
+
+    /// A "Y-prism": three flaps share one spine edge (count==3, non-manifold).
+    /// The simplifier must not panic, must emit a valid index buffer, and must
+    /// keep the spine endpoints (locked, so the disjoint sheets never fold
+    /// together / tear). Guards the whole path on non-manifold input.
+    #[test]
+    fn nonmanifold_yprism_simplifies_without_tearing() {
+        // Spine S0,S1 extruded along z; three flaps at 120°.
+        let mut pos = vec![[0.0f32, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let dirs = [
+            (1.0f32, 0.0f32),
+            (-0.5, 0.8660254),
+            (-0.5, -0.8660254),
+        ];
+        let mut indices = Vec::new();
+        for (dx, dy) in dirs {
+            let a0 = pos.len() as u32;
+            pos.push([dx, dy, 0.0]);
+            let a1 = pos.len() as u32;
+            pos.push([dx, dy, 1.0]);
+            // quad [S0,S1,a1,a0] → (S0,S1,a1),(S0,a1,a0); edge S0-S1 shared by all flaps.
+            indices.extend_from_slice(&[0, 1, a1]);
+            indices.extend_from_slice(&[0, a1, a0]);
+        }
+        let sm = simplify(&pos, &indices, SimplifyOptions::with_target_locked(1));
+        // Valid, non-empty output.
+        assert!(!sm.indices.is_empty());
+        assert!(sm.indices.iter().all(|&i| (i as usize) < sm.surviving.len()));
+        // The spine endpoints (original ids 0 and 1) survive — non-manifold-locked.
+        assert!(sm.surviving.contains(&0), "spine S0 collapsed away");
+        assert!(sm.surviving.contains(&1), "spine S1 collapsed away");
     }
 }

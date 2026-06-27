@@ -171,7 +171,12 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
   still ships) on degenerate, with a `tracing::warn!`; CLI `bake_one` uses the same
   `quality()` instead of its inlined heuristic. No editor escape hatch (an authoring
   tool must never silently ship a cracking nanite mesh).
-- [ ] B3 non-manifold edge locking + fixture
+- [x] B3 non-manifold edge locking + fixture — `nonmanifold_locked` in `simplify.rs`
+  marks endpoints of every ≥3-incidence edge; they're forced to `VertClass::Corner`
+  before collapse so disjoint sheets can't fold together / tear (and the cut can't
+  crack where they meet). Manifold meshes (all edges 1/2) → no-op. Tests:
+  `nonmanifold_locked_flags_only_high_valence_edges`,
+  `nonmanifold_yprism_simplifies_without_tearing`.
 - [ ] B4 degenerate/non-manifold tests + extended crack-free coverage
 - [ ] B5 runtime load-time DAG sanity backstop
 - [ ] A0 two-mesh baseline test
