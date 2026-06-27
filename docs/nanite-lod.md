@@ -288,6 +288,15 @@ asymmetrically; and `ClusterMesh::validate` rejects a malformed `.clusters.bin` 
 rather than reading out of bounds. Crack-free coverage spans the UV sphere (A1) and a
 genus-1 torus.
 
-**Known follow-ups (not regressions):** (1) one cluster render mesh is resident at a
-time (multiple simultaneous nanite meshes is future work). See
-[`plans/nanite-follow-up.md`](./plans/nanite-follow-up.md).
+Multiple simultaneous nanite meshes are **shipped**: the cluster pass keys per render
+mesh (`Vec<ClusterMeshState>`), each editor `ClusterMesh` node materializes
+independently under its own transform, and total residency is bounded by a global cap
+(`per_mesh_budget * GLOBAL_RESIDENCY_MESH_MULTIPLE`) shared across resident meshes — so
+VRAM stays bounded regardless of mesh count (later meshes throttle, then skip with a
+warn). The cut-readback diagnostics sum across all resident meshes. Verified on-device
+with two heavy nanite meshes resident + drawing at once (see
+[`plans/nanite-follow-up.md`](./plans/nanite-follow-up.md), phase A4).
+
+The historical "known follow-ups" are now both closed (degenerate-topology robustness
+above; multiple simultaneous meshes here). The plan
+[`plans/nanite-follow-up.md`](./plans/nanite-follow-up.md) records the full breakdown.

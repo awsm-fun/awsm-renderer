@@ -231,5 +231,13 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
   `ImportNaniteAsset` handler inserts without clearing) and each node materializes under
   its own `sub_tk` (per-node transform), both confirmed by code; live render + reload
   proof folds into A4.
-- [ ] A4 on-device verification (two heavy meshes, bounded VRAM)
-- [ ] docs: `nanite-lod.md` status updated as each closes
+- [x] A4 on-device verification (two heavy meshes, bounded VRAM) — VERIFIED in the
+  editor (:9085, this branch's build) via chrome-devtools + awsm-scene MCP, importing
+  two `~/Downloads/baked` nodes (fbx_node5 630k-tri + fbx_node9 492k-tri source).
+  Console proof: `cluster compaction (GPU): drawn index_count = 150681 (50227 tris)
+  across 2 mesh(es) over 5556 clusters` (A1 sums both cuts); each mesh `CAPPED ... budget
+  30000` → ~60k total resident, well under the 240k global cap (A2 bounded, full detail
+  kept). Both `cluster_mesh` nodes coexist (A3 multi-import); the second renders at its
+  own offset transform (per-node TRS). Screenshot shows both meshes at distinct
+  positions. B5 validate stayed silent (both DAGs valid, as expected).
+- [x] docs: `nanite-lod.md` status updated as each closes (both follow-ups now shipped).
