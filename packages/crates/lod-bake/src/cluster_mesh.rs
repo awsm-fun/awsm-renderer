@@ -146,6 +146,42 @@ impl ClusterMesh {
             .sum()
     }
 
+    /// Cheap structural sanity check for a parsed DAG, before it's uploaded to the
+    /// GPU. The bake's own output is always well-formed; this guards against a
+    /// hand-authored, third-party, or corrupted `.clusters.bin` that would otherwise
+    /// read out-of-bounds vertices or draw garbage. Returns `Err(reason)` on the
+    /// first defect; the runtime logs it and refuses to materialize (renders nothing,
+    /// rather than holes or a GPU OOB read).
+    ///
+    /// Checks only what would actually break the upload/draw, so a valid bake never
+    /// trips it: every cluster page's index span lies within `indices`, each page is
+    /// triangle-aligned, and every index references a real vertex.
+    pub fn validate(&self) -> Result<(), String> {
+        let n_idx = self.indices.len();
+        let n_vert = self.positions.len();
+        for (i, p) in self.clusters.iter().enumerate() {
+            if p.index_count % 3 != 0 {
+                return Err(format!(
+                    "cluster {i}: index_count {} not a multiple of 3",
+                    p.index_count
+                ));
+            }
+            let end = p.first_index as usize + p.index_count as usize;
+            if end > n_idx {
+                return Err(format!(
+                    "cluster {i}: index span [{}, {end}) exceeds index buffer len {n_idx}",
+                    p.first_index
+                ));
+            }
+        }
+        if let Some(&bad) = self.indices.iter().find(|&&i| i as usize >= n_vert) {
+            return Err(format!(
+                "index {bad} out of range for {n_vert} vertices"
+            ));
+        }
+        Ok(())
+    }
+
     /// Assess this DAG's clustering quality against the source triangle count and
     /// return the degeneracy verdict ([`DagQuality`]). `source_triangles` is the
     /// pre-bake triangle count of the input mesh (use [`Self::finest_triangle_count`]
@@ -259,6 +295,30 @@ mod tests {
             "unwelded split mesh not flagged: {:.1} tris/cluster, {:.1}× source",
             q.avg_tris_per_cluster, q.dag_ratio
         );
+    }
+
+    /// A real bake validates; corrupting an index or a page span is caught.
+    #[test]
+    fn validate_accepts_real_bake_and_rejects_corruption() {
+        let (pos, indices) = grid(16);
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+        let cm = ClusterMesh::from_dag(&dag, pos, vec![], vec![], vec![]);
+        assert!(cm.validate().is_ok(), "healthy bake must validate");
+
+        // Out-of-range vertex index.
+        let mut bad = cm.clone();
+        *bad.indices.last_mut().unwrap() = bad.positions.len() as u32;
+        assert!(bad.validate().is_err(), "OOB index must be rejected");
+
+        // Page span past the end of the index buffer.
+        let mut bad = cm.clone();
+        bad.clusters[0].index_count = cm.indices.len() as u32 + 3;
+        assert!(bad.validate().is_err(), "overlong page span must be rejected");
+
+        // Non-triangle-aligned page.
+        let mut bad = cm.clone();
+        bad.clusters[0].index_count += 1;
+        assert!(bad.validate().is_err(), "non-multiple-of-3 page must be rejected");
     }
 
     #[test]

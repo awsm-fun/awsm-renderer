@@ -2249,6 +2249,15 @@ pub async fn materialize_cluster_mesh(
     if cm.positions.is_empty() || cm.clusters.is_empty() {
         return Ok(None);
     }
+    // Backstop against a malformed DAG (hand-authored / third-party / corrupted
+    // `.clusters.bin`): refuse to materialize rather than read out-of-bounds
+    // vertices or draw garbage. The bake's own output always passes.
+    if let Err(e) = cm.validate() {
+        tracing::error!(
+            "cluster mesh '{asset_label}': malformed DAG ({e}) — refusing to materialize"
+        );
+        return Ok(None);
+    }
 
     // Phase B GPU cut (B.2): hand the cluster pages to the GPU cut pass. No-op
     // unless `virtual_geometry` built the pass; coexists with the per-instance

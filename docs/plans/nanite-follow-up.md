@@ -184,7 +184,14 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
   emits discrete LOD, no .clusters.bin" is enforced by the shared B2 guard and
   covered by the player-bundle export self-verify; the editor crate has no native
   test target (per `lod_bake.rs`), so it's not a separate unit test.
-- [ ] B5 runtime load-time DAG sanity backstop
+- [x] B5 runtime load-time DAG sanity backstop — `ClusterMesh::validate()` (lod-bake,
+  native-tested) checks every page span is in range + triangle-aligned and every
+  index references a real vertex; `materialize_cluster_mesh` calls it after the empty
+  check and refuses to materialize a malformed DAG (logs + renders nothing instead of
+  holes / GPU OOB). Verified by `validate_accepts_real_bake_and_rejects_corruption`
+  (native) + the wasm build of the call site. On-device verification N/A — the guard
+  only fires on deliberately-corrupt input; a fabricated bad file on-device would add
+  nothing over the native test.
 - [ ] A0 two-mesh baseline test
 - [ ] A1 multi-mesh-correct diagnostic readback
 - [ ] A2 global residency budget (tris + bytes) shared across meshes

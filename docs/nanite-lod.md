@@ -279,7 +279,15 @@ referenced DAG to `assets/<source>.clusters.bin` (from the session-local
 local `blob:`-URL import persists), and `restore_cluster_meshes` re-reads it into the
 cache before the scene materialises, in all three load paths.
 
+Degenerate / pathological-topology robustness is **shipped**: the degeneracy verdict
+is one shared heuristic (`ClusterMesh::quality`) used by BOTH the offline CLI and the
+editor export bake, so a mesh that won't cluster (non-manifold / unweldable) drops its
+cluster DAG and falls back to the discrete LOD chain instead of shipping a hole-prone
+one; the simplifier locks non-manifold edges (≥3-incidence) so they can't collapse
+asymmetrically; and `ClusterMesh::validate` rejects a malformed `.clusters.bin` at load
+rather than reading out of bounds. Crack-free coverage spans the UV sphere (A1) and a
+genus-1 torus.
+
 **Known follow-ups (not regressions):** (1) one cluster render mesh is resident at a
-time (multiple simultaneous nanite meshes is future work); (2) cluster-cut robustness
-on pathological/degenerate source topology (the weld-for-adjacency fix covers the
-common split-vertex case). See [`plans/nanite-follow-up.md`](./plans/nanite-follow-up.md).
+time (multiple simultaneous nanite meshes is future work). See
+[`plans/nanite-follow-up.md`](./plans/nanite-follow-up.md).
