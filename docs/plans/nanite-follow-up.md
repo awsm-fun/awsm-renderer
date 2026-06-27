@@ -177,7 +177,13 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
   crack where they meet). Manifold meshes (all edges 1/2) → no-op. Tests:
   `nonmanifold_locked_flags_only_high_valence_edges`,
   `nonmanifold_yprism_simplifies_without_tearing`.
-- [ ] B4 degenerate/non-manifold tests + extended crack-free coverage
+- [x] B4 degenerate/non-manifold tests + extended crack-free coverage — `dag.rs`:
+  `non_watertight_torus_cut_is_closed_at_every_level` (A1 extended to a genus-1
+  surface), `triangle_soup_is_flagged_degenerate` (unweldable soup flagged under
+  DEFAULT welding — the real editor-bake fallback trigger). Plan item (b) "editor
+  emits discrete LOD, no .clusters.bin" is enforced by the shared B2 guard and
+  covered by the player-bundle export self-verify; the editor crate has no native
+  test target (per `lod_bake.rs`), so it's not a separate unit test.
 - [ ] B5 runtime load-time DAG sanity backstop
 - [ ] A0 two-mesh baseline test
 - [ ] A1 multi-mesh-correct diagnostic readback
