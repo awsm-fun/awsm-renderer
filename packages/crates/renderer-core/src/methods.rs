@@ -291,34 +291,52 @@ impl AwsmRendererWebGpu {
         &self,
         descriptor: &web_sys::GpuBufferDescriptor,
     ) -> Result<web_sys::GpuBuffer> {
-        // Opt-in oversized-allocation guard: a single GPU buffer larger than
-        // OVERSIZED_ALLOC_BYTES almost certainly means a runaway size
-        // computation (a `* 0` count flipped, an overflow). Tripping a
-        // `debug_assert!` + `tracing::error!` here surfaces it at OUR call site
-        // with a stack — instead of as an opaque `IMMEDIATE_CRASH` deep in the
-        // browser allocator. Cold path (buffer creation, not per frame).
-        #[cfg(any(debug_assertions, feature = "harden-diag"))]
-        {
-            let size = js_sys::Reflect::get(
-                descriptor.as_ref(),
-                &wasm_bindgen::JsValue::from_str("size"),
-            )
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-            if size > crate::OVERSIZED_ALLOC_BYTES as f64 {
-                tracing::error!(
-                    target: "awsm_renderer_core::oversized_alloc",
-                    "create_buffer requested {} bytes (> {} cap) — likely a runaway size computation",
-                    size,
-                    crate::OVERSIZED_ALLOC_BYTES
-                );
-                debug_assert!(
-                    size <= crate::OVERSIZED_ALLOC_BYTES as f64,
-                    "oversized GPU buffer allocation: {size} bytes"
-                );
-            }
+        // Oversized-allocation guard. A single GPU buffer near 2 GiB almost
+        // certainly means a runaway size computation (a `* 0` count flipped, an
+        // overflow). Cold path (buffer creation, not per frame).
+        let size = js_sys::Reflect::get(
+            descriptor.as_ref(),
+            &wasm_bindgen::JsValue::from_str("size"),
+        )
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+        // Hard cap, always on (release included): a request at/above
+        // MAX_GPU_BUFFER_BYTES would hit PartitionAlloc's ~2 GiB ceiling and
+        // abort the whole renderer process with a deliberate `IMMEDIATE_CRASH`
+        // — which is NOT a catchable WebGPU validation error. Reject it here so
+        // the load fails as a recoverable `Result` at our call site instead.
+        if size >= crate::MAX_GPU_BUFFER_BYTES as f64 {
+            tracing::error!(
+                target: "awsm_renderer_core::oversized_alloc",
+                "create_buffer refused {} bytes (>= {} hard cap) — would abort the renderer in PartitionAlloc",
+                size,
+                crate::MAX_GPU_BUFFER_BYTES
+            );
+            return Err(AwsmCoreError::oversized_buffer_allocation(
+                size as u64,
+                crate::MAX_GPU_BUFFER_BYTES,
+            ));
         }
+
+        // Soft diagnostic threshold: surface "getting suspiciously big" early in
+        // dev (proceeds with the allocation). Tripping a `debug_assert!` here
+        // points at OUR call site with a stack.
+        #[cfg(any(debug_assertions, feature = "harden-diag"))]
+        if size > crate::OVERSIZED_ALLOC_BYTES as f64 {
+            tracing::warn!(
+                target: "awsm_renderer_core::oversized_alloc",
+                "create_buffer requested {} bytes (> {} soft threshold) — likely a runaway size computation",
+                size,
+                crate::OVERSIZED_ALLOC_BYTES
+            );
+            debug_assert!(
+                size <= crate::OVERSIZED_ALLOC_BYTES as f64,
+                "oversized GPU buffer allocation: {size} bytes"
+            );
+        }
+
         self.device
             .create_buffer(descriptor)
             .map_err(AwsmCoreError::buffer_creation)
