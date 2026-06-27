@@ -869,7 +869,7 @@ impl AwsmRenderer {
         // Gated by `virtual_geometry` + a loaded cluster mesh; independent of
         // `gpu_occlusion`.
         #[cfg(feature = "lod")]
-        let mut cluster_cut_kick: Option<(web_sys::GpuBuffer, u32)> = None;
+        let mut cluster_cut_kick: Option<Vec<(web_sys::GpuBuffer, u32)>> = None;
         #[cfg(feature = "lod")]
         if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
             if !cluster_pass.states.is_empty() {
@@ -1643,34 +1643,43 @@ impl AwsmRenderer {
         // a sanity check vs the tested `select_cut_per_cluster` (expect non-zero
         // and < total at a normal camera distance).
         #[cfg(feature = "lod")]
-        if let Some((readback_buffer, total)) = cluster_cut_kick {
+        if let Some(kicks) = cluster_cut_kick {
             let state = std::sync::Arc::clone(&self.cluster_cut_readback);
             state.lock().unwrap().inflight = true;
+            let mesh_count = kicks.len();
+            let total_clusters: u32 = kicks.iter().map(|(_, c)| *c).sum();
             wasm_bindgen_futures::spawn_local(async move {
-                match crate::core::buffers::extract_buffer_vec(&readback_buffer, Some(4)).await {
-                    Ok(bytes) if bytes.len() >= 4 => {
-                        let index_count =
-                            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                        let mut s = state.lock().unwrap();
-                        if s.last_value != index_count as i64 {
-                            s.last_value = index_count as i64;
-                            tracing::info!(
-                                "cluster compaction (GPU): draw_args.index_count = {index_count} \
-                                 ({} tris) over {total} clusters [frame {}]",
-                                index_count / 3,
-                                s.frames
-                            );
+                // Map each resident mesh's draw_args readback and sum the drawn
+                // index counts (one map per mesh; the cadence is every 30 frames so
+                // the sequential awaits are cheap). A failed map drops that mesh's
+                // contribution rather than aborting the whole readback.
+                let mut total_index_count: u64 = 0;
+                let mut ok = false;
+                for (buf, _) in &kicks {
+                    match crate::core::buffers::extract_buffer_vec(buf, Some(4)).await {
+                        Ok(bytes) if bytes.len() >= 4 => {
+                            total_index_count +=
+                                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64;
+                            ok = true;
                         }
-                        s.inflight = false;
-                    }
-                    Ok(_) => {
-                        state.lock().unwrap().inflight = false;
-                    }
-                    Err(err) => {
-                        tracing::warn!("cluster compaction readback mapAsync failed: {err:?}");
-                        state.lock().unwrap().inflight = false;
+                        Ok(_) => {}
+                        Err(err) => {
+                            tracing::warn!("cluster compaction readback mapAsync failed: {err:?}");
+                        }
                     }
                 }
+                let mut s = state.lock().unwrap();
+                if ok && s.last_value != total_index_count as i64 {
+                    s.last_value = total_index_count as i64;
+                    tracing::info!(
+                        "cluster compaction (GPU): drawn index_count = {total_index_count} \
+                         ({} tris) across {mesh_count} mesh(es) over {total_clusters} clusters \
+                         [frame {}]",
+                        total_index_count / 3,
+                        s.frames
+                    );
+                }
+                s.inflight = false;
             });
         }
 

@@ -493,10 +493,12 @@ impl ClusterLodRenderPass {
     /// indirect draw's vertex shader resolves M's material meta
     /// (`geometry_mesh_metas[instance_index]`).
     ///
-    /// Returns the readback kick `(readback_buffer, cluster_count)` for the FIRST
-    /// state when the cadence (frame 5, then every 30) fires and no readback is in
-    /// flight — the caller copies `draw_args` → readback inside the encoder and
-    /// maps it after submit (diagnostics; logs the drawn cut on change).
+    /// Returns the readback kick — one `(readback_buffer, cluster_count)` per
+    /// resident cluster mesh — when the cadence (frame 5, then every 30) fires and
+    /// no readback is in flight. The caller copies each `draw_args` → that mesh's
+    /// readback inside the encoder and maps them all after submit, summing the drawn
+    /// index counts (diagnostics; logs the total drawn cut + mesh count on change).
+    /// One entry per mesh keeps the totals correct with several resident meshes.
     pub fn dispatch_all(
         &self,
         ctx: &RenderContext,
@@ -505,7 +507,7 @@ impl ClusterLodRenderPass {
         tan_half_fov_y: f32,
         viewport_h: f32,
         pixel_budget: f32,
-    ) -> Result<Option<(web_sys::GpuBuffer, u32)>> {
+    ) -> Result<Option<Vec<(web_sys::GpuBuffer, u32)>>> {
         for state in &self.states {
             if state.cluster_count == 0 {
                 continue;
@@ -563,29 +565,32 @@ impl ClusterLodRenderPass {
             }
         }
 
-        // Readback verification of draw_args.index_count for the first resident
+        // Readback verification of draw_args.index_count across EVERY resident
         // mesh. Re-fires on a cadence (frame 5, then every 30) so the drawn cut is
-        // observable as the camera/scene change; the async handler logs on change.
-        let Some(state) = self.states.iter().find(|s| s.cluster_count > 0) else {
+        // observable as the camera/scene change; the async handler sums + logs on
+        // change. One kick entry per mesh ⇒ correct totals with several meshes.
+        let resident = || self.states.iter().filter(|s| s.cluster_count > 0);
+        if resident().next().is_none() {
             return Ok(None);
-        };
+        }
         let want = {
             let mut st = readback.lock().unwrap();
             st.frames += 1;
             !st.inflight && (st.frames == 5 || st.frames % 30 == 0)
         };
         if want {
-            ctx.command_encoder.copy_buffer_to_buffer(
-                &state.buffers.draw_args_buffer,
-                0,
-                &state.buffers.readback_buffer,
-                0,
-                4,
-            )?;
-            return Ok(Some((
-                state.buffers.readback_buffer.clone(),
-                state.cluster_count,
-            )));
+            let mut kicks = Vec::new();
+            for state in resident() {
+                ctx.command_encoder.copy_buffer_to_buffer(
+                    &state.buffers.draw_args_buffer,
+                    0,
+                    &state.buffers.readback_buffer,
+                    0,
+                    4,
+                )?;
+                kicks.push((state.buffers.readback_buffer.clone(), state.cluster_count));
+            }
+            return Ok(Some(kicks));
         }
         Ok(None)
     }

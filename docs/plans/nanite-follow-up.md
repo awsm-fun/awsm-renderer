@@ -200,7 +200,12 @@ reading the cut readback from the browser console (see [[renderer-tracing-in-bro
   materializes with a fresh MeshKey ⇒ N nodes → N states. No native GPU test harness
   exists in the renderer (only shader-template unit tests), so the live two-mesh render
   proof is A4. Real remaining gaps: A1 (readback) + A2 (global budget).
-- [ ] A1 multi-mesh-correct diagnostic readback
+- [x] A1 multi-mesh-correct diagnostic readback — `dispatch_all` now returns one
+  `(readback_buffer, cluster_count)` per resident mesh (each state already owns a
+  readback buffer); the render.rs consumer maps them all, sums drawn index counts,
+  and logs `drawn index_count = N (T tris) across M mesh(es) over C clusters`. Gated
+  by `lod`; flags-off compiles unchanged. Verified: renderer wasm (lod on + lod off),
+  editor wasm, lod-bake 42 tests.
 - [ ] A2 global residency budget (tris + bytes) shared across meshes
 - [ ] A3 editor multi-import + Save→reload test
 - [ ] A4 on-device verification (two heavy meshes, bounded VRAM)
