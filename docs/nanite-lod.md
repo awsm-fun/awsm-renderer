@@ -272,9 +272,14 @@ with committed tests + on-device evidence. The multi-M benchmark is recorded in
 2,393,468-tri DAG → ~83 MB bounded pool, M capped to 29,850 tris, cut 4.9k–14.8k tris
 scaling with viewport height) and pinned by the `a6_benchmark_table_recorded` test.
 
-**Known follow-ups (not regressions):** (1) editor cluster-asset persistence — the
-import cache is session-local, so a project Save→reload needs the `.clusters.bin`
-written into `assets/` + re-read (same TODO as `skinned_bake_cache`); (2) one cluster
-render mesh is resident at a time (multiple simultaneous nanite meshes is future
-work); (3) cluster-cut robustness on pathological/degenerate source topology (the
-weld-for-adjacency fix covers the common split-vertex case).
+Editor cluster-asset persistence is **shipped**: a view-only nanite import survives
+Save→reload and ships in the player bundle. `persistence::cluster_files` writes each
+referenced DAG to `assets/<source>.clusters.bin` (from the session-local
+`cluster_cache`, keyed by `AssetId` — not by re-fetching the import URL, so even a
+local `blob:`-URL import persists), and `restore_cluster_meshes` re-reads it into the
+cache before the scene materialises, in all three load paths.
+
+**Known follow-ups (not regressions):** (1) one cluster render mesh is resident at a
+time (multiple simultaneous nanite meshes is future work); (2) cluster-cut robustness
+on pathological/degenerate source topology (the weld-for-adjacency fix covers the
+common split-vertex case). See [`plans/nanite-follow-up.md`](./plans/nanite-follow-up.md).

@@ -102,14 +102,29 @@ fn tab_strip(tab: &Mutable<String>) -> Dom {
     })
 }
 
+/// True if `path` names a pre-baked nanite / cluster-LOD asset (the
+/// `awsm-renderer-lod-bake` CLI's `<id>.clusters.bin`). Strips any URL query /
+/// fragment first so a served `…/foo.clusters.bin?v=2` still routes to the
+/// nanite path; matches `cluster_mesh_filename`'s `.clusters.bin` suffix.
+fn is_nanite_path(path: &str) -> bool {
+    path.split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .to_lowercase()
+        .ends_with(".clusters.bin")
+}
+
 // Returns a reusable `Fn` (the dropdown rebuilds its rows on each open). Clones
 // the entries each call; InsertSpec isn't Copy (Primitive carries a struct
 // variant), so the per-item closure also clones its spec on each click.
-/// Open the glTF import modal — either paste a URL (gesture-free, source-
-/// abstracted `ImportModelFromUrl`) **or** pick a local `.glb`/`.gltf` file
-/// (`ImportModelFromFile`, via a `blob:` object URL so the existing loader path
-/// is reused). The file picker is the one users reach for to load their own
-/// local models.
+/// Open the model import modal — either paste a URL (gesture-free, source-
+/// abstracted) **or** pick a local file, routed by extension:
+/// - `.glb` / `.gltf` → `ImportModelFromFile` / `ImportModelFromUrl` (the
+///   normal editable-mesh path).
+/// - `.clusters.bin`  → `ImportNaniteAsset` (the pre-baked nanite / cluster-LOD
+///   path — a view-only `ClusterMesh` drawn through the bounded cluster
+///   pipeline). For a local pick we mint a `blob:` URL; `fetch_cluster_mesh`
+///   GETs it like any URL.
 fn open_import_model() {
     Modal::open(|| {
         let url = Mutable::new(String::new());
@@ -117,8 +132,7 @@ fn open_import_model() {
         let pick_err: Mutable<Option<String>> = Mutable::new(None);
 
         // When the user picks a local file, mint a blob: object URL from it and
-        // import straight away (no extra click) — then dismiss the modal. The
-        // controller revokes the URL once the load completes.
+        // import straight away (no extra click) — then dismiss the modal.
         spawn_local(clone!(picked => async move {
             let mut first = true;
             picked.signal_cloned().for_each(move |maybe| {
@@ -130,9 +144,22 @@ fn open_import_model() {
                         let name = file.name();
                         if let Ok(obj_url) = web_sys::Url::create_object_url_with_blob(&file) {
                             spawn_local(async move {
-                                let _ = controller()
-                                    .dispatch(EditorCommand::ImportModelFromFile { name, url: obj_url })
-                                    .await;
+                                if is_nanite_path(&name) {
+                                    // View-only nanite import. We do NOT revoke the blob:
+                                    // the URL is stored as the asset source and redo
+                                    // re-dispatches this command, which re-GETs it — a
+                                    // revoked blob would break redo. It lives for the
+                                    // session (same session-local lifetime as the cache).
+                                    let _ = controller()
+                                        .dispatch(EditorCommand::ImportNaniteAsset { clusters_url: obj_url })
+                                        .await;
+                                } else {
+                                    // The glb loader copies geometry into GPU templates,
+                                    // so the controller revokes this blob once done.
+                                    let _ = controller()
+                                        .dispatch(EditorCommand::ImportModelFromFile { name, url: obj_url })
+                                        .await;
+                                }
                             });
                             Modal::close();
                         }
@@ -141,16 +168,18 @@ fn open_import_model() {
             }).await;
         }));
 
-        ModalCard::new("Import glTF model")
+        ModalCard::new("Import model")
             .width(520.0)
             .child(html!("div", {
                 .style("display", "flex").style("flex-direction", "column").style("gap", "10px")
                 .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
-                    .text("Load a .glb / .gltf model into the scene — paste a URL, or pick a local file below.") }))
+                    .text("Load a model into the scene — paste a URL, or pick a local file below. \
+                           A .glb / .gltf imports as an editable mesh; a pre-baked .clusters.bin \
+                           (awsm-renderer-lod-bake output) imports as a view-only nanite mesh.") }))
                 .child(TextInput::new(url.clone()).placeholder("https://\u{2026}/model.glb").render())
                 .child(FilePicker::new()
-                    .with_accept(".glb,.gltf")
-                    .with_placeholder("Drag & drop a .glb / .gltf model, or click to browse")
+                    .with_accept(".glb,.gltf,.clusters.bin")
+                    .with_placeholder("Drag & drop a .glb / .gltf / .clusters.bin, or click to browse")
                     .render(picked.clone(), pick_err.clone()))
                 .child_signal(pick_err.signal_cloned().map(|e| e.map(|msg| html!("span", {
                     .style("font-size", "12px").style("color", "var(--danger, #e06c75)")
@@ -165,7 +194,12 @@ fn open_import_model() {
                         let u = url.get_cloned();
                         if u.trim().is_empty() { return; }
                         spawn_local(async move {
-                            let _ = controller().dispatch(EditorCommand::ImportModelFromUrl { url: u }).await;
+                            let cmd = if is_nanite_path(&u) {
+                                EditorCommand::ImportNaniteAsset { clusters_url: u }
+                            } else {
+                                EditorCommand::ImportModelFromUrl { url: u }
+                            };
+                            let _ = controller().dispatch(cmd).await;
                         });
                         Modal::close();
                     })).render())
