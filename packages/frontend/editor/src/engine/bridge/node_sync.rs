@@ -395,6 +395,10 @@ async fn remove_node(node_id: NodeId) {
         // gone. Candidate templates: this node's tracked import id, and (for a
         // skinned node) the template it renders from.
         reclaim_templates_for_removed(&entry, node_id).await;
+        // Free the view-only nanite DAG cache for a deleted ClusterMesh node (last
+        // reference only) — closes the editor-side session leak that otherwise grows
+        // the wasm heap toward an OOM abort on re-import-heavy sessions.
+        reclaim_cluster_cache_for_removed(&entry);
         // Dropping the entry (and its loaders) cancels the observers.
     }
 }
@@ -423,6 +427,50 @@ fn scene_has_skinned_from(aid: AssetId) -> bool {
         .lock_ref()
         .iter()
         .any(|n| walk(n, aid))
+}
+
+/// Whether the AUTHORED scene still has a `ClusterMesh` referencing `source`.
+/// Mirror of [`scene_has_skinned_from`] for view-only nanite meshes: keeps the
+/// `cluster_cache` free reload-safe (on `apply_project` the new nodes with the same
+/// source are already in `controller().scene`) and duplicate-safe (a duplicated
+/// `ClusterMesh` shares the source, so deleting one must not free the DAG the other
+/// still renders from).
+fn scene_has_cluster_from(source: AssetId) -> bool {
+    fn walk(node: &Arc<crate::engine::scene::node::Node>, source: AssetId) -> bool {
+        if let NodeKind::ClusterMesh { cluster, .. } = node.kind.get_cloned() {
+            if cluster.source == source {
+                return true;
+            }
+        }
+        node.children.lock_ref().iter().any(|c| walk(c, source))
+    }
+    controller()
+        .scene
+        .nodes
+        .lock_ref()
+        .iter()
+        .any(|n| walk(n, source))
+}
+
+/// Free the parsed cluster-LOD DAG ([`super::cluster_cache`]) of a deleted
+/// `ClusterMesh` node once **nothing** still references its source. Without this the
+/// ~tens-of-MB parsed DAG leaks for the whole session — and since each import mints
+/// a fresh `AssetId`, re-importing the same `.clusters.bin` accumulates a new entry
+/// every time, growing the wasm heap until `memory.grow` fails the V8 backing-store
+/// allocation and the renderer aborts (FatalProcessOutOfMemory). The renderer-side
+/// GPU state is already freed by `remove_mesh` → `drop_cluster_lod_for_mesh`; this
+/// closes the editor-side half. Reload-safe + duplicate-safe via the authored-scene
+/// check (see [`scene_has_cluster_from`]).
+fn reclaim_cluster_cache_for_removed(entry: &Arc<RendererNode>) {
+    if let NodeKind::ClusterMesh { cluster, .. } = entry.node.kind.get_cloned() {
+        if !scene_has_cluster_from(cluster.source) {
+            super::cluster_cache::remove(cluster.source);
+            tracing::debug!(
+                "freed cluster cache for {:?} (last ClusterMesh node deleted)",
+                cluster.source
+            );
+        }
+    }
 }
 
 async fn reclaim_templates_for_removed(entry: &Arc<RendererNode>, node_id: NodeId) {
