@@ -668,11 +668,7 @@ mod nonmanifold_tests {
     fn nonmanifold_yprism_simplifies_without_tearing() {
         // Spine S0,S1 extruded along z; three flaps at 120°.
         let mut pos = vec![[0.0f32, 0.0, 0.0], [0.0, 0.0, 1.0]];
-        let dirs = [
-            (1.0f32, 0.0f32),
-            (-0.5, 0.8660254),
-            (-0.5, -0.8660254),
-        ];
+        let dirs = [(1.0f32, 0.0f32), (-0.5, 0.8660254), (-0.5, -0.8660254)];
         let mut indices = Vec::new();
         for (dx, dy) in dirs {
             let a0 = pos.len() as u32;
@@ -686,7 +682,10 @@ mod nonmanifold_tests {
         let sm = simplify(&pos, &indices, SimplifyOptions::with_target_locked(1));
         // Valid, non-empty output.
         assert!(!sm.indices.is_empty());
-        assert!(sm.indices.iter().all(|&i| (i as usize) < sm.surviving.len()));
+        assert!(sm
+            .indices
+            .iter()
+            .all(|&i| (i as usize) < sm.surviving.len()));
         // The spine endpoints (original ids 0 and 1) survive — non-manifold-locked.
         assert!(sm.surviving.contains(&0), "spine S0 collapsed away");
         assert!(sm.surviving.contains(&1), "spine S1 collapsed away");

@@ -175,9 +175,7 @@ impl ClusterMesh {
             }
         }
         if let Some(&bad) = self.indices.iter().find(|&&i| i as usize >= n_vert) {
-            return Err(format!(
-                "index {bad} out of range for {n_vert} vertices"
-            ));
+            return Err(format!("index {bad} out of range for {n_vert} vertices"));
         }
         Ok(())
     }
@@ -313,12 +311,18 @@ mod tests {
         // Page span past the end of the index buffer.
         let mut bad = cm.clone();
         bad.clusters[0].index_count = cm.indices.len() as u32 + 3;
-        assert!(bad.validate().is_err(), "overlong page span must be rejected");
+        assert!(
+            bad.validate().is_err(),
+            "overlong page span must be rejected"
+        );
 
         // Non-triangle-aligned page.
         let mut bad = cm.clone();
         bad.clusters[0].index_count += 1;
-        assert!(bad.validate().is_err(), "non-multiple-of-3 page must be rejected");
+        assert!(
+            bad.validate().is_err(),
+            "non-multiple-of-3 page must be rejected"
+        );
     }
 
     #[test]

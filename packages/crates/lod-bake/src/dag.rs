@@ -596,7 +596,10 @@ mod tests {
 
         for &t in &breakpoints {
             let tris = cut_triangles(&dag, t);
-            assert!(!tris.is_empty(), "torus cut at threshold {t} selected nothing");
+            assert!(
+                !tris.is_empty(),
+                "torus cut at threshold {t} selected nothing"
+            );
             let holes = boundary_edge_count(&tris, &weld);
             assert_eq!(
                 holes, 0,
