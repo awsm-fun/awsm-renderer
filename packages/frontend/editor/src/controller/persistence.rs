@@ -1000,3 +1000,46 @@ fn slugify(name: &str) -> String {
         s
     }
 }
+
+#[cfg(test)]
+mod cluster_persistence_tests {
+    use super::*;
+    use crate::engine::scene::{NodeId, NodeKind, Trs};
+    use awsm_renderer_editor_protocol::{ClusterMeshRef, EditorNode};
+
+    fn cluster_node(source: AssetId, children: Vec<EditorNode>) -> EditorNode {
+        EditorNode {
+            id: NodeId::new(),
+            name: "nanite".into(),
+            transform: Trs::default(),
+            kind: NodeKind::ClusterMesh {
+                cluster: ClusterMeshRef { source },
+                material: None,
+                shadow: Default::default(),
+            },
+            locked: false,
+            visible: true,
+            prefab: false,
+            children,
+        }
+    }
+
+    /// A project with several `ClusterMesh` nodes (incl. a nested one) yields every
+    /// distinct source — so `cluster_files` writes them all on Save and
+    /// `restore_cluster_meshes` re-reads them all on Load. This is the persistence
+    /// contract that lets MULTIPLE nanite meshes survive Save→reload (A3); the
+    /// writer/restorer both iterate exactly this set.
+    #[test]
+    fn cluster_sources_from_project_collects_every_mesh() {
+        let a = AssetId::new();
+        let b = AssetId::new();
+        let project = EditorProject {
+            // `b` nested under `a` also exercises the recursive walk.
+            nodes: vec![cluster_node(a, vec![cluster_node(b, vec![])])],
+            ..Default::default()
+        };
+        let sources = cluster_sources_from_project(&project);
+        assert_eq!(sources.len(), 2, "every cluster source must be collected");
+        assert!(sources.contains(&a) && sources.contains(&b));
+    }
+}

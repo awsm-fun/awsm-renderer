@@ -2005,6 +2005,16 @@ const CLUSTER_PAGE_POOL_SLOTS: usize = 8192;
 #[cfg(feature = "lod")]
 const CLUSTER_PAGING_BUDGET_TRIS: usize = 30_000;
 
+/// How many cluster meshes may be resident at their FULL per-mesh budget before the
+/// global residency cap starts throttling later ones. The per-mesh budgets above
+/// each bound ONE mesh's GPU pool; this bounds the SUM across all resident cluster
+/// meshes (`per_mesh_budget * this`) so total VRAM stays bounded no matter how many
+/// nanite meshes a scene loads. Few-mesh scenes are unaffected (each gets its full
+/// budget until the sum reaches the cap); the uncapped path (budget == `MAX`, i.e.
+/// streaming + paging both off) stays uncapped, so the shipped path is unchanged.
+#[cfg(feature = "lod")]
+const GLOBAL_RESIDENCY_MESH_MULTIPLE: usize = 8;
+
 /// A static page-pool residency plan: which slot each cluster occupies (`-1` =
 /// not resident / overflowed) plus occupancy stats. This is the CPU side of the
 /// Gap-B page pool — the fixed-slot indirection that lets clusters stream in/out
@@ -2249,6 +2259,15 @@ pub async fn materialize_cluster_mesh(
     if cm.positions.is_empty() || cm.clusters.is_empty() {
         return Ok(None);
     }
+    // Backstop against a malformed DAG (hand-authored / third-party / corrupted
+    // `.clusters.bin`): refuse to materialize rather than read out-of-bounds
+    // vertices or draw garbage. The bake's own output always passes.
+    if let Err(e) = cm.validate() {
+        tracing::error!(
+            "cluster mesh '{asset_label}': malformed DAG ({e}) — refusing to materialize"
+        );
+        return Ok(None);
+    }
 
     // Phase B GPU cut (B.2): hand the cluster pages to the GPU cut pass. No-op
     // unless `virtual_geometry` built the pass; coexists with the per-instance
@@ -2265,7 +2284,7 @@ pub async fn materialize_cluster_mesh(
     // fits VRAM (full residency = ~1 GiB > the 512 MB GPU buffer cap — see
     // NORTHSTAR-GAPS). A conservative default keeps the bounded antichain comfortably
     // under the cap; `?streambudget=N` overrides it.
-    let budget = if renderer.features().cluster_paging {
+    let per_mesh_budget = if renderer.features().cluster_paging {
         renderer
             .features()
             .cluster_streaming_budget
@@ -2278,6 +2297,29 @@ pub async fn materialize_cluster_mesh(
     } else {
         usize::MAX
     };
+    // Global residency cap: bound the SUM across all resident cluster meshes, not
+    // just each one. A later mesh's budget shrinks by what's already resident, so
+    // total VRAM stays bounded at `per_mesh_budget * GLOBAL_RESIDENCY_MESH_MULTIPLE`
+    // regardless of mesh count. Few-mesh scenes are unaffected (the subtraction
+    // leaves the full per-mesh budget); the uncapped path (`MAX`) stays uncapped, so
+    // the shipped streaming/paging-off path is byte-identical.
+    let budget = if per_mesh_budget == usize::MAX {
+        usize::MAX
+    } else {
+        let global_cap = per_mesh_budget.saturating_mul(GLOBAL_RESIDENCY_MESH_MULTIPLE);
+        let already_resident = renderer.cluster_resident_tris_total();
+        per_mesh_budget.min(global_cap.saturating_sub(already_resident))
+    };
+    // No global budget left for this mesh — refuse to materialize (renders nothing)
+    // rather than allocate an over-budget pool. Rare: only past the global cap.
+    if budget == 0 {
+        tracing::warn!(
+            "cluster LOD: {asset_label} skipped — global residency budget exhausted \
+             ({} tris already resident, per-mesh budget {per_mesh_budget})",
+            renderer.cluster_resident_tris_total()
+        );
+        return Ok(None);
+    }
     let (gpu_pages, m_indices, resident_cluster_ids) = select_resident_clusters(cm, budget);
     let resident_tris = m_indices.len() / 3;
     let capped = m_indices.len() < cm.indices.len();
@@ -2463,7 +2505,12 @@ pub async fn materialize_cluster_mesh(
             resident_pool,
             init,
         } => {
-            renderer.upload_cluster_pages(m_key, &gpu_pages_pool, &slot_source)?;
+            renderer.upload_cluster_pages(
+                m_key,
+                &gpu_pages_pool,
+                &slot_source,
+                resident_tris as u32,
+            )?;
             renderer.upload_cluster_resident(m_key, &resident_pool)?;
             renderer.init_cluster_paging(m_key, init);
         }
@@ -2471,7 +2518,12 @@ pub async fn materialize_cluster_mesh(
             gpu_pages,
             identity_indices,
         } => {
-            renderer.upload_cluster_pages(m_key, &gpu_pages, &identity_indices)?;
+            renderer.upload_cluster_pages(
+                m_key,
+                &gpu_pages,
+                &identity_indices,
+                resident_tris as u32,
+            )?;
         }
     }
     tracing::info!(

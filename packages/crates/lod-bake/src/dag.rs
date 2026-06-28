@@ -393,6 +393,39 @@ mod tests {
         (pos, indices)
     }
 
+    /// A UV torus (major radius 1, minor 0.35) — like [`uv_sphere`], geometrically
+    /// **closed** but **non-watertight by index** (both the major and minor seam
+    /// rings are duplicated columns/rows). Genus-1, so a topologically distinct
+    /// crack-free fixture from the sphere: the cut must stay closed on it too.
+    fn uv_torus(segments_major: usize, segments_minor: usize) -> (Vec<[f32; 3]>, Vec<u32>) {
+        use std::f32::consts::PI;
+        const TAU: f32 = 2.0 * PI;
+        let (big_r, small_r) = (1.0f32, 0.35f32);
+        let mut pos = Vec::new();
+        for i in 0..=segments_major {
+            let theta = (i as f32 / segments_major as f32) * TAU;
+            let (sin_t, cos_t) = (theta.sin(), theta.cos());
+            for j in 0..=segments_minor {
+                let phi = (j as f32 / segments_minor as f32) * TAU;
+                let (sin_p, cos_p) = (phi.sin(), phi.cos());
+                let ring = big_r + small_r * cos_p;
+                pos.push([ring * cos_t, ring * sin_t, small_r * sin_p]);
+            }
+        }
+        let stride = segments_minor + 1;
+        let mut indices = Vec::new();
+        for i in 0..segments_major {
+            for j in 0..segments_minor {
+                let a = (i * stride + j) as u32;
+                let b = (i * stride + j + 1) as u32;
+                let c = ((i + 1) * stride + j + 1) as u32;
+                let d = ((i + 1) * stride + j) as u32;
+                indices.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        (pos, indices)
+    }
+
     /// Weld positions onto an epsilon grid → a canonical vertex id per location,
     /// so coincident-but-distinct seam/pole vertices unify. Returns one welded id
     /// per input vertex index.
@@ -527,6 +560,96 @@ mod tests {
             coarsest < source * 3 / 4,
             "coarsest cut {coarsest} is not a real reduction from {source} \
              (locked-boundary simplify must still coarsen the sphere)"
+        );
+    }
+
+    /// A1, extended to a genus-1 surface: a non-watertight-by-index torus must
+    /// also stay crack-free at every LOD level. Same invariant as the sphere test,
+    /// different topology — guards against a fix that accidentally relied on
+    /// sphere-specific structure.
+    #[test]
+    fn non_watertight_torus_cut_is_closed_at_every_level() {
+        let (pos, indices) = uv_torus(48, 24); // 48*24*2 = 2304 tris, multi-level DAG
+        let weld = weld_ids(&pos, 1e-3);
+
+        let src_tris: Vec<[u32; 3]> = indices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        assert_eq!(
+            boundary_edge_count(&src_tris, &weld),
+            0,
+            "source UV torus must be geometrically closed once welded"
+        );
+
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+
+        let mut breakpoints: Vec<f32> = vec![0.0];
+        for c in &dag.clusters {
+            breakpoints.push(c.lod_error);
+            if c.parent_error < ROOT_PARENT_ERROR {
+                breakpoints.push((c.lod_error + c.parent_error) * 0.5);
+            }
+        }
+        breakpoints.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        breakpoints.dedup();
+
+        for &t in &breakpoints {
+            let tris = cut_triangles(&dag, t);
+            assert!(
+                !tris.is_empty(),
+                "torus cut at threshold {t} selected nothing"
+            );
+            let holes = boundary_edge_count(&tris, &weld);
+            assert_eq!(
+                holes, 0,
+                "torus cluster cut at error threshold {t} tore {holes} hole edge(s) — \
+                 not crack-free on non-watertight genus-1 input (A1)"
+            );
+        }
+
+        let max_err = dag
+            .clusters
+            .iter()
+            .filter(|c| c.parent_error < ROOT_PARENT_ERROR)
+            .map(|c| c.lod_error)
+            .fold(0.0f32, f32::max);
+        let coarsest = cut_triangles(&dag, max_err).len();
+        let source = indices.len() / 3;
+        assert!(
+            coarsest < source * 3 / 4,
+            "coarsest torus cut {coarsest} is not a real reduction from {source}"
+        );
+    }
+
+    /// A "triangle soup" — every triangle at a distinct location, sharing no edges
+    /// or positions — is genuinely **unweldable**: position-welding can't restore
+    /// adjacency because nothing is coincident, so clustering collapses to ~1
+    /// tri/cluster even with the DEFAULT (welding-on) options. `ClusterMesh::quality`
+    /// must flag it degenerate, which is exactly what makes the editor bake drop the
+    /// cluster DAG and fall back to the discrete LOD chain (B2).
+    #[test]
+    fn triangle_soup_is_flagged_degenerate() {
+        use crate::cluster_mesh::ClusterMesh;
+        let mut pos = Vec::new();
+        let mut indices = Vec::new();
+        // 600 isolated triangles spread far apart so no two share a position.
+        for k in 0..600u32 {
+            let base = pos.len() as u32;
+            let off = (k as f32) * 10.0;
+            pos.push([off, 0.0, 0.0]);
+            pos.push([off + 1.0, 0.0, 0.0]);
+            pos.push([off, 1.0, 0.0]);
+            indices.extend_from_slice(&[base, base + 1, base + 2]);
+        }
+        let source_tris = indices.len() / 3;
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+        let cm = ClusterMesh::from_dag(&dag, pos, vec![], vec![], vec![]);
+        let q = cm.quality(source_tris);
+        assert!(
+            q.degenerate,
+            "unweldable triangle soup not flagged: {:.1} tris/cluster, {:.1}× source",
+            q.avg_tris_per_cluster, q.dag_ratio
         );
     }
 
