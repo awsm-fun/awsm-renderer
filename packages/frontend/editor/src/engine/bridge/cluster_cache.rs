@@ -38,8 +38,9 @@ pub fn get(source: AssetId) -> Option<Rc<ClusterMesh>> {
     CLUSTER_MESHES.with(|c| c.borrow().get(&source).cloned())
 }
 
-/// Drop a cached cluster mesh (e.g. when its node + asset are removed).
-#[allow(dead_code)] // teardown hook — wired when ClusterMesh node removal lands
+/// Drop a cached cluster mesh — called from `node_sync::remove_node` when the last
+/// `ClusterMesh` node referencing this source is deleted, so a view-only nanite
+/// import doesn't leak its parsed DAG (tens of MB) for the rest of the session.
 pub fn remove(source: AssetId) {
     CLUSTER_MESHES.with(|c| {
         c.borrow_mut().remove(&source);
@@ -51,4 +52,26 @@ pub fn remove(source: AssetId) {
 /// the persisted `assets/<source>.clusters.bin` via `restore_cluster_meshes`).
 pub fn clear() {
     CLUSTER_MESHES.with(|c| c.borrow_mut().clear());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `remove` drops only the targeted source; others stay cached. Guards the
+    /// teardown leak fix (a deleted ClusterMesh node frees its DAG, siblings keep
+    /// theirs).
+    #[test]
+    fn remove_drops_only_the_targeted_source() {
+        let a = AssetId::new();
+        let b = AssetId::new();
+        insert(a, ClusterMesh::default());
+        insert(b, ClusterMesh::default());
+        assert!(get(a).is_some() && get(b).is_some());
+        remove(a);
+        assert!(get(a).is_none(), "removed source must be gone");
+        assert!(get(b).is_some(), "other source must remain");
+        remove(b);
+        assert!(get(b).is_none());
+    }
 }
