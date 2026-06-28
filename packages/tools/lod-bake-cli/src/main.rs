@@ -36,6 +36,7 @@ const LOD_RATIOS: &[f32] = &[0.5, 0.25, 0.125];
 #[derive(Parser, Debug)]
 #[command(
     name = "awsm-renderer-lod-bake",
+    version,
     about = "Pre-bake a glTF/GLB mesh into nanite-ready cluster-LOD + discrete-LOD assets (offline)."
 )]
 struct Args {
