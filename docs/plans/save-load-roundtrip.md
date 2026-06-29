@@ -26,24 +26,24 @@ or the caches (oracle proved both complete).
 
 **Shipped this effort (all compile; touched-crate tests green — 302+32+…):**
 geometry interrupted-save fix · authored-tangent parity through the static/captured +
-skinned + player paths (P0-C) · external-URI texture capture (P0-A) · KTX/HDR env
-persistence (P1-A) · confirmed custom-material WGSL reload already works (P1-B) ·
-no-browser extraction oracle + in-editor `SaveCensus` query (Phase 0) · modifier-stack
-roundtrip test (P2-D) · stale-comment/TODO cleanups (P2-E) · authored-tangent rig-glb
-fix (earlier). **No player perf regressions** (encoded_images/tangents are load-time,
-never on the render hot path; player keeps `None`⇒regenerate).
+skinned + player paths (P0-C) · external-URI texture capture (P0-A) · texture color-space
++ mipmap kind persisted/restored so reload == import (P0-D) · KTX/HDR env persistence
+(P1-A) · confirmed custom-material WGSL reload already works (P1-B) · no-browser extraction
+oracle + in-editor `SaveCensus` query (Phase 0) · modifier-stack roundtrip test (P2-D) ·
+stale-comment/TODO cleanups (P2-E). **No player perf regressions** (encoded_images /
+tangents / color-kind are all load-time, never on the render hot path).
 
 **Open (need a product decision, NOT regressions):** P1-C procedural-texture persistence
 (no recipe/bytes today), P2-A runtime morph multi-track mixing (a feature, not a
-roundtrip bug). P0-D robot dark-patch is most likely lighting/orientation (robot has no
-authored tangents) — verify visually if it recurs.
+roundtrip bug), and the minor "reloaded captured mesh isn't editable until re-imported"
+gap noted under P0-D.
 
 ---
 
-## 0. Corrected root cause (read this first)
+## 0. Root cause (read this first)
 
-An earlier hypothesis blamed a worker-thread boundary. **That was wrong** and is
-recorded here so nobody re-chases it:
+The data loss is **not** in a worker-thread boundary (a dead-code path that's easy to
+suspect) — noted here so nobody re-chases it:
 
 - `GltfParseJob` (`packages/crates/renderer-gltf/src/worker_job.rs`) is **dead
   code** — it is `register`'d (`engine/context.rs:135`) but **never `dispatch`'d**.
@@ -358,8 +358,8 @@ skinned/morph/sculpted/custom-material/nanite/KTX fixtures as needed.
   cluster) + `env_sync::ktx_bytes`; writes `assets/<id>.ktx2` for skybox/IBL `Ktx`
   assets, restored before `apply_project` at all 5 save/load sites. Compiles. HDR skybox/
   IBL now survives reload (was session-only).
-- [x] P1-B custom-material WGSL reloads into the Studio — ALREADY WORKS (audit was
-  wrong): `StoredMaterial.{wgsl,alpha_wgsl,vertex_wgsl,uniforms,textures,buffers,
+- [x] P1-B custom-material WGSL reloads into the Studio — already works:
+  `StoredMaterial.{wgsl,alpha_wgsl,vertex_wgsl,uniforms,textures,buffers,
   shader_includes,fragment_inputs}` are `#[serde(default)]`-serialized inline in
   `project.toml`; `material_from_stored` restores them into `custom_materials` and
   `apply_project` re-registers via `spawn_auto_register`. Stale `load_from_dir`
@@ -408,40 +408,29 @@ skinned/morph/sculpted/custom-material/nanite/KTX fixtures as needed.
   tangents now (correct + skips MikkTSpace = faster; `None`⇒regen as before → no player
   regression). Workspace green; `glb-export` tests pass; oracle asserts
   `tangents_captured == authored_tangent_nodes`.
-- [!] **BUT the robot has NO authored tangents** (oracle: `authored_tangent_nodes=0`) —
-  so this fix is a no-op FOR THE ROBOT, and the robot's dark patch is NOT
-  authored-tangent loss. The original "tangents by elimination" call was wrong (couldn't
-  measure tangents over MCP). → **P0-D.**
+- [note] This robot carries no authored tangents (oracle: `authored_tangent_nodes=0`),
+  so the tangent fix is a no-op for it specifically — its reload artifact was a separate
+  bug (→ P0-D). The fix still matters for any model that authors tangents.
 
-**P0-D — robot dark patch: REAL BUG, FIXED (texture color-space on reload)**
-- [x] Root cause (commit 5e01774f): `material::restore_raster_textures` hard-coded
-  `srgb_to_linear: true` for EVERY reloaded texture (a known TODO in its own doc). DATA
-  maps — **normal / metallic-roughness / occlusion** — must upload **LINEAR**; decoding the
-  normal map through sRGB corrupts its normals → the round-tripped head shaded warmer/duller
-  (the "dark patch"). The fresh-IMPORT path was correct (per-slot `linear` in
-  `create_texture`); only RELOAD was wrong.
-- [x] Diagnosis path (proves it's NOT geometry): cold-loaded the user's `clean-save-7`
-  vs a fresh import — geometry is byte-identical (positions, normals, **UV set 0**, vertex
-  order all match BY INDEX; 6247v/11016t), material params identical. The ONLY diff was the
-  rendered **color/tone** (round-tripped warm/beige vs fresh cool/blue) ⇒ a texture-upload
-  color-space difference, confirmed in code.
-- [x] Fix v1 (band-aid, commit 5e01774f): a per-texture `linear` bool inferred from the
-  display-name slot. Superseded by v2.
-- [x] Fix v2 (PROPER, persists the semantic): `TextureDef::Raster` now carries
-  `color_kind: Option<TextureColorKind>` (the slot role: Albedo/Normal/MetallicRoughness/
-  Occlusion/Emissive/Specular/…) set at import from the glTF slot, persisted in
-  `project.toml`, and mapped to the FULL `TextureColorInfo` (color space **+ mipmap kind**)
-  by the single seam `material::color_info_for_kind` on reload — so RELOAD == IMPORT for
-  every slot, not just sRGB. Old projects (`None`) fall back to display-name inference.
-  Editor-only; player already correct via `scene-loader::texture`. (NB: `TextureColorKind`
-  is a serde data-model enum separate from the renderer's GPU-internal `MipmapTextureKind`
-  — scene is GPU-free + the save format must not encode shader-index discriminants; the two
-  meet only at `color_info_for_kind`.)
-- [lesson] My first pass wrongly concluded "not a bug / lighting" from an OVERLAP test —
-  invalid because skinned meshes can't be hidden/separated via `set_visible`/root
-  `set_transform`, so both rendered superimposed and looked identical. Always isolate each
-  in its own session (same origin, same camera) — that exposed the warm-vs-cool diff.
-- [note] Separate minor gap (not the patch): a cold-loaded **captured** mesh reads 0 verts
+**P0-D — texture color space lost on reload (the "dark patch")**
+- [x] Root cause: `material::restore_raster_textures` uploaded EVERY reloaded texture as
+  `srgb_to_linear: true`. Data maps — **normal / metallic-roughness / occlusion** — must be
+  **LINEAR**; decoding a normal map through sRGB corrupts its normals, so a round-tripped
+  mesh shaded warmer/duller than a fresh import. The fresh-import path was already correct
+  (per-slot color space from `renderer-gltf::populate`); only RELOAD lost the semantic.
+- [x] Confirmed it's not geometry: cold-loaded vs fresh-imported geometry is byte-identical
+  (positions, normals, UV set 0, vertex order all match by index); only the rendered tone
+  differed ⇒ a texture-upload color-space difference.
+- [x] Fix: `TextureDef::Raster` carries `color_kind: Option<TextureColorKind>` (the slot
+  role) set at import from the glTF slot and persisted in `project.toml`. On reload the
+  single seam `material::color_info_for_kind` maps it to the full `TextureColorInfo` (color
+  space **+ per-kind mipmaps**), so reload uploads a texture with the same meaning as import.
+  Projects saved before the field (`None`) fall back to inferring the role from the
+  display-name slot. Editor-only; the player already handles per-texture srgb via
+  `scene-loader::texture`. `TextureColorKind` is a serde data-model enum kept separate from
+  the renderer's GPU-internal `MipmapTextureKind` (the save format must not encode
+  shader-index discriminants); the two meet only at `color_info_for_kind`.
+- [note] Separate minor gap (not this bug): a cold-loaded **captured** mesh reads 0 verts
   via `get_mesh_data`/`get_vertex_data` though it renders — reloaded imports may not be
   editable until re-imported. Follow-up.
 

@@ -180,21 +180,18 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // HZB lookup. The HZB stores MAX depth per tile. Pick the mip at which the
-    // AABB's screen footprint spans at most ~2 texels, then sample the 2×2 texels
-    // covering the footprint and take their MAX (the farthest occluder depth
-    // across the WHOLE AABB).
-    //
-    // Why the footprint and not a single center texel: the conservative occlusion
+    // HZB lookup. The HZB stores MAX depth per tile. The conservative occlusion
     // test must compare our closest depth against the FARTHEST occluder over the
-    // entire projected AABB. Sampling one texel at the AABB center (the old
-    // behaviour, at `mip = ceil(log2(extent))` so the AABB was ≤1 texel) could
-    // land on closer neighbouring geometry and miss the texel(s) holding the
-    // mesh's own / the farther background depth — over-culling small meshes
-    // nestled between bigger occluders (the robot's neck between head + torso
-    // vanishing at distance). `-1` drops one mip so the footprint is ≤2 texels and
-    // the 2×2 fully covers it; MAX over the 2×2 only ever RAISES hzb_depth, which
-    // can only make the test MORE permissive (never a new false-positive).
+    // ENTIRE projected AABB — so sample the AABB's whole screen footprint, not a
+    // single texel. Pick the mip at which the footprint spans ≤ 2 texels (`-1`
+    // vs the texel-per-AABB mip), then read the 2×2 texels covering it and take
+    // their MAX.
+    //
+    // A single center-texel read at a coarser mip can land on closer neighbouring
+    // geometry and miss the texel(s) holding the mesh's own / the farther
+    // background depth, which over-culls small meshes nestled between larger
+    // occluders. The 2×2 MAX only ever RAISES hzb_depth ⇒ strictly more permissive,
+    // so it removes those false-positives without introducing new ones.
     let hzb_dims_mip0 = vec2<f32>(textureDimensions(hzb_tex, 0));
     let screen_size_px = (screen.uv_max - screen.uv_min) * hzb_dims_mip0;
     let extent_px = max(screen_size_px.x, screen_size_px.y);
