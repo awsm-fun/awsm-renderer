@@ -311,7 +311,7 @@ pub fn render() -> Dom {
                 match row_under(e.target()) {
                     Some((id, row)) if drag_active_for(id) => {
                         let rect = row.get_bounding_client_rect();
-                        let band = band_at(e.y() as f64 - rect.top(), rect.height());
+                        let band = band_at(e.y() - rect.top(), rect.height());
                         DROP_INTENT.with(|m| m.set_neq(Some((id, band))));
                     }
                     _ => DROP_INTENT.with(|m| m.set_neq(None)),
