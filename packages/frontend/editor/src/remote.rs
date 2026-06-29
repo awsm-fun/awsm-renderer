@@ -60,17 +60,10 @@ pub enum RemoteStatus {
 thread_local! {
     static STATUS: Mutable<RemoteStatus> = Mutable::new(RemoteStatus::Disconnected);
     static ORIGIN: Mutable<String> = Mutable::new(default_origin().to_string());
-    /// Pairing code to claim a specific agent (from `?pair=` or the connect
-    /// modal). Empty unless the server needs disambiguation between multiple
-    /// tabs/agents; sent as the first frame on attach.
-    static PAIR: Mutable<String> = Mutable::new(String::new());
     /// Use TLS for the link (`wss`/`https`) instead of plain (`ws`/`http`). Off by
     /// default — the server is normally local. Set via the modal toggle for a
     /// TLS-terminated remote server.
     static TLS: Mutable<bool> = Mutable::new(false);
-    /// Set when the server replies `PairingRequired`, so the connect modal reveals
-    /// its pair-code field. Cleared on a fresh connect / successful pair.
-    static PAIRING_NEEDED: Mutable<bool> = Mutable::new(false);
     /// User setting: when `false`, MCP connect/disconnect/error notices are
     /// suppressed (the link still works; only the toasts are muted). Bound to a
     /// Settings toggle; defaults on. Session-only chrome, not project state.
@@ -148,61 +141,16 @@ pub fn origin() -> Mutable<String> {
     ORIGIN.with(|s| s.clone())
 }
 
-/// Stash a pairing code to claim a specific agent on the next connect (from the
-/// `?pair=` URL param). It's sent as the first frame once the link attaches; the
-/// auto-pairing 1-tab-1-agent case needs no code.
-pub fn set_pair_code(code: String) {
-    PAIR.with(|p| p.set(code.trim().to_string()));
-}
-
-/// The pairing code (from `?pair=` or the modal). The connect modal seeds its
-/// pair-code field from this. Empty means "rely on auto-pairing".
-pub fn pair() -> Mutable<String> {
-    PAIR.with(|s| s.clone())
-}
-
 /// Whether the link uses TLS (`wss`/`https`). Off by default; the connect modal's
 /// toggle flips it for a TLS-terminated remote server.
 pub fn tls() -> Mutable<bool> {
     TLS.with(|s| s.clone())
 }
 
-/// True when the server asked for a pairing code (the connect modal reveals its
-/// pair-code field on this).
-pub fn pairing_needed() -> Mutable<bool> {
-    PAIRING_NEEDED.with(|s| s.clone())
-}
-
 /// Reactive "show MCP notifications" setting, for a Settings checkbox. When off,
 /// MCP connect/disconnect/error toasts are suppressed (the link still works).
 pub fn show_notifications() -> Mutable<bool> {
     SHOW_NOTIFICATIONS.with(|s| s.clone())
-}
-
-/// Send a pairing code over the live link (or stash it and connect). Lets the
-/// user pair an already-open socket after a `PairingRequired`. Consumed by the
-/// connect modal's pair-code field.
-pub fn submit_pair_code(code: String) {
-    let code = code.trim().to_string();
-    PAIR.with(|p| p.set(code.clone()));
-    if code.is_empty() {
-        return;
-    }
-    let sent = SESSION.with(|s| {
-        s.borrow()
-            .as_ref()
-            .map(|tx| {
-                tx.unbounded_send(WsClientMsg::Pair { code: code.clone() })
-                    .is_ok()
-            })
-            .unwrap_or(false)
-    });
-    if sent {
-        PAIRING_NEEDED.with(|n| n.set_neq(false));
-    } else {
-        // Not connected yet — connect; `run` sends the stashed code on attach.
-        connect(origin().get_cloned());
-    }
 }
 
 /// Emit an MCP info toast, gated by the [`show_notifications`] setting.
@@ -239,7 +187,6 @@ pub fn connect(control_origin: String) {
         loop {
             let result = run(control_origin.clone()).await;
             SESSION.with(|s| *s.borrow_mut() = None);
-            PAIRING_NEEDED.with(|n| n.set_neq(false));
             activity_reset();
             let was_connected = status().get() == RemoteStatus::Connected;
             status().set(RemoteStatus::Disconnected);
@@ -344,34 +291,19 @@ async fn run(control_origin: String) -> Result<(), String> {
     let (out_tx, mut out_rx) = mpsc::unbounded::<WsClientMsg>();
     SESSION.with(|s| *s.borrow_mut() = Some(out_tx));
     status().set(RemoteStatus::Connected);
-    PAIRING_NEEDED.with(|n| n.set_neq(false));
     notify_info("MCP connected");
     tracing::info!("mcp: attached");
-
-    // If a pairing code is set (`?pair=…`), claim our agent up front.
-    let pair_code = PAIR.with(|p| p.get_cloned());
-    if !pair_code.is_empty() {
-        send_frame(WsClientMsg::Pair { code: pair_code });
-    }
 
     loop {
         futures::select! {
             inbound = stream.next().fuse() => match inbound {
                 Some(Ok(Message::Text(txt))) => match serde_json::from_str::<WsServerMsg>(&txt) {
                     Ok(WsServerMsg::Request { id, req }) => spawn_local(serve_one(id, req)),
-                    Ok(WsServerMsg::PairingRequired) => {
-                        // Reveal the modal's pair-code field; the agent shows the code.
-                        PAIRING_NEEDED.with(|n| n.set_neq(true));
-                        notify_info(
-                            "MCP: a pairing code is required — open the MCP panel and \
-                             enter the code shown by your agent",
-                        );
-                    }
                     Ok(WsServerMsg::Detached) => {
-                        // Another tab took over this binding — don't fight for it
-                        // by reconnecting.
+                        // A newer tab attached to this single-session server and
+                        // took over — don't fight for it by reconnecting.
                         RECONNECT.with(|r| r.set(false));
-                        notify_info("MCP: detached (another tab paired)");
+                        notify_info("MCP: detached (a newer editor tab took over this server)");
                         return Ok(());
                     }
                     Err(e) => tracing::warn!("mcp: bad frame: {e}"),
