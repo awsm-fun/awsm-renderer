@@ -53,7 +53,7 @@ pub struct GltfImport {
     /// accessor values; the editor node carries the glTF node's local transform,
     /// so the geometry is used as-is (no extra matrix). Skinned meshes bake to
     /// their bind pose (JOINTS/WEIGHTS are not read).
-    pub node_meshes: HashMap<(u32, Option<u32>), (MeshData, Option<Vec<[f32; 4]>>)>,
+    pub node_meshes: NodeMeshMaps,
     /// `Some` when the import carries skins: the whole rig (geometry + skeleton +
     /// joints/weights + morph) re-exported through our writer into a clean glb
     /// (materials/animations dropped). This is what the player bundle ships for
@@ -209,9 +209,10 @@ pub async fn import_file(name: &str, url: &str) -> Result<GltfImport, String> {
 /// single Mesh node or destructure a multi-material node per-primitive — exactly
 /// the cases the old `Model` path covered. Positions are raw local accessor values
 /// (see [`awsm_renderer_glb_export::extract_node_mesh`] on the no-double-transform rule).
-/// Per-node primary geometry keyed by `(node_index, primitive_index)`. ALL UV sets
-/// (incl. `TEXCOORD_1`) ride `MeshData.uvs` now — no separate parallel map.
-type NodeMeshMaps = HashMap<(u32, Option<u32>), (MeshData, Option<Vec<[f32; 4]>>)>;
+/// Per-node primary geometry keyed by `(node_index, primitive_index)`, with the
+/// node's optional authored tangents alongside its `MeshData`. ALL UV sets (incl.
+/// `TEXCOORD_1`) ride `MeshData.uvs` — no separate parallel map.
+pub type NodeMeshMaps = HashMap<(u32, Option<u32>), (MeshData, Option<Vec<[f32; 4]>>)>;
 
 fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
     let buffers = &data.buffers.raw;

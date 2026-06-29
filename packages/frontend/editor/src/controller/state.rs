@@ -7720,10 +7720,7 @@ fn build_editor_subtree(
     asset_id: AssetId,
     mat_ids: &[AssetId],
     default_mat_id: Option<AssetId>,
-    node_meshes: &std::collections::HashMap<
-        (u32, Option<u32>),
-        (awsm_renderer_glb_export::MeshData, Option<Vec<[f32; 4]>>),
-    >,
+    node_meshes: &crate::engine::bridge::gltf::NodeMeshMaps,
     node_flat_indices: &std::collections::HashMap<u32, u32>,
     fallback_name: Option<&str>,
     node_map: &mut std::collections::HashMap<u32, NodeId>,
