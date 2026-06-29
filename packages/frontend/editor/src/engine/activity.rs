@@ -139,6 +139,24 @@ pub fn commit_phase_handler() -> impl FnMut(awsm_renderer::LoadingStats) {
     |stats| set_load_phase(stats.phase_label())
 }
 
+impl Activity {
+    /// Replace this activity's label in place. Lets a single guard span a
+    /// multi-phase operation (e.g. "Preparing…" → "Exporting…", or a generic
+    /// "Saving…" that gains the picked directory name) so the overlay never gaps
+    /// between phases — including across a native file/directory picker.
+    pub fn set_label(&self, label: impl Into<String>) {
+        let label = label.into();
+        ACTIVITIES.with(|a| {
+            let mut list = a.lock_mut();
+            if let Some(entry) = list.iter_mut().find(|(i, _)| *i == self.id) {
+                if entry.1 != label {
+                    entry.1 = label;
+                }
+            }
+        });
+    }
+}
+
 impl Drop for Activity {
     fn drop(&mut self) {
         let id = self.id;
