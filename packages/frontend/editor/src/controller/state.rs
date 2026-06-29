@@ -7932,7 +7932,8 @@ fn build_editor_subtree(
                     Trs::IDENTITY,
                     NodeKind::Group,
                 );
-                if let Some((mesh, tangents)) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32)))
+                if let Some((mesh, tangents)) =
+                    node_meshes.get(&(tn.gltf_node_index, Some(i as u32)))
                 {
                     let mesh_ref =
                         mint_imported_mesh(part.id, &part_label, mesh, tangents.as_ref(), asset_id);

@@ -67,7 +67,10 @@ mod tests {
         let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
         let reader = prim.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
         let got: Vec<[f32; 4]> = reader.read_tangents().expect("TANGENT present").collect();
-        assert_eq!(got, authored, "authored tangents must round-trip unmodified");
+        assert_eq!(
+            got, authored,
+            "authored tangents must round-trip unmodified"
+        );
     }
 
     /// A mesh with no uvs gets no TANGENT (MikkTSpace needs uvs).

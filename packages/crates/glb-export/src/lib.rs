@@ -41,9 +41,9 @@ pub use bundle::{assemble_bundle, BundleFile, BundleInputs, PlayerBundle};
 pub use extract::{
     extract_node_mesh, extract_node_mesh_from_bytes, extract_node_mesh_with_skin_from_bytes,
     extract_texture_images, extract_texture_images_from_bytes,
-    extract_texture_images_with_external, reexport_clean,
-    reexport_clean_scene, reexport_clean_scene_with_images, scene_node_flat_indices,
-    ExtractedMorph, ExtractedNodeMesh, ExtractedSkin,
+    extract_texture_images_with_external, reexport_clean, reexport_clean_scene,
+    reexport_clean_scene_with_images, scene_node_flat_indices, ExtractedMorph, ExtractedNodeMesh,
+    ExtractedSkin,
 };
 pub use write::write_glb;
 

@@ -271,8 +271,8 @@ where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
-    use awsm_renderer_glb_export::ImageMime;
     use awsm_renderer_editor_protocol::TextureColorKind;
+    use awsm_renderer_glb_export::ImageMime;
     let mut items: Vec<(AssetId, Vec<u8>, String, TextureColorKind)> = Vec::new();
     for (id, entry) in project.assets.entries.iter() {
         let AssetSource::Texture(TextureDef::Raster {
@@ -836,7 +836,9 @@ pub struct SaveCensus {
 
 impl SaveCensus {
     pub fn is_complete(&self) -> bool {
-        self.mesh_missing_cache == 0 && self.texture_missing_cache == 0 && self.texture_unhashed == 0
+        self.mesh_missing_cache == 0
+            && self.texture_missing_cache == 0
+            && self.texture_unhashed == 0
     }
 }
 
@@ -893,8 +895,11 @@ pub fn check_save_complete(ctrl: &EditorController) -> Result<(), String> {
     if c.is_complete() {
         return Ok(());
     }
-    let (missing_mesh, missing_tex, unhashed_tex) =
-        (c.mesh_missing_cache, c.texture_missing_cache, c.texture_unhashed);
+    let (missing_mesh, missing_tex, unhashed_tex) = (
+        c.mesh_missing_cache,
+        c.texture_missing_cache,
+        c.texture_unhashed,
+    );
     let mut parts = Vec::new();
     if missing_mesh > 0 {
         parts.push(format!("{missing_mesh} mesh(es)"));
@@ -930,10 +935,11 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
     // ever stops mid-loop (a backend hang or a future abort), the LAST breadcrumb
     // pinpoints exactly which phase/file it died on instead of leaving a silent
     // partial project — pairs with `write_bytes`'s per-file write-verify.
-    let text_files: Vec<(String, String)> = std::iter::once(("project.toml".to_string(), project_to_toml(ctrl)?))
-        .chain(material_files(ctrl))
-        .chain(animation_files(ctrl))
-        .collect();
+    let text_files: Vec<(String, String)> =
+        std::iter::once(("project.toml".to_string(), project_to_toml(ctrl)?))
+            .chain(material_files(ctrl))
+            .chain(animation_files(ctrl))
+            .collect();
     let byte_files: Vec<(String, Vec<u8>)> = mesh_files(ctrl)
         .into_iter()
         .chain(rig_glb_files(ctrl))
@@ -958,7 +964,10 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
             .map_err(|e| EditorError::Msg(format!("save {name}: {e}")))?;
         written += 1;
     }
-    tracing::info!("save complete: wrote {written}/{total} files to {}", dir.name());
+    tracing::info!(
+        "save complete: wrote {written}/{total} files to {}",
+        dir.name()
+    );
     Ok(())
 }
 

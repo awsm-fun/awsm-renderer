@@ -58,7 +58,12 @@ fn census(doc: &gltf::Document, buffers: &[Vec<u8>]) -> Census {
             if !em.mesh.positions.is_empty() && !em.mesh.indices.is_empty() {
                 mesh_ok += 1;
             }
-            if all_tan && em.tangents.as_ref().is_some_and(|t| t.len() == em.mesh.positions.len()) {
+            if all_tan
+                && em
+                    .tangents
+                    .as_ref()
+                    .is_some_and(|t| t.len() == em.mesh.positions.len())
+            {
                 captured += 1;
             }
         }
