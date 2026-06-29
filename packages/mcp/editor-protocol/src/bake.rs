@@ -26,10 +26,16 @@ use crate::{AssetSource as AuthSource, EditorProject, MeshBase, MeshDef};
 pub fn project_to_scene(project: &EditorProject) -> Scene {
     let mut assets = RtTable::new();
     for (id, entry) in &project.assets.entries {
+        // Buffer-data entries are editor-only (the player resolves a buffer
+        // override by its asset-id filename, never via the runtime table), so
+        // they don't lower — skip them.
+        let Some(source) = lower_source(&entry.source) else {
+            continue;
+        };
         assets.entries.insert(
             *id,
             RtEntry {
-                source: lower_source(&entry.source),
+                source,
                 gltf_material_asset_ids: entry.gltf_material_asset_ids.clone(),
                 gltf_image_asset_ids: entry.gltf_image_asset_ids.clone(),
                 content_hash: entry.content_hash.clone(),
@@ -61,14 +67,18 @@ pub fn lower_mesh(def: &MeshDef) -> RuntimeMesh {
     RuntimeMesh::Glb
 }
 
-fn lower_source(src: &AuthSource) -> RtSource {
-    match src {
+/// Lower one authoring asset source to its runtime form. Returns `None` for
+/// editor-only sources that don't travel to the player (buffer data — resolved by
+/// asset-id filename, not the runtime table).
+fn lower_source(src: &AuthSource) -> Option<RtSource> {
+    Some(match src {
         AuthSource::Filename(n) => RtSource::Filename(n.clone()),
         AuthSource::Url(u) => RtSource::Url(u.clone()),
         AuthSource::Material(m) => RtSource::Material(m.clone()),
         AuthSource::Texture(t) => RtSource::Texture(t.clone()),
         AuthSource::Mesh(def) => RtSource::Mesh(lower_mesh(def)),
-    }
+        AuthSource::Buffer(_) => return None,
+    })
 }
 
 #[cfg(test)]

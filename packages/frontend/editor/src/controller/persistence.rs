@@ -303,6 +303,78 @@ where
     crate::engine::bridge::material::restore_raster_textures(items).await;
 }
 
+/// Per-buffer-asset side files (`assets/<content_hash>.bin`) — the raw
+/// little-endian u32 words bound to a custom-material buffer slot via
+/// `set_material_buffer`, content-addressed exactly like an imported raster
+/// texture. The renderer only keeps the words packed into its extras pool, so the
+/// originals live session-locally in
+/// [`buffer_cache`](crate::engine::bridge::buffer_cache) until Save reads them;
+/// without this side file the slot binds to nothing on reload and the mesh renders
+/// garbage. Mirrors [`texture_files`]. The player-bundle bake emits the same words
+/// keyed by asset id (`export::emit_buffer_overrides`).
+pub fn buffer_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
+    use crate::engine::bridge::buffer_cache;
+    let mut out = Vec::new();
+    let assets = ctrl.scene.assets.lock().unwrap();
+    for (id, entry) in assets.entries.iter() {
+        if !matches!(&entry.source, AssetSource::Buffer(_)) {
+            continue;
+        }
+        let Some(name) = asset_filename(*id, entry) else {
+            continue; // no content_hash → not addressable (shouldn't happen)
+        };
+        if let Some(words) = buffer_cache::get(*id) {
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            out.push((format!("assets/{name}"), bytes));
+        }
+    }
+    out
+}
+
+/// Restore buffer-asset bytes on LOAD: for each `AssetSource::Buffer` entry in the
+/// project's asset table, read its `assets/<content_hash>.bin` side file, decode
+/// the little-endian u32 words, and seed the
+/// [`buffer_cache`](crate::engine::bridge::buffer_cache) (so a buffer override
+/// resolves by asset id the first time the mesh materializes — and a later re-save
+/// persists it again). Called **before** [`apply_project`] — a DECLARED LOAD
+/// INPUT, like [`restore_textures`]. Returns the labels of buffer assets whose
+/// backing file couldn't be resolved (the caller surfaces these in
+/// `missing_assets`); previously such a slot failed silently and the mesh rendered
+/// garbage with no warning.
+async fn restore_buffers<F, Fut>(project: &EditorProject, mut read: F) -> Vec<String>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    let mut missing = Vec::new();
+    for (id, entry) in project.assets.entries.iter() {
+        if !matches!(&entry.source, AssetSource::Buffer(_)) {
+            continue;
+        }
+        let Some(name) = asset_filename(*id, entry) else {
+            continue;
+        };
+        match read(format!("assets/{name}")).await {
+            Ok(bytes) if bytes.len() % 4 == 0 => {
+                let words: Vec<u32> = bytes
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                crate::engine::bridge::buffer_cache::store(*id, words);
+            }
+            Ok(_) => {
+                tracing::warn!("buffer {id}: {name} length not a multiple of 4");
+                missing.push(format!("material buffer ({name})"));
+            }
+            Err(_) => {
+                tracing::warn!("buffer {id}: missing side file {name}");
+                missing.push(format!("material buffer ({name})"));
+            }
+        }
+    }
+    missing
+}
+
 /// Best-effort recovery of a texture's [`TextureColorKind`] for OLD projects that
 /// didn't persist it: the editor names every imported texture `"<material> · <slot>"`
 /// (see `ensure_import_texture` call sites in `state.rs`), so the slot suffix
@@ -832,6 +904,8 @@ pub struct SaveCensus {
     pub texture_assets: usize,
     pub texture_missing_cache: usize,
     pub texture_unhashed: usize,
+    pub buffer_assets: usize,
+    pub buffer_missing_cache: usize,
 }
 
 impl SaveCensus {
@@ -839,12 +913,13 @@ impl SaveCensus {
         self.mesh_missing_cache == 0
             && self.texture_missing_cache == 0
             && self.texture_unhashed == 0
+            && self.buffer_missing_cache == 0
     }
 }
 
 /// Compute the [`SaveCensus`] for the live project (read-only; no mutation, no I/O).
 pub fn save_census(ctrl: &EditorController) -> SaveCensus {
-    use crate::engine::bridge::{mesh_cache, texture_cache};
+    use crate::engine::bridge::{buffer_cache, mesh_cache, texture_cache};
     use awsm_renderer_editor_protocol::{MeshBase, MeshRef};
     let assets = ctrl.scene.assets.lock().unwrap();
     let mut c = SaveCensus::default();
@@ -874,6 +949,15 @@ pub fn save_census(ctrl: &EditorController) -> SaveCensus {
                     c.texture_missing_cache += 1;
                 }
             }
+            // Custom-material buffer data: the words are the only copy (the
+            // renderer keeps only the packed extras-pool slice), so they must be
+            // live in the cache to persist — same contract as a captured mesh.
+            AssetSource::Buffer(_) => {
+                c.buffer_assets += 1;
+                if !buffer_cache::contains(*id) {
+                    c.buffer_missing_cache += 1;
+                }
+            }
             _ => {}
         }
     }
@@ -885,20 +969,23 @@ pub fn check_save_complete(ctrl: &EditorController) -> Result<(), String> {
     // Census on every save — surfaces a 38→N drop even when the guard passes.
     tracing::info!(
         "save census: mesh_assets={} (missing_cache={}) texture_assets={} \
-         (missing_cache={} unhashed={})",
+         (missing_cache={} unhashed={}) buffer_assets={} (missing_cache={})",
         c.mesh_assets,
         c.mesh_missing_cache,
         c.texture_assets,
         c.texture_missing_cache,
-        c.texture_unhashed
+        c.texture_unhashed,
+        c.buffer_assets,
+        c.buffer_missing_cache
     );
     if c.is_complete() {
         return Ok(());
     }
-    let (missing_mesh, missing_tex, unhashed_tex) = (
+    let (missing_mesh, missing_tex, unhashed_tex, missing_buf) = (
         c.mesh_missing_cache,
         c.texture_missing_cache,
         c.texture_unhashed,
+        c.buffer_missing_cache,
     );
     let mut parts = Vec::new();
     if missing_mesh > 0 {
@@ -909,6 +996,9 @@ pub fn check_save_complete(ctrl: &EditorController) -> Result<(), String> {
     }
     if unhashed_tex > 0 {
         parts.push(format!("{unhashed_tex} texture(s) with no captured bytes"));
+    }
+    if missing_buf > 0 {
+        parts.push(format!("{missing_buf} material buffer(s)"));
     }
     Err(format!(
         "refusing to save — {} have no persistable bytes yet (import not fully \
@@ -947,6 +1037,7 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
         .chain(texture_files(ctrl))
         .chain(cluster_files(ctrl))
         .chain(ktx_files(ctrl))
+        .chain(buffer_files(ctrl))
         .collect();
     let total = text_files.len() + byte_files.len();
     let mut written = 0usize;
@@ -1012,7 +1103,14 @@ pub async fn load_from_dir(
         dir.read_bytes(&path).await.map_err(|e| e.to_string())
     })
     .await;
+    // Rehydrate custom-material buffer assets BEFORE apply_project (their words
+    // must be in the buffer cache the first time a mesh materializes).
+    let missing_buffers = restore_buffers(&project, |path| async move {
+        dir.read_bytes(&path).await.map_err(|e| e.to_string())
+    })
+    .await;
     apply_project(ctrl, project);
+    ctrl.missing_assets.set(missing_buffers);
     // Restore each skinned source's rig glb AFTER apply_project (walks the
     // now-live SkinnedMesh nodes for `skin.source`), so a skinned model's
     // player-bundle export survives a cold reload.
@@ -1049,6 +1147,7 @@ pub fn serialize_inmem(
     byte_files.extend(texture_files(ctrl));
     byte_files.extend(cluster_files(ctrl));
     byte_files.extend(ktx_files(ctrl));
+    byte_files.extend(buffer_files(ctrl));
     Ok((toml, byte_files))
 }
 
@@ -1099,7 +1198,15 @@ pub async fn apply_inmem(
         async move { bytes.ok_or_else(|| format!("missing in-memory ktx: {path}")) }
     })
     .await;
+    // Rehydrate custom-material buffer assets BEFORE apply_project (their words
+    // must be in the buffer cache the first time a mesh materializes).
+    let missing_buffers = restore_buffers(&project, |path| {
+        let bytes = byte_files.get(&path).cloned();
+        async move { bytes.ok_or_else(|| format!("missing in-memory buffer: {path}")) }
+    })
+    .await;
     apply_project(ctrl, project);
+    ctrl.missing_assets.set(missing_buffers);
     // Restore each skinned source's rig glb AFTER apply_project (walks the
     // now-live SkinnedMesh nodes), so a skinned model's player-bundle export
     // survives the round-trip.
@@ -1179,7 +1286,10 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
     // Re-read cluster ("nanite") DAGs BEFORE apply_project (so ClusterMesh nodes render).
     restore_cluster_meshes(&project, http_bytes!()).await;
     restore_ktx(&project, http_bytes!()).await;
+    // Rehydrate custom-material buffer assets BEFORE apply_project.
+    let missing_buffers = restore_buffers(&project, http_bytes!()).await;
     apply_project(ctrl, project);
+    ctrl.missing_assets.set(missing_buffers);
     // Restore rig glb (bundle export) + bind poses (drop_skinning) AFTER apply.
     restore_rig_glb(ctrl, http_bytes!()).await;
     restore_bind_poses(ctrl, http_bytes!()).await;
@@ -1260,5 +1370,26 @@ mod cluster_persistence_tests {
         let sources = cluster_sources_from_project(&project);
         assert_eq!(sources.len(), 2, "every cluster source must be collected");
         assert!(sources.contains(&a) && sources.contains(&b));
+    }
+
+    /// A buffer asset is content-addressed as `<content_hash>.bin`. Save
+    /// (`buffer_files`) and Load (`restore_buffers`) both derive the side-file name
+    /// via the shared [`asset_filename`], so they can't drift — this pins that
+    /// contract (and that a hash-less buffer entry is unaddressable → `None`).
+    #[test]
+    fn buffer_asset_filename_is_content_hash_bin() {
+        use awsm_renderer_editor_protocol::{AssetEntry, AssetSource, BufferDef};
+        let id = AssetId::new();
+        let hashed = AssetEntry::new_with_hash(
+            AssetSource::Buffer(BufferDef { word_len: 8 }),
+            "deadbeef".to_string(),
+        );
+        assert_eq!(
+            asset_filename(id, &hashed),
+            Some("deadbeef.bin".to_string())
+        );
+
+        let unhashed = AssetEntry::new(AssetSource::Buffer(BufferDef { word_len: 8 }));
+        assert_eq!(asset_filename(id, &unhashed), None);
     }
 }

@@ -311,16 +311,30 @@ pub struct MaterialInstance {
     pub buffer_overrides: HashMap<String, BufferRef>,
 }
 
-/// Project-relative pointer to a `.bin` buffer file. Mirrors
-/// [`crate::primitive::TextureRef`]; the type exists separately so the
-/// editor can flag the field with a `.bin` file-picker UI rather than a
-/// texture-asset picker.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Pointer to a buffer-data asset bound into a custom-material buffer slot.
+/// Mirrors [`crate::primitive::TextureRef`]: it carries a durable `AssetId`, not
+/// a path. The bytes (raw little-endian `u32` words) are content-addressed like a
+/// raster texture — the editor caches them and persists `assets/<content_hash>.bin`;
+/// the player fetches `assets/<asset>.bin`. (Earlier builds stored a transient
+/// `session://buffer/<id>` path here, which didn't survive a project reload.)
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BufferRef {
-    /// Project-relative path to a `.bin` file.
-    pub path: PathBuf,
+    /// Stable id of the buffer-data asset bound to this slot.
+    pub asset: AssetId,
+}
+
+impl BufferRef {
+    pub fn new(asset: AssetId) -> Self {
+        Self { asset }
+    }
+}
+
+impl From<AssetId> for BufferRef {
+    fn from(asset: AssetId) -> Self {
+        Self::new(asset)
+    }
 }
 
 /// Resolved, in-memory representation of a custom-material folder.

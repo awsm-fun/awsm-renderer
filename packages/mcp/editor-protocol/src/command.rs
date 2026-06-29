@@ -871,9 +871,11 @@ pub enum EditorCommand {
     /// slot (by slot name), or clear it (`data: None`). The `data` is the slot's
     /// little-endian `u32` words (e.g. an `array<vec4<f32>>` of N vec4s is `4·N`
     /// words, the f32 bit patterns). Writes the node's
-    /// `MaterialInstance::buffer_overrides` — the editor stashes the words under a
-    /// session path and the bundle bake emits them as `assets/<id>.bin`. The node
-    /// must have a custom material assigned with a matching declared buffer slot.
+    /// `MaterialInstance::buffer_overrides` — the editor interns the words as a
+    /// content-addressed `Buffer` asset (persisted at `assets/<content_hash>.bin`,
+    /// the bundle bake emits `assets/<asset>.bin`), so the binding survives a
+    /// project reload. The node must have a custom material assigned with a
+    /// matching declared buffer slot.
     /// Inverse: restore the node's prior kind.
     SetMaterialBuffer {
         node: NodeId,

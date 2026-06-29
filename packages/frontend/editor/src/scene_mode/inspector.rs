@@ -2718,13 +2718,11 @@ fn pick_buffer_bin(node: &Arc<Node>, name: &str) {
                     u32::from_le_bytes(b)
                 })
                 .collect();
-            let path = crate::engine::bridge::dynamic::store_buffer_words(words);
+            let asset = crate::controller::intern_buffer_asset(words);
             set_buffer_override(
                 &node,
                 &name,
-                Some(awsm_renderer_editor_protocol::dynamic_material::BufferRef {
-                    path: path.into(),
-                }),
+                Some(awsm_renderer_editor_protocol::dynamic_material::BufferRef { asset }),
             );
         });
     });

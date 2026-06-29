@@ -37,7 +37,7 @@ mod texture_payload;
 mod transport;
 
 pub use anim_ui::{AnimSel, AnimView, StepKind};
-pub use assets::{asset_disk_path, asset_filename, AssetEntry, AssetSource, AssetTable};
+pub use assets::{asset_disk_path, asset_filename, AssetEntry, AssetSource, AssetTable, BufferDef};
 pub use bake::{lower_mesh, project_to_scene};
 pub use command::{
     BuiltinTextureSlot, CameraAxis, CustomAlphaMode, EditorCommand, EditorMode, ProceduralKind,
