@@ -1110,32 +1110,6 @@ impl EditorCommand {
         )
     }
 
-    /// Per-tab **view-local** commands that must NOT cross-tab broadcast: a
-    /// second window framing its own camera / with its own selection / mode must
-    /// not be yanked when the first edits. Everything else (clip/track/keyframe/
-    /// mixer edits + the shared transport playhead) DOES broadcast so two tabs on
-    /// the same project stay in lock-step.
-    pub fn is_tab_local(&self) -> bool {
-        matches!(
-            self,
-            EditorCommand::SwitchMode { .. }
-                | EditorCommand::SetSelection { .. }
-                | EditorCommand::SetVertexSelection { .. }
-                | EditorCommand::SetAssetSelection { .. }
-                | EditorCommand::SnapCameraToAxis { .. }
-                | EditorCommand::ResetCamera
-                | EditorCommand::SetCameraOrbit { .. }
-                | EditorCommand::SetCameraProjection { .. }
-                | EditorCommand::FrameNode { .. }
-                | EditorCommand::ResetPose { .. }
-                | EditorCommand::SetFrameTime { .. }
-                | EditorCommand::ClearFrameTime
-                | EditorCommand::SetMorphWeight { .. }
-                | EditorCommand::SetAnimSelection { .. }
-                | EditorCommand::SetSoloRoot { .. }
-        )
-    }
-
     /// Does applying this command change what the renderer must re-lower for
     /// animation playback — the active clip set, a clip's params, a track's
     /// sampler/mute/solo/keyframes, the mixer, the solo subtree, or the whole
