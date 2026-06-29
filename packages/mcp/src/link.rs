@@ -222,12 +222,7 @@ impl EditorLink {
 
     /// The id of the tab requests currently route to (for the event forwarder).
     pub fn current_conn_id(&self) -> Option<u64> {
-        self.inner
-            .connections
-            .lock()
-            .unwrap()
-            .last()
-            .map(|c| c.id)
+        self.inner.connections.lock().unwrap().last().map(|c| c.id)
     }
 
     /// Send a request from `agent` to the attached tab.
