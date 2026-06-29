@@ -204,7 +204,10 @@ struct AppContext {
 fn editor_features() -> RendererFeatures {
     use awsm_renderer::features::FeatureToggle;
     RendererFeatures {
-        gpu_culling: true,
+        // GPU-driven HZB occlusion culling. `?noocclusion` forces it off — used to
+        // confirm/repro occlusion-cull false-positives (small meshes nestled between
+        // occluders vanishing at distance).
+        gpu_culling: !url_has_flag("noocclusion"),
         decals: true,
         coverage_lod: false,
         // The canvas wires `.pick()` to pointer-down for node selection (M6).
