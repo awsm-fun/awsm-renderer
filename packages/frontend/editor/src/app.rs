@@ -318,18 +318,20 @@ fn typing_in_field() -> bool {
 /// `project.toml` + the per-material side files.
 fn save_project() {
     spawn_local(async {
-        // Block ALL interaction across the picker AND the write under one guard.
-        // The save is an async loop over many side files (File System Access, to a
-        // real disk); if the user triggers another op or navigates mid-write the
-        // write is cut off at a variable point → a silent PARTIAL project (the
-        // missing-meshes/textures bug). The `begin_activity` guard raises the
-        // full-screen `busy_overlay` (no close, swallows all input) and auto-clears
-        // on drop — so a cancelled picker dismisses it. The label gains the picked
-        // directory name once it's known.
-        let activity = crate::engine::activity::begin_activity("Saving…");
+        // Pick FIRST: the directory picker needs a live user gesture, so nothing
+        // async may run before it. Only once a directory is chosen do we raise the
+        // busy overlay — the native picker is already modal to the page, so guarding
+        // it with our own overlay just flashes it behind the OS dialog.
         match crate::fs::ProjectDir::pick().await {
             Ok(dir) => {
-                activity.set_label(format!("Saving to {}/…", dir.name()));
+                // Now block ALL interaction across the write under one guard. The save
+                // is an async loop over many side files (File System Access, to a real
+                // disk); if the user triggers another op or navigates mid-write the
+                // write is cut off at a variable point → a silent PARTIAL project (the
+                // missing-meshes/textures bug). `begin_activity` raises the full-screen
+                // `busy_overlay` (no close, swallows all input) and auto-clears on drop.
+                let _activity =
+                    crate::engine::activity::begin_activity(format!("Saving to {}/…", dir.name()));
                 match crate::controller::persistence::save_to_dir(&controller(), &dir).await {
                     Ok(()) => {
                         controller().project_name.set(dir.name());
@@ -451,21 +453,27 @@ fn export_scene_glb() {
 /// `assemble_bundle` layout so the editor and the tested layout never drift.
 fn export_player_bundle() {
     spawn_local(async {
-        // Block ALL interaction for the whole export — bake, directory picker, and
-        // the file-write loop — under ONE guard so the overlay never gaps. The
-        // scene can't mutate underneath the bake, and an interruption mid-write
-        // can't leave a silent partial bundle on disk. The guard auto-clears on
-        // drop, so a bake error or a cancelled picker dismisses the overlay.
-        let activity = crate::engine::activity::begin_activity("Preparing player bundle…");
-        let bundle = match crate::controller::export::bake_player_bundle(&controller()).await {
-            Ok(bundle) => bundle,
-            Err(e) => {
-                Toast::error(format!("Export bundle failed: {e}"));
-                return;
-            }
-        };
+        // Pick FIRST: the directory picker needs a live user gesture, so nothing
+        // async may precede it — baking before the picker consumed the gesture and
+        // the picker then threw "must be in response to a user gesture". Once a
+        // directory is chosen we raise the overlay, then bake + write under ONE
+        // guard so the scene can't mutate underneath the bake and an interruption
+        // mid-write can't leave a silent partial bundle. The guard auto-clears on
+        // drop, so a bake error dismisses the overlay.
         match crate::fs::ProjectDir::pick().await {
             Ok(dir) => {
+                let activity = crate::engine::activity::begin_activity(format!(
+                    "Preparing player bundle for {}/…",
+                    dir.name()
+                ));
+                let bundle =
+                    match crate::controller::export::bake_player_bundle(&controller()).await {
+                        Ok(bundle) => bundle,
+                        Err(e) => {
+                            Toast::error(format!("Export bundle failed: {e}"));
+                            return;
+                        }
+                    };
                 activity.set_label(format!("Exporting bundle to {}/…", dir.name()));
                 let count = bundle.len();
                 for file in &bundle {

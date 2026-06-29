@@ -87,8 +87,6 @@ features = [
     "Blob",
     "File",
     "Url",
-    "BroadcastChannel",
-    "MessageEvent",
     # navigator().clipboard().write_text() — the help modal's copy buttons.
     "Clipboard",
 ]

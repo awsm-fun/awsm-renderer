@@ -2,8 +2,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
 use awsm_renderer_web_shared::prelude::{Mutable, MutableVec, Toast};
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 
 use super::animation::{find_clip, CustomAnimation as CA};
@@ -19,12 +18,6 @@ use std::sync::Arc;
 
 thread_local! {
     static CONTROLLER: OnceCell<EditorController> = const { OnceCell::new() };
-    /// The cross-tab relay channel. `None` until `init`, or if the browser
-    /// lacks `BroadcastChannel` (cross-tab then simply disabled — the editor still
-    /// works). Every non-tab-local dispatched command is posted here; other tabs
-    /// apply it. `BroadcastChannel` does not deliver to the posting context, so
-    /// there is no echo to guard against.
-    static SYNC_CHANNEL: RefCell<Option<web_sys::BroadcastChannel>> = const { RefCell::new(None) };
 }
 
 thread_local! {
@@ -53,7 +46,6 @@ pub fn init() {
     CONTROLLER.with(|c| {
         let _ = c.set(EditorController::new());
     });
-    init_cross_tab_sync();
     // Mirror every toast into the console-log ring buffer (MCP `get_console_logs`).
     awsm_renderer_web_shared::prelude::set_toast_log_hook(|kind, msg| {
         use awsm_renderer_web_shared::prelude::ToastKind;
@@ -73,35 +65,6 @@ pub fn init() {
             });
         }
     });
-}
-
-/// Wire the cross-tab relay: a `BroadcastChannel` whose incoming commands
-/// are applied through the same `dispatch`/`apply` seam (replay path — no
-/// re-broadcast, no undo record). Two tabs on the same project thus stay in
-/// lock-step on every clip/track/keyframe/mixer edit + the shared playhead, while
-/// each keeps its own camera / selection / mode (`is_tab_local`, not broadcast).
-fn init_cross_tab_sync() {
-    let bc = match web_sys::BroadcastChannel::new("awsm-editor-sync") {
-        Ok(bc) => bc,
-        Err(_) => return, // unsupported → cross-tab disabled; editor unaffected
-    };
-    let on_message =
-        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(|e: web_sys::MessageEvent| {
-            let Some(json) = e.data().as_string() else {
-                return;
-            };
-            match serde_json::from_str::<EditorCommand>(&json) {
-                Ok(cmd) => spawn_local(async move {
-                    // Remote replay: straight to `apply` (dispatch would re-broadcast
-                    // + record undo). The returned inverse is discarded.
-                    let _ = controller().apply_remote(cmd).await;
-                }),
-                Err(err) => tracing::warn!("cross-tab: undecodable command: {err}"),
-            }
-        });
-    bc.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-    on_message.forget(); // handler lives for the app's lifetime
-    SYNC_CHANNEL.with(|c| *c.borrow_mut() = Some(bc));
 }
 
 /// A cheap clone of the controller singleton (all fields are `Mutable`/`Rc`).
@@ -284,10 +247,6 @@ impl EditorController {
     /// The single entry point. UI handlers build a command and dispatch it here;
     /// async because some commands await the renderer / FS / network.
     pub async fn dispatch(&self, cmd: EditorCommand) -> EditorResult<()> {
-        // Every command entering through `dispatch` is a *direct user input*
-        // (undo/redo replay goes straight to `apply`, bypassing this). Broadcast
-        // it for future multi-window / collaboration sync — see `broadcast`.
-        self.broadcast(&cmd);
         let transient = cmd.is_transient();
         // Coalesce consecutive continuous edits on the same node (transform
         // drag-scrub, name typing) into one undo step.
@@ -307,41 +266,10 @@ impl EditorController {
         Ok(())
     }
 
-    /// Broadcast a direct-input command. Today this only logs `broadcasting
-    /// <command>` (the command serialized as JSON — the exact payload a peer
-    /// would replay), which is handy for tracing undo/redo and input flow. Later
-    /// this will feed a transport so other windows / collaborators apply the same
-    /// command — e.g. driving a scene camera from one window's built-in view and
-    /// seeing it move in another. Undo/redo deliberately don't broadcast (they
-    /// call `apply` directly), so a replay isn't mistaken for a fresh edit.
-    fn broadcast(&self, cmd: &EditorCommand) {
-        // Per-tab view-local commands (camera / selection / mode) never cross-tab
-        // broadcast — a second window keeps its own view.
-        if cmd.is_tab_local() {
-            return;
-        }
-        let payload = serde_json::to_string(cmd).unwrap_or_else(|_| format!("{cmd:?}"));
-        tracing::trace!("broadcasting {payload}");
-        SYNC_CHANNEL.with(|c| {
-            if let Some(bc) = c.borrow().as_ref() {
-                let _ = bc.post_message(&JsValue::from_str(&payload));
-            }
-        });
-    }
-
-    /// Apply a command that arrived from ANOTHER tab via the cross-tab relay.
-    /// Goes straight to `apply` — the replay path: it does NOT re-broadcast
-    /// (only `dispatch` broadcasts) and does NOT record undo (the inverse is
-    /// discarded), so a relayed edit isn't mistaken for a fresh local one.
-    async fn apply_remote(&self, cmd: EditorCommand) -> EditorResult<()> {
-        let _ = self.apply(cmd).await?;
-        Ok(())
-    }
-
     /// Apply a command and, if it changes anything the renderer must re-lower
     /// for animation, bump [`Self::anim_revision`] — the single signal the bridge
     /// debounced-observes. This is the ONE chokepoint every path (`dispatch`,
-    /// `apply_remote`, undo, redo) funnels through, so no edit can skip the
+    /// undo, redo) funnels through, so no edit can skip the
     /// re-lower (the stale-channel bug). The actual effect lives in `apply_inner`.
     async fn apply(&self, cmd: EditorCommand) -> EditorResult<Option<EditorCommand>> {
         // A `Batch` applies its sub-commands in order (each a leaf — batches don't
@@ -379,14 +307,12 @@ impl EditorController {
     }
 
     /// Apply a list of commands as one atomic step that collapses into a single
-    /// undo entry. The MCP `dispatch_batch` round-trips here. Each sub-command is
-    /// broadcast individually (cross-tab replay), then the combined inverse is
-    /// pushed as one `Batch` so undo reverses the whole thing.
+    /// undo entry. The MCP `dispatch_batch` round-trips here. The combined inverse
+    /// is pushed as one `Batch` so undo reverses the whole thing.
     pub async fn dispatch_batch(&self, cmds: Vec<EditorCommand>) -> EditorResult<()> {
         let mut inverses = Vec::new();
         let mut any_recorded = false;
         for cmd in cmds {
-            self.broadcast(&cmd);
             let transient = cmd.is_transient();
             let inv = self.apply(cmd).await?;
             if !transient {
