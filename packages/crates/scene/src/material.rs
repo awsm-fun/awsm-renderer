@@ -290,6 +290,50 @@ pub enum ProceduralTextureDef {
     },
 }
 
+/// The SEMANTIC ROLE of a raster texture — what the renderer needs to know to
+/// upload it correctly (color space + per-kind mipmap generation). This is the
+/// source of truth set at import (from the glTF material slot, see
+/// `renderer-gltf::populate`) and PERSISTED on the asset so a Save→reload
+/// re-uploads with the same meaning instead of re-guessing. Mirrors the renderer's
+/// `MipmapTextureKind`; the editor maps it back to a full `TextureColorInfo`
+/// (sRGB-decode for color kinds, verbatim/linear for data kinds).
+///
+/// Without this, a reloaded normal/MR/occlusion map decodes as sRGB albedo →
+/// corrupted normals/roughness + wrong-kind mipmaps (the save→reload shading drift).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TextureColorKind {
+    /// Base color / albedo — sRGB. The safe default for any untagged texture.
+    #[default]
+    Albedo,
+    /// Tangent-space normal map — LINEAR.
+    Normal,
+    /// Packed metallic-roughness — LINEAR.
+    MetallicRoughness,
+    /// Ambient occlusion — LINEAR.
+    Occlusion,
+    /// Emissive — sRGB.
+    Emissive,
+    /// Specular (factor) — LINEAR.
+    Specular,
+    /// Specular color — sRGB.
+    SpecularColor,
+    /// Transmission — LINEAR.
+    Transmission,
+    /// Volume thickness — LINEAR.
+    VolumeThickness,
+}
+
+impl TextureColorKind {
+    /// Whether this kind's image is sRGB-encoded (color) vs linear (data). Drives
+    /// `TextureColorInfo::srgb_to_linear`. Kept here (next to the kinds) so the
+    /// import and reload paths can't disagree.
+    pub fn is_srgb(self) -> bool {
+        matches!(self, Self::Albedo | Self::Emissive | Self::SpecularColor)
+    }
+}
+
 /// Texture asset variants.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -299,7 +343,14 @@ pub enum TextureDef {
     /// extension for the on-disk file; the disk path itself is derived
     /// from the entry's `content_hash` (see
     /// `AssetEntry::content_hash`), not from this string.
-    Raster { display_name: String },
+    Raster {
+        display_name: String,
+        /// The texture's semantic role — its color space + mipmap kind. `None`
+        /// for projects saved before this was tracked (the editor falls back to
+        /// inferring from the import-assigned `display_name` slot suffix on load).
+        #[serde(default)]
+        color_kind: Option<TextureColorKind>,
+    },
     /// Procedurally generated at load time.
     Procedural(ProceduralTextureDef),
 }

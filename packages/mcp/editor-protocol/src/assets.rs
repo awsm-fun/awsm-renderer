@@ -47,7 +47,7 @@ impl AssetSource {
     pub fn display_name(&self) -> Option<&str> {
         match self {
             Self::Filename(name) => Some(name.as_str()),
-            Self::Texture(TextureDef::Raster { display_name }) => Some(display_name.as_str()),
+            Self::Texture(TextureDef::Raster { display_name, .. }) => Some(display_name.as_str()),
             _ => None,
         }
     }
@@ -165,7 +165,7 @@ pub fn asset_filename(id: AssetId, entry: &AssetEntry) -> Option<String> {
     }
     let display = match &entry.source {
         AssetSource::Filename(name) => name.as_str(),
-        AssetSource::Texture(TextureDef::Raster { display_name }) => display_name.as_str(),
+        AssetSource::Texture(TextureDef::Raster { display_name, .. }) => display_name.as_str(),
         _ => return None,
     };
     let ext = display.rsplit_once('.').map(|(_, e)| e).unwrap_or("");

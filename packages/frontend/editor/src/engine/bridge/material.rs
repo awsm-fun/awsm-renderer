@@ -15,7 +15,8 @@ use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_core::texture::texture_pool::TextureColorInfo;
 use awsm_renderer_editor_protocol::{
-    AssetSource, MaterialDef, MaterialShading, ProceduralTextureDef, TextureDef, TextureRef,
+    AssetSource, MaterialDef, MaterialShading, ProceduralTextureDef, TextureColorKind, TextureDef,
+    TextureRef,
 };
 
 use crate::engine::scene::AssetId;
@@ -222,24 +223,50 @@ pub(crate) async fn create_texture(
 /// uploads + the single pool-finalising `commit_load` happen under one lock in
 /// ONE batch (not per-texture — transaction-aligned).
 ///
-/// Color space: each item carries a `linear` flag (4th tuple field) — `true` for
-/// DATA maps (normal / metallic-roughness / occlusion) which upload verbatim
-/// (`srgb_to_linear = false`), `false` for color maps (base color / emissive)
-/// which sRGB-decode. The caller (`persistence::restore_textures`) derives it from
-/// the import-assigned display-name slot. This matches the per-slot color space
-/// the fresh-import path sets in [`create_texture`]; a normal map reloaded as sRGB
-/// has corrupted normals → the save→reload shading drift.
-pub(crate) async fn restore_raster_textures(items: Vec<(AssetId, Vec<u8>, String, bool)>) {
+/// The renderer upload descriptor for a texture's semantic role — the SINGLE place
+/// that maps a [`TextureColorKind`] to its `TextureColorInfo` (color space + mipmap
+/// kind), so the import and reload paths can never disagree. `premultiplied_alpha`
+/// stays `None` (use the image's own setting), matching `renderer-gltf::populate`.
+pub(crate) fn color_info_for_kind(kind: TextureColorKind) -> TextureColorInfo {
+    let mipmap_kind = match kind {
+        TextureColorKind::Albedo => MipmapTextureKind::Albedo,
+        TextureColorKind::Normal => MipmapTextureKind::Normal,
+        TextureColorKind::MetallicRoughness => MipmapTextureKind::MetallicRoughness,
+        TextureColorKind::Occlusion => MipmapTextureKind::Occlusion,
+        TextureColorKind::Emissive => MipmapTextureKind::Emissive,
+        TextureColorKind::Specular => MipmapTextureKind::Specular,
+        TextureColorKind::SpecularColor => MipmapTextureKind::SpecularColor,
+        TextureColorKind::Transmission => MipmapTextureKind::Transmission,
+        TextureColorKind::VolumeThickness => MipmapTextureKind::VolumeThickness,
+    };
+    TextureColorInfo {
+        mipmap_kind,
+        srgb_to_linear: kind.is_srgb(),
+        premultiplied_alpha: None,
+    }
+}
+
+/// Color space + mipmaps: each item carries its [`TextureColorKind`] (4th tuple
+/// field) — the texture's semantic role persisted on the asset. [`color_info_for_kind`]
+/// maps it to the full `TextureColorInfo` (sRGB-decode for color kinds, verbatim for
+/// data kinds; role-specific mipmap kind). This makes RELOAD upload textures with the
+/// exact same meaning as fresh IMPORT — a normal map reloaded as sRGB albedo has
+/// corrupted normals + wrong mipmaps (the save→reload shading drift).
+pub(crate) async fn restore_raster_textures(
+    items: Vec<(AssetId, Vec<u8>, String, TextureColorKind)>,
+) {
     if items.is_empty() {
         return;
     }
     // Decode all (async, network/codec) BEFORE taking the renderer lock. Carry the
-    // per-texture `linear` flag (true for DATA maps — normal/metal-rough/occlusion —
-    // which must NOT be sRGB-decoded) through to the upload.
-    let mut decoded: Vec<(AssetId, Vec<u8>, u32, u32, bool)> = Vec::with_capacity(items.len());
-    for (id, bytes, mime, linear) in &items {
+    // per-texture semantic ROLE through so the upload picks the right color space +
+    // mipmap kind (data maps — normal/metal-rough/occlusion — must NOT sRGB-decode
+    // and get role-specific mipmaps).
+    let mut decoded: Vec<(AssetId, Vec<u8>, u32, u32, TextureColorKind)> =
+        Vec::with_capacity(items.len());
+    for (id, bytes, mime, kind) in &items {
         match decode_rgba_from_bytes(bytes, mime).await {
-            Ok((rgba, w, h)) => decoded.push((*id, rgba, w, h, *linear)),
+            Ok((rgba, w, h)) => decoded.push((*id, rgba, w, h, *kind)),
             Err(e) => tracing::warn!("restore texture {id}: {e}"),
         }
     }
@@ -252,14 +279,10 @@ pub(crate) async fn restore_raster_textures(items: Vec<(AssetId, Vec<u8>, String
         tracing::warn!("restore textures: no sampler");
         return;
     };
-    for (id, rgba, w, h, linear) in &decoded {
-        // sRGB for color maps; LINEAR (sampled verbatim) for data maps — matches the
-        // per-slot color space the fresh-import path sets in `create_texture`.
-        let color = TextureColorInfo {
-            mipmap_kind: MipmapTextureKind::Albedo,
-            srgb_to_linear: !*linear,
-            premultiplied_alpha: None,
-        };
+    for (id, rgba, w, h, kind) in &decoded {
+        // The role's full TextureColorInfo (color space + mipmap kind) — identical
+        // to what the fresh-import path uses, so RELOAD == IMPORT.
+        let color = color_info_for_kind(*kind);
         match r
             .textures
             .add_image_rgba_raw(rgba, *w, *h, sampler_key, color)

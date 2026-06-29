@@ -13,7 +13,7 @@ use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
 use awsm_renderer_editor_protocol::{
     AssetEntry, AssetSource as SceneAssetSource, BoundedHistory, MaterialDef, ModifierStack,
-    ProceduralTextureDef, TextureDef,
+    ProceduralTextureDef, TextureColorKind, TextureDef,
 };
 use std::sync::Arc;
 
@@ -2707,6 +2707,7 @@ impl EditorController {
                     AssetEntry::new_with_hash(
                         SceneAssetSource::Texture(TextureDef::Raster {
                             display_name: format!("env-{}.{ext}", &id.to_string()[..8]),
+                            color_kind: None,
                         }),
                         hash,
                     ),
@@ -2963,6 +2964,7 @@ impl EditorController {
                             id,
                             AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
                                 display_name: name,
+                                color_kind: None,
                             })),
                         );
                         self.scene.bump_revision();
@@ -3007,6 +3009,7 @@ impl EditorController {
                             id,
                             AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
                                 display_name: format!("created-{}", &id.to_string()[..8]),
+                                color_kind: None,
                             })),
                         );
                         self.scene.bump_revision();
@@ -3802,6 +3805,7 @@ impl EditorController {
             AssetId,
             String,
             Option<(String, awsm_renderer_glb_export::ImageMime)>,
+            TextureColorKind,
         )> = Vec::new();
         let mut mat_ids: Vec<AssetId> = Vec::with_capacity(import.materials.len());
 
@@ -3817,6 +3821,7 @@ impl EditorController {
                 &mut texture_entries,
                 ex.textures.base_color,
                 &format!("{label} · base color"),
+                TextureColorKind::Albedo,
                 &import.texture_images,
             );
             def.metallic_roughness_texture = ensure_import_texture(
@@ -3824,6 +3829,7 @@ impl EditorController {
                 &mut texture_entries,
                 ex.textures.metallic_roughness,
                 &format!("{label} · metal/rough"),
+                TextureColorKind::MetallicRoughness,
                 &import.texture_images,
             );
             def.normal_texture = ensure_import_texture(
@@ -3831,6 +3837,7 @@ impl EditorController {
                 &mut texture_entries,
                 ex.textures.normal,
                 &format!("{label} · normal"),
+                TextureColorKind::Normal,
                 &import.texture_images,
             );
             def.occlusion_texture = ensure_import_texture(
@@ -3838,6 +3845,7 @@ impl EditorController {
                 &mut texture_entries,
                 ex.textures.occlusion,
                 &format!("{label} · occlusion"),
+                TextureColorKind::Occlusion,
                 &import.texture_images,
             );
             def.emissive_texture = ensure_import_texture(
@@ -3845,17 +3853,20 @@ impl EditorController {
                 &mut texture_entries,
                 ex.textures.emissive,
                 &format!("{label} · emissive"),
+                TextureColorKind::Emissive,
                 &import.texture_images,
             );
             // KHR-extension texture slots (clearcoat normal map, specular colour
             // map, sheen colour map, …): create a texture asset for each + write
-            // the TextureRef onto the matching extension field.
+            // the TextureRef onto the matching extension field. The slot name maps
+            // to the texture's color kind (so its color space + mipmaps persist).
             for (slot, baked) in &ex.ext_textures {
                 let tref = ensure_import_texture(
                     &mut tex_for_key,
                     &mut texture_entries,
                     Some(*baked),
                     &format!("{label} · {slot}"),
+                    ext_slot_color_kind(slot),
                     &import.texture_images,
                 );
                 set_ext_texture(&mut def.extensions, slot, tref);
@@ -3883,20 +3894,24 @@ impl EditorController {
         let img_ids: Vec<AssetId> = texture_entries.iter().map(|(id, ..)| *id).collect();
         let asset_id = {
             let mut table = self.scene.assets.lock().unwrap();
-            for (id, name, hash_mime) in &texture_entries {
+            for (id, name, hash_mime, color_kind) in &texture_entries {
                 // Captured bytes ⇒ a file-backed entry (content_hash addresses
                 // `assets/<hash>.<ext>`; the ext rides the display_name so
                 // `asset_filename` derives it). Otherwise a plain (session-only)
                 // entry — e.g. an external-file-URI texture we couldn't capture.
+                // `color_kind` carries the slot's semantic (color space + mipmaps)
+                // so a Save→reload re-uploads with the same meaning.
                 let entry = match hash_mime {
                     Some((hash, mime)) => AssetEntry::new_with_hash(
                         SceneAssetSource::Texture(TextureDef::Raster {
                             display_name: format!("{name}.{}", mime.ext()),
+                            color_kind: Some(*color_kind),
                         }),
                         hash.clone(),
                     ),
                     None => AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
                         display_name: name.clone(),
+                        color_kind: Some(*color_kind),
                     })),
                 };
                 table.entries.insert(*id, entry);
@@ -7522,12 +7537,14 @@ fn ensure_import_texture(
         AssetId,
         String,
         Option<(String, awsm_renderer_glb_export::ImageMime)>,
+        TextureColorKind,
     )>,
     baked: Option<(
         awsm_renderer::textures::TextureKey,
         crate::engine::bridge::gltf::TexBinding,
     )>,
     name: &str,
+    color_kind: TextureColorKind,
     texture_images: &std::collections::HashMap<
         awsm_renderer::textures::TextureKey,
         awsm_renderer_glb_export::ExportImage,
@@ -7558,8 +7575,27 @@ fn ensure_import_texture(
         crate::engine::bridge::texture_cache::store(id, img.bytes.clone(), img.mime);
         (hash, img.mime)
     });
-    texture_entries.push((id, name.to_string(), hash_mime));
+    texture_entries.push((id, name.to_string(), hash_mime, color_kind));
     Some(mk(id))
+}
+
+/// Map a KHR-extension texture slot name (the keys of `ExtractedMaterial::ext_textures`)
+/// to its color kind, so persisted extension textures reload with the right color
+/// space + mipmaps. Unknown slots default to `Albedo` (sRGB) — the safe default for a
+/// color-ish map; the linear data-map extensions are matched explicitly.
+fn ext_slot_color_kind(slot: &str) -> TextureColorKind {
+    match slot {
+        s if s.contains("clearcoat_normal") => TextureColorKind::Normal,
+        s if s.contains("clearcoat") => TextureColorKind::MetallicRoughness, // roughness/factor maps — linear
+        s if s.contains("specular_color") || s.contains("sheen_color") => {
+            TextureColorKind::SpecularColor
+        }
+        s if s.contains("specular") || s.contains("sheen") => TextureColorKind::Specular,
+        s if s.contains("transmission") => TextureColorKind::Transmission,
+        s if s.contains("thickness") || s.contains("volume") => TextureColorKind::VolumeThickness,
+        s if s.contains("iridescence") || s.contains("anisotropy") => TextureColorKind::Normal, // linear data
+        _ => TextureColorKind::Albedo,
+    }
 }
 
 /// SHA-256 hex of texture bytes — the `content_hash` that addresses the on-disk
@@ -8580,7 +8616,7 @@ mod equirect_persistence_tests {
                 .get(&id)
                 .expect("env texture asset registered");
             assert!(
-                matches!(&entry.source, SceneAssetSource::Texture(TextureDef::Raster { display_name }) if display_name.ends_with(".png")),
+                matches!(&entry.source, SceneAssetSource::Texture(TextureDef::Raster { display_name, .. }) if display_name.ends_with(".png")),
                 "env asset must be a .png raster texture"
             );
             assert!(

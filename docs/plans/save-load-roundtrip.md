@@ -413,19 +413,37 @@ skinned/morph/sculpted/custom-material/nanite/KTX fixtures as needed.
   authored-tangent loss. The original "tangents by elimination" call was wrong (couldn't
   measure tangents over MCP). → **P0-D.**
 
-**P0-D — robot dark patch: RESOLVED, NOT A ROUNDTRIP BUG**
-- [x] Cold-loaded the user's actual artifact `clean-save-7` (complete: 38/38 mesh.bin of
-  VARYING sizes, 8/8 png, built-in skybox+ibl, 0 lights) and compared its head to a fresh
-  import. With **both robots overlapped at the same position + identical orientation +
-  identical camera**, A (round-tripped) and B (fresh) render **PIXEL-IDENTICAL** — same
-  shading, same seam, no dark patch. Both heads resolve to 6247 verts / 11016 tris and the
-  same builtin-PBR "body-head" material. ⇒ the dark patch in the user's screenshot is
-  **IBL/environment shading on the two robots' DIFFERENT orientations** (head curving away
-  from the bright sky), not lost/corrupted data. (Earlier `awsm-project` repro was INVALID:
-  a DEGRADED save — all 38 mesh.bin a uniform 6979 bytes, head resolved to 0 verts.)
-- [note] Minor reload gap found (separate, not the patch): a cold-loaded **captured** mesh
-  reads 0 verts via the editor authoring query (`get_mesh_data`/`get_vertex_data`) though it
-  renders fine — reloaded imports may not be editable until re-imported. Follow-up.
+**P0-D — robot dark patch: REAL BUG, FIXED (texture color-space on reload)**
+- [x] Root cause (commit 5e01774f): `material::restore_raster_textures` hard-coded
+  `srgb_to_linear: true` for EVERY reloaded texture (a known TODO in its own doc). DATA
+  maps — **normal / metallic-roughness / occlusion** — must upload **LINEAR**; decoding the
+  normal map through sRGB corrupts its normals → the round-tripped head shaded warmer/duller
+  (the "dark patch"). The fresh-IMPORT path was correct (per-slot `linear` in
+  `create_texture`); only RELOAD was wrong.
+- [x] Diagnosis path (proves it's NOT geometry): cold-loaded the user's `clean-save-7`
+  vs a fresh import — geometry is byte-identical (positions, normals, **UV set 0**, vertex
+  order all match BY INDEX; 6247v/11016t), material params identical. The ONLY diff was the
+  rendered **color/tone** (round-tripped warm/beige vs fresh cool/blue) ⇒ a texture-upload
+  color-space difference, confirmed in code.
+- [x] Fix v1 (band-aid, commit 5e01774f): a per-texture `linear` bool inferred from the
+  display-name slot. Superseded by v2.
+- [x] Fix v2 (PROPER, persists the semantic): `TextureDef::Raster` now carries
+  `color_kind: Option<TextureColorKind>` (the slot role: Albedo/Normal/MetallicRoughness/
+  Occlusion/Emissive/Specular/…) set at import from the glTF slot, persisted in
+  `project.toml`, and mapped to the FULL `TextureColorInfo` (color space **+ mipmap kind**)
+  by the single seam `material::color_info_for_kind` on reload — so RELOAD == IMPORT for
+  every slot, not just sRGB. Old projects (`None`) fall back to display-name inference.
+  Editor-only; player already correct via `scene-loader::texture`. (NB: `TextureColorKind`
+  is a serde data-model enum separate from the renderer's GPU-internal `MipmapTextureKind`
+  — scene is GPU-free + the save format must not encode shader-index discriminants; the two
+  meet only at `color_info_for_kind`.)
+- [lesson] My first pass wrongly concluded "not a bug / lighting" from an OVERLAP test —
+  invalid because skinned meshes can't be hidden/separated via `set_visible`/root
+  `set_transform`, so both rendered superimposed and looked identical. Always isolate each
+  in its own session (same origin, same camera) — that exposed the warm-vs-cool diff.
+- [note] Separate minor gap (not the patch): a cold-loaded **captured** mesh reads 0 verts
+  via `get_mesh_data`/`get_vertex_data` though it renders — reloaded imports may not be
+  editable until re-imported. Follow-up.
 
 **Backstop (done)**
 - [x] `check_save_complete` guard + per-save census log + per-file write-verify
