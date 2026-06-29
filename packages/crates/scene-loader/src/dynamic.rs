@@ -10,7 +10,7 @@
 //!
 //! Scope: uniforms (defaults + per-mesh `uniform_overrides`), per-mesh
 //! `texture_overrides` (the bake emits each as `assets/<id>.png`), and per-mesh
-//! `buffer_overrides` (the bake emits each as `assets/buffer-<id>.bin` of
+//! `buffer_overrides` (the bake emits each as `assets/<asset>.bin` of
 //! little-endian u32 words) — all bound here like the editor's `build_custom`.
 //! Texture/buffer slots with no per-mesh override stay unbound (correct: an
 //! unbound texture samples transparent-black; there is no "default texture"
@@ -33,7 +33,7 @@ use awsm_renderer_materials::{
 };
 use awsm_renderer_scene::{
     AssetId, FieldType as SFieldType, MaterialAlphaMode as SAlphaMode, MaterialDefinition,
-    MaterialInstance, Scene, UniformValue as SUniformValue,
+    MaterialInstance, Scene, UniformValue as SUniformValue, ASSETS_DIR,
 };
 
 use crate::assets::SceneAssets;
@@ -80,7 +80,7 @@ pub async fn register_custom_materials(
 /// Build a per-mesh `Material::Custom` for a registered custom material, applying
 /// the instance's `uniform_overrides` (by name + type), `texture_overrides` (each
 /// `assets/<id>.png` decoded + staged), and `buffer_overrides` (each
-/// `assets/buffer-<id>.bin` of little-endian u32 words) — exactly like the
+/// `assets/<asset>.bin` of little-endian u32 words) — exactly like the
 /// editor's `build_custom`. Returns `None` if the shader id isn't registered.
 /// Slots without an override stay unbound (no "default texture" concept).
 pub async fn build_custom_material(
@@ -161,20 +161,23 @@ pub async fn build_custom_material(
         }
     }
 
-    // Per-mesh buffer overrides (slot order): the bake emitted each as a `.bin`
-    // (little-endian u32 words) at the BufferRef path; read them back into the
-    // slot. An override whose `.bin` is absent leaves the slot unbound.
+    // Per-mesh buffer overrides (slot order): the bake emitted each as
+    // `assets/<asset>.bin` (little-endian u32 words), keyed by the override's
+    // asset id — exactly like a texture's `assets/<asset>.png`. Read it back into
+    // the slot; an override whose `.bin` is absent leaves the slot unbound.
     let mut buffers: Vec<Option<Vec<u32>>> = vec![None; buffer_slots.len()];
     for (i, name) in buffer_slots.iter().enumerate() {
         if let Some(bref) = inst.buffer_overrides.get(name) {
-            let path = bref.path.to_string_lossy();
-            if let Ok(bytes) = assets.fetch(path.as_ref()).await {
+            let path = format!("{ASSETS_DIR}/{}.bin", bref.asset);
+            if let Ok(bytes) = assets.fetch(&path).await {
                 buffers[i] = Some(
                     bytes
                         .chunks_exact(4)
                         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                         .collect(),
                 );
+            } else {
+                tracing::warn!("scene-loader: bundle missing buffer `{path}` — slot left unbound");
             }
         }
     }

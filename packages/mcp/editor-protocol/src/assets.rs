@@ -35,9 +35,27 @@ pub enum AssetSource {
     Material(MaterialDef),
     /// Authored texture (raster file reference or procedural generator params).
     Texture(TextureDef),
+    /// Raw little-endian `u32` buffer data bound into a custom-material buffer
+    /// slot (via `set_material_buffer`). Content-addressed like a raster texture:
+    /// the bytes live at `assets/<content_hash>.bin` (the editor caches them until
+    /// Save) and dedup across instances. Editor-only — the bake resolves a buffer
+    /// override by its asset-id filename, so this entry isn't carried to the
+    /// runtime asset table.
+    Buffer(BufferDef),
     /// Procedural mesh placeholder (label only — actual mesh comes from the
     /// node that references it).
     Mesh(MeshDef),
+}
+
+/// Authoring metadata for an [`AssetSource::Buffer`] entry. The bytes themselves
+/// are content-addressed on disk (`assets/<content_hash>.bin`); this carries only
+/// what the UI / `get_node_details` want to show without loading the file.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct BufferDef {
+    /// Number of little-endian `u32` words in the buffer.
+    #[serde(default)]
+    pub word_len: u32,
 }
 
 impl AssetSource {
@@ -162,6 +180,11 @@ pub fn asset_filename(id: AssetId, entry: &AssetEntry) -> Option<String> {
     }
     if entry.content_hash.is_empty() {
         return None;
+    }
+    // Buffer data is content-addressed as `<content_hash>.bin` (no display name /
+    // extension to derive from, unlike a file-backed texture).
+    if let AssetSource::Buffer(_) = &entry.source {
+        return Some(format!("{}.bin", entry.content_hash));
     }
     let display = match &entry.source {
         AssetSource::Filename(name) => name.as_str(),

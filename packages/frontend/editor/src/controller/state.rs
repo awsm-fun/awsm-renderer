@@ -1037,6 +1037,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::buffer_cache::clear();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
                 // Seed a sane default scene: a key directional light (tilted ~50°
@@ -1113,6 +1114,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::buffer_cache::clear();
                 self.missing_assets.set(Vec::new());
                 self.scene.environment.set(scene.environment.clone());
                 self.scene.bump_revision();
@@ -1177,6 +1179,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::buffer_cache::clear();
                 // View-only cluster ("nanite") DAGs live only in `cluster_cache`;
                 // drop it too so the round-trip exercises the real save→reload
                 // restore (`restore_cluster_meshes` re-reads the persisted DAG).
@@ -2627,7 +2630,7 @@ impl EditorController {
                         ))
                     }
                 };
-                let hash = texture_content_hash(&bytes);
+                let hash = content_hash(&bytes);
                 self.scene.assets.lock().unwrap().entries.insert(
                     id,
                     AssetEntry::new_with_hash(
@@ -7053,22 +7056,20 @@ fn patch_material_texture(kind: &mut NodeKind, slot: &str, texture: Option<Asset
 }
 
 /// Bind (or clear) a buffer-data override on a node's assigned custom material.
-/// The `data` words are stashed in the session buffer store and referenced by a
-/// synthetic `session://buffer/<id>` path (the bundle bake later emits the bytes
-/// then rewrites the path to `assets/buffer-<id>.bin`). Returns false if the node
-/// has no custom-material instance.
+/// The `data` words are interned as a content-addressed [`AssetSource::Buffer`]
+/// asset (see [`intern_buffer_asset`]) and referenced by id — so the binding
+/// persists across Save/reload exactly like a texture override. Returns false if
+/// the node has no custom-material instance.
 fn patch_material_buffer(kind: &mut NodeKind, slot: &str, data: Option<Vec<u32>>) -> bool {
     let Some(inst) = node_material_mut(kind) else {
         return false;
     };
     match data {
         Some(words) => {
-            let path = crate::engine::bridge::dynamic::store_buffer_words(words);
+            let asset = intern_buffer_asset(words);
             inst.buffer_overrides.insert(
                 slot.to_string(),
-                awsm_renderer_editor_protocol::dynamic_material::BufferRef {
-                    path: std::path::PathBuf::from(path),
-                },
+                awsm_renderer_editor_protocol::dynamic_material::BufferRef { asset },
             );
         }
         None => {
@@ -7497,7 +7498,7 @@ fn ensure_import_texture(
     // on-disk side file `assets/<hash>.<ext>` (+ dedups identical textures); the
     // bytes live session-locally in texture_cache until Save reads them.
     let hash_mime = texture_images.get(&key).map(|img| {
-        let hash = texture_content_hash(&img.bytes);
+        let hash = content_hash(&img.bytes);
         crate::engine::bridge::texture_cache::store(id, img.bytes.clone(), img.mime);
         (hash, img.mime)
     });
@@ -7524,14 +7525,52 @@ fn ext_slot_color_kind(slot: &str) -> TextureColorKind {
     }
 }
 
-/// SHA-256 hex of texture bytes — the `content_hash` that addresses the on-disk
-/// `assets/<hash>.<ext>` side file (also dedups identical textures across models).
-fn texture_content_hash(bytes: &[u8]) -> String {
+/// SHA-256 hex of asset bytes — the `content_hash` that addresses the on-disk
+/// `assets/<hash>.<ext>` side file (also dedups identical assets across the
+/// project: textures, buffer-slot data, …).
+fn content_hash(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(bytes);
     let digest = h.finalize();
     digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Intern raw buffer-slot words as a content-addressed [`AssetSource::Buffer`]
+/// asset: dedups by SHA-256 (identical data across meshes shares one asset +
+/// one `.bin`), caches the words in [`buffer_cache`](crate::engine::bridge::buffer_cache)
+/// for Save, and returns the asset id to record in a `BufferRef`. The single bind
+/// path for both the `SetMaterialBuffer` command and the inspector's "Load .bin".
+pub(crate) fn intern_buffer_asset(words: Vec<u32>) -> AssetId {
+    use awsm_renderer_editor_protocol::BufferDef;
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let hash = content_hash(&bytes);
+    let ctrl = controller();
+    let id = {
+        let mut assets = ctrl.scene.assets.lock().unwrap();
+        // Reuse an existing BUFFER asset with identical bytes (a hash hit on a
+        // different asset kind — astronomically unlikely — is ignored so we never
+        // bind a texture id into a buffer slot).
+        let existing = assets.entries.iter().find_map(|(id, e)| {
+            (matches!(e.source, SceneAssetSource::Buffer(_)) && e.content_hash == hash)
+                .then_some(*id)
+        });
+        existing.unwrap_or_else(|| {
+            let id = AssetId::new();
+            assets.entries.insert(
+                id,
+                AssetEntry::new_with_hash(
+                    SceneAssetSource::Buffer(BufferDef {
+                        word_len: words.len() as u32,
+                    }),
+                    hash,
+                ),
+            );
+            id
+        })
+    };
+    crate::engine::bridge::buffer_cache::store(id, words);
+    id
 }
 
 /// Mint a captured-mesh `MeshDef` asset from CPU-extracted glTF geometry: store

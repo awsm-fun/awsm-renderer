@@ -87,25 +87,6 @@ pub fn shader_id_for_asset(id: AssetId) -> Option<MaterialShaderId> {
     registered_shader_id(id)
 }
 
-thread_local! {
-    /// Session-scoped data for per-mesh buffer-slot overrides: a synthetic
-    /// `session://buffer/<uuid>` path → the loaded `.bin`'s little-endian u32
-    /// words. (Persistence writes the `.bin` next to the project on save.)
-    static BUFFER_DATA: RefCell<HashMap<String, Vec<u32>>> = RefCell::new(HashMap::new());
-}
-
-/// Store a loaded buffer's words and return the synthetic path that references
-/// it (set as the `BufferRef::path` on a `MaterialInstance` override).
-pub(crate) fn store_buffer_words(words: Vec<u32>) -> String {
-    let path = format!("session://buffer/{}", AssetId::new().0);
-    BUFFER_DATA.with(|m| m.borrow_mut().insert(path.clone(), words));
-    path
-}
-
-pub(crate) fn buffer_words_for(path: &str) -> Option<Vec<u32>> {
-    BUFFER_DATA.with(|m| m.borrow().get(path).cloned())
-}
-
 /// Register a custom material with the renderer (locks it, finalizes textures).
 /// Returns the assigned shader id, or an error string on failure.
 pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> {
@@ -248,7 +229,7 @@ fn build_custom(renderer: &mut AwsmRenderer, inst: &MaterialInstance) -> Option<
                 .unwrap_or_default();
             for (i, name) in buf_slots.iter().enumerate() {
                 if let Some(bref) = inst.buffer_overrides.get(name) {
-                    if let Some(words) = buffer_words_for(&bref.path.to_string_lossy()) {
+                    if let Some(words) = super::buffer_cache::get(bref.asset) {
                         if let Some(slot) = dm.buffers.get_mut(i) {
                             *slot = Some(words);
                         }
