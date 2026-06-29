@@ -517,7 +517,7 @@ fn shading_badge(def: &MaterialDef) -> (String, Tone) {
 
 fn texture_view(def: &TextureDef) -> (String, String, String) {
     match def {
-        TextureDef::Raster { display_name } => (
+        TextureDef::Raster { display_name, .. } => (
             display_name.clone(),
             "raster".to_string(),
             "linear-gradient(135deg, oklch(0.4 0.03 255), oklch(0.25 0.02 255))".to_string(),

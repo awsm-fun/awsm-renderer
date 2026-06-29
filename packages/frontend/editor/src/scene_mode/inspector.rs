@@ -1725,7 +1725,7 @@ pub(crate) fn collect_texture_assets() -> Vec<(AssetId, String)> {
                         }
                     }
                     .to_string(),
-                    awsm_renderer_editor_protocol::TextureDef::Raster { display_name } => {
+                    awsm_renderer_editor_protocol::TextureDef::Raster { display_name, .. } => {
                         display_name.clone()
                     }
                 };
@@ -4372,7 +4372,7 @@ fn asset_name(id: AssetId, source: &AssetSource) -> String {
         AssetSource::Material(_) => "Material".to_string(),
         AssetSource::Mesh(def) if !def.label.is_empty() => def.label.clone(),
         AssetSource::Mesh(_) => "Mesh".to_string(),
-        AssetSource::Texture(TextureDef::Raster { display_name }) => display_name.clone(),
+        AssetSource::Texture(TextureDef::Raster { display_name, .. }) => display_name.clone(),
         AssetSource::Texture(TextureDef::Procedural(ProceduralTextureDef::Checker { .. })) => {
             "Checker".to_string()
         }

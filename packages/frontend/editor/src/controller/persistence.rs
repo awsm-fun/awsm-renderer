@@ -271,10 +271,15 @@ where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
+    use awsm_renderer_editor_protocol::TextureColorKind;
     use awsm_renderer_glb_export::ImageMime;
-    let mut items: Vec<(AssetId, Vec<u8>, String)> = Vec::new();
+    let mut items: Vec<(AssetId, Vec<u8>, String, TextureColorKind)> = Vec::new();
     for (id, entry) in project.assets.entries.iter() {
-        let AssetSource::Texture(TextureDef::Raster { display_name }) = &entry.source else {
+        let AssetSource::Texture(TextureDef::Raster {
+            display_name,
+            color_kind,
+        }) = &entry.source
+        else {
             continue;
         };
         let Some(name) = asset_filename(*id, entry) else {
@@ -285,12 +290,37 @@ where
             Some("jpg") | Some("jpeg") => ("image/jpeg", ImageMime::Jpeg),
             _ => continue,
         };
+        // The persisted semantic role IS the source of truth — its color space +
+        // mipmap kind flow straight to the upload. Projects saved before the role
+        // was tracked have `None` → fall back to inferring it from the
+        // import-assigned display-name slot.
+        let kind = color_kind.unwrap_or_else(|| infer_texture_color_kind(display_name));
         if let Ok(bytes) = read(format!("assets/{name}")).await {
             crate::engine::bridge::texture_cache::store(*id, bytes.clone(), mime);
-            items.push((*id, bytes, mime_str.to_string()));
+            items.push((*id, bytes, mime_str.to_string(), kind));
         }
     }
     crate::engine::bridge::material::restore_raster_textures(items).await;
+}
+
+/// Best-effort recovery of a texture's [`TextureColorKind`] for OLD projects that
+/// didn't persist it: the editor names every imported texture `"<material> · <slot>"`
+/// (see `ensure_import_texture` call sites in `state.rs`), so the slot suffix
+/// recovers the role. New projects store the kind on the asset and never reach this.
+fn infer_texture_color_kind(display_name: &str) -> awsm_renderer_editor_protocol::TextureColorKind {
+    use awsm_renderer_editor_protocol::TextureColorKind as K;
+    let n = display_name;
+    if n.contains("normal") {
+        K::Normal
+    } else if n.contains("metal/rough") {
+        K::MetallicRoughness
+    } else if n.contains("occlusion") {
+        K::Occlusion
+    } else if n.contains("emissive") {
+        K::Emissive
+    } else {
+        K::Albedo
+    }
 }
 
 /// Restore captured-mesh bytes into the [`mesh_cache`] store from a loaded
@@ -615,6 +645,59 @@ where
     }
 }
 
+/// The skybox/IBL KTX2 (HDR cubemap) asset ids referenced by an environment
+/// config. The `Equirect` panorama rides `texture_cache` (persists like an imported
+/// texture); only the KTX HDR bytes live session-only in `env_sync`, so only those
+/// need explicit side files.
+fn env_ktx_ids(env: &awsm_renderer_editor_protocol::EnvironmentConfig) -> Vec<AssetId> {
+    use awsm_renderer_editor_protocol::{IblConfig, SkyboxConfig};
+    let mut ids = Vec::new();
+    if let SkyboxConfig::Ktx { asset_id } = env.skybox {
+        ids.push(asset_id);
+    }
+    if let IblConfig::Ktx {
+        prefiltered_asset_id,
+        irradiance_asset_id,
+    } = env.ibl
+    {
+        ids.push(prefiltered_asset_id);
+        ids.push(irradiance_asset_id);
+    }
+    ids
+}
+
+/// Per-environment KTX2/HDR cubemap side files (`assets/<id>.ktx2`). The
+/// `EnvironmentConfig` ids round-trip in `project.toml`, but the HDR BYTES live
+/// session-only in `env_sync`'s stash — so without this an HDR skybox/IBL reverts to
+/// the built-in default on reload. Mirrors `texture_files` for the env's KTX assets.
+pub fn ktx_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
+    let env = ctrl.scene.environment.get_cloned();
+    env_ktx_ids(&env)
+        .into_iter()
+        .filter_map(|id| {
+            crate::engine::bridge::env_sync::ktx_bytes(id)
+                .map(|bytes| (format!("assets/{}.ktx2", id.0), bytes))
+        })
+        .collect()
+}
+
+/// Restore the env's KTX2 HDR bytes into `env_sync`'s stash from a loaded project
+/// (via `read`, reading `assets/<id>.ktx2`). Call BEFORE [`apply_project`] sets the
+/// environment, so the `env_sync` watcher resolves the skybox/IBL the first time it
+/// applies — a DECLARED LOAD INPUT. Missing files are skipped (non-HDR / older).
+async fn restore_ktx<F, Fut>(project: &EditorProject, mut read: F)
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    for id in env_ktx_ids(&project.environment) {
+        let path = format!("assets/{}.ktx2", id.0);
+        if let Ok(bytes) = read(path).await {
+            crate::engine::bridge::env_sync::stash_ktx(id, bytes);
+        }
+    }
+}
+
 /// Per-clip animation side files — the full authored model serialized as TOML
 /// (mirrors `material_files`). Each path matches the `CustomAnimationRef.file` in
 /// `project.toml` via the shared [`animation_file_path`] (so the writer can't
@@ -718,56 +801,181 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     ctrl.scene.bump_revision();
 }
 
+/// SAVE-COMPLETENESS INVARIANT — "a Save loses nothing, or fails loudly".
+///
+/// A project's `project.toml` carries everything serializable inline (scene tree,
+/// material params/uniforms, animation, env, the asset *table*). But the BYTES of
+/// imported geometry + textures live ONLY in session-local caches
+/// ([`mesh_cache`](crate::engine::bridge::mesh_cache) /
+/// [`texture_cache`](crate::engine::bridge::texture_cache)); Save streams them out
+/// as `.mesh.bin` / `.png` side files. If a cache is incomplete at Save time (e.g.
+/// an import's async populate hasn't settled), those side files silently go
+/// missing — the reload then shows missing meshes / white materials, and re-saving
+/// that broken project overwrites the good one. This check makes that condition a
+/// hard, RETRYABLE error instead of silent data loss.
+///
+/// Only NON-regenerable assets are required: a captured/imported/edited mesh
+/// ([`MeshBase::Captured`]) has no recipe — its `.mesh.bin` IS the source of
+/// truth; primitive/lathe/sweep/SDF meshes are exempt (the loader re-bakes them
+/// from their stack). An imported raster texture's encoded bytes are likewise the
+/// only copy. Returns a human-readable summary of what's not yet persistable.
+/// Census of persistable-byte completeness for the live project — the read-only
+/// truth behind [`check_save_complete`] and the `SaveCensus` query (Phase 0.2 of
+/// the roundtrip plan). `*_assets` = how many of that kind exist in the asset
+/// table; `*_missing_cache` = how many lack their bytes in the session cache (so a
+/// save would drop them); `texture_unhashed` = raster textures whose import never
+/// captured a content_hash (can't be addressed/persisted at all).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct SaveCensus {
+    pub mesh_assets: usize,
+    pub mesh_missing_cache: usize,
+    pub texture_assets: usize,
+    pub texture_missing_cache: usize,
+    pub texture_unhashed: usize,
+}
+
+impl SaveCensus {
+    pub fn is_complete(&self) -> bool {
+        self.mesh_missing_cache == 0
+            && self.texture_missing_cache == 0
+            && self.texture_unhashed == 0
+    }
+}
+
+/// Compute the [`SaveCensus`] for the live project (read-only; no mutation, no I/O).
+pub fn save_census(ctrl: &EditorController) -> SaveCensus {
+    use crate::engine::bridge::{mesh_cache, texture_cache};
+    use awsm_renderer_editor_protocol::{MeshBase, MeshRef};
+    let assets = ctrl.scene.assets.lock().unwrap();
+    let mut c = SaveCensus::default();
+    for (id, entry) in assets.entries.iter() {
+        match &entry.source {
+            // Captured-base meshes (imported / collapsed / raw-edited) are
+            // non-regenerable: their bytes must be live in the cache to persist.
+            AssetSource::Mesh(def) => {
+                c.mesh_assets += 1;
+                if let MeshBase::Captured(MeshRef(snap)) = &def.stack.base {
+                    let snap = *snap;
+                    if mesh_cache::get_captured(*id).is_none()
+                        || (snap != *id && mesh_cache::get_captured(snap).is_none())
+                    {
+                        c.mesh_missing_cache += 1;
+                    }
+                }
+            }
+            // Imported raster textures: the encoded bytes are the only copy. An
+            // empty content_hash means the import never captured them (so they
+            // can't be addressed/persisted at all) — also a loss.
+            AssetSource::Texture(TextureDef::Raster { .. }) => {
+                c.texture_assets += 1;
+                if entry.content_hash.is_empty() {
+                    c.texture_unhashed += 1;
+                } else if texture_cache::get(*id).is_none() {
+                    c.texture_missing_cache += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    c
+}
+
+pub fn check_save_complete(ctrl: &EditorController) -> Result<(), String> {
+    let c = save_census(ctrl);
+    // Census on every save — surfaces a 38→N drop even when the guard passes.
+    tracing::info!(
+        "save census: mesh_assets={} (missing_cache={}) texture_assets={} \
+         (missing_cache={} unhashed={})",
+        c.mesh_assets,
+        c.mesh_missing_cache,
+        c.texture_assets,
+        c.texture_missing_cache,
+        c.texture_unhashed
+    );
+    if c.is_complete() {
+        return Ok(());
+    }
+    let (missing_mesh, missing_tex, unhashed_tex) = (
+        c.mesh_missing_cache,
+        c.texture_missing_cache,
+        c.texture_unhashed,
+    );
+    let mut parts = Vec::new();
+    if missing_mesh > 0 {
+        parts.push(format!("{missing_mesh} mesh(es)"));
+    }
+    if missing_tex > 0 {
+        parts.push(format!("{missing_tex} texture(s)"));
+    }
+    if unhashed_tex > 0 {
+        parts.push(format!("{unhashed_tex} texture(s) with no captured bytes"));
+    }
+    Err(format!(
+        "refusing to save — {} have no persistable bytes yet (import not fully \
+         settled). Nothing was written, so your existing save is untouched. Wait \
+         for the import to finish (or re-import the model) and Save again.",
+        parts.join(", ")
+    ))
+}
+
 /// Save the project to a picked directory (File System Access): writes
 /// `project.toml` at the root plus each custom material's and clip's side files
 /// under `assets/` — material bodies in `assets/materials/<slug>-<id>/` and clips
 /// as `assets/animations/animation-<slug>-<id>.toml` (the stable id keeps
 /// same-named entries from colliding), matching the ref paths recorded in
 /// `project.toml`. `write_text` creates the subdirectories as it writes.
+///
+/// Refuses up-front (writing NOTHING) if the save would drop imported geometry /
+/// textures — see [`check_save_complete`]. This is the "lose nothing" backstop: a
+/// partial save must never silently clobber a good one.
 pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -> EditorResult<()> {
-    dir.write_text("project.toml", &project_to_toml(ctrl)?)
-        .await
-        .map_err(|e| EditorError::Msg(e.to_string()))?;
-    for (name, content) in material_files(ctrl) {
-        dir.write_text(&name, &content)
+    check_save_complete(ctrl).map_err(EditorError::Msg)?;
+    // Gather every side file up-front (counts are known before any I/O), then write
+    // with a per-phase tracing breadcrumb + a final "wrote N/N" summary. If the save
+    // ever stops mid-loop (a backend hang or a future abort), the LAST breadcrumb
+    // pinpoints exactly which phase/file it died on instead of leaving a silent
+    // partial project — pairs with `write_bytes`'s per-file write-verify.
+    let text_files: Vec<(String, String)> =
+        std::iter::once(("project.toml".to_string(), project_to_toml(ctrl)?))
+            .chain(material_files(ctrl))
+            .chain(animation_files(ctrl))
+            .collect();
+    let byte_files: Vec<(String, Vec<u8>)> = mesh_files(ctrl)
+        .into_iter()
+        .chain(rig_glb_files(ctrl))
+        .chain(bind_pose_files(ctrl))
+        .chain(texture_files(ctrl))
+        .chain(cluster_files(ctrl))
+        .chain(ktx_files(ctrl))
+        .collect();
+    let total = text_files.len() + byte_files.len();
+    let mut written = 0usize;
+    for (name, content) in &text_files {
+        tracing::debug!("save: writing {name} ({}/{total})", written + 1);
+        dir.write_text(name, content)
             .await
-            .map_err(|e| EditorError::Msg(e.to_string()))?;
+            .map_err(|e| EditorError::Msg(format!("save {name}: {e}")))?;
+        written += 1;
     }
-    for (name, content) in animation_files(ctrl) {
-        dir.write_text(&name, &content)
+    for (name, bytes) in &byte_files {
+        tracing::debug!("save: writing {name} ({}/{total})", written + 1);
+        dir.write_bytes(name, bytes)
             .await
-            .map_err(|e| EditorError::Msg(e.to_string()))?;
+            .map_err(|e| EditorError::Msg(format!("save {name}: {e}")))?;
+        written += 1;
     }
-    for (name, bytes) in mesh_files(ctrl) {
-        dir.write_bytes(&name, &bytes)
-            .await
-            .map_err(|e| EditorError::Msg(e.to_string()))?;
-    }
-    for (name, bytes) in rig_glb_files(ctrl) {
-        dir.write_bytes(&name, &bytes)
-            .await
-            .map_err(|e| EditorError::Msg(e.to_string()))?;
-    }
-    for (name, bytes) in bind_pose_files(ctrl) {
-        dir.write_bytes(&name, &bytes)
-            .await
-            .map_err(|e| EditorError::Msg(e.to_string()))?;
-    }
-    for (name, bytes) in texture_files(ctrl) {
-        dir.write_bytes(&name, &bytes)
-            .await
-            .map_err(|e| EditorError::Msg(e.to_string()))?;
-    }
-    for (name, bytes) in cluster_files(ctrl) {
-        dir.write_bytes(&name, &bytes)
-            .await
-            .map_err(|e| EditorError::Msg(e.to_string()))?;
-    }
+    tracing::info!(
+        "save complete: wrote {written}/{total} files to {}",
+        dir.name()
+    );
     Ok(())
 }
 
 /// Load a project from a picked directory: reads `project.toml` + rebuilds the
-/// live scene. (Reloading custom-material bodies into the Studio is the follow-on.)
+/// live scene. Custom-material bodies (wgsl / alpha / vertex / uniforms / textures /
+/// includes) ride the inline `StoredMaterial` in `project.toml` and are restored into
+/// `custom_materials` + re-registered by `apply_project` (`material_from_stored` +
+/// `spawn_auto_register`), so the Studio shows them on reload.
 pub async fn load_from_dir(
     ctrl: &EditorController,
     dir: &crate::fs::ProjectDir,
@@ -797,6 +1005,10 @@ pub async fn load_from_dir(
     // Re-read view-only cluster ("nanite") DAGs into the cluster_cache BEFORE the
     // scene materialises, so ClusterMesh nodes render after a cold reload.
     restore_cluster_meshes(&project, |path| async move {
+        dir.read_bytes(&path).await.map_err(|e| e.to_string())
+    })
+    .await;
+    restore_ktx(&project, |path| async move {
         dir.read_bytes(&path).await.map_err(|e| e.to_string())
     })
     .await;
@@ -836,6 +1048,7 @@ pub fn serialize_inmem(
     byte_files.extend(bind_pose_files(ctrl));
     byte_files.extend(texture_files(ctrl));
     byte_files.extend(cluster_files(ctrl));
+    byte_files.extend(ktx_files(ctrl));
     Ok((toml, byte_files))
 }
 
@@ -879,6 +1092,11 @@ pub async fn apply_inmem(
     restore_cluster_meshes(&project, |path| {
         let bytes = byte_files.get(&path).cloned();
         async move { bytes.ok_or_else(|| format!("missing in-memory cluster DAG: {path}")) }
+    })
+    .await;
+    restore_ktx(&project, |path| {
+        let bytes = byte_files.get(&path).cloned();
+        async move { bytes.ok_or_else(|| format!("missing in-memory ktx: {path}")) }
     })
     .await;
     apply_project(ctrl, project);
@@ -960,6 +1178,7 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
     restore_textures(&project, http_bytes!()).await;
     // Re-read cluster ("nanite") DAGs BEFORE apply_project (so ClusterMesh nodes render).
     restore_cluster_meshes(&project, http_bytes!()).await;
+    restore_ktx(&project, http_bytes!()).await;
     apply_project(ctrl, project);
     // Restore rig glb (bundle export) + bind poses (drop_skinning) AFTER apply.
     restore_rig_glb(ctrl, http_bytes!()).await;

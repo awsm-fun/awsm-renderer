@@ -180,27 +180,34 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // HZB lookup. The HZB stores max depth per tile. Compute the
-    // mip level whose texel fully covers our screen-space AABB:
+    // HZB lookup. The HZB stores MAX depth per tile. The conservative occlusion
+    // test must compare our closest depth against the FARTHEST occluder over the
+    // ENTIRE projected AABB — so sample the AABB's whole screen footprint, not a
+    // single texel. Pick the mip at which the footprint spans ≤ 2 texels (`-1`
+    // vs the texel-per-AABB mip), then read the 2×2 texels covering it and take
+    // their MAX.
     //
-    //   mip = ceil(log2(max(width_px, height_px)))
-    //
-    // Clamp to the HZB's mip count.
+    // A single center-texel read at a coarser mip can land on closer neighbouring
+    // geometry and miss the texel(s) holding the mesh's own / the farther
+    // background depth, which over-culls small meshes nestled between larger
+    // occluders. The 2×2 MAX only ever RAISES hzb_depth ⇒ strictly more permissive,
+    // so it removes those false-positives without introducing new ones.
     let hzb_dims_mip0 = vec2<f32>(textureDimensions(hzb_tex, 0));
     let screen_size_px = (screen.uv_max - screen.uv_min) * hzb_dims_mip0;
     let extent_px = max(screen_size_px.x, screen_size_px.y);
-    let mip_f = max(0.0, ceil(log2(max(extent_px, 1.0))));
+    let mip_f = max(0.0, ceil(log2(max(extent_px, 1.0))) - 1.0);
     let mip_count = i32(textureNumLevels(hzb_tex));
     let mip = clamp(i32(mip_f), 0, mip_count - 1);
 
-    // Sample the HZB at the AABB's center texel in the chosen mip.
-    let center_uv = (screen.uv_min + screen.uv_max) * 0.5;
     let mip_dims = vec2<f32>(textureDimensions(hzb_tex, mip));
-    let coord = vec2<i32>(
-        clamp(i32(center_uv.x * mip_dims.x), 0, i32(mip_dims.x) - 1),
-        clamp(i32(center_uv.y * mip_dims.y), 0, i32(mip_dims.y) - 1),
-    );
-    let hzb_depth = textureLoad(hzb_tex, coord, mip).x;
+    let last = vec2<i32>(i32(mip_dims.x) - 1, i32(mip_dims.y) - 1);
+    let t_min = clamp(vec2<i32>(screen.uv_min * mip_dims), vec2<i32>(0, 0), last);
+    let t_max = clamp(vec2<i32>(screen.uv_max * mip_dims), vec2<i32>(0, 0), last);
+    let d00 = textureLoad(hzb_tex, vec2<i32>(t_min.x, t_min.y), mip).x;
+    let d10 = textureLoad(hzb_tex, vec2<i32>(t_max.x, t_min.y), mip).x;
+    let d01 = textureLoad(hzb_tex, vec2<i32>(t_min.x, t_max.y), mip).x;
+    let d11 = textureLoad(hzb_tex, vec2<i32>(t_max.x, t_max.y), mip).x;
+    let hzb_depth = max(max(d00, d10), max(d01, d11));
 
     // Occlusion test: our closest depth must be ≤ hzb max depth to
     // possibly be visible. WebGPU depth is `[0, 1]` with 1 = far.

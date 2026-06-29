@@ -652,7 +652,7 @@ async fn resolve_one_texture(scene: &Scene, id: AssetId) -> Option<(String, Vec<
             let (rgba, w, h) = bridge_material::procedural_rgba(&p);
             rgba_to_png(&rgba, w, h).map(|png| (format!("texture-{id}"), png))
         }
-        TextureDef::Raster { display_name } => {
+        TextureDef::Raster { display_name, .. } => {
             // Only available once uploaded to the GPU (assign the material / its
             // model first). Skipped otherwise — referenced-only.
             let key = bridge_material::texture_key_for(id)?;

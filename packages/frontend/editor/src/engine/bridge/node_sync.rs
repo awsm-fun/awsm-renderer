@@ -993,6 +993,7 @@ fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Op
         return None;
     }
 
+    let tangents = decode.tangents;
     let m = decode.mesh;
     Some(RawMeshData {
         positions: m.positions,
@@ -1001,6 +1002,8 @@ fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Op
         uv_sets: m.uvs,
         colors: m.colors,
         indices: m.indices,
+        // Authored tangents from the rig glb decode → used verbatim (else regenerated).
+        tangents,
         skin: raw_skin,
         morph: raw_morph,
     })

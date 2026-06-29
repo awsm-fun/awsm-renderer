@@ -36,6 +36,9 @@ struct PrimSource<'a> {
     material: Option<&'a ExportMaterial>,
     joints: Option<&'a [[u16; 4]]>,
     weights: Option<&'a [[f32; 4]]>,
+    /// Authored per-vertex TANGENT (vec4). When present (and length-matched), the
+    /// writer emits these instead of regenerating via MikkTSpace.
+    tangents: Option<&'a [[f32; 4]]>,
     morph_targets: &'a [MorphTarget],
 }
 
@@ -152,6 +155,7 @@ impl Builder {
                 material: n.material.as_ref(),
                 joints: n.joints.as_deref(),
                 weights: n.weights.as_deref(),
+                tangents: n.tangents.as_deref(),
                 morph_targets: &n.morph_targets,
             },
             texture_indices,
@@ -163,6 +167,7 @@ impl Builder {
                     material: ep.material.as_ref(),
                     joints: ep.joints.as_deref(),
                     weights: ep.weights.as_deref(),
+                    tangents: ep.tangents.as_deref(),
                     morph_targets: &ep.morph_targets,
                 },
                 texture_indices,
@@ -265,12 +270,24 @@ impl Builder {
             }
         }
 
-        // TANGENT (vec4: xyz + handedness). Baked here from normals+uvs via
-        // MikkTSpace so the canonical/exported glb is self-contained and the
-        // population path is a dumb upload (it skips generation when tangents are
-        // present). Generated whenever normals+uvs exist — see `tangents` mod.
-        // Tangents are generated against UV set 0 (the base map's UVs).
-        if let (Some(normals), Some(uvs)) = (&m.normals, m.uvs.first()) {
+        // TANGENT (vec4: xyz + handedness). Prefer the source's AUTHORED tangents
+        // (round-tripped from the original glTF) so a normal map keeps the exact
+        // basis it was baked against — regenerating them shades differently (the
+        // dark-patch save→reload bug where authored ≠ MikkTSpace). Only when none
+        // are carried, bake from normals+uvs via MikkTSpace (against UV set 0) so
+        // the canonical/exported glb stays self-contained; population is then a
+        // dumb upload that skips generation when tangents are present.
+        if let Some(tangents) = src.tangents.filter(|t| t.len() == vcount) {
+            let acc = self.push_accessor(
+                &flatten_f32x4(tangents),
+                tangents.len(),
+                accessor::ComponentType::F32,
+                accessor::Type::Vec4,
+                None,
+                None,
+            );
+            attributes.insert(Checked::Valid(mesh::Semantic::Tangents), acc);
+        } else if let (Some(normals), Some(uvs)) = (&m.normals, m.uvs.first()) {
             if let Some(tangents) =
                 crate::tangents::generate_tangents(&m.positions, normals, uvs, &m.indices)
             {

@@ -560,6 +560,12 @@ fn build_clean_node(
                 ),
                 _ => (None, None),
             };
+            // Carry the AUTHORED tangents through verbatim so the writer emits them
+            // instead of regenerating via MikkTSpace — a save→reload of this clean
+            // rig glb then preserves the exact tangent basis a normal map was baked
+            // against (regenerated tangents shade differently; the symptom is a dark
+            // patch where authored ≠ MikkTSpace, e.g. mirrored-UV seams).
+            let tangents: Option<Vec<[f32; 4]>> = reader.read_tangents().map(|t| t.collect());
             // Morph targets — names only on the main primitive (mesh-level).
             let morph_targets: Vec<MorphTarget> = reader
                 .read_morph_targets()
@@ -591,6 +597,7 @@ fn build_clean_node(
                 out.material = material;
                 out.joints = joints;
                 out.weights = weights;
+                out.tangents = tangents;
                 out.morph_targets = morph_targets;
                 out.morph_weights = mesh.weights().map(|w| w.to_vec()).unwrap_or_default();
             } else {
@@ -599,6 +606,7 @@ fn build_clean_node(
                     material,
                     joints,
                     weights,
+                    tangents,
                     morph_targets,
                 });
             }
@@ -636,6 +644,13 @@ pub struct ExtractedNodeMesh {
     /// Geometry, with ALL UV sets folded into `mesh.uvs` (set 0 = `uvs[0]`, the
     /// 2nd set = `uvs[1]`, …) — N-set, no separate `uvs1` channel.
     pub mesh: MeshData,
+    /// Authored per-vertex `TANGENT` (vec4: xyz + handedness), vertex-aligned with
+    /// `mesh.positions`. `Some` only when EVERY read primitive supplied tangents (a
+    /// partial channel would misalign). Carried so a captured (static) imported mesh
+    /// preserves the exact tangent basis across save→reload instead of regenerating
+    /// it (the dark-patch bug). `MeshData` itself stays tangent-free (32 call sites);
+    /// this rides alongside like `skin`/`morph`.
+    pub tangents: Option<Vec<[f32; 4]>>,
     /// Per-node SKIN (rig binding), read in the SAME merge pass as the geometry so
     /// the per-vertex joints/weights stay vertex-aligned with `mesh.positions`.
     /// `Some` only when the node binds a skin AND every read primitive supplied
@@ -777,6 +792,7 @@ pub fn extract_node_mesh(
     let mut indices: Vec<u32> = Vec::new();
     let mut joints: Vec<[u16; 4]> = Vec::new();
     let mut weights: Vec<[f32; 4]> = Vec::new();
+    let mut tangents: Vec<[f32; 4]> = Vec::new();
     // Track whether *every* read primitive supplied normals/uvs/colors/skin; if any
     // didn't, the channel is dropped wholesale (a partial channel would misalign
     // with positions). The writer fills the gaps (recompute normals / omit uvs).
@@ -786,6 +802,7 @@ pub fn extract_node_mesh(
     let mut all_have_uvs1 = true;
     let mut all_have_colors = true;
     let mut all_have_skin = true;
+    let mut all_have_tangents = true;
     // Morph targets, accumulated per-target across primitives (vertex-aligned with
     // `positions`). The first contributing primitive fixes the target count; a
     // sibling with a different count drops morph (glTF requires consistency, so
@@ -827,6 +844,12 @@ pub fn extract_node_mesh(
         match reader.read_colors(0) {
             Some(c) => colors.extend(c.into_rgba_f32()),
             None => all_have_colors = false,
+        }
+        // Authored tangents (vec4 xyz+handedness). Only kept if EVERY primitive has
+        // them (else dropped wholesale to stay vertex-aligned → regenerated later).
+        match reader.read_tangents() {
+            Some(t) => tangents.extend(t),
+            None => all_have_tangents = false,
         }
         // Skin set 0 (JOINTS_0/WEIGHTS_0), vertex-aligned with positions. Both must
         // be present for a primitive to contribute skin; otherwise the node's skin
@@ -945,6 +968,9 @@ pub fn extract_node_mesh(
         }
     });
 
+    // Tangents only when every primitive supplied a length-aligned channel.
+    let tangents = (all_have_tangents && !tangents.is_empty() && tangents.len() == positions.len())
+        .then_some(tangents);
     Some(ExtractedNodeMesh {
         mesh: MeshData {
             positions,
@@ -953,6 +979,7 @@ pub fn extract_node_mesh(
             colors: all_have_colors.then_some(colors),
             indices,
         },
+        tangents,
         skin,
         morph,
     })
@@ -1007,7 +1034,21 @@ pub fn extract_texture_images(
     doc: &gltf::Document,
     buffers: &[Vec<u8>],
 ) -> std::collections::BTreeMap<usize, ExportImage> {
-    let mut pool = ImagePool::default();
+    extract_texture_images_with_external(doc, buffers, &[])
+}
+
+/// [`extract_texture_images`] that ALSO resolves EXTERNAL-file-URI images from the
+/// loader's re-fetched `encoded_images` (indexed by glTF image index). The plain
+/// `(doc, buffers)` form can only recover embedded buffer-view / `data:` URI images;
+/// an external-URI texture's bytes live ONLY in `encoded_images`, so without this
+/// the editor never captures them → empty `content_hash` → the texture silently
+/// drops on save→reload. Pass the import's `data.encoded_images`.
+pub fn extract_texture_images_with_external(
+    doc: &gltf::Document,
+    buffers: &[Vec<u8>],
+    encoded_images: &[Option<(Vec<u8>, String)>],
+) -> std::collections::BTreeMap<usize, ExportImage> {
+    let mut pool = ImagePool::with_external(encoded_images);
     let mut out = std::collections::BTreeMap::new();
     for texture in doc.textures() {
         if let Some(pool_idx) = pool.intern(&texture, buffers) {

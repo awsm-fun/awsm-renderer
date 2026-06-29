@@ -65,6 +65,13 @@ pub struct RawMeshData {
     /// Optional per-vertex RGBA colors.
     pub colors: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
+    /// Optional authored per-vertex `TANGENT` (vec4: xyz + handedness). `Some` ⇒ the
+    /// commit uses these verbatim instead of regenerating via MikkTSpace, so an
+    /// imported mesh's captured geometry preserves the EXACT tangent basis a normal
+    /// map was baked against across a save→reload (regenerated tangents shade
+    /// differently — the dark-patch roundtrip bug). `None` ⇒ regenerate as before
+    /// (procedural / edited meshes, and the player path — unchanged).
+    pub tangents: Option<Vec<[f32; 4]>>,
     /// Optional skin (rig) binding — makes this a SKINNED raw mesh. The deform
     /// compute pass runs off the inserted `SkinKey` exactly like a glTF-imported
     /// skin. `None` ⇒ a static mesh (unchanged).
@@ -226,9 +233,10 @@ impl RawMeshData {
             normals: self.normals.expect("ensure_normals filled this"),
             positions: self.positions,
             uvs0: self.uv_sets.into_iter().next(),
-            // Raw meshes don't author tangents — generated at commit if a normal-map
-            // material is bound.
-            tangents: None,
+            // Authored tangents (e.g. an imported mesh's captured glTF TANGENT) are
+            // used verbatim; `None` ⇒ generated at commit if a normal-map material is
+            // bound (procedural / edited meshes, and the player path).
+            tangents: self.tangents,
             indices: self.indices,
             front_face,
             vertex_attributes,

@@ -273,6 +273,13 @@ pub enum EditorQuery {
     /// slopes mean healthy; a steady climb on an idle scene is a leak. A read —
     /// no mutation.
     MemoryStats,
+    /// Save-completeness census (Phase 0.2 roundtrip oracle): how many mesh /
+    /// raster-texture assets exist vs how many lack their persistable bytes in the
+    /// session cache (so a save would drop them). Returned as a JSON `Text` payload
+    /// (`SaveCensus`). The decisive "did the import fully populate the persistence
+    /// caches" probe — `*_missing_cache`/`*_unhashed` of 0 means a lossless save.
+    /// A read — no mutation.
+    SaveCensus,
     /// Renderer-side animation runtime state (clip/channel lowering diagnostics):
     /// how many clip groups + RESOLVED channels actually lowered into the
     /// renderer, the rest-cache size, and the mixer layer count — plus the

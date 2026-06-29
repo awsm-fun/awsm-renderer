@@ -12,12 +12,13 @@
 //! triple a [`SkinnedMeshRef`](awsm_renderer_editor_protocol::SkinnedMeshRef) carries — so a
 //! `drop_skinning` on any skinned node resolves its bake directly.
 //!
-//! TODO(cross-reload persistence): like the old `model_source_cache`, this is
-//! session-local — it does NOT survive a project Save → reload. A reloaded
-//! project's `SkinnedMesh` nodes re-render only if the source is re-imported; a
-//! `drop_skinning` after a cold reload (no cached bake) currently errors. Full
-//! persistence would write each skinned node's bind-pose bytes to the project's
-//! `assets/` on Save and read them back on Load.
+//! Cross-reload persistence (DONE): `persistence::bind_pose_files` writes each
+//! skinned node's bind-pose bytes to `assets/<source>.<node>.<prim>.bake.bin` on
+//! Save, and `restore_bind_poses` re-stashes them on Load — so `drop_skinning`
+//! works after a cold reload. The clean rig glb (`rig_glb_files`/
+//! `restore_skinned_templates`) similarly makes `SkinnedMesh` nodes re-render
+//! without a re-import. (This store itself stays session-local; the side files are
+//! the persisted source of truth.)
 
 use std::cell::RefCell;
 use std::collections::HashMap;
