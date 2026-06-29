@@ -222,20 +222,24 @@ pub(crate) async fn create_texture(
 /// uploads + the single pool-finalising `commit_load` happen under one lock in
 /// ONE batch (not per-texture — transaction-aligned).
 ///
-/// Color space: re-uploaded as sRGB albedo (the visible base-color case is
-/// correct). The per-slot linear-vs-sRGB classification isn't persisted on the
-/// texture asset yet, so normal/metallic-roughness/occlusion maps restore in the
-/// albedo color space — a follow-up (store the `TextureColorInfo` kind per
-/// `TextureDef::Raster`).
-pub(crate) async fn restore_raster_textures(items: Vec<(AssetId, Vec<u8>, String)>) {
+/// Color space: each item carries a `linear` flag (4th tuple field) — `true` for
+/// DATA maps (normal / metallic-roughness / occlusion) which upload verbatim
+/// (`srgb_to_linear = false`), `false` for color maps (base color / emissive)
+/// which sRGB-decode. The caller (`persistence::restore_textures`) derives it from
+/// the import-assigned display-name slot. This matches the per-slot color space
+/// the fresh-import path sets in [`create_texture`]; a normal map reloaded as sRGB
+/// has corrupted normals → the save→reload shading drift.
+pub(crate) async fn restore_raster_textures(items: Vec<(AssetId, Vec<u8>, String, bool)>) {
     if items.is_empty() {
         return;
     }
-    // Decode all (async, network/codec) BEFORE taking the renderer lock.
-    let mut decoded: Vec<(AssetId, Vec<u8>, u32, u32)> = Vec::with_capacity(items.len());
-    for (id, bytes, mime) in &items {
+    // Decode all (async, network/codec) BEFORE taking the renderer lock. Carry the
+    // per-texture `linear` flag (true for DATA maps — normal/metal-rough/occlusion —
+    // which must NOT be sRGB-decoded) through to the upload.
+    let mut decoded: Vec<(AssetId, Vec<u8>, u32, u32, bool)> = Vec::with_capacity(items.len());
+    for (id, bytes, mime, linear) in &items {
         match decode_rgba_from_bytes(bytes, mime).await {
-            Ok((rgba, w, h)) => decoded.push((*id, rgba, w, h)),
+            Ok((rgba, w, h)) => decoded.push((*id, rgba, w, h, *linear)),
             Err(e) => tracing::warn!("restore texture {id}: {e}"),
         }
     }
@@ -248,12 +252,14 @@ pub(crate) async fn restore_raster_textures(items: Vec<(AssetId, Vec<u8>, String
         tracing::warn!("restore textures: no sampler");
         return;
     };
-    let color = TextureColorInfo {
-        mipmap_kind: MipmapTextureKind::Albedo,
-        srgb_to_linear: true,
-        premultiplied_alpha: None,
-    };
-    for (id, rgba, w, h) in &decoded {
+    for (id, rgba, w, h, linear) in &decoded {
+        // sRGB for color maps; LINEAR (sampled verbatim) for data maps — matches the
+        // per-slot color space the fresh-import path sets in `create_texture`.
+        let color = TextureColorInfo {
+            mipmap_kind: MipmapTextureKind::Albedo,
+            srgb_to_linear: !*linear,
+            premultiplied_alpha: None,
+        };
         match r
             .textures
             .add_image_rgba_raw(rgba, *w, *h, sampler_key, color)

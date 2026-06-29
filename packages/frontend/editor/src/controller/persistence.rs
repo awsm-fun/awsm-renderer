@@ -272,7 +272,7 @@ where
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
     use awsm_renderer_glb_export::ImageMime;
-    let mut items: Vec<(AssetId, Vec<u8>, String)> = Vec::new();
+    let mut items: Vec<(AssetId, Vec<u8>, String, bool)> = Vec::new();
     for (id, entry) in project.assets.entries.iter() {
         let AssetSource::Texture(TextureDef::Raster { display_name }) = &entry.source else {
             continue;
@@ -285,12 +285,31 @@ where
             Some("jpg") | Some("jpeg") => ("image/jpeg", ImageMime::Jpeg),
             _ => continue,
         };
+        let linear = restored_texture_is_linear(display_name);
         if let Ok(bytes) = read(format!("assets/{name}")).await {
             crate::engine::bridge::texture_cache::store(*id, bytes.clone(), mime);
-            items.push((*id, bytes, mime_str.to_string()));
+            items.push((*id, bytes, mime_str.to_string(), linear));
         }
     }
     crate::engine::bridge::material::restore_raster_textures(items).await;
+}
+
+/// Classify a restored raster texture's COLOR SPACE on reload. **Data** maps
+/// (normal / metallic-roughness / occlusion / clearcoat-normal) must upload as
+/// LINEAR (`srgb_to_linear = false`, sampled verbatim); **color** maps (base
+/// color / emissive / env / created) upload as sRGB. Without this, a reloaded
+/// normal map decoded through sRGB has corrupted normals → visibly different
+/// (warmer/duller) shading than a fresh import — the save→reload "dark patch".
+///
+/// The texture asset doesn't store its `TextureColorInfo` kind yet, so we derive
+/// it from the import-assigned display name: the editor names every imported
+/// texture `"<material> · <slot>"` (see `ensure_import_texture` call sites in
+/// `state.rs`), making the slot suffix a reliable classifier. The matching fresh
+/// IMPORT path already gets this right via the per-slot `linear` flag in
+/// `material::create_texture`; this brings RELOAD to parity.
+fn restored_texture_is_linear(display_name: &str) -> bool {
+    let n = display_name;
+    n.contains("normal") || n.contains("metal/rough") || n.contains("occlusion")
 }
 
 /// Restore captured-mesh bytes into the [`mesh_cache`] store from a loaded

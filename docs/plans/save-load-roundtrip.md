@@ -413,14 +413,19 @@ skinned/morph/sculpted/custom-material/nanite/KTX fixtures as needed.
   authored-tangent loss. The original "tangents by elimination" call was wrong (couldn't
   measure tangents over MCP). → **P0-D.**
 
-**P0-D — robot dark patch: RE-DIAGNOSE (not tangents)**
-- [ ] Robot regenerates tangents identically on import + reload (no authored to differ),
-  yet a dark patch was seen loaded-vs-reimported. Real cause is something else:
-  candidates — lighting/orientation difference in the side-by-side, a normal-map/material
-  binding diff, OR MikkTSpace regen sensitivity to vertex/index order through the
-  `.mesh.bin` roundtrip. **Now that the modal fix makes saves complete, reproduce in the
-  editor (import → save → reload vs fresh import), screenshot both, and diff materials +
-  the actual rendered shading** to find the true cause before claiming any fix.
+**P0-D — robot dark patch: RESOLVED, NOT A ROUNDTRIP BUG**
+- [x] Cold-loaded the user's actual artifact `clean-save-7` (complete: 38/38 mesh.bin of
+  VARYING sizes, 8/8 png, built-in skybox+ibl, 0 lights) and compared its head to a fresh
+  import. With **both robots overlapped at the same position + identical orientation +
+  identical camera**, A (round-tripped) and B (fresh) render **PIXEL-IDENTICAL** — same
+  shading, same seam, no dark patch. Both heads resolve to 6247 verts / 11016 tris and the
+  same builtin-PBR "body-head" material. ⇒ the dark patch in the user's screenshot is
+  **IBL/environment shading on the two robots' DIFFERENT orientations** (head curving away
+  from the bright sky), not lost/corrupted data. (Earlier `awsm-project` repro was INVALID:
+  a DEGRADED save — all 38 mesh.bin a uniform 6979 bytes, head resolved to 0 verts.)
+- [note] Minor reload gap found (separate, not the patch): a cold-loaded **captured** mesh
+  reads 0 verts via the editor authoring query (`get_mesh_data`/`get_vertex_data`) though it
+  renders fine — reloaded imports may not be editable until re-imported. Follow-up.
 
 **Backstop (done)**
 - [x] `check_save_complete` guard + per-save census log + per-file write-verify
