@@ -1,22 +1,25 @@
-//! The link between MCP agents and attached editor tabs.
+//! The link between MCP agents and the attached editor tab.
 //!
-//! Two independent identities meet here:
+//! This server is **single-session by design**: one MCP server serves exactly
+//! one editor tab and one agent. There is no pairing, no disambiguation, no
+//! multi-tab routing — if you want a second concurrent session, run a second
+//! server on another port and point a second editor at it.
+//!
+//! Two identities still meet here:
 //!   - a [`Connection`] is one editor tab (one `/editor` WebSocket), with its own
-//!     request-id space, pending-request map, and writer — so a frame from one
-//!     tab can never complete another's request.
-//!   - an [`AgentSession`] is one MCP client (one `EditorMcp`), with a pairing
-//!     code.
+//!     request-id space, pending-request map, and writer.
+//!   - an [`AgentSession`] is one MCP client (one `EditorMcp`).
 //!
-//! Each agent is *bound* to one connection. A request from a bound agent goes
-//! only to its tab; an event from a tab is delivered only to its bound agent.
-//! Binding is automatic when exactly one unbound tab and one unbound agent exist;
-//! otherwise the agent surfaces a pairing code the editor presents (via `?pair=`
-//! or the connect modal) to claim the binding. Cross-talk is structurally
-//! impossible — there is no shared id space and no shared link.
+//! An agent's requests go to the most-recently-attached tab; an event from that
+//! tab is delivered to the agent. When a new tab attaches, any previously
+//! attached tab is **evicted** (told it's [`detached`](WsServerMsg::Detached) and
+//! dropped) so exactly one live tab remains. This makes binding deterministic and
+//! self-healing across MCP/server restarts: each reconnect simply becomes *the*
+//! session.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -27,16 +30,9 @@ use awsm_renderer_editor_protocol::{EditorEvent, Request, Response, WsServerMsg}
 /// slow case).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Crockford base32 (no I/L/O/U) — unambiguous when read aloud / typed.
-const PAIR_ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const PAIR_CODE_LEN: usize = 4;
-
 /// Why a request couldn't be delivered.
 pub enum LinkError {
-    /// No tab is bound and binding is ambiguous — the editor must present this
-    /// pairing code first.
-    PairingRequired(String),
-    /// The bound tab's link failed (closed, dropped, or timed out).
+    /// No editor tab is attached.
     Transport(String),
 }
 
@@ -46,10 +42,6 @@ pub struct Connection {
     tx: mpsc::UnboundedSender<WsServerMsg>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Response>>>,
     next_req_id: AtomicU64,
-    /// The agent bound to this tab, if any. A `Weak` so a dropped / timed-out
-    /// agent frees the tab automatically — a new agent can then auto-bind to it
-    /// (self-healing).
-    bound_agent: Mutex<Option<Weak<AgentSession>>>,
 }
 
 impl Connection {
@@ -102,34 +94,20 @@ impl Connection {
     }
 }
 
-/// One connected MCP agent (one `EditorMcp`, one `Mcp-Session-Id`).
+/// One connected MCP agent (one `EditorMcp`, one `Mcp-Session-Id`). Kept as a
+/// lightweight identity handle; in the single-session model it carries no
+/// binding state (every agent talks to the one attached tab).
 pub struct AgentSession {
     pub id: u64,
-    pub pair_code: String,
-    bound_conn: Mutex<Option<Weak<Connection>>>,
-}
-
-impl AgentSession {
-    /// The id of the tab this agent is currently bound to (if the binding is
-    /// still alive). Used to filter the event stream.
-    pub fn bound_conn_id(&self) -> Option<u64> {
-        self.bound_conn
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .map(|c| c.id)
-    }
 }
 
 struct LinkInner {
     connections: Mutex<Vec<Arc<Connection>>>,
-    agents: Mutex<Vec<Weak<AgentSession>>>,
-    /// Editor push events, tagged with the originating connection id so each
-    /// agent forwarder can keep only its bound tab's events.
+    /// Editor push events, tagged with the originating connection id (the agent
+    /// forwarder keeps only the live tab's events).
     events: broadcast::Sender<(u64, EditorEvent)>,
     /// This server's own origin (e.g. `http://127.0.0.1:9086`), surfaced in the
-    /// `?mcp=…&pair=…` hint the pairing tools hand the agent.
+    /// `?mcp=…` hint the connect tooling hands the agent.
     self_origin: String,
     next_conn_id: AtomicU64,
     next_agent_id: AtomicU64,
@@ -147,7 +125,6 @@ impl EditorLink {
         Self {
             inner: Arc::new(LinkInner {
                 connections: Mutex::new(Vec::new()),
-                agents: Mutex::new(Vec::new()),
                 events,
                 self_origin,
                 next_conn_id: AtomicU64::new(1),
@@ -156,14 +133,17 @@ impl EditorLink {
         }
     }
 
-    /// This server's origin (for building the `?mcp=…&pair=…` pairing hint).
+    /// This server's origin (for building the `?mcp=…` connect hint).
     pub fn self_origin(&self) -> &str {
         &self.inner.self_origin
     }
 
     // ── connections (editor tabs) ───────────────────────────────────────────
 
-    /// Register a freshly-attached tab, returning its [`Connection`].
+    /// Register a freshly-attached tab, returning its [`Connection`]. Enforces the
+    /// single-session model: any previously-attached tab is evicted (told it's
+    /// [`Detached`](WsServerMsg::Detached), its in-flight requests failed, and it
+    /// is dropped) so this becomes the one live tab.
     pub fn register_connection(&self, tx: mpsc::UnboundedSender<WsServerMsg>) -> Arc<Connection> {
         let id = self.inner.next_conn_id.fetch_add(1, Ordering::Relaxed);
         let conn = Arc::new(Connection {
@@ -171,9 +151,19 @@ impl EditorLink {
             tx,
             pending: Mutex::new(HashMap::new()),
             next_req_id: AtomicU64::new(1),
-            bound_agent: Mutex::new(None),
         });
-        self.inner.connections.lock().unwrap().push(conn.clone());
+        let mut conns = self.inner.connections.lock().unwrap();
+        // Evict every prior tab — one server, one tab.
+        for old in conns.drain(..) {
+            tracing::info!(
+                "editor connection {} superseded by {} — evicting",
+                old.id,
+                id
+            );
+            old.send(WsServerMsg::Detached);
+            old.drain();
+        }
+        conns.push(conn.clone());
         conn
     }
 
@@ -186,20 +176,9 @@ impl EditorLink {
         }
     }
 
-    /// How many editor tabs are currently connected (for `pairing_status`).
+    /// How many editor tabs are currently connected (0 or 1 in normal operation).
     pub fn connection_count(&self) -> usize {
         self.inner.connections.lock().unwrap().len()
-    }
-
-    /// How many agent sessions are currently alive (for `pairing_status`).
-    pub fn agent_count(&self) -> usize {
-        self.inner
-            .agents
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|a| a.upgrade().is_some())
-            .count()
     }
 
     /// Publish an editor push event (tagged with its originating connection).
@@ -217,101 +196,41 @@ impl EditorLink {
     /// Register a new agent session (called once per `EditorMcp`).
     pub fn register_agent(&self) -> Arc<AgentSession> {
         let id = self.inner.next_agent_id.fetch_add(1, Ordering::Relaxed);
-        let agent = Arc::new(AgentSession {
-            id,
-            pair_code: gen_pair_code(),
-            bound_conn: Mutex::new(None),
-        });
-        tracing::debug!(
-            "agent session {} registered (pair code {})",
-            agent.id,
-            agent.pair_code
-        );
-        let mut agents = self.inner.agents.lock().unwrap();
-        agents.retain(|w| w.strong_count() > 0); // prune dead sessions
-        agents.push(Arc::downgrade(&agent));
+        let agent = Arc::new(AgentSession { id });
+        tracing::debug!("agent session {} registered", agent.id);
         agent
     }
 
-    /// Count agents that are alive and not yet bound to a tab.
-    fn unbound_agent_count(&self) -> usize {
+    /// The tab an agent talks to: the single attached tab (the most recent, if a
+    /// stale one lingers), else [`LinkError::Transport`].
+    pub fn resolve(&self, _agent: &Arc<AgentSession>) -> Result<Arc<Connection>, LinkError> {
         self.inner
-            .agents
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .filter(|a| a.bound_conn_id().is_none())
-            .count()
-    }
-
-    /// Bind `agent` to `conn` (mutually, both via `Weak`).
-    fn bind(&self, agent: &Arc<AgentSession>, conn: &Arc<Connection>) {
-        *agent.bound_conn.lock().unwrap() = Some(Arc::downgrade(conn));
-        *conn.bound_agent.lock().unwrap() = Some(Arc::downgrade(agent));
-    }
-
-    /// Is this tab free to auto-bind? True when it has no agent, or its bound
-    /// agent has gone away.
-    fn conn_is_unbound(conn: &Connection) -> bool {
-        conn.bound_agent
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .is_none()
-    }
-
-    /// Resolve the tab an agent should talk to: its live binding, else an
-    /// automatic bind when exactly one unbound tab and one unbound agent exist,
-    /// else [`LinkError::PairingRequired`].
-    pub fn resolve(&self, agent: &Arc<AgentSession>) -> Result<Arc<Connection>, LinkError> {
-        // Live existing binding?
-        if let Some(weak) = agent.bound_conn.lock().unwrap().clone() {
-            if let Some(conn) = weak.upgrade() {
-                return Ok(conn);
-            }
-        }
-        // Try to auto-bind.
-        let unbound: Vec<Arc<Connection>> = self
-            .inner
             .connections
             .lock()
             .unwrap()
-            .iter()
-            .filter(|c| Self::conn_is_unbound(c))
+            .last()
             .cloned()
-            .collect();
-        if unbound.len() == 1 && self.unbound_agent_count() == 1 {
-            self.bind(agent, &unbound[0]);
-            return Ok(unbound[0].clone());
-        }
-        Err(LinkError::PairingRequired(agent.pair_code.clone()))
+            .ok_or_else(|| {
+                LinkError::Transport(
+                    "no editor tab is attached to this MCP server. Open the awsm-renderer \
+                     editor pointed at this server (append `?mcp=<this server's origin>` to \
+                     its URL, or use its MCP connect modal) and wait for it to connect."
+                        .into(),
+                )
+            })
     }
 
-    /// Editor-initiated bind: a tab presents a pairing code to claim the agent
-    /// that owns it. Returns whether a matching agent was found.
-    pub fn bind_by_code(&self, conn: &Arc<Connection>, code: &str) -> bool {
-        let code = code.trim().to_uppercase();
-        let agent = self
-            .inner
-            .agents
+    /// The id of the tab requests currently route to (for the event forwarder).
+    pub fn current_conn_id(&self) -> Option<u64> {
+        self.inner
+            .connections
             .lock()
             .unwrap()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .find(|a| a.pair_code == code);
-        match agent {
-            Some(agent) => {
-                // Free this tab's previous agent (if any) and bind the new one.
-                self.bind(&agent, conn);
-                true
-            }
-            None => false,
-        }
+            .last()
+            .map(|c| c.id)
     }
 
-    /// Send a request from `agent` to its bound tab.
+    /// Send a request from `agent` to the attached tab.
     pub async fn request(
         &self,
         agent: &Arc<AgentSession>,
@@ -334,13 +253,4 @@ impl EditorLink {
             .ok_or_else(|| "no editor attached".to_string())?;
         conn.request(req).await
     }
-}
-
-/// A short, human-typable pairing code.
-fn gen_pair_code() -> String {
-    let bytes = uuid::Uuid::new_v4();
-    let b = bytes.as_bytes();
-    (0..PAIR_CODE_LEN)
-        .map(|i| PAIR_ALPHABET[(b[i] as usize) % PAIR_ALPHABET.len()] as char)
-        .collect()
 }

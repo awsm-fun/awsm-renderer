@@ -1341,36 +1341,24 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Report this session's editor pairing state WITHOUT performing an editor operation: whether an editor tab is bound (or would auto-bind), this session's pairing code, and how many tabs/agents are connected. Call this first — or after a 'No editor is paired' error — to know whether to wait or surface the pairing code, instead of issuing doomed editor calls."
+        description = "Report this server's editor connection state WITHOUT performing an editor operation: whether an editor tab is attached. This server is single-session — one server serves exactly one editor tab — so there is no pairing or pairing code. Call this first (or after a 'no editor tab is attached' error) to know whether to wait for the editor to connect, instead of issuing doomed editor calls. To run a second concurrent session, start another server on a different port and point a second editor at it."
     )]
     async fn pairing_status(&self) -> Result<CallToolResult, McpError> {
         let editors = self.link.connection_count();
-        let agents = self.link.agent_count();
-        let bound = self.agent.bound_conn_id().is_some();
-        // Mirrors `resolve`'s auto-bind rule: 1 unbound tab + 1 agent binds on the
-        // next request, so report that as ready-to-pair.
-        let will_auto_bind = !bound && editors == 1 && agents == 1;
+        let connected = editors > 0;
         let origin = self.link.self_origin();
-        let status = if bound {
-            "paired"
-        } else if will_auto_bind {
-            "ready (auto-binds on the next editor operation)"
-        } else if editors == 0 {
-            "waiting for an editor tab to connect"
-        } else {
-            "ambiguous — pairing code required"
-        };
         Ok(text(
             serde_json::json!({
-                "status": status,
-                "paired": bound,
+                "status": if connected {
+                    "connected (an editor tab is attached)"
+                } else {
+                    "waiting for an editor tab to connect"
+                },
+                "editor_connected": connected,
                 "editors_connected": editors,
-                "agents_connected": agents,
-                "pair_code": self.agent.pair_code,
-                "how_to_pair": format!(
-                    "open the editor with ?mcp={origin}&pair={} appended to its URL, \
-                     or enter the code in its MCP connect modal",
-                    self.agent.pair_code
+                "how_to_connect": format!(
+                    "open the awsm-renderer editor with `?mcp={origin}` appended to its URL, \
+                     or enter this server's address in its MCP connect modal"
                 ),
             })
             .to_string(),
@@ -3908,15 +3896,6 @@ impl EditorMcp {
             .request(&self.agent, &r)
             .await
             .map_err(|e| match e {
-                LinkError::PairingRequired(code) => McpError::invalid_request(
-                    format!(
-                        "No editor is paired with this MCP session. Ask the user to open the \
-                         awsm-renderer editor with `?pair={code}` appended to its URL, or to enter \
-                         pairing code `{code}` in the editor's MCP connect modal. (Auto-pairs when \
-                         exactly one editor tab and one agent are connected.)"
-                    ),
-                    None,
-                ),
                 LinkError::Transport(msg) => McpError::internal_error(msg, None),
             })
     }
@@ -4107,13 +4086,14 @@ impl ServerHandler for EditorMcp {
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
         let mut rx = self.link.subscribe_events();
         let peer = context.peer;
-        let agent = self.agent.clone();
+        let link = self.link.clone();
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Ok((conn_id, ev)) => {
-                        // Only forward events from the tab this agent is bound to.
-                        if agent.bound_conn_id() != Some(conn_id) {
+                        // Only forward events from the live (most-recent) tab — a
+                        // just-evicted stale tab must not leak events.
+                        if link.current_conn_id() != Some(conn_id) {
                             continue;
                         }
                         let level = match ev.level.as_deref() {

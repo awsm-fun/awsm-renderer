@@ -842,8 +842,6 @@ fn open_mcp_modal() {
         // Seeded once per open from the current/last-used origin (the `?mcp=` value
         // or the build default); edits feed straight into `connect`.
         let addr = Mutable::new(crate::remote::origin().get_cloned());
-        // Pair-code input — revealed only when the server asked for one.
-        let pair_code = Mutable::new(crate::remote::pair().get_cloned());
 
         html!("div", {
             .style("display", "flex")
@@ -921,47 +919,6 @@ fn open_mcp_modal() {
             // TLS toggle — for a remote server behind https/wss (off for the
             // usual local server).
             .child(row("Use TLS (wss / https)", toggle(crate::remote::tls())))
-            // Pairing code — ALWAYS shown (optional). Blank = auto-pair, which
-            // works when exactly one tab + one agent are connected. When more than
-            // one is connected the server needs a code: the agent prints it (its
-            // `pairing_status` tool); type it here + Pair to claim this tab.
-            .child(html!("label", {
-                .style("font-size", "11px")
-                .style("color", "var(--text-3)")
-                .style("text-transform", "uppercase")
-                .style("letter-spacing", "0.04em")
-                .text("Pairing code (optional)")
-            }))
-            .child(html!("div", {
-                .style("display", "flex")
-                .style("gap", "8px")
-                .style("align-items", "center")
-                .child(html!("div", {
-                    .style("flex", "1 1 auto")
-                    .style("min-width", "0")
-                    .child(TextInput::new(pair_code.clone())
-                        .placeholder("auto-pairs if blank \u{2014} e.g. 3K9J")
-                        .mono(true)
-                        .render())
-                }))
-                .child(Btn::new()
-                    .label("Pair")
-                    .variant(BtnVariant::Ghost)
-                    .size(BtnSize::Md)
-                    .title("Claim this tab for the agent holding this code")
-                    .on_click(clone!(pair_code => move || {
-                        crate::remote::submit_pair_code(pair_code.get_cloned());
-                    }))
-                    .render())
-            }))
-            // Highlighted prompt when the server actually asked for a code.
-            .child_signal(crate::remote::pairing_needed().signal().map(|needed| needed.then(|| html!("div", {
-                .style("font-size", "11.5px")
-                .style("color", "var(--warn)")
-                .style("line-height", "1.4")
-                .text("This server has multiple tabs/agents connected \u{2014} enter the pairing \
-                       code your agent printed (its pairing_status) to bind it to this tab.")
-            }))))
             // Live work display — the activity feed (narration + panel spotlight)
             // that lets you watch the agent build. Also under Settings.
             .child(row("Follow agent activity", toggle(crate::engine::activity_feed::enabled())))

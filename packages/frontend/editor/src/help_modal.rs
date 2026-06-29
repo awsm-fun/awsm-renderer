@@ -544,10 +544,10 @@ fn mcp_section() -> Dom {
         ]),
         code("http://localhost:9085/?mcp=http://127.0.0.1:9086"),
         p("For a TLS-terminated remote server, tick \u{201c}Use TLS\u{201d} in the connect modal. \
-           When the server has more than one tab/agent it asks for a pairing code — the \
-           agent prints it; enter it in the modal or append &pair=<code> to the URL. \
-           Attached, the MCP button shows \u{201c}MCP \u{2713}\u{201d} and a 🤖 chip tells you when the agent \
-           is editing."),
+           Each server serves a single editor tab — if a newer tab attaches to the same \
+           server, the older one detaches (to run two sessions at once, start a second \
+           server on another port). Attached, the MCP button shows \u{201c}MCP \u{2713}\u{201d} and a 🤖 \
+           chip tells you when the agent is editing."),
 
         h("4 · Point your agent at it"),
         p("It's a streamable-HTTP MCP server, so every MCP client connects to the same \
@@ -560,7 +560,7 @@ fn mcp_section() -> Dom {
         p("Then just ask: \u{201c}add a tessellated sphere with a brushed-metal material\u{201d}, or \
            \u{201c}rough up that mesh and screenshot it\u{201d}. The agent discovers every node and \
            command from the server's typed schema — no guesswork. If it reports \u{201c}no \
-           editor is paired\u{201d}, have it call its pairing_status tool to get the code."),
+           editor tab is attached\u{201d}, make sure this editor is connected (MCP \u{2713})."),
 
         h("5 · Watch it work"),
         p("While the agent drives, the 🤖 chip pulses and the \u{201c}Agent activity feed\u{201d} \

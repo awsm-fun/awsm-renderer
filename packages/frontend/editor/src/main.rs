@@ -138,13 +138,9 @@ pub fn main() {
                                 });
                             }
                             // Remote MCP control: `?mcp=<control-origin>` auto-dials
-                            // the native server over a WebSocket, optionally with
-                            // `&pair=<code>` to claim a specific agent when more
-                            // than one tab/agent is connected. Absent → the top-bar
-                            // MCP button connects on demand (to the dev default).
-                            if let Some(pair) = boot_mcp_pair() {
-                                remote::set_pair_code(pair);
-                            }
+                            // the native server over a WebSocket. Absent → the
+                            // top-bar MCP button connects on demand (to the dev
+                            // default). One server serves one editor tab.
                             if let Some(origin) = boot_mcp_origin() {
                                 remote::connect(origin);
                             }
@@ -211,12 +207,6 @@ fn boot_load_url() -> Option<String> {
 /// when absent (remote control disabled).
 fn boot_mcp_origin() -> Option<String> {
     boot_query_param("mcp")
-}
-
-/// Read a `?pair=<code>` query parameter (URL-decoded) — the pairing code that
-/// claims a specific MCP agent when more than one tab/agent is connected.
-fn boot_mcp_pair() -> Option<String> {
-    boot_query_param("pair")
 }
 
 /// Read a `<key>=<value>` query parameter (URL-decoded) from the page URL.
