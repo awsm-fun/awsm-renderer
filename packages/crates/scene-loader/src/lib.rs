@@ -2492,6 +2492,7 @@ pub async fn materialize_cluster_mesh(
         },
         colors: (!cm.colors.is_empty()).then(|| cm.colors.clone()),
         indices: m_geometry_indices,
+        tangents: None,
         skin: None,
         morph: None,
     };
@@ -2773,6 +2774,9 @@ async fn load_skinned_lod_chain(
                 uv_sets: extracted.mesh.uvs,
                 colors: extracted.mesh.colors,
                 indices: extracted.mesh.indices,
+                // Authored tangents from the rig glb → used verbatim (correct basis +
+                // skips MikkTSpace); `None` ⇒ regenerate as before.
+                tangents: extracted.tangents,
                 skin: raw_skin,
                 morph: raw_morph,
             };

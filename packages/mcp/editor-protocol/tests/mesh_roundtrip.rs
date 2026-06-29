@@ -43,6 +43,7 @@ fn sample_captured_mesh() -> CapturedMesh {
             [0.0, 0.0, 1.0, 1.0],
             [1.0, 1.0, 1.0, 0.5],
         ]),
+        tangents: None,
         indices: vec![0, 1, 2, 0, 2, 3],
     }
 }
@@ -101,6 +102,48 @@ fn mesh_asset_entry_bitcode_roundtrip() {
     assert_eq!(project, back);
 }
 
+/// P2-D: a NON-empty modifier stack (the audit flagged this as untested) must
+/// round-trip exactly through both project.json (serde-JSON) and the per-game
+/// bitcode artifact — so an edited mesh's recipe reloads identically.
+#[test]
+fn mesh_modifier_stack_roundtrips() {
+    use awsm_renderer_meshgen::recipe::{Axis, Modifier};
+    let asset_id = AssetId::new();
+    let mut project = project_with_mesh_asset(asset_id, "modded");
+    if let AssetSource::Mesh(def) = &mut project.assets.entries.get_mut(&asset_id).unwrap().source {
+        def.stack.modifiers = vec![
+            Modifier::Twist {
+                axis: Axis::Y,
+                turns: 0.75,
+            },
+            Modifier::Inflate { amount: 0.2 },
+            Modifier::Array {
+                count: 4,
+                offset: [1.0, 0.0, 0.5],
+            },
+            Modifier::Displace {
+                expr: "sin(x*3.0)".to_string(),
+            },
+        ];
+    }
+    let json = serde_json::to_string(&project).expect("serialize");
+    assert_eq!(
+        project,
+        serde_json::from_str::<EditorProject>(&json).expect("deserialize"),
+        "modifier stack json roundtrip"
+    );
+    let bytes = bitcode::serialize(&project).expect("bitcode serialize");
+    assert_eq!(
+        project,
+        bitcode::deserialize::<EditorProject>(&bytes).expect("bitcode deserialize"),
+        "modifier stack bitcode roundtrip"
+    );
+    match &project.assets.entries.get(&asset_id).unwrap().source {
+        AssetSource::Mesh(def) => assert_eq!(def.stack.modifiers.len(), 4),
+        other => panic!("expected Mesh, got {other:?}"),
+    }
+}
+
 #[test]
 fn captured_mesh_bitcode_roundtrip() {
     // The on-disk side-file shape — bitcode is what the editor's Save
@@ -130,6 +173,7 @@ fn captured_mesh_handles_optional_attrs() {
         uvs: None,
         uvs1: None,
         colors: None,
+        tangents: None,
         indices: vec![0, 1, 2],
     };
     let bytes = bitcode::serialize(&mesh).expect("bitcode serialize");
@@ -314,6 +358,7 @@ fn captured_mesh_validate_rejects_empty_and_degenerate() {
         uvs: None,
         uvs1: None,
         colors: None,
+        tangents: None,
         indices: vec![],
     };
     assert!(empty.validate(false).is_err(), "empty should be rejected");

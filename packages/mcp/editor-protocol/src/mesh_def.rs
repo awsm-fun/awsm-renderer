@@ -188,6 +188,14 @@ pub struct CapturedMesh {
     #[serde(default)]
     pub uvs1: Option<Vec<[f32; 2]>>,
     pub colors: Option<Vec<[f32; 4]>>,
+    /// Optional authored per-vertex `TANGENT` (vec4: xyz + handedness), vertex-aligned
+    /// with `positions`. Carried from an imported glTF's TANGENT attribute so the
+    /// captured mesh preserves the EXACT tangent basis a normal map was baked against
+    /// across save→reload (else the renderer regenerates via MikkTSpace and shades
+    /// differently — the dark-patch bug). `#[serde(default)]` so pre-feature
+    /// `.mesh.bin` files (and edited/procedural meshes, which carry none) round-trip.
+    #[serde(default)]
+    pub tangents: Option<Vec<[f32; 4]>>,
     pub indices: Vec<u32>,
 }
 
@@ -239,6 +247,7 @@ impl CapturedMesh {
         check("uvs", self.uvs.as_ref().map(|v| v.len()))?;
         check("uvs1", self.uvs1.as_ref().map(|v| v.len()))?;
         check("colors", self.colors.as_ref().map(|v| v.len()))?;
+        check("tangents", self.tangents.as_ref().map(|v| v.len()))?;
         Ok(())
     }
 }

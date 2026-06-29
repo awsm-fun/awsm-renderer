@@ -40,7 +40,8 @@ pub use awsm_renderer_meshgen::MeshData;
 pub use bundle::{assemble_bundle, BundleFile, BundleInputs, PlayerBundle};
 pub use extract::{
     extract_node_mesh, extract_node_mesh_from_bytes, extract_node_mesh_with_skin_from_bytes,
-    extract_texture_images, extract_texture_images_from_bytes, reexport_clean,
+    extract_texture_images, extract_texture_images_from_bytes,
+    extract_texture_images_with_external, reexport_clean,
     reexport_clean_scene, reexport_clean_scene_with_images, scene_node_flat_indices,
     ExtractedMorph, ExtractedNodeMesh, ExtractedSkin,
 };
@@ -144,6 +145,13 @@ pub struct ExportNode {
     /// Per-vertex `WEIGHTS_0` (4 blend weights, summing to ~1), one per mesh
     /// vertex. `Some` only for skinned meshes.
     pub weights: Option<Vec<[f32; 4]>>,
+    /// Per-vertex `TANGENT` (vec4: xyz + handedness), one per mesh vertex, carried
+    /// from the source glTF's AUTHORED tangent attribute. `Some` ⇒ the writer emits
+    /// these verbatim instead of regenerating via MikkTSpace, so a save→reload
+    /// round-trip preserves the exact basis a normal map was baked against
+    /// (regenerated tangents shade differently — see the writer's TANGENT branch).
+    /// `None` ⇒ the writer bakes tangents from normals+uvs.
+    pub tangents: Option<Vec<[f32; 4]>>,
     /// Morph targets on this node's mesh (position/normal deltas). Empty = none.
     pub morph_targets: Vec<MorphTarget>,
     /// Default morph-target weights (one per [`Self::morph_targets`] entry).
@@ -173,6 +181,7 @@ impl Default for ExportNode {
             skin: None,
             joints: None,
             weights: None,
+            tangents: None,
             morph_targets: Vec::new(),
             morph_weights: Vec::new(),
             extra_primitives: Vec::new(),
@@ -218,6 +227,9 @@ pub struct ExtraPrimitive {
     pub joints: Option<Vec<[u16; 4]>>,
     /// Per-vertex `WEIGHTS_0` for THIS primitive's vertices.
     pub weights: Option<Vec<[f32; 4]>>,
+    /// Per-vertex authored `TANGENT` for THIS primitive's vertices (see
+    /// [`ExportNode::tangents`]). `Some` ⇒ emitted verbatim, not regenerated.
+    pub tangents: Option<Vec<[f32; 4]>>,
     /// This primitive's morph targets (deltas parallel to its vertices).
     pub morph_targets: Vec<MorphTarget>,
 }

@@ -53,7 +53,7 @@ pub struct GltfImport {
     /// accessor values; the editor node carries the glTF node's local transform,
     /// so the geometry is used as-is (no extra matrix). Skinned meshes bake to
     /// their bind pose (JOINTS/WEIGHTS are not read).
-    pub node_meshes: HashMap<(u32, Option<u32>), MeshData>,
+    pub node_meshes: HashMap<(u32, Option<u32>), (MeshData, Option<Vec<[f32; 4]>>)>,
     /// `Some` when the import carries skins: the whole rig (geometry + skeleton +
     /// joints/weights + morph) re-exported through our writer into a clean glb
     /// (materials/animations dropped). This is what the player bundle ships for
@@ -211,7 +211,7 @@ pub async fn import_file(name: &str, url: &str) -> Result<GltfImport, String> {
 /// (see [`awsm_renderer_glb_export::extract_node_mesh`] on the no-double-transform rule).
 /// Per-node primary geometry keyed by `(node_index, primitive_index)`. ALL UV sets
 /// (incl. `TEXCOORD_1`) ride `MeshData.uvs` now — no separate parallel map.
-type NodeMeshMaps = HashMap<(u32, Option<u32>), MeshData>;
+type NodeMeshMaps = HashMap<(u32, Option<u32>), (MeshData, Option<Vec<[f32; 4]>>)>;
 
 fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
     let buffers = &data.buffers.raw;
@@ -219,11 +219,12 @@ fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
     for node in data.doc.nodes() {
         let Some(mesh) = node.mesh() else { continue };
         let node_index = node.index() as u32;
-        // Whole-node merge (the common, single-material case).
+        // Whole-node merge (the common, single-material case). `ex.tangents` rides
+        // alongside the geometry so the captured mesh preserves the authored basis.
         if let Some(ex) =
             awsm_renderer_glb_export::extract_node_mesh(&data.doc, buffers, node_index, None)
         {
-            out.insert((node_index, None), ex.mesh);
+            out.insert((node_index, None), (ex.mesh, ex.tangents));
         }
         // Per-primitive (used when a node's primitives carry different materials
         // and the controller destructures it into one Mesh child per primitive).
@@ -236,7 +237,7 @@ fn extract_node_meshes(data: &GltfData) -> NodeMeshMaps {
                     node_index,
                     Some(i),
                 ) {
-                    out.insert((node_index, Some(i)), ex.mesh);
+                    out.insert((node_index, Some(i)), (ex.mesh, ex.tangents));
                 }
             }
         }
@@ -264,8 +265,14 @@ async fn import_typed(
     // Grab the ENCODED texture bytes (PNG/JPEG) off the document before populate
     // consumes it — the renderer keeps only decoded pixels, so these are what we
     // persist (paired with the baked TextureKeys below). Keyed by glTF tex index.
-    let tex_images_by_index =
-        awsm_renderer_glb_export::extract_texture_images(&data.doc, &data.buffers.raw);
+    // Resolve embedded AND external-URI images: the loader re-fetched external-file
+    // image bytes into `data.encoded_images`, so persistence captures them too
+    // (else an external-URI texture drops on save→reload — P0-A).
+    let tex_images_by_index = awsm_renderer_glb_export::extract_texture_images_with_external(
+        &data.doc,
+        &data.buffers.raw,
+        &data.encoded_images,
+    );
     // Parse animations off the document before `data` is moved into populate.
     // A parse error must not abort the whole import — log it + import zero clips.
     let animations = match extract_animations(&data.doc, &data.buffers.raw) {

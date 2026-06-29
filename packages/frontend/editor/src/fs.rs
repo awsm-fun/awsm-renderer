@@ -158,6 +158,24 @@ impl ProjectDir {
         uint8.copy_from(content);
         JsFuture::from(stream.write_with_buffer_source(&uint8)?).await?;
         JsFuture::from(stream.close()).await?;
+        // Verify the bytes actually landed. Some File System Access backends (esp.
+        // a picked cross-process directory) can resolve `close()` yet drop/truncate
+        // the write — which would silently produce a partial project (missing
+        // meshes / textures on reload). Re-read the file size and fail LOUD on a
+        // mismatch so the save errors (and the prior good save is untouched) rather
+        // than half-writing. Cheap: one getFile per file.
+        let file_value = JsFuture::from(file_handle.get_file()).await?;
+        let file: web_sys::File = file_value
+            .dyn_into()
+            .map_err(|_| FsError::Js("write verify: getFile() did not return a File".into()))?;
+        let wrote = file.size() as usize;
+        if wrote != content.len() {
+            return Err(FsError::Js(format!(
+                "write verify failed for {path}: wrote {} bytes but file is {wrote} \
+                 (File System Access dropped/truncated the write)",
+                content.len()
+            )));
+        }
         Ok(())
     }
 

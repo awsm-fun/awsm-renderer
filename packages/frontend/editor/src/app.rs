@@ -319,15 +319,25 @@ fn typing_in_field() -> bool {
 fn save_project() {
     spawn_local(async {
         match crate::fs::ProjectDir::pick().await {
-            Ok(dir) => match crate::controller::persistence::save_to_dir(&controller(), &dir).await
-            {
-                Ok(()) => {
-                    controller().project_name.set(dir.name());
-                    controller().dirty.set_neq(false);
-                    Toast::info(format!("Saved to {}/", dir.name()));
+            Ok(dir) => {
+                // Block ALL interaction for the duration of the write. The save is an
+                // async loop over many side files (File System Access, to a real
+                // disk); if the user triggers another op or navigates mid-write the
+                // write is cut off at a variable point → a silent PARTIAL project
+                // (the missing-meshes/textures bug). The `begin_activity` guard raises
+                // the full-screen `busy_overlay` (no close, swallows all input) and
+                // auto-clears on drop the instant the save resolves.
+                let _activity =
+                    crate::engine::activity::begin_activity(format!("Saving to {}/…", dir.name()));
+                match crate::controller::persistence::save_to_dir(&controller(), &dir).await {
+                    Ok(()) => {
+                        controller().project_name.set(dir.name());
+                        controller().dirty.set_neq(false);
+                        Toast::info(format!("Saved to {}/", dir.name()));
+                    }
+                    Err(e) => Toast::error(format!("Save failed: {e}")),
                 }
-                Err(e) => Toast::error(format!("Save failed: {e}")),
-            },
+            }
             Err(crate::fs::FsError::Cancelled) => {}
             Err(crate::fs::FsError::Unsupported) => {
                 // No directory picker (e.g. Firefox/Safari): fall back to a download.

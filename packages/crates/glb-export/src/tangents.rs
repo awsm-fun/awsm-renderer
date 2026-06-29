@@ -37,6 +37,39 @@ mod tests {
         }
     }
 
+    /// AUTHORED tangents on the node are emitted VERBATIM — not regenerated —
+    /// even though normals+uvs are present (which would otherwise trigger
+    /// MikkTSpace). Pins the save→reload fix: the clean rig glb preserves the
+    /// exact tangent basis a normal map was baked against. The sentinel values
+    /// below are deliberately NOT what MikkTSpace would produce for this mesh.
+    #[test]
+    fn authored_tangents_emitted_verbatim() {
+        let mesh = MeshData {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+            uvs: vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]],
+            colors: None,
+            indices: vec![0, 1, 2],
+        };
+        let authored = vec![
+            [0.0, 1.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0, -1.0],
+        ];
+        let mut node = ExportNode::new("t").with_mesh(mesh);
+        node.tangents = Some(authored.clone());
+        let glb = write_glb(&GlbScene {
+            nodes: vec![node],
+            ..Default::default()
+        });
+        let (doc, buffers, _) = gltf::import_slice(&glb).expect("parse");
+        let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
+        let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
+        let reader = prim.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
+        let got: Vec<[f32; 4]> = reader.read_tangents().expect("TANGENT present").collect();
+        assert_eq!(got, authored, "authored tangents must round-trip unmodified");
+    }
+
     /// A mesh with no uvs gets no TANGENT (MikkTSpace needs uvs).
     #[test]
     fn no_uvs_no_tangent() {

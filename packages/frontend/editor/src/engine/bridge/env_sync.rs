@@ -46,6 +46,13 @@ fn stashed_ktx(id: AssetId) -> Option<Vec<u8>> {
     KTX_BYTES.with(|m| m.borrow().get(&id).cloned())
 }
 
+/// The stashed KTX bytes for `id` — the persistence seam (`persistence::ktx_files`
+/// writes them to `assets/<id>.ktx2`; `restore_ktx` re-stashes them via [`stash_ktx`]
+/// on reload so an HDR skybox/IBL survives Save→reload).
+pub fn ktx_bytes(id: AssetId) -> Option<Vec<u8>> {
+    stashed_ktx(id)
+}
+
 /// A decoded equirect panorama: RGBA8 pixels + `(width, height)` (§18).
 type EquirectImage = (Vec<u8>, u32, u32);
 

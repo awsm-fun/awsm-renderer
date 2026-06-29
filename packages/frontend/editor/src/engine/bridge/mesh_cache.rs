@@ -29,6 +29,9 @@ pub fn from_mesh_data(m: MeshData) -> CapturedMesh {
         uvs: uv_sets.next(),
         uvs1: uv_sets.next(),
         colors: m.colors,
+        // `MeshData` carries no tangents; the import path sets `CapturedMesh.tangents`
+        // separately (from the glTF TANGENT attr) after this conversion.
+        tangents: None,
         indices: m.indices,
     }
 }
@@ -70,6 +73,9 @@ pub fn get_raw(id: AssetId) -> Option<RawMeshData> {
             uv_sets: m.uvs.clone().into_iter().chain(m.uvs1.clone()).collect(),
             colors: m.colors.clone(),
             indices: m.indices.clone(),
+            // Authored tangents (imported glTF TANGENT) → used verbatim at commit;
+            // `None` for edited/procedural meshes → regenerated as before.
+            tangents: m.tangents.clone(),
             ..Default::default()
         })
     })

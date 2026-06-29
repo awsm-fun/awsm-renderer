@@ -1436,8 +1436,9 @@ impl EditorController {
                 // the node's kind. Reuses the import bake path (deterministic id =
                 // node id), so it persists like any captured mesh.
                 let label = n.name.get_cloned();
-                // drop_skinning bakes the bind pose; UV sets ride mesh.uvs.
-                let mesh_ref = mint_imported_mesh(node, &label, &mesh, skin.source);
+                // drop_skinning bakes the bind pose; UV sets ride mesh.uvs. No authored
+                // tangents on a baked bind pose → None (regenerated at commit).
+                let mesh_ref = mint_imported_mesh(node, &label, &mesh, None, skin.source);
                 // Hide the now-orphaned skinned populate copy so it stops rendering
                 // (the node now renders its captured bind-pose Mesh instead).
                 if let Some(template) = crate::engine::bridge::bridge().get_template(skin.source) {
@@ -5205,6 +5206,10 @@ impl EditorController {
                     entries,
                 })
             }
+            EditorQuery::SaveCensus => QueryResult::Text(
+                serde_json::to_string(&crate::controller::persistence::save_census(self))
+                    .unwrap_or_default(),
+            ),
             EditorQuery::MemoryStats => {
                 use serde_json::json;
                 // Renderer-side object counts (under the renderer guard)…
@@ -7578,6 +7583,7 @@ fn mint_imported_mesh(
     node_id: NodeId,
     label: &str,
     mesh: &awsm_renderer_glb_export::MeshData,
+    tangents: Option<&Vec<[f32; 4]>>,
     source_asset: AssetId,
 ) -> awsm_renderer_editor_protocol::MeshRef {
     use crate::engine::bridge::mesh_cache;
@@ -7585,8 +7591,12 @@ fn mint_imported_mesh(
     use awsm_renderer_editor_protocol::{MeshBase, ModifierStack};
 
     let mesh_id = AssetId(node_id.0);
-    // `from_mesh_data` folds every UV set (incl. TEXCOORD_1) from `mesh.uvs`.
-    mesh_cache::store_with_id(mesh_id, mesh_cache::from_mesh_data(mesh.clone()));
+    // `from_mesh_data` folds every UV set (incl. TEXCOORD_1) from `mesh.uvs`; attach
+    // the authored glTF tangents (if any) so the captured mesh preserves the exact
+    // basis a normal map was baked against across save→reload.
+    let mut captured = mesh_cache::from_mesh_data(mesh.clone());
+    captured.tangents = tangents.cloned();
+    mesh_cache::store_with_id(mesh_id, captured);
     let stack = ModifierStack {
         base: MeshBase::Captured(MeshRef(mesh_id)),
         modifiers: vec![],
@@ -7674,7 +7684,10 @@ fn build_editor_subtree(
     asset_id: AssetId,
     mat_ids: &[AssetId],
     default_mat_id: Option<AssetId>,
-    node_meshes: &std::collections::HashMap<(u32, Option<u32>), awsm_renderer_glb_export::MeshData>,
+    node_meshes: &std::collections::HashMap<
+        (u32, Option<u32>),
+        (awsm_renderer_glb_export::MeshData, Option<Vec<[f32; 4]>>),
+    >,
     node_flat_indices: &std::collections::HashMap<u32, u32>,
     fallback_name: Option<&str>,
     node_map: &mut std::collections::HashMap<u32, NodeId>,
@@ -7764,7 +7777,7 @@ fn build_editor_subtree(
             let material = instance_for(mat_indices.first().copied().flatten());
             // Stash the bind-pose geometry (no JOINTS/WEIGHTS) so `drop_skinning`
             // can bake it to a static editable Mesh later.
-            if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, None)) {
+            if let Some((mesh, _tangents)) = node_meshes.get(&(tn.gltf_node_index, None)) {
                 crate::engine::bridge::skinned_bake_cache::store(
                     asset_id,
                     tn.gltf_node_index,
@@ -7804,7 +7817,9 @@ fn build_editor_subtree(
                         .map(|m| m.name.get_cloned())
                     })
                     .unwrap_or_else(|| format!("{name} · part {i}"));
-                if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32))) {
+                if let Some((mesh, _tangents)) =
+                    node_meshes.get(&(tn.gltf_node_index, Some(i as u32)))
+                {
                     crate::engine::bridge::skinned_bake_cache::store(
                         asset_id,
                         tn.gltf_node_index,
@@ -7845,8 +7860,9 @@ fn build_editor_subtree(
             let material = instance_for(mat_indices.first().copied().flatten());
             // The whole-node merged geometry (every primitive concatenated).
             let mesh_node = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
-            if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, None)) {
-                let mesh_ref = mint_imported_mesh(mesh_node.id, &name, mesh, asset_id);
+            if let Some((mesh, tangents)) = node_meshes.get(&(tn.gltf_node_index, None)) {
+                let mesh_ref =
+                    mint_imported_mesh(mesh_node.id, &name, mesh, tangents.as_ref(), asset_id);
                 mesh_node.kind.set(NodeKind::Mesh {
                     mesh: mesh_ref,
                     material,
@@ -7880,8 +7896,10 @@ fn build_editor_subtree(
                     Trs::IDENTITY,
                     NodeKind::Group,
                 );
-                if let Some(mesh) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32))) {
-                    let mesh_ref = mint_imported_mesh(part.id, &part_label, mesh, asset_id);
+                if let Some((mesh, tangents)) = node_meshes.get(&(tn.gltf_node_index, Some(i as u32)))
+                {
+                    let mesh_ref =
+                        mint_imported_mesh(part.id, &part_label, mesh, tangents.as_ref(), asset_id);
                     part.kind.set(NodeKind::Mesh {
                         mesh: mesh_ref,
                         material,
