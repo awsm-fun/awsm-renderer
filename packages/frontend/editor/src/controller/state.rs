@@ -4402,6 +4402,17 @@ impl EditorController {
         serde_json::to_string(&self.snapshot()).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 
+    /// Bake a node's subtree (`Some`) or the whole scene (`None`) to a binary
+    /// glTF. Whole-scene export includes animations; single-node does not. The
+    /// raw `.glb` bytes ride the `/glb/<id>` side-channel (see `Request::ExportGlb`)
+    /// rather than the control link, so a large export can't blow the session.
+    pub async fn export_glb_bytes(&self, node: Option<NodeId>) -> Result<Vec<u8>, String> {
+        match node {
+            Some(id) => crate::controller::export::export_glb(&self.scene, Some(id)).await,
+            None => crate::controller::export::export_scene_glb(self).await,
+        }
+    }
+
     /// Run a read-only [`EditorQuery`] and return a serializable result.
     /// Read-only: never mutates persisted state, never records undo, never
     /// broadcasts; the pinning handler saves + restores the transport.
@@ -4461,20 +4472,6 @@ impl EditorController {
                     None => QueryResult::Error {
                         error: format!("no custom material {material}"),
                     },
-                }
-            }
-            EditorQuery::ExportGlb { node } => {
-                // Whole-scene export includes animations; single-node does not.
-                let result = match node {
-                    Some(id) => crate::controller::export::export_glb(&self.scene, Some(id)).await,
-                    None => crate::controller::export::export_scene_glb(self).await,
-                };
-                match result {
-                    Ok(bytes) => {
-                        use base64::Engine;
-                        QueryResult::Text(base64::engine::general_purpose::STANDARD.encode(bytes))
-                    }
-                    Err(e) => QueryResult::Error { error: e },
                 }
             }
             EditorQuery::ExportPlayerBundle { name } => {

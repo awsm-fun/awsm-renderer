@@ -1515,21 +1515,21 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Bake the whole scene to a binary glTF and return the .glb bytes base64-encoded. Built-in PBR → glTF PBR; Unlit → KHR_materials_unlit; custom/Toon → AWSM_materials_none (no embedded material). Textures are referenced-only."
+        description = "Bake the whole scene to a binary glTF. Writes the .glb to a temp file and returns its path + byte length as JSON (the bytes are NOT inlined — read the file to consume it). Built-in PBR → glTF PBR; Unlit → KHR_materials_unlit; custom/Toon → AWSM_materials_none (no embedded material). Textures are referenced-only."
     )]
     async fn export_scene_glb(&self) -> Result<CallToolResult, McpError> {
-        self.query(EditorQuery::ExportGlb { node: None }).await
+        self.glb(Request::ExportGlb { node: None }).await
     }
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Bake one node (and its subtree) to a binary glTF and return the .glb bytes base64-encoded. Same material mapping as export_scene_glb."
+        description = "Bake one node (and its subtree) to a binary glTF. Writes the .glb to a temp file and returns its path + byte length as JSON (the bytes are NOT inlined — read the file to consume it). Same material mapping as export_scene_glb."
     )]
     async fn export_node_glb(
         &self,
         Parameters(p): Parameters<ExportNodeParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.query(EditorQuery::ExportGlb {
+        self.glb(Request::ExportGlb {
             node: Some(parse_node(&p.node)?),
         })
         .await
@@ -4052,6 +4052,35 @@ impl EditorMcp {
                     STANDARD.encode(bytes),
                     "image/png".to_string(),
                 )]))
+            }
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Run a `.glb` export request. The bytes rode the `/glb/<id>` side-channel
+    /// (not the control link, which a multi-MiB export would blow), and we return
+    /// the temp-file **path** rather than inlining the base64 — keeping the payload
+    /// off both the link and the token stream. The caller reads the file to use it.
+    async fn glb(&self, r: Request) -> Result<CallToolResult, McpError> {
+        match self.req(r).await? {
+            Response::Glb(handle) => {
+                let path = crate::http::glb_path(&handle.id);
+                // Confirm the upload actually landed before reporting success.
+                if !path.exists() {
+                    return Err(McpError::internal_error(
+                        format!("glb {} not found at {}", handle.id, path.display()),
+                        None,
+                    ));
+                }
+                Ok(text(
+                    serde_json::json!({
+                        "glb_path": path.display().to_string(),
+                        "byte_len": handle.byte_len,
+                        "url": format!("/glb/{}", handle.id),
+                    })
+                    .to_string(),
+                ))
             }
             Response::Err(e) => Err(McpError::internal_error(e, None)),
             other => Err(unexpected(other)),

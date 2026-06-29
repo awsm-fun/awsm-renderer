@@ -55,7 +55,9 @@ pub use query::{
     VertexPredicate,
 };
 pub use texture_payload::{decode_texture_payload, TexturePayload};
-pub use transport::{EditorEvent, PngHandle, Request, Response, WsClientMsg, WsServerMsg};
+pub use transport::{
+    EditorEvent, GlbHandle, PngHandle, Request, Response, WsClientMsg, WsServerMsg,
+};
 
 // Re-export the meshgen recipe types so editor + mcp callers that build/send a
 // modifier stack have a single import path alongside the commands that carry it.

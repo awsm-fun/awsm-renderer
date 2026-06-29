@@ -53,14 +53,58 @@ pub struct MeshDef {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VertexOverrides {
-    #[serde(default, deserialize_with = "de_int_keyed_map")]
+    #[serde(
+        default,
+        serialize_with = "ser_int_keyed_map",
+        deserialize_with = "de_int_keyed_map"
+    )]
     pub positions: std::collections::HashMap<u32, [f32; 3]>,
-    #[serde(default, deserialize_with = "de_int_keyed_map")]
+    #[serde(
+        default,
+        serialize_with = "ser_int_keyed_map",
+        deserialize_with = "de_int_keyed_map"
+    )]
     pub colors: std::collections::HashMap<u32, [f32; 4]>,
-    #[serde(default, deserialize_with = "de_int_keyed_map")]
+    #[serde(
+        default,
+        serialize_with = "ser_int_keyed_map",
+        deserialize_with = "de_int_keyed_map"
+    )]
     pub normals: std::collections::HashMap<u32, [f32; 3]>,
-    #[serde(default, deserialize_with = "de_int_keyed_map")]
+    #[serde(
+        default,
+        serialize_with = "ser_int_keyed_map",
+        deserialize_with = "de_int_keyed_map"
+    )]
     pub uvs: std::collections::HashMap<u32, [f32; 2]>,
+}
+
+/// Serialize a `u32`-keyed override map. The complement of [`de_int_keyed_map`]:
+/// human-readable formats (TOML / JSON) require **string** map keys — TOML's
+/// serializer outright errors with "map key was not a string" on an integer key,
+/// which used to make any project carrying per-vertex overrides unsaveable — so
+/// stringify the index there. Non-self-describing binary formats (bitcode — the
+/// `.mesh.bin` / project persistence) keep the native `u32` key, so existing
+/// `.mesh.bin` files keep round-tripping byte-for-byte. Keys are emitted in
+/// sorted order to keep `project.toml` diffs deterministic.
+fn ser_int_keyed_map<S, V>(map: &std::collections::HashMap<u32, V>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    V: serde::Serialize,
+{
+    use serde::ser::SerializeMap;
+    let mut entries: Vec<(&u32, &V)> = map.iter().collect();
+    entries.sort_by_key(|(k, _)| **k);
+    let human_readable = s.is_human_readable();
+    let mut m = s.serialize_map(Some(entries.len()))?;
+    for (k, v) in entries {
+        if human_readable {
+            m.serialize_entry(&k.to_string(), v)?;
+        } else {
+            m.serialize_entry(k, v)?;
+        }
+    }
+    m.end()
 }
 
 /// Deserialize a `u32`-keyed map whose keys may arrive as integers (bitcode /
