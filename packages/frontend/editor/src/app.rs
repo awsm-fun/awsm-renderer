@@ -318,17 +318,18 @@ fn typing_in_field() -> bool {
 /// `project.toml` + the per-material side files.
 fn save_project() {
     spawn_local(async {
+        // Block ALL interaction across the picker AND the write under one guard.
+        // The save is an async loop over many side files (File System Access, to a
+        // real disk); if the user triggers another op or navigates mid-write the
+        // write is cut off at a variable point → a silent PARTIAL project (the
+        // missing-meshes/textures bug). The `begin_activity` guard raises the
+        // full-screen `busy_overlay` (no close, swallows all input) and auto-clears
+        // on drop — so a cancelled picker dismisses it. The label gains the picked
+        // directory name once it's known.
+        let activity = crate::engine::activity::begin_activity("Saving…");
         match crate::fs::ProjectDir::pick().await {
             Ok(dir) => {
-                // Block ALL interaction for the duration of the write. The save is an
-                // async loop over many side files (File System Access, to a real
-                // disk); if the user triggers another op or navigates mid-write the
-                // write is cut off at a variable point → a silent PARTIAL project
-                // (the missing-meshes/textures bug). The `begin_activity` guard raises
-                // the full-screen `busy_overlay` (no close, swallows all input) and
-                // auto-clears on drop the instant the save resolves.
-                let _activity =
-                    crate::engine::activity::begin_activity(format!("Saving to {}/…", dir.name()));
+                activity.set_label(format!("Saving to {}/…", dir.name()));
                 match crate::controller::persistence::save_to_dir(&controller(), &dir).await {
                     Ok(()) => {
                         controller().project_name.set(dir.name());
@@ -423,6 +424,11 @@ pub(crate) fn download_bytes(filename: &str, bytes: &[u8]) {
 /// project.
 fn export_scene_glb() {
     spawn_local(async {
+        // Block ALL interaction while the GLB is assembled (async image
+        // resolution + GPU readbacks) and downloaded. `begin_activity` raises the
+        // full-screen `busy_overlay` (no close, swallows input) and auto-clears on
+        // drop the instant the export resolves.
+        let _activity = crate::engine::activity::begin_activity("Exporting scene…");
         match crate::controller::export::export_scene_glb(&controller()).await {
             Ok(bytes) => {
                 let name = controller().project_name.get_cloned();
@@ -445,15 +451,12 @@ fn export_scene_glb() {
 /// `assemble_bundle` layout so the editor and the tested layout never drift.
 fn export_player_bundle() {
     spawn_local(async {
-        let name = {
-            let n = controller().project_name.get_cloned();
-            if n.is_empty() {
-                "bundle".to_string()
-            } else {
-                n
-            }
-        };
-        let _ = &name; // bundle name is the picked directory's; kept for the toast.
+        // Block ALL interaction for the whole export — bake, directory picker, and
+        // the file-write loop — under ONE guard so the overlay never gaps. The
+        // scene can't mutate underneath the bake, and an interruption mid-write
+        // can't leave a silent partial bundle on disk. The guard auto-clears on
+        // drop, so a bake error or a cancelled picker dismisses the overlay.
+        let activity = crate::engine::activity::begin_activity("Preparing player bundle…");
         let bundle = match crate::controller::export::bake_player_bundle(&controller()).await {
             Ok(bundle) => bundle,
             Err(e) => {
@@ -463,6 +466,7 @@ fn export_player_bundle() {
         };
         match crate::fs::ProjectDir::pick().await {
             Ok(dir) => {
+                activity.set_label(format!("Exporting bundle to {}/…", dir.name()));
                 let count = bundle.len();
                 for file in &bundle {
                     if let Err(e) = dir.write_bytes(&file.path, &file.bytes).await {
