@@ -2,17 +2,21 @@
 //! group collapse, single/ctrl/shift select, per-row context menu, empty state,
 //! filter, and an add button. Bound to `controller().scene`; every mutation is a
 //! dispatched command (selection is transient; visibility/lock/prefab/duplicate/
-//! delete are undoable). Drag-reparent lands as a follow-up.
+//! delete are undoable). Rows are drag-and-drop sources + targets: drop on the
+//! middle of a row to reparent into it, on the top/bottom band (insertion line)
+//! to reorder before/after it as a sibling, or on the background to move to the
+//! scene root. A multi-node drag moves the whole selection as one undo step.
 
 use std::sync::Arc;
 
 use awsm_renderer_editor_protocol::PrimitiveShape;
+use dominator::EventOptions;
 
 use std::cell::RefCell;
 
 use crate::controller::InsertSpec;
 use crate::engine::scene::mutate::{
-    ancestor_dedup, find_by_id, find_parent, flatten_visible_order,
+    ancestor_dedup, find_by_id, find_parent, flatten_tree_order, flatten_visible_order,
 };
 use crate::engine::scene::{Node, NodeId, NodeKind};
 use crate::prelude::*;
@@ -25,6 +29,81 @@ thread_local! {
     /// selection change the pointer interaction might trigger mid-drag. Same-app
     /// drag, so no HTML5 `dataTransfer`; cleared on drop / drag-end.
     static DRAG_SET: RefCell<Vec<NodeId>> = const { RefCell::new(Vec::new()) };
+
+    /// The live drop target while a drag hovers: which row, and which band of it
+    /// (drop *before* it as a sibling, *into* it as a child, or *after* it). The
+    /// outliner reads this to render the insertion line / drop ring on exactly
+    /// one row. `None` = hovering the background (= append to scene root).
+    static DROP_INTENT: Mutable<Option<(NodeId, DropBand)>> = Mutable::new(None);
+}
+
+/// Where a drop lands relative to the hovered row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DropBand {
+    /// Insert as a sibling immediately before the row.
+    Before,
+    /// Insert as the last child of the row (reparent into it).
+    Into,
+    /// Insert as a sibling immediately after the row.
+    After,
+}
+
+/// Map a pointer Y (relative to a 28px row's top) to a drop band: top ~30% =
+/// before, bottom ~30% = after, the middle = into. Generous middle band so
+/// "drop as child" stays easy to hit while still exposing reorder gaps.
+fn band_at(rel_y: f64, height: f64) -> DropBand {
+    if rel_y < height * 0.3 {
+        DropBand::Before
+    } else if rel_y > height * 0.7 {
+        DropBand::After
+    } else {
+        DropBand::Into
+    }
+}
+
+/// The ids of `parent`'s direct children in order (`None` = scene root).
+fn child_ids(parent: Option<NodeId>) -> Vec<NodeId> {
+    let scene = &controller().scene;
+    match parent {
+        None => scene.nodes.lock_ref().iter().map(|n| n.id).collect(),
+        Some(p) => find_by_id(scene, p)
+            .map(|n| n.children.lock_ref().iter().map(|c| c.id).collect())
+            .unwrap_or_default(),
+    }
+}
+
+/// Resolve a drop `band` on `target` into `(new_parent, base_index)`, where
+/// `base_index` is the insertion position in the destination's child list with
+/// every dragged node already removed (matching `mutate::reparent`, which
+/// removes before it inserts) — or `None` to append. `Into` appends as a child.
+fn resolve_drop(
+    target: NodeId,
+    band: DropBand,
+    dragged: &[NodeId],
+) -> (Option<NodeId>, Option<usize>) {
+    match band {
+        DropBand::Into => (Some(target), None),
+        DropBand::Before | DropBand::After => {
+            let parent = find_parent(&controller().scene, target).map(|p| p.id);
+            let siblings: Vec<NodeId> = child_ids(parent)
+                .into_iter()
+                .filter(|id| !dragged.contains(id))
+                .collect();
+            // `target` is never in `dragged` (the row guards that), so it's
+            // present here; fall back to append if it somehow isn't.
+            match siblings.iter().position(|id| *id == target) {
+                Some(pos) => (
+                    parent,
+                    Some(if matches!(band, DropBand::After) {
+                        pos + 1
+                    } else {
+                        pos
+                    }),
+                ),
+                None => (parent, None),
+            }
+        }
+    }
 }
 
 /// The nodes a drag starting on `src` should move: the whole selection (deduped
@@ -39,28 +118,49 @@ fn selection_aware_ids(src: NodeId) -> Vec<NodeId> {
     }
 }
 
-/// Reparent every node in `ids` under `new_parent` (`None` = scene root) as one
-/// sequential transaction, then expand the target so the moved nodes are visible
-/// (a collapsed Empty would otherwise look like the drop did nothing).
-/// `mutate::reparent` guards cycles + self-parenting, so invalid moves no-op.
+/// Reparent every node in `ids` under `new_parent` (`None` = scene root),
+/// appending to the end. See [`reparent_nodes_at`].
 fn reparent_nodes(ids: Vec<NodeId>, new_parent: Option<NodeId>) {
+    reparent_nodes_at(ids, new_parent, None);
+}
+
+/// Reparent every node in `ids` under `new_parent` (`None` = scene root) at
+/// `base_index` (`None` = append) as ONE undoable transaction, then expand the
+/// target so the moved nodes are visible (a collapsed Empty would otherwise look
+/// like the drop did nothing).
+///
+/// The group is sorted into current tree order and assigned consecutive indices
+/// (`base_index + k`) so it lands contiguously in its original relative order —
+/// the same scheme as `mutate::reparent_many`, which works because each
+/// `Reparent` removes the node before inserting (so the index is relative to the
+/// list without the dragged nodes). Wrapping the moves in one `Batch` collapses
+/// them into a single undo step whose inverse is captured automatically.
+/// `mutate::reparent` guards cycles + self-parenting, so invalid moves no-op.
+fn reparent_nodes_at(ids: Vec<NodeId>, new_parent: Option<NodeId>, base_index: Option<usize>) {
     if ids.is_empty() {
         return;
     }
     spawn_local(async move {
         let ctrl = controller();
-        for id in ids {
-            if Some(id) == new_parent {
-                continue;
-            }
-            let _ = ctrl
-                .dispatch(EditorCommand::Reparent {
-                    id,
-                    new_parent,
-                    index: None,
-                })
-                .await;
+        let order = flatten_tree_order(&ctrl.scene);
+        let mut ordered: Vec<NodeId> = ids
+            .into_iter()
+            .filter(|id| Some(*id) != new_parent)
+            .collect();
+        ordered.sort_by_key(|id| order.iter().position(|o| o == id).unwrap_or(usize::MAX));
+        let cmds: Vec<EditorCommand> = ordered
+            .iter()
+            .enumerate()
+            .map(|(k, &id)| EditorCommand::Reparent {
+                id,
+                new_parent,
+                index: base_index.map(|b| b + k),
+            })
+            .collect();
+        if cmds.is_empty() {
+            return;
         }
+        let _ = ctrl.dispatch(EditorCommand::Batch(cmds)).await;
         if let Some(parent) = new_parent {
             if let Some(node) = find_by_id(&controller().scene, parent) {
                 node.expanded.set(true);
@@ -93,14 +193,43 @@ fn drag_active_for(target: NodeId) -> bool {
     })
 }
 
-/// Commit the in-flight drag under `new_parent` (taking + clearing the set).
-fn drop_drag(new_parent: Option<NodeId>) {
+/// Commit the in-flight drag relative to `target` (`None` = background = append
+/// to scene root), taking + clearing the drag set and the drop indicator.
+fn drop_drag(target: Option<NodeId>, band: DropBand) {
     let ids = DRAG_SET.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    reparent_nodes(ids, new_parent);
+    DROP_INTENT.with(|m| m.set_neq(None));
+    let (new_parent, base_index) = match target {
+        Some(t) => resolve_drop(t, band, &ids),
+        None => (None, None),
+    };
+    reparent_nodes_at(ids, new_parent, base_index);
 }
 
 fn clear_drag() {
     DRAG_SET.with(|c| c.borrow_mut().clear());
+    DROP_INTENT.with(|m| m.set_neq(None));
+}
+
+/// A clone of the shared drop-intent mutable, for per-row indicator signals.
+fn drop_intent() -> Mutable<Option<(NodeId, DropBand)>> {
+    DROP_INTENT.with(|m| m.clone())
+}
+
+/// Resolve the outliner row (its [`NodeId`] + element) under a drag event's
+/// target by walking up to the nearest element tagged with `data-node-id`.
+/// `None` over the background / non-row chrome. Drag-and-drop is handled by
+/// delegation on the scroll container (one dragover + one drop listener) rather
+/// than per-row listeners: native HTML5 `drop`/`dragover` events don't fire
+/// reliably on the individual rows here, but the container always sees them.
+fn row_under(target: Option<web_sys::EventTarget>) -> Option<(NodeId, web_sys::Element)> {
+    use wasm_bindgen::JsCast;
+    let el = target?.dyn_into::<web_sys::Element>().ok()?;
+    let row = el.closest("[data-node-id]").ok().flatten()?;
+    let id = row
+        .get_attribute("data-node-id")
+        .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+        .map(NodeId)?;
+    Some((id, row))
 }
 
 /// Wrap the current selection (or `seed` if nothing's selected) in a fresh Empty
@@ -169,17 +298,34 @@ pub fn render() -> Dom {
             .style("flex", "1")
             .style("overflow-y", "auto")
             .style("padding", "0 6px 8px")
-            // Dropping on the empty area below the rows reparents to the scene
-            // root (un-parent). Row drops stop propagation, so this only fires
-            // for the background.
-            .event(move |e: events::DragOver| {
-                if drag_active() {
-                    e.prevent_default();
+            // Drag-and-drop is handled here by delegation (see `row_under`): the
+            // dragover hit-tests which row the pointer is over and records the
+            // drop intent (band) for the indicator; the drop commits it. Over the
+            // empty area below the rows, intent is cleared and a drop reparents to
+            // the scene root (un-parent).
+            .event_with_options(&EventOptions::preventable(), move |e: events::DragOver| {
+                if !drag_active() {
+                    return;
+                }
+                e.prevent_default();
+                match row_under(e.target()) {
+                    Some((id, row)) if drag_active_for(id) => {
+                        let rect = row.get_bounding_client_rect();
+                        let band = band_at(e.y() - rect.top(), rect.height());
+                        DROP_INTENT.with(|m| m.set_neq(Some((id, band))));
+                    }
+                    _ => DROP_INTENT.with(|m| m.set_neq(None)),
                 }
             })
-            .event(move |e: events::Drop| {
+            .event_with_options(&EventOptions::preventable(), move |e: events::Drop| {
                 e.prevent_default();
-                drop_drag(None);
+                if !drag_active() {
+                    return;
+                }
+                match DROP_INTENT.with(|m| m.get()) {
+                    Some((id, band)) => drop_drag(Some(id), band),
+                    None => drop_drag(None, DropBand::Into),
+                }
             })
             // Rebuild the row list when the scene structure (revision) or the
             // filter changes; per-row selection/visibility bindings are reactive
@@ -345,8 +491,23 @@ fn row(node: Arc<Node>, depth: usize) -> Dom {
     let has_kids = !node.children.lock_ref().is_empty();
     let ctx_open: Mutable<Option<(f64, f64)>> = Mutable::new(None);
     let hover = Mutable::new(false);
-    // Highlight when a drag hovers over this row (it's a drop target).
-    let drag_over = Mutable::new(false);
+
+    // Drop-indicator signals, derived from the shared drop intent: an "into"
+    // ring when this row is the drop-as-child target, and before/after insertion
+    // lines when it's the reorder gap above/below this row.
+    let intent = drop_intent();
+    let into_sig = intent
+        .signal()
+        .map(move |i| i == Some((id, DropBand::Into)));
+    let before_sig = intent
+        .signal()
+        .map(move |i| i == Some((id, DropBand::Before)));
+    let after_sig = intent
+        .signal()
+        .map(move |i| i == Some((id, DropBand::After)));
+    // Insertion lines indent to this row's content so they read at the depth the
+    // moved node will land (a sibling of this row).
+    let line_left = format!("{}px", 6 + depth * 15);
 
     // selection signals
     let sel = controller().selected.clone();
@@ -358,7 +519,7 @@ fn row(node: Arc<Node>, depth: usize) -> Dom {
         .style("align-items", "center")
         .style("gap", "6px")
         .style("height", "28px")
-        .style("padding-left", &format!("{}px", 6 + depth * 15))
+        .style("padding-left", &line_left)
         .style("padding-right", "6px")
         .style("border-radius", "var(--r1)")
         .style("cursor", "pointer")
@@ -369,31 +530,41 @@ fn row(node: Arc<Node>, depth: usize) -> Dom {
             }
         })
         .style_signal("box-shadow", primary_sig.map(|p| if p { "inset 2px 0 0 var(--accent)" } else { "none" }))
-        // Drop-target ring while a drag hovers over this row.
-        .style_signal("outline", drag_over.signal().map(|d| if d { "2px solid var(--accent)" } else { "none" }))
+        // Drop-as-child ring while a drag hovers over the middle of this row.
+        .style_signal("outline", into_sig.map(|d| if d { "2px solid var(--accent)" } else { "none" }))
         .style("outline-offset", "-2px")
-        // Drag-to-reparent: this row is both a draggable source and a drop target.
+        // Drag source. The drop side is handled by delegation on the scroll
+        // container (see `tree_rows`' parent) keyed off this `data-node-id`.
         .attr("draggable", "true")
+        .attr("data-node-id", &id.to_string())
         .event(move |_: events::DragStart| begin_drag(id))
         .event(move |_: events::DragEnd| clear_drag())
-        .event(clone!(drag_over => move |e: events::DragOver| {
-            // A real drag whose set doesn't include this row → a valid drop here.
-            if drag_active_for(id) {
-                e.prevent_default();
-                drag_over.set_neq(true);
-            }
-        }))
-        .event(clone!(drag_over => move |_: events::DragLeave| drag_over.set_neq(false)))
-        .event(clone!(drag_over => move |e: events::Drop| {
-            e.prevent_default();
-            e.stop_propagation();
-            drag_over.set_neq(false);
-            if drag_active_for(id) {
-                drop_drag(Some(id));
-            }
-        }))
         .event(clone!(hover => move |_: events::MouseEnter| hover.set_neq(true)))
         .event(clone!(hover => move |_: events::MouseLeave| hover.set_neq(false)))
+        // Reorder insertion lines: a 2px accent bar pinned to the top (drop
+        // before) or bottom (drop after) edge, indented to this row's content so
+        // it reads at the depth the node will land. Non-interactive so it never
+        // intercepts the drag's own dragover/drop.
+        .child(html!("div", {
+            .style("position", "absolute")
+            .style("left", &line_left)
+            .style("right", "6px")
+            .style("top", "-1px")
+            .style("height", "2px")
+            .style("border-radius", "1px")
+            .style("pointer-events", "none")
+            .style_signal("background", before_sig.map(|b| if b { "var(--accent)" } else { "transparent" }))
+        }))
+        .child(html!("div", {
+            .style("position", "absolute")
+            .style("left", &line_left)
+            .style("right", "6px")
+            .style("bottom", "-1px")
+            .style("height", "2px")
+            .style("border-radius", "1px")
+            .style("pointer-events", "none")
+            .style_signal("background", after_sig.map(|b| if b { "var(--accent)" } else { "transparent" }))
+        }))
         .event(move |e: events::Click| {
             let additive = e.ctrl_key();
             let range = e.shift_key();
