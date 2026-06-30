@@ -45,9 +45,10 @@ impl From<schema::ShadowsConfig> for ShadowsConfig {
             max_point_shadows: s.max_point_shadows,
             point_shadow_resolution: s.point_shadow_resolution,
             debug_cascade_colors: s.debug_cascade_colors,
-            // Cascade-array fields aren't authored in the on-disk
-            // schema yet — fall back to defaults. Once the editor
-            // exposes them they can be threaded through here.
+            // `denoise` is not in the on-disk schema (it's a runtime/editor
+            // quality knob); it falls back to the renderer default (on) here.
+            // Cascade-array fields likewise aren't authored yet — fall back to
+            // defaults. Once the editor exposes them, thread them through here.
             ..ShadowsConfig::default()
         }
     }
@@ -63,6 +64,7 @@ impl From<schema::LightShadowConfig> for LightShadowParams {
             hardness: s.hardness.into(),
             pcss_penumbra_scale: s.pcss_penumbra_scale,
             kernel_slack: s.kernel_slack,
+            shadow_samples: s.shadow_samples,
             max_distance: s.max_distance,
             cascade_count: s.cascade_count,
             cascade_split_lambda: s.cascade_split_lambda,

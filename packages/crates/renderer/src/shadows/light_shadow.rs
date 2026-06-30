@@ -38,6 +38,13 @@ pub struct LightShadowParams {
     /// (otherwise-unused) `cascade_info.x` descriptor slot. `0.0` = off,
     /// `2.0` = neutral default; larger trades acne for contact leak.
     pub kernel_slack: f32,
+    /// Soft/PCSS Vogel tap budget for this light — the per-shadowed-pixel
+    /// `textureSampleCompare` cost knob, applied to ALL light kinds (the PCSS
+    /// blocker search uses ¾ of it). Higher = smoother penumbra, more cost;
+    /// reserve high counts for hero lights. Clamped to `[8, 64]` by the shader;
+    /// the screen-space denoise blur is the cheaper global noise lever, so a
+    /// modest count here usually suffices. `Hard` ignores it (1 tap).
+    pub shadow_samples: u32,
     /// Camera-distance fadeout cutoff for this light's shadow.
     /// Camera-distance cutoff for the cascade span. `<= 0` = AUTO
     /// (follow the camera far plane) — the scale-safe default; a
@@ -75,6 +82,7 @@ impl Default for LightShadowParams {
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
             kernel_slack: 2.0,
+            shadow_samples: 16,
             max_distance: 0.0,
             cascade_count: 4,
             cascade_split_lambda: 0.5,

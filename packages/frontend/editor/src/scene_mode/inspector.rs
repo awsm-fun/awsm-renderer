@@ -3605,6 +3605,20 @@ fn light_shadow_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
             .render(),
     ));
 
+    // Soft/PCSS Vogel tap budget — per-shadowed-pixel sample cost. Higher =
+    // smoother penumbra, more cost; reserve high counts for hero lights. No
+    // effect in Hard mode. Clamped to [8, 64].
+    let n = node.clone();
+    sec = sec.child(row(
+        "Samples",
+        NumField::new(shadow.shadow_samples as f64)
+            .min(8.0)
+            .max(64.0)
+            .step(4.0)
+            .on_change(move |v| update_shadow(&n, |s| s.shadow_samples = (v as u32).clamp(8, 64)))
+            .render(),
+    ));
+
     let n = node.clone();
     sec = sec.child(row(
         "Resolution",
