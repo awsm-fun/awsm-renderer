@@ -312,9 +312,17 @@ async fn add_node(
         loader.load(clone!(entry => async move {
             entry.node.transform.signal().for_each(move |trs| {
                 clone!(entry => async move {
+                    let tk = entry.transform_key;
                     with_renderer_mut(move |r| {
-                        let _ = r.transforms.set_local(entry.transform_key, trs_to_transform(&trs));
+                        let _ = r.transforms.set_local(tk, trs_to_transform(&trs));
                     }).await;
+                    // A collider's wireframe is world-baked line geometry (not
+                    // parented to the node transform), so a move/rotate leaves it
+                    // stale — re-bake it from the fresh transform so the on-screen
+                    // affordance keeps matching where the collider actually is.
+                    if let NodeKind::Collider(shape) = entry.node.kind.get_cloned() {
+                        materialize_collider(entry.clone(), shape).await;
+                    }
                 })
             }).await;
         }));
@@ -1431,20 +1439,64 @@ async fn materialize_sprite(
 }
 
 /// Collider (`NodeKind::Collider`) → an editor-overlay wireframe of the shape,
-/// drawn as a world-baked fat-line segment list (one-shot; re-materializes on
-/// shape/transform change via the kind observer).
+/// drawn as a world-baked fat-line segment list. Idempotent: it drains any
+/// existing wireframe first, so it doubles as the re-bake called by both the kind
+/// observer (shape change) and the transform observer (move/rotate). The geometry
+/// is world-baked (not parented to the node transform), so it must be rebuilt
+/// whenever the node's world changes or the wireframe would lie about where the
+/// collider is.
 async fn materialize_collider(
     entry: Arc<RendererNode>,
     shape: awsm_renderer_editor_protocol::ColliderShape,
 ) {
-    let parent_tk = entry.transform_key;
+    let key = entry.transform_key;
+    let node_id = entry.node_id;
     let entry2 = entry.clone();
+    // Drain existing lines so this re-bakes cleanly (the transform observer calls
+    // it on every move; the kind observer's teardown already drained, so this is a
+    // harmless no-op on the initial materialize).
+    let old_lines: Vec<_> = entry.line_keys.lock().unwrap().drain(..).collect();
     let line_key = with_renderer_mut(move |r| {
-        let world = r
+        for lk in old_lines {
+            r.remove_line(lk);
+        }
+        // Fresh world = parent's CURRENT world × this node's local. `get_world`
+        // returns a cached matrix only refreshed by the render loop's
+        // update_transforms, so reading this node's own cached world right after a
+        // `set_local` would be stale; recompute from the parent (unchanged when the
+        // collider itself moves) instead.
+        let local = r
             .transforms
-            .get_world(parent_tk)
-            .copied()
+            .get_local(key)
+            .map(|t| t.to_matrix())
             .unwrap_or(glam::Mat4::IDENTITY);
+        let parent_world = r
+            .transforms
+            .get_parent(key)
+            .ok()
+            .and_then(|p| r.transforms.get_world(p).ok().copied())
+            .unwrap_or(glam::Mat4::IDENTITY);
+        let world = parent_world * local;
+        // A Rapier collider has no scale — its size comes entirely from the
+        // ColliderShape extents and its placement is an isometry (translation +
+        // rotation). Strip scale from the world matrix so the wireframe shows the
+        // exact dimensions/placement physics sees, instead of folding node (or
+        // ancestor) scale on top of the shape extents. (FIXES.md #1.)
+        let (scale, rot, trans) = world.to_scale_rotation_translation();
+        // The collider's own scale is locked to unit (see SetTransform), so any
+        // non-unit world scale here is an ANCESTOR's — which the runtime ignores,
+        // re-introducing the gizmo/physics divergence #2 warns about. Flag it so
+        // the divergence is visible rather than silent. (FIXES.md #2 caveat.)
+        if (scale - glam::Vec3::ONE).abs().max_element() > 1e-3 {
+            tracing::warn!(
+                "collider node {node_id:?} has non-unit ancestor scale {:?}; \
+                 the runtime ignores scale on colliders, so the wireframe (and \
+                 physics) use shape extents only — the visual may diverge from \
+                 scaled siblings",
+                scale.to_array(),
+            );
+        }
+        let world = glam::Mat4::from_rotation_translation(rot, trans);
         let (positions, colors) = super::collider_wire::build(&shape, &world);
         if positions.is_empty() {
             return None;

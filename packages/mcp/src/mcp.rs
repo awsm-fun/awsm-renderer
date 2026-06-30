@@ -1501,7 +1501,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "World-space AABB { min, max } for each node (CPU-estimated; pass node UUIDs, or empty for all). Use to frame the camera or size objects."
+        description = "World-space AABB { min, max } for each node (CPU-estimated; pass node UUIDs, or empty for all). Use to frame the camera or size objects. Collider nodes report bounds from their ColliderShape extents at the node's world translation+rotation (scale is not part of a collider) — so this matches what the collider gizmo and physics actually use."
     )]
     async fn get_node_bounds(
         &self,
@@ -1905,7 +1905,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a node's local transform: translation [x,y,z], rotation quaternion [x,y,z,w], scale [x,y,z]."
+        description = "Set a node's local transform: translation [x,y,z], rotation quaternion [x,y,z,w], scale [x,y,z]. NOTE: collider nodes have no scale — `scale` is forced to [1,1,1] for them (a Rapier collider's size is its ColliderShape extents, and only translation+rotation export). To resize a collider, edit its shape (set_kind/patch_kind), not this scale."
     )]
     async fn node_set_transform(
         &self,

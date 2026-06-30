@@ -208,6 +208,15 @@ pub struct ClusterMeshRef {
 pub enum NodeKind {
     Group,
     Light(LightConfig),
+    /// A physics collider. Its SIZE comes entirely from the `ColliderShape`
+    /// extents (`half_extents` / `radius` / `half_height`) — NOT from the node's
+    /// transform scale. A Rapier collider has no scale: its placement is an
+    /// isometry, so only the node's translation + rotation are honored at export
+    /// (`ColliderSpec::from_node`). Node scale on a collider is locked to
+    /// `[1,1,1]` by the editor and ignored by the runtime — to make a collider
+    /// bigger, edit its shape extents, never the transform scale. Rotation IS
+    /// honored and is the only way to orient a Y-aligned Capsule/Cylinder/Cone
+    /// along X or Z, or to tilt a Box.
     Collider(ColliderShape),
     Camera(CameraConfig),
     /// The sole procedural-geometry node. Backed by an `AssetSource::Mesh`
