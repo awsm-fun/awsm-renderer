@@ -316,6 +316,44 @@ fn vertex_overrides_uvs_roundtrip() {
     let back: VertexOverrides = bitcode::deserialize(&bytes).expect("bitcode deserialize");
     assert_eq!(ov, back, "bitcode drift");
     assert!(!back.is_empty());
+
+    // TOML is the editor's `project.toml` Save format. Integer map keys used to
+    // make `toml::to_string_pretty` fail with "map key was not a string",
+    // rendering any project carrying per-vertex overrides unsaveable. The keys
+    // must serialize as strings here and parse back to the same u32 indices.
+    let toml_str = toml::to_string_pretty(&ov).expect("toml serialize");
+    let back: VertexOverrides = toml::from_str(&toml_str).expect("toml deserialize");
+    assert_eq!(ov, back, "TOML drift");
+    assert_eq!(back.uvs.get(&7), Some(&[0.5, 0.25]));
+}
+
+#[test]
+fn project_with_vertex_overrides_toml_roundtrip() {
+    // The editor's Save flow serializes the whole `EditorProject` to `project.toml`
+    // via `toml::to_string_pretty`. A `MeshDef` carrying any per-vertex override
+    // used to make that call fail with "map key was not a string" (integer map
+    // keys), so the project became unsaveable. Exercise the full project shape.
+    let asset_id = AssetId::new();
+    let mut project = project_with_mesh_asset(asset_id, "Tank tread");
+    match &mut project.assets.entries.get_mut(&asset_id).unwrap().source {
+        AssetSource::Mesh(def) => {
+            def.overrides.uvs.insert(0, [0.0, 0.0]);
+            def.overrides.uvs.insert(1259, [1.0, 0.5]);
+            def.overrides.positions.insert(42, [0.1, 0.2, 0.3]);
+        }
+        other => panic!("expected Mesh source, got {other:?}"),
+    }
+
+    let toml_str = toml::to_string_pretty(&project).expect("project toml serialize");
+    let back: EditorProject = toml::from_str(&toml_str).expect("project toml deserialize");
+    assert_eq!(project, back, "project TOML drift");
+    match &back.assets.entries.get(&asset_id).unwrap().source {
+        AssetSource::Mesh(def) => {
+            assert_eq!(def.overrides.uvs.get(&1259), Some(&[1.0, 0.5]));
+            assert_eq!(def.overrides.positions.get(&42), Some(&[0.1, 0.2, 0.3]));
+        }
+        other => panic!("expected Mesh source, got {other:?}"),
+    }
 }
 
 #[test]

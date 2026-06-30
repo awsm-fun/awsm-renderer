@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use awsm_renderer_scene::AssetId;
+use awsm_renderer_scene::{AssetId, NodeId};
 
 use crate::{EditorCommand, EditorMode, EditorQuery, QueryResult};
 
@@ -42,6 +42,13 @@ pub enum Request {
     },
     /// PNG of a texture asset thumbnail (raw bytes).
     TexturePng(AssetId),
+    /// Bake a node (and its subtree) — or the whole scene when `node` is `None` —
+    /// to a binary glTF. Like the PNG variants, the (potentially multi-MiB) `.glb`
+    /// bytes never ride the control link: the editor POSTs them to the server's
+    /// `/glb/<id>` side-channel and replies with a small [`GlbHandle`]. Returning
+    /// the base64 inline (the old `EditorQuery::ExportGlb` path) reliably blew the
+    /// session on meshes past a couple thousand verts.
+    ExportGlb { node: Option<NodeId> },
     /// The current workspace mode.
     Mode,
 }
@@ -105,6 +112,19 @@ pub struct PngHandle {
     pub height: u32,
 }
 
+/// A reference to a `.glb` the editor uploaded out-of-band. Like [`PngHandle`],
+/// the bytes do **not** ride the control link — the editor POSTs them to the
+/// server's `/glb/<id>` HTTP route and returns this small handle here instead, so
+/// a multi-MiB export can't blow the session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlbHandle {
+    /// Opaque id (uuid v4) the editor minted and POSTed the bytes under; the
+    /// server stores them at a temp path keyed by this id.
+    pub id: String,
+    /// Size of the uploaded `.glb` in bytes.
+    pub byte_len: usize,
+}
+
 /// Editor → server. The reply to a [`Request`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
@@ -116,6 +136,9 @@ pub enum Response {
     /// A rendered PNG, uploaded out-of-band (see [`PngHandle`]); only this handle
     /// crosses the control link.
     Png(PngHandle),
+    /// An exported `.glb`, uploaded out-of-band (see [`GlbHandle`]); only this
+    /// handle crosses the control link.
+    Glb(GlbHandle),
     /// The current workspace mode.
     Mode(EditorMode),
     /// The request failed; the string is a human-readable reason.
@@ -436,6 +459,13 @@ mod wire_roundtrip_tests {
             },
             "scene_png",
         );
+        assert_roundtrips(&Request::ExportGlb { node: None }, "export_glb_scene");
+        assert_roundtrips(
+            &Request::ExportGlb {
+                node: Some(NodeId::new()),
+            },
+            "export_glb_node",
+        );
         assert_roundtrips(&Request::Mode, "mode");
     }
 
@@ -466,6 +496,17 @@ mod wire_roundtrip_tests {
             }),
         };
         let j = serde_json::to_string(&client).unwrap();
+        let back: WsClientMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        let glb = WsClientMsg::Response {
+            id: 8,
+            resp: Response::Glb(GlbHandle {
+                id: "def".to_string(),
+                byte_len: 65536,
+            }),
+        };
+        let j = serde_json::to_string(&glb).unwrap();
         let back: WsClientMsg = serde_json::from_str(&j).unwrap();
         assert_eq!(j, serde_json::to_string(&back).unwrap());
 

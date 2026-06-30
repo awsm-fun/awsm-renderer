@@ -1,10 +1,10 @@
 //! GLB export — lower the live editor scene (or one subtree) to a baked
 //! [`awsm_renderer_glb_export::GlbScene`] and serialize it to a `.glb`.
 //!
-//! This is the standalone "get geometry out" path behind
-//! [`EditorQuery::ExportGlb`](awsm_renderer_editor_protocol::query::EditorQuery::ExportGlb)
-//! / the `export_scene_glb` + `export_node_glb` MCP tools. The whole-runtime
-//! player publish (Phase 6) reuses the same `GlbScene` IR + `write_glb`.
+//! This is the standalone "get geometry out" path behind `Request::ExportGlb`
+//! (the `EditorController::export_glb_bytes` side-channel) and the
+//! `export_scene_glb` / `export_node_glb` MCP tools. The whole-runtime player
+//! publish (Phase 6) reuses the same `GlbScene` IR + `write_glb`.
 //!
 //! ## Material policy (locked)
 //! - assigned/inline **PBR** → glTF PBR; **Unlit** → `KHR_materials_unlit`;

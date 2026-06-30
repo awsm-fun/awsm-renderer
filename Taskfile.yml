@@ -143,12 +143,9 @@ tasks:
       #    release on CI (.github/workflows/release.yml). Idempotent like the
       #    commit above: if the tag already exists (a re-run after a partial
       #    release — e.g. crates.io rate-limited mid-publish), keep it and move on.
-      - |
-        if git rev-parse -q --verify "refs/tags/v{{.VERSION}}" >/dev/null; then
-          echo "  Tag v{{.VERSION}} already exists — keeping it (resuming a partial release)."
-        else
-          git tag -a "v{{.VERSION}}" -m "v{{.VERSION}}"
-        fi
+      - task: tag-push
+        vars:
+          VERSION: "{{.VERSION}}"
       # 4. Publish the library crates to crates.io (the explicit, ordered set).
       - task: crates-publish
       # 5. Deploy both frontends to Cloudflare Pages (scene editor + model tester).
@@ -157,6 +154,18 @@ tasks:
       - git push
       - git push origin "v{{.VERSION}}"
       - echo "✅ v{{.VERSION}} — crates published, frontends deployed, tag pushed (MCP binary release building on CI)."
+
+  tag-push:
+    desc: "Push the current branch + the given tag (no-op if already pushed). Usage: task tag-push -- <version>"
+    requires:
+      vars: [VERSION]
+    cmds:
+      - |
+        if git rev-parse -q --verify "refs/tags/v{{.VERSION}}" >/dev/null; then
+          echo "  Tag v{{.VERSION}} already exists — keeping it (resuming a partial release)."
+        else
+          git tag -a "v{{.VERSION}}" -m "v{{.VERSION}}"
+        fi
 
   crates-publish:
     desc: "Publish the 13 awsm-renderer library crates to crates.io (dependency-ordered)."

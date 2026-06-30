@@ -222,19 +222,51 @@ fn build_custom(renderer: &mut AwsmRenderer, inst: &MaterialInstance) -> Option<
             }
         }
         // Per-mesh buffer-slot overrides (#4.2): bind a loaded `.bin`'s words.
-        if !inst.buffer_overrides.is_empty() {
-            let buf_slots: Vec<String> = renderer
-                .dynamic_material_registration(dm.shader_id)
-                .map(|reg| reg.layout.buffers.iter().map(|b| b.name.clone()).collect())
-                .unwrap_or_default();
-            for (i, name) in buf_slots.iter().enumerate() {
-                if let Some(bref) = inst.buffer_overrides.get(name) {
-                    if let Some(words) = super::buffer_cache::get(bref.asset) {
+        // Snapshot the declared slots UNCONDITIONALLY (not only when an override
+        // exists) together with whether each has a registration default — so we
+        // can flag a declared, default-less slot that ends up with no bound data.
+        // Such a slot silently packs `(offset, length) = (0, 0)` and the author's
+        // WGSL reads zeros (garbage) with no other signal (silent-empty).
+        let buf_slots: Vec<(String, bool)> = renderer
+            .dynamic_material_registration(dm.shader_id)
+            .map(|reg| {
+                reg.layout
+                    .buffers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| {
+                        let has_default = reg.buffer_defaults.get(i).is_some_and(|d| !d.is_empty());
+                        (b.name.clone(), has_default)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !buf_slots.is_empty() {
+            let mut unbound: Vec<&str> = Vec::new();
+            for (i, (name, has_default)) in buf_slots.iter().enumerate() {
+                match inst
+                    .buffer_overrides
+                    .get(name)
+                    .and_then(|bref| super::buffer_cache::get(bref.asset))
+                {
+                    Some(words) => {
                         if let Some(slot) = dm.buffers.get_mut(i) {
                             *slot = Some(words);
                         }
                     }
+                    // No per-instance data, but a registration default covers it.
+                    None if *has_default => {}
+                    // Declared, default-less, and unbound → reads zeros.
+                    None => unbound.push(name),
                 }
+            }
+            if !unbound.is_empty() {
+                tracing::warn!(
+                    "custom material {} on this mesh declares buffer slot(s) {:?} with no bound \
+                     data — they read zeros; bind data via set_material_buffer",
+                    inst.asset,
+                    unbound,
+                );
             }
         }
         // Per-mesh texture-slot overrides (#4.2): resolve each TextureRef to a

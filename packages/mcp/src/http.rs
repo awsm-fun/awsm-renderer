@@ -5,6 +5,9 @@
 //! - `POST /png/{id}` / `GET /png/{id}` — the PNG byte side-channel: the editor
 //!   POSTs rendered image bytes here (off the control link); the rmcp tool layer
 //!   (and humans/tooling) read them back.
+//! - `POST /glb/{id}` / `GET /glb/{id}` — the same side-channel for exported `.glb`
+//!   bytes (`export_scene_glb` / `export_node_glb`); the tool layer returns the
+//!   temp-file path so the bytes never cross the control link or the token stream.
 //! - `GET  /health`      — agent-facing liveness (editor attached? last boot error?).
 //! - `POST /boot-error`  — the editor reports a renderer/init failure (before any
 //!   MCP attach), so a boot crash is visible to agents via `/health`.
@@ -38,11 +41,19 @@ use crate::mcp::EditorMcp;
 /// evicted oldest-first and their files deleted.
 const MAX_RETAINED_PNGS: usize = 32;
 
+/// Cap on retained `.glb` files (bounds temp-dir disk use). Exports past this are
+/// evicted oldest-first and their files deleted.
+const MAX_RETAINED_GLBS: usize = 16;
+
 /// Body-size cap for a PNG upload. A high-res scene render is a few MiB, well past
 /// Axum's 2 MB default — which would silently 413 a non-trivial screenshot. This
 /// is a loopback-only side-channel from the trusted local editor; the cap exists
 /// only to bound memory (the body is buffered before the temp-file write).
 const PNG_BODY_LIMIT: usize = 256 * 1024 * 1024;
+
+/// Body-size cap for a `.glb` upload — a whole-scene export can be large, so use
+/// the same generous loopback-only cap as PNG (see [`PNG_BODY_LIMIT`]).
+const GLB_BODY_LIMIT: usize = 256 * 1024 * 1024;
 
 /// On-disk path the editor's PNG upload lands at (and the rmcp tool reads back).
 /// Both sides agree on this naming so the tool needs no shared in-memory map.
@@ -50,11 +61,20 @@ pub(crate) fn png_path(id: &str) -> PathBuf {
     std::env::temp_dir().join(format!("awsm-renderer-scene-mcp-{id}.png"))
 }
 
+/// On-disk path the editor's `.glb` export upload lands at. The rmcp tool returns
+/// this path verbatim (it does not inline the bytes), and `GET /glb/<id>` serves
+/// it for humans / tooling.
+pub(crate) fn glb_path(id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("awsm-renderer-scene-mcp-{id}.glb"))
+}
+
 #[derive(Clone)]
 struct AppState {
     link: EditorLink,
     /// Insertion-ordered PNG ids for LRU eviction (see [`MAX_RETAINED_PNGS`]).
     pngs: Arc<Mutex<VecDeque<String>>>,
+    /// Insertion-ordered `.glb` ids for LRU eviction (see [`MAX_RETAINED_GLBS`]).
+    glbs: Arc<Mutex<VecDeque<String>>>,
     /// The most recent editor BOOT error (renderer/init failure reported by the
     /// page before any MCP attach happened), with a timestamp. Agents read it via
     /// `GET /health` — without this, a boot-time failure is invisible outside the
@@ -68,6 +88,7 @@ pub async fn serve(addr: SocketAddr, link: EditorLink) -> Result<()> {
     let state = AppState {
         link: link.clone(),
         pngs: Arc::new(Mutex::new(VecDeque::new())),
+        glbs: Arc::new(Mutex::new(VecDeque::new())),
         boot_error: Arc::new(Mutex::new(None)),
     };
 
@@ -111,12 +132,20 @@ pub async fn serve(addr: SocketAddr, link: EditorLink) -> Result<()> {
                 .get(png_download)
                 .layer(DefaultBodyLimit::max(PNG_BODY_LIMIT)),
         )
+        // The `.glb` side-channel: the editor POSTs exported glTF bytes here; the
+        // rmcp tool returns the temp-file path (never the inline bytes).
+        .route(
+            "/glb/{id}",
+            post(glb_upload)
+                .get(glb_download)
+                .layer(DefaultBodyLimit::max(GLB_BODY_LIMIT)),
+        )
         .nest_service("/mcp", mcp_service)
         .layer(cors)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("http listening on http://{addr} (/mcp, /editor, /debug, /png, /health)");
+    tracing::info!("http listening on http://{addr} (/mcp, /editor, /debug, /png, /glb, /health)");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -185,5 +214,34 @@ async fn png_download(Path(id): Path<String>) -> impl IntoResponse {
     match std::fs::read(png_path(id)) {
         Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "no such png").into_response(),
+    }
+}
+
+/// `POST /glb/{id}` — the editor uploads an exported `.glb` here (off the control
+/// link). We write it to a temp file and remember the id for LRU eviction.
+async fn glb_upload(State(s): State<AppState>, Path(id): Path<String>, body: Bytes) -> StatusCode {
+    let path = glb_path(&id);
+    if let Err(e) = std::fs::write(&path, &body) {
+        tracing::warn!("glb upload write failed ({}): {e}", path.display());
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    tracing::debug!("glb {id}: {} bytes → {}", body.len(), path.display());
+    // Track for eviction; drop the oldest beyond the cap.
+    let mut q = s.glbs.lock().unwrap();
+    q.push_back(id);
+    while q.len() > MAX_RETAINED_GLBS {
+        if let Some(old) = q.pop_front() {
+            let _ = std::fs::remove_file(glb_path(&old));
+        }
+    }
+    StatusCode::OK
+}
+
+/// `GET /glb/{id}` — serve a previously-exported `.glb` (for humans / tooling).
+async fn glb_download(Path(id): Path<String>) -> impl IntoResponse {
+    let id = id.strip_suffix(".glb").unwrap_or(&id);
+    match std::fs::read(glb_path(id)) {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "model/gltf-binary")], bytes).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "no such glb").into_response(),
     }
 }

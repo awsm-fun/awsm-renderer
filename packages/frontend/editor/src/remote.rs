@@ -27,7 +27,7 @@ use gloo_net::websocket::Message;
 use wasm_bindgen_futures::spawn_local;
 
 use awsm_renderer_editor_protocol::{
-    EditorEvent, PngHandle, Request, Response, WsClientMsg, WsServerMsg,
+    EditorEvent, GlbHandle, PngHandle, Request, Response, WsClientMsg, WsServerMsg,
 };
 
 use crate::controller::controller;
@@ -402,7 +402,25 @@ async fn dispatch(req: Request) -> Response {
             Ok(data_url) => png_from_data_url(&data_url).await,
             Err(e) => Response::Err(e),
         },
+        Request::ExportGlb { node } => glb_response(ctrl.export_glb_bytes(node).await).await,
     }
+}
+
+/// POST exported `.glb` bytes to the server's `/glb/<id>` side-channel (off the
+/// control link) and return a [`GlbHandle`]. Mirrors [`png_from_data_url`]: the
+/// bytes never ride the link, so a multi-MiB export can't blow the session.
+async fn glb_response(result: Result<Vec<u8>, String>) -> Response {
+    let bytes = match result {
+        Ok(bytes) => bytes,
+        Err(e) => return Response::Err(e),
+    };
+    let byte_len = bytes.len();
+    let id = uuid::Uuid::new_v4().to_string();
+    let origin = ORIGIN.with(|o| o.get_cloned());
+    if let Err(e) = upload_bytes(&origin, "glb", &id, bytes).await {
+        return Response::Err(format!("glb upload failed: {e}"));
+    }
+    Response::Glb(GlbHandle { id, byte_len })
 }
 
 /// Turn an optional `data:image/png;base64,…` URL into a [`Response::Png`] handle
@@ -428,7 +446,7 @@ async fn png_from_data_url(data_url: &str) -> Response {
     let byte_len = bytes.len();
     let id = uuid::Uuid::new_v4().to_string();
     let origin = ORIGIN.with(|o| o.get_cloned());
-    if let Err(e) = upload_png(&origin, &id, bytes).await {
+    if let Err(e) = upload_bytes(&origin, "png", &id, bytes).await {
         return Response::Err(format!("png upload failed: {e}"));
     }
     Response::Png(PngHandle {
@@ -451,12 +469,12 @@ fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
-/// POST raw PNG bytes to `<origin>/png/<id>` over plain HTTP — a separate
-/// connection from the control link, so a multi-MiB render never blocks small
-/// frames. Posting *before* replying guarantees the server has the bytes by the
-/// time it sees the handle.
-async fn upload_png(origin: &str, id: &str, bytes: Vec<u8>) -> Result<(), String> {
-    let url = format!("{}/png/{id}", http_base(origin, tls().get()));
+/// POST raw bytes to `<origin>/<kind>/<id>` (`kind` is `png` or `glb`) over plain
+/// HTTP — a separate connection from the control link, so a multi-MiB payload
+/// never blocks small frames. Posting *before* replying guarantees the server has
+/// the bytes by the time it sees the handle.
+async fn upload_bytes(origin: &str, kind: &str, id: &str, bytes: Vec<u8>) -> Result<(), String> {
+    let url = format!("{}/{kind}/{id}", http_base(origin, tls().get()));
     let body = js_sys::Uint8Array::from(bytes.as_slice());
     let resp = gloo_net::http::Request::post(&url)
         .header("content-type", "application/octet-stream")
