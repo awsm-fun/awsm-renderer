@@ -1980,6 +1980,7 @@ impl Shadows {
                                 cascade.world_per_texel,
                                 cascade_count,
                                 *split_far,
+                                params.shadow_samples,
                             );
                             // cascade_info.w = 1.0 → EVSM 2D sample.
                             descriptor_bytes[off + 108..off + 112]
@@ -2033,6 +2034,7 @@ impl Shadows {
                                 cascade.world_per_texel,
                                 cascade_count,
                                 *split_far,
+                                params.shadow_samples,
                             );
                         }
 
@@ -2200,6 +2202,7 @@ impl Shadows {
                         // `split_far` to +infinity-ish makes the shader's
                         // walk pick this descriptor unconditionally.
                         f32::MAX,
+                        params.shadow_samples,
                     );
 
                     let view_slot = alloc.view_base;
@@ -2387,6 +2390,7 @@ impl Shadows {
                         0.0,
                         1,
                         f32::MAX,
+                        params.shadow_samples,
                     );
                     // Patch in the cube-specific atlas_rect (light_pos +
                     // range) and the "kind = cube + slice index" in

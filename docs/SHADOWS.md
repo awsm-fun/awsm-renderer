@@ -21,11 +21,14 @@ bottom for where to look.
   as opaque.
 * **Sample-site filters**: `Hard` (1-tap), `Soft` (PCF with a
   world-unit-sized kernel), `Pcss` (variable-kernel PCF with blocker
-  search — on every light kind, incl. point/cube). The point-light
-  soft/Pcss taps use a clump-free Vogel disc; an optional screen-space
-  [denoise blur](#shadow-denoise-blur) smooths the residual penumbra
-  speckle. EVSM is selected per-cascade via `evsm_cutoff` and gives a
-  single-bilinear-fetch path for the farthest cascades.
+  search — on every light kind, incl. point/cube). All kinds sample one
+  shared **baked Vogel (golden-angle) disc** — even, clump-free coverage
+  at a runtime-chosen tap count. The per-light `shadow_samples` knob sets
+  that count (the cost lever); an optional screen-space
+  [denoise blur](#shadow-denoise-blur) smooths residual penumbra speckle
+  so a modest count suffices. EVSM is selected per-cascade via
+  `evsm_cutoff` and gives a single-bilinear-fetch path for the farthest
+  cascades.
 * **Screen-space contact shadows (SSCS)** refine the dominant
   directional light's term in the opaque pass.
 
@@ -46,6 +49,7 @@ under each Light node's **Shadows** sub-panel.
 | `hardness`                  | `Hard` / `Soft` / `Pcss`                                | Sample-site filter. `Pcss` runs on every light kind; point-light Pcss is a fixed-kernel widened-Soft (see Known limits). |
 | `pcss_penumbra_scale`       | f32, default 1.0                                        | Only consulted when `hardness == Pcss`.                                                     |
 | `kernel_slack`              | f32, default 2.0 (point only)                          | Soft/Pcss self-shadow acne slack, in cube-texels of quantization to forgive (scaled per-texel, NOT by kernel radius — see Known limits). `0` = off.  |
+| `shadow_samples`            | u32, default 16, clamped `[8, 64]`                     | Soft/Pcss Vogel tap budget — the per-shadowed-pixel `textureSampleCompare` cost knob, all light kinds (PCSS blocker search uses ¾). Higher = smoother penumbra, more cost; reserve high counts for hero lights. `Hard` ignores it. |
 | `max_distance`              | f32 (m)                                                 | Camera-distance cutoff. Beyond this, the light's shadow fades.                              |
 | `cascade_count`             | 1..=4 (directional only)                                | Default 4. Lower for cheaper but coarser shadow coverage.                                   |
 | `cascade_split_lambda`      | 0.0..=1.0 (directional only)                            | PSSM split bias. `0` = uniform; `1` = logarithmic. Default `0.5`.                           |
@@ -187,17 +191,21 @@ historical reasons; new player code should prefer the From impls.
   `24 · res² · max_lights` bytes. The defaults (8 lights × 1024²) cost
   ~24 MB. Mobile-class browsers usually want `512²` × `4` lights
   (~3 MB) or smaller.
+* **`shadow_samples`** (per-light, default 16) — THE tap-count cost
+  lever. Every shadowed pixel does `shadow_samples` (Soft) or
+  `shadow_samples` + ¾·`shadow_samples` (Pcss, blocker + PCF) cube/atlas
+  `textureSampleCompare`s, so cost is ~linear in it. Lower for fill
+  lights / low-end GPUs; raise only for hero lights. The denoise blur is
+  the cheaper *global* noise lever, so 16 + denoise usually beats 48 raw.
 * **`hardness`** at the receiver site:
   * `Hard`: 1 comparison tap per fragment.
-  * `Soft`: 16-tap rotated Poisson disk PCF. Kernel half-width is
-    sized in *world units* (`soft_world_radius`, ~25 cm at default
-    light angles) divided by `world_per_texel`, clamped to
-    `[3, 20]` texels. With hardware 2×2 bilinear comparison per tap
-    that's ~64 effective samples — a clearly soft edge across the
-    full cascade chain.
-  * `Pcss`: blocker search + variable-kernel PCF. AAA quality, AAA
-    cost; reserve for hero lights. (Point lights use a clump-free Vogel
-    disc — 24 blocker + 32 PCF taps; the 2D/cascade path stays at 16.)
+  * `Soft`: `shadow_samples`-tap Vogel-disc PCF. Kernel half-width is
+    sized in *world units* (`soft_world_radius`) divided by
+    `world_per_texel`. With hardware 2×2 bilinear comparison per tap the
+    effective sample count is ~4×, a clearly soft edge.
+  * `Pcss`: blocker search + variable-kernel PCF. AAA quality, AAA cost;
+    reserve for hero lights. Tap budget is `shadow_samples` (PCF) +
+    ¾·`shadow_samples` (blocker), all light kinds.
 * **`denoise`** — one separable, light-count-independent screen-space
   blur on the shared visibility buffer (see [Shadow denoise](#shadow-denoise-blur)).
   Cheap relative to the shadow sampling it cleans up; on by default.
@@ -464,17 +472,21 @@ penumbra against a high-contrast (dark-shadow / bright-floor) receiver.
    denoise**, on by default) exists to smooth exactly this. Confirm it's
    enabled; if a player build looks noisy, check `ShadowsConfig::denoise`
    is `true`. See [Shadow denoise](#shadow-denoise-blur).
-2. **Kernel reaching off-tile (directional/spot).** On the 2D path,
+2. **Too few samples.** Raise the light's `shadow_samples` (default 16).
+   Low counts on a wide penumbra are the direct cause of speckle; with
+   denoise on, 16 is usually clean, but a very wide PCSS penumbra on a
+   hero light may want 24–48.
+3. **Kernel reaching off-tile (directional/spot).** On the 2D path,
    `pcss_penumbra_scale` can widen the variable kernel beyond the
    cascade's atlas tile, where blocker-search taps hit the tile clamp.
    Reduce `pcss_penumbra_scale` (try `1.0` and work up). Confirm with
    `debug_cascade_colors` that the receiver isn't right at a cascade
    boundary where two PCSS kernels overlap.
-3. **Underlying sampler.** The point-light soft/Pcss taps use a
-   clump-free Vogel disc (32 PCF / 24 blocker taps) — far smoother than a
-   rotated fixed-Poisson set — so the residual after denoise is minimal.
-   If you still see structure with denoise on, it's likely the MSAA
-   silhouette-edge band the blur skips (see the denoise limitation).
+4. **Underlying sampler.** All kinds sample a clump-free baked Vogel disc
+   (far smoother than a rotated fixed-Poisson set), so the residual after
+   denoise is minimal. If you still see structure with denoise on, it's
+   likely the MSAA silhouette-edge band the blur skips (see the denoise
+   limitation).
 
 #### Phantom double / mirrored shadow on point lights
 
@@ -525,8 +537,8 @@ Recipe for an unambiguous EVSM-vs-PCF demo:
   inlined at the call site (a forward-declared helper tripped a
   Dawn validation error). Penumbra width follows
   `(z_recv − z_blocker_avg) / z_blocker_avg`, mapped to a
-  world-space disc radius clamped to `[10 cm, 1 m]`. Taps use a
-  Vogel disc (24 blocker / 32 PCF) for clump-free coverage.
+  world-space disc radius clamped to `[10 cm, 1 m]`. Taps use the shared
+  baked Vogel disc at the light's `shadow_samples` count (¾ for blocker).
 * **`kernel_slack` is per-texel, not per-kernel** — the point-light
   soft/Pcss self-shadow slack (which removes "acne rings" on a flat
   floor) is scaled by the world footprint of **one** cube texel, not by
@@ -570,7 +582,8 @@ move with the code if it gets refactored. Map of where to look:
 | Atlas clear-once / cube clear      | [`shadows/render_pass.rs`](../packages/crates/renderer/src/shadows/render_pass.rs)                                                                  |
 | Cube Y-flip + CW winding           | [`shadows/mod.rs`](../packages/crates/renderer/src/shadows/mod.rs) (search for `y_flip`)                                                            |
 | EVSM moment write + blur shaders   | [`shadows/evsm.rs`](../packages/crates/renderer/src/shadows/evsm.rs)                                                                                |
-| Cascade-blend, PCF / PCSS taps, Vogel disc, `kernel_slack` | [`shared_wgsl/shadow/bind_groups.wgsl`](../packages/crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl)                   |
+| Cascade-blend, PCF/PCSS taps, baked Vogel disc (`VOGEL_BASE`), `shadow_samples`, `kernel_slack` | [`shared_wgsl/shadow/bind_groups.wgsl`](../packages/crates/renderer/src/render_passes/shared/shared_wgsl/shadow/bind_groups.wgsl)                   |
+| Per-light shadow descriptor packing (`extra_params`) | [`shadows/helpers.rs`](../packages/crates/renderer/src/shadows/helpers.rs) + [`shadows/consts.rs`](../packages/crates/renderer/src/shadows/consts.rs) |
 | Shadow denoise blur (visibility)   | [`material_prep/shader/shadow_blur_wgsl/`](../packages/crates/renderer/src/render_passes/material_prep/shader/shadow_blur_wgsl) + [`render_blur`](../packages/crates/renderer/src/render_passes/material_prep/render_pass.rs) |
 | Equal-resolution cascades          | [`shadows/cascade.rs::cascade_resolution`](../packages/crates/renderer/src/shadows/cascade.rs)                                                      |
 | Slope-scale + constant depth bias  | [`build_shadow_pipeline`](../packages/crates/renderer/src/shadows/mod.rs) (`with_depth_bias(1).with_depth_bias_slope_scale(1.5)`)                  |

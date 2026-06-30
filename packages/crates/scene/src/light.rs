@@ -72,6 +72,12 @@ pub struct LightShadowConfig {
     /// risks minor peter-panning right at contacts.
     #[serde(default = "default_kernel_slack")]
     pub kernel_slack: f32,
+    /// Soft/PCSS Vogel tap budget — the per-shadowed-pixel sample cost for this
+    /// light, all kinds (the PCSS blocker search uses ¾ of it). Higher =
+    /// smoother penumbra, more cost; reserve high counts for hero lights.
+    /// Clamped to `[8, 64]` by the renderer. `Hard` ignores it.
+    #[serde(default = "default_shadow_samples")]
+    pub shadow_samples: u32,
     /// Beyond this distance from the camera the shadow fades and the
     /// light skips its shadow pass that frame.
     #[serde(default = "default_max_distance")]
@@ -105,6 +111,7 @@ impl Default for LightShadowConfig {
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
             kernel_slack: 2.0,
+            shadow_samples: default_shadow_samples(),
             max_distance: 0.0,
             cascade_count: 4,
             cascade_split_lambda: 0.5,
@@ -199,6 +206,9 @@ fn default_pcss_scale() -> f32 {
 }
 fn default_kernel_slack() -> f32 {
     2.0
+}
+fn default_shadow_samples() -> u32 {
+    16
 }
 fn default_max_distance() -> f32 {
     // <= 0 = AUTO (follow the camera far plane) — scale-safe; see the

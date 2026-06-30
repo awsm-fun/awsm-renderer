@@ -68,6 +68,7 @@ pub fn light_shadow_params_from_config(
         },
         pcss_penumbra_scale: cfg.pcss_penumbra_scale,
         kernel_slack: cfg.kernel_slack,
+        shadow_samples: cfg.shadow_samples,
         max_distance: cfg.max_distance,
         cascade_count: cfg.cascade_count,
         cascade_split_lambda: cfg.cascade_split_lambda,

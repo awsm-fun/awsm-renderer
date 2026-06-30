@@ -65,6 +65,7 @@ pub(super) fn write_shadow_descriptor(
     cascade_y_param: f32,
     cascade_count: u32,
     split_far: f32,
+    shadow_samples: u32,
 ) {
     debug_assert!(dest.len() >= SHADOW_DESCRIPTOR_BYTES);
     let cols = view_projection.to_cols_array();
@@ -101,6 +102,11 @@ pub(super) fn write_shadow_descriptor(
     dest[100..104].copy_from_slice(&cascade_y_param.to_ne_bytes());
     dest[104..108].copy_from_slice(&(cascade_count as f32).to_ne_bytes());
     dest[108..112].copy_from_slice(&0.0_f32.to_ne_bytes());
+    // extra_params: (shadow_samples, pad, pad, pad).
+    dest[112..116].copy_from_slice(&(shadow_samples as f32).to_ne_bytes());
+    dest[116..120].copy_from_slice(&0.0_f32.to_ne_bytes());
+    dest[120..124].copy_from_slice(&0.0_f32.to_ne_bytes());
+    dest[124..128].copy_from_slice(&0.0_f32.to_ne_bytes());
 }
 
 /// Writes a directional-cascade descriptor (kind = 3) whose depth
@@ -125,6 +131,7 @@ pub(super) fn write_shadow_cascade_array_descriptor(
     world_per_texel: f32,
     cascade_count: u32,
     split_far: f32,
+    shadow_samples: u32,
 ) {
     debug_assert!(dest.len() >= SHADOW_DESCRIPTOR_BYTES);
     let cols = view_projection.to_cols_array();
@@ -161,6 +168,11 @@ pub(super) fn write_shadow_cascade_array_descriptor(
     dest[104..108].copy_from_slice(&(cascade_count as f32).to_ne_bytes());
     // cascade_info.w = 3.0 → cascade-array PCF.
     dest[108..112].copy_from_slice(&3.0_f32.to_ne_bytes());
+    // extra_params: (shadow_samples, pad, pad, pad).
+    dest[112..116].copy_from_slice(&(shadow_samples as f32).to_ne_bytes());
+    dest[116..120].copy_from_slice(&0.0_f32.to_ne_bytes());
+    dest[120..124].copy_from_slice(&0.0_f32.to_ne_bytes());
+    dest[124..128].copy_from_slice(&0.0_f32.to_ne_bytes());
 }
 
 pub(super) fn build_evsm_moment_write_bind_group(

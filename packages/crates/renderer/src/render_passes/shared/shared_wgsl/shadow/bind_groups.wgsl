@@ -23,6 +23,11 @@ struct ShadowDescriptor {
     // and Gaussian blur landed alongside it. If a future tweak leaves
     // EVSM disabled the cascade falls back to PCF on `shadow_atlas`.
     cascade_info: vec4<f32>,
+    // (shadow_samples, pad, pad, pad) — per-light soft/PCSS Vogel tap budget
+    // (.x). Universal slot: kernel_slack overloads cascade_info.x and is only
+    // free on the cube path, so the tap count (read by every light kind) needs
+    // its own. Read via `shadow_tap_count(desc.extra_params.x)`.
+    extra_params: vec4<f32>,
 };
 
 struct ShadowGlobals {
@@ -65,27 +70,86 @@ const SHADOW_INDEX_NONE: u32 = 0xFFFFFFFFu;
 // (ABI — the pipeline layout always has the shadow group).
 {% if needs_shadow_sampling %}
 
-// 16 Poisson-distributed samples in `[-1, 1]^2`. Used by both the
-// PCSS blocker search and the variable-kernel PCF pass. The same
-// table doubled-up keeps the WGSL small; a per-pixel rotation breaks
-// up the regular pattern.
-const POISSON_DISK_16: array<vec2<f32>, 16> = array<vec2<f32>, 16>(
-    vec2<f32>(-0.94201624, -0.39906216),
-    vec2<f32>( 0.94558609, -0.76890725),
-    vec2<f32>(-0.09418410, -0.92938870),
-    vec2<f32>( 0.34495938,  0.29387760),
-    vec2<f32>(-0.91588581,  0.45771432),
-    vec2<f32>(-0.81544232, -0.87912464),
-    vec2<f32>(-0.38277543,  0.27676845),
-    vec2<f32>( 0.97484398,  0.75648379),
-    vec2<f32>( 0.44323325, -0.97511554),
-    vec2<f32>( 0.53742981, -0.47373420),
-    vec2<f32>(-0.26496911, -0.41893023),
-    vec2<f32>( 0.79197514,  0.19090188),
-    vec2<f32>(-0.24188840,  0.99706507),
-    vec2<f32>(-0.81409955,  0.91437590),
-    vec2<f32>( 0.19984126,  0.78641367),
-    vec2<f32>( 0.14383161, -0.14100790),
+// Baked Vogel (sunflower) disc — the single sampling pattern for ALL shadow
+// kinds (cube + cascade + spot; PCF, blocker search, and PCSS). Golden-angle
+// spiral: even coverage with no clumps at any count, so a per-pixel phase
+// rotation decorrelates neighbours WITHOUT exposing clumps as speckle (the
+// failure mode of rotating a fixed Poisson set over a wide kernel).
+//
+// VOGEL_BASE[i] = sqrt(i+0.5) * (cos(i*GA), sin(i*GA)). The runtime point for
+// an n-tap disc is `rotate(VOGEL_BASE[i], phase) * inversesqrt(n)`, which
+// equals `sqrt((i+0.5)/n)` at angle `i*GA + phase`. Splitting the radius this
+// way is the whole trick: the only n-dependent factor is `inversesqrt(n)`,
+// computed ONCE per pixel — so the tap count `n` is a free runtime parameter
+// (truncating to the first n entries × rsqrt(n) still fills the full unit disc)
+// AND there are ZERO transcendentals per tap (vs sqrt+sin+cos in the naive
+// formula). `n` may be any value up to VOGEL_MAX_TAPS.
+const VOGEL_MAX_TAPS: u32 = 64u;
+const VOGEL_BASE: array<vec2<f32>, 64> = array<vec2<f32>, 64>(
+    vec2<f32>(0.707107, 0.000000),
+    vec2<f32>(-0.903089, 0.827303),
+    vec2<f32>(0.138232, -1.575085),
+    vec2<f32>(1.138285, 1.484691),
+    vec2<f32>(-2.088893, -0.369496),
+    vec2<f32>(1.978782, -1.258739),
+    vec2<f32>(-0.661864, 2.462100),
+    vec2<f32>(-1.262246, -2.430378),
+    vec2<f32>(2.738569, 1.000121),
+    vec2<f32>(-2.849024, 1.176036),
+    vec2<f32>(1.373418, -2.934914),
+    vec2<f32>(1.014921, 3.235728),
+    vec2<f32>(-3.058984, -1.772744),
+    vec2<f32>(3.588536, -0.788930),
+    vec2<f32>(-2.190028, 3.115089),
+    vec2<f32>(-0.505947, -3.904359),
+    vec2<f32>(3.106019, 2.617756),
+    vec2<f32>(-4.179728, 0.172845),
+    vec2<f32>(3.048791, -3.033954),
+    vec2<f32>(-0.203976, 4.411167),
+    vec2<f32>(-2.900934, -3.476288),
+    vec2<f32>(4.595400, 0.618305),
+    vec2<f32>(-3.893673, 2.709116),
+    vec2<f32>(1.063975, -4.729477),
+    vec2<f32>(2.460920, 4.294633),
+    vec2<f32>(-4.810863, -1.534796),
+    vec2<f32>(4.673141, -2.159110),
+    vec2<f32>(-2.024521, 4.837490),
+    vec2<f32>(-1.806841, -5.023478),
+    vec2<f32>(4.807809, 2.526850),
+    vec2<f32>(-5.340266, 1.407677),
+    vec2<f32>(3.035444, -4.720813),
+    vec2<f32>(0.965593, 5.618508),
+    vec2<f32>(-4.576062, -3.543960),
+    vec2<f32>(5.853615, -0.484960),
+    vec2<f32>(-4.046082, 4.373696),
+    vec2<f32>(0.029472, -6.041451),
+    vec2<f32>(4.114440, 4.535569),
+    vec2<f32>(-6.178359, -0.572609),
+    vec2<f32>(5.006298, -3.799602),
+    vec2<f32>(-1.139045, 6.261196),
+    vec2<f32>(-3.431072, -5.452316),
+    vec2<f32>(6.287361, 1.723105),
+    vec2<f32>(-5.867884, 3.011301),
+    vec2<f32>(2.318893, -6.254817),
+    vec2<f32>(2.543292, 6.247533),
+    vec2<f32>(-6.162111, -2.920340),
+    vec2<f32>(6.586106, -2.030567),
+    vec2<f32>(-3.521252, 6.008393),
+    vec2<f32>(-1.477146, -6.878811),
+    vec2<f32>(5.793419, 4.115373),
+    vec2<f32>(-7.121259, 0.887509),
+    vec2<f32>(4.696434, -5.517563),
+    vec2<f32>(0.266559, 7.309511),
+    vec2<f32>(-5.181816, -5.258211),
+    vec2<f32>(7.440113, 0.380418),
+    vec2<f32>(-5.794585, 4.787775),
+    vec2<f32>(1.047803, -7.510134),
+    vec2<f32>(4.337639, 6.299594),
+    vec2<f32>(-7.517192, -1.729688),
+    vec2<f32>(6.767494, -3.834192),
+    vec2<f32>(-2.419935, 7.459485),
+    vec2<f32>(-3.280777, -7.192809),
+    vec2<f32>(7.335807, 3.112224),
 );
 
 // Inter-leaved Gradient Noise — Jorge Jimenez's hash, returns a
@@ -101,36 +165,34 @@ fn pcss_rotate(v: vec2<f32>, sin_a: f32, cos_a: f32) -> vec2<f32> {
     return vec2<f32>(v.x * cos_a - v.y * sin_a, v.x * sin_a + v.y * cos_a);
 }
 
-// Vogel (sunflower) disk: `n` points spread by the golden angle, each at
-// radius `sqrt((i+0.5)/n)`. Coverage is far more uniform than rotating a fixed
-// 16-point Poisson set — a rotated Poisson set keeps its clumps (it just spins
-// them), so a wide kernel undersamples into per-pixel speckle. The Vogel point
-// set has no clumps at any count, so the same per-pixel rotation (`phase`,
-// from the IGN hash) decorrelates neighbours WITHOUT exposing clumps as noise.
-// Scales to any `n` with no lookup table. Returns a point in the unit disk.
-fn vogel_disk(i: u32, n: u32, phase: f32) -> vec2<f32> {
-    let GOLDEN_ANGLE: f32 = 2.39996323; // π·(3−√5)
-    let r = sqrt((f32(i) + 0.5) / f32(n));
-    let theta = f32(i) * GOLDEN_ANGLE + phase;
-    return vec2<f32>(r * cos(theta), r * sin(theta));
+// The i-th tap of an n-tap Vogel disc, in the unit disk. Caller hoists the two
+// per-pixel scalars (`rsqrt_n = inversesqrt(f32(n))`, and `sin_p`/`cos_p` of
+// the IGN phase) out of the loop, so this is just a rotate + scale per tap — no
+// transcendentals. `i` must be < n <= VOGEL_MAX_TAPS.
+fn vogel_tap(i: u32, rsqrt_n: f32, sin_p: f32, cos_p: f32) -> vec2<f32> {
+    return pcss_rotate(VOGEL_BASE[i], sin_p, cos_p) * rsqrt_n;
 }
 
-// Cube soft/PCSS tap budgets. Raised from the original fixed 16 (and routed
-// through the clump-free Vogel disk above) because point-light penumbras here
-// reach a ~1 m world disc — 16 rotated-Poisson taps over that span read as the
-// "furry" speckle fringe. More taps + uniform coverage resolves the penumbra
-// smoothly. These are point-light-only; the 2D/cascade paths keep their own.
-//
-// COST: these are the per-shadowed-pixel cube `textureSampleCompare` budget and
-// are a HARD compile-time ceiling (they can't grow at runtime). The values are
-// the deliberate cost/quality knob — ~2x the old 16-tap budget. The cheaper
-// noise lever is the screen-space denoise blur (ShadowsConfig::denoise, on by
-// default), which smooths residual penumbra speckle once for ALL lights instead
-// of per-pixel-per-light here; raise the blur radius before raising these. They
-// stay this high so the denoise-OFF path is still acceptable on its own.
-const CUBE_SOFT_TAPS: u32 = 32u;
-const CUBE_BLOCKER_TAPS: u32 = 24u;
-const CUBE_PCSS_TAPS: u32 = 32u;
+// Per-light Vogel tap budget (PCF / soft / final-PCSS), from the descriptor's
+// `extra_params.x`. Clamped to [VOGEL_MIN_TAPS, VOGEL_MAX_TAPS]; 0 (unset)
+// falls back to VOGEL_DEFAULT_TAPS so an un-plumbed descriptor still samples.
+const VOGEL_MIN_TAPS: u32 = 8u;
+const VOGEL_DEFAULT_TAPS: u32 = 16u;
+fn shadow_tap_count(extra_x: f32) -> u32 {
+    let n = u32(extra_x + 0.5);
+    if n == 0u {
+        return VOGEL_DEFAULT_TAPS;
+    }
+    return clamp(n, VOGEL_MIN_TAPS, VOGEL_MAX_TAPS);
+}
+
+// Blocker-search budget: a fraction of the PCF budget (the search only
+// estimates an average blocker depth, so it needs fewer taps; the denoise
+// blur + the averaging smooth the residual width noise). Min 8.
+fn shadow_blocker_count(n: u32) -> u32 {
+    return max((n * 3u) / 4u, VOGEL_MIN_TAPS);
+}
+
 
 // Screen-space contact shadows (SSCS). Short ray-march in view space
 // from `world_pos` toward `light_dir` (the surface→light direction),
@@ -397,27 +459,36 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let tangent = normalize(cross(up_hint, world_normal));
     let bitangent = cross(world_normal, tangent);
 
-    // Per-pixel phase for the Vogel disk (IGN hash on world pos, so adjacent
-    // receivers sample rotated kernels and don't share a pattern).
+    // Per-pixel phase for the Vogel disc (IGN hash on world pos, so adjacent
+    // receivers sample rotated kernels and don't share a pattern). sin/cos
+    // hoisted once — `vogel_tap` only rotates + scales per tap.
     let angle = pcss_disk_angle(
         biased_pos.xz * 137.0 + vec2<f32>(biased_pos.y * 31.0, biased_pos.y * 17.0),
     );
+    let sin_p = sin(angle);
+    let cos_p = cos(angle);
 
     // Cube face resolution (square), for the per-texel kernel-slack term in
     // both branches below.
     let cube_face_res = f32(textureDimensions(shadow_cube_2d_array, 0).x);
 
+    // Per-light Vogel tap budget (descriptor extra_params.x). Soft/PCSS use `n`;
+    // the blocker search uses a smaller `n_blocker`.
+    let n = shadow_tap_count(desc.extra_params.x);
+    let n_blocker = shadow_blocker_count(n);
+
     if hardness < 1.5 {
-        // Soft — fixed-width Vogel disc, ~15 cm world radius. The tap count is
-        // `CUBE_SOFT_TAPS` (raised from 16); over a clump-free Vogel set this
+        // Soft — fixed-width Vogel disc, ~15 cm world radius, `n` taps (the
+        // per-light `shadow_samples` budget); over a clump-free Vogel set this
         // resolves the soft edge smoothly with no rotation speckle.
         // World-space disc radius. Base 0.15 m at `pcss_penumbra_scale == 1`;
         // the per-light knob (bias_params.w) is the user's softness control,
         // shared with PCSS so one slider governs both modes for point lights too.
         let SOFT_WORLD_RADIUS: f32 = 0.15 * max(desc.bias_params.w, 0.0);
+        let rsqrt_n = inverseSqrt(f32(n));
         var sum = 0.0;
-        for (var i = 0u; i < CUBE_SOFT_TAPS; i = i + 1u) {
-            let off = vogel_disk(i, CUBE_SOFT_TAPS, angle) * SOFT_WORLD_RADIUS;
+        for (var i = 0u; i < n; i = i + 1u) {
+            let off = vogel_tap(i, rsqrt_n, sin_p, cos_p) * SOFT_WORLD_RADIUS;
             let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
             let tap_to_light = tap_pos - light_pos;
             let tap_dist = length(tap_to_light);
@@ -446,7 +517,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
                 tap_ref,
             );
         }
-        return sum / f32(CUBE_SOFT_TAPS);
+        return sum / f32(n);
     }
 
     // PCSS — real blocker search + variable kernel.
@@ -476,14 +547,15 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let cube_dims = textureDimensions(shadow_cube_2d_array, 0);
     let cube_face_size = vec2<f32>(f32(cube_dims.x), f32(cube_dims.y));
 
-    // Vogel blocker search (`CUBE_BLOCKER_TAPS`). The averaged blocker depth
+    // Vogel blocker search (`n_blocker` taps). The averaged blocker depth
     // sets the penumbra WIDTH, so per-pixel variance here turns into a noisy
     // penumbra-radius field — a second noise source on top of the PCF below.
     // A clump-free Vogel set + more taps keeps the width estimate smooth.
     var blocker_sum = 0.0;
     var blocker_count = 0u;
-    for (var i = 0u; i < CUBE_BLOCKER_TAPS; i = i + 1u) {
-        let off = vogel_disk(i, CUBE_BLOCKER_TAPS, angle) * pcss_search_world_radius;
+    let blocker_rsqrt_n = inverseSqrt(f32(n_blocker));
+    for (var i = 0u; i < n_blocker; i = i + 1u) {
+        let off = vogel_tap(i, blocker_rsqrt_n, sin_p, cos_p) * pcss_search_world_radius;
         let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
         let tap_to_light = tap_pos - light_pos;
         let tap_dist = length(tap_to_light);
@@ -542,7 +614,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     if blocker_count == 0u {
         return 1.0;
     }
-    if blocker_count == CUBE_BLOCKER_TAPS {
+    if blocker_count == n_blocker {
         return 0.0;
     }
     let avg_blocker = blocker_sum / f32(blocker_count);
@@ -567,8 +639,9 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     );
 
     var sum = 0.0;
-    for (var i = 0u; i < CUBE_PCSS_TAPS; i = i + 1u) {
-        let off = vogel_disk(i, CUBE_PCSS_TAPS, angle) * penumbra_world_radius;
+    let pcss_rsqrt_n = inverseSqrt(f32(n));
+    for (var i = 0u; i < n; i = i + 1u) {
+        let off = vogel_tap(i, pcss_rsqrt_n, sin_p, cos_p) * penumbra_world_radius;
         let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
         let tap_to_light = tap_pos - light_pos;
         let tap_dist = length(tap_to_light);
@@ -596,7 +669,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             tap_ref,
         );
     }
-    return sum / f32(CUBE_PCSS_TAPS);
+    return sum / f32(n);
 }
 
 
@@ -737,9 +810,11 @@ fn sample_shadow_cascade_array(
         );
         let sin_a = sin(angle);
         let cos_a = cos(angle);
+        let n = shadow_tap_count(desc.extra_params.x);
+        let rsqrt_n = inverseSqrt(f32(n));
         var sum = 0.0;
-        for (var i = 0u; i < 16u; i = i + 1u) {
-            let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * radius_texels;
+        for (var i = 0u; i < n; i = i + 1u) {
+            let off = vogel_tap(i, rsqrt_n, sin_a, cos_a) * radius_texels;
             sum += textureSampleCompareLevel(
                 shadow_cascade_array, shadow_atlas_sampler,
                 clamp(atlas_uv + off * inv_atlas, tile_min, tile_max),
@@ -747,7 +822,7 @@ fn sample_shadow_cascade_array(
                 ref_depth,
             );
         }
-        return sum / 16.0;
+        return sum / f32(n);
     }
     // PCSS — same recipe as the 2D path, with the cascade-array
     // texture and explicit `layer` arg.
@@ -763,6 +838,10 @@ fn sample_shadow_cascade_array(
     );
     let sin_a = sin(angle);
     let cos_a = cos(angle);
+    let n = shadow_tap_count(desc.extra_params.x);
+    let n_blocker = shadow_blocker_count(n);
+    let blocker_rsqrt_n = inverseSqrt(f32(n_blocker));
+    let pcf_rsqrt_n = inverseSqrt(f32(n));
     let search_radius_texels = clamp(
         pcss_light_world_radius / world_per_texel_pcss,
         4.0,
@@ -781,8 +860,8 @@ fn sample_shadow_cascade_array(
     var blocker_count = 0u;
     let tile_min_px = vec2<i32>(tile_min * atlas_uv_to_texels);
     let tile_max_px = vec2<i32>(tile_max * atlas_uv_to_texels);
-    for (var i = 0u; i < 16u; i = i + 1u) {
-        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * search_radius_texels;
+    for (var i = 0u; i < n_blocker; i = i + 1u) {
+        let off = vogel_tap(i, blocker_rsqrt_n, sin_a, cos_a) * search_radius_texels;
         let sample_uv = atlas_uv + off * inv_atlas;
         let coord = vec2<i32>(sample_uv * atlas_uv_to_texels);
         let c = clamp(coord, tile_min_px, tile_max_px);
@@ -795,7 +874,7 @@ fn sample_shadow_cascade_array(
     if blocker_count == 0u {
         return 1.0;
     }
-    if blocker_count == 16u {
+    if blocker_count == n_blocker {
         return 0.0;
     }
     let avg_blocker = blocker_sum / f32(blocker_count);
@@ -812,8 +891,8 @@ fn sample_shadow_cascade_array(
     // peter-panning a near-contact (narrow-kernel) fragment would otherwise show.
     let pcss_ref = ref_depth - desc.bias_params.x * penumbra_texels * 0.5;
     var pcf_sum = 0.0;
-    for (var i = 0u; i < 16u; i = i + 1u) {
-        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_texels;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let off = vogel_tap(i, pcf_rsqrt_n, sin_a, cos_a) * penumbra_texels;
         pcf_sum = pcf_sum + textureSampleCompareLevel(
             shadow_cascade_array,
             shadow_atlas_sampler,
@@ -822,7 +901,7 @@ fn sample_shadow_cascade_array(
             pcss_ref,
         );
     }
-    return pcf_sum / 16.0;
+    return pcf_sum / f32(n);
 }
 
 // Sample a single shadow descriptor (cascade / spot / face). Returns
@@ -943,20 +1022,22 @@ fn sample_shadow_descriptor(
         );
         let sin_a = sin(angle);
         let cos_a = cos(angle);
+        let n = shadow_tap_count(desc.extra_params.x);
+        let rsqrt_n = inverseSqrt(f32(n));
         // Fixed 16 taps on the Soft path — see `sample_shadow_cube`'s
         // Soft branch for the full rationale. Tapering here banded
         // large smooth receivers; the PCSS branch below still
         // tapers because its variable-kernel PCF absorbs the noise.
         var sum = 0.0;
-        for (var i = 0u; i < 16u; i = i + 1u) {
-            let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * radius_texels;
+        for (var i = 0u; i < n; i = i + 1u) {
+            let off = vogel_tap(i, rsqrt_n, sin_a, cos_a) * radius_texels;
             sum += textureSampleCompareLevel(
                 shadow_atlas, shadow_atlas_sampler,
                 clamp(atlas_uv + off * inv_atlas, tile_min, tile_max),
                 ref_depth,
             );
         }
-        return sum / 16.0;
+        return sum / f32(n);
     }
     // PCSS — blocker-search + variable-kernel PCF.
     //
@@ -988,6 +1069,10 @@ fn sample_shadow_descriptor(
     );
     let sin_a = sin(angle);
     let cos_a = cos(angle);
+    let n = shadow_tap_count(desc.extra_params.x);
+    let n_blocker = shadow_blocker_count(n);
+    let blocker_rsqrt_n = inverseSqrt(f32(n_blocker));
+    let pcf_rsqrt_n = inverseSqrt(f32(n));
     // Blocker-search radius: track the light disc directly so a wider
     // virtual light sees more potential blockers (correct PCSS
     // behaviour — small light = sharper shadow because fewer
@@ -1008,8 +1093,8 @@ fn sample_shadow_descriptor(
     var blocker_count = 0u;
     let tile_min_px = vec2<i32>(tile_min * atlas_uv_to_texels);
     let tile_max_px = vec2<i32>(tile_max * atlas_uv_to_texels);
-    for (var i = 0u; i < 16u; i = i + 1u) {
-        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * search_radius_texels;
+    for (var i = 0u; i < n_blocker; i = i + 1u) {
+        let off = vogel_tap(i, blocker_rsqrt_n, sin_a, cos_a) * search_radius_texels;
         let sample_uv = atlas_uv + off * inv_atlas;
         let coord = vec2<i32>(sample_uv * atlas_uv_to_texels);
         // Clamp to the cascade's own tile so the blocker search
@@ -1024,7 +1109,7 @@ fn sample_shadow_descriptor(
     if blocker_count == 0u {
         return 1.0; // fully lit fast path
     }
-    if blocker_count == 16u {
+    if blocker_count == n_blocker {
         // Every blocker-search sample was below the receiver's
         // biased depth — the receiver is deep inside the umbra
         // and the second 16-tap PCF would average to ≈ 0
@@ -1052,8 +1137,8 @@ fn sample_shadow_descriptor(
     // radius, so it inherits the per-light tuning instead of a fresh constant.
     let pcss_ref = ref_depth - desc.bias_params.x * penumbra_texels * 0.5;
     var pcf_sum = 0.0;
-    for (var i = 0u; i < 16u; i = i + 1u) {
-        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_texels;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let off = vogel_tap(i, pcf_rsqrt_n, sin_a, cos_a) * penumbra_texels;
         pcf_sum = pcf_sum + textureSampleCompareLevel(
             shadow_atlas,
             shadow_atlas_sampler,
@@ -1061,7 +1146,7 @@ fn sample_shadow_descriptor(
             pcss_ref,
         );
     }
-    return pcf_sum / 16.0;
+    return pcf_sum / f32(n);
 }
 
 // Per-light cascade selection with smooth blending across split
