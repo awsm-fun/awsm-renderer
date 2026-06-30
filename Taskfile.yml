@@ -143,20 +143,21 @@ tasks:
       #    release on CI (.github/workflows/release.yml). Idempotent like the
       #    commit above: if the tag already exists (a re-run after a partial
       #    release — e.g. crates.io rate-limited mid-publish), keep it and move on.
-      - task: tag-push
+      - task: tag
         vars:
           VERSION: "{{.VERSION}}"
       # 4. Publish the library crates to crates.io (the explicit, ordered set).
       - task: crates-publish
       # 5. Deploy both frontends to Cloudflare Pages (scene editor + model tester).
       - task: deploy
-      # 6. Push the branch (no-op if up to date) + the new tag.
+      # 6. Push the branch (no-op if up to date) + the new tag — pushing the tag
+      #    triggers the cargo-dist MCP-server binary release on CI.
       - git push
       - git push origin "v{{.VERSION}}"
       - echo "✅ v{{.VERSION}} — crates published, frontends deployed, tag pushed (MCP binary release building on CI)."
 
-  tag-push:
-    desc: "Push the current branch + the given tag (no-op if already pushed). Usage: task tag-push -- <version>"
+  tag:
+    desc: "Create the annotated tag v<version> locally (no push). Idempotent — keeps an existing tag. Usage: task tag -- <version>"
     requires:
       vars: [VERSION]
     cmds:
@@ -166,6 +167,24 @@ tasks:
         else
           git tag -a "v{{.VERSION}}" -m "v{{.VERSION}}"
         fi
+
+  tag-publish:
+    desc: "Tag v<version> and push branch + tag. Pushing the tag triggers the cargo-dist awsm-renderer-scene-mcp binary release on CI. Idempotent. Usage: task tag-publish -- <version>"
+    vars:
+      VERSION: "{{.CLI_ARGS}}"
+    preconditions:
+      - sh: 'test -n "{{.VERSION}}"'
+        msg: "No version given. Usage: task tag-publish -- <version>   (e.g. task tag-publish -- 0.3.0)"
+    cmds:
+      # 1. Create the tag locally (idempotent — no-op if it already exists).
+      - task: tag
+        vars:
+          VERSION: "{{.VERSION}}"
+      # 2. Push the branch (no-op if up to date) + the tag. Pushing the tag is what
+      #    fires .github/workflows/release.yml to build the MCP-server binaries.
+      - git push
+      - git push origin "v{{.VERSION}}"
+      - echo "✅ v{{.VERSION}} tag pushed — MCP binary release building on CI."
 
   crates-publish:
     desc: "Publish the 13 awsm-renderer library crates to crates.io (dependency-ordered)."
