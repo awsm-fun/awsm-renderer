@@ -439,20 +439,31 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let near = POINT_SHADOW_NEAR;
     let ndc_z = (range / (range - near)) * (1.0 - near / max(view_depth, near));
 
-    // Slope-aware constant bias. `n_dot_dir` floor at 0.05 keeps
-    // grazing surfaces from running away to huge bias values
-    // (`bias → ∞` as `n_dot_dir → 0`); the user-authored
-    // `desc.bias_params.x` (the per-light `depth_bias`) is trusted
-    // as-is. An earlier floor of `max(..., 0.001)` here silently
-    // overrode any inspector value smaller than 0.001 — that was
-    // ~10× the NDC gap between a receiver and a box's back face at
-    // a typical 4 m point-light distance, so contacts could never
-    // close even after lowering `depth_bias`. If you DO want a
-    // global floor for some project, gate it on
-    // `ShadowsConfig::min_point_depth_bias` (not present today).
+    // Cube face resolution (square). World-size of one texel uses this both
+    // here (central receiver bias) and in the Soft/PCSS tap loops.
+    let cube_face_res = f32(textureDimensions(shadow_cube_2d_array, 0).x);
+
+    // Receiver depth bias, expressed in WORLD space and converted to NDC.z
+    // through the local perspective depth gradient `grad = d(ndc_z)/d(view_depth)`.
+    //
+    // Why world-space: NDC.z is nonlinear under perspective, so a *constant*
+    // NDC subtraction (what this used to do) maps to a world offset that grows
+    // with distance — at a few metres the authored `depth_bias` ballooned to
+    // ~10+ cm and lifted the receiver clean off its caster, punching the lit
+    // "hole" out of the contact shadow directly under a mesh. Multiplying a
+    // world-space push-back by `grad` keeps it a fixed small offset at any
+    // light distance. `desc.bias_params.x` (`depth_bias`) is therefore in
+    // METRES on this path; the `n_dot_dir` floor at 0.05 slope-scales it
+    // (grazing surfaces need more) without running away as `n_dot_dir → 0`.
+    // The per-texel quantization slack (`texel_world * kernel_slack`) is folded
+    // into the same world push-back — both are world distances through one `grad`.
+    let grad = (range / (range - near)) * near
+        / max(view_depth * view_depth, near * near);
+    let texel_world = 2.0 * view_depth / cube_face_res;
     let n_dot_dir = abs(dot(dir, world_normal));
-    let bias = desc.bias_params.x / max(n_dot_dir, 0.05);
-    let ref_depth = clamp(ndc_z, 0.0, 1.0) - bias;
+    let world_bias = desc.bias_params.x / max(n_dot_dir, 0.05)
+        + texel_world * desc.cascade_info.x;
+    let ref_depth = clamp(ndc_z, 0.0, 1.0) - world_bias * grad;
     let hardness = desc.bias_params.z;
 
     if hardness < 0.5 {
@@ -489,10 +500,6 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let sin_p = sin(angle);
     let cos_p = cos(angle);
 
-    // Cube face resolution (square), for the per-texel kernel-slack term in
-    // both branches below.
-    let cube_face_res = f32(textureDimensions(shadow_cube_2d_array, 0).x);
-
     // Per-light Vogel tap budget (descriptor extra_params.x). Soft/PCSS use `n`;
     // the blocker search uses a smaller `n_blocker`.
     let n = shadow_tap_count(desc.extra_params.x);
@@ -520,16 +527,17 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             let tap_ndc_z =
                 (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
             let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
-            let tap_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05);
-            // Per-texel quantization slack (NOT kernel-radius — see the block
-            // comment above the cube fn). `world_per_texel = 2·view_depth /
-            // res`; one texel of depth can't bridge a real occluder gap, so
-            // no umbra leak.
+            // World-space receiver push-back → NDC.z via the local perspective
+            // gradient (see the central block above). `depth_bias` is metres and
+            // slope-scaled; the per-texel quantization slack (`world_per_texel =
+            // 2·view_depth / res`, one texel can't bridge a real occluder gap)
+            // rides the same `tap_grad`, so neither term explodes with distance.
             let tap_grad = (range / (range - near)) * near
                 / max(tap_view_depth * tap_view_depth, near * near);
-            let texel_world = 2.0 * tap_view_depth / cube_face_res;
-            let tap_slack = tap_grad * texel_world * desc.cascade_info.x;
-            let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias - tap_slack;
+            let tap_texel_world = 2.0 * tap_view_depth / cube_face_res;
+            let tap_world_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05)
+                + tap_texel_world * desc.cascade_info.x;
+            let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_world_bias * tap_grad;
             sum += textureSampleCompareLevel(
                 shadow_cube_array,
                 shadow_cube_sampler,
@@ -673,15 +681,17 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         let tap_ndc_z =
             (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
         let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
-        let tap_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05);
-        // Per-texel quantization slack (see soft path + the block comment
-        // above the cube fn): ONE-texel footprint, independent of the (up to
-        // ~1 m) penumbra radius, so a wide kernel no longer leaks the umbra.
+        // World-space receiver push-back → NDC.z via the local perspective
+        // gradient (see the central block + Soft path). `depth_bias` is metres
+        // and slope-scaled; the per-texel quantization slack is a ONE-texel
+        // footprint, independent of the (up to ~1 m) penumbra radius, so a wide
+        // kernel no longer leaks the umbra and neither term grows with distance.
         let tap_grad = (range / (range - near)) * near
             / max(tap_view_depth * tap_view_depth, near * near);
-        let texel_world = 2.0 * tap_view_depth / cube_face_res;
-        let tap_slack = tap_grad * texel_world * desc.cascade_info.x;
-        let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias - tap_slack;
+        let tap_texel_world = 2.0 * tap_view_depth / cube_face_res;
+        let tap_world_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05)
+            + tap_texel_world * desc.cascade_info.x;
+        let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_world_bias * tap_grad;
         sum += textureSampleCompareLevel(
             shadow_cube_array,
             shadow_cube_sampler,
