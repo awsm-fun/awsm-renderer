@@ -169,22 +169,24 @@ tasks:
         fi
 
   tag-publish:
-    desc: "Tag v<version> and push branch + tag. Pushing the tag triggers the cargo-dist awsm-renderer-scene-mcp binary release on CI. Idempotent. Usage: task tag-publish -- <version>"
+    desc: "Force-(re)tag v<version> at the CURRENT commit and push it, firing the cargo-dist MCP/LOD binary build on CI. Use this to rebuild binaries from your latest code: unlike `publish` (a real versioned release), it MOVES an existing tag to HEAD and force-pushes so CI always re-runs even if that version was already tagged. NOTE: it's `tag-publish` (one task, hyphen) — `task tag publish` is two tasks and silently does nothing. Usage: task tag-publish -- <version>"
     vars:
       VERSION: "{{.CLI_ARGS}}"
     preconditions:
       - sh: 'test -n "{{.VERSION}}"'
-        msg: "No version given. Usage: task tag-publish -- <version>   (e.g. task tag-publish -- 0.3.0)"
+        msg: "No version given. Usage: task tag-publish -- <version>   (e.g. task tag-publish -- 0.7.2)"
     cmds:
-      # 1. Create the tag locally (idempotent — no-op if it already exists).
-      - task: tag
-        vars:
-          VERSION: "{{.VERSION}}"
-      # 2. Push the branch (no-op if up to date) + the tag. Pushing the tag is what
-      #    fires .github/workflows/release.yml to build the MCP-server binaries.
+      # 1. (Re)create the annotated tag at the CURRENT commit. `-f` MOVES it to
+      #    HEAD if it already exists — so the CI build reflects your latest code.
+      #    (This is deliberately NOT the idempotent `tag` task, which keeps an
+      #    existing tag pointing at its old commit for resuming a partial `publish`.)
+      - git tag -f -a "v{{.VERSION}}" -m "v{{.VERSION}}"
+      # 2. Push the branch, then FORCE-push the tag. Force is required: if the tag
+      #    was already on origin, a plain push is a no-op and CI never fires.
+      #    Pushing the tag is what triggers .github/workflows/release.yml.
       - git push
-      - git push origin "v{{.VERSION}}"
-      - echo "✅ v{{.VERSION}} tag pushed — MCP binary release building on CI."
+      - git push -f origin "v{{.VERSION}}"
+      - echo "✅ v{{.VERSION}} tag (re)pushed at $(git rev-parse --short HEAD) — MCP/LOD binary build running on CI."
 
   crates-publish:
     desc: "Publish the 13 awsm-renderer library crates to crates.io (dependency-ordered)."
