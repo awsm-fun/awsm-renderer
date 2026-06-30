@@ -447,10 +447,11 @@ fn export_scene_glb() {
     });
 }
 
-/// Assemble a player bundle (scene.glb + custom-material side-files + referenced
-/// custom-material textures + env.json + bundle.json index) and write every file
-/// into a picked directory via the File System Access handle. Reuses the native
-/// `assemble_bundle` layout so the editor and the tested layout never drift.
+/// Assemble a player bundle (`scene.toml` + an `assets/` directory: geometry-only
+/// glbs, custom-material wgsl folders, referenced textures, LOD/cluster files) and
+/// write every file into a picked directory via the File System Access handle.
+/// Reuses `bake_player_bundle`'s `assemble_bundle` layout so the editor and the
+/// runtime/player loader never drift.
 fn export_player_bundle() {
     spawn_local(async {
         // Pick FIRST: the directory picker needs a live user gesture, so nothing

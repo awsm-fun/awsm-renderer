@@ -663,13 +663,19 @@ fn row_context_menu(node: Arc<Node>, x: f64, y: f64, open: Mutable<Option<(f64, 
     let vis = node.visible.get();
     let locked = node.locked.get();
     let prefab = node.prefab.get();
+    // Only geometry-bearing kinds + Group containers bake to a GLB (mirrors
+    // the inspector's "Export GLB" gating).
+    let exportable = matches!(
+        node.kind.get_cloned(),
+        NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. } | NodeKind::Group
+    );
     let dispatch = |cmd: EditorCommand| {
         spawn_local(async move {
             let _ = controller().dispatch(cmd).await;
         })
     };
 
-    let rows = vec![
+    let mut rows = vec![
         MenuItem::new("Rename").icon("code").on_click(clone!(close => move || { select_node(id, false, false); close(); })).render(),
         MenuItem::new("Duplicate").icon("copy").hint("\u{2318}D").on_click(clone!(close => move || { dispatch(EditorCommand::Duplicate { id, new_id: None }); close(); })).render(),
         MenuItem::new(if locked { "Unlock" } else { "Lock" }).icon(if locked { "unlock" } else { "lock" })
@@ -685,10 +691,41 @@ fn row_context_menu(node: Arc<Node>, x: f64, y: f64, open: Mutable<Option<(f64, 
             .on_click(clone!(close => move || { group_selection(id); close(); })).render(),
         MenuItem::new("Move to root").icon("chevron")
             .on_click(clone!(close => move || { reparent_into(None, id); close(); })).render(),
-        menu_sep(),
-        MenuItem::new("Delete").icon("trash").danger(true).hint("\u{232b}")
-            .on_click(clone!(close => move || { dispatch(EditorCommand::Delete { id }); close(); })).render(),
     ];
+    // Single-node GLB export (geometry/Group only) — async free fn, so spawn
+    // directly rather than going through the `dispatch` EditorCommand helper.
+    if exportable {
+        rows.push(menu_sep());
+        rows.push(
+            MenuItem::new("Export as GLB\u{2026}").icon("mesh")
+                .on_click(clone!(close, node => move || {
+                    let file = {
+                        let raw = node.name.get_cloned();
+                        let n = raw.trim();
+                        if n.is_empty() { "node.glb".to_string() } else { format!("{n}.glb") }
+                    };
+                    spawn_local(async move {
+                        match crate::controller::export::export_glb(&controller().scene, Some(id)).await {
+                            Ok(bytes) => {
+                                crate::app::download_bytes(&file, &bytes);
+                                Toast::info(format!("Exported {file} ({} KB)", bytes.len() / 1024));
+                            }
+                            Err(e) => Toast::error(format!("Export failed: {e}")),
+                        }
+                    });
+                    close();
+                })).render(),
+        );
+    }
+    rows.push(menu_sep());
+    rows.push(
+        MenuItem::new("Delete")
+            .icon("trash")
+            .danger(true)
+            .hint("\u{232b}")
+            .on_click(clone!(close => move || { dispatch(EditorCommand::Delete { id }); close(); }))
+            .render(),
+    );
     context_menu(x, y, move || open.set(None), rows)
 }
 
