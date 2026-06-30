@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "askama",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-core"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "binpack2d",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-curves"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "glam 0.32.1",
  "serde",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-debugging"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-editor"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "awsm-renderer",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-editor-protocol"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "awsm-renderer-meshgen",
  "awsm-renderer-scene",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-geometry"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "glam 0.32.1",
  "serde",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-glb-export"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "awsm-renderer-meshgen",
  "awsm-renderer-tangents",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-gltf"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "awsm-renderer",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-gltf-convert"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "awsm-renderer-glb-export",
  "awsm-renderer-meshgen",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-lod-bake"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "glam 0.32.1",
  "serde",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-lod-bake-cli"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "awsm-renderer-glb-export",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-materials"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "awsm-renderer-core",
  "thiserror 2.0.18",
@@ -419,7 +419,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-meshgen"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "awsm-renderer-curves",
  "awsm-renderer-geometry",
@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-model-tests"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "awsm-renderer",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-multithreaded-example"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "awsm-renderer",
  "awsm-renderer-core",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-particles"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "awsm-renderer-curves",
  "awsm-renderer-geometry",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-render-worker-example"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "awsm-renderer",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-scene"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "bitcode",
  "glam 0.32.1",
@@ -535,7 +535,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-scene-loader"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "awsm-renderer",
@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-scene-mcp"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "awsm-renderer-editor-protocol",
@@ -578,14 +578,14 @@ dependencies = [
 
 [[package]]
 name = "awsm-renderer-tangents"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "bevy_mikktspace",
 ]
 
 [[package]]
 name = "awsm-renderer-web-shared"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "awsm-renderer",

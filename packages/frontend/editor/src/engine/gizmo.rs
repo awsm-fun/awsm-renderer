@@ -45,6 +45,11 @@ pub enum GizmoMode {
 
 thread_local! {
     static GIZMO_MODE: Mutable<GizmoMode> = Mutable::new(GizmoMode::Move);
+    /// Whether the current gizmo anchor is a collider node — resolved once per
+    /// selection (in `sync_gizmo_selection`) and read by the per-frame visibility
+    /// update, so the hot path never rescans the node map. Colliders never show a
+    /// scale handle (they have no scale — FIXES.md #2).
+    static SELECTION_IS_COLLIDER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The shared gizmo-mode handle (the palette sets it; the gizmo observes it).
@@ -219,6 +224,25 @@ fn transform_key_for_node(id: NodeId) -> Option<TransformKey> {
         .map(|n| n.transform_key)
 }
 
+/// Whether `id` is a collider node. Colliders have no scale (size comes from the
+/// ColliderShape, placement is translation + rotation only), so the scale handle
+/// set is suppressed for them. (FIXES.md #2.)
+fn node_is_collider(id: NodeId) -> bool {
+    use crate::engine::scene::NodeKind;
+    bridge()
+        .nodes
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|n| matches!(n.node.kind.get_cloned(), NodeKind::Collider(_)))
+        .unwrap_or(false)
+}
+
+/// Cached collider-ness of the current gizmo anchor (see `SELECTION_IS_COLLIDER`).
+fn selection_is_collider() -> bool {
+    SELECTION_IS_COLLIDER.with(|c| c.get())
+}
+
 async fn sync_gizmo_selection(id: Option<NodeId>) {
     let transform_key = id.and_then(transform_key_for_node);
 
@@ -229,6 +253,10 @@ async fn sync_gizmo_selection(id: Option<NodeId>) {
         let Some(controller) = guard.as_mut() else {
             return;
         };
+        // Cache collider-ness once per selection so the per-frame update can gate
+        // the scale handle without rescanning the node map.
+        let is_collider = id.is_some_and(node_is_collider);
+        SELECTION_IS_COLLIDER.with(|c| c.set(is_collider));
         let gizmo_enabled = controller_gizmo_enabled();
         match transform_key {
             Some(key) => {
@@ -237,7 +265,9 @@ async fn sync_gizmo_selection(id: Option<NodeId>) {
                     instance: None,
                 });
                 if gizmo_enabled {
-                    let (th, rh, sh) = hidden_for_mode(gizmo_mode().get());
+                    let (th, rh, mut sh) = hidden_for_mode(gizmo_mode().get());
+                    // Colliders never expose a scale handle.
+                    sh |= is_collider;
                     let _ = controller.set_hidden(&mut renderer, th, rh, sh);
                 } else {
                     let _ = controller.set_hidden(&mut renderer, true, true, true);
@@ -270,8 +300,10 @@ pub fn per_frame_update(renderer: &mut AwsmRenderer) {
             let _ = controller.set_hidden(renderer, true, true, true);
             return;
         }
-        // Show only the active tool's handle set (Select shows none).
-        let (th, rh, sh) = hidden_for_mode(gizmo_mode().get());
+        // Show only the active tool's handle set (Select shows none); never the
+        // scale handle for a collider (it has no scale — FIXES.md #2).
+        let (th, rh, mut sh) = hidden_for_mode(gizmo_mode().get());
+        sh |= selection_is_collider();
         let _ = controller.set_hidden(renderer, th, rh, sh);
         let Some(matrices) = renderer.camera.last_matrices.as_ref().cloned() else {
             return;

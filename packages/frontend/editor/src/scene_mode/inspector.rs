@@ -4046,16 +4046,23 @@ fn transform_section(node: &Arc<Node>) -> Dom {
         }))
     });
 
-    // Scale
-    let n_scale = node.clone();
-    let scale = row(
-        "Scale",
-        vec3_signal(node.transform.signal_ref(|t| f3(t.scale)), 0.1, move |v| {
-            let mut t = n_scale.transform.get();
-            t.scale = [v[0] as f32, v[1] as f32, v[2] as f32];
-            dispatch_transform(id, t);
-        }),
-    );
+    // Scale — locked to 1×1×1 for collider nodes. A Rapier collider has no scale
+    // (size comes from the ColliderShape extents; placement is translation +
+    // rotation only), so editing it here would author a value the runtime silently
+    // drops. Show a read-only note instead of editable fields. (FIXES.md #2.)
+    let scale = if matches!(node.kind.get_cloned(), NodeKind::Collider(_)) {
+        ro_row("Scale", "1, 1, 1 · locked (size via Collider shape)")
+    } else {
+        let n_scale = node.clone();
+        row(
+            "Scale",
+            vec3_signal(node.transform.signal_ref(|t| f3(t.scale)), 0.1, move |v| {
+                let mut t = n_scale.transform.get();
+                t.scale = [v[0] as f32, v[1] as f32, v[2] as f32];
+                dispatch_transform(id, t);
+            }),
+        )
+    };
 
     Section::new("Transform")
         .child(pos)

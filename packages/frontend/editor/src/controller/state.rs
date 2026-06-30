@@ -8,7 +8,7 @@ use wasm_bindgen_futures::spawn_local;
 use super::animation::{find_clip, CustomAnimation as CA};
 use super::custom_material::{find_material, CustomMaterial as CM};
 use super::*;
-use crate::engine::scene::{mutate, AssetId, NodeId, NodeKind, Scene};
+use crate::engine::scene::{mutate, AssetId, ColliderShape, NodeId, NodeKind, Scene};
 use crate::error::EditorResult;
 use awsm_renderer_editor_protocol::{
     AssetEntry, AssetSource as SceneAssetSource, BoundedHistory, MaterialDef, ModifierStack,
@@ -923,9 +923,18 @@ impl EditorController {
                 }))
                 .await
             }
-            EditorCommand::SetTransform { id, transform } => {
+            EditorCommand::SetTransform { id, mut transform } => {
                 match mutate::find_by_id(&self.scene, id) {
                     Some(node) => {
+                        // A Rapier collider has no scale: its size is the
+                        // ColliderShape extents and its placement is an isometry
+                        // (translation + rotation). Scale on a collider node is
+                        // silently dropped at export (`ColliderSpec::from_node`), so
+                        // lock it to unit here — the single chokepoint every write
+                        // (gizmo, inspector, MCP, import) flows through. (FIXES.md #2.)
+                        if matches!(node.kind.get_cloned(), NodeKind::Collider(_)) {
+                            transform.scale = [1.0, 1.0, 1.0];
+                        }
                         let prev = node.transform.get();
                         node.transform.set(transform);
                         self.scene.bump_revision();
@@ -5770,27 +5779,35 @@ impl EditorController {
     async fn node_bounds(&self, nodes: &[NodeId]) -> query::QueryResult {
         use serde_json::json;
         let ids = self.resolve_node_ids(nodes);
-        // (id, local-aabb) pairs from the scene; world matrices from the renderer.
-        let locals: Vec<(NodeId, Aabb3)> = ids
+        // (id, local-aabb, is_collider) tuples from the scene; world matrices from
+        // the renderer. `is_collider` strips node scale below — a collider's size
+        // is its shape extents, not its transform scale.
+        let locals: Vec<(NodeId, Aabb3, bool)> = ids
             .iter()
             .filter_map(|id| {
-                mutate::find_by_id(&self.scene, *id)
-                    .map(|n| (*id, local_aabb(&n.kind.get_cloned())))
+                mutate::find_by_id(&self.scene, *id).map(|n| {
+                    let kind = n.kind.get_cloned();
+                    let is_collider = matches!(kind, NodeKind::Collider(_));
+                    (*id, local_aabb(&kind), is_collider)
+                })
             })
             .collect();
         // Resolve per-node renderer meshes + transform keys BEFORE taking the
         // renderer lock: renderer_meshes_for_node locks the bridge nodes map,
         // which must never nest inside a scope already holding that lock.
-        let resolved: Vec<(
+        // (id, local-aabb, is_collider, renderer meshes, transform key).
+        type Resolved = (
             NodeId,
             Aabb3,
+            bool,
             Vec<awsm_renderer::meshes::MeshKey>,
             Option<awsm_renderer::transforms::TransformKey>,
-        )> = {
+        );
+        let resolved: Vec<Resolved> = {
             let bridge = crate::engine::bridge::bridge();
             locals
                 .iter()
-                .map(|(id, aabb)| {
+                .map(|(id, aabb, is_collider)| {
                     let meshes = renderer_meshes_for_node(*id);
                     let tk = bridge
                         .nodes
@@ -5798,16 +5815,23 @@ impl EditorController {
                         .unwrap()
                         .get(id)
                         .map(|n| n.transform_key);
-                    (*id, *aabb, meshes, tk)
+                    (*id, *aabb, *is_collider, meshes, tk)
                 })
                 .collect()
         };
         let entries = crate::engine::context::with_renderer_mut(move |r| {
             let mut m = std::collections::BTreeMap::new();
-            for (id, (lmin, lmax), meshes, tk) in &resolved {
-                let world = tk
+            for (id, (lmin, lmax), is_collider, meshes, tk) in &resolved {
+                let mut world = tk
                     .and_then(|tk| r.transforms.get_world(tk).ok().copied())
                     .unwrap_or(glam::Mat4::IDENTITY);
+                // Collider bounds compose the shape's local AABB with the node's
+                // world translation + rotation only — scale (the node's own, or an
+                // ancestor's) is not part of a Rapier collider. (FIXES.md #1.)
+                if *is_collider {
+                    let (_s, rot, trans) = world.to_scale_rotation_translation();
+                    world = glam::Mat4::from_rotation_translation(rot, trans);
+                }
                 // §8 facing hint: the node's local axes in WORLD space (see
                 // `world_forward_up_right`).
                 let (forward, up, right) = world_forward_up_right(world);
@@ -6081,11 +6105,44 @@ fn local_aabb(kind: &NodeKind) -> Aabb3 {
                 }
             }
         }
+        // A collider's bounds come from its `ColliderShape` extents — never from
+        // node scale (which a collider doesn't have; see `ColliderSpec::from_node`).
+        // The shapes are centered on the node origin and Capsule/Cylinder/Cone are
+        // Y-aligned in their local frame. (FIXES.md #1.)
+        NodeKind::Collider(shape) => return collider_local_aabb(shape),
         _ => {}
     }
     // Lights / cameras / empties / un-baked meshes: a small unit box centered on
     // the node.
     ([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5])
+}
+
+/// Local-space AABB of a collider shape, in the collider's own frame (centered
+/// on the node origin). Pair with the node's world translation + rotation — but
+/// NOT its scale — to get world bounds. Mirrors the dimensions the wireframe
+/// (`collider_wire`) and runtime (`ColliderSpec`) read.
+fn collider_local_aabb(shape: &ColliderShape) -> Aabb3 {
+    let half = |hx: f32, hy: f32, hz: f32| ([-hx, -hy, -hz], [hx, hy, hz]);
+    match shape {
+        ColliderShape::Box { half_extents } | ColliderShape::Ellipsoid { half_extents } => {
+            half(half_extents[0], half_extents[1], half_extents[2])
+        }
+        ColliderShape::Sphere { radius } => half(*radius, *radius, *radius),
+        // Capsule total half-height = half_height + radius; girth = radius on X/Z.
+        ColliderShape::Capsule {
+            half_height,
+            radius,
+        } => half(*radius, *half_height + *radius, *radius),
+        // Cylinder / Cone span `half_height` on Y, `radius` on X/Z.
+        ColliderShape::Cylinder {
+            half_height,
+            radius,
+        }
+        | ColliderShape::Cone {
+            half_height,
+            radius,
+        } => half(*radius, *half_height, *radius),
+    }
 }
 
 /// Transform a local AABB by a world matrix and return the enclosing world AABB.

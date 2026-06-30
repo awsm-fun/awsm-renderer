@@ -5,6 +5,13 @@ use glam::{Quat, Vec3};
 /// the collider's local frame — to orient them along X or Z, rotate
 /// the containing node.
 ///
+/// SIZE LIVES HERE, NOT IN NODE SCALE. These extents
+/// (`half_extents` / `radius` / `half_height`) are the collider's only
+/// size source: a Rapier collider has no scale, so the node's transform
+/// scale is locked to `[1,1,1]` in the editor and dropped at export
+/// (`ColliderSpec::from_node` reads translation + rotation only). To
+/// resize a collider, change these values — never the node scale.
+///
 /// Ellipsoid is the one shape Rapier doesn't expose natively: the
 /// runtime tessellates a unit sphere into 42 vertices, scales each
 /// per-axis, and hands the result to `ColliderBuilder::convex_hull`.
