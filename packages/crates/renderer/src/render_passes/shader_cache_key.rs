@@ -19,7 +19,7 @@ use crate::render_passes::{
     material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal,
     material_opaque::shader::cache_key::ShaderCacheKeyMaterialOpaque,
     material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialFinalBlend,
-    material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep,
+    material_prep::shader::cache_key::{ShaderCacheKeyMaterialPrep, ShaderCacheKeyShadowBlur},
     material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent,
     occlusion::shader::cache_key::{
         ShaderCacheKeyOcclusionCompaction, ShaderCacheKeyOcclusionCull,
@@ -48,6 +48,8 @@ pub enum ShaderCacheKeyRenderPass {
     MaterialClassify(ShaderCacheKeyMaterialClassify),
     /// Plan B shared prep pass (docs/plans/deferred-shared-prep-pass.md).
     MaterialPrep(ShaderCacheKeyMaterialPrep),
+    /// Optional shadow-visibility denoise blur (`cs_blur_h` / `cs_blur_v`).
+    ShadowBlur(ShaderCacheKeyShadowBlur),
     DecalClassify(ShaderCacheKeyDecalClassify),
     MaterialDecal(ShaderCacheKeyMaterialDecal),
     MaterialOpaque(ShaderCacheKeyMaterialOpaque),

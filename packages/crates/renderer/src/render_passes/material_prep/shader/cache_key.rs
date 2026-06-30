@@ -23,3 +23,19 @@ impl From<ShaderCacheKeyMaterialPrep> for ShaderCacheKey {
         ShaderCacheKey::RenderPass(ShaderCacheKeyRenderPass::MaterialPrep(key))
     }
 }
+
+/// Cache key for the OPTIONAL shadow-visibility denoise blur compute pipelines
+/// (`cs_blur_h` / `cs_blur_v`). `msaa_sample_count` selects the depth binding
+/// type (multisampled vs not); `max_shadow_casters` sets the packed-layer loop
+/// count (`ceil(K/4)`), matching the prep output it blurs.
+#[derive(Hash, Debug, Clone, PartialEq, Eq)]
+pub struct ShaderCacheKeyShadowBlur {
+    pub msaa_sample_count: Option<u32>,
+    pub max_shadow_casters: u32,
+}
+
+impl From<ShaderCacheKeyShadowBlur> for ShaderCacheKey {
+    fn from(key: ShaderCacheKeyShadowBlur) -> Self {
+        ShaderCacheKey::RenderPass(ShaderCacheKeyRenderPass::ShadowBlur(key))
+    }
+}

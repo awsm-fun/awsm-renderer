@@ -29,6 +29,33 @@ pub fn start() {
             .await;
     });
 
+    // Shadow denoise blur (cheap, synchronous — no pipeline recompile, just a
+    // per-frame dispatch gate in ShadowsConfig).
+    spawn_local(async {
+        let mut first = true;
+        controller()
+            .settings
+            .shadow_denoise
+            .signal()
+            .for_each(move |on| {
+                let skip = first;
+                first = false;
+                async move {
+                    if !skip {
+                        with_renderer_mut(move |r| {
+                            let mut cfg = r.shadows_config().clone();
+                            if cfg.denoise != on {
+                                cfg.denoise = on;
+                                r.set_shadows_config(cfg);
+                            }
+                        })
+                        .await;
+                    }
+                }
+            })
+            .await;
+    });
+
     // MSAA on/off — recompiles the affected pipelines, so it's async + guarded
     // against redundant re-applies.
     spawn_local(async {

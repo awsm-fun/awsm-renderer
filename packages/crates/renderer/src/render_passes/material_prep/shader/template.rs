@@ -4,7 +4,9 @@
 use askama::Template;
 
 use crate::{
-    render_passes::material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep,
+    render_passes::material_prep::shader::cache_key::{
+        ShaderCacheKeyMaterialPrep, ShaderCacheKeyShadowBlur,
+    },
     shaders::{AwsmShaderError, Result},
 };
 
@@ -105,5 +107,58 @@ impl ShaderTemplateMaterialPrep {
     /// Returns an optional debug label for shader compilation.
     pub fn debug_label(&self) -> Option<&str> {
         Some("Material Prep")
+    }
+}
+
+// ── Optional shadow-visibility denoise blur (`cs_blur_h` / `cs_blur_v`) ───────
+
+pub struct ShaderTemplateShadowBlur {
+    pub bind_groups: ShaderTemplateShadowBlurBindGroups,
+    pub compute: ShaderTemplateShadowBlurCompute,
+}
+
+/// Blur bind-group declarations — lockstep with the blur layout in
+/// `material_prep/bind_group.rs` (`create_blur_bind_group_layout_key`).
+#[derive(Template, Debug)]
+#[template(path = "shadow_blur_wgsl/bind_groups.wgsl", whitespace = "minimize")]
+pub struct ShaderTemplateShadowBlurBindGroups {
+    /// Depth binding type (true = `texture_depth_multisampled_2d`).
+    pub multisampled_geometry: bool,
+}
+
+/// Blur compute body (`cs_blur_h` / `cs_blur_v`).
+#[derive(Template, Debug)]
+#[template(path = "shadow_blur_wgsl/compute.wgsl", whitespace = "minimize")]
+pub struct ShaderTemplateShadowBlurCompute {
+    /// `ceil(K/4)` — packed shadow-visibility layers to blur (matches the prep
+    /// output this pass reads + writes).
+    pub shadow_visibility_layers: u32,
+}
+
+impl TryFrom<&ShaderCacheKeyShadowBlur> for ShaderTemplateShadowBlur {
+    type Error = AwsmShaderError;
+    fn try_from(key: &ShaderCacheKeyShadowBlur) -> Result<Self> {
+        Ok(ShaderTemplateShadowBlur {
+            bind_groups: ShaderTemplateShadowBlurBindGroups {
+                multisampled_geometry: key.msaa_sample_count.is_some(),
+            },
+            compute: ShaderTemplateShadowBlurCompute {
+                shadow_visibility_layers: key.max_shadow_casters.div_ceil(4).max(1),
+            },
+        })
+    }
+}
+
+impl ShaderTemplateShadowBlur {
+    /// Renders the blur shader into a WGSL source string.
+    pub fn into_source(self) -> Result<String> {
+        let bind_groups_source = self.bind_groups.render()?;
+        let compute_source = self.compute.render()?;
+        Ok(format!("{}\n{}", bind_groups_source, compute_source))
+    }
+
+    /// Returns an optional debug label for shader compilation.
+    pub fn debug_label(&self) -> Option<&str> {
+        Some("Shadow Denoise Blur")
     }
 }

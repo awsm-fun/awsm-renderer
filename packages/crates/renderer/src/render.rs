@@ -1078,6 +1078,10 @@ impl AwsmRenderer {
             // (classify → prep → opaque ordering); concurrent edge-buffer READ is
             // safe within the frame encoder.
             prep.render_edge(&ctx)?;
+            // Optional shadow-visibility denoise blur (in place on
+            // prep_shadow_visibility). Gated on ShadowsConfig::denoise; runs
+            // before opaque reads the buffer.
+            prep.render_blur(&ctx)?;
         }
 
         {

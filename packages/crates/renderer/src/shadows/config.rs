@@ -57,6 +57,14 @@ pub struct ShadowsConfig {
     /// Tints each directional cascade range so the splits are visible
     /// in the editor. Drives a debug bitmask flag in the opaque pass.
     pub debug_cascade_colors: bool,
+    /// Optional edge-aware denoise blur on the packed per-pixel
+    /// shadow-visibility buffer (`prep_shadow_visibility`). A single
+    /// separable, depth-stopped screen-space pass that smooths the
+    /// residual soft/PCSS penumbra speckle for ALL shadowed lights at
+    /// once (cost is independent of light count). Skipped entirely when
+    /// `false`. Does not cover MSAA silhouette-edge samples (those read a
+    /// separate compact buffer).
+    pub denoise: bool,
 }
 
 impl Default for ShadowsConfig {
@@ -82,6 +90,10 @@ impl Default for ShadowsConfig {
             max_point_shadows: 8,
             point_shadow_resolution: 1024,
             debug_cascade_colors: false,
+            // On by default: it fixes the residual point-light penumbra
+            // speckle out of the box and is cheap (one separable pass,
+            // light-count-independent). Toggleable off in the editor.
+            denoise: true,
         }
     }
 }

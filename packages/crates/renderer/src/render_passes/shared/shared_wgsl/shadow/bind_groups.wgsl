@@ -101,6 +101,37 @@ fn pcss_rotate(v: vec2<f32>, sin_a: f32, cos_a: f32) -> vec2<f32> {
     return vec2<f32>(v.x * cos_a - v.y * sin_a, v.x * sin_a + v.y * cos_a);
 }
 
+// Vogel (sunflower) disk: `n` points spread by the golden angle, each at
+// radius `sqrt((i+0.5)/n)`. Coverage is far more uniform than rotating a fixed
+// 16-point Poisson set — a rotated Poisson set keeps its clumps (it just spins
+// them), so a wide kernel undersamples into per-pixel speckle. The Vogel point
+// set has no clumps at any count, so the same per-pixel rotation (`phase`,
+// from the IGN hash) decorrelates neighbours WITHOUT exposing clumps as noise.
+// Scales to any `n` with no lookup table. Returns a point in the unit disk.
+fn vogel_disk(i: u32, n: u32, phase: f32) -> vec2<f32> {
+    let GOLDEN_ANGLE: f32 = 2.39996323; // π·(3−√5)
+    let r = sqrt((f32(i) + 0.5) / f32(n));
+    let theta = f32(i) * GOLDEN_ANGLE + phase;
+    return vec2<f32>(r * cos(theta), r * sin(theta));
+}
+
+// Cube soft/PCSS tap budgets. Raised from the original fixed 16 (and routed
+// through the clump-free Vogel disk above) because point-light penumbras here
+// reach a ~1 m world disc — 16 rotated-Poisson taps over that span read as the
+// "furry" speckle fringe. More taps + uniform coverage resolves the penumbra
+// smoothly. These are point-light-only; the 2D/cascade paths keep their own.
+//
+// COST: these are the per-shadowed-pixel cube `textureSampleCompare` budget and
+// are a HARD compile-time ceiling (they can't grow at runtime). The values are
+// the deliberate cost/quality knob — ~2x the old 16-tap budget. The cheaper
+// noise lever is the screen-space denoise blur (ShadowsConfig::denoise, on by
+// default), which smooths residual penumbra speckle once for ALL lights instead
+// of per-pixel-per-light here; raise the blur radius before raising these. They
+// stay this high so the denoise-OFF path is still acceptable on its own.
+const CUBE_SOFT_TAPS: u32 = 32u;
+const CUBE_BLOCKER_TAPS: u32 = 24u;
+const CUBE_PCSS_TAPS: u32 = 32u;
+
 // Screen-space contact shadows (SSCS). Short ray-march in view space
 // from `world_pos` toward `light_dir` (the surface→light direction),
 // using the already-bound depth buffer (`depth_tex`). Returns `[0, 1]`
@@ -251,20 +282,38 @@ fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>) -> f32 {
 // for cube face generation in `Shadows::write_gpu`.
 const POINT_SHADOW_NEAR: f32 = 0.05;
 
-// Kernel-width receiver-plane slack for the point-light soft/PCSS taps
-// is the per-light `kernel_slack` shadow param, delivered in the
+// Texel-quantization receiver-plane slack for the point-light soft/PCSS
+// taps is the per-light `kernel_slack` shadow param, delivered in the
 // otherwise-unused `cascade_info.x` descriptor slot (see
-// `shadows::state` cube packing). A wide disc on the receiver tangent
-// plane reaches taps whose light-direction lands in cube texels storing
-// the floor's own (quantized, slope-varying) back-face depth; the
-// constant per-tap `depth_bias` can't cover that growing mismatch, so
-// the 16-tap average dips below 1.0 in radial bands → the "acne rings"
-// on a flat floor under a point light. Mirrors the 2D/cascade fix
-// (`pcss_ref -= depth_bias * penumbra_texels * 0.5`): widen the
-// comparison bias with the kernel radius so wider penumbras get
-// proportional slack. Scaled below by the local NDC.z gradient so the
-// slack is in the same units as `ref_depth` at every distance/face.
-// Hard (kernel radius 0) gets zero extra bias and stays crisp.
+// `shadows::state` cube packing). A tap whose light-direction lands in a
+// cube texel storing the floor's own back-face depth self-shadows by the
+// depth quantization across that texel; the constant per-tap `depth_bias`
+// can't cover it, so the average dips below 1.0 in radial bands → the
+// "acne rings" on a flat floor under a point light.
+//
+// The slack widens the comparison bias by exactly that quantization gap:
+// `tap_grad × world_per_texel × kernel_slack`, where `world_per_texel =
+// 2·view_depth / cube_resolution` is the world footprint of ONE cube
+// texel at the tap's distance. `kernel_slack` therefore reads as "how
+// many texels of quantization to forgive" (default 2).
+//
+// CRITICAL: the slack scales with ONE TEXEL, not the kernel radius. The
+// earlier formula used the kernel *radius* (`SOFT_WORLD_RADIUS` /
+// `penumbra_world_radius`), so a ~1 m PCSS penumbra demanded ~100× the
+// slack a genuine receiver↔occluder gap provides, and the umbra leaked
+// to lit — worst directly under a floating occluder, where the gap is
+// smallest. One-texel scale fixes the quantization acne identically
+// (it IS a one-texel effect) while staying far too small to ever bridge
+// a real occluder gap, so the umbra can't leak. Hard (no kernel) gets
+// zero extra bias and stays crisp.
+//
+// The stored `kernel_slack` value (default 2) is reinterpreted by this
+// change: under the old kernel-radius formula the same number meant a
+// far larger world slack. No migration is provided — the kernel-radius
+// formula only ever shipped in the immediately-prior point-light commit,
+// so a project with a non-default value tuned against it is not expected
+// in practice, and the default reads correctly here. If an old project
+// shows faint acne rings, nudge its per-light `kernel_slack` up a texel.
 
 // Point-light cube shadow sample.
 //
@@ -348,30 +397,27 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let tangent = normalize(cross(up_hint, world_normal));
     let bitangent = cross(world_normal, tangent);
 
+    // Per-pixel phase for the Vogel disk (IGN hash on world pos, so adjacent
+    // receivers sample rotated kernels and don't share a pattern).
     let angle = pcss_disk_angle(
         biased_pos.xz * 137.0 + vec2<f32>(biased_pos.y * 31.0, biased_pos.y * 17.0),
     );
-    let sin_a = sin(angle);
-    let cos_a = cos(angle);
+
+    // Cube face resolution (square), for the per-texel kernel-slack term in
+    // both branches below.
+    let cube_face_res = f32(textureDimensions(shadow_cube_2d_array, 0).x);
 
     if hardness < 1.5 {
-        // Soft — fixed 16-tap rotated Poisson, ~15 cm world disc.
-        // Distance tapering applies ONLY to the PCSS branch below
-        // (where the variable-kernel PCF can absorb the noise floor
-        // a smaller sample count introduces). The Soft path is the
-        // user's "I want a clean smooth shadow, no contact hardening"
-        // setting; dropping its tap count introduces visible Poisson-
-        // rotation banding on large smooth receivers (the floor in
-        // the canonical "directional light + character on a plane"
-        // test). 16 fixed = visually clean; the tap-count knob exists
-        // for the PCSS branch's wide-kernel pass.
+        // Soft — fixed-width Vogel disc, ~15 cm world radius. The tap count is
+        // `CUBE_SOFT_TAPS` (raised from 16); over a clump-free Vogel set this
+        // resolves the soft edge smoothly with no rotation speckle.
         // World-space disc radius. Base 0.15 m at `pcss_penumbra_scale == 1`;
         // the per-light knob (bias_params.w) is the user's softness control,
         // shared with PCSS so one slider governs both modes for point lights too.
         let SOFT_WORLD_RADIUS: f32 = 0.15 * max(desc.bias_params.w, 0.0);
         var sum = 0.0;
-        for (var i = 0u; i < 16u; i = i + 1u) {
-            let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * SOFT_WORLD_RADIUS;
+        for (var i = 0u; i < CUBE_SOFT_TAPS; i = i + 1u) {
+            let off = vogel_disk(i, CUBE_SOFT_TAPS, angle) * SOFT_WORLD_RADIUS;
             let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
             let tap_to_light = tap_pos - light_pos;
             let tap_dist = length(tap_to_light);
@@ -383,11 +429,14 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
                 (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
             let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
             let tap_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05);
-            // Kernel-width slack: depth a tap-radius displacement can span
-            // on this receiver, in NDC.z units (gradient × world radius).
+            // Per-texel quantization slack (NOT kernel-radius — see the block
+            // comment above the cube fn). `world_per_texel = 2·view_depth /
+            // res`; one texel of depth can't bridge a real occluder gap, so
+            // no umbra leak.
             let tap_grad = (range / (range - near)) * near
                 / max(tap_view_depth * tap_view_depth, near * near);
-            let tap_slack = tap_grad * SOFT_WORLD_RADIUS * desc.cascade_info.x;
+            let texel_world = 2.0 * tap_view_depth / cube_face_res;
+            let tap_slack = tap_grad * texel_world * desc.cascade_info.x;
             let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias - tap_slack;
             sum += textureSampleCompareLevel(
                 shadow_cube_array,
@@ -397,7 +446,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
                 tap_ref,
             );
         }
-        return sum / 16.0;
+        return sum / f32(CUBE_SOFT_TAPS);
     }
 
     // PCSS — real blocker search + variable kernel.
@@ -427,18 +476,14 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let cube_dims = textureDimensions(shadow_cube_2d_array, 0);
     let cube_face_size = vec2<f32>(f32(cube_dims.x), f32(cube_dims.y));
 
-    // Fixed 16-tap blocker search. We previously tapered this by
-    // `dist / range` to save fragment cost on distant receivers,
-    // but the variable-kernel PCF below needs all 16 samples to
-    // resolve smoothly — undersampled wide penumbras showed
-    // visible Poisson-rotation banding (cube version less obvious
-    // than directional, but present). The unused helper
-    // `pcss_tap_count` is kept above for future re-introduction
-    // once a quality-preserving tap budget is worked out.
+    // Vogel blocker search (`CUBE_BLOCKER_TAPS`). The averaged blocker depth
+    // sets the penumbra WIDTH, so per-pixel variance here turns into a noisy
+    // penumbra-radius field — a second noise source on top of the PCF below.
+    // A clump-free Vogel set + more taps keeps the width estimate smooth.
     var blocker_sum = 0.0;
     var blocker_count = 0u;
-    for (var i = 0u; i < 16u; i = i + 1u) {
-        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * pcss_search_world_radius;
+    for (var i = 0u; i < CUBE_BLOCKER_TAPS; i = i + 1u) {
+        let off = vogel_disk(i, CUBE_BLOCKER_TAPS, angle) * pcss_search_world_radius;
         let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
         let tap_to_light = tap_pos - light_pos;
         let tap_dist = length(tap_to_light);
@@ -497,7 +542,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     if blocker_count == 0u {
         return 1.0;
     }
-    if blocker_count == 16u {
+    if blocker_count == CUBE_BLOCKER_TAPS {
         return 0.0;
     }
     let avg_blocker = blocker_sum / f32(blocker_count);
@@ -522,8 +567,8 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     );
 
     var sum = 0.0;
-    for (var i = 0u; i < 16u; i = i + 1u) {
-        let off = pcss_rotate(POISSON_DISK_16[i], sin_a, cos_a) * penumbra_world_radius;
+    for (var i = 0u; i < CUBE_PCSS_TAPS; i = i + 1u) {
+        let off = vogel_disk(i, CUBE_PCSS_TAPS, angle) * penumbra_world_radius;
         let tap_pos = biased_pos + tangent * off.x + bitangent * off.y;
         let tap_to_light = tap_pos - light_pos;
         let tap_dist = length(tap_to_light);
@@ -535,11 +580,13 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
         let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
         let tap_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05);
-        // Kernel-width slack (see soft path) — scaled by the PCSS
-        // penumbra radius so wide variable kernels don't self-shadow.
+        // Per-texel quantization slack (see soft path + the block comment
+        // above the cube fn): ONE-texel footprint, independent of the (up to
+        // ~1 m) penumbra radius, so a wide kernel no longer leaks the umbra.
         let tap_grad = (range / (range - near)) * near
             / max(tap_view_depth * tap_view_depth, near * near);
-        let tap_slack = tap_grad * penumbra_world_radius * desc.cascade_info.x;
+        let texel_world = 2.0 * tap_view_depth / cube_face_res;
+        let tap_slack = tap_grad * texel_world * desc.cascade_info.x;
         let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias - tap_slack;
         sum += textureSampleCompareLevel(
             shadow_cube_array,
@@ -549,7 +596,7 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             tap_ref,
         );
     }
-    return sum / 16.0;
+    return sum / f32(CUBE_PCSS_TAPS);
 }
 
 

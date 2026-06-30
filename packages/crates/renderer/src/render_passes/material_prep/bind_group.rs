@@ -59,9 +59,17 @@ pub struct MaterialPrepBindGroups {
     /// edge_layout (uniform) + edge_shadow_out (storage texture array, write).
     /// `None` when the renderer is not MSAA (no edges, no cs_prep_edge pipeline).
     pub edge_bind_group_layout_key: Option<BindGroupLayoutKey>,
+    /// Layouts for the optional shadow-denoise blur (`cs_blur_h` / `cs_blur_v`).
+    /// Two MSAA variants (the depth binding type follows the geometry pass).
+    pub blur_multisampled_bind_group_layout_key: BindGroupLayoutKey,
+    pub blur_singlesampled_bind_group_layout_key: BindGroupLayoutKey,
     bind_group: Option<web_sys::GpuBindGroup>,
     lights_bind_group: Option<web_sys::GpuBindGroup>,
     shadows_bind_group: Option<web_sys::GpuBindGroup>,
+    /// Blur ping-pong bind groups: H reads `prep_shadow_visibility` → writes
+    /// the temp; V reads the temp → writes back into `prep_shadow_visibility`.
+    blur_h_bind_group: Option<web_sys::GpuBindGroup>,
+    blur_v_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl MaterialPrepBindGroups {
@@ -90,15 +98,24 @@ impl MaterialPrepBindGroups {
         // the pipeline + texture are ready for the MSAA-on path.
         let edge_bind_group_layout_key = Some(create_edge_bind_group_layout_key(ctx)?);
 
+        let blur_multisampled_bind_group_layout_key =
+            create_blur_bind_group_layout_key(ctx, true)?;
+        let blur_singlesampled_bind_group_layout_key =
+            create_blur_bind_group_layout_key(ctx, false)?;
+
         Ok(Self {
             multisampled_bind_group_layout_key,
             singlesampled_bind_group_layout_key,
             lights_bind_group_layout_key,
             shadows_bind_group_layout_key,
             edge_bind_group_layout_key,
+            blur_multisampled_bind_group_layout_key,
+            blur_singlesampled_bind_group_layout_key,
             bind_group: None,
             lights_bind_group: None,
             shadows_bind_group: None,
+            blur_h_bind_group: None,
+            blur_v_bind_group: None,
         })
     }
 
@@ -129,6 +146,24 @@ impl MaterialPrepBindGroups {
             .ok_or_else(|| AwsmBindGroupError::NotFound("Material Prep - Shadows".to_string()))
     }
 
+    /// Blur H bind group (src = `prep_shadow_visibility`, dst = temp).
+    pub fn get_blur_h_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.blur_h_bind_group
+            .as_ref()
+            .ok_or_else(|| AwsmBindGroupError::NotFound("Material Prep - Blur H".to_string()))
+    }
+
+    /// Blur V bind group (src = temp, dst = `prep_shadow_visibility`).
+    pub fn get_blur_v_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.blur_v_bind_group
+            .as_ref()
+            .ok_or_else(|| AwsmBindGroupError::NotFound("Material Prep - Blur V".to_string()))
+    }
+
     /// (Re)builds all three prep bind groups. Called from
     /// [`crate::bind_groups::BindGroups`] in response to any of prep's recreate
     /// events (texture-view recreate, mesh-meta / geometry-pool resize, lights /
@@ -138,7 +173,85 @@ impl MaterialPrepBindGroups {
         self.recreate_main(ctx)?;
         self.recreate_lights(ctx)?;
         self.recreate_shadows(ctx)?;
+        self.recreate_blur(ctx)?;
         Ok(())
+    }
+
+    /// Rebuilds the two blur ping-pong bind groups (H + V) against the live
+    /// MSAA layout. Built unconditionally (cheap) so the denoise toggle can flip
+    /// at runtime without a bind-group rebuild — `render_blur` skips the
+    /// dispatch when the config disables it.
+    fn recreate_blur(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
+        let msaa = ctx.anti_aliasing.msaa_sample_count.is_some();
+        let layout_key = if msaa {
+            self.blur_multisampled_bind_group_layout_key
+        } else {
+            self.blur_singlesampled_bind_group_layout_key
+        };
+
+        let visibility = ctx
+            .render_texture_views
+            .prep_shadow_visibility
+            .as_ref()
+            .ok_or_else(|| {
+                AwsmBindGroupError::NotFound("Material Prep - Blur visibility".to_string())
+            })?;
+        let tmp = ctx
+            .render_texture_views
+            .prep_shadow_visibility_blur_tmp
+            .as_ref()
+            .ok_or_else(|| {
+                AwsmBindGroupError::NotFound("Material Prep - Blur temp".to_string())
+            })?;
+
+        // H: src = visibility → dst = temp. V: src = temp → dst = visibility.
+        self.blur_h_bind_group = Some(self.build_blur_bind_group(
+            ctx,
+            layout_key,
+            visibility,
+            tmp,
+            "Material Prep - Blur H",
+        )?);
+        self.blur_v_bind_group = Some(self.build_blur_bind_group(
+            ctx,
+            layout_key,
+            tmp,
+            visibility,
+            "Material Prep - Blur V",
+        )?);
+        Ok(())
+    }
+
+    fn build_blur_bind_group(
+        &self,
+        ctx: &BindGroupRecreateContext<'_>,
+        layout_key: BindGroupLayoutKey,
+        src: &web_sys::GpuTextureView,
+        dst: &web_sys::GpuTextureView,
+        label: &str,
+    ) -> Result<web_sys::GpuBindGroup> {
+        let entries = vec![
+            // 0 depth_tex (edge-stopping).
+            BindGroupEntry::new(
+                0,
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
+            ),
+            // 1 camera_raw (uniform — depth → linear view-z).
+            BindGroupEntry::new(
+                1,
+                BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
+            ),
+            // 2 src visibility (sampled).
+            BindGroupEntry::new(2, BindGroupResource::TextureView(Cow::Borrowed(src))),
+            // 3 dst visibility (storage write).
+            BindGroupEntry::new(3, BindGroupResource::TextureView(Cow::Borrowed(dst))),
+        ];
+        let descriptor = BindGroupDescriptor::new(
+            ctx.bind_group_layouts.get(layout_key)?,
+            Some(label),
+            entries,
+        );
+        Ok(ctx.gpu.create_bind_group(&descriptor.into()))
     }
 
     fn recreate_main(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
@@ -392,6 +505,53 @@ fn create_edge_bind_group_layout_key(
             BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
         )),
         // 2 edge_shadow_out — storage texture array (rgba8unorm, write).
+        compute(BindGroupLayoutResource::StorageTexture(
+            StorageTextureBindingLayout::new(TextureFormat::Rgba8unorm)
+                .with_view_dimension(TextureViewDimension::N2dArray)
+                .with_access(StorageTextureAccess::WriteOnly),
+        )),
+    ];
+
+    Ok(ctx
+        .bind_group_layouts
+        .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)
+}
+
+/// Layout for the optional shadow-denoise blur (`cs_blur_h` / `cs_blur_v`):
+///   0 blur_depth_tex   — depth texture (edge-stop); MSAA variant multisampled.
+///   1 blur_camera_raw  — uniform (depth → linear view-z).
+///   2 blur_src         — sampled visibility array (Rgba8unorm read as f32).
+///   3 blur_dst         — storage visibility array (Rgba8unorm, write).
+fn create_blur_bind_group_layout_key(
+    ctx: &mut RenderPassInitContext<'_>,
+    multisampled_geometry: bool,
+) -> Result<BindGroupLayoutKey> {
+    let compute = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
+        resource,
+        visibility_vertex: false,
+        visibility_fragment: false,
+        visibility_compute: true,
+    };
+
+    let entries = vec![
+        // 0 depth_tex — MSAA variant is multisampled (matches geometry depth).
+        compute(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::Depth)
+                .with_multisampled(multisampled_geometry),
+        )),
+        // 1 camera_raw — uniform.
+        compute(BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+        )),
+        // 2 src visibility — sampled texture array (rgba8unorm → filterable f32).
+        compute(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2dArray)
+                .with_sample_type(TextureSampleType::Float),
+        )),
+        // 3 dst visibility — storage texture array (rgba8unorm, write).
         compute(BindGroupLayoutResource::StorageTexture(
             StorageTextureBindingLayout::new(TextureFormat::Rgba8unorm)
                 .with_view_dimension(TextureViewDimension::N2dArray)

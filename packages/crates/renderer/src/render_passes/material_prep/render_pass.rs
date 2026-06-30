@@ -25,8 +25,9 @@ use crate::{
     render_passes::{
         material_opaque::edge_buffers::MaterialEdgeBuffers,
         material_prep::{
-            bind_group::MaterialPrepBindGroups, buffers::EdgeShadowBuffer,
-            shader::cache_key::ShaderCacheKeyMaterialPrep,
+            bind_group::MaterialPrepBindGroups,
+            buffers::EdgeShadowBuffer,
+            shader::cache_key::{ShaderCacheKeyMaterialPrep, ShaderCacheKeyShadowBlur},
         },
         RenderPassInitContext,
     },
@@ -47,6 +48,13 @@ pub struct MaterialPrepRenderPass {
     /// Stage 5b-shadow: the compact per-edge-sample shadow texture cs_prep_edge
     /// writes + cs_edge reads. `None` when not MSAA.
     pub edge_shadow: Option<EdgeShadowBuffer>,
+    /// Optional shadow-denoise blur pipelines (`cs_blur_h` / `cs_blur_v`), one
+    /// per MSAA-geometry variant. Built eagerly; dispatched by `render_blur`
+    /// only when the runtime `ShadowsConfig::denoise` toggle is on.
+    blur_h_multisampled_pipeline_key: ComputePipelineKey,
+    blur_h_singlesampled_pipeline_key: ComputePipelineKey,
+    blur_v_multisampled_pipeline_key: ComputePipelineKey,
+    blur_v_singlesampled_pipeline_key: ComputePipelineKey,
 }
 
 impl MaterialPrepRenderPass {
@@ -73,12 +81,25 @@ impl MaterialPrepRenderPass {
             ctx.prep_config.shadow_visibility_layers(),
         )?);
 
+        let blur_h_multisampled_pipeline_key =
+            build_blur_pipeline(ctx, &bind_groups, true, "cs_blur_h").await?;
+        let blur_h_singlesampled_pipeline_key =
+            build_blur_pipeline(ctx, &bind_groups, false, "cs_blur_h").await?;
+        let blur_v_multisampled_pipeline_key =
+            build_blur_pipeline(ctx, &bind_groups, true, "cs_blur_v").await?;
+        let blur_v_singlesampled_pipeline_key =
+            build_blur_pipeline(ctx, &bind_groups, false, "cs_blur_v").await?;
+
         Ok(Self {
             bind_groups,
             multisampled_pipeline_key,
             singlesampled_pipeline_key,
             edge_pipeline_key,
             edge_shadow,
+            blur_h_multisampled_pipeline_key,
+            blur_h_singlesampled_pipeline_key,
+            blur_v_multisampled_pipeline_key,
+            blur_v_singlesampled_pipeline_key,
         })
     }
 
@@ -213,6 +234,67 @@ impl MaterialPrepRenderPass {
         compute_pass.end();
         Ok(())
     }
+
+    /// Optional shadow-visibility denoise blur. A single separable, edge-aware
+    /// (depth-stopped) screen-space pass over `prep_shadow_visibility`: H writes
+    /// the temp, V writes back, so the opaque reader's binding never changes.
+    /// Smooths the residual soft/PCSS penumbra speckle for ALL shadowed lights
+    /// at once (cost independent of light count). Skipped entirely when the
+    /// runtime `ShadowsConfig::denoise` toggle is off. Inserted between
+    /// `cs_prep`/`cs_prep_edge` and the opaque pass (compute passes in one
+    /// encoder are ordered, so the write→read is safe with no explicit barrier).
+    pub fn render_blur(&self, ctx: &RenderContext) -> Result<()> {
+        if !ctx.shadows.config().denoise {
+            return Ok(());
+        }
+        // Nothing casts → `prep_shadow_visibility` is all-1.0; blurring it is a
+        // no-op. Skip the two full-screen dispatches (matches how the shadow
+        // generation pass itself short-circuits on `any_active()`).
+        if !ctx.shadows.any_active() {
+            return Ok(());
+        }
+        let msaa = ctx.anti_aliasing.msaa_sample_count.is_some();
+        let (h_key, v_key) = if msaa {
+            (
+                self.blur_h_multisampled_pipeline_key,
+                self.blur_v_multisampled_pipeline_key,
+            )
+        } else {
+            (
+                self.blur_h_singlesampled_pipeline_key,
+                self.blur_v_singlesampled_pipeline_key,
+            )
+        };
+        let h_pipeline = ctx.pipelines.compute.get(h_key)?;
+        let v_pipeline = ctx.pipelines.compute.get(v_key)?;
+        let h_bind_group = self.bind_groups.get_blur_h_bind_group()?;
+        let v_bind_group = self.bind_groups.get_blur_v_bind_group()?;
+
+        let workgroups_x = ctx.render_texture_views.width.div_ceil(8);
+        let workgroups_y = ctx.render_texture_views.height.div_ceil(8);
+
+        // Horizontal: prep_shadow_visibility → temp.
+        {
+            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+                &ComputePassDescriptor::new(Some("Shadow Denoise Blur H")).into(),
+            ));
+            compute_pass.set_pipeline(h_pipeline);
+            compute_pass.set_bind_group(0, h_bind_group, None)?;
+            compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
+            compute_pass.end();
+        }
+        // Vertical: temp → prep_shadow_visibility (back in place).
+        {
+            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+                &ComputePassDescriptor::new(Some("Shadow Denoise Blur V")).into(),
+            ));
+            compute_pass.set_pipeline(v_pipeline);
+            compute_pass.set_bind_group(0, v_bind_group, None)?;
+            compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
+            compute_pass.end();
+        }
+        Ok(())
+    }
 }
 
 /// Builds the `cs_prep` pipeline for one MSAA-geometry variant.
@@ -299,6 +381,51 @@ async fn build_edge_pipeline(
             ctx.pipeline_layouts,
             ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
                 .with_entry_point("cs_prep_edge"),
+        )
+        .await?;
+    Ok(pipeline_key)
+}
+
+/// Builds one shadow-denoise blur pipeline (`entry_point` = `cs_blur_h` or
+/// `cs_blur_v`) for one MSAA-geometry variant. Both entry points share the one
+/// blur shader module (same `ShaderCacheKeyShadowBlur`); only the pipeline's
+/// entry point + the H/V bind group differ. Pipeline layout = the single blur
+/// bind group at group(0).
+async fn build_blur_pipeline(
+    ctx: &mut RenderPassInitContext<'_>,
+    bind_groups: &MaterialPrepBindGroups,
+    multisampled_geometry: bool,
+    entry_point: &str,
+) -> Result<ComputePipelineKey> {
+    let bgl_key = if multisampled_geometry {
+        bind_groups.blur_multisampled_bind_group_layout_key
+    } else {
+        bind_groups.blur_singlesampled_bind_group_layout_key
+    };
+    let pipeline_layout_key = ctx.pipeline_layouts.get_key(
+        ctx.gpu,
+        ctx.bind_group_layouts,
+        PipelineLayoutCacheKey::new(vec![bgl_key]),
+    )?;
+    let shader_key = ctx
+        .shaders
+        .get_key(
+            ctx.gpu,
+            ShaderCacheKeyShadowBlur {
+                msaa_sample_count: if multisampled_geometry { Some(4) } else { None },
+                max_shadow_casters: ctx.prep_config.clamped_k(),
+            },
+        )
+        .await?;
+    let pipeline_key = ctx
+        .pipelines
+        .compute
+        .get_key(
+            ctx.gpu,
+            ctx.shaders,
+            ctx.pipeline_layouts,
+            ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
+                .with_entry_point(entry_point),
         )
         .await?;
     Ok(pipeline_key)

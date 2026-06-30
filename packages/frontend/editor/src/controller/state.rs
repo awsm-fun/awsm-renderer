@@ -182,6 +182,9 @@ pub struct Settings {
     pub auto_key: Mutable<bool>,
     pub msaa: Mutable<bool>,
     pub heatmap: Mutable<bool>,
+    /// Edge-aware shadow denoise blur (global). Drives the renderer's
+    /// `ShadowsConfig::denoise` via `settings_sync`.
+    pub shadow_denoise: Mutable<bool>,
     pub snap: Mutable<bool>,
     pub units: Mutable<String>,
     /// Built-in editor view camera projection: `true` = orthographic, `false` =
@@ -200,6 +203,9 @@ impl Default for Settings {
             auto_key: Mutable::new(true),
             msaa: Mutable::new(true),
             heatmap: Mutable::new(false),
+            // On by default — matches the renderer's `ShadowsConfig::denoise`
+            // default; keeps point-light soft/PCSS penumbras clean out of box.
+            shadow_denoise: Mutable::new(true),
             snap: Mutable::new(false),
             units: Mutable::new("meters".to_string()),
             editor_ortho: Mutable::new(false),

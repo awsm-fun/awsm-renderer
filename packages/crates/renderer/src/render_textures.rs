@@ -327,6 +327,9 @@ pub struct RenderTextureViews {
     pub prep_vcolor: Option<web_sys::GpuTextureView>,
     /// Plan B Stage 3: per-pixel shadow-visibility view (Rgba8unorm array).
     pub prep_shadow_visibility: Option<web_sys::GpuTextureView>,
+    /// Ping-pong temp for the optional separable shadow-denoise blur (same
+    /// descriptor as `prep_shadow_visibility`). H writes here, V writes back.
+    pub prep_shadow_visibility_blur_tmp: Option<web_sys::GpuTextureView>,
     /// U0: per-pixel edge-id view (R32Uint). `None` when MSAA is off.
     /// Written by classify (storage texture); read by nobody in U0.
     pub edge_id: Option<web_sys::GpuTextureView>,
@@ -396,6 +399,9 @@ impl RenderTextureViews {
             prep_uv: inner.prep_uv_view.clone(),
             prep_vcolor: inner.prep_vcolor_view.clone(),
             prep_shadow_visibility: inner.prep_shadow_visibility_view.clone(),
+            prep_shadow_visibility_blur_tmp: inner
+                .prep_shadow_visibility_blur_tmp_view
+                .clone(),
             edge_id: inner.edge_id_view.clone(),
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
@@ -470,6 +476,10 @@ pub struct RenderTexturesInner {
     /// slots/texel). Always allocated (prep is unconditional).
     pub prep_shadow_visibility: Option<web_sys::GpuTexture>,
     pub prep_shadow_visibility_view: Option<web_sys::GpuTextureView>,
+    /// Ping-pong temp for the optional separable shadow-denoise blur (same
+    /// descriptor as `prep_shadow_visibility`).
+    pub prep_shadow_visibility_blur_tmp: Option<web_sys::GpuTexture>,
+    pub prep_shadow_visibility_blur_tmp_view: Option<web_sys::GpuTextureView>,
 
     /// U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id texture
     /// (R32Uint, one word/pixel). Classify writes the compact edge_pixel_id /
@@ -928,6 +938,46 @@ impl RenderTexturesInner {
             ),
             None => None,
         };
+        // Ping-pong temp for the optional separable shadow-denoise blur. Same
+        // descriptor as `prep_shadow_visibility` (storage write + sampled read).
+        // DELIBERATELY always allocated (it shares prep_shadow_visibility's exact
+        // lifecycle: resize/AA rebuild only). Denoise defaults ON, so the temp is
+        // needed in the common case; making it conditional would couple the cheap
+        // live `denoise` toggle to a full render-texture rebuild for no benefit
+        // when on. Standing cost when denoise is OFF: 4 bytes/px × ceil(K/4)
+        // layers (~8 MB @1080p K≤4, ~133 MB @4K K=16) — revisit only if a
+        // high-K, denoise-off configuration proves common.
+        let prep_shadow_visibility_blur_tmp = Some(
+            gpu.create_texture(
+                &TextureDescriptor::new(
+                    TextureFormat::Rgba8unorm,
+                    Extent3d::new(width, Some(height), Some(prep_shadow_layers.max(1))),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
+                )
+                .with_label("PrepShadowVisibilityBlurTmp")
+                .into(),
+            )
+            .map_err(AwsmRenderTextureError::CreateTexture)?,
+        );
+        let prep_shadow_visibility_blur_tmp_view =
+            match prep_shadow_visibility_blur_tmp.as_ref() {
+                Some(tex) => Some(
+                    tex.create_view_with_descriptor(
+                        &TextureViewDescriptor::new(Some("PrepShadowVisibilityBlurTmp"))
+                            .with_dimension(TextureViewDimension::N2dArray)
+                            .with_array_layer_count(prep_shadow_layers.max(1))
+                            .into(),
+                    )
+                    .map_err(|e| {
+                        AwsmRenderTextureError::CreateTextureView(format!(
+                            "prep_shadow_visibility_blur_tmp: {e:?}"
+                        ))
+                    })?,
+                ),
+                None => None,
+            };
 
         // U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id texture
         // — R32Uint, one word/pixel, NEVER multisampled (one value per pixel,
@@ -1049,6 +1099,8 @@ impl RenderTexturesInner {
             prep_vcolor_view,
             prep_shadow_visibility,
             prep_shadow_visibility_view,
+            prep_shadow_visibility_blur_tmp,
+            prep_shadow_visibility_blur_tmp_view,
 
             edge_id,
             edge_id_view,
@@ -1097,6 +1149,9 @@ impl RenderTexturesInner {
             tex.destroy();
         }
         if let Some(tex) = self.prep_shadow_visibility {
+            tex.destroy();
+        }
+        if let Some(tex) = self.prep_shadow_visibility_blur_tmp {
             tex.destroy();
         }
         if let Some(tex) = self.edge_id {
