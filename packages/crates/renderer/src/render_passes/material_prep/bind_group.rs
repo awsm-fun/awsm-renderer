@@ -98,8 +98,7 @@ impl MaterialPrepBindGroups {
         // the pipeline + texture are ready for the MSAA-on path.
         let edge_bind_group_layout_key = Some(create_edge_bind_group_layout_key(ctx)?);
 
-        let blur_multisampled_bind_group_layout_key =
-            create_blur_bind_group_layout_key(ctx, true)?;
+        let blur_multisampled_bind_group_layout_key = create_blur_bind_group_layout_key(ctx, true)?;
         let blur_singlesampled_bind_group_layout_key =
             create_blur_bind_group_layout_key(ctx, false)?;
 
@@ -200,9 +199,7 @@ impl MaterialPrepBindGroups {
             .render_texture_views
             .prep_shadow_visibility_blur_tmp
             .as_ref()
-            .ok_or_else(|| {
-                AwsmBindGroupError::NotFound("Material Prep - Blur temp".to_string())
-            })?;
+            .ok_or_else(|| AwsmBindGroupError::NotFound("Material Prep - Blur temp".to_string()))?;
 
         // H: src = visibility → dst = temp. V: src = temp → dst = visibility.
         self.blur_h_bind_group = Some(self.build_blur_bind_group(

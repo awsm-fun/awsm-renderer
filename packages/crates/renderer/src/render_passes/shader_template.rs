@@ -93,9 +93,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::MaterialPrep(cache_key) => Ok(
                 ShaderTemplateRenderPass::MaterialPrep(cache_key.try_into()?),
             ),
-            ShaderCacheKeyRenderPass::ShadowBlur(cache_key) => Ok(
-                ShaderTemplateRenderPass::ShadowBlur(cache_key.try_into()?),
-            ),
+            ShaderCacheKeyRenderPass::ShadowBlur(cache_key) => {
+                Ok(ShaderTemplateRenderPass::ShadowBlur(cache_key.try_into()?))
+            }
             ShaderCacheKeyRenderPass::DecalClassify(cache_key) => Ok(
                 ShaderTemplateRenderPass::DecalClassify(cache_key.try_into()?),
             ),

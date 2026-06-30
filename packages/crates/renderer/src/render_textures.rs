@@ -399,9 +399,7 @@ impl RenderTextureViews {
             prep_uv: inner.prep_uv_view.clone(),
             prep_vcolor: inner.prep_vcolor_view.clone(),
             prep_shadow_visibility: inner.prep_shadow_visibility_view.clone(),
-            prep_shadow_visibility_blur_tmp: inner
-                .prep_shadow_visibility_blur_tmp_view
-                .clone(),
+            prep_shadow_visibility_blur_tmp: inner.prep_shadow_visibility_blur_tmp_view.clone(),
             edge_id: inner.edge_id_view.clone(),
             depth: inner.depth_view.clone(),
             hud_depth: inner.hud_depth_view.clone(),
@@ -961,23 +959,22 @@ impl RenderTexturesInner {
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?,
         );
-        let prep_shadow_visibility_blur_tmp_view =
-            match prep_shadow_visibility_blur_tmp.as_ref() {
-                Some(tex) => Some(
-                    tex.create_view_with_descriptor(
-                        &TextureViewDescriptor::new(Some("PrepShadowVisibilityBlurTmp"))
-                            .with_dimension(TextureViewDimension::N2dArray)
-                            .with_array_layer_count(prep_shadow_layers.max(1))
-                            .into(),
-                    )
-                    .map_err(|e| {
-                        AwsmRenderTextureError::CreateTextureView(format!(
-                            "prep_shadow_visibility_blur_tmp: {e:?}"
-                        ))
-                    })?,
-                ),
-                None => None,
-            };
+        let prep_shadow_visibility_blur_tmp_view = match prep_shadow_visibility_blur_tmp.as_ref() {
+            Some(tex) => Some(
+                tex.create_view_with_descriptor(
+                    &TextureViewDescriptor::new(Some("PrepShadowVisibilityBlurTmp"))
+                        .with_dimension(TextureViewDimension::N2dArray)
+                        .with_array_layer_count(prep_shadow_layers.max(1))
+                        .into(),
+                )
+                .map_err(|e| {
+                    AwsmRenderTextureError::CreateTextureView(format!(
+                        "prep_shadow_visibility_blur_tmp: {e:?}"
+                    ))
+                })?,
+            ),
+            None => None,
+        };
 
         // U0 (`docs/plans/unified-edge-shading.md`): per-pixel edge-id texture
         // — R32Uint, one word/pixel, NEVER multisampled (one value per pixel,
