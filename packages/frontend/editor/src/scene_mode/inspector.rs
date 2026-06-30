@@ -3690,6 +3690,18 @@ fn light_shadow_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
 
     // Point-light cube faces.
     if matches!(cfg, LightConfig::Point { .. }) {
+        // Soft/PCSS-only knob: receiver-plane slack that removes the
+        // wide-kernel self-shadow "acne rings" on flat floors. No effect
+        // in Hard mode (zero-radius kernel).
+        let n = node.clone();
+        sec = sec.child(row(
+            "Kernel Slack",
+            NumField::new(shadow.kernel_slack as f64)
+                .min(0.0)
+                .step(0.5)
+                .on_change(move |v| update_shadow(&n, |s| s.kernel_slack = (v as f32).max(0.0)))
+                .render(),
+        ));
         let n = node.clone();
         sec = sec.child(enum_select_row(
             "Cube Update",

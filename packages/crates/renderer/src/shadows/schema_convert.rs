@@ -62,6 +62,7 @@ impl From<schema::LightShadowConfig> for LightShadowParams {
             resolution: s.resolution,
             hardness: s.hardness.into(),
             pcss_penumbra_scale: s.pcss_penumbra_scale,
+            kernel_slack: s.kernel_slack,
             max_distance: s.max_distance,
             cascade_count: s.cascade_count,
             cascade_split_lambda: s.cascade_split_lambda,

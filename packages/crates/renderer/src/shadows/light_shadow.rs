@@ -31,6 +31,13 @@ pub struct LightShadowParams {
     /// PCSS for back-compat, but it now governs the `Soft` mode too so a
     /// single control drives both.
     pub pcss_penumbra_scale: f32,
+    /// Point-light only. Receiver-plane slack folded into the soft/PCSS
+    /// comparison bias, scaled by the kernel radius — kills the
+    /// self-shadow "acne rings" a wide disc otherwise produces on a flat
+    /// floor under a point light. Passed to the cube shader via the
+    /// (otherwise-unused) `cascade_info.x` descriptor slot. `0.0` = off,
+    /// `2.0` = neutral default; larger trades acne for contact leak.
+    pub kernel_slack: f32,
     /// Camera-distance fadeout cutoff for this light's shadow.
     /// Camera-distance cutoff for the cascade span. `<= 0` = AUTO
     /// (follow the camera far plane) — the scale-safe default; a
@@ -67,6 +74,7 @@ impl Default for LightShadowParams {
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
+            kernel_slack: 2.0,
             max_distance: 0.0,
             cascade_count: 4,
             cascade_split_lambda: 0.5,
