@@ -251,6 +251,21 @@ fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>) -> f32 {
 // for cube face generation in `Shadows::write_gpu`.
 const POINT_SHADOW_NEAR: f32 = 0.05;
 
+// Kernel-width receiver-plane slack for the point-light soft/PCSS taps
+// is the per-light `kernel_slack` shadow param, delivered in the
+// otherwise-unused `cascade_info.x` descriptor slot (see
+// `shadows::state` cube packing). A wide disc on the receiver tangent
+// plane reaches taps whose light-direction lands in cube texels storing
+// the floor's own (quantized, slope-varying) back-face depth; the
+// constant per-tap `depth_bias` can't cover that growing mismatch, so
+// the 16-tap average dips below 1.0 in radial bands → the "acne rings"
+// on a flat floor under a point light. Mirrors the 2D/cascade fix
+// (`pcss_ref -= depth_bias * penumbra_texels * 0.5`): widen the
+// comparison bias with the kernel radius so wider penumbras get
+// proportional slack. Scaled below by the local NDC.z gradient so the
+// slack is in the same units as `ref_depth` at every distance/face.
+// Hard (kernel radius 0) gets zero extra bias and stays crisp.
+
 // Point-light cube shadow sample.
 //
 // Each cube face stores perspective NDC.z written by the rasterizer
@@ -368,7 +383,12 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
                 (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
             let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
             let tap_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05);
-            let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias;
+            // Kernel-width slack: depth a tap-radius displacement can span
+            // on this receiver, in NDC.z units (gradient × world radius).
+            let tap_grad = (range / (range - near)) * near
+                / max(tap_view_depth * tap_view_depth, near * near);
+            let tap_slack = tap_grad * SOFT_WORLD_RADIUS * desc.cascade_info.x;
+            let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias - tap_slack;
             sum += textureSampleCompareLevel(
                 shadow_cube_array,
                 shadow_cube_sampler,
@@ -515,7 +535,12 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
         let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
         let tap_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05);
-        let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias;
+        // Kernel-width slack (see soft path) — scaled by the PCSS
+        // penumbra radius so wide variable kernels don't self-shadow.
+        let tap_grad = (range / (range - near)) * near
+            / max(tap_view_depth * tap_view_depth, near * near);
+        let tap_slack = tap_grad * penumbra_world_radius * desc.cascade_info.x;
+        let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_bias - tap_slack;
         sum += textureSampleCompareLevel(
             shadow_cube_array,
             shadow_cube_sampler,

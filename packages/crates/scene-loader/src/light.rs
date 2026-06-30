@@ -67,6 +67,7 @@ pub fn light_shadow_params_from_config(
             s::LightShadowHardness::Pcss => r::LightShadowHardness::Pcss,
         },
         pcss_penumbra_scale: cfg.pcss_penumbra_scale,
+        kernel_slack: cfg.kernel_slack,
         max_distance: cfg.max_distance,
         cascade_count: cfg.cascade_count,
         cascade_split_lambda: cfg.cascade_split_lambda,

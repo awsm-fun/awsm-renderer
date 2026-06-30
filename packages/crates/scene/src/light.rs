@@ -60,6 +60,15 @@ pub struct LightShadowConfig {
     /// Multiplier on the estimated PCSS penumbra size.
     #[serde(default = "default_pcss_scale")]
     pub pcss_penumbra_scale: f32,
+    /// Point-light only. Receiver-plane slack added to the soft/PCSS
+    /// comparison bias, scaled by the kernel radius — counteracts the
+    /// self-shadow "acne rings" a wide disc produces on a flat floor
+    /// under a point light (the cube faces store slope-varying
+    /// back-face depth that a constant `depth_bias` can't cover as the
+    /// kernel widens). 0 = off (acne returns at large softness); larger
+    /// = more slack (eventually light-leak / peter-panning at contacts).
+    #[serde(default = "default_kernel_slack")]
+    pub kernel_slack: f32,
     /// Beyond this distance from the camera the shadow fades and the
     /// light skips its shadow pass that frame.
     #[serde(default = "default_max_distance")]
@@ -92,6 +101,7 @@ impl Default for LightShadowConfig {
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
+            kernel_slack: 2.0,
             max_distance: 0.0,
             cascade_count: 4,
             cascade_split_lambda: 0.5,
@@ -183,6 +193,9 @@ fn default_shadow_res() -> u32 {
 }
 fn default_pcss_scale() -> f32 {
     1.0
+}
+fn default_kernel_slack() -> f32 {
+    2.0
 }
 fn default_max_distance() -> f32 {
     // <= 0 = AUTO (follow the camera far plane) — scale-safe; see the

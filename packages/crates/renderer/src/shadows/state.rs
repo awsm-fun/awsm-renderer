@@ -2395,6 +2395,12 @@ impl Shadows {
                     descriptor_bytes[off + 68..off + 72].copy_from_slice(&pos.y.to_ne_bytes());
                     descriptor_bytes[off + 72..off + 76].copy_from_slice(&pos.z.to_ne_bytes());
                     descriptor_bytes[off + 76..off + 80].copy_from_slice(&r.to_ne_bytes());
+                    // cascade_info.x = kernel slack (point-only; this slot
+                    // otherwise carries split_far, which the cube sampler
+                    // never reads). Soft/PCSS taps fold it into the
+                    // receiver-plane comparison bias to kill acne rings.
+                    descriptor_bytes[off + 96..off + 100]
+                        .copy_from_slice(&params.kernel_slack.to_ne_bytes());
                     // cascade_info.y = slot index (as f32)
                     descriptor_bytes[off + 100..off + 104]
                         .copy_from_slice(&(slot_index as f32).to_ne_bytes());
