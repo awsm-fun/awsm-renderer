@@ -176,6 +176,27 @@ fn vogel_tap(i: u32, rsqrt_n: f32, sin_p: f32, cos_p: f32) -> vec2<f32> {
 // Per-light Vogel tap budget (PCF / soft / final-PCSS), from the descriptor's
 // `extra_params.x`. Clamped to [VOGEL_MIN_TAPS, VOGEL_MAX_TAPS]; 0 (unset)
 // falls back to VOGEL_DEFAULT_TAPS so an un-plumbed descriptor still samples.
+//
+// PERF NOTE — `n` is a DYNAMIC loop bound below, which usually rings alarm
+// bells ("dynamic loop per texel = killer"). It isn't, here, for a specific
+// reason: `n` comes from the per-LIGHT descriptor, so it's UNIFORM across the
+// warp (every lane sampling a given light's shadow iterates the same count).
+// The killer case is a per-PIXEL-varying trip count → lane divergence (the old
+// `pcss_tap_count(ndc.z)` taper, since removed). A uniform dynamic bound has no
+// divergence; the only cost vs a compile-time constant is lost loop unrolling /
+// latency-hiding, which is small on these texture-fetch-bound loops (and may not
+// even differ — drivers often don't fully unroll a 32-tap textureSampleCompare
+// loop regardless). Unmeasured, deliberately: kept per-light because it's a
+// strict superset (set every light the same → it behaves as one global knob,
+// for free) at negligible cost.
+//
+// IF a profile ever shows this dynamic bound actually costing something: the
+// clean fast-path is shader specialization via the askama template + a cache-key
+// dimension — when Rust sees ALL active casters share a count N, key the
+// material_prep variant on `Some(N)` and emit `const` tap counts (→ unrolled);
+// key on `None` for the mixed case and fall back to exactly this dynamic path.
+// All-or-nothing per pass, recompiles when the shared N changes (debounce the
+// editor slider). Not built — premature without a measured delta.
 const VOGEL_MIN_TAPS: u32 = 8u;
 const VOGEL_DEFAULT_TAPS: u32 = 16u;
 fn shadow_tap_count(extra_x: f32) -> u32 {
