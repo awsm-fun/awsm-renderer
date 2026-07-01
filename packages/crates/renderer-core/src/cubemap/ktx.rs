@@ -31,6 +31,13 @@ pub async fn load_url(url: &str) -> anyhow::Result<ktx2::Reader<Vec<u8>>> {
     Ok(ktx2::Reader::new(bytes).map_err(|e| AwsmCoreError::Ktx(e.to_string()))?)
 }
 
+/// Parses a KTX2 file from already-fetched bytes (no network). The bytes-in
+/// counterpart of [`load_url`] — used when the `.ktx2` comes from a player-bundle
+/// asset map (or any in-memory source) rather than a URL.
+pub fn load_bytes(bytes: Vec<u8>) -> anyhow::Result<ktx2::Reader<Vec<u8>>> {
+    Ok(ktx2::Reader::new(bytes).map_err(|e| AwsmCoreError::Ktx(e.to_string()))?)
+}
+
 /// Creates a cubemap texture from a KTX2 reader.
 pub async fn create_texture(
     reader: &ktx2::Reader<Vec<u8>>,

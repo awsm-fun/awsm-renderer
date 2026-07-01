@@ -209,20 +209,9 @@ async fn load_ktx_by_id(asset_id: AssetId) -> anyhow::Result<CubemapImage> {
         _ => anyhow::bail!("KTX skybox / IBL must reference a Filename or Url asset"),
     };
 
-    let array = js_sys::Uint8Array::from(bytes.as_slice());
-    let parts = js_sys::Array::new();
-    parts.push(&array);
-    let options = web_sys::BlobPropertyBag::new();
-    options.set_type("application/octet-stream");
-    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)
-        .map_err(|e| anyhow::anyhow!("blob: {e:?}"))?;
-    let url_for_loader = web_sys::Url::create_object_url_with_blob(&blob)
-        .map_err(|e| anyhow::anyhow!("object url: {e:?}"))?;
-    let result = CubemapImage::load_url_ktx(&url_for_loader)
-        .await
-        .map_err(|e| anyhow::anyhow!("load_url_ktx {label}: {e}"));
-    let _ = web_sys::Url::revoke_object_url(&url_for_loader);
-    result
+    // Parse the KTX2 straight from bytes (same path the player's `scene_loader`
+    // uses) — no browser blob / object-URL round-trip.
+    CubemapImage::load_ktx_bytes(bytes).map_err(|e| anyhow::anyhow!("load ktx {label}: {e}"))
 }
 
 async fn set_skybox_on_renderer(

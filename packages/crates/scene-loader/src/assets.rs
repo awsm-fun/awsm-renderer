@@ -50,3 +50,52 @@ impl SceneAssets for HashMap<String, Vec<u8>> {
             .ok_or_else(|| anyhow::anyhow!("asset not found: {path}"))
     }
 }
+
+/// An HTTP [`SceneAssets`] that fetches bundle bytes from a base origin — the
+/// player counterpart of the model-test's in-memory [`HashMap`] source, and the
+/// impl a shipped web player almost always wants.
+///
+/// A player bundle ships as static files (`scene.toml` + `assets/…`) served at
+/// some origin; the loader asks for bundle-relative paths and this GETs
+/// `<origin>/<path>`. This is why fetching is *not* baked into
+/// `load_scene_for_player`: the loader stays transport-agnostic (a game might
+/// stream from a CDN, a content-addressed store, or a preloaded map), and the
+/// common same-origin-HTTP case is just this ready-made impl. Enable the `http`
+/// feature to pull it in (it adds a web-only `gloo-net` dependency), and a
+/// template needs no bespoke fetching glue:
+///
+/// ```ignore
+/// let assets = HttpAssets::new(page_origin); // window.location.origin
+/// load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await?;
+/// ```
+#[cfg(feature = "http")]
+pub struct HttpAssets {
+    base: String,
+}
+
+#[cfg(feature = "http")]
+impl HttpAssets {
+    /// Fetch bundle files relative to `origin` (a trailing `/` is trimmed, so
+    /// `https://host` and `https://host/` behave identically). For a same-origin
+    /// web player pass the page origin (`window.location.origin`).
+    pub fn new(origin: impl Into<String>) -> Self {
+        Self {
+            base: origin.into().trim_end_matches('/').to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "http")]
+impl SceneAssets for HttpAssets {
+    async fn fetch(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+        let url = format!("{}/{}", self.base, path);
+        let bytes = gloo_net::http::Request::get(&url)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("fetch {url}: {e}"))?
+            .binary()
+            .await
+            .map_err(|e| anyhow::anyhow!("fetch {url} body: {e}"))?;
+        Ok(bytes)
+    }
+}

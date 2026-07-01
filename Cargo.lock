@@ -549,6 +549,7 @@ dependencies = [
  "awsm-renderer-particles",
  "awsm-renderer-scene",
  "glam 0.32.1",
+ "gloo-net",
  "serde_json",
  "toml",
  "tracing",
