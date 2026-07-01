@@ -33,7 +33,6 @@ mod mesh_def;
 mod node_spec;
 mod project;
 mod query;
-mod texture_payload;
 mod transport;
 
 pub use anim_ui::{AnimSel, AnimView, StepKind};
@@ -54,7 +53,6 @@ pub use query::{
     SettledResult, StatsResult, TextureSnapshot, TimeseriesFrame, TimeseriesResult, TrackSnapshot,
     VertexPredicate,
 };
-pub use texture_payload::{decode_texture_payload, TexturePayload};
 pub use transport::{
     EditorEvent, GlbHandle, PngHandle, Request, Response, WsClientMsg, WsServerMsg,
 };

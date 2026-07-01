@@ -183,7 +183,7 @@ pub async fn load_f64<T: AsRef<[f64]>>(
 
 /// Build an `ImageBitmap` from raw RGBA8 pixel data (`width * height * 4` bytes,
 /// row-major, top-left origin). The CPU counterpart to [`create_color`] for
-/// procedurally-generated images (e.g. the §18 equirect→cubemap face projection).
+/// procedurally-generated images (e.g. sky-gradient cubemap faces).
 pub async fn create_from_rgba(
     rgba: &[u8],
     width: u32,

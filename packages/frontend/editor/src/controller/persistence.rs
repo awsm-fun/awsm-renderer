@@ -718,9 +718,8 @@ where
 }
 
 /// The skybox/IBL KTX2 (HDR cubemap) asset ids referenced by an environment
-/// config. The `Equirect` panorama rides `texture_cache` (persists like an imported
-/// texture); only the KTX HDR bytes live session-only in `env_sync`, so only those
-/// need explicit side files.
+/// config. The KTX HDR bytes live session-only in `env_sync`, so they need
+/// explicit side files (`ktx_files`) to survive Save→reload.
 fn env_ktx_ids(env: &awsm_renderer_editor_protocol::EnvironmentConfig) -> Vec<AssetId> {
     use awsm_renderer_editor_protocol::{IblConfig, SkyboxConfig};
     let mut ids = Vec::new();

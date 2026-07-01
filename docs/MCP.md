@@ -252,25 +252,25 @@ every command/query, and each tool self-describes over the MCP schema.
   `set_node_texture { node, slot, texture? }` for a mesh node's built-in (inline
   PBR) slot (base_color | metallic_roughness | normal | occlusion | emissive).
 - `set_node_texture_transform { node, slot, offset?, scale?, rotation?, flow?,
-  wrap_u?, wrap_v?, uv_set? }` — patch the UV transform / flow / sampler-wrap of a
-  built-in slot that already has a texture bound (patch-style: only the fields you
-  pass change). `scale>1` tiles; `flow=[u,v]` auto-scrolls the texture in
-  UV-units/sec (conveyors/water/lava; `[0,0]` stops it); `wrap_*` =
-  repeat|clamp_to_edge|mirrored_repeat. Applying to an empty slot is rejected, not
-  silently ignored. For a directional/keyframed scroll, use a `texture_transform`
-  animation track instead.
-- `create_texture { data, width?, height?, format?, linear? }` — the generic
-  "author **any** texture" primitive: the agent ships the pixels itself instead
-  of picking a procedural preset. Two modes: **raw pixels** — `format="rgba8"` +
-  `width` + `height`, `data` = base64 of `width*height*4` RGBA8 bytes (row-major,
-  top-left origin); or **encoded image** — `data` = a `data:` URI
-  (`data:image/png;base64,…`) or bare base64 of a PNG/JPEG/WebP (dims/format
-  derived). Set `linear=true` for data/normal/roughness/height maps (skips the
-  sRGB→linear conversion). Returns the new id; bind with `set_material_texture`.
-  Use it for soft particle sprites, fbm height/normal maps, gradients, cubemap
-  faces — no built-in generator required. (Session-local, like
-  `import_texture_from_url`.) Invalid payloads are **rejected loudly** (e.g. an
-  `rgba8` byte count that doesn't match `width*height*4`).
+  wrap_u?, wrap_v?, mag_filter?, min_filter?, mipmap_filter?, uv_set? }` — patch the
+  UV transform / flow / sampler of a built-in slot that already has a texture bound
+  (patch-style: only the fields you pass change). `scale>1` tiles; `flow=[u,v]`
+  auto-scrolls the texture in UV-units/sec (conveyors/water/lava; `[0,0]` stops it);
+  `wrap_*` = repeat|clamp_to_edge|mirrored_repeat; `*_filter` = nearest|linear.
+  Applying to an empty slot is rejected, not silently ignored. For a
+  directional/keyframed scroll, use a `texture_transform` animation track instead.
+
+**No inline base64.** There is no `create_texture` tool — the agent authors a
+texture by generating + **hosting** it, then `import_texture_from_url { url }`. Same
+for environments (bake a `.ktx2` cubemap offline, `set_environment` by URL) and
+heightmaps (`displace_from_texture { node, url, strength }`). See the
+`awsm://docs/asset-workflows` resource for the full pipelines.
+
+- `set_node_material_uniform { node, name, value }` — set a PER-MESH uniform override
+  on a node with a custom material (`value` = typed `{kind, value}`), distinct from
+  `set_material_uniform` (shared asset default).
+- `purge_unused` — delete every asset not referenced by the live scene (one undoable
+  step; never removes an in-use asset).
 
 **View / camera / time**
 - `switch_mode { mode }`, `snap_camera_to_axis { axis }`, `reset_camera`.
