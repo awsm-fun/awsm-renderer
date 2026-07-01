@@ -615,6 +615,43 @@ fn shadows_section() -> Dom {
     }));
 
     DrawerSection::new("Shadows")
+        .right(settings_help_button(
+            "Contact shadows (SSCS)",
+            vec![
+                (
+                    "Contact shadows (SSCS)",
+                    "Screen-space contact shadows: a short view-space ray-march that darkens \
+                     the small contact gaps a shadow map misses (e.g. the lit gap right under \
+                     a resting object). Subtle by design; toggling recompiles the shadow \
+                     shaders. Global — saved into the project + player bundle.",
+                ),
+                (
+                    "SSCS steps",
+                    "How many samples the ray takes toward the light. More = longer reach and \
+                     smoother result, at more cost. Compile-time (changing it recompiles).",
+                ),
+                (
+                    "Step length (m)",
+                    "World distance per step, in metres. Total reach = step length × steps. \
+                     Small hugs the contact; large catches farther occluders.",
+                ),
+                (
+                    "Thickness (m)",
+                    "How thick an occluder can be and still count: a depth sample this far or \
+                     less in front of the ray is treated as a blocker. Raise it to catch \
+                     chunky objects (a ball needs ~0.3); too high over-darkens thin geometry.",
+                ),
+                (
+                    "Directional darkening",
+                    "Maximum darkening (0–1) SSCS applies under a directional (sun) light.",
+                ),
+                (
+                    "Punctual darkening",
+                    "Maximum darkening (0–1) under point/spot lights — usually higher than \
+                     directional, since a cube shadow map leaves a wider lit contact gap.",
+                ),
+            ],
+        ))
         .child(row("Contact shadows (SSCS)", toggle(enabled)))
         .child(row(
             "SSCS steps",

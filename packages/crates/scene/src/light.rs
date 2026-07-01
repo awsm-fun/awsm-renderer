@@ -105,24 +105,25 @@ impl Default for LightShadowConfig {
     fn default() -> Self {
         Self {
             cast: true,
-            // Small world-referenced depth push-back; slope-scaled by the
-            // receiver-plane `inc_tan` in the shadow shader (→ 0 on light-facing
-            // receivers), so it cleans contact-edge acne without Peter-Panning.
-            depth_bias: 0.0015,
-            // Small normal-offset. Was 0.05 → 0.02 → 0.01: each `normal_bias`
-            // step Peter-Panned a lit "donut" into the contact shadow under a
-            // resting mesh (a small caster tangent to the floor amplifies mm of
-            // bias into cm of hole). With the `inc_tan` slope-scaling now doing
-            // the heavy lifting, 0.01 keeps grazing/terminator acne protection
-            // while staying donut-safe out of the box. Keep in sync with
-            // `default_normal_bias()` + renderer `LightShadowParams::default`.
-            normal_bias: 0.01,
+            // Depth-bias-ONLY shadow biasing (donut-free default). Slope-scaled by
+            // the receiver-plane `inc_tan` in the shadow shader (→ 0 on
+            // light-facing receivers), so it cleans the contact edge without
+            // Peter-Panning. Keep in sync with `default_depth_bias()` + renderer
+            // `LightShadowParams::default`.
+            depth_bias: 0.001,
+            // 0 by default — a donut driver: any normal-offset Peter-Pans a lit
+            // "donut" ring into the contact shadow under a resting mesh (a small
+            // caster tangent to the floor amplifies mm of bias into cm of hole).
+            // A one-term-at-a-time sweep + live tuning both landed on depth-only.
+            // Per-light knob to add back if grazing/terminator acne shows up.
+            normal_bias: 0.0,
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
-            // Quantization slack, halved 2.0 → 1.0: the full 2× slack was a
-            // second donut driver at moderate-incidence contacts. inc_tan-scaled.
-            kernel_slack: 1.0,
+            // 0 by default — the second donut driver (quantization slack
+            // over-biases moderate-incidence contacts). Per-light knob if flat-
+            // receiver acne ever needs it.
+            kernel_slack: 0.0,
             shadow_samples: default_shadow_samples(),
             max_distance: 0.0,
             cascade_count: 4,
@@ -205,10 +206,10 @@ fn default_true() -> bool {
     true
 }
 fn default_depth_bias() -> f32 {
-    0.0015
+    0.001
 }
 fn default_normal_bias() -> f32 {
-    0.01
+    0.0
 }
 fn default_shadow_res() -> u32 {
     1024
@@ -217,7 +218,7 @@ fn default_pcss_scale() -> f32 {
     1.0
 }
 fn default_kernel_slack() -> f32 {
-    1.0
+    0.0
 }
 fn default_shadow_samples() -> u32 {
     16

@@ -7,6 +7,7 @@
 pub use crate::atoms::button::*;
 pub use crate::atoms::controls::*;
 pub use crate::atoms::field::*;
+pub use crate::atoms::help::*;
 pub use crate::atoms::icon::*;
 pub use crate::atoms::num_field::*;
 pub use crate::atoms::overlay::*;
