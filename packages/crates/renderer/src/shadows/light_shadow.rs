@@ -14,9 +14,16 @@ pub struct LightShadowParams {
     /// Constant depth offset added at sample time. Pushes the
     /// comparison reference closer to the light to suppress acne.
     pub depth_bias: f32,
-    /// Receiver-position offset along the surface normal applied before
-    /// the shadow lookup. Cures grazing-angle acne without the Peter
-    /// Panning that slope-scale bias produces.
+    /// Receiver-position offset along the surface normal (world metres)
+    /// applied before the shadow lookup. Cures grazing-angle acne without
+    /// the Peter Panning that slope-scale bias produces — but being a fixed
+    /// world push toward the light, an over-large value *is* itself a
+    /// Peter-Pan source: it lifts the receiver off a caster it nearly
+    /// touches, holing the contact shadow directly under a resting mesh.
+    /// The default is deliberately modest (~2-3 shadow texels at typical
+    /// resolutions); acne is carried mostly by the slope-scaled hardware
+    /// bias + the world-referenced `depth_bias`/per-texel slack, so this
+    /// only needs to cover the residual.
     pub normal_bias: f32,
     /// Per-cascade / per-face shadow map resolution. Directional
     /// lights use this as the base; deeper cascades downscale via
@@ -77,7 +84,11 @@ impl Default for LightShadowParams {
         Self {
             cast: false,
             depth_bias: 0.0005,
-            normal_bias: 0.05,
+            // ~2-3 shadow texels of world push-back. Was 0.05 (≈7 texels),
+            // which visibly Peter-Panned a hole into contact shadows under a
+            // resting/settling mesh; lowered once depth_bias went world-
+            // referenced and stopped over-biasing on its own. See the field doc.
+            normal_bias: 0.02,
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
