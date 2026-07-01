@@ -106,7 +106,11 @@ impl Default for LightShadowConfig {
         Self {
             cast: true,
             depth_bias: 0.0005,
-            normal_bias: 0.05,
+            // Modest normal-offset (~2-3 shadow texels). Was 0.05, which
+            // Peter-Panned a hole into contact shadows under a resting mesh;
+            // lowered once depth_bias became world-referenced. Keep in sync with
+            // `default_normal_bias()` + renderer `LightShadowParams::default`.
+            normal_bias: 0.02,
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
@@ -196,7 +200,7 @@ fn default_depth_bias() -> f32 {
     0.0005
 }
 fn default_normal_bias() -> f32 {
-    0.05
+    0.02
 }
 fn default_shadow_res() -> u32 {
     1024
