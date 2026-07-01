@@ -22,7 +22,7 @@ lod = ["awsm-renderer/lod", "dep:awsm-renderer-lod-bake"]
 # (`animation::scene_loader::lower_stored_clip` / `lower_stored_mixer`) we feed
 # the bundle's clips + mixer through.
 awsm-renderer = { workspace = true, features = ["scene-schema"] }
-awsm-renderer-core = { workspace = true }
+awsm-renderer-core = { workspace = true, features = ["ktx"] }
 awsm-renderer-gltf = { workspace = true }
 # Dynamic-material types (custom-WGSL registration: layout, registration, shader id).
 awsm-renderer-materials = { workspace = true }

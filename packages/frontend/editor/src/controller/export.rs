@@ -216,6 +216,15 @@ pub async fn bake_player_bundle(
         files.push(BundleFile::new(path, bytes));
     }
 
+    // 6. Environment skybox / IBL KTX2 cubemaps → assets/<id>.ktx2. The runtime
+    //    `scene.environment` (in scene.toml) references these by id; the player's
+    //    `scene_loader::environment` fetches them by the same convention. `ktx_files`
+    //    returns paths already rooted at `assets/`, so push verbatim (a gradient /
+    //    built-in environment references no KTX and emits nothing here).
+    for (path, bytes) in crate::controller::persistence::ktx_files(ctrl) {
+        files.push(BundleFile::new(path, bytes));
+    }
+
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
 }
 

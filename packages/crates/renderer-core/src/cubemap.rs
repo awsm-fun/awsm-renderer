@@ -114,6 +114,14 @@ impl CubemapImage {
                 Ok(CubemapImage::Ktx(Arc::new(reader)))
             }
 
+            /// Loads a KTX2 cubemap from already-fetched bytes (no network) — e.g.
+            /// a `.ktx2` pulled from a player-bundle asset map or an in-memory stash.
+            pub fn load_ktx_bytes(bytes: Vec<u8>) -> anyhow::Result<Self> {
+                let reader = ktx::load_bytes(bytes)?;
+
+                Ok(CubemapImage::Ktx(Arc::new(reader)))
+            }
+
             // returns mip count as well
             /// Creates a GPU cubemap texture and view.
             pub async fn create_texture_and_view(

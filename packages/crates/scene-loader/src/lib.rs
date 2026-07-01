@@ -94,6 +94,7 @@ pub mod animation;
 pub mod assets;
 pub mod camera;
 pub mod dynamic;
+pub mod environment;
 pub mod light;
 pub mod material;
 pub mod particles;
@@ -818,6 +819,15 @@ pub async fn load_scene_for_player(
     // renderer. The loader only LOADS animation; the consumer drives the clock
     // (`update_animations` each frame, or the editor round-trip's playhead pin).
     loaded.clips = animation::load_animations(renderer, scene, &maps);
+
+    // ── Environment: apply skybox + IBL BEFORE the Phase-4 compile so
+    //    IBL-sampling materials compile against the final environment (mirrors
+    //    the editor's `env_sync::apply_initial` running before the first paint).
+    //    Non-fatal: a missing/bad cubemap falls back to the renderer's built-in
+    //    default rather than sinking the whole load.
+    if let Err(err) = environment::apply_environment(renderer, &scene.environment, assets).await {
+        tracing::warn!("environment apply failed, using renderer default: {err}");
+    }
 
     // ── Phase 4: THE commit — finalize the texture pool ONCE + compile every
     //    pipeline the scene needs, against the now-final content. This is the
