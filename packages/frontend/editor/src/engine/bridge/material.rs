@@ -67,14 +67,17 @@ pub(crate) fn register_texture_key(asset_id: AssetId, key: TextureKey) {
     TEXTURE_KEYS.with(|c| c.borrow_mut().insert(asset_id, key));
 }
 
-/// Fetch + decode an image URL to RGBA8 bytes (via the browser's
-/// `createImageBitmap` + a 2D canvas readback). Cross-origin URLs need CORS
-/// headers (same constraint as glTF image loads).
-async fn fetch_rgba(url: &str) -> Result<(Vec<u8>, u32, u32), String> {
-    let bitmap = awsm_renderer_core::image::bitmap::load(url.to_string(), None)
-        .await
-        .map_err(|e| format!("load image: {e}"))?;
-    bitmap_to_rgba(bitmap)
+/// Best-effort image mime from a URL's extension (query/fragment stripped). Only
+/// tags the decode + the persisted `assets/<hash>.<ext>` side file; the browser's
+/// decoder sniffs the actual content regardless, so it is only a hint. Defaults
+/// to PNG.
+fn mime_from_url(url: &str) -> awsm_renderer_glb_export::ImageMime {
+    use awsm_renderer_glb_export::ImageMime;
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    match path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()) {
+        Some(e) if e == "jpg" || e == "jpeg" => ImageMime::Jpeg,
+        _ => ImageMime::Png,
+    }
 }
 
 /// Decode ENCODED image bytes (PNG/JPEG) to RGBA8 via the browser, for restoring
@@ -89,23 +92,19 @@ pub(crate) async fn decode_rgba_from_bytes(
     bitmap_to_rgba(bitmap)
 }
 
-/// Decode an agent texture **payload string** (a `data:` URI or bare base64
-/// PNG/JPEG, or a raw-RGBA descriptor) to RGBA8 + dims (§18 equirect upload).
-/// Mirrors the `CreateTexture` decode but with no caller-supplied dims/format.
-pub(crate) async fn decode_rgba_from_payload(data: &str) -> Result<(Vec<u8>, u32, u32), String> {
-    use awsm_renderer_editor_protocol::TexturePayload;
-    let payload = awsm_renderer_editor_protocol::decode_texture_payload(data, None, None, None)
-        .map_err(|e| e.to_string())?;
-    match payload {
-        TexturePayload::RawRgba8 {
-            bytes,
-            width,
-            height,
-        } => Ok((bytes, width, height)),
-        TexturePayload::Encoded { bytes, mime } => {
-            decode_rgba_from_bytes(&bytes, mime.as_deref().unwrap_or("image/png")).await
-        }
-    }
+/// Fetch an encoded image from `url` and decode it to RGBA8 + dims. Used by
+/// `DisplaceFromTexture` (§16) to read an agent-hosted heightmap by URL — the same
+/// fetch + decode path imported textures use (no inline base64).
+pub(crate) async fn decode_rgba_from_url(url: &str) -> Result<(Vec<u8>, u32, u32), String> {
+    let mime = mime_from_url(url);
+    let bytes = gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch {url}: {e}"))?
+        .binary()
+        .await
+        .map_err(|e| format!("fetch {url} body: {e}"))?;
+    decode_rgba_from_bytes(&bytes, mime.as_str()).await
 }
 
 /// Read an `ImageBitmap` back to RGBA8 bytes via a 2D canvas (shared by the
@@ -141,9 +140,23 @@ fn bitmap_to_rgba(bitmap: web_sys::ImageBitmap) -> Result<(Vec<u8>, u32, u32), S
 /// pool, and register the asset id against the resulting [`TextureKey`] so it
 /// resolves for material binding + `screenshot_texture`. The caller creates the
 /// `TextureDef::Raster` asset entry.
-pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), String> {
-    // Fetch/decode WITHOUT holding the renderer lock (network wait).
-    let (rgba, w, h) = fetch_rgba(url).await?;
+pub(crate) async fn import_texture_url(
+    id: AssetId,
+    url: &str,
+) -> Result<(Vec<u8>, awsm_renderer_glb_export::ImageMime), String> {
+    // Fetch the ENCODED bytes (network wait, no renderer lock) so we can BOTH decode
+    // them for the GPU AND return them for persistence — Save writes the encoded
+    // bytes to `assets/<hash>.<ext>`. Decoding from the fetched bytes is the exact
+    // path a project reload uses (`restore_raster_textures`), so import == reload.
+    let mime = mime_from_url(url);
+    let bytes = gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch {url}: {e}"))?
+        .binary()
+        .await
+        .map_err(|e| format!("fetch {url} body: {e}"))?;
+    let (rgba, w, h) = decode_rgba_from_bytes(&bytes, mime.as_str()).await?;
     let handle = crate::engine::context::renderer_handle();
     let mut r = handle.lock().await;
     let sampler_key = sampler_for(&mut r, None).ok_or("sampler")?;
@@ -164,54 +177,7 @@ pub(crate) async fn import_texture_url(id: AssetId, url: &str) -> Result<(), Str
         .await
         .map_err(|e| format!("commit_load: {e}"))?;
     register_texture_key(id, key);
-    Ok(())
-}
-
-/// Create a texture from **agent-authored** data (the ★ raw-upload primitive):
-/// raw RGBA8 pixels, or an encoded PNG/JPEG/WebP the browser decodes — uploaded
-/// to the GPU texture pool + registered under `id` so it resolves for material
-/// binding + `screenshot_texture`. Mirrors [`import_texture_url`], but the bytes
-/// come from the agent (not a URL). `linear` uploads as linear data
-/// (normal/roughness/height maps) instead of sRGB albedo. The caller creates the
-/// `TextureDef::Raster` asset entry.
-pub(crate) async fn create_texture(
-    id: AssetId,
-    payload: awsm_renderer_editor_protocol::TexturePayload,
-    linear: bool,
-) -> Result<(), String> {
-    use awsm_renderer_editor_protocol::TexturePayload;
-    // Decode WITHOUT holding the renderer lock (the encoded path is async).
-    let (rgba, w, h) = match payload {
-        TexturePayload::RawRgba8 {
-            bytes,
-            width,
-            height,
-        } => (bytes, width, height),
-        TexturePayload::Encoded { bytes, mime } => {
-            decode_rgba_from_bytes(&bytes, mime.as_deref().unwrap_or("image/png")).await?
-        }
-    };
-    let handle = crate::engine::context::renderer_handle();
-    let mut r = handle.lock().await;
-    let sampler_key = sampler_for(&mut r, None).ok_or("sampler")?;
-    let color = TextureColorInfo {
-        mipmap_kind: MipmapTextureKind::Albedo,
-        // sRGB albedo by default; `linear` opts data/normal maps out of the
-        // sRGB→linear conversion so their values are sampled verbatim.
-        srgb_to_linear: !linear,
-        premultiplied_alpha: None,
-    };
-    let key = r
-        .textures
-        .add_image_rgba_raw(&rgba, w, h, sampler_key, color)
-        .map_err(|e| format!("upload: {e}"))?;
-    // Live texture add: a pool grow invalidates the texture-array-len-baked
-    // shaders, so route through `commit_load` (finalize pool + recompile once).
-    r.commit_load(crate::engine::activity::commit_phase_handler())
-        .await
-        .map_err(|e| format!("commit_load: {e}"))?;
-    register_texture_key(id, key);
-    Ok(())
+    Ok((bytes, mime))
 }
 
 /// Restore persisted raster textures on LOAD: decode each `(asset id, encoded

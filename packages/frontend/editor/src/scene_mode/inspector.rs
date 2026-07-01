@@ -1993,10 +1993,14 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
             Option<awsm_renderer_editor_protocol::TextureRef>,
             bool,
         )> = Vec::new();
+        // Always expose the 5 core PBR slots — even when unbound — so a texture can
+        // be ASSIGNED per-mesh from here (the row shows "None" with an asset picker
+        // when empty), mirroring MCP `set_node_texture`. Previously only slots that
+        // were ALREADY bound rendered, so a default primitive had no way to add a
+        // map. (Extension slots below stay gated on the extension being enabled,
+        // since binding one requires that extension.)
         for (slot, label, d) in core {
-            if d.is_some() {
-                entries.push((slot, label, d, false));
-            }
+            entries.push((slot, label, d, false));
         }
         for (slot, label) in ext_slots {
             if let Some(t) = crate::controller::get_ext_texture(&def.extensions, slot) {
@@ -2808,7 +2812,9 @@ fn texture_override_picker(
         .render()
 }
 
-/// Write (or clear) one per-mesh texture override and re-materialize.
+/// Write (or clear) one per-mesh **custom-material** texture override (the named
+/// texture slots a dynamic-WGSL material declares) and re-materialize. Built-in
+/// PBR slots do NOT use this — they live on the inline def (see `write_slot`).
 fn set_texture_override(
     node: &Arc<Node>,
     name: &str,
@@ -2829,40 +2835,79 @@ fn set_texture_override(
 
 // ── Unified per-mesh texture-slot editor (core PBR slots + KHR extension slots) ─
 // Edits the FULL `TextureRef` per mesh: bound image + UV set + KHR_texture_
-// transform — all non-recompiling, so all overridable. Core slots route through
-// the instance's `texture_overrides` map; extension slots edit the inline
-// extension struct (which `builtin_merged` copies per mesh). Always preserves the
-// other binding fields when one changes (read-modify-write at edit time).
+// transform — all non-recompiling, so all overridable. BOTH core PBR slots and
+// KHR extension slots live on the per-mesh inline `MaterialDef` — core slots on
+// its named texture fields, extension slots inside its extension structs. That is
+// the SAME store MCP `set_node_texture` / `set_node_texture_transform`,
+// `builtin_merged` (the render path), and `get_node_details` read, so a binding
+// made from the UI and one made over MCP are one and the same — neither shadows
+// the other, and the picker reflects an MCP-set image. (The instance's separate
+// `texture_overrides` map stays reserved for custom-WGSL materials' named slots.)
+// Always preserves the other binding fields when one changes (read-modify-write).
 
-/// The currently-bound `TextureRef` for a slot (`is_ext` picks the storage).
+/// Read a core PBR texture slot off an inline `MaterialDef` by its serialized
+/// field name (the keys in the `core` slot table above).
+fn core_slot_texture(
+    m: &MaterialDef,
+    slot: &str,
+) -> Option<awsm_renderer_editor_protocol::TextureRef> {
+    match slot {
+        "base_color_texture" => m.base_color_texture,
+        "metallic_roughness_texture" => m.metallic_roughness_texture,
+        "normal_texture" => m.normal_texture,
+        "occlusion_texture" => m.occlusion_texture,
+        "emissive_texture" => m.emissive_texture,
+        _ => None,
+    }
+}
+
+/// Write (or clear) a core PBR texture slot on an inline `MaterialDef` by name.
+fn set_core_slot_texture(
+    m: &mut MaterialDef,
+    slot: &str,
+    tref: Option<awsm_renderer_editor_protocol::TextureRef>,
+) {
+    match slot {
+        "base_color_texture" => m.base_color_texture = tref,
+        "metallic_roughness_texture" => m.metallic_roughness_texture = tref,
+        "normal_texture" => m.normal_texture = tref,
+        "occlusion_texture" => m.occlusion_texture = tref,
+        "emissive_texture" => m.emissive_texture = tref,
+        _ => {}
+    }
+}
+
+/// The currently-bound `TextureRef` for a slot — all on the inline def
+/// (`is_ext` picks a core texture field vs an extension struct's slot).
 fn read_slot(
     node: &Arc<Node>,
     slot: &str,
     is_ext: bool,
 ) -> Option<awsm_renderer_editor_protocol::TextureRef> {
+    let m = current_primitive_material(node)?;
     if is_ext {
-        current_primitive_material(node)
-            .and_then(|m| crate::controller::get_ext_texture(&m.extensions, slot))
+        crate::controller::get_ext_texture(&m.extensions, slot)
     } else {
-        node_material_instance(node).and_then(|i| i.texture_overrides.get(slot).copied())
+        core_slot_texture(&m, slot)
     }
 }
 
-/// Write (or clear) a slot's `TextureRef`.
+/// Write (or clear) a slot's `TextureRef` on the inline def.
 fn write_slot(
     node: &Arc<Node>,
     slot: &str,
     is_ext: bool,
     tref: Option<awsm_renderer_editor_protocol::TextureRef>,
 ) {
+    let Some(mut m) = current_primitive_material(node) else {
+        return;
+    };
     if is_ext {
-        if let Some(mut m) = current_primitive_material(node) {
-            crate::controller::set_ext_texture(&mut m.extensions, slot, tref);
-            set_inline_material(node, m);
-        }
+        crate::controller::set_ext_texture(&mut m.extensions, slot, tref);
     } else {
-        set_texture_override(node, slot, tref);
+        set_core_slot_texture(&mut m, slot, tref);
     }
+    set_inline_material(node, m);
 }
 
 /// Read-modify-write one slot's `TextureRef` (seeding from the material's default
@@ -2991,7 +3036,17 @@ fn texture_slot_rows(
                         .on_click({
                             let (node, close) = (node.clone(), close.clone());
                             move || {
-                                edit_slot(&node, slot, is_ext, default_ref, |t| t.asset = id);
+                                // Seed from the current/default binding (preserving
+                                // UV/transform/sampler), or a FRESH ref when the slot
+                                // was unbound — so assigning into an EMPTY core slot
+                                // works, not just re-binding an already-declared one.
+                                let mut tr = read_slot(&node, slot, is_ext)
+                                    .or(default_ref)
+                                    .unwrap_or_else(|| {
+                                        awsm_renderer_editor_protocol::TextureRef::new(id)
+                                    });
+                                tr.asset = id;
+                                write_slot(&node, slot, is_ext, Some(tr));
                                 (close.borrow_mut())();
                             }
                         })

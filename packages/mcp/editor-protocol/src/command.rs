@@ -198,8 +198,8 @@ pub enum EditorCommand {
         #[serde(default)]
         blend: Option<bool>,
         /// Bind a billboard SPRITE texture (asset id) the particles sample —
-        /// e.g. a soft radial-alpha disc (author one with `create_texture`) for
-        /// soft-edged particles instead of hard squares. Pair with `blend: true`
+        /// e.g. a soft radial-alpha disc (import one with `import_texture_from_url`)
+        /// for soft-edged particles instead of hard squares. Pair with `blend: true`
         /// so the sprite's alpha actually fades the edges. `Some(None)` clears it.
         #[serde(default)]
         texture: Option<Option<AssetId>>,
@@ -342,31 +342,6 @@ pub enum EditorCommand {
     /// of the new id.
     AddTextureAsset { id: AssetId, proc: ProceduralKind },
 
-    /// Create a 2D texture from **agent-authored** image data — the generic
-    /// "author any texture" primitive (★ in `docs/plans/mcp-improvements.md`),
-    /// the GPU-side companion to the three procedural presets. Either:
-    /// - **raw pixels**: `format = "rgba8"` + `width`/`height`, `data` = base64
-    ///   of `width*height*4` RGBA8 bytes (row-major, top-left origin); or
-    /// - **encoded image**: `data` = a `data:` URI or bare base64 of a
-    ///   PNG/JPEG/WebP; dims/format derived (`format` omitted).
-    ///
-    /// `linear` uploads as linear data (normal/roughness/height maps) instead of
-    /// sRGB albedo. **Carries its `id`** (caller-minted, idempotent). The asset
-    /// is session-local (same as [`ImportTextureFromUrl`](Self::ImportTextureFromUrl)
-    /// — raw pixels carry no encoded bytes to persist). Inverse: `DeleteAsset`.
-    CreateTexture {
-        id: AssetId,
-        data: String,
-        #[serde(default)]
-        width: Option<u32>,
-        #[serde(default)]
-        height: Option<u32>,
-        #[serde(default)]
-        format: Option<String>,
-        #[serde(default)]
-        linear: bool,
-    },
-
     /// Remove an asset from the project asset table. Inverse: `RestoreAsset` with
     /// the captured entry (so undo round-trips the exact asset + id).
     DeleteAsset { id: AssetId },
@@ -374,6 +349,12 @@ pub enum EditorCommand {
     /// Re-insert a captured asset entry at its original id (the inverse of
     /// `DeleteAsset`). `entry` is boxed — `AssetEntry` is a large payload.
     RestoreAsset { id: AssetId, entry: Box<AssetEntry> },
+
+    /// Delete every asset NOT reachable from the live scene (no node material /
+    /// mesh / texture / buffer binding, environment KTX, or animation target
+    /// references it, directly or transitively). One atomic step: the inverse is a
+    /// `Batch` of `RestoreAsset` so a single undo brings them all back.
+    PurgeUnusedAssets,
 
     /// Select an asset in the Content Browser (routes the right rail to the Asset
     /// Inspector). **Transient** — `None` clears back to the node inspector.
@@ -443,15 +424,6 @@ pub enum EditorCommand {
     /// (serialized to TOML); the `env_sync` bridge uploads the cubemaps as a
     /// side effect. Inverse: restore the prior environment.
     SetEnvironment { env: EnvironmentConfig },
-
-    /// §18: upload an agent-authored **equirectangular panorama** and make it the
-    /// environment. `data` is a base64 / `data:` image string (decoded to RGBA in
-    /// the env bridge), stashed under `id`, and projected to a cubemap that drives
-    /// BOTH the skybox and the IBL (`skybox` + `ibl` set to `Equirect { id }`).
-    /// The composable alternative to the built-in / sky-gradient / hosted-KTX
-    /// environments — the agent supplies any panorama it can draw. Inverse:
-    /// restore the prior `EnvironmentConfig`.
-    SetEnvironmentEquirect { id: AssetId, data: String },
 
     /// Snap the viewport camera to a world axis (the nav-cube directions).
     /// **Transient** — camera/view state, not recorded in the undo log.
@@ -709,15 +681,15 @@ pub enum EditorCommand {
         selection: Option<u32>,
     },
     /// §16: displace a node's mesh by an agent-authored **heightmap image** — the
-    /// generic "supply your own heightfield" hook. `data` is a base64 / `data:`
-    /// image (decoded to RGBA in the bridge); each vertex is offset along its
-    /// normal by `luminance(heightmap @ vertex-UV) * strength` (black = flat,
-    /// white = raised). Collapses to a frozen-topology override layer first (like
-    /// the sculpt verbs) and re-bakes. Inverse: restore the prior overrides
+    /// generic "supply your own heightfield" hook. `url` points at a hosted PNG/JPEG
+    /// heightmap (fetched + decoded to RGBA in the bridge); each vertex is offset
+    /// along its normal by `luminance(heightmap @ vertex-UV) * strength` (black =
+    /// flat, white = raised). Collapses to a frozen-topology override layer first
+    /// (like the sculpt verbs) and re-bakes. Inverse: restore the prior overrides
     /// (+ stack if the collapse fired).
     DisplaceFromTexture {
         node: NodeId,
-        data: String,
+        url: String,
         strength: f32,
     },
     /// Replace a mesh's entire sparse [`VertexOverrides`] map wholesale (the
@@ -770,7 +742,8 @@ pub enum EditorCommand {
     /// `offset`/`scale`/`rotation` compose into the slot's `KHR_texture_transform`
     /// (offset is also the base the `flow` scroll accumulates onto); `flow` is a
     /// `[u,v]` UV-units/sec auto-scroll (set `[0,0]` to stop); `wrap_u`/`wrap_v`
-    /// set the sampler address mode; `uv_set` picks the TEXCOORD set. The slot
+    /// set the sampler address mode; `mag_filter`/`min_filter`/`mipmap_filter` set
+    /// the sampler filtering (`nearest`/`linear`); `uv_set` picks the TEXCOORD set. The slot
     /// **must already have a texture bound** (`SetBuiltinTexture` first) — applying
     /// to an empty slot is **rejected loudly**, never a silent no-op. Setting any
     /// field re-materializes the node so the change actually renders. Inverse:
@@ -792,6 +765,12 @@ pub enum EditorCommand {
         wrap_v: Option<awsm_renderer_scene::primitive::TextureWrap>,
         #[serde(default)]
         uv_set: Option<u32>,
+        #[serde(default)]
+        mag_filter: Option<awsm_renderer_scene::primitive::TextureFilter>,
+        #[serde(default)]
+        min_filter: Option<awsm_renderer_scene::primitive::TextureFilter>,
+        #[serde(default)]
+        mipmap_filter: Option<awsm_renderer_scene::primitive::TextureFilter>,
     },
 
     // ─────────────────── Custom (dynamic-WGSL) material authoring ─────────────
@@ -828,6 +807,16 @@ pub enum EditorCommand {
         material: AssetId,
         name: String,
         value: String,
+    },
+    /// Set a PER-MESH uniform override for a node assigned a CUSTOM-WGSL material —
+    /// writes `MaterialInstance::uniform_overrides[name]`, the per-instance
+    /// counterpart of `SetMaterialUniform` (which sets the shared asset default).
+    /// `value` is the typed [`UniformValue`]; `name` must match a declared
+    /// `UniformField`. Re-materializes the node. Inverse: restore the prior kind.
+    SetNodeMaterialUniform {
+        node: NodeId,
+        name: String,
+        value: awsm_renderer_scene::dynamic_material::UniformValue,
     },
     /// Set a built-in material factor on a mesh node's inline material (the
     /// writable counterpart of `ReadbackTarget::BuiltinParam`). `value` is 1
@@ -1239,7 +1228,7 @@ impl EditorCommand {
             EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",
             EditorCommand::AddMaterialAsset { .. } => "Add material",
             EditorCommand::AddTextureAsset { .. } => "Add texture",
-            EditorCommand::CreateTexture { .. } => "Create texture",
+            EditorCommand::PurgeUnusedAssets => "Purge unused assets",
             EditorCommand::DeleteAsset { .. } | EditorCommand::RestoreAsset { .. } => {
                 "Delete asset"
             }
@@ -1283,13 +1272,13 @@ impl EditorCommand {
             EditorCommand::SetCustomMaterialShaderIncludes { .. } => "Set shader includes",
             EditorCommand::SetCustomMaterialFragmentInputs { .. } => "Set fragment inputs",
             EditorCommand::SetMaterialUniform { .. } => "Set uniform",
+            EditorCommand::SetNodeMaterialUniform { .. } => "Set uniform",
             EditorCommand::SetBuiltinParam { .. } => "Set material param",
             EditorCommand::SetBuiltinAlphaMode { .. } => "Set builtin alpha mode",
             EditorCommand::SetLightParam { .. } => "Set light param",
             EditorCommand::SetMaterialTexture { .. } => "Bind texture",
             EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",
             EditorCommand::SetEnvironment { .. } => "Set environment",
-            EditorCommand::SetEnvironmentEquirect { .. } => "Set environment",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",

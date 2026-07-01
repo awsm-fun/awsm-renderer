@@ -424,6 +424,20 @@ pub(crate) fn download_bytes(filename: &str, bytes: &[u8]) {
 /// Export the whole scene to a binary glTF and download it. The player/runtime
 /// (or another DCC tool) re-imports the `.glb`; it's not auto-added back to the
 /// project.
+fn purge_unused_assets() {
+    // Delete every asset the live scene no longer references. Undoable in one step
+    // (the command's inverse is a Batch of RestoreAsset); the handler toasts the
+    // count purged, so no confirm dialog is needed.
+    spawn_local(async {
+        if let Err(e) = controller()
+            .dispatch(awsm_renderer_editor_protocol::EditorCommand::PurgeUnusedAssets)
+            .await
+        {
+            Toast::error(format!("Purge failed: {e}"));
+        }
+    });
+}
+
 fn export_scene_glb() {
     spawn_local(async {
         // Block ALL interaction while the GLB is assembled (async image
@@ -1082,6 +1096,7 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
                 MenuItem::new("Export player bundle\u{2026}").icon("mesh").on_click(clone!(close => move || { export_player_bundle(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Settings\u{2026}").icon("settings").on_click(clone!(close => move || { controller().settings_open.set_neq(true); (close.borrow_mut())(); })).render(),
                 MenuItem::new("About AwsmRenderer\u{2026}").icon("help").on_click(clone!(close => move || { open_about(); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Purge unused assets").icon("trash").on_click(clone!(close => move || { purge_unused_assets(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Clear scene\u{2026}").icon("trash").danger(true).on_click(clone!(close => move || { open_clear_all(); (close.borrow_mut())(); })).render(),
             ]).render())
         // Red dot when there are missing assets.

@@ -213,17 +213,6 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
-                "create_texture",
-                EditorCommand::CreateTexture {
-                    id: AssetId::new(),
-                    data: "AAAA".to_string(),
-                    width: Some(1),
-                    height: Some(1),
-                    format: Some("rgba8".to_string()),
-                    linear: true,
-                },
-            ),
-            (
                 "patch_kind",
                 EditorCommand::PatchKind {
                     id: NodeId::new(),
@@ -253,17 +242,10 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
-                "set_environment_equirect",
-                EditorCommand::SetEnvironmentEquirect {
-                    id: AssetId::new(),
-                    data: "data:image/png;base64,AAAA".to_string(),
-                },
-            ),
-            (
                 "displace_from_texture",
                 EditorCommand::DisplaceFromTexture {
                     node: NodeId::new(),
-                    data: "data:image/png;base64,AAAA".to_string(),
+                    url: "https://example.com/heightmap.png".to_string(),
                     strength: 0.5,
                 },
             ),
@@ -345,6 +327,9 @@ mod wire_roundtrip_tests {
                     wrap_u: Some(awsm_renderer_scene::primitive::TextureWrap::MirroredRepeat),
                     wrap_v: None,
                     uv_set: Some(1),
+                    mag_filter: Some(awsm_renderer_scene::primitive::TextureFilter::Nearest),
+                    min_filter: None,
+                    mipmap_filter: None,
                 },
             ),
             // Track flags + transport (newly typed MCP tools — must round-trip).

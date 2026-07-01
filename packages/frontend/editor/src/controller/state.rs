@@ -1347,6 +1347,48 @@ impl EditorController {
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::DeleteAsset { id }))
             }
+            EditorCommand::PurgeUnusedAssets => {
+                // Delete every asset the live scene no longer references. The
+                // reachable set is computed conservatively (over-marking keeps an
+                // asset; it can never drop a used one) — see `reachable_assets`.
+                let reachable = reachable_assets(self);
+                let unused: Vec<AssetId> = {
+                    let assets = self.scene.assets.lock().unwrap();
+                    assets
+                        .entries
+                        .keys()
+                        .copied()
+                        .filter(|id| !reachable.contains(id))
+                        .collect()
+                };
+                if unused.is_empty() {
+                    Toast::info("No unused assets to purge");
+                    return Ok(None);
+                }
+                // Remove each, capturing its entry so the inverse `Batch` of
+                // `RestoreAsset` makes the whole purge one undo step.
+                let mut restores = Vec::with_capacity(unused.len());
+                {
+                    let mut assets = self.scene.assets.lock().unwrap();
+                    for id in &unused {
+                        if let Some(entry) = assets.entries.remove(id) {
+                            restores.push(EditorCommand::RestoreAsset {
+                                id: *id,
+                                entry: Box::new(entry),
+                            });
+                        }
+                    }
+                }
+                if let Some(sel) = self.asset_selection.get() {
+                    if unused.contains(&sel) {
+                        self.asset_selection.set(None);
+                    }
+                }
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Toast::info(format!("Purged {} unused asset(s)", restores.len()));
+                Ok(Some(EditorCommand::Batch(restores)))
+            }
             EditorCommand::DropSkinning { node } => {
                 use awsm_renderer_editor_protocol::SkinnedMeshRef;
                 let Some(n) = mutate::find_by_id(&self.scene, node) else {
@@ -1633,16 +1675,16 @@ impl EditorController {
             }
             EditorCommand::DisplaceFromTexture {
                 node,
-                data,
+                url,
                 strength,
             } => {
                 // §16: displace every vertex along its normal by the heightmap's
                 // luminance at the vertex UV — the generic "supply your own
-                // heightfield" hook. Decode (loudly) BEFORE collapsing.
+                // heightfield" hook. Fetch + decode (loudly) BEFORE collapsing.
                 let (mesh, md) = self
                     .node_editable_mesh(node)
                     .map_err(crate::error::EditorError::msg)?;
-                let (rgba, w, h) = crate::engine::bridge::material::decode_rgba_from_payload(&data)
+                let (rgba, w, h) = crate::engine::bridge::material::decode_rgba_from_url(&url)
                     .await
                     .map_err(crate::error::EditorError::msg)?;
                 let normals = md.normals.clone();
@@ -2337,6 +2379,28 @@ impl EditorController {
                 }
                 None => Ok(None),
             },
+            EditorCommand::SetNodeMaterialUniform { node, name, value } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.kind.get_cloned();
+                        let mut next = prev.clone();
+                        let Some(inst) = node_material_mut(&mut next) else {
+                            return Err(crate::error::EditorError::msg(
+                                "node has no material instance — assign a material first",
+                            ));
+                        };
+                        inst.uniform_overrides.insert(name, value);
+                        // `kind.set` re-materializes the node so the override renders.
+                        n.kind.set(next);
+                        self.scene.bump_revision();
+                        Ok(Some(EditorCommand::SetKind {
+                            id: node,
+                            kind: Box::new(prev),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }
             EditorCommand::SetBuiltinParam { node, param, value } => {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {
@@ -2404,6 +2468,9 @@ impl EditorController {
                 wrap_u,
                 wrap_v,
                 uv_set,
+                mag_filter,
+                min_filter,
+                mipmap_filter,
             } => match mutate::find_by_id(&self.scene, node) {
                 Some(n) => {
                     let prev = n.kind.get_cloned();
@@ -2412,7 +2479,18 @@ impl EditorController {
                     // texture to transform. `kind.set` re-materializes the node so
                     // the new transform/flow actually renders.
                     patch_builtin_texture_transform(
-                        &mut next, slot, offset, scale, rotation, flow, wrap_u, wrap_v, uv_set,
+                        &mut next,
+                        slot,
+                        offset,
+                        scale,
+                        rotation,
+                        flow,
+                        wrap_u,
+                        wrap_v,
+                        uv_set,
+                        mag_filter,
+                        min_filter,
+                        mipmap_filter,
                     )
                     .map_err(crate::error::EditorError::msg)?;
                     n.kind.set(next);
@@ -2616,56 +2694,6 @@ impl EditorController {
             EditorCommand::SetEnvironment { env } => {
                 let prev = self.scene.environment.get_cloned();
                 self.scene.environment.set(env);
-                self.scene.bump_revision();
-                Ok(Some(EditorCommand::SetEnvironment { env: prev }))
-            }
-            EditorCommand::SetEnvironmentEquirect { id, data } => {
-                // §18: decode the wire payload to ENCODED image bytes (loudly — a bad
-                // payload is a rejected op), register it as a content-hashed raster
-                // texture asset + seed the texture_cache, so the existing texture
-                // persistence (texture_files / restore_textures) saves the panorama
-                // and restores it on reload; env_sync decodes + projects it lazily.
-                // Then point both skybox + IBL at it. Inverse restores the prior env.
-                use awsm_renderer_editor_protocol::TexturePayload;
-                let payload =
-                    awsm_renderer_editor_protocol::decode_texture_payload(&data, None, None, None)
-                        .map_err(crate::error::EditorError::msg)?;
-                let (bytes, mime, ext) = match payload {
-                    TexturePayload::Encoded { bytes, mime } => {
-                        let m = mime.as_deref().unwrap_or("image/png");
-                        if m.contains("jpeg") || m.contains("jpg") {
-                            (bytes, awsm_renderer_glb_export::ImageMime::Jpeg, "jpg")
-                        } else {
-                            (bytes, awsm_renderer_glb_export::ImageMime::Png, "png")
-                        }
-                    }
-                    TexturePayload::RawRgba8 { .. } => {
-                        return Err(crate::error::EditorError::msg(
-                            "equirect environment must be an encoded PNG/JPEG (data: URI / base64)",
-                        ))
-                    }
-                };
-                let hash = content_hash(&bytes);
-                self.scene.assets.lock().unwrap().entries.insert(
-                    id,
-                    AssetEntry::new_with_hash(
-                        SceneAssetSource::Texture(TextureDef::Raster {
-                            display_name: format!("env-{}.{ext}", &id.to_string()[..8]),
-                            color_kind: None,
-                        }),
-                        hash,
-                    ),
-                );
-                crate::engine::bridge::texture_cache::store(id, bytes, mime);
-                let prev = self.scene.environment.get_cloned();
-                self.scene
-                    .environment
-                    .set(awsm_renderer_editor_protocol::EnvironmentConfig {
-                        skybox: awsm_renderer_editor_protocol::SkyboxConfig::Equirect {
-                            asset_id: id,
-                        },
-                        ibl: awsm_renderer_editor_protocol::IblConfig::Equirect { asset_id: id },
-                    });
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
             }
@@ -2897,19 +2925,33 @@ impl EditorController {
                     "Importing texture — uploading to GPU…",
                 );
                 match crate::engine::bridge::material::import_texture_url(id, &url).await {
-                    Ok(()) => {
-                        let name = url
+                    Ok((bytes, mime)) => {
+                        // Name the persisted side file with an extension matching the
+                        // mime, so `asset_filename` + `restore_textures` round-trip it.
+                        let base = url
+                            .split(['?', '#'])
+                            .next()
+                            .unwrap_or(&url)
                             .rsplit('/')
                             .next()
                             .filter(|s| !s.is_empty())
-                            .unwrap_or("texture")
-                            .to_string();
+                            .unwrap_or("texture");
+                        let stem = base.rsplit_once('.').map(|(s, _)| s).unwrap_or(base);
+                        let name = format!("{stem}.{}", mime.ext());
+                        // Capture the encoded bytes + content hash so Save can persist
+                        // this texture (without a hash the save gate refuses with
+                        // "texture(s) with no captured bytes").
+                        let hash = content_hash(&bytes);
+                        crate::engine::bridge::texture_cache::store(id, bytes, mime);
                         self.scene.assets.lock().unwrap().entries.insert(
                             id,
-                            AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
-                                display_name: name,
-                                color_kind: None,
-                            })),
+                            AssetEntry::new_with_hash(
+                                SceneAssetSource::Texture(TextureDef::Raster {
+                                    display_name: name,
+                                    color_kind: None,
+                                }),
+                                hash,
+                            ),
                         );
                         self.scene.bump_revision();
                         self.asset_selection.set(Some(id));
@@ -2924,66 +2966,42 @@ impl EditorController {
                     ))),
                 }
             }
-            EditorCommand::CreateTexture {
-                id,
-                data,
-                width,
-                height,
-                format,
-                linear,
-            } => {
-                // Idempotent: skip if this id already exists (cross-tab replay).
-                if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
-                    return Ok(None);
-                }
-                // Decode the wire payload (base64 / data: URI) loudly BEFORE any
-                // GPU work — a bad payload is a rejected op, not a silent `ok`.
-                let payload = awsm_renderer_editor_protocol::decode_texture_payload(
-                    &data,
-                    width,
-                    height,
-                    format.as_deref(),
-                )
-                .map_err(crate::error::EditorError::msg)?;
-                let _activity =
-                    crate::engine::activity::begin_activity("Creating texture — uploading to GPU…");
-                match crate::engine::bridge::material::create_texture(id, payload, linear).await {
-                    Ok(()) => {
-                        self.scene.assets.lock().unwrap().entries.insert(
-                            id,
-                            AssetEntry::new(SceneAssetSource::Texture(TextureDef::Raster {
-                                display_name: format!("created-{}", &id.to_string()[..8]),
-                                color_kind: None,
-                            })),
-                        );
-                        self.scene.bump_revision();
-                        self.asset_selection.set(Some(id));
-                        self.dirty.set_neq(true);
-                        Toast::info("Created texture");
-                        Ok(Some(EditorCommand::DeleteAsset { id }))
-                    }
-                    // Fail loudly — surfaced as an MCP error, not a silent `ok`.
-                    Err(e) => Err(crate::error::EditorError::msg(format!(
-                        "create texture failed: {e}"
-                    ))),
-                }
-            }
             EditorCommand::ImportKtxEnvFromUrl { id, url } => {
                 // Idempotent (cross-tab replay): skip if this id already exists.
                 if self.scene.assets.lock().unwrap().entries.contains_key(&id) {
                     return Ok(None);
                 }
-                // Register a URL-sourced cubemap asset; the env-sync bridge
-                // fetches + decodes the KTX bytes when `SetEnvironment` applies a
-                // config that references this id (see `env_sync::load_ktx_by_id`'s
-                // `AssetSource::Url` arm). No GPU upload here — unlike a raster
-                // texture, the cubemap is materialized lazily at apply time.
+                // Fetch the KTX bytes NOW and stash them so the environment PERSISTS:
+                // Save writes `assets/<id>.ktx2` from the stash (`ktx_files`) and a
+                // reload re-stashes it (`restore_ktx`) — mirroring the ribbon HDR
+                // picker (Filename source + `stash_ktx`). A bare `Url` source would
+                // only refetch on reload and break once the URL is gone. `env_sync`'s
+                // `Filename` arm then loads the cubemap from the stash at apply time.
+                let bytes = gloo_net::http::Request::get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| crate::error::EditorError::msg(format!("fetch {url}: {e}")))?
+                    .binary()
+                    .await
+                    .map_err(|e| {
+                        crate::error::EditorError::msg(format!("fetch {url} body: {e}"))
+                    })?;
+                crate::engine::bridge::env_sync::stash_ktx(id, bytes);
+                let name = url
+                    .split(['?', '#'])
+                    .next()
+                    .unwrap_or(&url)
+                    .rsplit('/')
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("env.ktx2")
+                    .to_string();
                 self.scene
                     .assets
                     .lock()
                     .unwrap()
                     .entries
-                    .insert(id, AssetEntry::new(SceneAssetSource::Url(url)));
+                    .insert(id, AssetEntry::new(SceneAssetSource::Filename(name)));
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(Some(EditorCommand::DeleteAsset { id }))
@@ -7041,6 +7059,9 @@ fn patch_builtin_texture_transform(
     wrap_u: Option<awsm_renderer_editor_protocol::TextureWrap>,
     wrap_v: Option<awsm_renderer_editor_protocol::TextureWrap>,
     uv_set: Option<u32>,
+    mag_filter: Option<awsm_renderer_editor_protocol::TextureFilter>,
+    min_filter: Option<awsm_renderer_editor_protocol::TextureFilter>,
+    mipmap_filter: Option<awsm_renderer_editor_protocol::TextureFilter>,
 ) -> Result<(), String> {
     use awsm_renderer_editor_protocol::BuiltinTextureSlot as S;
     let Some(inst) = node_material_mut(kind) else {
@@ -7080,13 +7101,27 @@ fn patch_builtin_texture_transform(
     if let Some(f) = flow {
         tref.flow = Some(f);
     }
-    if wrap_u.is_some() || wrap_v.is_some() {
+    if wrap_u.is_some()
+        || wrap_v.is_some()
+        || mag_filter.is_some()
+        || min_filter.is_some()
+        || mipmap_filter.is_some()
+    {
         let s = tref.sampler.get_or_insert_with(Default::default);
         if let Some(w) = wrap_u {
             s.wrap_u = w;
         }
         if let Some(w) = wrap_v {
             s.wrap_v = w;
+        }
+        if let Some(f) = mag_filter {
+            s.mag_filter = f;
+        }
+        if let Some(f) = min_filter {
+            s.min_filter = f;
+        }
+        if let Some(f) = mipmap_filter {
+            s.mipmap_filter = f;
         }
     }
     if let Some(uv) = uv_set {
@@ -7588,6 +7623,104 @@ fn ext_slot_color_kind(slot: &str) -> TextureColorKind {
 /// SHA-256 hex of asset bytes — the `content_hash` that addresses the on-disk
 /// `assets/<hash>.<ext>` side file (also dedups identical assets across the
 /// project: textures, buffer-slot data, …).
+/// The asset ids reachable from the live scene: walked from the node tree, the
+/// environment, and every animation clip, then transitively through each reachable
+/// asset entry (glTF child material/image ids, a captured mesh's source asset, a
+/// material asset's own texture refs). Robust by construction — it serializes each
+/// root/entry and keeps every UUID that is an asset-table key, so no
+/// reference-carrying field can be forgotten: over-marking only ever KEEPS an
+/// asset, never deletes a used one. Backs `PurgeUnusedAssets`.
+fn reachable_assets(ctrl: &EditorController) -> std::collections::HashSet<AssetId> {
+    use std::collections::HashSet;
+
+    let keys: HashSet<AssetId> = ctrl
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .entries
+        .keys()
+        .copied()
+        .collect();
+
+    // Insert every asset-key UUID (a value string OR an object key) found in a
+    // serde_json value.
+    fn collect(v: &serde_json::Value, keys: &HashSet<AssetId>, out: &mut HashSet<AssetId>) {
+        match v {
+            serde_json::Value::String(s) => {
+                if let Ok(u) = uuid::Uuid::parse_str(s) {
+                    let id = AssetId(u);
+                    if keys.contains(&id) {
+                        out.insert(id);
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for e in a {
+                    collect(e, keys, out);
+                }
+            }
+            serde_json::Value::Object(m) => {
+                for (k, val) in m {
+                    if let Ok(u) = uuid::Uuid::parse_str(k) {
+                        let id = AssetId(u);
+                        if keys.contains(&id) {
+                            out.insert(id);
+                        }
+                    }
+                    collect(val, keys, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn scan<T: serde::Serialize>(val: &T, keys: &HashSet<AssetId>, out: &mut HashSet<AssetId>) {
+        if let Ok(v) = serde_json::to_value(val) {
+            collect(&v, keys, out);
+        }
+    }
+
+    let mut reachable: HashSet<AssetId> = HashSet::new();
+
+    // Roots: node tree (each node's kind carries its geometry/material/texture
+    // refs), the environment, and every animation clip.
+    fn walk_nodes(
+        nodes: &[std::sync::Arc<crate::engine::scene::node::Node>],
+        keys: &HashSet<AssetId>,
+        out: &mut HashSet<AssetId>,
+    ) {
+        for n in nodes {
+            scan(&n.kind.get_cloned(), keys, out);
+            walk_nodes(&n.children.lock_ref(), keys, out);
+        }
+    }
+    walk_nodes(&ctrl.scene.nodes.lock_ref(), &keys, &mut reachable);
+    scan(&ctrl.scene.environment.get_cloned(), &keys, &mut reachable);
+    for c in ctrl.custom_animations.lock_ref().iter() {
+        scan(
+            &crate::controller::animation::stored_from_live(c),
+            &keys,
+            &mut reachable,
+        );
+    }
+
+    // Transitive: a reachable asset's entry may reference further assets.
+    let mut frontier: Vec<AssetId> = reachable.iter().copied().collect();
+    while let Some(id) = frontier.pop() {
+        let entry = ctrl.scene.assets.lock().unwrap().entries.get(&id).cloned();
+        if let Some(entry) = entry {
+            let mut found = HashSet::new();
+            scan(&entry, &keys, &mut found);
+            for f in found {
+                if reachable.insert(f) {
+                    frontier.push(f);
+                }
+            }
+        }
+    }
+    reachable
+}
+
 fn content_hash(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -8602,59 +8735,6 @@ mod mesh_rebake_tests {
             files.iter().any(|(p, _)| *p == want),
             "snapshot {snap} must be in the saved mesh files: {:?}",
             files.iter().map(|(p, _)| p).collect::<Vec<_>>()
-        );
-    }
-}
-
-#[cfg(test)]
-mod equirect_persistence_tests {
-    use super::*;
-    use awsm_renderer_editor_protocol::{SkyboxConfig, TextureDef};
-    use futures::executor::block_on;
-
-    // §18 follow-up: an agent equirect environment must register as a
-    // content-hashed raster texture + seed the texture_cache, so the EXISTING
-    // texture persistence (texture_files / restore_textures) saves + restores the
-    // panorama across reload — it's no longer session-only.
-    #[test]
-    fn equirect_env_registers_persistable_texture() {
-        let ctrl = EditorController::new();
-        let id = AssetId::new();
-        block_on(ctrl.apply(EditorCommand::SetEnvironmentEquirect {
-            id,
-            data: "data:image/png;base64,AAAA".to_string(),
-        }))
-        .unwrap();
-
-        // (a) both skybox + IBL point at the equirect asset
-        let env = ctrl.scene.environment.get_cloned();
-        assert!(matches!(env.skybox, SkyboxConfig::Equirect { asset_id } if asset_id == id));
-
-        // (b) a content-hashed raster texture asset was registered (.png so the
-        // loader can derive the mime; content_hash so asset_filename → Some).
-        {
-            let assets = ctrl.scene.assets.lock().unwrap();
-            let entry = assets
-                .entries
-                .get(&id)
-                .expect("env texture asset registered");
-            assert!(
-                matches!(&entry.source, SceneAssetSource::Texture(TextureDef::Raster { display_name, .. }) if display_name.ends_with(".png")),
-                "env asset must be a .png raster texture"
-            );
-            assert!(
-                !entry.content_hash.is_empty(),
-                "content_hash unset → won't persist"
-            );
-        }
-
-        // (c) the encoded bytes are in the texture_cache (what Save reads).
-        let cached = crate::engine::bridge::texture_cache::get(id).expect("bytes in cache");
-        // (d) the persistence pass emits a side file carrying exactly those bytes.
-        let files = crate::controller::persistence::texture_files(&ctrl);
-        assert!(
-            files.iter().any(|(_, bytes)| *bytes == cached.0),
-            "texture_files did not include the equirect panorama side file"
         );
     }
 }

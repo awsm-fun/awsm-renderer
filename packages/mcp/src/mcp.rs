@@ -336,10 +336,10 @@ pub struct SetVertexUvsParams {
 pub struct DisplaceFromTextureParams {
     /// UUID of the geometry node to displace.
     pub node: String,
-    /// The heightmap as a `data:image/png;base64,…` URI (or bare base64). Decoded
-    /// to RGBA; per-vertex height = perceptual luminance (black = flat, white =
-    /// raised). Author ANY heightfield (eroded terrain, a logo, fbm) externally.
-    pub data: String,
+    /// URL of a hosted PNG/JPEG heightmap. Fetched + decoded to RGBA; per-vertex
+    /// height = perceptual luminance (black = flat, white = raised). Author ANY
+    /// heightfield (eroded terrain, a logo, fbm) externally, host it, pass the URL.
+    pub url: String,
     /// Displacement distance (world units) at full white. Negative carves inward.
     pub strength: f32,
 }
@@ -686,6 +686,16 @@ pub struct MaterialUniformParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NodeMaterialUniformParams {
+    /// Mesh node UUID (must have a CUSTOM-WGSL material assigned).
+    pub node: String,
+    /// Declared uniform slot name (a `UniformField::name` on the material layout).
+    pub name: String,
+    /// Typed value: `{ "kind": "f32"|"vec2"|"vec3"|"vec4"|"u32"|…, "value": number|array }`.
+    pub value: awsm_renderer_editor_protocol::dynamic_material::UniformValue,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinParamArg {
     BaseColor,
@@ -775,7 +785,7 @@ pub struct ParticleEmitterParams {
     #[serde(default)]
     pub blend: Option<bool>,
     /// Billboard SPRITE texture asset id the particles sample — e.g. a soft
-    /// radial-alpha disc (author one with `create_texture`) for soft-edged
+    /// radial-alpha disc (import one with `import_texture_from_url`) for soft-edged
     /// particles instead of hard squares. Pair with `blend: true` so the sprite
     /// alpha fades the edges. Omit to leave unchanged.
     #[serde(default)]
@@ -831,6 +841,15 @@ pub struct NodeTextureTransformParams {
     /// Which TEXCOORD set this slot samples (glTF `texCoord` index).
     #[serde(default)]
     pub uv_set: Option<u32>,
+    /// Sampler magnification filter: `nearest` | `linear`.
+    #[serde(default)]
+    pub mag_filter: Option<String>,
+    /// Sampler minification filter: `nearest` | `linear`.
+    #[serde(default)]
+    pub min_filter: Option<String>,
+    /// Sampler mipmap filter: `nearest` | `linear`.
+    #[serde(default)]
+    pub mipmap_filter: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -845,29 +864,6 @@ pub enum ProceduralArg {
 pub struct AddTextureParams {
     /// Procedural generator: checker | gradient | noise.
     pub proc: ProceduralArg,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CreateTextureParams {
-    /// Image data the AGENT authored. Either RAW PIXELS — base64 of
-    /// `width*height*4` RGBA8 bytes (row-major, top-left origin), with
-    /// `format="rgba8"` + `width` + `height`; or an ENCODED IMAGE — a `data:`
-    /// URI (`data:image/png;base64,…`) or bare base64 of a PNG/JPEG/WebP
-    /// (`width`/`height`/`format` derived).
-    pub data: String,
-    /// Pixel width. REQUIRED for raw `rgba8`; ignored/derived for encoded images.
-    #[serde(default)]
-    pub width: Option<u32>,
-    /// Pixel height. REQUIRED for raw `rgba8`; ignored/derived for encoded images.
-    #[serde(default)]
-    pub height: Option<u32>,
-    /// Raw pixel format — only `"rgba8"` today. Omit for an encoded image.
-    #[serde(default)]
-    pub format: Option<String>,
-    /// Upload as LINEAR data (normal / roughness / height maps) instead of sRGB
-    /// albedo. Default false (sRGB).
-    #[serde(default)]
-    pub linear: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1000,13 +996,6 @@ pub struct EnvironmentParams {
     /// Pairs with `zenith`.
     #[serde(default)]
     pub nadir: Option<[f32; 3]>,
-    /// Agent-authored **panorama** environment (§18): an equirectangular
-    /// (lat/long, 2:1) image as a `data:image/png;base64,…` URI (or bare base64).
-    /// It's projected to a cubemap that drives BOTH the skybox and the IBL — so
-    /// any panorama you can draw (nebula, sunset, gradient sky) becomes a
-    /// reflecting + lighting environment. Overrides skybox/ibl_*/zenith/nadir.
-    #[serde(default)]
-    pub equirect: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2460,7 +2449,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Displace a node's mesh by an agent-authored HEIGHTMAP image (§16) — the generic 'supply your own heightfield' hook. `data` is a data:image/png;base64 heightmap; each vertex moves along its normal by luminance(heightmap @ its UV) * `strength` (black = flat, white = raised; negative strength carves in). Author ANY terrain externally (eroded ridges, a stamped logo, scanned relief, multi-octave fbm baked to a PNG) and feed it — composes with create_texture-style raw upload. Needs a UV-mapped, sufficiently TESSELLATED mesh (subdivide a plane via set_mesh_modifiers first — displacement only moves existing verts). Collapses to a frozen-topology override layer (like the sculpt verbs) and re-bakes; undoable. Verify with get_mesh_stats (bbox grows) or a screenshot."
+        description = "Displace a node's mesh by an agent-authored HEIGHTMAP image (§16) — the generic 'supply your own heightfield' hook. `url` is a hosted PNG/JPEG heightmap (author ANY terrain externally — eroded ridges, a stamped logo, scanned relief, multi-octave fbm baked to a PNG — host it, pass the URL); each vertex moves along its normal by luminance(heightmap @ its UV) * `strength` (black = flat, white = raised; negative strength carves in). Needs a UV-mapped, sufficiently TESSELLATED mesh (subdivide a plane via set_mesh_modifiers first — displacement only moves existing verts). Collapses to a frozen-topology override layer (like the sculpt verbs) and re-bakes; undoable. Verify with get_mesh_stats (bbox grows) or a screenshot."
     )]
     async fn displace_from_texture(
         &self,
@@ -2468,7 +2457,7 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::DisplaceFromTexture {
             node: parse_node(&p.node)?,
-            data: p.data,
+            url: p.url,
             strength: p.strength,
         })
         .await
@@ -2584,6 +2573,13 @@ impl EditorMcp {
             id: parse_asset(&p.asset)?,
         })
         .await
+    }
+
+    #[tool(
+        description = "Purge ALL unused project assets in one undoable step — deletes every texture / material / mesh / buffer NOT referenced by the live scene. The reachable set is walked from node material/mesh/texture/buffer bindings, the environment cubemaps, and animation targets (transitively), so an asset still in use is NEVER removed. Use after importing/replacing assets to drop orphans left behind. Verify the result with get_snapshot."
+    )]
+    async fn purge_unused(&self) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::PurgeUnusedAssets).await
     }
 
     #[tool(
@@ -2872,6 +2868,21 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Set a PER-MESH uniform override on a node assigned a CUSTOM-WGSL material — writes MaterialInstance.uniform_overrides[name], distinct from set_material_uniform (which sets the material's SHARED default for every mesh using it). `name` = a declared uniform slot; `value` = the typed UniformValue { kind: f32|vec2|vec3|vec4|u32|ivec2|ivec3|ivec4|mat3|mat4|color3|color4|bool, value: number OR array } (e.g. {\"kind\":\"f32\",\"value\":0.5} or {\"kind\":\"vec3\",\"value\":[1,0,0]}). Renders immediately; undoable."
+    )]
+    async fn set_node_material_uniform(
+        &self,
+        Parameters(p): Parameters<NodeMaterialUniformParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetNodeMaterialUniform {
+            node: parse_node(&p.node)?,
+            name: p.name,
+            value: p.value,
+        })
+        .await
+    }
+
+    #[tool(
         description = "Bind a texture asset into a mesh node's custom-material texture slot (by slot name), or clear it (omit `texture`). The node needs a custom material assigned with a matching declared texture slot."
     )]
     async fn set_material_texture(
@@ -2935,28 +2946,6 @@ impl EditorMcp {
         let id = AssetId::new();
         self.dispatch_echo_asset(EditorCommand::AddTextureAsset { id, proc }, id)
             .await
-    }
-
-    #[tool(
-        description = "Create a texture from AGENT-AUTHORED image data — the generic 'author any texture' primitive. Two modes: (1) RAW PIXELS — set format=\"rgba8\" + width + height, data = base64 of width*height*4 RGBA8 bytes (row-major, top-left origin); (2) ENCODED IMAGE — data = a data: URI (data:image/png;base64,…) or bare base64 of a PNG/JPEG/WebP, dims derived. Use this to upload soft particle sprites, fbm height/normal maps, gradients, cubemap faces, etc. — no procedural preset required. Set linear=true for data/normal/roughness maps (skips sRGB conversion). Returns the new texture id; bind with set_material_texture (or set_node_texture)."
-    )]
-    async fn create_texture(
-        &self,
-        Parameters(p): Parameters<CreateTextureParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let id = AssetId::new();
-        self.dispatch_echo_asset(
-            EditorCommand::CreateTexture {
-                id,
-                data: p.data,
-                width: p.width,
-                height: p.height,
-                format: p.format,
-                linear: p.linear,
-            },
-            id,
-        )
-        .await
     }
 
     #[tool(
@@ -3062,7 +3051,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive), texture (billboard SPRITE asset id — a soft radial-alpha disc from create_texture gives soft-edged particles; pair with blend:true so the alpha fades the edges). Errors if the node isn't a particle emitter."
+        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive), texture (billboard SPRITE asset id — a soft radial-alpha disc imported via import_texture_from_url gives soft-edged particles; pair with blend:true so the alpha fades the edges). Errors if the node isn't a particle emitter."
     )]
     async fn set_particle_emitter(
         &self,
@@ -3089,7 +3078,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the UV transform / flow / wrap of a mesh node's BUILT-IN (inline PBR) texture slot (base_color | metallic_roughness | normal | occlusion | emissive). Patch-style: only the fields you pass change. offset/scale/rotation set the KHR_texture_transform (scale>1 tiles); flow=[u,v] auto-scrolls the texture (UV-units/sec — conveyors/water/lava — set [0,0] to stop); wrap_u/wrap_v = repeat|clamp_to_edge|mirrored_repeat; uv_set picks the TEXCOORD set. The slot must already have a texture bound (set_node_texture first) — an empty slot is rejected, not silently ignored. Renders immediately. For a directional/keyframed scroll use a texture_transform animation track instead. NOTE: scrolling only reads as travel on a GEOMETRY-LOCKED strip UV (one axis = travel) + a tileable texture — on a baked atlas UV it slides samples onto unrelated content. See the 'Geometry-locked scroll (conveyor / tread / road)' recipe in awsm://docs/material-recipes (author the strip UV with set_vertex_uvs + strip_parameterize first)."
+        description = "Set the UV transform / flow / wrap of a mesh node's BUILT-IN (inline PBR) texture slot (base_color | metallic_roughness | normal | occlusion | emissive). Patch-style: only the fields you pass change. offset/scale/rotation set the KHR_texture_transform (scale>1 tiles); flow=[u,v] auto-scrolls the texture (UV-units/sec — conveyors/water/lava — set [0,0] to stop); wrap_u/wrap_v = repeat|clamp_to_edge|mirrored_repeat; mag_filter/min_filter/mipmap_filter = nearest|linear; uv_set picks the TEXCOORD set. The slot must already have a texture bound (set_node_texture first) — an empty slot is rejected, not silently ignored. Renders immediately. For a directional/keyframed scroll use a texture_transform animation track instead. NOTE: scrolling only reads as travel on a GEOMETRY-LOCKED strip UV (one axis = travel) + a tileable texture — on a baked atlas UV it slides samples onto unrelated content. See the 'Geometry-locked scroll (conveyor / tread / road)' recipe in awsm://docs/material-recipes (author the strip UV with set_vertex_uvs + strip_parameterize first)."
     )]
     async fn set_node_texture_transform(
         &self,
@@ -3105,6 +3094,9 @@ impl EditorMcp {
             wrap_u: p.wrap_u.as_deref().map(parse_wrap).transpose()?,
             wrap_v: p.wrap_v.as_deref().map(parse_wrap).transpose()?,
             uv_set: p.uv_set,
+            mag_filter: p.mag_filter.as_deref().map(parse_filter).transpose()?,
+            min_filter: p.min_filter.as_deref().map(parse_filter).transpose()?,
+            mipmap_filter: p.mipmap_filter.as_deref().map(parse_filter).transpose()?,
         })
         .await
     }
@@ -3367,22 +3359,12 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment (skybox + IBL). AGENT-AUTHORED (no hosting), three ways: (1) `equirect` = a data:image/png;base64 EQUIRECTANGULAR (2:1 lat/long) PANORAMA you drew — projected to a cubemap that drives BOTH skybox + IBL (any sky you can paint: nebula, sunset, gradient — reflects + lights the scene). (2) `zenith` + `nadir` ([r,g,b] linear) for a two-color SKY GRADIENT (skybox + IBL) — author dusk / overcast / night / studio from your own colors. (3) Otherwise each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap. KTX IBL needs both ibl_prefiltered + ibl_irradiance. Precedence: equirect > zenith/nadir > skybox/ibl_*. A fresh scene already seeds the built-in environment."
+        description = "Set the scene environment (skybox + IBL). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) for a two-color SKY GRADIENT (skybox + IBL) — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap. KTX IBL needs both ibl_prefiltered + ibl_irradiance. Precedence: zenith/nadir > skybox/ibl_*. A fresh scene already seeds the built-in environment."
     )]
     async fn set_environment(
         &self,
         Parameters(p): Parameters<EnvironmentParams>,
     ) -> Result<CallToolResult, McpError> {
-        // §18: agent-authored panorama short-circuit — an equirect image becomes
-        // the skybox + IBL (projected to a cubemap in the env bridge).
-        if let Some(data) = p.equirect {
-            return self
-                .dispatch(EditorCommand::SetEnvironmentEquirect {
-                    id: AssetId::new(),
-                    data,
-                })
-                .await;
-        }
         // §18: agent-authored sky-gradient short-circuit — zenith+nadir drive both
         // the skybox and the IBL from the same two colors (no KTX2 needed).
         if let (Some(zenith), Some(nadir)) = (p.zenith, p.nadir) {
@@ -4104,8 +4086,12 @@ impl ServerHandler for EditorMcp {
              mutate with the scene/material/animation tools (or dispatch_command/dispatch_batch \
              for anything without a dedicated tool), then wait_render_settled + screenshot_scene \
              to see the result. For custom WGSL materials read get_material_contract first and \
-             check get_material_diagnostics after editing. Docs + workflow templates are exposed \
-             as MCP resources + prompts."
+             check get_material_diagnostics after editing. Assets (textures, environments, \
+             heightmaps) come from URLs — generate + host them, then import/reference by URL; \
+             there is NO inline-base64 texture or equirect tool. For the environment / texture / \
+             material / displacement / purge workflows (incl. baking a .ktx2 cubemap offline via \
+             cmgen/ktx), read the awsm://docs/asset-workflows resource. Docs + workflow templates \
+             are exposed as MCP resources + prompts."
                 .to_string(),
         );
         info
@@ -4167,6 +4153,14 @@ impl ServerHandler for EditorMcp {
                 "How to drive the editor over MCP (docs/MCP.md).",
             ),
             res(
+                "awsm://docs/asset-workflows",
+                "Asset workflows",
+                "Environment / texture / material / displacement / purge workflows: bake a .ktx2 \
+                 cubemap offline (cmgen/ktx) + set_environment by URL, import_texture_from_url → \
+                 PBR slots, custom WGSL, displace_from_texture, purge_unused, and the patch_kind \
+                 escape hatch for long-tail material fields. Assets come from URLs (no inline base64).",
+            ),
+            res(
                 "awsm://docs/agent-guide",
                 "Agent guide",
                 "The agent loop, end-to-end scene walkthrough, lighting, batching, troubleshooting.",
@@ -4216,6 +4210,7 @@ impl ServerHandler for EditorMcp {
     ) -> Result<ReadResourceResult, McpError> {
         let body = match req.uri.as_str() {
             "awsm://docs/mcp" => MCP_DOC,
+            "awsm://docs/asset-workflows" => ASSET_WORKFLOWS,
             "awsm://docs/agent-guide" => AGENT_GUIDE,
             "awsm://docs/material-recipes" => MATERIAL_RECIPES,
             "awsm://docs/animation" => ANIMATION_DOC,
@@ -4257,6 +4252,11 @@ impl ServerHandler for EditorMcp {
                 Some("Import a glTF model from a URL and frame it for a screenshot."),
                 None,
             ),
+            Prompt::new(
+                "setup_environment",
+                Some("Set the environment: a two-color sky gradient, or a baked .ktx2 cubemap by URL."),
+                None,
+            ),
         ]))
     }
 
@@ -4275,6 +4275,10 @@ impl ServerHandler for EditorMcp {
                 PROMPT_ROTATION_CLIP,
             ),
             "import_and_frame_model" => ("Import a glTF model and frame it.", PROMPT_IMPORT_FRAME),
+            "setup_environment" => (
+                "Set the scene environment (sky gradient, or a baked .ktx2 by URL).",
+                PROMPT_SETUP_ENVIRONMENT,
+            ),
             other => {
                 return Err(McpError::invalid_params(
                     format!("unknown prompt {other}"),
@@ -4311,6 +4315,18 @@ fn parse_wrap(s: &str) -> Result<awsm_renderer_editor_protocol::TextureWrap, Mcp
         "mirror" | "mirrored_repeat" | "mirroredrepeat" => Ok(W::MirroredRepeat),
         other => Err(McpError::invalid_params(
             format!("invalid wrap {other:?} (use repeat | clamp_to_edge | mirrored_repeat)"),
+            None,
+        )),
+    }
+}
+
+fn parse_filter(s: &str) -> Result<awsm_renderer_editor_protocol::TextureFilter, McpError> {
+    use awsm_renderer_editor_protocol::TextureFilter as F;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "nearest" | "point" => Ok(F::Nearest),
+        "linear" | "smooth" => Ok(F::Linear),
+        other => Err(McpError::invalid_params(
+            format!("invalid filter {other:?} (use nearest | linear)"),
             None,
         )),
     }
@@ -4522,6 +4538,7 @@ const CONTRACT_TRANSPARENT: &str =
     include_str!("../../../docs/dynamic-materials/contract-transparent.md");
 const CONTRACT_VERTEX: &str = include_str!("../../../docs/dynamic-materials/contract-vertex.md");
 const MCP_DOC: &str = include_str!("../../../docs/MCP.md");
+const ASSET_WORKFLOWS: &str = include_str!("../../../docs/ASSET_WORKFLOWS.md");
 const AGENT_GUIDE: &str = include_str!("../../../docs/AGENT_GUIDE.md");
 const MATERIAL_RECIPES: &str = include_str!("../../../docs/dynamic-materials/recipes.md");
 const ANIMATION_DOC: &str = include_str!("../../../docs/ANIMATION_AUTHORING.md");
@@ -4559,6 +4576,24 @@ Import a glTF/glb model and frame it:
 3. get_snapshot to find the imported node id.
 4. frame_node { node } (optionally set_camera_orbit for a 3/4 view).
 5. wait_render_settled, then screenshot_scene.";
+
+const PROMPT_SETUP_ENVIRONMENT: &str = "\
+Set the scene environment. Assets come from URLs — there is NO inline-base64 / \
+equirect tool. Two routes:
+
+A) Quick two-color sky (no hosting):
+   1. set_environment { zenith: [r,g,b], nadir: [r,g,b] }  (linear RGB; drives skybox + IBL).
+   2. wait_render_settled, then screenshot_scene.
+
+B) Baked HDRI / studio KTX2 cubemaps by URL (read awsm://docs/asset-workflows for full flags):
+   1. Make an .hdr/.exr (a real HDRI, or generate an equirect panorama procedurally — numpy → flat-RGBE .hdr).
+   2. cmgen → skybox faces (-x skybox), prefiltered spec (--ibl-ld), irradiance (--ibl-irradiance).
+      The equirect→cubemap projection happens HERE, offline (there is no runtime equirect).
+   3. ktx create --cubemap --format B10G11R11_UFLOAT_PACK32 … → skybox.ktx2, env.ktx2, irradiance.ktx2.
+   4. Serve them (a local CORS static server is fine), then:
+      set_environment { skybox: \"<url>/skybox.ktx2\", ibl_prefiltered: \"<url>/env.ktx2\", ibl_irradiance: \"<url>/irradiance.ktx2\" }.
+      (KTX IBL needs BOTH ibl_prefiltered + ibl_irradiance. Skybox may differ from the IBL — e.g. clean grey sky + studio IBL for chrome.)
+   5. wait_render_settled, then screenshot_scene. Save embeds the .ktx2 bytes so it survives reload with no server.";
 
 /// The legal Pass-Dependency keys, appended to the contract output.
 const MATERIAL_KEYS_DOC: &str = "\

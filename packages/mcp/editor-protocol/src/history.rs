@@ -42,7 +42,7 @@ impl std::io::Write for ByteCounter {
 /// Uses the command's **serialized JSON length** as a cheap, recursive,
 /// safe **over-estimate**: the heavy payloads that actually drive the OOM —
 /// `NodeKind` geometry (`Vec<f32>` positions/normals/uvs, `Vec<u32>` indices),
-/// base64 texture/equirect blobs, WGSL source — all serialize to *at least* as
+/// inline heightmap/texture blobs, WGSL source — all serialize to *at least* as
 /// many bytes as they occupy in memory (floats become multi-char decimal
 /// strings, so vertex data over-estimates ~2-4×). Over-estimating is the safe
 /// direction: it makes the byte cap evict *sooner*, never later. A small fixed
