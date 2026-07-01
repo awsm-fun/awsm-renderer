@@ -15,6 +15,11 @@ default = ["lod"]
 # dependency are compiled out, matching `awsm-renderer/lod` — a player built without
 # LOD pulls in none of it.
 lod = ["awsm-renderer/lod", "dep:awsm-renderer-lod-bake"]
+# A ready-made HTTP `SceneAssets` (`assets::HttpAssets`) that fetches a bundle's
+# files (`scene.toml`'s `assets/…`) from a base origin — what a shipped web player
+# wants. Pulls a web-only `gloo-net`, so it's opt-in; the loader core stays
+# transport-agnostic without it (a game can still supply its own `SceneAssets`).
+http = ["dep:gloo-net"]
 
 [dependencies]
 # The core renderer (GPU) + the glTF loader we reuse for the per-mesh glbs.
@@ -42,6 +47,9 @@ awsm-renderer-lod-bake = { workspace = true, features = ["serde"], optional = tr
 awsm-renderer-glb-export = { workspace = true }
 glam = { workspace = true }
 anyhow = { workspace = true }
+# HTTP client for the optional `http` feature's `OriginAssets` (web-only). Opt-in
+# so the transport-agnostic loader core doesn't pull it unless a player wants it.
+gloo-net = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # Parse the `.lod.toml` LOD manifests baked into the bundle.
 toml = "0.8"
