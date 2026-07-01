@@ -425,6 +425,21 @@ pub enum EditorCommand {
     /// side effect. Inverse: restore the prior environment.
     SetEnvironment { env: EnvironmentConfig },
 
+    /// Patch the global SSCS (screen-space contact-shadow) settings on
+    /// `scene.shadows` (persisted; the `sscs_sync` bridge pushes them into the
+    /// renderer live). Every field is optional — only the `Some` ones change.
+    /// `enabled` + `step_count` recompile the shadow-consuming pipelines (they're
+    /// compile-time template constants); the scalars are live uniforms. Inverse:
+    /// restore the prior SSCS values.
+    SetShadowsSscs {
+        enabled: Option<bool>,
+        step_count: Option<u32>,
+        step_world: Option<f32>,
+        thickness: Option<f32>,
+        directional_darkening: Option<f32>,
+        punctual_darkening: Option<f32>,
+    },
+
     /// Snap the viewport camera to a world axis (the nav-cube directions).
     /// **Transient** — camera/view state, not recorded in the undo log.
     SnapCameraToAxis { axis: CameraAxis },
@@ -1279,6 +1294,7 @@ impl EditorCommand {
             EditorCommand::SetMaterialTexture { .. } => "Bind texture",
             EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",
             EditorCommand::SetEnvironment { .. } => "Set environment",
+            EditorCommand::SetShadowsSscs { .. } => "Set SSCS",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",

@@ -2718,6 +2718,46 @@ impl EditorController {
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
             }
+            EditorCommand::SetShadowsSscs {
+                enabled,
+                step_count,
+                step_world,
+                thickness,
+                directional_darkening,
+                punctual_darkening,
+            } => {
+                let prev = self.scene.shadows.get_cloned();
+                let mut next = prev.clone();
+                if let Some(v) = enabled {
+                    next.sscs_enabled = v;
+                }
+                if let Some(v) = step_count {
+                    next.sscs_step_count = v.max(1);
+                }
+                if let Some(v) = step_world {
+                    next.sscs_step_world = v;
+                }
+                if let Some(v) = thickness {
+                    next.sscs_thickness = v;
+                }
+                if let Some(v) = directional_darkening {
+                    next.sscs_directional_darkening = v;
+                }
+                if let Some(v) = punctual_darkening {
+                    next.sscs_punctual_darkening = v;
+                }
+                self.scene.shadows.set(next);
+                self.scene.bump_revision();
+                // Inverse restores every SSCS field to its prior value.
+                Ok(Some(EditorCommand::SetShadowsSscs {
+                    enabled: Some(prev.sscs_enabled),
+                    step_count: Some(prev.sscs_step_count),
+                    step_world: Some(prev.sscs_step_world),
+                    thickness: Some(prev.sscs_thickness),
+                    directional_darkening: Some(prev.sscs_directional_darkening),
+                    punctual_darkening: Some(prev.sscs_punctual_darkening),
+                }))
+            }
             EditorCommand::SnapCameraToAxis { axis } => {
                 use std::f32::consts::PI;
                 // Just under ±90° for top/bottom to dodge the look-at gimbal.
