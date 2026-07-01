@@ -533,6 +533,7 @@ fn settings_drawer() -> Dom {
                 ))
                 .render(),
         )
+        .child(shadows_section())
         .child(
             DrawerSection::new("Camera")
                 .child(html!("div", {
@@ -580,9 +581,111 @@ fn settings_drawer() -> Dom {
         )
         .child(html!("div", {
             .style("padding", "16px").style("font-size", "11px").style("color", "var(--text-3)").style("line-height", "1.5")
-            .text("Editor settings affect the viewport and chrome only \u{2014} they are not saved into the project file.")
+            .text("Most editor settings affect the viewport and chrome only and aren't saved. The Shadows section is part of the project \u{2014} it is saved into the file and the player bundle.")
         }))
         .render()
+}
+
+/// Global SSCS (screen-space contact shadows) controls. Unlike the ephemeral
+/// Viewport toggles, these persist: every change dispatches `SetShadowsSscs`,
+/// which merges into `scene.shadows` (serialized + bundled) and syncs live to
+/// the renderer. Seeded from the current `scene.shadows` when the drawer opens
+/// (the drawer is a transient popover, so seed-at-open is enough — no two-way
+/// binding needed).
+fn shadows_section() -> Dom {
+    let sh = controller().scene.shadows.get_cloned();
+
+    // `enabled` is compile-time (recompiles the shadow pipelines); route it
+    // through a Mutable so the standard `toggle` widget drives the dispatch.
+    let enabled = Mutable::new(sh.sscs_enabled);
+    spawn_local(clone!(enabled => async move {
+        let mut first = true;
+        enabled
+            .signal()
+            .for_each(move |on| {
+                let fire = !first;
+                first = false;
+                async move {
+                    if fire {
+                        dispatch_sscs(Some(on), None, None, None, None, None);
+                    }
+                }
+            })
+            .await;
+    }));
+
+    DrawerSection::new("Shadows")
+        .child(row("Contact shadows (SSCS)", toggle(enabled)))
+        .child(row(
+            "SSCS steps",
+            NumField::new(sh.sscs_step_count as f64)
+                .min(1.0)
+                .step(1.0)
+                .on_change(|v| dispatch_sscs(None, Some((v as u32).max(1)), None, None, None, None))
+                .render(),
+        ))
+        .child(row(
+            "Step length (m)",
+            NumField::new(sh.sscs_step_world as f64)
+                .min(0.0)
+                .step(0.005)
+                .on_change(|v| dispatch_sscs(None, None, Some(v as f32), None, None, None))
+                .render(),
+        ))
+        .child(row(
+            "Thickness (m)",
+            NumField::new(sh.sscs_thickness as f64)
+                .min(0.0)
+                .step(0.01)
+                .on_change(|v| dispatch_sscs(None, None, None, Some(v as f32), None, None))
+                .render(),
+        ))
+        .child(row(
+            "Directional darkening",
+            NumField::new(sh.sscs_directional_darkening as f64)
+                .min(0.0)
+                .max(1.0)
+                .step(0.05)
+                .on_change(|v| dispatch_sscs(None, None, None, None, Some(v as f32), None))
+                .render(),
+        ))
+        .child(row(
+            "Punctual darkening",
+            NumField::new(sh.sscs_punctual_darkening as f64)
+                .min(0.0)
+                .max(1.0)
+                .step(0.05)
+                .on_change(|v| dispatch_sscs(None, None, None, None, None, Some(v as f32)))
+                .render(),
+        ))
+        .render()
+}
+
+/// Dispatch a single-field (or multi-field) SSCS patch — only the `Some` fields
+/// change. Fire-and-forget; the `settings_sync` observer applies it live.
+fn dispatch_sscs(
+    enabled: Option<bool>,
+    step_count: Option<u32>,
+    step_world: Option<f32>,
+    thickness: Option<f32>,
+    directional_darkening: Option<f32>,
+    punctual_darkening: Option<f32>,
+) {
+    spawn_local(async move {
+        if let Err(e) = controller()
+            .dispatch(EditorCommand::SetShadowsSscs {
+                enabled,
+                step_count,
+                step_world,
+                thickness,
+                directional_darkening,
+                punctual_darkening,
+            })
+            .await
+        {
+            tracing::error!("SetShadowsSscs: {e}");
+        }
+    });
 }
 
 fn open_about() {
