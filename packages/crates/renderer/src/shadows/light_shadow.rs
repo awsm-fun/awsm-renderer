@@ -83,16 +83,23 @@ impl Default for LightShadowParams {
     fn default() -> Self {
         Self {
             cast: false,
-            depth_bias: 0.0005,
-            // ~2-3 shadow texels of world push-back. Was 0.05 (≈7 texels),
-            // which visibly Peter-Panned a hole into contact shadows under a
-            // resting/settling mesh; lowered once depth_bias went world-
-            // referenced and stopped over-biasing on its own. See the field doc.
-            normal_bias: 0.02,
+            // Slope-scaled by the shadow shader's receiver-plane `inc_tan`
+            // (→ 0 on light-facing receivers); cleans contact-edge acne without
+            // Peter-Panning. Keep in sync with scene `LightShadowConfig::default`.
+            depth_bias: 0.0015,
+            // Small normal-offset. Was 0.05 → 0.02 → 0.01: each step Peter-Panned
+            // a lit "donut" into the contact shadow under a resting/settling mesh
+            // (a small caster tangent to the floor turns mm of bias into cm of
+            // hole). With the shader's `inc_tan` slope-scaling now carrying the
+            // load, 0.01 keeps grazing/terminator acne cover while staying
+            // donut-safe by default. See the field doc.
+            normal_bias: 0.01,
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
-            kernel_slack: 2.0,
+            // Quantization slack, halved 2.0 → 1.0 (second donut driver at
+            // moderate-incidence contacts). inc_tan-scaled in the shader.
+            kernel_slack: 1.0,
             shadow_samples: 16,
             max_distance: 0.0,
             cascade_count: 4,

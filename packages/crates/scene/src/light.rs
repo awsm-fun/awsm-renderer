@@ -105,16 +105,24 @@ impl Default for LightShadowConfig {
     fn default() -> Self {
         Self {
             cast: true,
-            depth_bias: 0.0005,
-            // Modest normal-offset (~2-3 shadow texels). Was 0.05, which
-            // Peter-Panned a hole into contact shadows under a resting mesh;
-            // lowered once depth_bias became world-referenced. Keep in sync with
+            // Small world-referenced depth push-back; slope-scaled by the
+            // receiver-plane `inc_tan` in the shadow shader (→ 0 on light-facing
+            // receivers), so it cleans contact-edge acne without Peter-Panning.
+            depth_bias: 0.0015,
+            // Small normal-offset. Was 0.05 → 0.02 → 0.01: each `normal_bias`
+            // step Peter-Panned a lit "donut" into the contact shadow under a
+            // resting mesh (a small caster tangent to the floor amplifies mm of
+            // bias into cm of hole). With the `inc_tan` slope-scaling now doing
+            // the heavy lifting, 0.01 keeps grazing/terminator acne protection
+            // while staying donut-safe out of the box. Keep in sync with
             // `default_normal_bias()` + renderer `LightShadowParams::default`.
-            normal_bias: 0.02,
+            normal_bias: 0.01,
             resolution: 1024,
             hardness: LightShadowHardness::Soft,
             pcss_penumbra_scale: 1.0,
-            kernel_slack: 2.0,
+            // Quantization slack, halved 2.0 → 1.0: the full 2× slack was a
+            // second donut driver at moderate-incidence contacts. inc_tan-scaled.
+            kernel_slack: 1.0,
             shadow_samples: default_shadow_samples(),
             max_distance: 0.0,
             cascade_count: 4,
@@ -197,10 +205,10 @@ fn default_true() -> bool {
     true
 }
 fn default_depth_bias() -> f32 {
-    0.0005
+    0.0015
 }
 fn default_normal_bias() -> f32 {
-    0.02
+    0.01
 }
 fn default_shadow_res() -> u32 {
     1024
@@ -209,7 +217,7 @@ fn default_pcss_scale() -> f32 {
     1.0
 }
 fn default_kernel_slack() -> f32 {
-    2.0
+    1.0
 }
 fn default_shadow_samples() -> u32 {
     16

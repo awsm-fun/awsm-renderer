@@ -46,12 +46,31 @@ pub struct PrepPassConfig {
     // always reconstructs it from depth (`get_standard_coordinates`). The former
     // `reconstruct_world_pos` tunable was therefore obsolete and removed (Stage 6
     // cleanup).
+    /// SSCS shader-variant inputs, mirrored from `ShadowsConfig` (kept in sync by
+    /// `AwsmRenderer::set_shadows_config`). They live here — not read from the
+    /// shadow uniform — because both drive the shadow module's COMPILE-TIME
+    /// template: `sscs_enabled` folds into the `apply_sscs` capability gate
+    /// (`sscs_available`) so a disabled config emits zero SSCS code, and
+    /// `sscs_step_count` is baked as the ray-march loop bound (unroll-friendly,
+    /// no per-fragment counter). `PrepPassConfig` is already the shadow-shader
+    /// config threaded to every shadow-consuming pipeline build (opaque, prep,
+    /// edge-resolve), so co-locating them here reaches all cache-key sites
+    /// without new plumbing. Changing either re-keys + recompiles those pipelines
+    /// (via `mark_variants_dirty` + `commit_load`); the SSCS *scalar* tuning
+    /// params stay live uniforms in `ShadowsConfig` / `ShadowGlobals`.
+    pub sscs_enabled: bool,
+    pub sscs_step_count: u32,
 }
 
 impl Default for PrepPassConfig {
     fn default() -> Self {
         Self {
             max_shadow_casters_per_pixel: 4,
+            // Match `ShadowsConfig::default()` (SSCS off; 16-step march) so the
+            // initial pipeline build and the shadow config agree before any
+            // `set_shadows_config` sync runs.
+            sscs_enabled: false,
+            sscs_step_count: 16,
         }
     }
 }

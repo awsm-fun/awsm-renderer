@@ -15,6 +15,16 @@ pub struct ShadowsConfig {
     pub sscs_enabled: bool,
     /// Number of screen-space ray-march steps for SSCS.
     pub sscs_step_count: u32,
+    /// World-space length of each SSCS ray-march step, in metres. Total
+    /// reach = `sscs_step_world · sscs_step_count`.
+    pub sscs_step_world: f32,
+    /// SSCS occluder-slab thickness in metres — a scene texel this far or
+    /// less in front of the ray counts as an occluder.
+    pub sscs_thickness: f32,
+    /// Max SSCS darkening for the directional shadow term (0..1).
+    pub sscs_directional_darkening: f32,
+    /// Max SSCS darkening for punctual (point/spot) shadow terms (0..1).
+    pub sscs_punctual_darkening: f32,
     /// Width / height (square) of the 2D PCF/PCSS shadow atlas in
     /// texels. Must be a power of two.
     pub atlas_size: u32,
@@ -72,6 +82,10 @@ impl Default for ShadowsConfig {
         Self {
             sscs_enabled: false,
             sscs_step_count: 16,
+            sscs_step_world: 0.04,
+            sscs_thickness: 0.05,
+            sscs_directional_darkening: 0.35,
+            sscs_punctual_darkening: 0.9,
             atlas_size: 4096,
             evsm_atlas_size: 2048,
             cascade_resolution: 2048,

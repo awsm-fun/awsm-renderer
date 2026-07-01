@@ -265,6 +265,8 @@ impl MaterialEdgePipelines {
         color_wgsl_format: &str,
         dynamic_registry: Option<&DynamicMaterials>,
         max_shadow_casters: u32,
+        sscs_enabled: bool,
+        sscs_step_count: u32,
     ) -> Result<Option<MaterialEdgePipelineDescriptors>> {
         // No MSAA → no edges → no compile.
         if anti_aliasing.msaa_sample_count.is_none() {
@@ -378,6 +380,8 @@ impl MaterialEdgePipelines {
                     msaa_sample_count: anti_aliasing.msaa_sample_count,
                     mipmaps,
                     max_shadow_casters,
+                    sscs_enabled,
+                    sscs_step_count,
                     shader_id: entry.shader_id,
                     base: entry.base,
                     owns_skybox,
@@ -445,6 +449,8 @@ impl MaterialEdgePipelines {
         color_wgsl_format: &str,
         dynamic_registry: Option<&DynamicMaterials>,
         max_shadow_casters: u32,
+        sscs_enabled: bool,
+        sscs_step_count: u32,
     ) -> Result<()> {
         let Some(descs) = self.build_descriptors(
             gpu,
@@ -457,6 +463,8 @@ impl MaterialEdgePipelines {
             color_wgsl_format,
             dynamic_registry,
             max_shadow_casters,
+            sscs_enabled,
+            sscs_step_count,
         )?
         else {
             return Ok(());

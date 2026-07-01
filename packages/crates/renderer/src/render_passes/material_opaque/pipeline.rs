@@ -175,6 +175,8 @@ impl MaterialOpaquePipelines {
             &bucket_entries,
             false,
             max_shadow_casters,
+            ctx.prep_config.sscs_enabled,
+            ctx.prep_config.sscs_step_count,
         )
     }
 
@@ -195,6 +197,8 @@ impl MaterialOpaquePipelines {
         bucket_entries: &[crate::dynamic_materials::BucketEntry],
         include_first_party: bool,
         max_shadow_casters: u32,
+        sscs_enabled: bool,
+        sscs_step_count: u32,
     ) -> Result<Vec<OpaqueShaderDesc>> {
         // Which (main_bgl, slot) is active? Only emit the descriptors
         // for the live MSAA branch — the other half stays uncompiled
@@ -246,6 +250,8 @@ impl MaterialOpaquePipelines {
                         msaa_sample_count: active_msaa,
                         mipmaps: active_mipmaps,
                         max_shadow_casters,
+                        sscs_enabled,
+                        sscs_step_count,
                         shader_id,
                         base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
                         owns_skybox: shader_id == MaterialShaderId::SKYBOX,

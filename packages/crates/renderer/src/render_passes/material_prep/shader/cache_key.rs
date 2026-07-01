@@ -16,6 +16,13 @@ pub struct ShaderCacheKeyMaterialPrep {
     /// Threaded into the key so the prep pipeline varies with K (the shadow
     /// loop's slot clamp + the packed-layer count derive from it).
     pub max_shadow_casters: u32,
+    /// Global SSCS enable (`ShadowsConfig::sscs_enabled`). Folded into the shadow
+    /// module's compile-time `sscs_available` gate — when `false` the `apply_sscs`
+    /// body is compiled out (zero cost, the default). Re-keys on toggle.
+    pub sscs_enabled: bool,
+    /// Global SSCS ray-march step count (`ShadowsConfig::sscs_step_count`, ≥1),
+    /// baked as the `apply_sscs` loop bound (compile-time constant). Re-keys on change.
+    pub sscs_step_count: u32,
 }
 
 impl From<ShaderCacheKeyMaterialPrep> for ShaderCacheKey {

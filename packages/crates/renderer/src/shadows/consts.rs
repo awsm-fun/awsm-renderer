@@ -27,10 +27,14 @@ pub const SHADOW_DESCRIPTOR_BYTES: usize = 128;
 
 /// Size in bytes of the `ShadowGlobals` uniform block. Layout:
 /// - `atlas_sizes: vec4<f32>` (16 B) — `(pcf.w, pcf.h, evsm.w, evsm.h)`
-/// - `evsm_sscs: vec4<f32>` (16 B)
+/// - `evsm_sscs: vec4<f32>` (16 B) — `(evsm_exponent, evsm_blur_radius, _, _)`;
+///   SSCS step_count + enabled are now compile-time template constants, so
+///   `.z` / `.w` are reserved padding.
 /// - `flags: vec4<u32>` (16 B)
 /// - `cascade_array: vec4<f32>` (16 B) — `(layer.w, layer.h, max_layers, _)`
-pub const SHADOW_GLOBALS_BYTES: usize = 64;
+/// - `sscs_params: vec4<f32>` (16 B) — `(step_world, thickness,
+///   directional_darkening, punctual_darkening)`, live-tunable SSCS scalars.
+pub const SHADOW_GLOBALS_BYTES: usize = 80;
 
 /// Logical size of a single per-view shadow uniform entry: a
 /// `mat4x4` view-projection (64 B) and a `vec4` of bias parameters

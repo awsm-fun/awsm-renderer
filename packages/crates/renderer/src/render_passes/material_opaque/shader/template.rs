@@ -41,11 +41,13 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// Trailing alignment-pad u32 indices for `ClassifyBuckets`,
     /// mirrors the classify-pass template's `pad_words_iter`.
     pub pad_words_iter: Vec<u32>,
-    /// Whether `apply_sscs` should compile its real body (true on the
-    /// opaque pass — it has `depth_tex` bound) or short-circuit to
-    /// `return 1.0` (true on the transparent pass — sampling its own
-    /// depth target would be a feedback loop, so SSCS is disabled).
+    /// Effective SSCS gate = pass-capability (the opaque pass has `depth_tex`
+    /// bound) AND the global `ShadowsConfig::sscs_enabled`. When `false`,
+    /// `apply_sscs` short-circuits to `return 1.0` at compile time (zero cost).
     pub sscs_available: bool,
+    /// SSCS ray-march step count baked as the `apply_sscs` loop bound
+    /// (compile-time constant). Only read when `sscs_available`.
+    pub sscs_step_count: u32,
     /// Whether the ~50 KB shadow SAMPLING block in
     /// `shared_wgsl/shadow/bind_groups.wgsl` is emitted. Set from
     /// `inc.apply_lighting` (the only caller of `sample_shadow_*`), so
@@ -410,7 +412,10 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 msaa_sample_count,
                 debug,
                 shadow_group_index: 3,
-                sscs_available: true,
+                // Opaque is SSCS-capable; effective gate is the global enable.
+                // step_count clamped ≥1 (safe loop bound + f32(steps) divisor).
+                sscs_available: value.sscs_enabled,
+                sscs_step_count: value.sscs_step_count.max(1),
                 // Plan B (stage 5a): drop the inline `sample_shadow_*` block
                 // only in no-MSAA+prep (cs_opaque=PRIMARY reads the buffer).
                 // Under MSAA+prep cs_edge=RECOMPUTE still inline-samples, so it
@@ -700,6 +705,8 @@ mod empty_registry_tests {
             msaa_sample_count: msaa,
             mipmaps: true,
             max_shadow_casters: 4,
+            sscs_enabled: false,
+            sscs_step_count: 16,
             shader_id,
             base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
             owns_skybox: shader_id == MaterialShaderId::SKYBOX,
@@ -1030,6 +1037,8 @@ mod size_regression {
             msaa_sample_count: msaa,
             mipmaps,
             max_shadow_casters: 4,
+            sscs_enabled: false,
+            sscs_step_count: 16,
             shader_id: dyn_id,
             base: crate::dynamic_materials::ShadingBase::Custom,
             owns_skybox: false,

@@ -2107,6 +2107,8 @@ impl AwsmRendererBuilder {
                     color_wgsl,
                     None,
                     prep_config.clamped_k(),
+                    prep_config.sscs_enabled,
+                    prep_config.sscs_step_count,
                 )
                 .await?;
         }
@@ -2586,6 +2588,8 @@ impl AwsmRenderer {
                     msaa_sample_count: None,
                     mipmaps: false,
                     max_shadow_casters: 4,
+                    sscs_enabled: self.prep_config.sscs_enabled,
+                    sscs_step_count: self.prep_config.sscs_step_count,
                     shader_id,
                     base: ShadingBase::Custom,
                     owns_skybox: false,

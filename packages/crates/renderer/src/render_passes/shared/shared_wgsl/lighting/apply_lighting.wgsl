@@ -72,7 +72,7 @@ fn apply_lighting(
                     // would double-cost them for no win.
                     if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
                         let sscs_dir = normalize(-light.direction);
-                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                     }
                 }
                 color += direct * visibility;
@@ -242,7 +242,7 @@ fn apply_lighting_per_froxel(
                         );
                         if light.shadow_index != SHADOW_INDEX_NONE {
                             let sscs_dir = normalize(-light.direction);
-                            visibility = visibility * apply_sscs(world_position, sscs_dir);
+                            visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                         }
                     }
                 }
@@ -259,7 +259,7 @@ fn apply_lighting_per_froxel(
                     );
                     if light.shadow_index != SHADOW_INDEX_NONE {
                         let sscs_dir = normalize(-light.direction);
-                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                     }
                 }
                 color += direct * visibility;
@@ -318,6 +318,9 @@ fn apply_lighting_per_froxel(
                                 shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
                                 view_z_for_shadow,
                             );
+                            if light.shadow_index != SHADOW_INDEX_NONE {
+                                visibility = visibility * apply_sscs(world_position, normalize(to_light), shadow_globals.sscs_params.w);
+                            }
                         }
                         {% endif %}
                         color += direct * visibility;
@@ -342,6 +345,9 @@ fn apply_lighting_per_froxel(
                                 shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
                                 view_z_for_shadow,
                             );
+                            if light.shadow_index != SHADOW_INDEX_NONE {
+                                visibility = visibility * apply_sscs(world_position, normalize(to_light), shadow_globals.sscs_params.w);
+                            }
                         }
                         color += direct * visibility;
                     {% else %}
@@ -448,7 +454,7 @@ fn apply_lighting_per_froxel_with_transmission(
                         );
                         if light.shadow_index != SHADOW_INDEX_NONE {
                             let sscs_dir = normalize(-light.direction);
-                            visibility = visibility * apply_sscs(world_position, sscs_dir);
+                            visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                         }
                     }
                 }
@@ -465,7 +471,7 @@ fn apply_lighting_per_froxel_with_transmission(
                     );
                     if light.shadow_index != SHADOW_INDEX_NONE {
                         let sscs_dir = normalize(-light.direction);
-                        visibility = visibility * apply_sscs(world_position, sscs_dir);
+                        visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                     }
                 }
                 color += direct * visibility;
@@ -512,6 +518,9 @@ fn apply_lighting_per_froxel_with_transmission(
                                 shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
                                 view_z_for_shadow,
                             );
+                            if light.shadow_index != SHADOW_INDEX_NONE {
+                                visibility = visibility * apply_sscs(world_position, normalize(to_light), shadow_globals.sscs_params.w);
+                            }
                         }
                         {% endif %}
                         color += direct * visibility;
@@ -536,6 +545,9 @@ fn apply_lighting_per_froxel_with_transmission(
                                 shadow_normal_toward_light(material_color.normal, light_brdf.light_dir),
                                 view_z_for_shadow,
                             );
+                            if light.shadow_index != SHADOW_INDEX_NONE {
+                                visibility = visibility * apply_sscs(world_position, normalize(to_light), shadow_globals.sscs_params.w);
+                            }
                         }
                         color += direct * visibility;
                     {% else %}

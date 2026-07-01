@@ -33,13 +33,20 @@ struct ShadowDescriptor {
 struct ShadowGlobals {
     // (atlas.w, atlas.h, evsm.w, evsm.h)
     atlas_sizes: vec4<f32>,
-    // (evsm_exponent, evsm_blur_radius, sscs_step_count, sscs_enabled)
+    // (evsm_exponent, evsm_blur_radius, _reserved, _reserved) — SSCS
+    // step_count + enabled moved to compile-time template constants (the
+    // `sscs_step_count` cache-key field folded into `sscs_available`), so
+    // .z / .w are now reserved padding.
     evsm_sscs: vec4<f32>,
     // (debug_cascade_colors, max_point_shadows, pad, pad)
     flags: vec4<u32>,
     // (cascade_array.w, cascade_array.h, max_layers, _) — per-layer
     // dimensions of the directional cascade texture array.
     cascade_array: vec4<f32>,
+    // (sscs_step_world, sscs_thickness, sscs_directional_darkening,
+    // sscs_punctual_darkening) — live-tunable SSCS scalar params (metres,
+    // metres, 0..1, 0..1). Loop-invariant in `apply_sscs`.
+    sscs_params: vec4<f32>,
 };
 
 struct ShadowDescriptorArray {
@@ -221,24 +228,23 @@ fn shadow_blocker_count(n: u32) -> u32 {
 // visibility — multiplied into the main shadow term to darken micro-
 // occluders that the shadow map misses (gaps under feet, hair, etc.).
 //
-// `shadow_globals.evsm_sscs.w` is the master enable; `.z` is the step
-// count. Uses single-sample depth reads even when the geometry pass
-// was rendered with MSAA (we read sample 0).
+// SSCS enable + step count are compile-time template constants now (folded
+// into `sscs_available` + baked as the loop bound; see `PrepPassConfig`).
+// Uses single-sample depth reads even when the geometry pass was rendered
+// with MSAA (we read sample 0).
 //
 // The transparent pass doesn't bind a `depth_tex` (sampling the
 // in-progress depth target on the same pass would be a feedback loop),
 // so its shader template sets `sscs_available = false` and this
 // function short-circuits to "fully lit" before any depth fetch.
-fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>) -> f32 {
+fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>, max_darkening: f32) -> f32 {
 {% if sscs_available %}
-    let enabled = shadow_globals.evsm_sscs.w;
-    if enabled < 0.5 {
-        return 1.0;
-    }
-    let steps = u32(max(shadow_globals.evsm_sscs.z, 1.0));
-    if steps == 0u {
-        return 1.0;
-    }
+    // `sscs_available` folds in the global `ShadowsConfig::sscs_enabled` at
+    // compile time, so a disabled config compiles this entire body out to the
+    // else-arm's `return 1.0` — SSCS off (the default) costs nothing.
+    // The step count is a baked compile-time constant (clamped >= 1 Rust-side),
+    // so the march bound is unroll-friendly with no per-fragment loop counter.
+    let steps: u32 = {{ sscs_step_count }}u;
 
     // SSCS — Screen-Space Contact Shadows. A short ray-march from
     // each receiver toward the light, sampling the geometry-pass
@@ -278,10 +284,20 @@ fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>) -> f32 {
     // pixel-per-world ratio changes as the camera zooms, so a
     // fixed-pixel march samples different world positions every
     // frame even for the same surface).
-    let SSCS_STEP_WORLD: f32 = 0.04;          // 4 cm per step → 64 cm reach @ 16 steps
-    let SSCS_THICKNESS: f32 = 0.05;           // 5 cm slab counts as occluder
+    // Step length + occluder thickness are live-tunable global uniforms
+    // (`ShadowsConfig::sscs_step_world` / `sscs_thickness`, packed into
+    // `ShadowGlobals.sscs_params` by `Shadows::write_gpu`). They're
+    // loop-invariant, so the compiler hoists these reads out of the march —
+    // making them uniforms (vs. baked constants) costs nothing but buys
+    // recompile-free editor tuning. Total reach = step_world · step_count.
+    let SSCS_STEP_WORLD: f32 = shadow_globals.sscs_params.x;  // metres per step
+    let SSCS_THICKNESS: f32 = shadow_globals.sscs_params.y;   // occluder slab (m)
     let SSCS_SELF_OCCLUSION_EPS: f32 = 0.002; // 2 mm self-occlusion guard
-    let MAX_DARKENING: f32 = 0.35;            // SSCS is refinement, not shadow
+    // Darkening cap is a per-call parameter (`max_darkening`) sourced from the
+    // same uniform at the call sites: directional passes the conservative
+    // `sscs_params.z` refinement; punctual contacts (ball-on-floor "Peter Pan"
+    // donut) pass the higher `sscs_params.w` since there the cube map leaves a
+    // fully-lit hole SSCS must actually fill, not just nudge.
 
     let viewport_size = camera_raw.viewport.zw;
     let depth_dim = vec2<i32>(viewport_size);
@@ -355,7 +371,7 @@ fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>) -> f32 {
     }
 
     let occluded = hits / f32(steps);
-    return 1.0 - occluded * MAX_DARKENING;
+    return 1.0 - occluded * max_darkening;
 {% else %}
     return 1.0;
 {% endif %}
@@ -449,7 +465,18 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let range = max(desc.atlas_rect.w, 0.01);
     let slot = i32(desc.cascade_info.y);
 
-    let biased_pos = world_pos + world_normal * desc.bias_params.y;
+    // Incidence-scaled normal offset. The normal-offset bias only fights acne
+    // through its component PERPENDICULAR to the light ray; its along-ray
+    // component is pure peter-panning. On a light-facing receiver (n·d → 1) that
+    // along-ray part is the WHOLE offset AND there's ~no acne to fight, so a
+    // fixed normal offset lifts the receiver clean off a resting caster into a
+    // lit "donut" under the mesh. Scale by the incidence slope from the UNbiased
+    // surface point (`min(tan, 1)`: 0 when facing → no donut, full by 45° so
+    // grazing acne stays covered, never exceeds the authored `normal_bias`).
+    let dir0 = normalize(world_pos - light_pos);
+    let ndd0 = abs(dot(dir0, world_normal));
+    let nbias_slope = min(sqrt(max(1.0 - ndd0 * ndd0, 0.0)) / max(ndd0, 0.05), 1.0);
+    let biased_pos = world_pos + world_normal * desc.bias_params.y * nbias_slope;
     let light_to_surface = biased_pos - light_pos;
     let dist = length(light_to_surface);
     if dist >= range {
@@ -488,8 +515,21 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         / max(view_depth * view_depth, near * near);
     let texel_world = 2.0 * view_depth / cube_face_res;
     let n_dot_dir = abs(dot(dir, world_normal));
-    let world_bias = desc.bias_params.x / max(n_dot_dir, 0.05)
-        + texel_world * desc.cascade_info.x;
+    // Receiver-plane slope factor for the quantization slack. The depth error
+    // from a 1-texel lateral misplacement is `texel_world · tan(incidence)`, so
+    // the slack must VANISH where the receiver faces the light (tan → 0) — that
+    // flat-contact case is exactly where a constant slack lifts the receiver off
+    // its caster into a lit "donut" under the mesh. `tan = √(1−n·d²)/(n·d)`,
+    // clamped to ≤1 so it never EXCEEDS the old constant: grazing keeps full
+    // flat-floor-acne protection, only near-facing receivers relax. (The authored
+    // `depth_bias` term keeps its own separate `1/n·d` slope-scaling.)
+    // Incidence tangent (receiver-plane). `depth_bias` grows with it (as its old
+    // `1/n·d` did) but now VANISHES on a light-facing contact instead of flooring
+    // at the authored value → no donut; the fixed-distance texel slack rides the
+    // same tangent, clamped to ≤1× so grazing flat-floor acne stays covered.
+    let inc_tan = sqrt(max(1.0 - n_dot_dir * n_dot_dir, 0.0)) / max(n_dot_dir, 0.05);
+    let world_bias = desc.bias_params.x * inc_tan
+        + texel_world * desc.cascade_info.x * min(inc_tan, 1.0);
     let ref_depth = clamp(ndc_z, 0.0, 1.0) - world_bias * grad;
     let hardness = desc.bias_params.z;
 
@@ -562,8 +602,12 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             let tap_grad = (range / (range - near)) * near
                 / max(tap_view_depth * tap_view_depth, near * near);
             let tap_texel_world = 2.0 * tap_view_depth / cube_face_res;
-            let tap_world_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05)
-                + tap_texel_world * desc.cascade_info.x;
+            // Receiver-plane slope factor (see the central block) — the slack
+            // vanishes on light-facing taps and never exceeds the old constant.
+            let tap_inc_tan = sqrt(max(1.0 - tap_n_dot_dir * tap_n_dot_dir, 0.0))
+                / max(tap_n_dot_dir, 0.05);
+            let tap_world_bias = desc.bias_params.x * tap_inc_tan
+                + tap_texel_world * desc.cascade_info.x * min(tap_inc_tan, 1.0);
             let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_world_bias * tap_grad;
             sum += textureSampleCompareLevel(
                 shadow_cube_array,
@@ -659,10 +703,17 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             vec2<i32>(cube_dims.xy) - vec2<i32>(1, 1),
         );
         let d = textureLoad(shadow_cube_2d_array, tex_xy, layer, 0);
-        // Bias-free blocker test — we want a clean estimate of how
-        // many genuine occluders sit in front of the receiver. The
-        // 0.0005 epsilon matches the directional PCSS path.
-        if d < tap_ndc_z - 0.0005 {
+        // Skip-self epsilon in WORLD space (~2 receiver texels) converted to
+        // NDC.z through the same `texel_world`/`grad` framework as the receiver
+        // bias above. A hardcoded NDC epsilon is the perspective trap `a9cd12dd`
+        // world-referenced on the cascade path but LEFT here: on the perspective
+        // cube path a constant `0.0005` NDC balloons into a large world depth at
+        // a few-metre light (~3.7 m in the physics template), so the search
+        // rejects the genuine near-contact occluder, `blocker_count` collapses,
+        // and the `blocker_count == 0` early-out below returns 1.0 (fully lit) —
+        // a lit "donut"/hole in the contact shadow directly under a mesh.
+        // World-referencing keeps it a fixed small offset at any light distance.
+        if d < tap_ndc_z - 2.0 * texel_world * grad {
             blocker_sum = blocker_sum + d;
             blocker_count = blocker_count + 1u;
         }
@@ -716,8 +767,12 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         let tap_grad = (range / (range - near)) * near
             / max(tap_view_depth * tap_view_depth, near * near);
         let tap_texel_world = 2.0 * tap_view_depth / cube_face_res;
-        let tap_world_bias = desc.bias_params.x / max(tap_n_dot_dir, 0.05)
-            + tap_texel_world * desc.cascade_info.x;
+        // Receiver-plane slope factor (see the central block) — the slack
+        // vanishes on light-facing taps and never exceeds the old constant.
+        let tap_inc_tan = sqrt(max(1.0 - tap_n_dot_dir * tap_n_dot_dir, 0.0))
+            / max(tap_n_dot_dir, 0.05);
+        let tap_world_bias = desc.bias_params.x * tap_inc_tan
+            + tap_texel_world * desc.cascade_info.x * min(tap_inc_tan, 1.0);
         let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_world_bias * tap_grad;
         sum += textureSampleCompareLevel(
             shadow_cube_array,

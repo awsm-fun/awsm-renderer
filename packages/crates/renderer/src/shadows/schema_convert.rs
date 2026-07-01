@@ -38,6 +38,10 @@ impl From<schema::ShadowsConfig> for ShadowsConfig {
         Self {
             sscs_enabled: s.sscs_enabled,
             sscs_step_count: s.sscs_step_count,
+            sscs_step_world: s.sscs_step_world,
+            sscs_thickness: s.sscs_thickness,
+            sscs_directional_darkening: s.sscs_directional_darkening,
+            sscs_punctual_darkening: s.sscs_punctual_darkening,
             atlas_size: s.atlas_size,
             evsm_atlas_size: s.evsm_atlas_size,
             evsm_exponent: s.evsm_exponent,
