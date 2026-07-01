@@ -368,7 +368,13 @@ async fn dispatch(req: Request) -> Response {
             crate::engine::activity_feed::narrate(&cmd);
             follow_agent_mode(crate::engine::activity_feed::command_mode(&cmd));
             match ctrl.dispatch(cmd).await {
-                Ok(()) => Response::Ok,
+                Ok(()) => {
+                    // External (agent) edit → re-seed the inspector's seed-once
+                    // property widgets from the mutated node.kind. Local UI edits
+                    // don't hit this path, so scrubs are never torn.
+                    ctrl.note_external_mutation();
+                    Response::Ok
+                }
                 Err(e) => Response::Err(format!("{e}")),
             }
         }
@@ -379,7 +385,10 @@ async fn dispatch(req: Request) -> Response {
                     .find_map(crate::engine::activity_feed::command_mode),
             );
             match ctrl.dispatch_batch(cmds).await {
-                Ok(()) => Response::Ok,
+                Ok(()) => {
+                    ctrl.note_external_mutation();
+                    Response::Ok
+                }
                 Err(e) => Response::Err(format!("{e}")),
             }
         }

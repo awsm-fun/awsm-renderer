@@ -47,14 +47,17 @@ fn node_panel() -> Dom {
         .child(html!("div", {
             .style("flex", "1")
             .style("overflow-y", "auto")
-            // Rebuild on selection change OR a *structural* kind change
+            // Rebuild on selection change, a *structural* kind change
             // (`structure_rev` — a discrete PBR↔Unlit / Persp↔Ortho toggle that
-            // changes which rows exist). A continuous numeric scrub keeps the
-            // structure key constant, so the field being dragged is never torn
-            // out mid-drag by its own dispatched edits.
+            // changes which rows exist), OR an external/MCP edit (`external_rev`)
+            // so the seed-once property widgets re-seed from the mutated
+            // node.kind. A continuous *local* numeric scrub bumps neither rev, so
+            // the field being dragged is never torn out mid-drag by its own
+            // dispatched edits.
             .child_signal(map_ref! {
                 let sel = ctrl.selected.signal_cloned(),
-                let _rev = ctrl.structure_rev.signal() =>
+                let _rev = ctrl.structure_rev.signal(),
+                let _ext = ctrl.external_rev.signal() =>
                 Some(content(sel))
             })
         }))
