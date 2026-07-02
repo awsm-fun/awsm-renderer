@@ -5,14 +5,19 @@ const SENSOR_HEIGHT: f32 = 0.024;        // 24mm full-frame sensor height (in me
 
 // Linearize depth from NDC depth buffer value
 fn linearize_depth(depth: f32, camera: Camera) -> f32 {
-    let near = camera.proj[3][2];
-
     // Check for reverse-Z infinite far (proj[2][2] ≈ 0)
     if (abs(camera.proj[2][2]) < 0.0001) {
-        // Reverse-Z with infinite far: depth = near / z, so z = near / depth
+        // Reverse-Z with infinite far: proj[3][2] = near; depth = near / z.
+        let near = camera.proj[3][2];
         return near / max(depth, 0.0001);
     } else {
-        // Standard depth buffer
+        // Standard RH 0..1 projection (glam `perspective_rh`):
+        //   proj[2][2] = far/(near-far),  proj[3][2] = near*far/(near-far)
+        // so near = proj[3][2]/proj[2][2] and far = proj[3][2]/(proj[2][2]+1).
+        // Using proj[3][2] directly as `near` (the old code) yields a NEGATIVE
+        // near → negative linear depth → CoC clamped to 0 → DoF silently never
+        // blurred a single pixel.
+        let near = camera.proj[3][2] / camera.proj[2][2];
         let far = camera.proj[3][2] / (camera.proj[2][2] + 1.0);
         return (near * far) / (far - depth * (far - near));
     }

@@ -312,7 +312,51 @@ fn environment_row() -> Dom {
             }).render())
         .child(Btn::new().label("HDR set\u{2026}").icon("sphere").variant(BtnVariant::Ghost).size(BtnSize::Sm)
             .on_click(open_hdr_modal).render())
+        // Live readout of the ACTIVE environment — reacts to every write path
+        // (ribbon preset, HDR picker, MCP set_environment, project load), so
+        // an agent-set environment is visible in the UI, not just the render.
+        .child(html!("span", {
+            .style("font-size", "11.5px").style("color", "var(--text-3)")
+            .style("white-space", "nowrap")
+            .text_signal(controller().scene.environment.signal_cloned().map(|env| {
+                let sky = match &env.skybox {
+                    SkyboxConfig::BuiltInDefault => "Simple Sky".to_string(),
+                    SkyboxConfig::SkyGradient { .. } => "sky gradient".to_string(),
+                    SkyboxConfig::Ktx { asset_id } => env_asset_label(*asset_id),
+                };
+                let ibl = match &env.ibl {
+                    IblConfig::BuiltInDefault => "Simple Sky".to_string(),
+                    IblConfig::SkyGradient { .. } => "sky gradient".to_string(),
+                    IblConfig::Ktx { prefiltered_asset_id, .. } =>
+                        env_asset_label(*prefiltered_asset_id),
+                };
+                if sky == ibl {
+                    format!("Sky+IBL: {sky}")
+                } else {
+                    format!("Sky: {sky} \u{b7} IBL: {ibl}")
+                }
+            }))
+        }))
     })
+}
+
+/// Display label for a KTX environment asset — its `Filename`/`Url` leaf name,
+/// or a short id when the asset entry is gone.
+fn env_asset_label(id: crate::engine::scene::AssetId) -> String {
+    use crate::engine::scene::AssetSource;
+    let name = controller()
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .entries
+        .get(&id)
+        .and_then(|e| match &e.source {
+            AssetSource::Filename(name) => Some(name.clone()),
+            AssetSource::Url(url) => url.rsplit('/').next().map(|s| s.to_string()),
+            _ => None,
+        });
+    name.unwrap_or_else(|| format!("{:.8}", id.0.to_string()))
 }
 
 /// Dispatch a `SetEnvironment` command — the only path to the renderer skybox/IBL

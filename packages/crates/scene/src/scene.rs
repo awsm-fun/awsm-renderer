@@ -13,6 +13,7 @@ use crate::{
     assets::AssetTable,
     dynamic_material::CustomMaterialRef,
     environment::EnvironmentConfig,
+    post_process::PostProcessConfig,
     shadows::ShadowsConfig,
     tree::EditorNode,
 };
@@ -30,6 +31,10 @@ pub struct Scene {
     /// Renderer-wide shadow settings, pushed into the renderer at load.
     #[serde(default)]
     pub shadows: ShadowsConfig,
+    /// Renderer-wide post-processing (tonemapping / bloom / DoF / exposure),
+    /// pushed into the renderer at load.
+    #[serde(default)]
+    pub post_process: PostProcessConfig,
     /// The by-id asset table (meshes / materials / textures / file refs).
     #[serde(default)]
     pub assets: AssetTable,

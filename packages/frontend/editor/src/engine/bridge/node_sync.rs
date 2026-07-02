@@ -339,11 +339,20 @@ async fn add_node(
         }));
         entry.loaders.lock().unwrap().push(loader);
     }
-    // Visibility observer — hide/show this node's meshes.
+    // Visibility observer — hide/show this node's meshes; for a Light node the
+    // eye actually turns the light OFF/ON (remove/re-insert the renderer
+    // light — there is no per-light hide flag), so hiding a light darkens the
+    // scene instead of silently doing nothing.
     {
         let loader = AsyncLoader::new();
         loader.load(clone!(entry => async move {
+            // Skip the initial (current-value) emission for the LIGHT arm:
+            // materialization itself honors `visible` (`apply_light` early-
+            // returns when hidden), and reacting to the initial fire here
+            // could double-insert against the in-flight kind observer.
+            let first = std::cell::Cell::new(true);
             entry.node.visible.signal().for_each(move |visible| {
+                let initial = first.replace(false);
                 clone!(entry => async move {
                     let meshes: Vec<_> = entry.model_meshes.lock().unwrap().clone();
                     with_renderer_mut(move |r| {
@@ -351,6 +360,27 @@ async fn add_node(
                             let _ = r.set_mesh_hidden(mk, !visible);
                         }
                     }).await;
+                    if initial {
+                        return;
+                    }
+                    if let NodeKind::Light(cfg) = entry.node.kind.get_cloned() {
+                        if visible {
+                            // Re-insert only if the hide arm removed it (an
+                            // already-lit light keeps its key untouched).
+                            if entry.light_key.lock().unwrap().is_none() {
+                                apply_light(entry.clone(), cfg).await;
+                                // The LightKey churned — re-lower so animation
+                                // channels targeting this light rebind.
+                                super::animation_sync::schedule_relower();
+                            }
+                        } else {
+                            let taken = entry.light_key.lock().unwrap().take();
+                            if let Some(lk) = taken {
+                                with_renderer_mut(move |r| r.remove_light(lk)).await;
+                                super::animation_sync::schedule_relower();
+                            }
+                        }
+                    }
                 })
             }).await;
         }));
@@ -1794,11 +1824,21 @@ async fn materialize_particle(
 }
 
 async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
+    let node_id = entry.node_id;
+    // A hidden light node contributes NO light: honor `visible` at materialize
+    // time (mirrors meshes applying hidden-at-creation), so the outliner eye
+    // survives re-materialization and a project saved with a hidden light
+    // loads dark. Still registered in `light_node_ids` so the viewport icon
+    // keeps marking the node. The visibility observer re-materializes on
+    // show (see the Light arm there).
+    if !entry.node.visible.get() {
+        bridge().light_node_ids.lock().unwrap().insert(node_id);
+        return;
+    }
     let trs = entry.node.transform.get();
     let pos = Vec3::from_array(trs.translation);
     let dir = (Quat::from_array(trs.rotation) * Vec3::NEG_Z).normalize_or_zero();
     let light = light_from_config(&cfg, pos, dir);
-    let node_id = entry.node_id;
 
     let shadow_params = light_shadow_params_from_config(cfg.shadow());
     let casts = shadow_params.cast;

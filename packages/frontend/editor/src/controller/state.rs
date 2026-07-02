@@ -1094,6 +1094,12 @@ impl EditorController {
                 self.scene
                     .environment
                     .set(awsm_renderer_editor_protocol::EnvironmentConfig::default());
+                self.scene
+                    .shadows
+                    .set(awsm_renderer_editor_protocol::ShadowsConfig::default());
+                self.scene
+                    .post_process
+                    .set(awsm_renderer_editor_protocol::PostProcessConfig::default());
                 self.scene.bump_revision();
                 self.dirty.set_neq(false);
                 self.env_saved_baseline
@@ -2813,6 +2819,37 @@ impl EditorController {
                     thickness: Some(prev.sscs_thickness),
                     directional_darkening: Some(prev.sscs_directional_darkening),
                     punctual_darkening: Some(prev.sscs_punctual_darkening),
+                }))
+            }
+            EditorCommand::SetPostProcess {
+                tonemapping,
+                bloom,
+                dof,
+                exposure,
+            } => {
+                let prev = self.scene.post_process.get_cloned();
+                let mut next = prev.clone();
+                if let Some(v) = tonemapping {
+                    next.tonemapping = v;
+                }
+                if let Some(v) = bloom {
+                    next.bloom = v;
+                }
+                if let Some(v) = dof {
+                    next.dof = v;
+                }
+                if let Some(v) = exposure {
+                    next.exposure = v;
+                }
+                self.scene.post_process.set(next);
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                // Inverse restores every field to its prior value.
+                Ok(Some(EditorCommand::SetPostProcess {
+                    tonemapping: Some(prev.tonemapping),
+                    bloom: Some(prev.bloom),
+                    dof: Some(prev.dof),
+                    exposure: Some(prev.exposure),
                 }))
             }
             EditorCommand::SnapCameraToAxis { axis } => {

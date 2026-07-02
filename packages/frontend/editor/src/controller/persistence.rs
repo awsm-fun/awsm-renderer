@@ -145,6 +145,7 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         name: ctrl.project_name.get_cloned(),
         environment: ctrl.scene.environment.get_cloned(),
         shadows: ctrl.scene.shadows.get_cloned(),
+        post_process: ctrl.scene.post_process.get_cloned(),
         assets: ctrl.scene.assets.lock().unwrap().clone(),
         custom_materials,
         editor_materials,
@@ -773,6 +774,7 @@ pub fn animation_files(ctrl: &EditorController) -> Vec<(String, String)> {
 pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     ctrl.scene.environment.set(project.environment);
     ctrl.scene.shadows.set(project.shadows);
+    ctrl.scene.post_process.set(project.post_process);
     *ctrl.scene.assets.lock().unwrap() = project.assets;
     if !project.name.is_empty() {
         ctrl.project_name.set(project.name);

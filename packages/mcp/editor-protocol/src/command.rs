@@ -17,7 +17,7 @@ use awsm_renderer_scene::particle::{
 };
 use awsm_renderer_scene::{
     AssetId, EnvironmentConfig, IblConfig, MaterialDef, MaterialShading, NodeId, NodeKind,
-    SkyboxConfig, Trs,
+    SkyboxConfig, ToneMappingConfig, Trs,
 };
 
 use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
@@ -450,6 +450,19 @@ pub enum EditorCommand {
         thickness: Option<f32>,
         directional_darkening: Option<f32>,
         punctual_darkening: Option<f32>,
+    },
+
+    /// Patch the global post-processing settings on `scene.post_process`
+    /// (persisted into the project + player bundle; the `settings_sync` bridge
+    /// pushes them into the renderer live). Every field is optional — only the
+    /// `Some` ones change. `tonemapping` / `bloom` / `dof` recompile the
+    /// effects/display pipelines; `exposure` is a live uniform. Inverse:
+    /// restore the prior values.
+    SetPostProcess {
+        tonemapping: Option<ToneMappingConfig>,
+        bloom: Option<bool>,
+        dof: Option<bool>,
+        exposure: Option<f32>,
     },
 
     /// Snap the viewport camera to a world axis (the nav-cube directions).
@@ -1308,6 +1321,7 @@ impl EditorCommand {
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::PatchEnvironment { .. } => "Set environment",
             EditorCommand::SetShadowsSscs { .. } => "Set SSCS",
+            EditorCommand::SetPostProcess { .. } => "Set post-processing",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",

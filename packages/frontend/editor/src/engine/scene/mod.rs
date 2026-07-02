@@ -19,6 +19,8 @@ pub mod types;
 pub use assets::{AssetId, AssetSource, AssetTable};
 pub use awsm_renderer_editor_protocol::ShadowsConfig;
 #[allow(unused_imports)]
+pub use awsm_renderer_editor_protocol::{PostProcessConfig, ToneMappingConfig};
+#[allow(unused_imports)]
 pub use model::{Scene, SceneStats};
 pub use node::{Node, NodeId};
 #[allow(unused_imports)]
