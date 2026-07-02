@@ -1599,14 +1599,42 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Bake the whole project to a player runtime bundle DIRECTORY: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory: one geometry-only `assets/<id>.glb` per non-primitive mesh (bare primitives stay procedural in scene.toml), custom-material wgsl folders, and referenced textures. Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips). A read; returns the file set `{name, files:[{path, base64 bytes}]}` (result kind `player_bundle`). Skinned/morph meshes' glb re-export from source is a follow-on (static geometry for now)."
+        description = "Bake the whole project to a player runtime bundle DIRECTORY on disk: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory: one geometry-only `assets/<id>.glb` per non-primitive mesh (bare primitives stay procedural in scene.toml), custom-material wgsl folders, and referenced textures. Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips). A read; the files ride the `/bundle/<id>/<path>` side-channel and land in a temp directory — NEVER inlined in this result. Returns `{name, bundle_dir, files:[{path, byte_len}], total_bytes, url_base}`: read/copy the bundle from `bundle_dir`, or fetch files over HTTP at `<server>/<url_base>/<path>`."
     )]
     async fn export_player_bundle(
         &self,
         Parameters(p): Parameters<ExportBundleParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.query(EditorQuery::ExportPlayerBundle { name: p.name })
-            .await
+        match self.req(Request::ExportPlayerBundle).await? {
+            Response::Bundle(handle) => {
+                let dir = crate::http::bundle_dir(&handle.id);
+                // Confirm the uploads actually landed before reporting success.
+                if !dir.exists() {
+                    return Err(McpError::internal_error(
+                        format!("bundle {} not found at {}", handle.id, dir.display()),
+                        None,
+                    ));
+                }
+                let total: usize = handle.files.iter().map(|f| f.byte_len).sum();
+                let files: Vec<serde_json::Value> = handle
+                    .files
+                    .iter()
+                    .map(|f| serde_json::json!({ "path": f.path, "byte_len": f.byte_len }))
+                    .collect();
+                Ok(text(
+                    serde_json::json!({
+                        "name": p.name,
+                        "bundle_dir": dir.display().to_string(),
+                        "files": files,
+                        "total_bytes": total,
+                        "url_base": format!("/bundle/{}", handle.id),
+                    })
+                    .to_string(),
+                ))
+            }
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
     }
 
     #[tool(

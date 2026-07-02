@@ -19,7 +19,7 @@ use awsm_renderer::AwsmRenderer;
 use awsm_renderer_core::command::color::Color;
 use awsm_renderer_core::cubemap::images::CubemapSkyGradient;
 use awsm_renderer_core::cubemap::CubemapImage;
-use awsm_renderer_scene::{AssetId, EnvironmentConfig, IblConfig, SkyboxConfig, ASSETS_DIR};
+use awsm_renderer_scene::{env_ktx_path, AssetId, EnvironmentConfig, IblConfig, SkyboxConfig};
 
 use crate::assets::SceneAssets;
 
@@ -92,9 +92,10 @@ async fn gradient_ibl(gradient: CubemapSkyGradient) -> Result<(CubemapImage, Cub
     Ok((p, i))
 }
 
-/// Read + parse a KTX2 cubemap from the bundle (`assets/<id>.ktx2`).
+/// Read + parse a KTX2 cubemap from the bundle, at the shared [`env_ktx_path`]
+/// convention (the same path the editor's Save/export writes).
 async fn load_ktx(asset_id: AssetId, assets: &impl SceneAssets) -> Result<CubemapImage> {
-    let path = format!("{ASSETS_DIR}/{}.ktx2", asset_id.0);
+    let path = env_ktx_path(asset_id);
     let bytes = assets
         .fetch(&path)
         .await

@@ -53,6 +53,12 @@ pub fn ktx_bytes(id: AssetId) -> Option<Vec<u8>> {
     stashed_ktx(id)
 }
 
+/// Whether KTX bytes for `id` are stashed — presence only, no byte clone (the
+/// save census asks this per env id; a skybox cubemap can be 100+ MB).
+pub fn has_ktx(id: AssetId) -> bool {
+    KTX_BYTES.with(|m| m.borrow().contains_key(&id))
+}
+
 /// Apply the current `scene.environment` (skybox + IBL) ONCE, awaited — call at
 /// boot AFTER the renderer is ready but BEFORE the render loop starts.
 ///

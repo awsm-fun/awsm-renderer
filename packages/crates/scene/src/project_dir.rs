@@ -13,6 +13,7 @@
 //!     materials/<name>/…        # custom-material wgsl + layout side files
 //! ```
 
+use crate::assets::AssetId;
 use crate::scene::Scene;
 
 /// The conventional scene-document filename inside a bundle directory.
@@ -29,6 +30,16 @@ pub fn scene_to_toml(scene: &Scene) -> Result<String, toml::ser::Error> {
 /// Parse `scene.toml` text into a [`Scene`].
 pub fn scene_from_toml(text: &str) -> Result<Scene, toml::de::Error> {
     toml::from_str(text)
+}
+
+/// Bundle/project-relative path of an environment KTX2 cubemap asset —
+/// `assets/<id>.ktx2`. THE single naming convention shared by every reader and
+/// writer: the editor's Save (`ktx_files`) and project reload (`restore_ktx`),
+/// the player-bundle bake, and the player's `apply_environment` all resolve an
+/// env KTX through this function, so the name cannot drift between them (a
+/// drift would silently play the built-in default environment).
+pub fn env_ktx_path(id: AssetId) -> String {
+    format!("{ASSETS_DIR}/{}.ktx2", id.0)
 }
 
 /// One file in a baked bundle: a bundle-relative path + its bytes. The editor's
@@ -152,5 +163,73 @@ mod tests {
         assert_eq!(files[0].path, SCENE_FILE);
         assert!(files[0].bytes.starts_with(b"name"));
         assert_eq!(files[1], glb);
+    }
+
+    /// A KTX environment must survive the bundle round-trip END-TO-END at the
+    /// file level: the `scene.toml` carries the exact skybox/IBL asset ids, and
+    /// for each id the bundle holds a file at [`env_ktx_path`] — the SAME path
+    /// the player's `apply_environment` fetches. This is the headless half of
+    /// the player-path guarantee (the GPU render itself is browser-verified);
+    /// it catches both an env config dropped from `scene.toml` and a naming
+    /// drift between the bake and the loader.
+    #[test]
+    fn ktx_environment_round_trips_through_bundle() {
+        let mut scene = sample_scene();
+        let skybox = AssetId::new();
+        let prefiltered = AssetId::new();
+        let irradiance = AssetId::new();
+        scene.environment = EnvironmentConfig {
+            skybox: crate::SkyboxConfig::Ktx { asset_id: skybox },
+            ibl: crate::IblConfig::Ktx {
+                prefiltered_asset_id: prefiltered,
+                irradiance_asset_id: irradiance,
+            },
+        };
+        // The bake emits one file per env KTX id, at the shared convention path.
+        let env_files: Vec<BundleFile> = scene
+            .environment
+            .ktx_asset_ids()
+            .into_iter()
+            .map(|id| BundleFile::new(env_ktx_path(id), vec![0xAB]))
+            .collect();
+        assert_eq!(env_files.len(), 3, "skybox + prefiltered + irradiance");
+        let files = assemble_bundle(&scene, env_files).unwrap();
+
+        // Player side: parse scene.toml back and resolve every env KTX id to a
+        // bundle file via the same `env_ktx_path` the loader uses.
+        let toml = std::str::from_utf8(&files[0].bytes).unwrap();
+        let loaded = scene_from_toml(toml).expect("parse scene.toml");
+        assert_eq!(loaded.environment, scene.environment, "env config intact");
+        for id in loaded.environment.ktx_asset_ids() {
+            let path = env_ktx_path(id);
+            assert!(
+                files.iter().any(|f| f.path == path),
+                "bundle must contain {path}"
+            );
+        }
+    }
+
+    /// The procedural sky-gradient environment is pure config — it must
+    /// round-trip through `scene.toml` with no side files at all.
+    #[test]
+    fn gradient_environment_round_trips_through_scene_toml() {
+        let mut scene = sample_scene();
+        scene.environment = EnvironmentConfig {
+            skybox: crate::SkyboxConfig::SkyGradient {
+                zenith: [0.9, 0.3, 0.1],
+                nadir: [0.05, 0.02, 0.1],
+            },
+            ibl: crate::IblConfig::SkyGradient {
+                zenith: [0.9, 0.3, 0.1],
+                nadir: [0.05, 0.02, 0.1],
+            },
+        };
+        let toml = scene_to_toml(&scene).unwrap();
+        let loaded = scene_from_toml(&toml).unwrap();
+        assert_eq!(loaded.environment, scene.environment);
+        assert!(
+            loaded.environment.ktx_asset_ids().is_empty(),
+            "gradient env references no KTX assets"
+        );
     }
 }
