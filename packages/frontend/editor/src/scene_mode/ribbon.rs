@@ -359,17 +359,18 @@ fn env_slot_picker(slot: Slot) -> Dom {
 
 fn env_slot_button(slot: Slot, current: EnvSlot) -> Dom {
     let label = format!("{}: {}", slot.title(), env_slot_label(&current));
-    DropButton::new().label(label).icon("env").size(BtnSize::Sm)
+    DropButton::new()
+        .label(label)
+        .icon("env")
+        .size(BtnSize::Sm)
         .items(move |close: Close| {
-            let mut rows = vec![
-                MenuItem::new("Default sky")
-                    .checked(matches!(current, EnvSlot::BuiltInDefault))
-                    .on_click(clone!(close => move || {
-                        patch_env_slot(slot, EnvSlot::BuiltInDefault);
-                        (close.borrow_mut())();
-                    }))
-                    .render(),
-            ];
+            let mut rows = vec![MenuItem::new("Default sky")
+                .checked(matches!(current, EnvSlot::BuiltInDefault))
+                .on_click(clone!(close => move || {
+                    patch_env_slot(slot, EnvSlot::BuiltInDefault);
+                    (close.borrow_mut())();
+                }))
+                .render()];
             // Preserve (and mark) an agent-authored sky gradient if that's what
             // this slot currently holds — the UI can't author one, but it must
             // not hide it or misreport the slot as "Default sky".
@@ -408,7 +409,8 @@ fn env_slot_button(slot: Slot, current: EnvSlot) -> Dom {
                     .render(),
             );
             rows
-        }).render()
+        })
+        .render()
 }
 
 /// Short display label for a slot's current value.
@@ -456,7 +458,7 @@ fn collect_env_assets() -> Vec<(AssetId, String)> {
             _ => None,
         })
         .collect();
-    out.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    out.sort_by_key(|(_, name)| name.to_lowercase());
     out
 }
 
