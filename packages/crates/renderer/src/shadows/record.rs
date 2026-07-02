@@ -137,6 +137,31 @@ pub struct LightShadowView {
     pub shadow_view_slot: u32,
 }
 
+/// Persistent frustum-culled caster list for one shadow view. Keyed like
+/// [`ShadowViewThrottle`] (per light, parallel to
+/// `LightShadowRecord::views`) so the per-frame `records` rebuild doesn't
+/// lose it. A static light over static geometry never re-runs its
+/// frustum query: `Shadows::refresh_caster_caches` marks the entry
+/// `dirty` only when the spatial index reports a mutation intersecting
+/// `frustum` (or the log wrapped), and recomputes only dirty /
+/// view-changed entries for views that render this frame.
+#[derive(Clone, Debug)]
+pub struct ViewCasterCache {
+    /// The view-projection the cached list was culled against. A
+    /// mismatch with the current view forces a recompute (light moved,
+    /// cascade refit).
+    pub view_projection: Mat4,
+    /// The frustum of `view_projection` — kept so dirty-region tests
+    /// don't re-derive the planes every frame.
+    pub frustum: crate::frustum::Frustum,
+    /// Shadow-caster mesh keys surviving the frustum + caster filter.
+    /// Reused across recomputes (cleared, not reallocated).
+    pub casters: Vec<crate::meshes::MeshKey>,
+    /// A spatial mutation touched this view's frustum since the list
+    /// was built — recompute before the next render of this view.
+    pub dirty: bool,
+}
+
 /// Persistent throttle state per shadow view. Keyed by `(LightKey,
 /// view_index)` on `Shadows` so the per-frame `records` rebuild
 /// doesn't lose it.

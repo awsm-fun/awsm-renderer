@@ -90,7 +90,7 @@ ordered-float = {workspace = true}
 indexmap = { workspace = true}
 # MikkTSpace tangent generation (shared crate) for the raw-mesh upload path.
 awsm-renderer-tangents = { workspace = true }
-rstar = "0.12"
+parry3d = "0.28"
 # Required unconditionally by the `workers/` module (Phase 4.3a) — job
 # Input/Output must be serializable. The legacy optional `serde`
 # feature still works as a no-op marker (kept so existing consumers

@@ -59,6 +59,7 @@ use crate::{
         light_shadow::{EvsmCutoff, LightShadowParams},
         record::{
             EvsmDispatchEntry, LightShadowRecord, LightShadowView, ShadowAlloc, ShadowViewThrottle,
+            ViewCasterCache,
         },
     },
 };
@@ -192,6 +193,18 @@ pub struct Shadows {
     /// rebuild. Indexed by light key; each entry is a `Vec` parallel
     /// to `LightShadowRecord::views`.
     throttle: SecondaryMap<LightKey, Vec<ShadowViewThrottle>>,
+    /// Per-view caster cache, persisted across the `records` rebuild
+    /// (same keying as `throttle`: per light, parallel to
+    /// `LightShadowRecord::views`). A static light over static geometry
+    /// keeps its frustum-culled caster list across frames; entries are
+    /// invalidated by the spatial index's dirty-region log (anything
+    /// moved / added / removed / re-flagged inside the view's frustum)
+    /// or a view-projection change. Refreshed at the end of
+    /// `write_gpu`; consumed by `render_pass::record`.
+    caster_cache: SecondaryMap<LightKey, Vec<ViewCasterCache>>,
+    /// Position in the spatial index's dirty-region log at the last
+    /// caster-cache refresh.
+    spatial_dirty_cursor: crate::scene_spatial::SpatialDirtyCursor,
     /// Number of descriptors currently active in `descriptors_uniform`.
     active_descriptor_count: u32,
     /// Number of view slots used in `shadow_view_buffer` this frame.
@@ -1025,6 +1038,8 @@ impl Shadows {
             cube_slot_for_light: SecondaryMap::new(),
             records: SecondaryMap::new(),
             throttle: SecondaryMap::new(),
+            caster_cache: SecondaryMap::new(),
+            spatial_dirty_cursor: Default::default(),
             active_descriptor_count: 0,
             active_view_count: 0,
             shadow_view_bind_group_layout_key,
@@ -2617,6 +2632,11 @@ impl Shadows {
             );
         }
 
+        // Views + should_render are final — reconcile the per-view caster
+        // caches so `render_pass::record` reads cached lists instead of
+        // re-running a frustum query per view per frame.
+        self.refresh_caster_caches(scene_spatial);
+
         Ok(())
     }
 
@@ -2632,6 +2652,109 @@ impl Shadows {
     /// pass loop to know which views to draw.
     pub fn records(&self) -> impl Iterator<Item = (LightKey, &LightShadowRecord)> + '_ {
         self.records.iter()
+    }
+
+    /// Reconcile the persistent per-view caster caches against this
+    /// frame's records + the spatial index's dirty-region log. Called at
+    /// the end of `write_gpu` (views and `should_render` are final by
+    /// then, and the spatial index is post-`maintain`).
+    ///
+    /// Three phases:
+    /// 1. **Invalidate** — mark every cached entry whose frustum a
+    ///    spatial mutation touched since the last refresh (log wrap ⇒
+    ///    everything).
+    /// 2. **Prune** — drop cache rows for lights that no longer have a
+    ///    record (the entry vecs self-heal on length mismatch below).
+    /// 3. **Recompute** — for each view rendering THIS frame whose entry
+    ///    is missing, dirty, or built for a different view-projection,
+    ///    re-run the frustum query into the entry's reused `Vec`.
+    ///    Throttled views keep their (possibly dirty) entries and
+    ///    recompute on the frame they actually render.
+    fn refresh_caster_caches(&mut self, spatial: &crate::scene_spatial::SceneSpatial) {
+        // 1. Invalidate from the dirty log.
+        match spatial.dirty_since(&self.spatial_dirty_cursor) {
+            None => {
+                // Log wrapped — events were missed; everything is suspect.
+                for entries in self.caster_cache.values_mut() {
+                    for entry in entries.iter_mut() {
+                        entry.dirty = true;
+                    }
+                }
+            }
+            Some(regions) => {
+                if !regions.is_empty() {
+                    for entries in self.caster_cache.values_mut() {
+                        for entry in entries.iter_mut() {
+                            if !entry.dirty
+                                && regions
+                                    .iter()
+                                    .any(|aabb| entry.frustum.intersects_aabb(aabb))
+                            {
+                                entry.dirty = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.spatial_dirty_cursor = spatial.dirty_cursor();
+
+        // 2. Prune rows for lights with no record this frame.
+        let records = &self.records;
+        self.caster_cache
+            .retain(|light_key, _| records.contains_key(light_key));
+
+        // 3. Recompute stale entries for views that render this frame.
+        for (light_key, record) in self.records.iter() {
+            let entries = self
+                .caster_cache
+                .entry(light_key)
+                .expect("light key is live (taken from records)")
+                .or_default();
+            // Parallel-vec discipline (same as `throttle`): view count can
+            // change frame to frame (cascade count edits, importance tier
+            // flips). Fresh slots start dirty with an identity vp so the
+            // recompute below always fires for them.
+            entries.resize_with(record.views.len(), || ViewCasterCache {
+                view_projection: Mat4::IDENTITY,
+                frustum: crate::frustum::Frustum::from_view_projection(Mat4::IDENTITY),
+                casters: Vec::new(),
+                dirty: true,
+            });
+            for (view, entry) in record.views.iter().zip(entries.iter_mut()) {
+                if !view.should_render {
+                    continue;
+                }
+                if !entry.dirty && entry.view_projection == view.view_projection {
+                    continue;
+                }
+                let frustum = crate::frustum::Frustum::from_view_projection(view.view_projection);
+                entry.casters.clear();
+                entry.casters.extend(
+                    spatial
+                        .query_frustum(&frustum, crate::scene_spatial::NodeFilter::shadow_caster())
+                        .map(|node| node.mesh_key),
+                );
+                entry.view_projection = view.view_projection;
+                entry.frustum = frustum;
+                entry.dirty = false;
+            }
+        }
+    }
+
+    /// The cached frustum-culled caster list for a view, when valid for
+    /// `view_projection`. `None` ⇒ the caller should cull directly (only
+    /// reachable if a view renders without `write_gpu` having refreshed
+    /// it this frame).
+    pub fn cached_view_casters(
+        &self,
+        light: LightKey,
+        view_index: usize,
+        view_projection: &Mat4,
+    ) -> Option<&[crate::meshes::MeshKey]> {
+        let entry = self.caster_cache.get(light)?.get(view_index)?;
+        (!entry.dirty && entry.view_projection == *view_projection)
+            .then_some(entry.casters.as_slice())
     }
 
     /// Returns the per-light authored shadow params, if registered.

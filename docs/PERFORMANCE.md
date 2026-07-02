@@ -1081,7 +1081,7 @@ the cap, + resolve the opaque storage-binding budget), and (2) a
 GPU-resident light grid/BVH to make Stage A test only *nearby* lights
 (the only way to beat the `tiles × lights` linear scan). Both should be
 **light-count-gated tiers**, not always-on, and need profiling on real
-high-light scenes first. The CPU rstar tree can't be reused here — it's a
+high-light scenes first. The CPU scene BVH can't be reused here — it's a
 CPU structure and the froxel cull is a massively-parallel GPU pass.
 
 ---
@@ -1473,7 +1473,7 @@ move the needle:
 | `meshes/mesh.rs::push_geometry_pass_commands` | Per-mesh draw recording. | Vertex/index buffer rebinds. Two non-instanced variants picked by `features.indirect_first_instance_enabled()`: storage-array meta (shared bind group, requires `indirect-first-instance`) or uniform-with-dynamic-offset (portable, one `setBindGroup` per draw). Instanced meshes always use uniform-with-dynamic-offset. |
 | `shadows/state.rs::write_gpu` | Reconciles shadow descriptors + throttle state. | Per-light writes scale with shadow caster count × cascade/cube count. |
 | `light_buckets/buckets.rs::rebuild` | Per-mesh × per-light AABB overlap. Runs every frame. | O(meshes × lights) cost — but BVH-driven for normal meshes, and oversized meshes skip the per-light walk. |
-| `scene_spatial/*` | The BVH (rstar). Per-pass frustum culling descends through this instead of walking meshes. | Don't add full mesh-walk fallbacks — they re-introduce the cost the BVH eliminates. |
+| `scene_spatial/*` | The BVH (parry3d's dynamic `Bvh`). Per-pass frustum culling descends through this instead of walking meshes; per-frame movers update leaves in place (fattened margins + refit). | Don't add full mesh-walk fallbacks — they re-introduce the cost the BVH eliminates. |
 | `transforms.rs::update_inner_recursively` | World-transform propagation. | Adding work here scales with hierarchy depth. |
 
 ---
@@ -1866,7 +1866,7 @@ renderer:
 
 **Re-attempt as:** light-count-**gated tiers** (kick in above a
 threshold, leave normal scenes untouched), and **profile on a real
-high-light scene first** — the CPU rstar tree does *not* transfer (it's
+high-light scene first** — the CPU scene BVH does *not* transfer (it's
 CPU; the froxel cull is GPU-parallel). See §5h for the current design and
 why the per-mesh BVH path already covers typical scenes.
 
@@ -1927,8 +1927,9 @@ emitter of unshadowed point lights) before attempting this.
 - PCSS: Fernando, "Percentage-Closer Soft Shadows."
 
 **Spatial structures:**
-- [rstar — RTree](https://docs.rs/rstar/latest/rstar/) is the
-  BVH backend for `scene_spatial`.
+- [parry3d — Bvh](https://docs.rs/parry3d/latest/parry3d/partitioning/struct.Bvh.html) is the
+  BVH backend for `scene_spatial` — the same dynamic BVH rapier uses for
+  its broadphase (incremental leaf updates, refit, incremental rebalance).
 
 ---
 

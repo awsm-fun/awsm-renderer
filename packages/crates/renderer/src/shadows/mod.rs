@@ -46,7 +46,9 @@ pub use consts::{
     SHADOW_DESCRIPTOR_BYTES, SHADOW_GLOBALS_BYTES, SHADOW_INDEX_NONE, SHADOW_VIEW_BYTES,
     SHADOW_VIEW_STRIDE,
 };
-pub use record::{EvsmDispatchEntry, LightShadowRecord, LightShadowView, ShadowViewThrottle};
+pub use record::{
+    EvsmDispatchEntry, LightShadowRecord, LightShadowView, ShadowViewThrottle, ViewCasterCache,
+};
 pub use state::{Shadows, ShadowsDescriptors};
 
 /// Re-exported for the masked-shadow pipeline pool

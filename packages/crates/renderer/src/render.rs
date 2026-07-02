@@ -179,6 +179,15 @@ impl AwsmRenderer {
     /// `reconcile_material_variants` → `ensure_scene_pipelines` compile that used
     /// to run here every frame now lives ONLY in `commit_load`.
     fn render_all(&mut self, hooks: Option<&RenderHooks>) -> Result<()> {
+        // Propagate any spatial-index mutations that landed since
+        // `update_all`'s maintenance pass (out-of-band syncs: material
+        // re-bind → geometry re-resolve, load commits, editor flag
+        // flips) so the frustum/envelope queries below (collect_renderables,
+        // shadow caster caches, light buckets) run on the accelerated
+        // tree path instead of the stale-tree linear fallback. No-op
+        // when nothing changed.
+        self.scene_spatial.maintain();
+
         // Fat-line pipelines are render pipelines, not compute, so they
         // sit outside the scheduler's `poll_pipeline_scheduler` pump
         // above. Drive their lazy compile here on the same per-frame
