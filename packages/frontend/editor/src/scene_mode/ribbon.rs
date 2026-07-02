@@ -6,7 +6,7 @@
 use awsm_renderer_editor_protocol::{LightKind, PrimitiveShape};
 
 use crate::controller::InsertSpec;
-use crate::engine::scene::{EnvironmentConfig, IblConfig, SkyboxConfig};
+use crate::engine::scene::{AssetId, AssetSource, EnvSlot};
 use crate::prelude::*;
 
 /// Dispatch an insert of `spec` at the scene root.
@@ -295,55 +295,134 @@ fn object_row() -> Dom {
     })
 }
 
+/// The three independent environment slots. Each renders as its own picker
+/// showing the current assignment (see [`env_slot_picker`]).
+#[derive(Clone, Copy, PartialEq)]
+enum Slot {
+    Skybox,
+    Specular,
+    Irradiance,
+}
+
+impl Slot {
+    fn title(self) -> &'static str {
+        match self {
+            Slot::Skybox => "Skybox",
+            Slot::Specular => "IBL Specular",
+            Slot::Irradiance => "IBL Irradiance",
+        }
+    }
+    /// This slot's current value out of an environment config.
+    fn get(self, env: &crate::engine::scene::EnvironmentConfig) -> EnvSlot {
+        match self {
+            Slot::Skybox => env.skybox,
+            Slot::Specular => env.specular,
+            Slot::Irradiance => env.irradiance,
+        }
+    }
+    /// A `PatchEnvironment` that changes ONLY this slot (the others stay `None` →
+    /// preserved), so assigning one slot never resets the other two.
+    fn patch(self, value: EnvSlot) -> EditorCommand {
+        let (skybox, specular, irradiance) = match self {
+            Slot::Skybox => (Some(value), None, None),
+            Slot::Specular => (None, Some(value), None),
+            Slot::Irradiance => (None, None, Some(value)),
+        };
+        EditorCommand::PatchEnvironment {
+            skybox,
+            specular,
+            irradiance,
+        }
+    }
+}
+
 fn environment_row() -> Dom {
     html!("div", {
         .style("display", "flex").style("align-items", "center").style("gap", "8px")
-        .child(DropButton::new().label("Environment\u{2026}").icon("env").size(BtnSize::Sm)
-            .items(move |close: Close| {
-                vec![
-                    MenuItem::new("Simple Sky")
-                        .on_click(clone!(close => move || {
-                            // Default = BuiltInDefault skybox + IBL (the procedural sky gradient).
-                            set_environment(EnvironmentConfig::default());
-                            (close.borrow_mut())();
-                        }))
-                        .render(),
-                ]
-            }).render())
-        .child(Btn::new().label("HDR set\u{2026}").icon("sphere").variant(BtnVariant::Ghost).size(BtnSize::Sm)
-            .on_click(open_hdr_modal).render())
-        // Live readout of the ACTIVE environment — reacts to every write path
-        // (ribbon preset, HDR picker, MCP set_environment, project load), so
-        // an agent-set environment is visible in the UI, not just the render.
-        .child(html!("span", {
-            .style("font-size", "11.5px").style("color", "var(--text-3)")
-            .style("white-space", "nowrap")
-            .text_signal(controller().scene.environment.signal_cloned().map(|env| {
-                let sky = match &env.skybox {
-                    SkyboxConfig::BuiltInDefault => "Simple Sky".to_string(),
-                    SkyboxConfig::SkyGradient { .. } => "sky gradient".to_string(),
-                    SkyboxConfig::Ktx { asset_id } => env_asset_label(*asset_id),
-                };
-                let ibl = match &env.ibl {
-                    IblConfig::BuiltInDefault => "Simple Sky".to_string(),
-                    IblConfig::SkyGradient { .. } => "sky gradient".to_string(),
-                    IblConfig::Ktx { prefiltered_asset_id, .. } =>
-                        env_asset_label(*prefiltered_asset_id),
-                };
-                if sky == ibl {
-                    format!("Sky+IBL: {sky}")
-                } else {
-                    format!("Sky: {sky} \u{b7} IBL: {ibl}")
-                }
-            }))
+        .child(env_slot_picker(Slot::Skybox))
+        .child(env_slot_picker(Slot::Specular))
+        .child(env_slot_picker(Slot::Irradiance))
+    })
+}
+
+/// A per-slot picker. The trigger label reflects the CURRENT assignment (reacts
+/// to every write path — this picker, MCP `set_environment`, project load), so
+/// what's set is always visible. The menu offers the built-in default sky, every
+/// imported env cubemap asset, and an import action.
+fn env_slot_picker(slot: Slot) -> Dom {
+    html!("span", {
+        .child_signal(controller().scene.environment.signal_cloned().map(move |env| {
+            Some(env_slot_button(slot, slot.get(&env)))
         }))
     })
 }
 
+fn env_slot_button(slot: Slot, current: EnvSlot) -> Dom {
+    let label = format!("{}: {}", slot.title(), env_slot_label(&current));
+    DropButton::new().label(label).icon("env").size(BtnSize::Sm)
+        .items(move |close: Close| {
+            let mut rows = vec![
+                MenuItem::new("Default sky")
+                    .checked(matches!(current, EnvSlot::BuiltInDefault))
+                    .on_click(clone!(close => move || {
+                        patch_env_slot(slot, EnvSlot::BuiltInDefault);
+                        (close.borrow_mut())();
+                    }))
+                    .render(),
+            ];
+            // Preserve (and mark) an agent-authored sky gradient if that's what
+            // this slot currently holds — the UI can't author one, but it must
+            // not hide it or misreport the slot as "Default sky".
+            if matches!(current, EnvSlot::SkyGradient { .. }) {
+                rows.push(
+                    MenuItem::new("Sky gradient (set via MCP)")
+                        .checked(true)
+                        .disabled(true)
+                        .render(),
+                );
+            }
+            let assets = collect_env_assets();
+            if !assets.is_empty() {
+                rows.push(menu_sep());
+                for (id, name) in assets {
+                    let is_current = matches!(current, EnvSlot::Ktx { asset_id } if asset_id == id);
+                    rows.push(
+                        MenuItem::new(name)
+                            .checked(is_current)
+                            .on_click(clone!(close => move || {
+                                patch_env_slot(slot, EnvSlot::Ktx { asset_id: id });
+                                (close.borrow_mut())();
+                            }))
+                            .render(),
+                    );
+                }
+            }
+            rows.push(menu_sep());
+            rows.push(
+                MenuItem::new("Import .ktx2\u{2026}")
+                    .icon("sphere")
+                    .on_click(clone!(close => move || {
+                        import_env_ktx(slot);
+                        (close.borrow_mut())();
+                    }))
+                    .render(),
+            );
+            rows
+        }).render()
+}
+
+/// Short display label for a slot's current value.
+fn env_slot_label(slot: &EnvSlot) -> String {
+    match slot {
+        EnvSlot::BuiltInDefault => "Default sky".to_string(),
+        EnvSlot::SkyGradient { .. } => "sky gradient".to_string(),
+        EnvSlot::Ktx { asset_id } => env_asset_label(*asset_id),
+    }
+}
+
 /// Display label for a KTX environment asset — its `Filename`/`Url` leaf name,
 /// or a short id when the asset entry is gone.
-fn env_asset_label(id: crate::engine::scene::AssetId) -> String {
-    use crate::engine::scene::AssetSource;
+fn env_asset_label(id: AssetId) -> String {
     let name = controller()
         .scene
         .assets
@@ -359,15 +438,34 @@ fn env_asset_label(id: crate::engine::scene::AssetId) -> String {
     name.unwrap_or_else(|| format!("{:.8}", id.0.to_string()))
 }
 
-/// Dispatch a `SetEnvironment` command — the only path to the renderer skybox/IBL
-/// (so the environment is serialized into the scene, undoable, and MCP-drivable).
-fn set_environment(env: EnvironmentConfig) {
+/// Every env-cubemap asset (`.ktx2`/`.ktx`, from an import here or an MCP URL
+/// import) that a slot can reference, sorted by name. Shares `is_env_cubemap`
+/// with the Content Browser so both agree on what's an environment map.
+fn collect_env_assets() -> Vec<(AssetId, String)> {
+    use crate::scene_mode::content_browser::is_env_cubemap;
+    let ctrl = controller();
+    let assets = ctrl.scene.assets.lock().unwrap();
+    let mut out: Vec<(AssetId, String)> = assets
+        .entries
+        .iter()
+        .filter_map(|(id, e)| match &e.source {
+            AssetSource::Filename(name) if is_env_cubemap(name) => Some((*id, name.clone())),
+            AssetSource::Url(url) if is_env_cubemap(url) => {
+                Some((*id, url.rsplit('/').next().unwrap_or(url).to_string()))
+            }
+            _ => None,
+        })
+        .collect();
+    out.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    out
+}
+
+/// Assign `value` to `slot` via a partial `PatchEnvironment` (undoable,
+/// serialized, MCP-consistent).
+fn patch_env_slot(slot: Slot, value: EnvSlot) {
     spawn_local(async move {
-        if let Err(err) = controller()
-            .dispatch(EditorCommand::SetEnvironment { env })
-            .await
-        {
-            tracing::error!("ribbon: SetEnvironment failed: {err}");
+        if let Err(err) = controller().dispatch(slot.patch(value)).await {
+            tracing::error!("ribbon: PatchEnvironment failed: {err}");
         }
     });
 }
@@ -379,38 +477,35 @@ async fn read_file_bytes(file: &web_sys::File) -> Result<Vec<u8>, String> {
     Ok(js_sys::Uint8Array::new(&buf).to_vec())
 }
 
-/// Photoreal HDR environment: three KTX2 file pickers (skybox + prefiltered env
-/// + irradiance) → stashed as assets → a `SetEnvironment` command.
-fn open_hdr_modal() {
-    Modal::open(|| {
-        let skybox: Mutable<Option<web_sys::File>> = Mutable::new(None);
-        let env: Mutable<Option<web_sys::File>> = Mutable::new(None);
-        let irr: Mutable<Option<web_sys::File>> = Mutable::new(None);
-        ModalCard::new("Load HDR environment")
-            .width(560.0)
+/// Import a single `.ktx2` cubemap and assign it to `slot`. One file picker,
+/// then a partial patch — the other two slots are untouched.
+fn import_env_ktx(slot: Slot) {
+    Modal::open(move || {
+        let file: Mutable<Option<web_sys::File>> = Mutable::new(None);
+        ModalCard::new(format!("Import .ktx2 \u{2192} {}", slot.title()))
+            .width(480.0)
             .child(html!("div", {
                 .style("display", "flex").style("flex-direction", "column").style("gap", "10px")
                 .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
-                    .text("Pick the three KTX2 cubemaps for this environment.") }))
-                .child(hdr_file_row("Skybox (.ktx2)", skybox.clone()))
-                .child(hdr_file_row("Prefiltered env (.ktx2)", env.clone()))
-                .child(hdr_file_row("Irradiance (.ktx2)", irr.clone()))
+                    .text("Pick a .ktx2 cubemap to assign to this slot. It joins the project assets and can be reused by the other slots.") }))
+                .child(env_file_row(".ktx2 cubemap", file.clone()))
             }))
             .footer(html!("div", {
                 .style("display", "flex").style("gap", "8px")
                 .child(Btn::new().label("Cancel").variant(BtnVariant::Ghost).on_click(Modal::close).render())
-                .child(Btn::new().label("Load").icon("sphere").variant(BtnVariant::Primary)
-                    .on_click(clone!(skybox, env, irr => move || {
-                        let (Some(sky), Some(envf), Some(irrf)) =
-                            (skybox.get_cloned(), env.get_cloned(), irr.get_cloned())
-                        else {
-                            Toast::error("Pick all three .ktx2 files.");
+                .child(Btn::new().label("Import").icon("sphere").variant(BtnVariant::Primary)
+                    .on_click(clone!(file => move || {
+                        let Some(f) = file.get_cloned() else {
+                            Toast::error("Pick a .ktx2 file.");
                             return;
                         };
                         spawn_local(async move {
-                            match load_hdr(sky, envf, irrf).await {
-                                Ok(cfg) => { set_environment(cfg); Modal::close(); }
-                                Err(e) => Toast::error(format!("HDR load failed: {e}")),
+                            match import_env_file(f).await {
+                                Ok(id) => {
+                                    patch_env_slot(slot, EnvSlot::Ktx { asset_id: id });
+                                    Modal::close();
+                                }
+                                Err(e) => Toast::error(format!("Import failed: {e}")),
                             }
                         });
                     })).render())
@@ -419,10 +514,10 @@ fn open_hdr_modal() {
     });
 }
 
-fn hdr_file_row(label: &str, slot: Mutable<Option<web_sys::File>>) -> Dom {
+fn env_file_row(label: &str, slot: Mutable<Option<web_sys::File>>) -> Dom {
     html!("div", {
         .style("display", "flex").style("align-items", "center").style("gap", "8px")
-        .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("min-width", "150px").text(label) }))
+        .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("min-width", "120px").text(label) }))
         .child(html!("input" => web_sys::HtmlInputElement, {
             .attr("type", "file").attr("accept", ".ktx2,.ktx")
             .with_node!(el => {
@@ -434,39 +529,24 @@ fn hdr_file_row(label: &str, slot: Mutable<Option<web_sys::File>>) -> Dom {
     })
 }
 
-/// Read the three picked KTX files, stash their bytes + register asset entries,
-/// and build the `EnvironmentConfig` that references them by id.
-async fn load_hdr(
-    skybox: web_sys::File,
-    env: web_sys::File,
-    irr: web_sys::File,
-) -> Result<EnvironmentConfig, String> {
+/// Read a picked KTX file, register it as a project asset + stash its bytes, and
+/// return the new asset id (to reference from a slot). Mirrors the MCP
+/// `ImportKtxEnvFromUrl` path (a `Filename` asset entry + `env_sync` byte stash).
+async fn import_env_file(file: web_sys::File) -> Result<AssetId, String> {
     use crate::engine::bridge::env_sync::stash_ktx;
-    use crate::engine::scene::{AssetId, AssetSource};
     use awsm_renderer_editor_protocol::AssetEntry;
 
-    async fn stash(file: web_sys::File) -> Result<AssetId, String> {
-        let bytes = read_file_bytes(&file).await?;
-        let id = AssetId::new();
-        controller()
-            .scene
-            .assets
-            .lock()
-            .unwrap()
-            .entries
-            .insert(id, AssetEntry::new(AssetSource::Filename(file.name())));
-        stash_ktx(id, bytes);
-        Ok(id)
-    }
-
-    let sky_id = stash(skybox).await?;
-    let env_id = stash(env).await?;
-    let irr_id = stash(irr).await?;
-    Ok(EnvironmentConfig {
-        skybox: SkyboxConfig::Ktx { asset_id: sky_id },
-        ibl: IblConfig::Ktx {
-            prefiltered_asset_id: env_id,
-            irradiance_asset_id: irr_id,
-        },
-    })
+    let bytes = read_file_bytes(&file).await?;
+    let id = AssetId::new();
+    controller()
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .entries
+        .insert(id, AssetEntry::new(AssetSource::Filename(file.name())));
+    stash_ktx(id, bytes);
+    // Surface the new asset in the Content Browser / other pickers immediately.
+    controller().scene.bump_revision();
+    Ok(id)
 }

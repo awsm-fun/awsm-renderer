@@ -49,9 +49,9 @@ pub use node_spec::{kind_tag, InsertSpec, NodeQuery, NodeSpec};
 pub use project::{EditorProject, StoredMaterial, StoredSlot};
 pub use query::{
     AnimationSnapshot, ClipSnapshot, CompileDiagnostics, CompileError, EditorQuery, EditorSnapshot,
-    MapResult, MaterialSnapshot, PixelsResult, ProjectSnapshot, QueryResult, ReadbackTarget,
-    SettledResult, StatsResult, TextureSnapshot, TimeseriesFrame, TimeseriesResult, TrackSnapshot,
-    VertexPredicate,
+    EnvSlotSnapshot, EnvironmentSnapshot, MapResult, MaterialSnapshot, PixelsResult, ProjectSnapshot,
+    QueryResult, ReadbackTarget, SettledResult, StatsResult, TextureSnapshot, TimeseriesFrame,
+    TimeseriesResult, TrackSnapshot, VertexPredicate,
 };
 pub use transport::{
     BundleFileMeta, BundleHandle, EditorEvent, GlbHandle, PngHandle, Request, Response,

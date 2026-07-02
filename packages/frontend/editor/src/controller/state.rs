@@ -2767,15 +2767,21 @@ impl EditorController {
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
             }
-            EditorCommand::PatchEnvironment { skybox, ibl } => {
+            EditorCommand::PatchEnvironment {
+                skybox,
+                specular,
+                irradiance,
+            } => {
                 // Partial update: `None` slots PRESERVE the current config, so
-                // setting just the IBL doesn't silently reset the skybox (and
-                // vice versa) — the split skybox/IBL workflow survives
-                // sequential MCP calls. Inverse: the prior FULL environment.
+                // setting just one slot (skybox / specular / irradiance) doesn't
+                // silently reset the others — mixed workflows (default-sky
+                // irradiance + custom specular, neutral skybox + keyed IBL, …)
+                // survive sequential MCP calls. Inverse: the prior FULL env.
                 let prev = self.scene.environment.get_cloned();
                 let next = crate::engine::scene::EnvironmentConfig {
                     skybox: skybox.unwrap_or(prev.skybox),
-                    ibl: ibl.unwrap_or(prev.ibl),
+                    specular: specular.unwrap_or(prev.specular),
+                    irradiance: irradiance.unwrap_or(prev.irradiance),
                 };
                 self.scene.environment.set(next);
                 self.scene.bump_revision();
@@ -4486,6 +4492,7 @@ impl EditorController {
                 env_unsaved: self.scene.environment.get_cloned()
                     != self.env_saved_baseline.get_cloned(),
                 missing_assets: self.missing_assets.get_cloned(),
+                environment: self.environment_snapshot(),
                 coordinate_system: "right-handed, Y-up, -Z forward".to_string(),
                 units: self.settings.units.get_cloned(),
             },
@@ -4553,6 +4560,44 @@ impl EditorController {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Per-slot read of the current environment for the snapshot — so an MCP
+    /// driver can see WHAT is set (built-in default vs. a KTX asset vs. a sky
+    /// gradient), mirroring the editor's three per-slot pickers.
+    fn environment_snapshot(&self) -> query::EnvironmentSnapshot {
+        use crate::engine::scene::{AssetSource, EnvSlot};
+        let env = self.scene.environment.get_cloned();
+        let assets = self.scene.assets.lock().unwrap();
+        let slot = |s: &EnvSlot| -> query::EnvSlotSnapshot {
+            match s {
+                EnvSlot::BuiltInDefault => query::EnvSlotSnapshot::default(),
+                EnvSlot::SkyGradient { zenith, nadir } => query::EnvSlotSnapshot {
+                    kind: "sky_gradient".to_string(),
+                    asset_id: None,
+                    label: None,
+                    gradient: Some([*zenith, *nadir]),
+                },
+                EnvSlot::Ktx { asset_id } => {
+                    let label = assets.entries.get(asset_id).and_then(|e| match &e.source {
+                        AssetSource::Filename(name) => Some(name.clone()),
+                        AssetSource::Url(url) => url.rsplit('/').next().map(str::to_string),
+                        _ => None,
+                    });
+                    query::EnvSlotSnapshot {
+                        kind: "ktx".to_string(),
+                        asset_id: Some(asset_id.to_string()),
+                        label,
+                        gradient: None,
+                    }
+                }
+            }
+        };
+        query::EnvironmentSnapshot {
+            skybox: slot(&env.skybox),
+            specular: slot(&env.specular),
+            irradiance: slot(&env.irradiance),
+        }
     }
 
     /// The Animation-mode projection of `snapshot()`.

@@ -14,11 +14,18 @@ Serving locally: any static server with permissive CORS works, e.g.
 
 ## 1. Environment (skybox + IBL)
 
+The environment has **three independent slots**, each set separately:
+- **skybox** — the background cubemap the camera sees.
+- **specular** — the prefiltered / roughness-mipped IBL map that drives reflections
+  ("prefiltered env" and "specular" are the same thing).
+- **irradiance** — the diffuse-convolved IBL map that drives ambient light.
+
+Omit a slot to leave it unchanged; pass `"builtin"` to reset it to the default sky.
 Two ways, pick by need:
 
 ### a) Two-color sky gradient — no hosting, instant
-`set_environment { zenith:[r,g,b], nadir:[r,g,b] }` (linear RGB). Drives BOTH the
-skybox and the IBL from the same gradient. Great for dusk / overcast / studio.
+`set_environment { zenith:[r,g,b], nadir:[r,g,b] }` (linear RGB). Sets ALL THREE
+slots from the same gradient. Great for dusk / overcast / studio.
 
 ### b) KTX2 cubemaps by URL — full HDRI / studio lighting / chrome
 A `.ktx2` cubemap is **baked offline** from an `.hdr`/`.exr` and served. You author
@@ -35,16 +42,20 @@ no runtime equirect projection). Pipeline (full flags in `docs/DEVELOPMENT.md`):
 3. `ktx create --cubemap --format B10G11R11_UFLOAT_PACK32 …` → `skybox.ktx2`,
    `env.ktx2` (prefiltered, `--levels 6`, all mip faces), `irradiance.ktx2`.
 4. Serve them, then:
-   `set_environment { skybox:"<url>/skybox.ktx2", ibl_prefiltered:"<url>/env.ktx2", ibl_irradiance:"<url>/irradiance.ktx2" }`
+   `set_environment { skybox:"<url>/skybox.ktx2", specular:"<url>/env.ktx2", irradiance:"<url>/irradiance.ktx2" }`
 
 Notes:
-- **KTX IBL needs BOTH** `ibl_prefiltered` AND `ibl_irradiance`.
-- The **skybox can differ from the IBL** — a clean grey skybox + a studio IBL gives
-  a chrome ball its reflections while the punctual (point/dir) lights own the primary
-  specular hotspot. (`zenith`/`nadir` forces skybox==IBL; to get a gradient *look* with
-  a separate KTX IBL, bake the gradient into a skybox `.ktx2` too.)
-- Each of `skybox` / `ibl_prefiltered` / `ibl_irradiance` also accepts `"builtin"`
-  (or omit) for the default, or an existing KTX texture-asset UUID.
+- **Slots are fully independent.** Set only the ones you want; the rest stay put.
+  E.g. keep the default-sky irradiance and override *only* `specular`, or set a
+  clean `skybox:"builtin"` while pointing `specular`/`irradiance` at a studio KTX.
+- The **skybox can differ from the IBL** — a clean grey skybox + a studio specular/
+  irradiance gives a chrome ball its reflections while the punctual (point/dir)
+  lights own the primary specular hotspot. (`zenith`/`nadir` sets all three slots
+  to the same gradient; to get a gradient *look* with a separate KTX IBL, bake the
+  gradient into a skybox `.ktx2` too.)
+- Each of `skybox` / `specular` / `irradiance` also accepts `"builtin"` (or omit)
+  for the default sky, an existing KTX cubemap asset UUID, or a `https://` `.ktx2` URL.
+- Read what's set via `get_snapshot` → `project.environment` (per-slot kind + asset).
 
 ---
 

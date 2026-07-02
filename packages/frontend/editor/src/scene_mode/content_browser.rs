@@ -515,9 +515,11 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
     cards
 }
 
-/// Environment cubemap files (.ktx2/.ktx, from the ribbon HDR picker or an MCP
-/// `set_environment` URL import) — carded as ENV, never as MODEL.
-fn is_env_cubemap(name: &str) -> bool {
+/// Environment cubemap files (.ktx2/.ktx, from the ribbon env pickers or an MCP
+/// `set_environment` URL import) — carded as ENV, never as MODEL. Shared with the
+/// ribbon's per-slot pickers (`collect_env_assets`) so both agree on what counts
+/// as an assignable environment map.
+pub(crate) fn is_env_cubemap(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".ktx2") || lower.ends_with(".ktx")
 }

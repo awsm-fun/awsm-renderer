@@ -19,21 +19,31 @@ use awsm_renderer::AwsmRenderer;
 use awsm_renderer_core::command::color::Color;
 use awsm_renderer_core::cubemap::images::CubemapSkyGradient;
 use awsm_renderer_core::cubemap::CubemapImage;
-use awsm_renderer_scene::{env_ktx_path, AssetId, EnvironmentConfig, IblConfig, SkyboxConfig};
+use awsm_renderer_scene::{env_ktx_path, AssetId, EnvSlot, EnvironmentConfig};
 
 use crate::assets::SceneAssets;
 
+/// The procedural-gradient cubemap resolution for each slot role. Skybox and the
+/// prefiltered specular map are full-res; irradiance is a tiny diffuse-convolved
+/// map. Shared with `env_sync` (the editor counterpart) so both paths generate
+/// the built-in default identically.
+const SKYBOX_SIZE: u32 = 1024;
+const SPECULAR_SIZE: u32 = 1024;
+const IRRADIANCE_SIZE: u32 = 32;
+
 /// Apply a scene's `EnvironmentConfig` (skybox + IBL) to the renderer. KTX
-/// cubemaps are read from the bundle by the `assets/<id>.ktx2` convention.
+/// cubemaps are read from the bundle by the `assets/<id>.ktx2` convention. All
+/// three slots (skybox / specular / irradiance) resolve independently.
 pub async fn apply_environment(
     renderer: &mut AwsmRenderer,
     env: &EnvironmentConfig,
     assets: &impl SceneAssets,
 ) -> Result<()> {
-    let skybox = skybox_image(&env.skybox, assets).await?;
+    let skybox = slot_image(&env.skybox, SKYBOX_SIZE, assets).await?;
     set_skybox(renderer, skybox).await?;
 
-    let (prefiltered, irradiance) = ibl_images(&env.ibl, assets).await?;
+    let prefiltered = slot_image(&env.specular, SPECULAR_SIZE, assets).await?;
+    let irradiance = slot_image(&env.irradiance, IRRADIANCE_SIZE, assets).await?;
     set_ibl(renderer, prefiltered, irradiance).await?;
     Ok(())
 }
@@ -44,52 +54,26 @@ fn sky_gradient(zenith: [f32; 3], nadir: [f32; 3]) -> CubemapSkyGradient {
     CubemapSkyGradient::new(c(zenith), c(nadir))
 }
 
-async fn skybox_image(cfg: &SkyboxConfig, assets: &impl SceneAssets) -> Result<CubemapImage> {
-    match cfg {
-        SkyboxConfig::BuiltInDefault => {
-            CubemapImage::new_sky_gradient(CubemapSkyGradient::default(), 1024, 1024)
-                .await
-                .map_err(|e| anyhow!("sky gradient: {e}"))
-        }
-        SkyboxConfig::SkyGradient { zenith, nadir } => {
-            CubemapImage::new_sky_gradient(sky_gradient(*zenith, *nadir), 1024, 1024)
-                .await
-                .map_err(|e| anyhow!("sky gradient: {e}"))
-        }
-        SkyboxConfig::Ktx { asset_id } => load_ktx(*asset_id, assets).await,
-    }
-}
-
-async fn ibl_images(
-    cfg: &IblConfig,
+/// Resolve one environment slot to a cubemap at the role's `size` (KTX slots
+/// ignore `size` — the file carries its own resolution/mips).
+async fn slot_image(
+    slot: &EnvSlot,
+    size: u32,
     assets: &impl SceneAssets,
-) -> Result<(CubemapImage, CubemapImage)> {
-    match cfg {
-        IblConfig::BuiltInDefault => gradient_ibl(CubemapSkyGradient::default()).await,
-        IblConfig::SkyGradient { zenith, nadir } => {
-            gradient_ibl(sky_gradient(*zenith, *nadir)).await
+) -> Result<CubemapImage> {
+    match slot {
+        EnvSlot::BuiltInDefault => {
+            CubemapImage::new_sky_gradient(CubemapSkyGradient::default(), size, size)
+                .await
+                .map_err(|e| anyhow!("sky gradient: {e}"))
         }
-        IblConfig::Ktx {
-            prefiltered_asset_id,
-            irradiance_asset_id,
-        } => {
-            let p = load_ktx(*prefiltered_asset_id, assets).await?;
-            let i = load_ktx(*irradiance_asset_id, assets).await?;
-            Ok((p, i))
+        EnvSlot::SkyGradient { zenith, nadir } => {
+            CubemapImage::new_sky_gradient(sky_gradient(*zenith, *nadir), size, size)
+                .await
+                .map_err(|e| anyhow!("sky gradient: {e}"))
         }
+        EnvSlot::Ktx { asset_id } => load_ktx(*asset_id, assets).await,
     }
-}
-
-/// Prefiltered (1024²) + irradiance (32²) env from a sky gradient — matches
-/// `env_sync::gradient_ibl`.
-async fn gradient_ibl(gradient: CubemapSkyGradient) -> Result<(CubemapImage, CubemapImage)> {
-    let p = CubemapImage::new_sky_gradient(gradient.clone(), 1024, 1024)
-        .await
-        .map_err(|e| anyhow!("prefiltered: {e}"))?;
-    let i = CubemapImage::new_sky_gradient(gradient, 32, 32)
-        .await
-        .map_err(|e| anyhow!("irradiance: {e}"))?;
-    Ok((p, i))
 }
 
 /// Read + parse a KTX2 cubemap from the bundle, at the shared [`env_ktx_path`]

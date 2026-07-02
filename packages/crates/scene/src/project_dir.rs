@@ -179,10 +179,12 @@ mod tests {
         let prefiltered = AssetId::new();
         let irradiance = AssetId::new();
         scene.environment = EnvironmentConfig {
-            skybox: crate::SkyboxConfig::Ktx { asset_id: skybox },
-            ibl: crate::IblConfig::Ktx {
-                prefiltered_asset_id: prefiltered,
-                irradiance_asset_id: irradiance,
+            skybox: crate::EnvSlot::Ktx { asset_id: skybox },
+            specular: crate::EnvSlot::Ktx {
+                asset_id: prefiltered,
+            },
+            irradiance: crate::EnvSlot::Ktx {
+                asset_id: irradiance,
             },
         };
         // The bake emits one file per env KTX id, at the shared convention path.
@@ -214,15 +216,14 @@ mod tests {
     #[test]
     fn gradient_environment_round_trips_through_scene_toml() {
         let mut scene = sample_scene();
+        let grad = crate::EnvSlot::SkyGradient {
+            zenith: [0.9, 0.3, 0.1],
+            nadir: [0.05, 0.02, 0.1],
+        };
         scene.environment = EnvironmentConfig {
-            skybox: crate::SkyboxConfig::SkyGradient {
-                zenith: [0.9, 0.3, 0.1],
-                nadir: [0.05, 0.02, 0.1],
-            },
-            ibl: crate::IblConfig::SkyGradient {
-                zenith: [0.9, 0.3, 0.1],
-                nadir: [0.05, 0.02, 0.1],
-            },
+            skybox: grad,
+            specular: grad,
+            irradiance: grad,
         };
         let toml = scene_to_toml(&scene).unwrap();
         let loaded = scene_from_toml(&toml).unwrap();
