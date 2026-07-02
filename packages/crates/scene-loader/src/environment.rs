@@ -56,11 +56,7 @@ fn sky_gradient(zenith: [f32; 3], nadir: [f32; 3]) -> CubemapSkyGradient {
 
 /// Resolve one environment slot to a cubemap at the role's `size` (KTX slots
 /// ignore `size` — the file carries its own resolution/mips).
-async fn slot_image(
-    slot: &EnvSlot,
-    size: u32,
-    assets: &impl SceneAssets,
-) -> Result<CubemapImage> {
+async fn slot_image(slot: &EnvSlot, size: u32, assets: &impl SceneAssets) -> Result<CubemapImage> {
     match slot {
         EnvSlot::BuiltInDefault => {
             CubemapImage::new_sky_gradient(CubemapSkyGradient::default(), size, size)
