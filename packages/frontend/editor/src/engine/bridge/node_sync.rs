@@ -300,7 +300,18 @@ async fn add_node(
             entry.node.kind.signal_cloned().for_each(clone!(entry => move |kind| {
                 let skip = first.replace(false);
                 clone!(entry => async move {
-                    if !skip { apply_kind(entry, kind, false).await; }
+                    if !skip {
+                        // Hold the `WaitRenderSettled` barrier open for the whole
+                        // re-materialization. A kind edit (patch_kind /
+                        // assign_material / update_builtin_material's same-value
+                        // resync) lands here ASYNC after its command returns; the
+                        // signal wakes on the microtask queue, so this guard is
+                        // visible before a settled-wait's first (timer) poll —
+                        // closing the "settled in 32 ms while the variant was
+                        // still recompiling" race for MCP screenshot-after-edit.
+                        let _guard = crate::controller::CompileGuard::new();
+                        apply_kind(entry, kind, false).await;
+                    }
                 })
             })).await;
         }));
@@ -696,15 +707,28 @@ fn merge_slot_texture(
 pub(crate) fn builtin_merged(
     inst: &awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
 ) -> Option<awsm_renderer_editor_protocol::MaterialDef> {
+    let ctrl = crate::controller::controller();
+    let mat =
+        crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.asset)?;
+    let variant = mat.builtin.get_cloned()?;
+    Some(merged_builtin_def(inst, &variant))
+}
+
+/// The pure variant ∪ inline merge behind [`builtin_merged`] (which only adds
+/// the library lookup). Pure so the merge rule is unit-tested directly — the
+/// regression guard for "inline extensions stored but never rendered", and the
+/// parity anchor for export: `flatten_builtin_materials` writes this exact def
+/// into each bundle node's `inline`, so editor rendering == player rendering
+/// holds iff this merge is a fixed point over its own output (tested).
+pub(crate) fn merged_builtin_def(
+    inst: &awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
+    variant: &awsm_renderer_editor_protocol::MaterialDef,
+) -> awsm_renderer_editor_protocol::MaterialDef {
     use awsm_renderer_editor_protocol::material::{
         MaterialAlphaMode, MaterialShading, PbrExtensions,
     };
     use awsm_renderer_editor_protocol::TextureRef;
     let inline = &inst.inline;
-    let ctrl = crate::controller::controller();
-    let mat =
-        crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.asset)?;
-    let variant = mat.builtin.get_cloned()?;
 
     // ── The override rule ────────────────────────────────────────────────────
     // Most VARIANT fields (shading model, alpha *mode*, double-sided cull,
@@ -763,7 +787,7 @@ pub(crate) fn builtin_merged(
         (v, _) => v,
     };
 
-    Some(awsm_renderer_editor_protocol::MaterialDef {
+    awsm_renderer_editor_protocol::MaterialDef {
         base_color: inline.base_color,
         metallic: inline.metallic,
         roughness: inline.roughness,
@@ -799,8 +823,8 @@ pub(crate) fn builtin_merged(
         shading,
         extensions,
         // variant-only: double_sided, vertex_colors_enabled, label.
-        ..variant
-    })
+        ..variant.clone()
+    }
 }
 
 /// Resolve the renderer material key for a geometry node from its optional
@@ -1842,6 +1866,9 @@ pub(crate) fn trs_to_transform(trs: &Trs) -> Transform {
 /// observer wouldn't re-fire on its own; this re-runs `apply_kind` (which re-reads
 /// `mesh_cache::get_raw`) for the affected nodes.
 pub(crate) async fn rematerialize_mesh_nodes() {
+    // Hold the `WaitRenderSettled` barrier open across the sweep (see the kind
+    // observer's guard) — a mesh-edit re-sync compiles too.
+    let _guard = crate::controller::CompileGuard::new();
     let entries: Vec<Arc<RendererNode>> =
         bridge().nodes.lock().unwrap().values().cloned().collect();
     for entry in entries {
@@ -1889,5 +1916,93 @@ mod slot_texture_tests {
         let def = TextureRef::new(AssetId::new());
         assert_eq!(merge_slot_texture(None, None, Some(def)), Some(def));
         assert_eq!(merge_slot_texture(None, None, None), None);
+    }
+}
+
+#[cfg(test)]
+mod builtin_merge_tests {
+    use super::merged_builtin_def;
+    use awsm_renderer_editor_protocol::dynamic_material::MaterialInstance;
+    use awsm_renderer_editor_protocol::material::{ClearcoatExt, MaterialDef};
+    use awsm_renderer_editor_protocol::{AssetId, TextureRef};
+
+    fn inst(inline: MaterialDef) -> MaterialInstance {
+        MaterialInstance {
+            asset: AssetId::new(),
+            inline,
+            ..Default::default()
+        }
+    }
+
+    fn with_clearcoat(factor: f32, roughness_factor: f32) -> MaterialDef {
+        MaterialDef {
+            extensions: awsm_renderer_editor_protocol::material::PbrExtensions {
+                clearcoat: Some(ClearcoatExt {
+                    factor,
+                    roughness_factor,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    // Regression guard for "inline extensions stored but never rendered":
+    // library None + inline Some(clearcoat) must ENABLE the extension for
+    // this mesh (the variant bit comes from presence in EITHER layer).
+    #[test]
+    fn inline_extension_enables_what_the_library_lacks() {
+        let variant = MaterialDef::default();
+        let merged = merged_builtin_def(&inst(with_clearcoat(1.0, 0.0)), &variant);
+        let cc = merged
+            .extensions
+            .clearcoat
+            .expect("inline-only clearcoat must survive");
+        assert_eq!(cc.factor, 1.0);
+        assert_eq!(cc.roughness_factor, 0.0);
+    }
+
+    // Library Some(factor 0) + inline Some(factor 1): the inline factors must
+    // reach the merged def (they feed the per-mesh uniforms).
+    #[test]
+    fn inline_extension_factors_beat_the_library() {
+        let variant = with_clearcoat(0.0, 0.5);
+        let merged = merged_builtin_def(&inst(with_clearcoat(1.0, 0.0)), &variant);
+        let cc = merged.extensions.clearcoat.unwrap();
+        assert_eq!(cc.factor, 1.0);
+        assert_eq!(cc.roughness_factor, 0.0);
+    }
+
+    // An enabled-but-inline-unseeded extension carries the library's AUTHORED
+    // factors, not struct defaults.
+    #[test]
+    fn library_authored_factors_fill_an_unseeded_inline() {
+        let variant = with_clearcoat(0.7, 0.3);
+        let merged = merged_builtin_def(&inst(MaterialDef::default()), &variant);
+        let cc = merged.extensions.clearcoat.unwrap();
+        assert_eq!(cc.factor, 0.7);
+        assert_eq!(cc.roughness_factor, 0.3);
+    }
+
+    // Export parity: `flatten_builtin_materials` writes the merged def into the
+    // bundle node's `inline`, and the player re-resolves that inline over the
+    // same library def. Editor rendering == player rendering therefore requires
+    // the merge to be a FIXED POINT over its own output — including extensions
+    // and texture slots.
+    #[test]
+    fn merge_is_idempotent_over_the_flattened_inline() {
+        let mut variant = with_clearcoat(0.7, 0.3);
+        variant.base_color_texture = Some(TextureRef::new(AssetId::new()));
+        variant.metallic = 1.0;
+        let mut inline = with_clearcoat(1.0, 0.0);
+        inline.normal_texture = Some(TextureRef::new(AssetId::new()));
+        inline.base_color = [0.5, 0.25, 0.125, 1.0];
+
+        let merged = merged_builtin_def(&inst(inline), &variant);
+        // Simulate the player's view of the flattened bundle: inline = merged,
+        // per-instance override maps empty (they don't ship in the bundle).
+        let reflattened = merged_builtin_def(&inst(merged.clone()), &variant);
+        assert_eq!(reflattened, merged);
     }
 }

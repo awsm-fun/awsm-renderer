@@ -16,7 +16,8 @@ use awsm_renderer_scene::particle::{
     ColorOverLifeDef, EmitterSpaceDef, ForceDef, SizeOverLifeDef, SpawnShapeDef,
 };
 use awsm_renderer_scene::{
-    AssetId, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind, Trs,
+    AssetId, EnvironmentConfig, IblConfig, MaterialDef, MaterialShading, NodeId, NodeKind,
+    SkyboxConfig, Trs,
 };
 
 use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
@@ -424,6 +425,17 @@ pub enum EditorCommand {
     /// (serialized to TOML); the `env_sync` bridge uploads the cubemaps as a
     /// side effect. Inverse: restore the prior environment.
     SetEnvironment { env: EnvironmentConfig },
+
+    /// Patch the scene environment: only the `Some` slots change; a `None` slot
+    /// PRESERVES the current config. This is what the MCP `set_environment`
+    /// tool dispatches, so setting just the IBL (or just the skybox) no longer
+    /// silently resets the other slot to `BuiltInDefault` — the split
+    /// skybox/IBL workflow (neutral background, keyed reflections) survives
+    /// sequential calls. Inverse: restore the prior full environment.
+    PatchEnvironment {
+        skybox: Option<SkyboxConfig>,
+        ibl: Option<IblConfig>,
+    },
 
     /// Patch the global SSCS (screen-space contact-shadow) settings on
     /// `scene.shadows` (persisted; the `sscs_sync` bridge pushes them into the
@@ -1294,6 +1306,7 @@ impl EditorCommand {
             EditorCommand::SetMaterialTexture { .. } => "Bind texture",
             EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",
             EditorCommand::SetEnvironment { .. } => "Set environment",
+            EditorCommand::PatchEnvironment { .. } => "Set environment",
             EditorCommand::SetShadowsSscs { .. } => "Set SSCS",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",

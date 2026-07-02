@@ -2163,13 +2163,34 @@ impl EditorController {
                         // renaming it never orphans this mesh). Validate the id
                         // exists in the custom-material list. `None` clears the
                         // assignment → magenta.
+                        //
+                        // Template→instance copy, NOT a wipe: per-mesh inline
+                        // CUSTOMIZATIONS — texture binds (`set_node_texture`) and
+                        // extension entries that differ from the PRIOR material's
+                        // library def — are carried onto the new inline, so
+                        // re-assigning after a material reorganization doesn't
+                        // force a full re-dress of every texture slot. Slots that
+                        // merely mirrored the prior template adopt the new
+                        // template instead (see `carry_inline_customizations`).
                         let instance = material
                             .filter(|id| find_material(&self.custom_materials, *id).is_some())
                             .map(|id| {
-                                let inline = find_material(&self.custom_materials, id)
-                                    .and_then(|m| m.builtin.get_cloned())
+                                let template = find_material(&self.custom_materials, id)
+                                    .and_then(|m| m.builtin.get_cloned());
+                                let mut inline = template
+                                    .clone()
                                     .or_else(|| prior.as_ref().map(|p| p.inline.clone()))
                                     .unwrap_or_default();
+                                if let (Some(p), Some(_)) = (prior.as_ref(), template.as_ref()) {
+                                    let prior_template =
+                                        find_material(&self.custom_materials, p.asset)
+                                            .and_then(|m| m.builtin.get_cloned());
+                                    carry_inline_customizations(
+                                        &mut inline,
+                                        &p.inline,
+                                        prior_template.as_ref(),
+                                    );
+                                }
                                 awsm_renderer_editor_protocol::dynamic_material::MaterialInstance {
                                     asset: id,
                                     inline,
@@ -2740,6 +2761,20 @@ impl EditorController {
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
             }
+            EditorCommand::PatchEnvironment { skybox, ibl } => {
+                // Partial update: `None` slots PRESERVE the current config, so
+                // setting just the IBL doesn't silently reset the skybox (and
+                // vice versa) — the split skybox/IBL workflow survives
+                // sequential MCP calls. Inverse: the prior FULL environment.
+                let prev = self.scene.environment.get_cloned();
+                let next = crate::engine::scene::EnvironmentConfig {
+                    skybox: skybox.unwrap_or(prev.skybox),
+                    ibl: ibl.unwrap_or(prev.ibl),
+                };
+                self.scene.environment.set(next);
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetEnvironment { env: prev }))
+            }
             EditorCommand::SetShadowsSscs {
                 enabled,
                 step_count,
@@ -3071,6 +3106,21 @@ impl EditorController {
                     .map_err(|e| {
                         crate::error::EditorError::msg(format!("fetch {url} body: {e}"))
                     })?;
+                // Validate the bytes parse as a KTX2 CUBEMAP *now*, so a bad
+                // URL (2D texture, wrong supercompression, truncated file)
+                // fails THIS command loudly. Without this the parse only
+                // happened at env-APPLY time, inside the async env_sync
+                // observer — a toast + console error the MCP caller never
+                // sees, while its set_environment returned "ok" and the
+                // previous IBL silently stayed bound ("the prefiltered slot
+                // is dead" class of misdiagnosis).
+                awsm_renderer_core::cubemap::CubemapImage::load_ktx_bytes(bytes.clone()).map_err(
+                    |e| {
+                        crate::error::EditorError::msg(format!(
+                            "{url} is not a loadable KTX2 cubemap: {e}"
+                        ))
+                    },
+                )?;
                 crate::engine::bridge::env_sync::stash_ktx(id, bytes);
                 let name = url
                     .split(['?', '#'])
@@ -5962,15 +6012,27 @@ impl EditorController {
     /// the renderer's pipeline scheduler has drained, held stable across two
     /// consecutive frames so the settled frame has actually presented. Returns on
     /// timeout otherwise. Polls on a ~frame cadence.
+    ///
+    /// `compile_pending` covers custom-WGSL compiles AND (via [`CompileGuard`])
+    /// every async re-materialization — the kind observer's `apply_kind` (a
+    /// patch_kind / assign_material / builtin-variant edit) and the mesh-edit
+    /// re-sync — so an edit that re-specializes a mesh's pipeline holds this
+    /// barrier until its commit drains. The guard is raised on the microtask
+    /// queue (signal delivery), strictly before this function's first 16 ms
+    /// timer poll, so there is no observable gap after the triggering command.
     async fn wait_render_settled(&self, max_ms: u32) -> query::QueryResult {
         const INTERVAL_MS: u32 = 16;
-        let max_polls = (max_ms / INTERVAL_MS).max(1);
+        // Wall-clock budget + reporting: a poll can block far longer than the
+        // 16 ms interval (its renderer read awaits the lock a re-materialize
+        // holds across `commit_load` — that block IS the useful waiting), so
+        // counting polls would both under-report `waited_ms` (48 ms reported
+        // for a 6 s variant recompile) and overrun `max_ms`.
+        let start = js_sys::Date::now();
+        let elapsed = || (js_sys::Date::now() - start).max(0.0) as u32;
         let mut stable = 0u32;
-        let mut waited = 0u32;
         let mut settled = false;
-        for _ in 0..max_polls {
+        while elapsed() < max_ms {
             gloo_timers::future::TimeoutFuture::new(INTERVAL_MS).await;
-            waited = waited.saturating_add(INTERVAL_MS);
             let editor_pending = self.compile_pending.get() > 0;
             let renderer_pending = crate::engine::context::with_renderer_mut(|r| {
                 let p = r.compile_progress();
@@ -5989,7 +6051,7 @@ impl EditorController {
         }
         query::QueryResult::Settled(query::SettledResult {
             settled,
-            waited_ms: waited,
+            waited_ms: elapsed(),
         })
     }
 
@@ -7307,6 +7369,28 @@ pub(crate) fn compile_end() {
     c.set(c.get().saturating_sub(1));
 }
 
+/// RAII [`compile_begin`]/[`compile_end`] pair. Holds the `WaitRenderSettled`
+/// barrier open for the guard's lifetime — used around async re-materialization
+/// (the kind observer's `apply_kind`, mesh re-sync) so a settled-wait issued
+/// right after the triggering command can't slip through the gap before the
+/// renderer's own compile counters become visible. Drop-based so a CANCELLED
+/// re-materialization (node deleted mid-apply tears the observer down) still
+/// releases the barrier instead of wedging `compile_pending` above zero.
+pub(crate) struct CompileGuard;
+
+impl CompileGuard {
+    pub(crate) fn new() -> Self {
+        compile_begin();
+        Self
+    }
+}
+
+impl Drop for CompileGuard {
+    fn drop(&mut self) {
+        compile_end();
+    }
+}
+
 /// Compile + register a dynamic material into a renderer bucket, then
 /// re-materialize meshes using it. Returns true on success; leaves
 /// `registered = false` on a compile error (the code pane surfaces the problems).
@@ -8389,6 +8473,140 @@ fn node_index(scene: &Scene, id: NodeId, parent: Option<NodeId>) -> Option<usize
         None => scene.nodes.lock_ref().iter().position(|n| n.id == id),
         Some(pid) => mutate::find_by_id(scene, pid)
             .and_then(|p| p.children.lock_ref().iter().position(|n| n.id == id)),
+    }
+}
+
+/// Carry a node's per-mesh inline CUSTOMIZATIONS across a material
+/// re-assignment (`AssignMaterial`'s template→instance copy). A "customization"
+/// is an inline value that DIFFERS from the prior material's library def —
+/// i.e. something the user set on this mesh (a `set_node_texture` bind, an
+/// inline extension) rather than the copy the last assignment seeded. Carried:
+/// the five standard texture slots + every per-extension entry. Slots that
+/// merely mirrored the prior template adopt the NEW template (so re-assigning
+/// swaps the look as expected); genuine per-mesh binds survive (so a material
+/// reorganization doesn't force re-dressing every slot on every mesh).
+///
+/// `prior_template == None` (prior assignment was a custom-WGSL material, or
+/// its def is gone) treats every populated prior slot as a customization.
+/// Pure — unit-tested below.
+fn carry_inline_customizations(
+    next: &mut awsm_renderer_editor_protocol::MaterialDef,
+    prior: &awsm_renderer_editor_protocol::MaterialDef,
+    prior_template: Option<&awsm_renderer_editor_protocol::MaterialDef>,
+) {
+    macro_rules! carry_tex {
+        ($($f:ident),+) => {$(
+            if prior.$f.is_some() && prior_template.is_none_or(|t| t.$f != prior.$f) {
+                next.$f = prior.$f;
+            }
+        )+};
+    }
+    carry_tex!(
+        base_color_texture,
+        metallic_roughness_texture,
+        normal_texture,
+        occlusion_texture,
+        emissive_texture
+    );
+    macro_rules! carry_ext {
+        ($($f:ident),+) => {$(
+            if prior.extensions.$f.is_some()
+                && prior_template.is_none_or(|t| t.extensions.$f != prior.extensions.$f)
+            {
+                next.extensions.$f = prior.extensions.$f;
+            }
+        )+};
+    }
+    carry_ext!(
+        emissive_strength,
+        ior,
+        specular,
+        transmission,
+        diffuse_transmission,
+        volume,
+        clearcoat,
+        sheen,
+        dispersion,
+        anisotropy,
+        iridescence
+    );
+}
+
+#[cfg(test)]
+mod carry_inline_tests {
+    use super::carry_inline_customizations;
+    use awsm_renderer_editor_protocol::material::{ClearcoatExt, MaterialDef, PbrExtensions};
+    use awsm_renderer_editor_protocol::{AssetId, TextureRef};
+
+    // A per-mesh texture bind (differs from the prior template) survives
+    // re-assignment; a slot that mirrored the prior template adopts the new
+    // template's value instead.
+    #[test]
+    fn per_mesh_bind_survives_template_copy_does_not() {
+        let template_tex = TextureRef::new(AssetId::new());
+        let user_tex = TextureRef::new(AssetId::new());
+        let prior_template = MaterialDef {
+            base_color_texture: Some(template_tex),
+            ..Default::default()
+        };
+        // Prior inline: base color mirrors the old template (adopted at the
+        // last assign); the normal map is a genuine per-mesh bind.
+        let prior_inline = MaterialDef {
+            base_color_texture: Some(template_tex),
+            normal_texture: Some(user_tex),
+            ..Default::default()
+        };
+        let new_template_tex = TextureRef::new(AssetId::new());
+        let mut next = MaterialDef {
+            base_color_texture: Some(new_template_tex),
+            ..Default::default()
+        };
+        carry_inline_customizations(&mut next, &prior_inline, Some(&prior_template));
+        assert_eq!(
+            next.base_color_texture,
+            Some(new_template_tex),
+            "template-mirrored slot must adopt the NEW template"
+        );
+        assert_eq!(
+            next.normal_texture,
+            Some(user_tex),
+            "per-mesh bind must survive re-assignment"
+        );
+    }
+
+    // An inline extension the user enabled on this mesh survives; without a
+    // prior template every populated slot counts as a customization.
+    #[test]
+    fn inline_extension_and_templateless_binds_carry() {
+        let user_tex = TextureRef::new(AssetId::new());
+        let prior_inline = MaterialDef {
+            emissive_texture: Some(user_tex),
+            extensions: PbrExtensions {
+                clearcoat: Some(ClearcoatExt {
+                    factor: 1.0,
+                    roughness_factor: 0.0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut next = MaterialDef::default();
+        carry_inline_customizations(&mut next, &prior_inline, None);
+        assert_eq!(next.emissive_texture, Some(user_tex));
+        assert_eq!(next.extensions.clearcoat.unwrap().factor, 1.0);
+    }
+
+    // Empty prior slots never clobber the new template's values.
+    #[test]
+    fn empty_prior_slots_leave_the_new_template_alone() {
+        let new_tex = TextureRef::new(AssetId::new());
+        let mut next = MaterialDef {
+            base_color_texture: Some(new_tex),
+            ..Default::default()
+        };
+        carry_inline_customizations(&mut next, &MaterialDef::default(), None);
+        assert_eq!(next.base_color_texture, Some(new_tex));
     }
 }
 
