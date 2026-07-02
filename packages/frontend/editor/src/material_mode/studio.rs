@@ -44,7 +44,15 @@ pub fn render() -> Dom {
             }))
             .child(html!("div", {
                 .style("border-right", "1px solid var(--line)").style("min-height", "0")
-                .child_signal(controller().current_material.signal().map(|id| Some(definition(id))))
+                // Rebuild on `external_rev` too (like the scene inspector's
+                // node panel) so an MCP `update_builtin_material` refreshes
+                // the alpha / textures / toon / name rows live instead of
+                // leaving a stale once-per-selection snapshot until reselect.
+                .child_signal(map_ref! {
+                    let id = controller().current_material.signal(),
+                    let _ext = controller().external_rev.signal() =>
+                    Some(definition(*id))
+                })
             }))
             .child(html!("div", {
                 .style("min-width", "0").style("min-height", "0").style("background", "var(--bg-0)")

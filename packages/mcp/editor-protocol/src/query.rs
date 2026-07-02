@@ -52,6 +52,12 @@ pub struct MaterialSnapshot {
     pub name: String,
     pub registered: bool,
     pub builtin: bool,
+    /// For a built-in material: its FULL shared variant `MaterialDef` — the
+    /// read half of `update_builtin_material`'s read-modify-write workflow
+    /// (the def is all-fields-required on write, so agents need the current
+    /// one to modify). `None` for custom-WGSL materials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin_def: Option<Box<crate::MaterialDef>>,
     pub uniforms: Vec<String>,
     /// True when the material has no outstanding compile errors (always true for
     /// built-ins, which need no compile). Closes the old `query.rs` TODO.
@@ -122,6 +128,12 @@ pub struct TrackSnapshot {
 pub struct ProjectSnapshot {
     pub name: String,
     pub dirty: bool,
+    /// The LIVE-APPLIED environment (skybox/IBL) differs from the last-saved
+    /// one — a project reload loses it unless the project is saved first.
+    /// Agents driving `set_environment` should prompt for a Save when this is
+    /// set.
+    #[serde(default)]
+    pub env_unsaved: bool,
     pub missing_assets: Vec<String>,
     /// Coordinate-system description (handedness / up-axis / units) so a driver
     /// doesn't have to guess the frame. Constant for now.

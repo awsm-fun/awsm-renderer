@@ -693,7 +693,7 @@ fn merge_slot_texture(
 /// with this mesh's per-mesh uniform values (`inline`: base color / metallic /
 /// roughness / emissive) into a final `MaterialDef`. Returns `None` for a dynamic
 /// material or an unknown id (callers then try the dynamic path / inline).
-fn builtin_merged(
+pub(crate) fn builtin_merged(
     inst: &awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
 ) -> Option<awsm_renderer_editor_protocol::MaterialDef> {
     use awsm_renderer_editor_protocol::material::{
@@ -734,30 +734,16 @@ fn builtin_merged(
         )
     };
 
-    // Extension PARAMS per mesh, ENABLE from the variant: an extension the
-    // material doesn't enable stays off (enabling it would recompile); an enabled
-    // one takes this mesh's parameters (falling back to defaults if unseeded).
-    macro_rules! merge_ext {
-        ($f:ident) => {
-            variant
-                .extensions
-                .$f
-                .map(|_| inline.extensions.$f.unwrap_or_default())
-        };
-    }
-    let extensions = PbrExtensions {
-        emissive_strength: merge_ext!(emissive_strength),
-        ior: merge_ext!(ior),
-        specular: merge_ext!(specular),
-        transmission: merge_ext!(transmission),
-        diffuse_transmission: merge_ext!(diffuse_transmission),
-        volume: merge_ext!(volume),
-        clearcoat: merge_ext!(clearcoat),
-        sheen: merge_ext!(sheen),
-        dispersion: merge_ext!(dispersion),
-        anisotropy: merge_ext!(anisotropy),
-        iridescence: merge_ext!(iridescence),
-    };
+    // Extension merge, mirroring texture-slot presence (§11): enabled when
+    // EITHER layer carries the extension — a per-node `inline` extension
+    // re-specializes THIS mesh's pipeline (one extra bucket per distinct
+    // feature combination, not one per mesh) instead of being silently
+    // dropped. Params: inline wins, else the variant's AUTHORED values
+    // (previously an enabled-but-inline-unseeded extension fell back to
+    // struct DEFAULTS, discarding the library material's factors). The rule
+    // lives on `PbrExtensions::merged_over` — shared with the inspector so
+    // the UI shows exactly what renders.
+    let extensions = PbrExtensions::merged_over(&inline.extensions, &variant.extensions);
 
     // Alpha MODE (Opaque/Mask/Blend) is variant routing; the Mask *cutoff* value
     // is a per-mesh uniform compare, so carry it from inline when both are Mask.
@@ -1588,6 +1574,22 @@ async fn upload_simple_mesh(
     // to transparency geometry without a separate entry point.
     match r.add_raw_mesh(raw, sub_tk, mat_key) {
         Ok(mk) => {
+            // Apply the node's CURRENT shadow flags + visibility at creation,
+            // exactly like the skinned / cluster materialize paths. Without
+            // this, a `shadow.cast` (or any kind) edit re-materializes the
+            // mesh back to renderer DEFAULTS: the kind observer tears down and
+            // rebuilds, the visibility observer doesn't re-fire (node.visible
+            // didn't change), and the shadow flags were never applied at all —
+            // so `set_mesh_shadow cast=false` silently kept casting.
+            let shadow_cfg = entry
+                .node
+                .kind
+                .get_cloned()
+                .mesh_shadow()
+                .copied()
+                .unwrap_or_default();
+            let _ = r.set_mesh_shadow_flags(mk, mesh_shadow_flags_from_config(&shadow_cfg));
+            let _ = r.set_mesh_hidden(mk, !entry.node.visible.get());
             if !declare_only {
                 if let Err(e) = r
                     .commit_load(crate::engine::activity::commit_phase_handler())

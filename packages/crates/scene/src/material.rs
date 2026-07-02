@@ -220,6 +220,32 @@ pub struct PbrExtensions {
     pub iridescence: Option<IridescenceExt>,
 }
 
+impl PbrExtensions {
+    /// The per-mesh MERGED view of a node's `inline` extension layer over the
+    /// shared library `variant`: per extension, the inline value wins when
+    /// present, otherwise the variant's authored values carry through —
+    /// presence in EITHER layer enables the extension (an inline-only
+    /// extension re-specializes that mesh's pipeline, mirroring texture-slot
+    /// presence). THE single definition of this rule: the editor's mesh
+    /// materialization and the inspector's extension controls both call this,
+    /// so what the UI shows is what actually renders.
+    pub fn merged_over(inline: &Self, variant: &Self) -> Self {
+        Self {
+            emissive_strength: inline.emissive_strength.or(variant.emissive_strength),
+            ior: inline.ior.or(variant.ior),
+            specular: inline.specular.or(variant.specular),
+            transmission: inline.transmission.or(variant.transmission),
+            diffuse_transmission: inline.diffuse_transmission.or(variant.diffuse_transmission),
+            volume: inline.volume.or(variant.volume),
+            clearcoat: inline.clearcoat.or(variant.clearcoat),
+            sheen: inline.sheen.or(variant.sheen),
+            dispersion: inline.dispersion.or(variant.dispersion),
+            anisotropy: inline.anisotropy.or(variant.anisotropy),
+            iridescence: inline.iridescence.or(variant.iridescence),
+        }
+    }
+}
+
 macro_rules! ext_struct {
     ($(#[$m:meta])* $name:ident { $($field:ident : $ty:ty = $def:expr),* $(,)? }) => {
         $(#[$m])*
