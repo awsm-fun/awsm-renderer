@@ -65,6 +65,23 @@ impl AwsmRenderer {
     /// (SSCS toggle, blur radius, exponent, debug overlay) take
     /// effect on the next `render()` call.
     pub fn set_shadows_config(&mut self, config: ShadowsConfig) {
+        // SSCS `enabled` + `step_count` drive the shadow module's COMPILE-TIME
+        // template (see `PrepPassConfig`'s SSCS fields), so a change to either
+        // must re-key + recompile the material pipelines — exactly like
+        // `set_anti_aliasing`. Mirror the two into `prep_config` (the carrier
+        // threaded to every shadow-consuming pipeline build); when they change,
+        // flag the material-variant reconcile so the caller's next `commit_load`
+        // recompiles (prep rebuilds lazily from its per-frame key). The SSCS
+        // *scalar* params ride `ShadowGlobals` and just re-upload via the
+        // `set_config` dirty flag below — no recompile.
+        let recompile = self.prep_config.sscs_enabled != config.sscs_enabled
+            || self.prep_config.sscs_step_count != config.sscs_step_count;
+        self.prep_config.sscs_enabled = config.sscs_enabled;
+        self.prep_config.sscs_step_count = config.sscs_step_count;
+        if recompile {
+            self.last_ensured_bucket_layout = None;
+            self.materials.mark_variants_dirty();
+        }
         self.shadows.set_config(config);
     }
 

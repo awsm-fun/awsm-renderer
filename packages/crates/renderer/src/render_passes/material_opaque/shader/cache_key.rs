@@ -28,6 +28,15 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// renders), but carried on the key so a K change still re-keys the
     /// pipeline. Default 4.
     pub max_shadow_casters: u32,
+    /// Global SSCS enable (from `ShadowsConfig::sscs_enabled`). Folded into the
+    /// shadow module's compile-time `sscs_available` gate — when `false` the
+    /// `apply_sscs` body is compiled out entirely (zero cost, the default), so
+    /// toggling SSCS re-keys + recompiles the opaque pipelines like MSAA does.
+    pub sscs_enabled: bool,
+    /// Global SSCS ray-march step count (`ShadowsConfig::sscs_step_count`, ≥1).
+    /// Baked as the `apply_sscs` loop bound so it's a compile-time constant
+    /// (unroll-friendly, no per-fragment counter). Changing it recompiles.
+    pub sscs_step_count: u32,
     pub shader_id: MaterialShaderId,
     /// Which built-in shading family this bucket's template body comes
     /// from. Decoupled from `shader_id` so a per-feature-set PBR variant

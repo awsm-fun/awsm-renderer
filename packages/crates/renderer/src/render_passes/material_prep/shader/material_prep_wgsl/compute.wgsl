@@ -18,8 +18,9 @@
 // Returns the K shadow factors packed into `ceil(K/4)` vec4 layers (slot j ->
 // layer j/4, channel j%4) — the caller textureStores each layer to its own
 // target. Walks the canonical froxel order (froxel_walk.wgsl SSOT) and samples
-// EXACTLY as `apply_lighting_per_froxel` does: directional incl. `* apply_sscs`,
-// punctual WITHOUT sscs. `receive_shadows` is NOT applied here (the lighting loop
+// EXACTLY as `apply_lighting_per_froxel` does: directional incl. `* apply_sscs`
+// (0.35 cap), punctual incl. `* apply_sscs` (0.9 cap — fills the cube map's
+// contact "Peter Pan" donut). `receive_shadows` is NOT applied here (the lighting loop
 // applies it at read time so the slot model stays material-independent). The
 // caller passes the world position (sample-0 depth reconstruction in both kernels
 // — see shade_sample's NOTE) + view_z + the per-pixel/per-sample surface normal.
@@ -56,7 +57,7 @@ fn compute_shadow_visibility_packed(
                 shadow_normal_toward_light(normal, ls.light_dir),
                 view_z,
             );
-            v = v * apply_sscs(world_pos, normalize(-light.direction));
+            v = v * apply_sscs(world_pos, normalize(-light.direction), shadow_globals.sscs_params.z);
             layers[slot / 4u][slot % 4u] = v;
             slot = slot + 1u;
         }
@@ -72,12 +73,18 @@ fn compute_shadow_visibility_packed(
         if (light.kind == 1u) { continue; }
         if (light.shadow_index != SHADOW_INDEX_NONE) {
             let ls = light_sample(light, normal, world_pos);
-            let v = sample_shadow_directional(
+            var v = sample_shadow_directional(
                 light.shadow_index,
                 world_pos,
                 shadow_normal_toward_light(normal, ls.light_dir),
                 view_z,
             );
+            // Punctual SSCS: bake the contact-shadow refinement into the prep
+            // buffer so PRIMARY/EDGE reads include it, matching the inline
+            // RECOMPUTE / no-prep paths in apply_lighting. Higher cap (0.9) than
+            // directional's 0.35 — the cube map leaves a fully-lit "Peter Pan"
+            // donut at ball-on-floor contacts that SSCS must fill, not just nudge.
+            v = v * apply_sscs(world_pos, normalize(light.position - world_pos), shadow_globals.sscs_params.w);
             layers[slot / 4u][slot % 4u] = v;
             slot = slot + 1u;
         }
@@ -249,25 +256,34 @@ fn cs_prep_edge(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cam = camera_from_raw(camera_raw);
     let dims = textureDimensions(normal_tangent_tex);
 
-    // Sample-0 world position (matches shade_sample's get_standard_coordinates).
-    let depth0 = textureLoad(depth_tex, coords, 0);
     let pix_uv = (vec2<f32>(coords) + vec2<f32>(0.5, 0.5))
         / vec2<f32>(f32(dims.x), f32(dims.y));
-    let ndc = vec3<f32>(pix_uv.x * 2.0 - 1.0, 1.0 - pix_uv.y * 2.0, depth0);
-    let view_h = cam.inv_proj * vec4<f32>(ndc, 1.0);
-    let world_pos = (cam.inv_view * vec4<f32>(view_h.xyz / max(view_h.w, 1e-8), 1.0)).xyz;
-    let view_z = -(cam.view * vec4<f32>(world_pos, 1.0)).z;
 
     for (var s: u32 = 0u; s < {{ msaa_sample_count }}u; s = s + 1u) {
-        // Per-sample normal (shade_sample reads vis/bary/normal per-sample).
+        // Per-sample normal AND per-sample depth. Multisampled textureLoad needs a
+        // CONSTANT sample index, so both come from one constant-index switch.
         var packed_nt: vec4<f32>;
+        var depth_s: f32;
         switch (s) {
-            case 0u: { packed_nt = textureLoad(normal_tangent_tex, coords, 0); }
-            case 1u: { packed_nt = textureLoad(normal_tangent_tex, coords, 1); }
-            case 2u: { packed_nt = textureLoad(normal_tangent_tex, coords, 2); }
-            case 3u, default: { packed_nt = textureLoad(normal_tangent_tex, coords, 3); }
+            case 0u: { packed_nt = textureLoad(normal_tangent_tex, coords, 0); depth_s = textureLoad(depth_tex, coords, 0); }
+            case 1u: { packed_nt = textureLoad(normal_tangent_tex, coords, 1); depth_s = textureLoad(depth_tex, coords, 1); }
+            case 2u: { packed_nt = textureLoad(normal_tangent_tex, coords, 2); depth_s = textureLoad(depth_tex, coords, 2); }
+            case 3u, default: { packed_nt = textureLoad(normal_tangent_tex, coords, 3); depth_s = textureLoad(depth_tex, coords, 3); }
         }
         let normal = unpack_normal_tangent(packed_nt).N;
+
+        // Per-sample world position — reconstruct from THIS sample's depth so the
+        // receiver bias matches the surface the sample actually lies on. Reusing
+        // sample-0's world_pos for every sample (the old behaviour) mismatches
+        // position vs normal at a silhouette straddling a depth discontinuity (a
+        // ball resting on the floor): a floor sub-sample gets the BALL's position
+        // with the FLOOR's normal, so the normal-offset + `inc_tan` bias are sized
+        // for a surface that doesn't exist and the contact shadow flips lit/
+        // shadowed along the edge — the crawling "green fringe" at resting contacts.
+        let ndc = vec3<f32>(pix_uv.x * 2.0 - 1.0, 1.0 - pix_uv.y * 2.0, depth_s);
+        let view_h = cam.inv_proj * vec4<f32>(ndc, 1.0);
+        let world_pos = (cam.inv_view * vec4<f32>(view_h.xyz / max(view_h.w, 1e-8), 1.0)).xyz;
+        let view_z = -(cam.view * vec4<f32>(world_pos, 1.0)).z;
 
         let packed = compute_shadow_visibility_packed(pixel_xy, world_pos, view_z, normal);
 

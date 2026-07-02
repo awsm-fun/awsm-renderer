@@ -29,6 +29,28 @@ pub struct ShadowsConfig {
     /// faithful contact darkening at the cost of fragment work.
     #[serde(default = "default_sscs_step_count")]
     pub sscs_step_count: u32,
+    /// World-space length of each SSCS ray-march step, in metres. Total
+    /// reach = `sscs_step_world · sscs_step_count`. World-space (not
+    /// pixel-space) so the same surface point samples the same world
+    /// positions every frame regardless of camera zoom.
+    #[serde(default = "default_sscs_step_world")]
+    pub sscs_step_world: f32,
+    /// SSCS occluder-slab thickness in metres: a depth-buffer texel this
+    /// far or less in front of the ray counts as an occluder. Larger
+    /// admits thicker casters (a resting ball) at the cost of over-
+    /// darkening behind thin geometry.
+    #[serde(default = "default_sscs_thickness")]
+    pub sscs_thickness: f32,
+    /// Maximum SSCS darkening for the DIRECTIONAL shadow term (0..1).
+    /// Conservative by default — directional SSCS is a refinement on top
+    /// of a cascade map that already covers the contact.
+    #[serde(default = "default_sscs_directional_darkening")]
+    pub sscs_directional_darkening: f32,
+    /// Maximum SSCS darkening for PUNCTUAL (point/spot) shadow terms
+    /// (0..1). Higher than directional because a cube shadow map leaves a
+    /// fully-lit contact "Peter-Pan" gap that SSCS must actually fill.
+    #[serde(default = "default_sscs_punctual_darkening")]
+    pub sscs_punctual_darkening: f32,
     /// 2D atlas size (square) for the PCF / spot / EVSM-source depth
     /// passes. Must be a power of two. The atlas auto-grows when the
     /// row-pack allocator overflows (capped at 8192).
@@ -72,6 +94,10 @@ impl Default for ShadowsConfig {
         Self {
             sscs_enabled: default_sscs_enabled(),
             sscs_step_count: default_sscs_step_count(),
+            sscs_step_world: default_sscs_step_world(),
+            sscs_thickness: default_sscs_thickness(),
+            sscs_directional_darkening: default_sscs_directional_darkening(),
+            sscs_punctual_darkening: default_sscs_punctual_darkening(),
             atlas_size: default_atlas_size(),
             evsm_atlas_size: default_evsm_atlas_size(),
             evsm_exponent: default_evsm_exponent(),
@@ -92,6 +118,18 @@ fn default_sscs_enabled() -> bool {
 }
 fn default_sscs_step_count() -> u32 {
     16
+}
+fn default_sscs_step_world() -> f32 {
+    0.04
+}
+fn default_sscs_thickness() -> f32 {
+    0.05
+}
+fn default_sscs_directional_darkening() -> f32 {
+    0.35
+}
+fn default_sscs_punctual_darkening() -> f32 {
+    0.9
 }
 fn default_atlas_size() -> u32 {
     4096

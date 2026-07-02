@@ -30,9 +30,13 @@ pub struct ShaderTemplateMaterialPrepBindGroups {
     /// Compile the shadow-SAMPLING bodies (`{% if needs_shadow_sampling %}` in
     /// `shadow/bind_groups.wgsl`). `true` — prep is a shadow sampler.
     pub needs_shadow_sampling: bool,
-    /// SSCS availability (`apply_sscs` reads `depth_tex` + `camera_raw`). Prep
-    /// binds both, so `true` (matches the opaque pass for parity).
+    /// SSCS effective gate = pass-capability (prep binds `depth_tex` +
+    /// `camera_raw`) AND the global `ShadowsConfig::sscs_enabled`. When `false`
+    /// the shared `apply_sscs` body is compiled out to `return 1.0` (zero cost).
     pub sscs_available: bool,
+    /// SSCS ray-march step count baked as the `apply_sscs` loop bound
+    /// (compile-time constant). Only read when `sscs_available`.
+    pub sscs_step_count: u32,
     /// Bind-group slot the shadow bindings live at (group 2 for prep).
     pub shadow_group_index: u32,
     /// Z-slice count for `froxel_walk.wgsl` (`FROXEL_SLICE_COUNT`).
@@ -77,7 +81,11 @@ impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
                 multisampled_geometry,
                 shadows: true,
                 needs_shadow_sampling: true,
-                sscs_available: true,
+                // Prep is SSCS-capable (binds depth_tex + camera_raw); the
+                // effective gate is the global enable. `sscs_step_count` is
+                // clamped ≥1 so the loop bound and `f32(steps)` divisor are safe.
+                sscs_available: key.sscs_enabled,
+                sscs_step_count: key.sscs_step_count.max(1),
                 shadow_group_index: 2,
                 froxel_slice_count,
             },

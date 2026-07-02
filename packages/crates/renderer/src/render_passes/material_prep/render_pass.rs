@@ -324,6 +324,8 @@ async fn build_pipeline(
             ShaderCacheKeyMaterialPrep {
                 msaa_sample_count: if multisampled_geometry { Some(4) } else { None },
                 max_shadow_casters: ctx.prep_config.clamped_k(),
+                sscs_enabled: ctx.prep_config.sscs_enabled,
+                sscs_step_count: ctx.prep_config.sscs_step_count,
             },
         )
         .await?;
@@ -369,6 +371,8 @@ async fn build_edge_pipeline(
             ShaderCacheKeyMaterialPrep {
                 msaa_sample_count: Some(4),
                 max_shadow_casters: ctx.prep_config.clamped_k(),
+                sscs_enabled: ctx.prep_config.sscs_enabled,
+                sscs_step_count: ctx.prep_config.sscs_step_count,
             },
         )
         .await?;

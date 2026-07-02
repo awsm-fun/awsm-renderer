@@ -96,6 +96,16 @@ pub struct EditorController {
     /// refreshes which rows exist — while a continuous numeric scrub, which
     /// keeps the structure key constant, never tears out the field being dragged.
     pub structure_rev: Mutable<u64>,
+    /// Bumps after every mutation that arrives from OUTSIDE the local UI — i.e.
+    /// the MCP / remote dispatch path (see `remote.rs`). The inspector rebuilds
+    /// on this so the seed-once property widgets (light/shadow/material/etc.,
+    /// which read their node's value once at build time and are otherwise
+    /// one-way) re-seed from the freshly-mutated `node.kind`. Local UI edits do
+    /// NOT bump this (they own the value they just typed), so an in-progress
+    /// numeric scrub is never torn out by its own dispatch — only an external
+    /// (agent) edit forces the refresh. Kept separate from `structure_rev` so
+    /// the "structure changed" meaning stays precise.
+    pub external_rev: Mutable<u64>,
     /// Whether the Content Browser bottom drawer is expanded. Pure view state
     /// (not project/undo state), held here so the ribbon toggle, the drawer, and
     /// the workspace layout share one source of truth.
@@ -226,6 +236,7 @@ impl EditorController {
             can_undo: Mutable::new(false),
             can_redo: Mutable::new(false),
             structure_rev: Mutable::new(0),
+            external_rev: Mutable::new(0),
             content_browser_open: Mutable::new(false),
             active_camera: Mutable::new(None),
             asset_selection: Mutable::new(None),
@@ -251,6 +262,16 @@ impl EditorController {
     }
 
     /// The single entry point. UI handlers build a command and dispatch it here;
+    /// Force the inspector to re-seed its property widgets. Call this after a
+    /// mutation that did NOT originate from a local UI widget (the MCP / remote
+    /// path) so the seed-once light/shadow/material inspectors pick up the new
+    /// `node.kind` values. Local edits skip this — their widgets already hold the
+    /// value the user typed, so bumping here would tear an in-progress scrub.
+    pub fn note_external_mutation(&self) {
+        self.external_rev
+            .set(self.external_rev.get().wrapping_add(1));
+    }
+
     /// async because some commands await the renderer / FS / network.
     pub async fn dispatch(&self, cmd: EditorCommand) -> EditorResult<()> {
         let transient = cmd.is_transient();
@@ -2696,6 +2717,46 @@ impl EditorController {
                 self.scene.environment.set(env);
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
+            }
+            EditorCommand::SetShadowsSscs {
+                enabled,
+                step_count,
+                step_world,
+                thickness,
+                directional_darkening,
+                punctual_darkening,
+            } => {
+                let prev = self.scene.shadows.get_cloned();
+                let mut next = prev.clone();
+                if let Some(v) = enabled {
+                    next.sscs_enabled = v;
+                }
+                if let Some(v) = step_count {
+                    next.sscs_step_count = v.max(1);
+                }
+                if let Some(v) = step_world {
+                    next.sscs_step_world = v;
+                }
+                if let Some(v) = thickness {
+                    next.sscs_thickness = v;
+                }
+                if let Some(v) = directional_darkening {
+                    next.sscs_directional_darkening = v;
+                }
+                if let Some(v) = punctual_darkening {
+                    next.sscs_punctual_darkening = v;
+                }
+                self.scene.shadows.set(next);
+                self.scene.bump_revision();
+                // Inverse restores every SSCS field to its prior value.
+                Ok(Some(EditorCommand::SetShadowsSscs {
+                    enabled: Some(prev.sscs_enabled),
+                    step_count: Some(prev.sscs_step_count),
+                    step_world: Some(prev.sscs_step_world),
+                    thickness: Some(prev.sscs_thickness),
+                    directional_darkening: Some(prev.sscs_directional_darkening),
+                    punctual_darkening: Some(prev.sscs_punctual_darkening),
+                }))
             }
             EditorCommand::SnapCameraToAxis { axis } => {
                 use std::f32::consts::PI;

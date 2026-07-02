@@ -3,6 +3,7 @@
 pub mod button;
 pub mod controls;
 pub mod field;
+pub mod help;
 pub mod icon;
 pub mod num_field;
 pub mod overlay;

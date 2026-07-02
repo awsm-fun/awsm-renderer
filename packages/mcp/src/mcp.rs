@@ -999,6 +999,35 @@ pub struct EnvironmentParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SscsParams {
+    /// Master enable for screen-space contact shadows (a short view-space
+    /// ray-march that darkens contact gaps the shadow map misses). Off by
+    /// default. Compile-time — toggling recompiles the shadow pipelines.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Ray-march step count (clamped >= 1). Compile-time loop bound — changing it
+    /// recompiles. More steps = longer reach / more cost.
+    #[serde(default)]
+    pub step_count: Option<u32>,
+    /// World-space length of each march step, in metres. Live uniform. Total
+    /// reach = step_world * step_count.
+    #[serde(default)]
+    pub step_world: Option<f32>,
+    /// Occluder-slab thickness in metres — a depth texel this far or less in
+    /// front of the ray counts as an occluder. Live uniform. Larger admits
+    /// thicker casters (a resting ball) at the cost of over-darkening thin geo.
+    #[serde(default)]
+    pub thickness: Option<f32>,
+    /// Max darkening (0..1) applied to the DIRECTIONAL shadow term. Live uniform.
+    #[serde(default)]
+    pub directional_darkening: Option<f32>,
+    /// Max darkening (0..1) for PUNCTUAL (point/spot) shadow terms — higher than
+    /// directional since a cube map leaves a fully-lit contact gap to fill. Live.
+    #[serde(default)]
+    pub punctual_darkening: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModeArg {
     Scene,
@@ -3420,6 +3449,24 @@ impl EditorMcp {
         };
         self.dispatch(EditorCommand::SetEnvironment {
             env: EnvironmentConfig { skybox, ibl },
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the global SSCS (screen-space contact shadows) settings — a short view-space ray-march that darkens contact gaps the shadow map leaves lit (e.g. the 'Peter-Pan' hole under a resting ball). Persisted on scene.shadows + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). `enabled` + `step_count` are compile-time and recompile the shadow pipelines; the scalars are live uniforms. Off by default."
+    )]
+    async fn set_sscs(
+        &self,
+        Parameters(p): Parameters<SscsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetShadowsSscs {
+            enabled: p.enabled,
+            step_count: p.step_count,
+            step_world: p.step_world,
+            thickness: p.thickness,
+            directional_darkening: p.directional_darkening,
+            punctual_darkening: p.punctual_darkening,
         })
         .await
     }

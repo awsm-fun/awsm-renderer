@@ -1682,8 +1682,10 @@ impl Shadows {
                 .clamp(0.5, ShadowsConfig::EVSM_EXPONENT_MAX_FP16);
             data[16..20].copy_from_slice(&evsm_exponent.to_ne_bytes());
             data[20..24].copy_from_slice(&(self.config.evsm_blur_radius as f32).to_ne_bytes());
-            data[24..28].copy_from_slice(&(self.config.sscs_step_count as f32).to_ne_bytes());
-            data[28..32].copy_from_slice(&(self.config.sscs_enabled as u32 as f32).to_ne_bytes());
+            // evsm_sscs.z / .w (bytes 24..32) are reserved: SSCS step_count +
+            // enabled are now compile-time template constants (folded into the
+            // shadow module's `sscs_available` gate + baked loop bound), not
+            // uniform reads. Left zeroed.
             data[32..36].copy_from_slice(&(self.config.debug_cascade_colors as u32).to_ne_bytes());
             data[36..40].copy_from_slice(&self.config.max_point_shadows.to_ne_bytes());
             // `flags.z` / `flags.w` are reserved padding (see the
@@ -1695,6 +1697,13 @@ impl Shadows {
             data[52..56].copy_from_slice(&cascade_size.to_ne_bytes());
             data[56..60].copy_from_slice(&(self.cascade_max_layers as f32).to_ne_bytes());
             data[60..64].copy_from_slice(&0.0_f32.to_ne_bytes());
+            // sscs_params vec4: live-tunable SSCS scalars (step_world, thickness,
+            // directional_darkening, punctual_darkening). Loop-invariant reads in
+            // `apply_sscs`; a scalar-only change re-uploads this without recompiling.
+            data[64..68].copy_from_slice(&self.config.sscs_step_world.to_ne_bytes());
+            data[68..72].copy_from_slice(&self.config.sscs_thickness.to_ne_bytes());
+            data[72..76].copy_from_slice(&self.config.sscs_directional_darkening.to_ne_bytes());
+            data[76..80].copy_from_slice(&self.config.sscs_punctual_darkening.to_ne_bytes());
             let n = data.len();
             self.globals_uploader.write_dirty_ranges(
                 gpu,

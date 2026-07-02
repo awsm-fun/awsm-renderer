@@ -47,14 +47,17 @@ fn node_panel() -> Dom {
         .child(html!("div", {
             .style("flex", "1")
             .style("overflow-y", "auto")
-            // Rebuild on selection change OR a *structural* kind change
+            // Rebuild on selection change, a *structural* kind change
             // (`structure_rev` — a discrete PBR↔Unlit / Persp↔Ortho toggle that
-            // changes which rows exist). A continuous numeric scrub keeps the
-            // structure key constant, so the field being dragged is never torn
-            // out mid-drag by its own dispatched edits.
+            // changes which rows exist), OR an external/MCP edit (`external_rev`)
+            // so the seed-once property widgets re-seed from the mutated
+            // node.kind. A continuous *local* numeric scrub bumps neither rev, so
+            // the field being dragged is never torn out mid-drag by its own
+            // dispatched edits.
             .child_signal(map_ref! {
                 let sel = ctrl.selected.signal_cloned(),
-                let _rev = ctrl.structure_rev.signal() =>
+                let _rev = ctrl.structure_rev.signal(),
+                let _ext = ctrl.external_rev.signal() =>
                 Some(content(sel))
             })
         }))
@@ -3633,7 +3636,73 @@ fn light_shadow_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
         }).await;
     }));
 
-    let mut sec = Section::new("Shadows").child(row("Cast", toggle(cast)));
+    let mut sec = Section::new("Shadows")
+        .right(settings_help_button(
+            "Shadow settings",
+            vec![
+                ("Cast", "Whether this light casts shadows at all."),
+                (
+                    "Hardness",
+                    "Hard = crisp, cheap edges. Soft (PCF) = fixed-width soft edges. PCSS = \
+                     contact-hardening soft edges that widen with distance from the caster \
+                     (most realistic, most costly).",
+                ),
+                (
+                    "Softness",
+                    "Penumbra width for Soft/PCSS — scales the soft-edge disc (Soft) or the \
+                     virtual light size (PCSS). No effect in Hard mode.",
+                ),
+                (
+                    "Samples",
+                    "Taps the Soft/PCSS filter takes per shadowed pixel. More = smoother \
+                     penumbra and less speckle at the penumbra edge, at proportional cost. No \
+                     effect in Hard mode.",
+                ),
+                (
+                    "Resolution",
+                    "Shadow-map size in texels (per cube face for point lights). Higher = \
+                     sharper shadows and less bias needed, at more memory + fill cost.",
+                ),
+                (
+                    "Depth Bias",
+                    "Pushes the receiver away from the light (metres, slope-scaled) so a \
+                     surface stops shadowing itself ('acne'). Too much lifts the shadow off \
+                     the contact ('Peter-Panning' — a lit donut under a resting object). The \
+                     primary, safest bias knob; often the only one you need.",
+                ),
+                (
+                    "Normal Bias",
+                    "Offsets the shadow lookup along the surface normal — extra acne cover on \
+                     grazing/curved surfaces, but any amount tends to Peter-Pan a lit ring \
+                     into tight contacts. Defaults to 0; raise only if depth bias alone \
+                     leaves acne.",
+                ),
+                (
+                    "Kernel Slack",
+                    "Quantization slack folded into the bias so one shadow-map texel can't \
+                     bridge a real occluder gap. Like Normal Bias it Peter-Pans a lit ring \
+                     into tight contacts — defaults to 0; raise only for flat-receiver acne.",
+                ),
+                (
+                    "Max Distance",
+                    "Distance beyond which this light's shadows fade out (0 = no limit). Saves \
+                     cost on far geometry.",
+                ),
+                (
+                    "Cube Update",
+                    "Point lights only — how often the six cube-map shadow faces re-render. \
+                     Lower rates amortize cost, but are only safe when the shadow-CASTING \
+                     geometry in the light's range is static: a moving caster (even under a \
+                     fixed light) needs frequent updates or its shadow lags behind it.",
+                ),
+                (
+                    "Cascades",
+                    "Directional lights only — how many shadow-map slices the view range is \
+                     split into. More slices keep distant shadows sharp, at more cost.",
+                ),
+            ],
+        ))
+        .child(row("Cast", toggle(cast)));
 
     let n = node.clone();
     sec = sec.child(enum_select_row(

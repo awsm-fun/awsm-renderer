@@ -206,6 +206,10 @@ pub struct ShaderTemplateTransparentMaterialBindGroups {
     /// to a depth texture it can sample on the same frame without a
     /// feedback loop. `false` here makes `apply_sscs` short-circuit.
     pub sscs_available: bool,
+    /// SSCS loop bound — inert on the transparent pass (`sscs_available` is
+    /// always `false` so `apply_sscs`'s body is never emitted), but the shared
+    /// shadow template references the field, so it must exist. Dummy `1`.
+    pub sscs_step_count: u32,
     /// Emit the shadow SAMPLING block only when this material runs
     /// first-party lighting (`inc.apply_lighting`) — the only caller of
     /// `sample_shadow_*`. Custom materials force it off. The shadow bind
@@ -229,6 +233,7 @@ impl ShaderTemplateTransparentMaterialBindGroups {
             multisampled_geometry: cache_key.msaa_sample_count.is_some(),
             shadow_group_index: 1,
             sscs_available: false,
+            sscs_step_count: 1,
             needs_shadow_sampling: inc.apply_lighting,
         }
     }

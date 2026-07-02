@@ -75,6 +75,8 @@ fn first_party_key_prep(
         msaa_sample_count: msaa,
         mipmaps,
         max_shadow_casters: 4,
+        sscs_enabled: false,
+        sscs_step_count: 16,
         shader_id,
         base,
         owns_skybox,
@@ -104,6 +106,8 @@ fn custom_key(
         msaa_sample_count: msaa,
         mipmaps,
         max_shadow_casters: 4,
+        sscs_enabled: false,
+        sscs_step_count: 16,
         shader_id: dyn_id,
         base: ShadingBase::Custom,
         owns_skybox: false,
@@ -132,6 +136,46 @@ fn render(key: &ShaderCacheKeyMaterialOpaque, label: &str) -> String {
 }
 
 const CONFIGS: [(Option<u32>, bool); 3] = [(None, true), (None, false), (Some(4), true)];
+
+#[test]
+fn sscs_enabled_shaders_validate() {
+    // Every other validation test renders the SSCS-OFF variant (sscs_available is
+    // false → `apply_sscs` compiles to `return 1.0`). This one exercises the
+    // SSCS-ON path: the compile-time `{{ sscs_step_count }}` march bound and the
+    // `sscs_params` uniform reads must produce valid WGSL across step counts
+    // (incl. the clamped-minimum 1) for both prep and opaque.
+    use crate::render_passes::material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep;
+    use crate::render_passes::material_prep::shader::template::ShaderTemplateMaterialPrep;
+
+    for step_count in [1u32, 8, 32] {
+        for msaa in [None, Some(4u32)] {
+            // Prep owns the punctual + directional `apply_sscs` call sites.
+            let label = format!("sscs-on prep step={step_count} msaa={msaa:?}");
+            let src = ShaderTemplateMaterialPrep::try_from(&ShaderCacheKeyMaterialPrep {
+                msaa_sample_count: msaa,
+                max_shadow_casters: 4,
+                sscs_enabled: true,
+                sscs_step_count: step_count,
+            })
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("sscs_params"),
+                "{label}: SSCS-on body should read the sscs_params uniform"
+            );
+
+            // Opaque (first-party PBR bucket) with SSCS enabled.
+            let label = format!("sscs-on opaque step={step_count} msaa={msaa:?}");
+            let mut key =
+                first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, false);
+            key.sscs_enabled = true;
+            key.sscs_step_count = step_count;
+            naga_validate(&render(&key, &label), &label);
+        }
+    }
+}
 
 #[test]
 fn first_party_opaque_shaders_validate() {
@@ -562,6 +606,8 @@ fn material_prep_shader_validates() {
         let src = ShaderTemplateMaterialPrep::try_from(&ShaderCacheKeyMaterialPrep {
             msaa_sample_count: msaa,
             max_shadow_casters: 4,
+            sscs_enabled: false,
+            sscs_step_count: 16,
         })
         .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
         .into_source()
@@ -648,6 +694,8 @@ fn custom_froxel_lights_accessors_validate() {
             msaa_sample_count: msaa,
             mipmaps: mips,
             max_shadow_casters: 4,
+            sscs_enabled: false,
+            sscs_step_count: 16,
             shader_id: dyn_id,
             base: ShadingBase::Custom,
             owns_skybox: false,
