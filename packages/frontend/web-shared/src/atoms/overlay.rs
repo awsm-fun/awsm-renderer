@@ -491,10 +491,12 @@ impl RightDrawer {
         let close = make_close(self.on_close.unwrap_or_else(|| Box::new(|| {})));
         let has_footer = !self.footer.is_empty();
         html!("div", {
+            // Transparent click-catcher, deliberately NOT dimmed: the settings
+            // drawer hosts live render tuning (exposure, tonemapping) and the
+            // viewport must stay unaltered while values change.
             .child(html!("div", {
                 .style("position", "fixed")
                 .style("inset", "0")
-                .style("background", "oklch(0 0 0 / 0.4)")
                 .style("z-index", "200")
                 .event(clone!(close => move |_: events::Click| fire(&close)))
             }))
