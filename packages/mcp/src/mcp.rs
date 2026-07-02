@@ -38,8 +38,8 @@ use awsm_renderer_scene::animation::{
     TrackTarget, TrackValue, TransformProp,
 };
 use awsm_renderer_scene::{
-    AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, MeshLodConfig,
-    MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, SkyboxConfig, ToneMappingConfig, Trs,
+    AssetId, EnvSlot, EnvironmentConfig, LightKind, MaterialShading, MeshLodConfig,
+    MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, ToneMappingConfig, Trs,
 };
 
 use crate::link::{AgentSession, EditorLink, LinkError};
@@ -978,22 +978,27 @@ pub struct LightAnglesParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EnvironmentParams {
-    /// Skybox: omit/"builtin" for the built-in default, or a KTX texture asset
-    /// UUID for a custom cubemap.
+    /// Skybox (the background cubemap): omit to keep the current one, "builtin"
+    /// for the built-in default sky, a KTX cubemap asset UUID, or a https:// URL
+    /// to a .ktx2 cubemap.
     #[serde(default)]
     pub skybox: Option<String>,
-    /// IBL prefiltered specular: omit/"builtin" for the built-in default, or a
-    /// KTX asset UUID (then `ibl_irradiance` is required too).
+    /// IBL specular (a.k.a. the prefiltered / roughness-mipped env map that
+    /// drives reflections): omit to keep the current one, "builtin" for the
+    /// built-in default, a KTX asset UUID, or a https:// .ktx2 URL. Independent
+    /// of `irradiance` — you can override just this one.
     #[serde(default)]
-    pub ibl_prefiltered: Option<String>,
-    /// IBL irradiance KTX asset UUID (required when `ibl_prefiltered` is a UUID).
+    pub specular: Option<String>,
+    /// IBL irradiance (the diffuse-convolved env map that drives ambient light):
+    /// omit to keep the current one, "builtin" for the built-in default, a KTX
+    /// asset UUID, or a https:// .ktx2 URL. Independent of `specular`.
     #[serde(default)]
-    pub ibl_irradiance: Option<String>,
+    pub irradiance: Option<String>,
     /// Agent-authored SKY-GRADIENT environment (§18): linear-RGB `[r,g,b]` zenith
-    /// (sky) color. When `zenith`+`nadir` are both given they set BOTH the skybox
-    /// and the IBL to that two-color gradient (overriding skybox/ibl_* above) —
-    /// author dusk / overcast / night / studio from your own colors, no hosted
-    /// `.ktx2` needed.
+    /// (sky) color. When `zenith`+`nadir` are both given they set ALL THREE slots
+    /// (skybox + specular + irradiance) to that two-color gradient (overriding the
+    /// slot args above) — author dusk / overcast / night / studio from your own
+    /// colors, no hosted `.ktx2` needed.
     #[serde(default)]
     pub zenith: Option<[f32; 3]>,
     /// Agent-authored sky-gradient nadir (ground) color, linear-RGB `[r,g,b]`.
@@ -3447,20 +3452,22 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment (skybox + IBL). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) for a two-color SKY GRADIENT (skybox + IBL) — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' for the built-in default, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED skybox / ibl_* slot keeps its current config (pass 'builtin' to explicitly reset one) — so setting just the IBL never silently resets the skybox, and vice versa (split skybox/IBL survives sequential calls). KTX IBL needs both ibl_prefiltered + ibl_irradiance. URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > skybox/ibl_*. A fresh scene already seeds the built-in environment."
+        description = "Set the scene environment. THREE INDEPENDENT slots — skybox (background), specular (the prefiltered/roughness-mipped IBL map that drives reflections), and irradiance (the diffuse-convolved IBL map that drives ambient light). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) sets ALL THREE to a two-color SKY GRADIENT — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / specular / irradiance accepts: 'builtin' for the built-in default sky, an existing KTX cubemap asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED slot keeps its current config (pass 'builtin' to explicitly reset one) — so e.g. keeping default-sky irradiance while overriding just specular is one call, and slots never silently reset each other across sequential calls. Slots are fully decoupled (unlike before, specular and irradiance are set separately). URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > per-slot args. A fresh scene already seeds the built-in environment. Use get_snapshot (project.environment) to read what is currently set."
     )]
     async fn set_environment(
         &self,
         Parameters(p): Parameters<EnvironmentParams>,
     ) -> Result<CallToolResult, McpError> {
-        // §18: agent-authored sky-gradient short-circuit — zenith+nadir drive both
-        // the skybox and the IBL from the same two colors (no KTX2 needed).
+        // §18: agent-authored sky-gradient short-circuit — zenith+nadir drive all
+        // three slots from the same two colors (no KTX2 needed).
         if let (Some(zenith), Some(nadir)) = (p.zenith, p.nadir) {
+            let grad = EnvSlot::SkyGradient { zenith, nadir };
             return self
                 .dispatch(EditorCommand::SetEnvironment {
                     env: EnvironmentConfig {
-                        skybox: SkyboxConfig::SkyGradient { zenith, nadir },
-                        ibl: IblConfig::SkyGradient { zenith, nadir },
+                        skybox: grad,
+                        specular: grad,
+                        irradiance: grad,
                     },
                 })
                 .await;
@@ -3487,33 +3494,29 @@ impl EditorMcp {
                 }
             }};
         }
-        // PARTIAL semantics: an omitted slot is `None` → the editor PRESERVES
-        // its current config; 'builtin' explicitly resets that slot.
-        let skybox = match p.skybox.as_deref() {
-            None => None,
-            Some("builtin") | Some("builtin_default") => Some(SkyboxConfig::BuiltInDefault),
-            Some(v) => Some(SkyboxConfig::Ktx {
-                asset_id: resolve_ktx!(v),
-            }),
-        };
-        let ibl = match p.ibl_prefiltered.as_deref() {
-            None => None,
-            Some("builtin") | Some("builtin_default") => Some(IblConfig::BuiltInDefault),
-            Some(prefiltered) => {
-                let irradiance = p.ibl_irradiance.as_deref().ok_or_else(|| {
-                    McpError::invalid_params(
-                        "ibl_irradiance is required when ibl_prefiltered is set (KTX asset UUID or .ktx2 URL)",
-                        None,
-                    )
-                })?;
-                Some(IblConfig::Ktx {
-                    prefiltered_asset_id: resolve_ktx!(prefiltered),
-                    irradiance_asset_id: resolve_ktx!(irradiance),
-                })
-            }
-        };
-        self.dispatch(EditorCommand::PatchEnvironment { skybox, ibl })
-            .await
+        // PARTIAL semantics: an omitted slot is `None` → the editor PRESERVES its
+        // current config; 'builtin' explicitly resets that slot. Each slot
+        // resolves identically and independently.
+        macro_rules! resolve_slot {
+            ($arg:expr) => {
+                match $arg.as_deref() {
+                    None => None,
+                    Some("builtin") | Some("builtin_default") => Some(EnvSlot::BuiltInDefault),
+                    Some(v) => Some(EnvSlot::Ktx {
+                        asset_id: resolve_ktx!(v),
+                    }),
+                }
+            };
+        }
+        let skybox = resolve_slot!(p.skybox);
+        let specular = resolve_slot!(p.specular);
+        let irradiance = resolve_slot!(p.irradiance);
+        self.dispatch(EditorCommand::PatchEnvironment {
+            skybox,
+            specular,
+            irradiance,
+        })
+        .await
     }
 
     #[tool(
@@ -4724,8 +4727,13 @@ const PROMPT_SETUP_ENVIRONMENT: &str = "\
 Set the scene environment. Assets come from URLs — there is NO inline-base64 / \
 equirect tool. Two routes:
 
+The environment has THREE independent slots — skybox, specular (the prefiltered/\
+roughness-mipped IBL map that drives reflections), irradiance (the diffuse-\
+convolved IBL map that drives ambient light). Each is set separately; omit a slot \
+to leave it unchanged. Two routes:
+
 A) Quick two-color sky (no hosting):
-   1. set_environment { zenith: [r,g,b], nadir: [r,g,b] }  (linear RGB; drives skybox + IBL).
+   1. set_environment { zenith: [r,g,b], nadir: [r,g,b] }  (linear RGB; sets all three slots).
    2. wait_render_settled, then screenshot_scene.
 
 B) Baked HDRI / studio KTX2 cubemaps by URL (read awsm://docs/asset-workflows for full flags):
@@ -4734,9 +4742,12 @@ B) Baked HDRI / studio KTX2 cubemaps by URL (read awsm://docs/asset-workflows fo
       The equirect→cubemap projection happens HERE, offline (there is no runtime equirect).
    3. ktx create --cubemap --format B10G11R11_UFLOAT_PACK32 … → skybox.ktx2, env.ktx2, irradiance.ktx2.
    4. Serve them (a local CORS static server is fine), then:
-      set_environment { skybox: \"<url>/skybox.ktx2\", ibl_prefiltered: \"<url>/env.ktx2\", ibl_irradiance: \"<url>/irradiance.ktx2\" }.
-      (KTX IBL needs BOTH ibl_prefiltered + ibl_irradiance. Skybox may differ from the IBL — e.g. clean grey sky + studio IBL for chrome.)
-   5. wait_render_settled, then screenshot_scene. Save embeds the .ktx2 bytes so it survives reload with no server.";
+      set_environment { skybox: \"<url>/skybox.ktx2\", specular: \"<url>/env.ktx2\", irradiance: \"<url>/irradiance.ktx2\" }.
+      (Slots are independent — set only the ones you want. Mix freely: e.g. skybox: \"builtin\" for a \
+clean default sky + a studio specular/irradiance for chrome, or keep default-sky irradiance and \
+override just specular.)
+   5. wait_render_settled, then screenshot_scene. Save embeds the .ktx2 bytes so it survives reload with no server.
+   To read what's currently set: get_snapshot → project.environment (per-slot kind + asset).";
 
 /// The legal Pass-Dependency keys, appended to the contract output.
 const MATERIAL_KEYS_DOC: &str = "\

@@ -135,6 +135,12 @@ pub struct ProjectSnapshot {
     #[serde(default)]
     pub env_unsaved: bool,
     pub missing_assets: Vec<String>,
+    /// The currently-applied environment, per slot (skybox / specular /
+    /// irradiance) — so a driver can READ what is set (which slot is the
+    /// built-in default vs. a KTX asset vs. a sky gradient) rather than only
+    /// knowing it changed. Mirrors what the editor's per-slot pickers show.
+    #[serde(default)]
+    pub environment: EnvironmentSnapshot,
     /// Coordinate-system description (handedness / up-axis / units) so a driver
     /// doesn't have to guess the frame. Constant for now.
     #[serde(default = "default_coordinate_system")]
@@ -142,6 +148,39 @@ pub struct ProjectSnapshot {
     /// World units. Constant ("meters") for now.
     #[serde(default = "default_units")]
     pub units: String,
+}
+
+/// Read-only view of the scene environment's three slots.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EnvironmentSnapshot {
+    pub skybox: EnvSlotSnapshot,
+    pub specular: EnvSlotSnapshot,
+    pub irradiance: EnvSlotSnapshot,
+}
+
+/// Read-only view of one environment slot. `kind` is `"builtin"` (the default
+/// sky), `"ktx"` (a cubemap asset — `asset_id`/`label` populated), or
+/// `"sky_gradient"` (`gradient` = `[zenith, nadir]` linear RGB).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvSlotSnapshot {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<[[f32; 3]; 2]>,
+}
+
+impl Default for EnvSlotSnapshot {
+    fn default() -> Self {
+        Self {
+            kind: "builtin".to_string(),
+            asset_id: None,
+            label: None,
+            gradient: None,
+        }
+    }
 }
 
 fn default_coordinate_system() -> String {

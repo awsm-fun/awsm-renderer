@@ -16,8 +16,8 @@ use awsm_renderer_scene::particle::{
     ColorOverLifeDef, EmitterSpaceDef, ForceDef, SizeOverLifeDef, SpawnShapeDef,
 };
 use awsm_renderer_scene::{
-    AssetId, EnvironmentConfig, IblConfig, MaterialDef, MaterialShading, NodeId, NodeKind,
-    SkyboxConfig, ToneMappingConfig, Trs,
+    AssetId, EnvSlot, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind,
+    ToneMappingConfig, Trs,
 };
 
 use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
@@ -428,13 +428,15 @@ pub enum EditorCommand {
 
     /// Patch the scene environment: only the `Some` slots change; a `None` slot
     /// PRESERVES the current config. This is what the MCP `set_environment`
-    /// tool dispatches, so setting just the IBL (or just the skybox) no longer
-    /// silently resets the other slot to `BuiltInDefault` — the split
-    /// skybox/IBL workflow (neutral background, keyed reflections) survives
-    /// sequential calls. Inverse: restore the prior full environment.
+    /// tool dispatches, so setting just one slot (skybox / specular / irradiance)
+    /// no longer silently resets the others to `BuiltInDefault` — the split
+    /// skybox/IBL workflow (neutral background, keyed reflections, default-sky
+    /// irradiance + custom specular, …) survives sequential calls. Inverse:
+    /// restore the prior full environment.
     PatchEnvironment {
-        skybox: Option<SkyboxConfig>,
-        ibl: Option<IblConfig>,
+        skybox: Option<EnvSlot>,
+        specular: Option<EnvSlot>,
+        irradiance: Option<EnvSlot>,
     },
 
     /// Patch the global SSCS (screen-space contact-shadow) settings on

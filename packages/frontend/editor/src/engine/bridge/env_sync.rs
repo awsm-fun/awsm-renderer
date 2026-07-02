@@ -25,8 +25,15 @@ use awsm_renderer_core::cubemap::CubemapImage;
 
 use crate::controller::controller;
 use crate::engine::context::renderer_handle;
-use crate::engine::scene::{AssetId, AssetSource, EnvironmentConfig, IblConfig, SkyboxConfig};
+use crate::engine::scene::{AssetId, AssetSource, EnvSlot, EnvironmentConfig};
 use crate::prelude::*;
+
+/// Procedural-gradient cubemap sizes per slot role — mirror
+/// `scene_loader::environment` so the editor and player generate the built-in
+/// default identically.
+const SKYBOX_SIZE: u32 = 1024;
+const SPECULAR_SIZE: u32 = 1024;
+const IRRADIANCE_SIZE: u32 = 32;
 
 thread_local! {
     /// In-memory KTX bytes for HDR assets picked this session, keyed by the
@@ -76,7 +83,7 @@ pub async fn apply_initial() {
     if let Err(err) = apply_skybox(&env.skybox).await {
         tracing::error!("initial skybox apply failed: {err}");
     }
-    if let Err(err) = apply_ibl(&env.ibl).await {
+    if let Err(err) = apply_ibl(&env.specular, &env.irradiance).await {
         tracing::error!("initial ibl apply failed: {err}");
     }
 }
@@ -97,7 +104,12 @@ pub fn start() {
                     .as_ref()
                     .map(|p| p.skybox != env.skybox)
                     .unwrap_or(true);
-                let ibl_changed = previous.as_ref().map(|p| p.ibl != env.ibl).unwrap_or(true);
+                // IBL re-applies if EITHER the specular (prefiltered) or the
+                // irradiance slot changed — both feed a single `set_ibl`.
+                let ibl_changed = previous
+                    .as_ref()
+                    .map(|p| p.specular != env.specular || p.irradiance != env.irradiance)
+                    .unwrap_or(true);
                 previous = Some(env.clone());
                 async move {
                     if sky_changed {
@@ -107,7 +119,7 @@ pub fn start() {
                         }
                     }
                     if ibl_changed {
-                        if let Err(err) = apply_ibl(&env.ibl).await {
+                        if let Err(err) = apply_ibl(&env.specular, &env.irradiance).await {
                             tracing::error!("ibl apply failed: {err}");
                             Toast::error(format!("IBL failed: {err}"));
                         }
@@ -125,58 +137,39 @@ fn sky_gradient(zenith: [f32; 3], nadir: [f32; 3]) -> CubemapSkyGradient {
     CubemapSkyGradient::new(c(zenith), c(nadir))
 }
 
-async fn apply_skybox(cfg: &SkyboxConfig) -> anyhow::Result<()> {
-    let image = match cfg {
-        SkyboxConfig::BuiltInDefault => {
-            CubemapImage::new_sky_gradient(CubemapSkyGradient::default(), 1024, 1024)
-                .await
-                .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))?
-        }
-        // §18: agent-authored sky gradient — same generator as BuiltInDefault.
-        SkyboxConfig::SkyGradient { zenith, nadir } => {
-            CubemapImage::new_sky_gradient(sky_gradient(*zenith, *nadir), 1024, 1024)
-                .await
-                .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))?
-        }
-        SkyboxConfig::Ktx { asset_id } => load_ktx_by_id(*asset_id).await?,
-    };
+async fn apply_skybox(slot: &EnvSlot) -> anyhow::Result<()> {
+    let image = slot_image(slot, SKYBOX_SIZE).await?;
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
     set_skybox_on_renderer(&mut renderer, image).await
 }
 
-async fn apply_ibl(cfg: &IblConfig) -> anyhow::Result<()> {
-    let (prefiltered, irradiance) = match cfg {
-        IblConfig::BuiltInDefault => gradient_ibl(CubemapSkyGradient::default()).await?,
-        // §18: agent-authored sky-gradient IBL — same generator as BuiltInDefault.
-        IblConfig::SkyGradient { zenith, nadir } => {
-            gradient_ibl(sky_gradient(*zenith, *nadir)).await?
-        }
-        IblConfig::Ktx {
-            prefiltered_asset_id,
-            irradiance_asset_id,
-        } => {
-            let p = load_ktx_by_id(*prefiltered_asset_id).await?;
-            let i = load_ktx_by_id(*irradiance_asset_id).await?;
-            (p, i)
-        }
-    };
+async fn apply_ibl(specular: &EnvSlot, irradiance: &EnvSlot) -> anyhow::Result<()> {
+    let prefiltered = slot_image(specular, SPECULAR_SIZE).await?;
+    let irradiance = slot_image(irradiance, IRRADIANCE_SIZE).await?;
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
     set_ibl_on_renderer(&mut renderer, prefiltered, irradiance).await
 }
 
-/// Prefiltered (1024²) + irradiance (32²) env from a sky gradient.
-async fn gradient_ibl(
-    gradient: CubemapSkyGradient,
-) -> anyhow::Result<(CubemapImage, CubemapImage)> {
-    let p = CubemapImage::new_sky_gradient(gradient.clone(), 1024, 1024)
-        .await
-        .map_err(|e| anyhow::anyhow!("prefiltered: {e}"))?;
-    let i = CubemapImage::new_sky_gradient(gradient, 32, 32)
-        .await
-        .map_err(|e| anyhow::anyhow!("irradiance: {e}"))?;
-    Ok((p, i))
+/// Resolve one environment slot to a cubemap at the role's `size`. `Ktx` slots
+/// ignore `size` (the file carries its own resolution/mips); the procedural
+/// variants generate at `size`. §18 sky-gradient uses the same generator as the
+/// built-in default.
+async fn slot_image(slot: &EnvSlot, size: u32) -> anyhow::Result<CubemapImage> {
+    match slot {
+        EnvSlot::BuiltInDefault => {
+            CubemapImage::new_sky_gradient(CubemapSkyGradient::default(), size, size)
+                .await
+                .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))
+        }
+        EnvSlot::SkyGradient { zenith, nadir } => {
+            CubemapImage::new_sky_gradient(sky_gradient(*zenith, *nadir), size, size)
+                .await
+                .map_err(|e| anyhow::anyhow!("sky gradient: {e}"))
+        }
+        EnvSlot::Ktx { asset_id } => load_ktx_by_id(*asset_id).await,
+    }
 }
 
 /// Resolve a KTX cubemap by `AssetId`: the scene asset table gives the source,
