@@ -8,6 +8,10 @@
 //! - `POST /glb/{id}` / `GET /glb/{id}` — the same side-channel for exported `.glb`
 //!   bytes (`export_scene_glb` / `export_node_glb`); the tool layer returns the
 //!   temp-file path so the bytes never cross the control link or the token stream.
+//! - `POST /bundle/{id}/{*path}` / `GET /bundle/{id}/{*path}` — the same
+//!   side-channel for player-bundle files (`export_player_bundle`): the editor
+//!   POSTs each baked file under its bundle-relative path; they land in one temp
+//!   directory per id, and the tool layer returns that directory's path.
 //! - `GET  /health`      — agent-facing liveness (editor attached? last boot error?).
 //! - `POST /boot-error`  — the editor reports a renderer/init failure (before any
 //!   MCP attach), so a boot crash is visible to agents via `/health`.
@@ -55,6 +59,14 @@ const PNG_BODY_LIMIT: usize = 256 * 1024 * 1024;
 /// the same generous loopback-only cap as PNG (see [`PNG_BODY_LIMIT`]).
 const GLB_BODY_LIMIT: usize = 256 * 1024 * 1024;
 
+/// Cap on retained player-bundle directories (bounds temp-dir disk use). Exports
+/// past this are evicted oldest-first and their directories deleted.
+const MAX_RETAINED_BUNDLES: usize = 8;
+
+/// Body-size cap for a single bundle-file upload (per file; a bundle is many
+/// POSTs). Same generous loopback-only rationale as [`PNG_BODY_LIMIT`].
+const BUNDLE_BODY_LIMIT: usize = 256 * 1024 * 1024;
+
 /// On-disk path the editor's PNG upload lands at (and the rmcp tool reads back).
 /// Both sides agree on this naming so the tool needs no shared in-memory map.
 pub(crate) fn png_path(id: &str) -> PathBuf {
@@ -68,6 +80,30 @@ pub(crate) fn glb_path(id: &str) -> PathBuf {
     std::env::temp_dir().join(format!("awsm-renderer-scene-mcp-{id}.glb"))
 }
 
+/// On-disk directory a player-bundle upload lands in (one per export). The rmcp
+/// tool returns this path verbatim (it never inlines the bytes), and
+/// `GET /bundle/<id>/<path>` serves the files for humans / a player dev server.
+pub(crate) fn bundle_dir(id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("awsm-renderer-scene-mcp-bundle-{id}"))
+}
+
+/// Resolve a bundle-relative file path under its bundle's temp directory,
+/// rejecting anything that could escape it (traversal components, absolute
+/// paths, a malformed id). `None` means "don't touch the filesystem".
+fn bundle_file_path(id: &str, rel: &str) -> Option<PathBuf> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    let mut path = bundle_dir(id);
+    for comp in rel.split('/') {
+        if comp.is_empty() || comp == "." || comp == ".." || comp.contains('\\') {
+            return None;
+        }
+        path.push(comp);
+    }
+    Some(path)
+}
+
 #[derive(Clone)]
 struct AppState {
     link: EditorLink,
@@ -75,6 +111,9 @@ struct AppState {
     pngs: Arc<Mutex<VecDeque<String>>>,
     /// Insertion-ordered `.glb` ids for LRU eviction (see [`MAX_RETAINED_GLBS`]).
     glbs: Arc<Mutex<VecDeque<String>>>,
+    /// Insertion-ordered bundle ids for LRU eviction (see
+    /// [`MAX_RETAINED_BUNDLES`]). One entry per bundle (not per file).
+    bundles: Arc<Mutex<VecDeque<String>>>,
     /// The most recent editor BOOT error (renderer/init failure reported by the
     /// page before any MCP attach happened), with a timestamp. Agents read it via
     /// `GET /health` — without this, a boot-time failure is invisible outside the
@@ -89,6 +128,7 @@ pub async fn serve(addr: SocketAddr, link: EditorLink) -> Result<()> {
         link: link.clone(),
         pngs: Arc::new(Mutex::new(VecDeque::new())),
         glbs: Arc::new(Mutex::new(VecDeque::new())),
+        bundles: Arc::new(Mutex::new(VecDeque::new())),
         boot_error: Arc::new(Mutex::new(None)),
     };
 
@@ -140,12 +180,23 @@ pub async fn serve(addr: SocketAddr, link: EditorLink) -> Result<()> {
                 .get(glb_download)
                 .layer(DefaultBodyLimit::max(GLB_BODY_LIMIT)),
         )
+        // The player-bundle side-channel: the editor POSTs each baked file here
+        // under its bundle-relative path; the rmcp tool returns the bundle
+        // directory path (never the inline bytes), and GET serves the files.
+        .route(
+            "/bundle/{id}/{*path}",
+            post(bundle_upload)
+                .get(bundle_download)
+                .layer(DefaultBodyLimit::max(BUNDLE_BODY_LIMIT)),
+        )
         .nest_service("/mcp", mcp_service)
         .layer(cors)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("http listening on http://{addr} (/mcp, /editor, /debug, /png, /glb, /health)");
+    tracing::info!(
+        "http listening on http://{addr} (/mcp, /editor, /debug, /png, /glb, /bundle, /health)"
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -243,5 +294,67 @@ async fn glb_download(Path(id): Path<String>) -> impl IntoResponse {
     match std::fs::read(glb_path(id)) {
         Ok(bytes) => ([(header::CONTENT_TYPE, "model/gltf-binary")], bytes).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "no such glb").into_response(),
+    }
+}
+
+/// `POST /bundle/{id}/{*path}` — the editor uploads one baked bundle file here
+/// (off the control link), under its bundle-relative path. We write it into the
+/// bundle's temp directory and remember the id for LRU eviction.
+async fn bundle_upload(
+    State(s): State<AppState>,
+    Path((id, rel)): Path<(String, String)>,
+    body: Bytes,
+) -> StatusCode {
+    let Some(path) = bundle_file_path(&id, &rel) else {
+        tracing::warn!("bundle upload rejected: bad id/path ({id} / {rel})");
+        return StatusCode::BAD_REQUEST;
+    };
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!("bundle upload mkdir failed ({}): {e}", parent.display());
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    }
+    if let Err(e) = std::fs::write(&path, &body) {
+        tracing::warn!("bundle upload write failed ({}): {e}", path.display());
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    tracing::debug!("bundle {id}: {} bytes → {}", body.len(), path.display());
+    // Track for eviction on the bundle's FIRST file; drop the oldest beyond the
+    // cap (whole directories — a bundle is one unit).
+    let mut q = s.bundles.lock().unwrap();
+    if !q.contains(&id) {
+        q.push_back(id);
+        while q.len() > MAX_RETAINED_BUNDLES {
+            if let Some(old) = q.pop_front() {
+                let _ = std::fs::remove_dir_all(bundle_dir(&old));
+            }
+        }
+    }
+    StatusCode::OK
+}
+
+/// `GET /bundle/{id}/{*path}` — serve a previously-uploaded bundle file (for
+/// humans / a player dev server pointed at the bundle over HTTP).
+async fn bundle_download(Path((id, rel)): Path<(String, String)>) -> impl IntoResponse {
+    let Some(path) = bundle_file_path(&id, &rel) else {
+        return (StatusCode::BAD_REQUEST, "bad bundle path").into_response();
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => ([(header::CONTENT_TYPE, bundle_mime(&rel))], bytes).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "no such bundle file").into_response(),
+    }
+}
+
+/// Content type for a served bundle file, by extension (enough for a browser /
+/// player to consume the handful of formats a bundle contains).
+fn bundle_mime(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("toml") | Some("wgsl") | Some("txt") => "text/plain; charset=utf-8",
+        Some("glb") => "model/gltf-binary",
+        Some("png") => "image/png",
+        Some("ktx2") => "image/ktx2",
+        Some("json") => "application/json",
+        _ => "application/octet-stream",
     }
 }

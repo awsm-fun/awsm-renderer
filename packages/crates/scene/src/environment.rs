@@ -10,6 +10,30 @@ pub struct EnvironmentConfig {
     pub ibl: IblConfig,
 }
 
+impl EnvironmentConfig {
+    /// Every KTX2 cubemap asset id this environment references (skybox +
+    /// IBL-prefiltered + IBL-irradiance, when file-based). These are exactly the
+    /// ids whose BYTES must accompany the config — the editor's Save/export
+    /// write them to [`crate::project_dir::env_ktx_path`] and the player's
+    /// `apply_environment` reads them back from the same path. Procedural
+    /// variants (built-in default / sky-gradient) reference no assets.
+    pub fn ktx_asset_ids(&self) -> Vec<AssetId> {
+        let mut ids = Vec::new();
+        if let SkyboxConfig::Ktx { asset_id } = self.skybox {
+            ids.push(asset_id);
+        }
+        if let IblConfig::Ktx {
+            prefiltered_asset_id,
+            irradiance_asset_id,
+        } = self.ibl
+        {
+            ids.push(prefiltered_asset_id);
+            ids.push(irradiance_asset_id);
+        }
+        ids
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Copy, Default)]

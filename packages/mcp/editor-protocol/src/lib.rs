@@ -54,7 +54,8 @@ pub use query::{
     VertexPredicate,
 };
 pub use transport::{
-    EditorEvent, GlbHandle, PngHandle, Request, Response, WsClientMsg, WsServerMsg,
+    BundleFileMeta, BundleHandle, EditorEvent, GlbHandle, PngHandle, Request, Response,
+    WsClientMsg, WsServerMsg,
 };
 
 // Re-export the meshgen recipe types so editor + mcp callers that build/send a

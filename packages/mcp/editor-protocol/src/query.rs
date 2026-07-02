@@ -316,16 +316,6 @@ pub enum EditorQuery {
         #[serde(default)]
         limit: Option<u32>,
     },
-    /// Bake the whole project to a player runtime bundle **directory**: a
-    /// `scene.toml` (the runtime scene — nodes / transforms / material instances /
-    /// lights / cameras / our clips / env, meshes by id) + an `assets/` directory
-    /// (one geometry-only `assets/<id>.glb` per non-primitive mesh — bare
-    /// primitives stay procedural in scene.toml; custom-material folders;
-    /// referenced textures). Materials + animations are ours (not in the glbs),
-    /// applied by the player from scene.toml + clips. A read (returns the file
-    /// set; never mutates). MCP: `export_player_bundle`. Skinned/morph glb
-    /// re-export from source is a follow-on (static for now).
-    ExportPlayerBundle { name: String },
     /// Resolve the material a node actually renders with — the most common
     /// authoring target, otherwise only reachable by parsing the opaque `NodeKind`
     /// blob from `node_kind_details`. Returns `{ assigned, kind:

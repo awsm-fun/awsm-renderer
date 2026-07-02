@@ -216,16 +216,64 @@ pub async fn bake_player_bundle(
         files.push(BundleFile::new(path, bytes));
     }
 
-    // 6. Environment skybox / IBL KTX2 cubemaps → assets/<id>.ktx2. The runtime
-    //    `scene.environment` (in scene.toml) references these by id; the player's
-    //    `scene_loader::environment` fetches them by the same convention. `ktx_files`
-    //    returns paths already rooted at `assets/`, so push verbatim (a gradient /
-    //    built-in environment references no KTX and emits nothing here).
-    for (path, bytes) in crate::controller::persistence::ktx_files(ctrl) {
-        files.push(BundleFile::new(path, bytes));
-    }
+    // 6. Environment skybox / IBL KTX2 cubemaps → the shared `env_ktx_path`
+    //    convention (`assets/<id>.ktx2`) the player's `scene_loader::environment`
+    //    fetches. STRICT (unlike Save's `ktx_files`): a KTX env id whose bytes
+    //    can't be resolved FAILS the export instead of silently baking a bundle
+    //    that plays with the built-in default environment. A gradient / built-in
+    //    environment references no KTX and emits nothing here.
+    files.extend(env_ktx_bundle_files(ctrl).await?);
 
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
+}
+
+/// The environment's KTX2 cubemap files for the player bundle — one
+/// `assets/<id>.ktx2` (the shared `env_ktx_path` convention) per referenced
+/// skybox / IBL-prefiltered / IBL-irradiance id, REGARDLESS of how the env was
+/// applied (Save-embedded reload, ribbon HDR picker, MCP `set_environment` by
+/// URL — all of which stash bytes in `env_sync`). A `Url`-sourced asset (e.g. a
+/// hand-authored `project.toml`) has no stash entry; its bytes are fetched here
+/// and stashed so the next save/export is consistent. Anything else unresolvable
+/// is a hard error: the export must not silently drop the authored environment.
+async fn env_ktx_bundle_files(
+    ctrl: &super::EditorController,
+) -> Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String> {
+    use awsm_renderer_editor_protocol::{env_ktx_path, BundleFile};
+    let env = ctrl.scene.environment.get_cloned();
+    let mut out = Vec::new();
+    for id in env.ktx_asset_ids() {
+        let bytes = match crate::engine::bridge::env_sync::ktx_bytes(id) {
+            Some(bytes) => bytes,
+            None => {
+                let source = ctrl
+                    .scene
+                    .assets
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .get(&id)
+                    .map(|e| e.source.clone());
+                let Some(AssetSource::Url(url)) = source else {
+                    return Err(format!(
+                        "environment cubemap {id} has no bytes to export (not in the \
+                         session stash, no URL source) — re-apply the environment \
+                         (set_environment / HDR picker) and export again"
+                    ));
+                };
+                let bytes = gloo_net::http::Request::get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("environment cubemap {id}: fetch {url}: {e}"))?
+                    .binary()
+                    .await
+                    .map_err(|e| format!("environment cubemap {id}: fetch {url} body: {e}"))?;
+                crate::engine::bridge::env_sync::stash_ktx(id, bytes.clone());
+                bytes
+            }
+        };
+        out.push(BundleFile::new(env_ktx_path(id), bytes));
+    }
+    Ok(out)
 }
 
 /// Collect the mesh-asset ids whose referencing `NodeKind::Mesh` nodes have LOD

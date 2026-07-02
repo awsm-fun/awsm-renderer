@@ -27,7 +27,8 @@ use gloo_net::websocket::Message;
 use wasm_bindgen_futures::spawn_local;
 
 use awsm_renderer_editor_protocol::{
-    EditorEvent, GlbHandle, PngHandle, Request, Response, WsClientMsg, WsServerMsg,
+    BundleFileMeta, BundleHandle, EditorEvent, GlbHandle, PngHandle, Request, Response,
+    WsClientMsg, WsServerMsg,
 };
 
 use crate::controller::controller;
@@ -412,6 +413,9 @@ async fn dispatch(req: Request) -> Response {
             Err(e) => Response::Err(e),
         },
         Request::ExportGlb { node } => glb_response(ctrl.export_glb_bytes(node).await).await,
+        Request::ExportPlayerBundle => {
+            bundle_response(crate::controller::export::bake_player_bundle(&ctrl).await).await
+        }
     }
 }
 
@@ -430,6 +434,42 @@ async fn glb_response(result: Result<Vec<u8>, String>) -> Response {
         return Response::Err(format!("glb upload failed: {e}"));
     }
     Response::Glb(GlbHandle { id, byte_len })
+}
+
+/// POST a baked player bundle's files to the server's `/bundle/<id>/<path>`
+/// side-channel (off the control link) and return a [`BundleHandle`] manifest.
+/// Mirrors [`glb_response`]: only the manifest crosses the link, so a
+/// multi-file, multi-MiB bundle can't blow the session (or the agent's token
+/// stream — this replaced an inline-base64 query result that did exactly that).
+async fn bundle_response(
+    result: Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String>,
+) -> Response {
+    let files = match result {
+        Ok(files) => files,
+        Err(e) => return Response::Err(e),
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let origin = ORIGIN.with(|o| o.get_cloned());
+    let mut metas = Vec::with_capacity(files.len());
+    for f in files {
+        let byte_len = f.bytes.len();
+        // Percent-encode each segment so a path lands intact in the URL; the
+        // server decodes and re-validates it before touching the filesystem.
+        let encoded = f
+            .path
+            .split('/')
+            .map(|seg| String::from(js_sys::encode_uri_component(seg)))
+            .collect::<Vec<_>>()
+            .join("/");
+        if let Err(e) = upload_bytes(&origin, "bundle", &format!("{id}/{encoded}"), f.bytes).await {
+            return Response::Err(format!("bundle upload failed ({}): {e}", f.path));
+        }
+        metas.push(BundleFileMeta {
+            path: f.path,
+            byte_len,
+        });
+    }
+    Response::Bundle(BundleHandle { id, files: metas })
 }
 
 /// Turn an optional `data:image/png;base64,…` URL into a [`Response::Png`] handle

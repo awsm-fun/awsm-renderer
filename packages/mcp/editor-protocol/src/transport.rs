@@ -49,6 +49,12 @@ pub enum Request {
     /// the base64 inline (the old `EditorQuery::ExportGlb` path) reliably blew the
     /// session on meshes past a couple thousand verts.
     ExportGlb { node: Option<NodeId> },
+    /// Bake the whole project to a player runtime bundle (`scene.toml` + an
+    /// `assets/` directory). Like [`Request::ExportGlb`], the file bytes never
+    /// ride the control link (or the agent's token stream): the editor POSTs
+    /// each file to the server's `/bundle/<id>/<path>` side-channel and replies
+    /// with a small [`BundleHandle`] manifest.
+    ExportPlayerBundle,
     /// The current workspace mode.
     Mode,
 }
@@ -125,6 +131,29 @@ pub struct GlbHandle {
     pub byte_len: usize,
 }
 
+/// One file of an out-of-band bundle upload: its bundle-relative path + size.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleFileMeta {
+    /// Bundle-relative path, e.g. `scene.toml` or `assets/<id>.glb`.
+    pub path: String,
+    /// Size of the uploaded file in bytes.
+    pub byte_len: usize,
+}
+
+/// A reference to a player bundle the editor uploaded out-of-band. Like
+/// [`GlbHandle`], the bytes do **not** ride the control link — the editor POSTs
+/// each file to the server's `/bundle/<id>/<path>` HTTP route and returns this
+/// small manifest here instead, so a multi-file, multi-MiB bundle can't blow
+/// the session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleHandle {
+    /// Opaque id (uuid v4) the editor minted and POSTed the files under; the
+    /// server stores them in a temp directory keyed by this id.
+    pub id: String,
+    /// Every uploaded file's bundle-relative path + byte size.
+    pub files: Vec<BundleFileMeta>,
+}
+
 /// Editor → server. The reply to a [`Request`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
@@ -139,6 +168,9 @@ pub enum Response {
     /// An exported `.glb`, uploaded out-of-band (see [`GlbHandle`]); only this
     /// handle crosses the control link.
     Glb(GlbHandle),
+    /// A baked player bundle, uploaded out-of-band file-by-file (see
+    /// [`BundleHandle`]); only this manifest crosses the control link.
+    Bundle(BundleHandle),
     /// The current workspace mode.
     Mode(EditorMode),
     /// The request failed; the string is a human-readable reason.
@@ -451,6 +483,7 @@ mod wire_roundtrip_tests {
             },
             "export_glb_node",
         );
+        assert_roundtrips(&Request::ExportPlayerBundle, "export_player_bundle");
         assert_roundtrips(&Request::Mode, "mode");
     }
 
@@ -492,6 +525,26 @@ mod wire_roundtrip_tests {
             }),
         };
         let j = serde_json::to_string(&glb).unwrap();
+        let back: WsClientMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        let bundle = WsClientMsg::Response {
+            id: 9,
+            resp: Response::Bundle(BundleHandle {
+                id: "ghi".to_string(),
+                files: vec![
+                    BundleFileMeta {
+                        path: "scene.toml".to_string(),
+                        byte_len: 2048,
+                    },
+                    BundleFileMeta {
+                        path: "assets/mesh.glb".to_string(),
+                        byte_len: 65536,
+                    },
+                ],
+            }),
+        };
+        let j = serde_json::to_string(&bundle).unwrap();
         let back: WsClientMsg = serde_json::from_str(&j).unwrap();
         assert_eq!(j, serde_json::to_string(&back).unwrap());
 

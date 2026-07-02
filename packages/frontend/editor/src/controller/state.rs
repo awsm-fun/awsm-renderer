@@ -4568,36 +4568,6 @@ impl EditorController {
                     },
                 }
             }
-            EditorQuery::ExportPlayerBundle { name } => {
-                use base64::Engine;
-                use serde_json::json;
-                // The runtime bundle directory (scene.toml + assets/, per the
-                // glb-mesh design) via the native-tested `project_to_scene` +
-                // `assemble_bundle`. Each file's bytes are base64 (STANDARD) so the
-                // wire result stays JSON-clean.
-                match crate::controller::export::bake_player_bundle(self).await {
-                    Ok(bundle) => {
-                        let files: Vec<serde_json::Value> = bundle
-                            .into_iter()
-                            .map(|f| {
-                                json!({
-                                    "path": f.path,
-                                    "bytes": base64::engine::general_purpose::STANDARD
-                                        .encode(f.bytes),
-                                })
-                            })
-                            .collect();
-                        let mut entries = std::collections::BTreeMap::new();
-                        entries.insert("name".to_string(), json!(name));
-                        entries.insert("files".to_string(), json!(files));
-                        QueryResult::Map(query::MapResult {
-                            kind: "player_bundle".to_string(),
-                            entries,
-                        })
-                    }
-                    Err(e) => QueryResult::Error { error: e },
-                }
-            }
             EditorQuery::ResolveNodeMaterial { node } => {
                 use serde_json::json;
                 let Some(n) = mutate::find_by_id(&self.scene, node) else {

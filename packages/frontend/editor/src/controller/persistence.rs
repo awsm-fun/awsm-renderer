@@ -717,37 +717,20 @@ where
     }
 }
 
-/// The skybox/IBL KTX2 (HDR cubemap) asset ids referenced by an environment
-/// config. The KTX HDR bytes live session-only in `env_sync`, so they need
-/// explicit side files (`ktx_files`) to survive Save→reload.
-fn env_ktx_ids(env: &awsm_renderer_editor_protocol::EnvironmentConfig) -> Vec<AssetId> {
-    use awsm_renderer_editor_protocol::{IblConfig, SkyboxConfig};
-    let mut ids = Vec::new();
-    if let SkyboxConfig::Ktx { asset_id } = env.skybox {
-        ids.push(asset_id);
-    }
-    if let IblConfig::Ktx {
-        prefiltered_asset_id,
-        irradiance_asset_id,
-    } = env.ibl
-    {
-        ids.push(prefiltered_asset_id);
-        ids.push(irradiance_asset_id);
-    }
-    ids
-}
-
-/// Per-environment KTX2/HDR cubemap side files (`assets/<id>.ktx2`). The
+/// Per-environment KTX2/HDR cubemap side files, at the shared
+/// [`awsm_renderer_editor_protocol::env_ktx_path`] convention. The
 /// `EnvironmentConfig` ids round-trip in `project.toml`, but the HDR BYTES live
 /// session-only in `env_sync`'s stash — so without this an HDR skybox/IBL reverts to
 /// the built-in default on reload. Mirrors `texture_files` for the env's KTX assets.
+/// A stash miss is skipped here (the save census counts it — see [`save_census`]);
+/// the bundle EXPORT path resolves strictly instead (`export::env_ktx_bundle_files`).
 pub fn ktx_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
     let env = ctrl.scene.environment.get_cloned();
-    env_ktx_ids(&env)
+    env.ktx_asset_ids()
         .into_iter()
         .filter_map(|id| {
             crate::engine::bridge::env_sync::ktx_bytes(id)
-                .map(|bytes| (format!("assets/{}.ktx2", id.0), bytes))
+                .map(|bytes| (awsm_renderer_editor_protocol::env_ktx_path(id), bytes))
         })
         .collect()
 }
@@ -761,8 +744,8 @@ where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
-    for id in env_ktx_ids(&project.environment) {
-        let path = format!("assets/{}.ktx2", id.0);
+    for id in project.environment.ktx_asset_ids() {
+        let path = awsm_renderer_editor_protocol::env_ktx_path(id);
         if let Ok(bytes) = read(path).await {
             crate::engine::bridge::env_sync::stash_ktx(id, bytes);
         }
@@ -905,6 +888,8 @@ pub struct SaveCensus {
     pub texture_unhashed: usize,
     pub buffer_assets: usize,
     pub buffer_missing_cache: usize,
+    pub env_ktx_assets: usize,
+    pub env_ktx_missing_stash: usize,
 }
 
 impl SaveCensus {
@@ -913,6 +898,7 @@ impl SaveCensus {
             && self.texture_missing_cache == 0
             && self.texture_unhashed == 0
             && self.buffer_missing_cache == 0
+            && self.env_ktx_missing_stash == 0
     }
 }
 
@@ -960,6 +946,17 @@ pub fn save_census(ctrl: &EditorController) -> SaveCensus {
             _ => {}
         }
     }
+    drop(assets);
+    // Environment KTX cubemaps: the bytes live only in `env_sync`'s session
+    // stash (written to `assets/<id>.ktx2` on save). A referenced id with no
+    // stashed bytes would silently revert the env to the built-in default on
+    // reload — the same loss class as a missing mesh/texture cache.
+    for id in ctrl.scene.environment.get_cloned().ktx_asset_ids() {
+        c.env_ktx_assets += 1;
+        if !crate::engine::bridge::env_sync::has_ktx(id) {
+            c.env_ktx_missing_stash += 1;
+        }
+    }
     c
 }
 
@@ -968,14 +965,17 @@ pub fn check_save_complete(ctrl: &EditorController) -> Result<(), String> {
     // Census on every save — surfaces a 38→N drop even when the guard passes.
     tracing::info!(
         "save census: mesh_assets={} (missing_cache={}) texture_assets={} \
-         (missing_cache={} unhashed={}) buffer_assets={} (missing_cache={})",
+         (missing_cache={} unhashed={}) buffer_assets={} (missing_cache={}) \
+         env_ktx_assets={} (missing_stash={})",
         c.mesh_assets,
         c.mesh_missing_cache,
         c.texture_assets,
         c.texture_missing_cache,
         c.texture_unhashed,
         c.buffer_assets,
-        c.buffer_missing_cache
+        c.buffer_missing_cache,
+        c.env_ktx_assets,
+        c.env_ktx_missing_stash
     );
     if c.is_complete() {
         return Ok(());
@@ -999,10 +999,17 @@ pub fn check_save_complete(ctrl: &EditorController) -> Result<(), String> {
     if missing_buf > 0 {
         parts.push(format!("{missing_buf} material buffer(s)"));
     }
+    if c.env_ktx_missing_stash > 0 {
+        parts.push(format!(
+            "{} environment cubemap(s)",
+            c.env_ktx_missing_stash
+        ));
+    }
     Err(format!(
         "refusing to save — {} have no persistable bytes yet (import not fully \
          settled). Nothing was written, so your existing save is untouched. Wait \
-         for the import to finish (or re-import the model) and Save again.",
+         for the import to finish (or re-import the model / re-apply the \
+         environment) and Save again.",
         parts.join(", ")
     ))
 }

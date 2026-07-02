@@ -29,7 +29,7 @@ resolver = "2"
 [workspace.package]
 description = "awsm renderer"
 edition = "2021"
-version = "0.11.0"
+version = "0.11.1"
 license = "MIT OR Apache-2.0"
 authors = ["David Komer"]
 # 1.85 floor: rmcp 1.x (the MCP server SDK) is edition-2024, which requires
@@ -118,23 +118,23 @@ opt-level = 1
 # `workspace.package.version` so the published crates carry concrete
 # version requirements on each other (crates.io rejects path-only deps).
 # Bump this block together with the version above on every release.
-awsm-renderer-curves = { path = "packages/crates/curves", version = "0.11.0" }
-awsm-renderer-geometry = { path = "packages/crates/geometry", version = "0.11.0" }
-awsm-renderer-scene = { path = "packages/crates/scene", version = "0.11.0" }
-awsm-renderer-scene-loader = { path = "packages/crates/scene-loader", version = "0.11.0" }
-awsm-renderer-editor-protocol = { path = "packages/mcp/editor-protocol", version = "0.11.0" }
-awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.11.0" }
-awsm-renderer-meshgen = { path = "packages/crates/meshgen", version = "0.11.0" }
-awsm-renderer-glb-export = { path = "packages/crates/glb-export", version = "0.11.0" }
-awsm-renderer-gltf-convert = { path = "packages/crates/gltf-convert", version = "0.11.0" }
-awsm-renderer-tangents = { path = "packages/crates/tangents", version = "0.11.0" }
-awsm-renderer-lod-bake = { path = "packages/crates/lod-bake", version = "0.11.0" }
-awsm-renderer-particles = { path = "packages/crates/particles", version = "0.11.0" }
-awsm-renderer-materials = { path = "packages/crates/materials", version = "0.11.0" }
-awsm-renderer = { path = "packages/crates/renderer", version = "0.11.0" }
-awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.11.0" }
+awsm-renderer-curves = { path = "packages/crates/curves", version = "0.11.1" }
+awsm-renderer-geometry = { path = "packages/crates/geometry", version = "0.11.1" }
+awsm-renderer-scene = { path = "packages/crates/scene", version = "0.11.1" }
+awsm-renderer-scene-loader = { path = "packages/crates/scene-loader", version = "0.11.1" }
+awsm-renderer-editor-protocol = { path = "packages/mcp/editor-protocol", version = "0.11.1" }
+awsm-renderer-core = { path = "packages/crates/renderer-core", version = "0.11.1" }
+awsm-renderer-meshgen = { path = "packages/crates/meshgen", version = "0.11.1" }
+awsm-renderer-glb-export = { path = "packages/crates/glb-export", version = "0.11.1" }
+awsm-renderer-gltf-convert = { path = "packages/crates/gltf-convert", version = "0.11.1" }
+awsm-renderer-tangents = { path = "packages/crates/tangents", version = "0.11.1" }
+awsm-renderer-lod-bake = { path = "packages/crates/lod-bake", version = "0.11.1" }
+awsm-renderer-particles = { path = "packages/crates/particles", version = "0.11.1" }
+awsm-renderer-materials = { path = "packages/crates/materials", version = "0.11.1" }
+awsm-renderer = { path = "packages/crates/renderer", version = "0.11.1" }
+awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.11.1" }
 # Frontend-only (not published); workspace dep keeps consumers path-agnostic.
-awsm-renderer-web-shared = { path = "packages/frontend/web-shared", version = "0.11.0" }
+awsm-renderer-web-shared = { path = "packages/frontend/web-shared", version = "0.11.1" }
 
 # Misc
 cfg-if = "1.0.4"
