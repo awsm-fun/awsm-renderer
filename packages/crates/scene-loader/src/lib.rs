@@ -845,9 +845,24 @@ pub async fn load_scene_for_player(
     // ── Environment: apply skybox + IBL BEFORE the Phase-4 compile so
     //    IBL-sampling materials compile against the final environment (mirrors
     //    the editor's `env_sync::apply_initial` running before the first paint).
-    //    Non-fatal: a missing/bad cubemap falls back to the renderer's built-in
-    //    default rather than sinking the whole load.
+    //    FATAL when the scene authored a FILE-BASED (KTX) environment: silently
+    //    falling back to the built-in default renders the whole scene with the
+    //    wrong lighting, which reads as "the player is broken" and hides asset
+    //    problems (missing/corrupt/cache-poisoned `assets/<id>.ktx2`). A purely
+    //    procedural environment (builtin / gradient) can't lose assets, so a
+    //    failure there still degrades to the renderer default rather than
+    //    sinking the load.
     if let Err(err) = environment::apply_environment(renderer, &scene.environment, assets).await {
+        let env = &scene.environment;
+        let has_ktx_slot = [&env.skybox, &env.specular, &env.irradiance]
+            .into_iter()
+            .any(|slot| matches!(slot, awsm_renderer_scene::EnvSlot::Ktx { .. }));
+        if has_ktx_slot {
+            return Err(err.context(
+                "scene authored a KTX environment that failed to load — refusing to \
+                 silently render with the default environment",
+            ));
+        }
         tracing::warn!("environment apply failed, using renderer default: {err}");
     }
 

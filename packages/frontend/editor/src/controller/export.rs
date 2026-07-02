@@ -756,8 +756,24 @@ async fn resolve_one_texture(scene: &Scene, id: AssetId) -> Option<(String, Vec<
             rgba_to_png(&rgba, w, h).map(|png| (format!("texture-{id}"), png))
         }
         TextureDef::Raster { display_name, .. } => {
-            // Only available once uploaded to the GPU (assign the material / its
-            // model first). Skipped otherwise — referenced-only.
+            // Prefer the session texture_cache's ORIGINAL encoded bytes (what the
+            // project Save writes) — byte-perfect. The GPU round-trip below is
+            // LOSSY for non-sRGB DATA textures: `texture_png_bytes` linear→sRGB
+            // encodes them for PNG, so a normal map came back mean-shifted
+            // ((128,128,255) → ~(184,186,250)) and the player then shaded with
+            // normals leaning ~30°, a strong view-dependent sheen/fresnel wash
+            // the editor viewport never showed. (The bytes may be JPEG despite
+            // the bundle's `<id>.png` name — the browser decoder sniffs content,
+            // the extension is only a hint.)
+            if let Some((bytes, _mime)) = crate::engine::bridge::texture_cache::get(id) {
+                return Some((display_name, bytes));
+            }
+            // Fallback: read back from the GPU (needs the texture uploaded —
+            // assign the material / its model first). Loud: for data textures
+            // this bakes in an sRGB encode.
+            tracing::warn!(
+                "bundle texture {id} ({display_name}): no cached source bytes — GPU readback fallback (lossy for normal/MR/occlusion maps)"
+            );
             let key = bridge_material::texture_key_for(id)?;
             let handle = crate::engine::context::renderer_handle();
             let r = handle.lock().await;
