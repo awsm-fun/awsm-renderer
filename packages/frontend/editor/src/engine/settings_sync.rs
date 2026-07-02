@@ -92,6 +92,42 @@ pub fn start() {
             .await;
     });
 
+    // SMAA on/off — post-process AA on `AntiAliasing::smaa`. Recompiles the
+    // effects/display pipelines (via `set_anti_aliasing`), so it's async + guarded
+    // against redundant re-applies, mirroring the MSAA observer above. Transient
+    // (not persisted) — a debug-only editor view of what a player might enable.
+    spawn_local(async {
+        let mut first = true;
+        controller()
+            .settings
+            .smaa
+            .signal()
+            .for_each(move |on| {
+                let skip = first;
+                first = false;
+                async move {
+                    if skip {
+                        return;
+                    }
+                    let handle = renderer_handle();
+                    let mut r = handle.lock().await;
+                    if r.anti_aliasing.smaa != on {
+                        let mut aa = r.anti_aliasing.clone();
+                        aa.smaa = on;
+                        if let Err(e) = r.set_anti_aliasing(aa).await {
+                            tracing::warn!("set_anti_aliasing (smaa): {e}");
+                        }
+                        // Same as the MSAA flip: route the material-variant
+                        // reconcile through the one compile path.
+                        if let Err(e) = r.commit_load(|_| {}).await {
+                            tracing::warn!("commit_load after smaa toggle: {e}");
+                        }
+                    }
+                }
+            })
+            .await;
+    });
+
     // Global SSCS (screen-space contact shadows): the authored, persisted
     // `scene.shadows` SSCS fields → renderer. `enabled` / `step_count` are
     // compile-time template constants, so they can recompile the shadow-consuming

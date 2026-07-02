@@ -197,6 +197,12 @@ pub struct Settings {
     /// inert in Scene/Material modes.
     pub auto_key: Mutable<bool>,
     pub msaa: Mutable<bool>,
+    /// SMAA (post-process morphological AA). Transient, like [`Self::msaa`] —
+    /// NOT persisted (AA is a player/runtime decision, not scene data); it's here
+    /// only so aliasing can be eyeballed/debugged in the editor viewport. Drives
+    /// the renderer's `AntiAliasing::smaa` via `settings_sync`. Off by default
+    /// (MSAA already on), independent of MSAA so both can be compared.
+    pub smaa: Mutable<bool>,
     pub heatmap: Mutable<bool>,
     /// Edge-aware shadow denoise blur (global). Drives the renderer's
     /// `ShadowsConfig::denoise` via `settings_sync`.
@@ -218,6 +224,7 @@ impl Default for Settings {
             skeleton_viz: Mutable::new(true),
             auto_key: Mutable::new(true),
             msaa: Mutable::new(true),
+            smaa: Mutable::new(false),
             heatmap: Mutable::new(false),
             // On by default — matches the renderer's `ShadowsConfig::denoise`
             // default; keeps point-light soft/PCSS penumbras clean out of box.
