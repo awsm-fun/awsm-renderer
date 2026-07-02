@@ -563,8 +563,12 @@ pub struct ShadingParams {
 pub struct UpdateBuiltinParams {
     /// The built-in material's asset id.
     pub id: String,
-    /// The FULL MaterialDef as JSON (read the current one from get_snapshot,
-    /// modify, send back). See the tool description for field shapes.
+    /// The FULL MaterialDef as a JSON **object** (read the current one from
+    /// get_snapshot, modify, send back). See the tool description for field
+    /// shapes. Typed as `object` in the schema (like `patch_kind.patch`) so
+    /// clients don't stringify it — a bare `Value` schema made every client
+    /// send a string, which the server then rejected.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub def: serde_json::Value,
 }
 
@@ -1414,17 +1418,17 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Replace a built-in library material's VARIANT definition wholesale (idempotent full MaterialDef as JSON, undoable; assigned meshes re-materialize). Key fields: shading ({\"pbr\":null} | {\"unlit\":null} | {\"toon\":{...}} | {\"flip_book\":{\"cols\":2,\"rows\":2,\"frame_count\":4,\"fps\":2.0,\"time_offset\":0.0,\"mode\":\"loop\",\"flip_y\":false}}), alpha_mode ({\"opaque\":null} | {\"mask\":{\"cutoff\":0.5}} | {\"blend\":null}), double_sided, base_color (rgba), base_color_texture ({\"asset\":\"<texture-asset-id>\"} — for a FlipBook this is the ATLAS), label. Read the current def from get_snapshot first and send it back modified. A Mask-mode FlipBook = an ANIMATED CUTOUT (alpha-tested opaque, hole-shaped shadows)."
+        description = "Replace a built-in library material's VARIANT definition wholesale (idempotent full MaterialDef as a JSON object, undoable; assigned meshes re-materialize). Key fields: shading (unit variants are PLAIN STRINGS: \"pbr\" | \"unlit\"; struct variants are single-key objects: {\"toon\":{...}} | {\"flip_book\":{\"cols\":2,\"rows\":2,\"frame_count\":4,\"fps\":2.0,\"time_offset\":0.0,\"mode\":\"loop\",\"flip_y\":false}}), alpha_mode (\"opaque\" | {\"mask\":{\"cutoff\":0.5}} | \"blend\"), double_sided, base_color (rgba), base_color_texture ({\"asset\":\"<texture-asset-id>\"} — for a FlipBook this is the ATLAS), extensions (e.g. {\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}), label. Read the current def from get_snapshot first and send it back modified. A Mask-mode FlipBook = an ANIMATED CUTOUT (alpha-tested opaque, hole-shaped shadows)."
     )]
     async fn update_builtin_material(
         &self,
         Parameters(p): Parameters<UpdateBuiltinParams>,
     ) -> Result<CallToolResult, McpError> {
         let id = parse_asset(&p.id)?;
-        let def: awsm_renderer_editor_protocol::MaterialDef = serde_json::from_value(p.def.clone())
-            .map_err(|e| {
-                McpError::invalid_params(format!("def does not parse as a MaterialDef: {e}"), None)
-            })?;
+        // `json_arg` (not a bare `from_value`) so a client that double-encodes
+        // the object as a JSON string still parses.
+        let def: awsm_renderer_editor_protocol::MaterialDef =
+            json_arg(p.def.clone(), "def (a MaterialDef object)")?;
         self.dispatch(EditorCommand::UpdateBuiltinMaterial {
             id,
             def: Box::new(def),
@@ -3006,7 +3010,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength (1 float)."
+        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength (1 float). For KHR extension params (clearcoat, sheen, transmission, ior, ...) use patch_kind on mesh.material.inline.extensions — e.g. {\"mesh\":{\"material\":{\"inline\":{\"extensions\":{\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}}}}} — an inline extension ENABLES it for that mesh (recompiles its variant) and null disables."
     )]
     async fn set_builtin_param(
         &self,
@@ -3074,7 +3078,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Patch a node's kind with a JSON merge-patch (RFC 7386) — edit only the fields you name instead of resending the whole NodeKind via dispatch_command SetKind. `node` is the node UUID; `patch` is a partial JSON **object** (send it as an object, not a stringified object) merged over the node's current kind (fields present overwrite; null removes a key; nested objects merge recursively; arrays replace wholesale). Read get_node_details to see the exact shape + field names, then send just the delta. The result must still be a valid NodeKind (rejected loudly with the deserialize error otherwise). Ideal for escape-hatch edits with no typed tool: particle-emitter config, decal, sprite, collider, etc."
+        description = "Patch a node's kind with a JSON merge-patch (RFC 7386) — edit only the fields you name instead of resending the whole NodeKind via dispatch_command SetKind. `node` is the node UUID; `patch` is a partial JSON **object** (send it as an object, not a stringified object) merged over the node's current kind (fields present overwrite; null removes a key; nested objects merge recursively; arrays replace wholesale). Read get_node_details to see the exact shape + field names, then send just the delta. The result must still be a valid NodeKind (rejected loudly with the deserialize error otherwise). Ideal for escape-hatch edits with no typed tool: particle-emitter config, decal, sprite, collider, and per-mesh PBR extension params (mesh.material.inline.extensions.clearcoat = {\"factor\":1.0,\"roughness_factor\":0.0} enables + parameterizes clearcoat on JUST this mesh; null disables)."
     )]
     async fn patch_kind(
         &self,

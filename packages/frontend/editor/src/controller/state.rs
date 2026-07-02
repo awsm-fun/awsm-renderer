@@ -87,6 +87,12 @@ pub struct EditorController {
     pub mode: Mutable<EditorMode>,
     pub project_name: Mutable<String>,
     pub dirty: Mutable<bool>,
+    /// The environment config as of the last save / load / new-project — the
+    /// baseline `snapshot()` compares against to surface `env_unsaved` (a
+    /// live-applied `set_environment` is lost on reload unless saved; agents
+    /// read the flag to know to prompt for a Save). Updated wherever `dirty`
+    /// resets to false.
+    pub env_saved_baseline: Mutable<awsm_renderer_editor_protocol::EnvironmentConfig>,
     pub missing_assets: Mutable<Vec<String>>,
     pub can_undo: Mutable<bool>,
     pub can_redo: Mutable<bool>,
@@ -232,6 +238,7 @@ impl EditorController {
             mode: Mutable::new(EditorMode::default()),
             project_name: Mutable::new("untitled.awsm".to_string()),
             dirty: Mutable::new(false),
+            env_saved_baseline: Mutable::new(Default::default()),
             missing_assets: Mutable::new(Vec::new()),
             can_undo: Mutable::new(false),
             can_redo: Mutable::new(false),
@@ -1089,6 +1096,8 @@ impl EditorController {
                     .set(awsm_renderer_editor_protocol::EnvironmentConfig::default());
                 self.scene.bump_revision();
                 self.dirty.set_neq(false);
+                self.env_saved_baseline
+                    .set(self.scene.environment.get_cloned());
                 self.undo.borrow_mut().clear();
                 self.redo.borrow_mut().clear();
                 self.refresh_history_signals();
@@ -1191,6 +1200,8 @@ impl EditorController {
                 }
                 self.project_name.set("round-trip.awsm".to_string());
                 self.dirty.set_neq(false);
+                self.env_saved_baseline
+                    .set(self.scene.environment.get_cloned());
                 self.undo.borrow_mut().clear();
                 self.redo.borrow_mut().clear();
                 self.refresh_history_signals();
@@ -1998,8 +2009,6 @@ impl EditorController {
                 let mat = CM::new_builtin(id, format!("{label} Material {n}"), shading);
                 self.custom_materials.lock_mut().push_cloned(mat.clone());
                 self.current_material.set(Some(id));
-                // Re-materialize assigned meshes when its variant settings change.
-                spawn_builtin_resync(mat);
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(None)
@@ -2016,10 +2025,23 @@ impl EditorController {
                 };
                 mat.builtin.set(Some(*def));
                 // Variant changed → refresh its card thumbnail + re-materialize
-                // every assigned mesh (debounced).
+                // every assigned mesh DIRECTLY. This used to ride a per-material
+                // `spawn_builtin_resync` observer, which only existed for
+                // materials created through `AddBuiltinMaterial` / project load —
+                // glTF-IMPORTED library materials never spawned one, so updating
+                // them (e.g. enabling a PBR extension over MCP) silently changed
+                // nothing on screen. A direct call can't have coverage holes.
                 crate::engine::thumbnail::invalidate(mat.id);
                 crate::engine::thumbnail::request(mat.clone());
-                spawn_builtin_resync(mat);
+                crate::engine::bridge::rematerialize_for_material(id);
+                // A variant edit changes which per-mesh controls exist on every
+                // node assigned this material (extension rows appear/disappear,
+                // texture slots gate on it) — rebuild the node inspector like
+                // AssignMaterial does. Without this a LOCAL material-panel edit
+                // (which by design bumps no external_rev) left a still-selected
+                // node's panel stale until reselect.
+                self.structure_rev
+                    .set(self.structure_rev.get().wrapping_add(1));
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(Some(EditorCommand::UpdateBuiltinMaterial {
@@ -2907,6 +2929,8 @@ impl EditorController {
                         self.redo.borrow_mut().clear();
                         self.refresh_history_signals();
                         self.dirty.set_neq(false);
+                        self.env_saved_baseline
+                            .set(self.scene.environment.get_cloned());
                         Toast::info("Project loaded");
                     }
                     Err(e) => Toast::error(format!("Load failed: {e}")),
@@ -4372,6 +4396,8 @@ impl EditorController {
             project: ProjectSnapshot {
                 name: self.project_name.get_cloned(),
                 dirty: self.dirty.get(),
+                env_unsaved: self.scene.environment.get_cloned()
+                    != self.env_saved_baseline.get_cloned(),
                 missing_assets: self.missing_assets.get_cloned(),
                 coordinate_system: "right-handed, Y-up, -Z forward".to_string(),
                 units: self.settings.units.get_cloned(),
@@ -4397,6 +4423,7 @@ impl EditorController {
                         name: m.name.get_cloned(),
                         registered: m.registered.get(),
                         builtin: m.builtin.lock_ref().is_some(),
+                        builtin_def: m.builtin.get_cloned().map(Box::new),
                         uniforms: m
                             .uniforms
                             .lock_ref()
@@ -7422,28 +7449,6 @@ pub(crate) fn spawn_auto_register(mat: Arc<CM>) {
     });
 }
 
-/// Re-materialize meshes using a **built-in** material whenever its shared
-/// variant settings change (node_sync re-merges the variant with each mesh's
-/// per-mesh uniforms).
-pub(crate) fn spawn_builtin_resync(mat: Arc<CM>) {
-    use futures_signals::signal::SignalExt;
-    let id = mat.id;
-    spawn_local(async move {
-        let sig = mat.builtin.signal_cloned();
-        let mut first = true;
-        sig.for_each(move |_| {
-            let fire = !first;
-            first = false;
-            async move {
-                if fire {
-                    crate::engine::bridge::rematerialize_for_material(id);
-                }
-            }
-        })
-        .await;
-    });
-}
-
 /// Default parameters for a freshly-created procedural texture asset, one per
 /// generator family the Content Browser offers.
 fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
@@ -7469,6 +7474,27 @@ fn default_procedural(proc: ProceduralKind) -> ProceduralTextureDef {
             seed: 1337,
             scale: 4.0,
         },
+    }
+}
+
+/// Whether the extension owning the `"<ext>.<field>"` slot is ENABLED
+/// (`Some`) — the slot-visibility gate, distinct from "has a texture bound"
+/// ([`get_ext_texture`] conflates the two: it returns `None` both for a
+/// disabled extension and for an enabled one with no texture yet).
+pub(crate) fn ext_slot_enabled(
+    ext: &awsm_renderer_editor_protocol::PbrExtensions,
+    slot: &str,
+) -> bool {
+    match slot.split('.').next().unwrap_or("") {
+        "specular" => ext.specular.is_some(),
+        "transmission" => ext.transmission.is_some(),
+        "diffuse_transmission" => ext.diffuse_transmission.is_some(),
+        "volume" => ext.volume.is_some(),
+        "clearcoat" => ext.clearcoat.is_some(),
+        "sheen" => ext.sheen.is_some(),
+        "anisotropy" => ext.anisotropy.is_some(),
+        "iridescence" => ext.iridescence.is_some(),
+        _ => false,
     }
 }
 

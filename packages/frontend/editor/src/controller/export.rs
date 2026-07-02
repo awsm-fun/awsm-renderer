@@ -96,7 +96,16 @@ pub async fn bake_player_bundle(
     use awsm_renderer_editor_protocol::{lower_mesh, project_to_scene};
 
     let project = crate::controller::persistence::to_editor_project(ctrl);
-    let scene = project_to_scene(&project);
+    let mut scene = project_to_scene(&project);
+    // Flatten each node's built-in assignment to the MERGED def the editor
+    // actually renders with (`builtin_merged`: shared variant ∪ per-mesh
+    // inline). Built-in LIBRARY defs don't travel in the bundle — the player
+    // reads each node's `inline` as a complete, self-contained MaterialDef —
+    // but the inline seed is taken at ASSIGN time, so library edits made
+    // after assignment (typically the texture bindings of an art pass) never
+    // reach it: the bundle carried the label/factors/extensions yet DROPPED
+    // the texture refs, and textured library materials played back untextured.
+    flatten_builtin_materials(&mut scene.nodes);
     let mut files: Vec<BundleFile> = Vec::new();
 
     // 0. Custom-material BUFFER overrides → `assets/<asset>.bin`. Each override
@@ -225,6 +234,29 @@ pub async fn bake_player_bundle(
     files.extend(env_ktx_bundle_files(ctrl).await?);
 
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
+}
+
+/// Replace every assigned built-in `MaterialInstance.inline` in the baked
+/// node tree with the MERGED def (`builtin_merged`) so the bundle is
+/// self-contained: the player renders each node exactly as the editor did,
+/// including library texture refs bound after assignment. Dynamic-WGSL
+/// assignments (no builtin def) keep their instance untouched — their def
+/// travels as a material folder instead.
+fn flatten_builtin_materials(nodes: &mut [awsm_renderer_editor_protocol::EditorNode]) {
+    use awsm_renderer_editor_protocol::NodeKind;
+    for node in nodes {
+        let material = match &mut node.kind {
+            NodeKind::Mesh { material, .. } => material.as_mut(),
+            NodeKind::SkinnedMesh { material, .. } => material.as_mut(),
+            _ => None,
+        };
+        if let Some(inst) = material {
+            if let Some(merged) = crate::engine::bridge::node_sync::builtin_merged(inst) {
+                inst.inline = merged;
+            }
+        }
+        flatten_builtin_materials(&mut node.children);
+    }
 }
 
 /// The environment's KTX2 cubemap files for the player bundle — one
@@ -642,7 +674,13 @@ fn collect_texture_assets(node: &Node, ids: &mut Vec<AssetId>, seen: &mut HashSe
         .map(|m| m.builtin.get_cloned().is_some())
         .unwrap_or(false);
         if is_builtin {
-            for t in material_texture_refs(&inst.inline) {
+            // Collect from the MERGED def (variant ∪ inline), matching what the
+            // bundle's flattened node actually references — a texture bound on
+            // the LIBRARY material after assignment lives only on the variant,
+            // and reading `inst.inline` alone skipped its bytes.
+            let merged = crate::engine::bridge::node_sync::builtin_merged(inst)
+                .unwrap_or_else(|| inst.inline.clone());
+            for t in material_texture_refs(&merged) {
                 if seen.insert(t.asset) {
                     ids.push(t.asset);
                 }
@@ -855,7 +893,13 @@ fn map_material(material: &Option<MaterialInstance>, tex_index: &TexIndex) -> Ex
     .map(|m| m.builtin.get_cloned().is_some())
     .unwrap_or(false);
     if is_builtin {
-        map_material_def(&inst.inline, Some(inst.asset), tex_index)
+        // Export the MERGED def (variant ∪ inline) — same fix as the player
+        // bundle: a texture (or extension) bound on the LIBRARY material after
+        // assignment lives only on the variant, and exporting `inst.inline`
+        // alone dropped it from the glb.
+        let merged = crate::engine::bridge::node_sync::builtin_merged(inst)
+            .unwrap_or_else(|| inst.inline.clone());
+        map_material_def(&merged, Some(inst.asset), tex_index)
     } else {
         ExportMaterial::None {
             id: Some(inst.asset.to_string()),

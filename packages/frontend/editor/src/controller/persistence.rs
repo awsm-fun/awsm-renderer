@@ -791,9 +791,10 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
         .lock_mut()
         .replace_cloned(mats.clone());
     for m in mats {
-        if m.is_builtin() {
-            super::spawn_builtin_resync(m);
-        } else {
+        // Built-ins need no per-material observer: `UpdateBuiltinMaterial`
+        // re-materializes assigned meshes directly now (the observer approach
+        // had coverage holes — glTF-imported materials never spawned one).
+        if !m.is_builtin() {
             super::spawn_auto_register(m);
         }
     }
@@ -1130,6 +1131,8 @@ pub async fn load_from_dir(
     .await;
     ctrl.reset_history();
     ctrl.dirty.set_neq(false);
+    ctrl.env_saved_baseline
+        .set(ctrl.scene.environment.get_cloned());
     Ok(())
 }
 
@@ -1228,6 +1231,8 @@ pub async fn apply_inmem(
     .await;
     ctrl.reset_history();
     ctrl.dirty.set_neq(false);
+    ctrl.env_saved_baseline
+        .set(ctrl.scene.environment.get_cloned());
     Ok(())
 }
 

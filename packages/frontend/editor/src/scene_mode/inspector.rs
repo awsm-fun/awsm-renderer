@@ -2005,9 +2005,20 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         for (slot, label, d) in core {
             entries.push((slot, label, d, false));
         }
+        // Extension slots gate on the extension being ENABLED in the MERGED
+        // view (inline over variant — an MCP-set inline-only extension gets
+        // its slots too), and show even when no texture is bound yet so one
+        // can be ASSIGNED per-mesh — the same rule as the core slots above.
+        // The default ref comes from the merged view, so an inline-bound
+        // texture shows as this mesh's current binding.
+        let merged_ext = awsm_renderer_editor_protocol::material::PbrExtensions::merged_over(
+            &mat.extensions,
+            &def.extensions,
+        );
         for (slot, label) in ext_slots {
-            if let Some(t) = crate::controller::get_ext_texture(&def.extensions, slot) {
-                entries.push((slot, label, Some(t), true));
+            if crate::controller::ext_slot_enabled(&merged_ext, slot) {
+                let t = crate::controller::get_ext_texture(&merged_ext, slot);
+                entries.push((slot, label, t, true));
             }
         }
         if !entries.is_empty() {
@@ -2289,8 +2300,18 @@ fn builtin_uniform_extras(
     }
 
     // ── KHR extension parameters (per enabled extension) ──
-    let e = &variant.extensions;
-    let ie = &inline.extensions;
+    // Gate AND seed from the MERGED view (inline wins, variant fills,
+    // presence from either — `PbrExtensions::merged_over`, the same rule
+    // mesh materialization applies), so the controls show exactly what this
+    // mesh renders with: an MCP-set inline-only extension is visible/editable
+    // here, and an enabled-but-unedited extension shows the library's
+    // authored factors instead of struct defaults.
+    let merged_ext = awsm_renderer_editor_protocol::material::PbrExtensions::merged_over(
+        &inline.extensions,
+        &variant.extensions,
+    );
+    let e = &merged_ext;
+    let ie = &merged_ext;
     let any = e.emissive_strength.is_some()
         || e.ior.is_some()
         || e.specular.is_some()
