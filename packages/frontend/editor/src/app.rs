@@ -534,6 +534,7 @@ fn settings_drawer() -> Dom {
                 .render(),
         )
         .child(shadows_section())
+        .child(post_processing_section())
         .child(
             DrawerSection::new("Camera")
                 .child(html!("div", {
@@ -581,7 +582,7 @@ fn settings_drawer() -> Dom {
         )
         .child(html!("div", {
             .style("padding", "16px").style("font-size", "11px").style("color", "var(--text-3)").style("line-height", "1.5")
-            .text("Most editor settings affect the viewport and chrome only and aren't saved. The Shadows section is part of the project \u{2014} it is saved into the file and the player bundle.")
+            .text("Most editor settings affect the viewport and chrome only and aren't saved. The Shadows and Post-processing sections are part of the project \u{2014} they are saved into the file and the player bundle.")
         }))
         .render()
 }
@@ -696,6 +697,145 @@ fn shadows_section() -> Dom {
                 .render(),
         ))
         .render()
+}
+
+/// Global post-processing controls (tonemapping / bloom / DoF / exposure).
+/// Same model as [`shadows_section`]: these PERSIST — every change dispatches
+/// `SetPostProcess`, which merges into `scene.post_process` (serialized +
+/// bundled) and syncs live to the renderer via `settings_sync`. Seeded from the
+/// current `scene.post_process` when the drawer opens.
+fn post_processing_section() -> Dom {
+    use awsm_renderer_editor_protocol::ToneMappingConfig;
+    let pp = controller().scene.post_process.get_cloned();
+
+    // Toggles + select ride Mutables so the standard widgets drive the
+    // dispatch; skip each Mutable's initial (seed) emission.
+    let bloom = Mutable::new(pp.bloom);
+    spawn_local(clone!(bloom => async move {
+        let mut first = true;
+        bloom.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    dispatch_post(None, Some(on), None, None);
+                }
+            }
+        }).await;
+    }));
+    let dof = Mutable::new(pp.dof);
+    spawn_local(clone!(dof => async move {
+        let mut first = true;
+        dof.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    dispatch_post(None, None, Some(on), None);
+                }
+            }
+        }).await;
+    }));
+    let tonemap = Mutable::new(
+        match pp.tonemapping {
+            ToneMappingConfig::None => "none",
+            ToneMappingConfig::KhronosNeutralPbr => "khronos_neutral_pbr",
+            ToneMappingConfig::Aces => "aces",
+        }
+        .to_string(),
+    );
+    spawn_local(clone!(tonemap => async move {
+        let mut first = true;
+        tonemap.signal_cloned().for_each(move |v| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    let t = match v.as_str() {
+                        "none" => ToneMappingConfig::None,
+                        "aces" => ToneMappingConfig::Aces,
+                        _ => ToneMappingConfig::KhronosNeutralPbr,
+                    };
+                    dispatch_post(Some(t), None, None, None);
+                }
+            }
+        }).await;
+    }));
+
+    DrawerSection::new("Post-processing")
+        .right(settings_help_button(
+            "Post-processing",
+            vec![
+                (
+                    "Tonemapping",
+                    "Operator mapping the HDR scene to the display. Khronos PBR-neutral \
+                     (default) preserves material colors; ACES is filmic (stronger highlight \
+                     roll-off); None is linear pass-through (HDR values clip). Global — saved \
+                     into the project + player bundle.",
+                ),
+                (
+                    "Bloom",
+                    "Bright areas bleed a soft glow. Toggling recompiles the effects \
+                     pipelines.",
+                ),
+                (
+                    "Depth of field",
+                    "Blurs away from the active camera's focus distance (cameras default to \
+                     focusing their orbit/look-at target at f/16). Toggling recompiles the \
+                     effects pipelines.",
+                ),
+                (
+                    "Exposure (EV)",
+                    "Pre-tonemap scene exposure in stops: 0 = unity, +1 = twice as bright, \
+                     -1 = half. Use it to pull photometric light intensities into the \
+                     tonemapper's range.",
+                ),
+            ],
+        ))
+        .child(row(
+            "Tonemapping",
+            select(
+                tonemap,
+                vec![
+                    ("khronos_neutral_pbr".to_string(), "Khronos PBR".to_string()),
+                    ("aces".to_string(), "ACES".to_string()),
+                    ("none".to_string(), "None (linear)".to_string()),
+                ],
+            ),
+        ))
+        .child(row("Bloom", toggle(bloom)))
+        .child(row("Depth of field", toggle(dof)))
+        .child(row(
+            "Exposure (EV)",
+            NumField::new(pp.exposure as f64)
+                .step(0.25)
+                .on_change(|v| dispatch_post(None, None, None, Some(v as f32)))
+                .render(),
+        ))
+        .render()
+}
+
+/// Dispatch a post-processing patch — only the `Some` fields change.
+/// Fire-and-forget; the `settings_sync` observer applies it live.
+fn dispatch_post(
+    tonemapping: Option<awsm_renderer_editor_protocol::ToneMappingConfig>,
+    bloom: Option<bool>,
+    dof: Option<bool>,
+    exposure: Option<f32>,
+) {
+    spawn_local(async move {
+        if let Err(e) = controller()
+            .dispatch(EditorCommand::SetPostProcess {
+                tonemapping,
+                bloom,
+                dof,
+                exposure,
+            })
+            .await
+        {
+            tracing::error!("SetPostProcess: {e}");
+        }
+    });
 }
 
 /// Dispatch a single-field (or multi-field) SSCS patch — only the `Some` fields

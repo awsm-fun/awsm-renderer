@@ -137,4 +137,40 @@ pub fn start() {
             })
             .await;
     });
+
+    // Global post-processing: the authored, persisted `scene.post_process`
+    // (tonemapping / bloom / DoF / exposure) → renderer. Tonemapper/bloom/DoF
+    // flips recompile the effects + display pipelines inside
+    // `set_post_processing` (it awaits until GPU-resident); exposure is a live
+    // uniform. `set_post_processing` no-ops on an equal config, so unrelated
+    // signal re-emissions don't churn. The `CompileGuard` holds the
+    // `WaitRenderSettled` barrier open across the recompile so an MCP
+    // edit→settle→screenshot sequence can't capture a mid-recompile frame.
+    spawn_local(async {
+        let mut first = true;
+        controller()
+            .scene
+            .post_process
+            .signal_cloned()
+            .for_each(move |pp| {
+                let skip = first;
+                first = false;
+                async move {
+                    if skip {
+                        return;
+                    }
+                    let _guard = crate::controller::CompileGuard::new();
+                    let handle = renderer_handle();
+                    let mut r = handle.lock().await;
+                    // The SHARED schema→runtime mapping (scene-loader) — the
+                    // player's load path uses the same fn, so the editor
+                    // viewport and a bundle playback tonemap identically.
+                    let rpp = awsm_renderer_scene_loader::post_process_to_renderer(&pp);
+                    if let Err(e) = r.set_post_processing(rpp).await {
+                        tracing::warn!("set_post_processing: {e}");
+                    }
+                }
+            })
+            .await;
+    });
 }

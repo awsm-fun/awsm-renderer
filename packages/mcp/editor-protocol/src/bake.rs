@@ -46,6 +46,7 @@ pub fn project_to_scene(project: &EditorProject) -> Scene {
         name: project.name.clone(),
         environment: project.environment.clone(),
         shadows: project.shadows.clone(),
+        post_process: project.post_process.clone(),
         assets,
         custom_materials: project.custom_materials.clone(),
         animations: project.editor_animations.clone(),

@@ -1,11 +1,12 @@
 use crate::prelude::*;
 
-use super::{AssetTable, EnvironmentConfig, Node, NodeKind, ShadowsConfig};
+use super::{AssetTable, EnvironmentConfig, Node, NodeKind, PostProcessConfig, ShadowsConfig};
 
 /// Live, reactive scene. Held inside the `EditorController` as an `Arc<Scene>`.
 pub struct Scene {
     pub environment: Mutable<EnvironmentConfig>,
     pub shadows: Mutable<ShadowsConfig>,
+    pub post_process: Mutable<PostProcessConfig>,
     pub nodes: MutableVec<Arc<Node>>,
     /// Per-project asset table. Every `Model` node + env entry refers into this
     /// by `AssetId`. Mutations bump `revision` so derived UI reacts.
@@ -19,6 +20,7 @@ impl Scene {
         Arc::new(Self {
             environment: Mutable::new(EnvironmentConfig::default()),
             shadows: Mutable::new(ShadowsConfig::default()),
+            post_process: Mutable::new(PostProcessConfig::default()),
             nodes: MutableVec::new(),
             assets: Mutex::new(AssetTable::new()),
             revision: Mutable::new(0),

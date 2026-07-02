@@ -660,6 +660,28 @@ pub fn set_node_visible(renderer: &mut AwsmRenderer, handles: &NodeHandles, visi
     }
 }
 
+/// Schema [`awsm_renderer_scene::PostProcessConfig`] → runtime
+/// [`awsm_renderer::post_process::PostProcessing`]. THE single mapping — shared
+/// by the player load path ([`populate_awsm_scene`]) and the editor's live
+/// `settings_sync`, so an authored tonemapper/bloom/DoF/exposure lowers
+/// identically in both (the round-trip premise, same as lights/cameras).
+pub fn post_process_to_renderer(
+    pp: &awsm_renderer_scene::PostProcessConfig,
+) -> awsm_renderer::post_process::PostProcessing {
+    use awsm_renderer::post_process::ToneMapping;
+    use awsm_renderer_scene::ToneMappingConfig as T;
+    awsm_renderer::post_process::PostProcessing {
+        tonemapping: match pp.tonemapping {
+            T::None => ToneMapping::None,
+            T::KhronosNeutralPbr => ToneMapping::KhronosNeutralPbr,
+            T::Aces => ToneMapping::Aces,
+        },
+        bloom: pp.bloom,
+        dof: pp.dof,
+        exposure: pp.exposure,
+    }
+}
+
 /// Load a runtime [`Scene`] into the renderer as one batched, phased pass.
 /// Returns the [`LoadedScene`] handles for later teardown.
 ///
@@ -827,6 +849,18 @@ pub async fn load_scene_for_player(
     //    default rather than sinking the whole load.
     if let Err(err) = environment::apply_environment(renderer, &scene.environment, assets).await {
         tracing::warn!("environment apply failed, using renderer default: {err}");
+    }
+
+    // ── Post-processing: apply the scene's authored tonemapping / bloom / DoF /
+    //    exposure. Placed BEFORE the Phase-4 commit like the environment, so the
+    //    effects/display pipelines it selects compile in the same batch. `#[serde
+    //    (default)]` matches the renderer defaults, so pre-schema bundles no-op.
+    //    Non-fatal like the environment apply.
+    if let Err(err) = renderer
+        .set_post_processing(post_process_to_renderer(&scene.post_process))
+        .await
+    {
+        tracing::warn!("post-processing apply failed, using renderer default: {err}");
     }
 
     // ── Phase 4: THE commit — finalize the texture pool ONCE + compile every

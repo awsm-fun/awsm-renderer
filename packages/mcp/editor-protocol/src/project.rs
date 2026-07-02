@@ -1,6 +1,7 @@
 use awsm_renderer_scene::animation::{CustomAnimationRef, MixerDoc, StoredAnimation};
 use awsm_renderer_scene::{
-    AssetId, CustomMaterialRef, EditorNode, EnvironmentConfig, MaterialDef, ShadowsConfig,
+    AssetId, CustomMaterialRef, EditorNode, EnvironmentConfig, MaterialDef, PostProcessConfig,
+    ShadowsConfig,
 };
 
 use crate::assets::AssetTable;
@@ -89,6 +90,11 @@ pub struct EditorProject {
     /// rendered frame.
     #[serde(default)]
     pub shadows: ShadowsConfig,
+    /// Renderer-wide post-processing (tonemapping / bloom / DoF / exposure).
+    /// Same lifecycle as `shadows`: read at startup, pushed via
+    /// `AwsmRenderer::set_post_processing`, live-synced on edit.
+    #[serde(default)]
+    pub post_process: PostProcessConfig,
     #[serde(default)]
     pub assets: AssetTable,
     /// Custom (runtime-registered) materials imported into the project.

@@ -39,7 +39,7 @@ use awsm_renderer_scene::animation::{
 };
 use awsm_renderer_scene::{
     AssetId, EnvironmentConfig, IblConfig, LightKind, MaterialShading, MeshLodConfig,
-    MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, SkyboxConfig, Trs,
+    MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, SkyboxConfig, ToneMappingConfig, Trs,
 };
 
 use crate::link::{AgentSession, EditorLink, LinkError};
@@ -1029,6 +1029,25 @@ pub struct SscsParams {
     /// directional since a cube map leaves a fully-lit contact gap to fill. Live.
     #[serde(default)]
     pub punctual_darkening: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PostProcessParams {
+    /// Tonemapping operator: "none" (linear, HDR clips), "khronos_neutral_pbr"
+    /// (default — color-preserving), or "aces" (filmic). Omit to leave unchanged.
+    #[serde(default)]
+    pub tonemapping: Option<String>,
+    /// Bloom on/off. Recompiles the effects pipelines. Omit to leave unchanged.
+    #[serde(default)]
+    pub bloom: Option<bool>,
+    /// Depth of field on/off (uses the active camera's focus distance /
+    /// aperture). Recompiles the effects pipelines. Omit to leave unchanged.
+    #[serde(default)]
+    pub dof: Option<bool>,
+    /// Pre-tonemap exposure in EV stops (0 unity, +1 = 2x, -1 = half). Live
+    /// uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub exposure: Option<f32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -3511,6 +3530,39 @@ impl EditorMcp {
             thickness: p.thickness,
             directional_darkening: p.directional_darkening,
             punctual_darkening: p.punctual_darkening,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright). Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof recompile the effects+display pipelines (wait_render_settled after); exposure is a live uniform. Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0."
+    )]
+    async fn set_post_process(
+        &self,
+        Parameters(p): Parameters<PostProcessParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let tonemapping = match p.tonemapping.as_deref() {
+            None => None,
+            Some("none") => Some(ToneMappingConfig::None),
+            Some("khronos_neutral_pbr") | Some("khronos") => {
+                Some(ToneMappingConfig::KhronosNeutralPbr)
+            }
+            Some("aces") => Some(ToneMappingConfig::Aces),
+            Some(other) => {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "unknown tonemapping '{other}' — expected 'none', \
+                         'khronos_neutral_pbr', or 'aces'"
+                    ),
+                    None,
+                ))
+            }
+        };
+        self.dispatch(EditorCommand::SetPostProcess {
+            tonemapping,
+            bloom: p.bloom,
+            dof: p.dof,
+            exposure: p.exposure,
         })
         .await
     }
