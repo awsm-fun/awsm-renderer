@@ -469,29 +469,31 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
             // Texture category so an agent-set environment is visible in the UI
             // instead of masquerading as a glTF model file.
             AssetSource::Filename(name)
-                if name.to_ascii_lowercase().ends_with(".ktx2")
-                    || name.to_ascii_lowercase().ends_with(".ktx") =>
+                if is_env_cubemap(name)
+                    && matches!(cat, Cat::All | Cat::Texture)
+                    && matches(name) =>
             {
-                if matches!(cat, Cat::All | Cat::Texture) && matches(name) {
-                    cards.push(Card {
-                        cat: Cat::Texture,
-                        id: Some(*id),
-                        name: name.clone(),
-                        swatch:
-                            "linear-gradient(135deg, oklch(0.55 0.10 250), oklch(0.25 0.05 290))"
-                                .to_string(),
-                        badge: Some(("ENV".to_string(), Tone::Accent)),
-                        meta: "environment cubemap".to_string(),
-                        builtin: false,
-                        custom: false,
-                        anim: false,
-                    });
-                }
+                cards.push(Card {
+                    cat: Cat::Texture,
+                    id: Some(*id),
+                    name: name.clone(),
+                    swatch: "linear-gradient(135deg, oklch(0.55 0.10 250), oklch(0.25 0.05 290))"
+                        .to_string(),
+                    badge: Some(("ENV".to_string(), Tone::Accent)),
+                    meta: "environment cubemap".to_string(),
+                    builtin: false,
+                    custom: false,
+                    anim: false,
+                });
             }
             // Imported glTF/glb model files — the deconstructed scene tree lives
-            // in the Outliner; this is the browsable source-file asset.
+            // in the Outliner; this is the browsable source-file asset. Cubemap
+            // files are excluded so a .ktx that fails the ENV guard above (wrong
+            // tab / filter) never falls through and cards as a MODEL.
             AssetSource::Filename(name)
-                if matches!(cat, Cat::All | Cat::Model) && matches(name) =>
+                if !is_env_cubemap(name)
+                    && matches!(cat, Cat::All | Cat::Model)
+                    && matches(name) =>
             {
                 cards.push(Card {
                     cat: Cat::Model,
@@ -511,6 +513,13 @@ fn collect_cards(cat: Cat, query: &str) -> Vec<Card> {
     }
     // Stable order: built-ins first (already pushed), then assets by name.
     cards
+}
+
+/// Environment cubemap files (.ktx2/.ktx, from the ribbon HDR picker or an MCP
+/// `set_environment` URL import) — carded as ENV, never as MODEL.
+fn is_env_cubemap(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".ktx2") || lower.ends_with(".ktx")
 }
 
 fn material_name(def: &MaterialDef) -> String {
