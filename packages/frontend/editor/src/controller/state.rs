@@ -2034,6 +2034,14 @@ impl EditorController {
                 crate::engine::thumbnail::invalidate(mat.id);
                 crate::engine::thumbnail::request(mat.clone());
                 crate::engine::bridge::rematerialize_for_material(id);
+                // A variant edit changes which per-mesh controls exist on every
+                // node assigned this material (extension rows appear/disappear,
+                // texture slots gate on it) — rebuild the node inspector like
+                // AssignMaterial does. Without this a LOCAL material-panel edit
+                // (which by design bumps no external_rev) left a still-selected
+                // node's panel stale until reselect.
+                self.structure_rev
+                    .set(self.structure_rev.get().wrapping_add(1));
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(Some(EditorCommand::UpdateBuiltinMaterial {
