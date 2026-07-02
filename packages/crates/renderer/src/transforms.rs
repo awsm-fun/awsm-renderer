@@ -133,17 +133,18 @@ impl AwsmRenderer {
             self.sync_spatial_for_mesh(mesh_key);
         }
 
-        // Periodic BVH refresh. Span so the rebuild cost shows up in the
-        // browser Performance API (`?trace=sub-frame`) when tuning the cadence
-        // defaults (`SceneSpatialConfig::rebuild_period_frames` /
-        // `rebuild_dirty_threshold`).
+        // Per-frame BVH maintenance (refit + incremental rebalance; a
+        // no-op on idle frames). Must run between the transform sync above
+        // and ANY tree query below — deferred leaf updates propagate here.
+        // Span so the cost shows up in the browser Performance API
+        // (`?trace=sub-frame`).
         {
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "SceneSpatial Rebuild").entered())
+                Some(tracing::span!(tracing::Level::INFO, "SceneSpatial Maintain").entered())
             } else {
                 None
             };
-            self.scene_spatial.rebuild_if_needed();
+            self.scene_spatial.maintain();
         }
 
         // Per-frame per-light → per-mesh bucket rebuild — cheap (one

@@ -136,10 +136,10 @@ impl RendererProfile {
                 shadow_quality_tier: ShadowQualityTier::Low,
                 max_edge_budget: DEFAULT_MAX_EDGE_BUDGET_MOBILE,
                 scene_spatial: SceneSpatialConfig {
-                    // Halve the BVH rebuild cadence — fewer per-frame
-                    // CPU spikes on the smaller mobile budget.
-                    rebuild_dirty_threshold: 400,
-                    rebuild_period_frames: 1200,
+                    // Fatter leaf margin — movers absorb more motion per
+                    // tree update, trading slightly looser culling bounds
+                    // for fewer BVH updates on the smaller mobile budget.
+                    change_detection_margin: 0.1,
                 },
                 render_texture_formats: RenderTextureFormatsOverride {
                     // 24-bit depth saves 33% of the depth attachment
@@ -238,11 +238,10 @@ mod tests {
     }
 
     #[test]
-    fn mobile_halves_bvh_rebuild_cadence() {
+    fn mobile_fattens_bvh_leaf_margin() {
         let m = RendererProfile::Mobile.defaults();
         let d = RendererProfile::Desktop.defaults();
-        assert!(m.scene_spatial.rebuild_period_frames > d.scene_spatial.rebuild_period_frames);
-        assert!(m.scene_spatial.rebuild_dirty_threshold > d.scene_spatial.rebuild_dirty_threshold);
+        assert!(m.scene_spatial.change_detection_margin > d.scene_spatial.change_detection_margin);
     }
 
     #[test]

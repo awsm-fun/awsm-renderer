@@ -1,8 +1,4 @@
-//! Query filters and the engine-bridge `SpatialQuery` trait.
-
-use glam::Vec3;
-
-use crate::{bounds::Aabb, frustum::Frustum, meshes::MeshKey};
+//! Query filters applied to leaves during spatial queries.
 
 use super::node::SceneNode;
 
@@ -63,18 +59,4 @@ impl NodeFilter {
         }
         true
     }
-}
-
-/// Read-only spatial query surface exposed to external crates. The
-/// renderer is the sole writer of the underlying structure.
-pub trait SpatialQuery {
-    /// Returns the mesh keys whose world AABBs intersect the frustum,
-    /// filtered by `filter`.
-    fn query_frustum(&self, frustum: &Frustum, filter: NodeFilter) -> Vec<MeshKey>;
-
-    /// Returns the mesh keys whose world AABBs intersect `aabb`.
-    fn query_envelope(&self, aabb: &Aabb) -> Vec<MeshKey>;
-
-    /// Returns the mesh key whose AABB-center is closest to `point`.
-    fn nearest(&self, point: Vec3) -> Option<MeshKey>;
 }

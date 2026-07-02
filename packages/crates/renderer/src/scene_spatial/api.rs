@@ -16,6 +16,10 @@ impl AwsmRenderer {
     /// Called for each mesh wired by `resolve_geometry` (commit) / `resolve_one`
     /// (eager `add_raw_mesh`) so the new mesh participates in frustum culling on
     /// the next frame. (`AwsmRenderer::resolve_geometry` calls this per wired key.)
+    ///
+    /// Per-frame movers (skinned, instanced, physics-driven) need no special
+    /// routing: the BVH absorbs incremental leaf updates directly (see
+    /// [`super::SceneSpatial::maintain`]).
     pub fn sync_spatial_for_mesh(&mut self, mesh_key: MeshKey) {
         let Ok(mesh) = self.meshes.get(mesh_key) else {
             self.scene_spatial.remove(mesh_key);
@@ -26,17 +30,6 @@ impl AwsmRenderer {
             return;
         };
         let flags = SceneNodeFlags::from_mesh(mesh);
-        // Skinned + instanced meshes are the canonical per-frame movers:
-        // every animation tick remove+inserts them in the tree which
-        // erodes R*-tree query quality fast. Route them to the linear-
-        // scan sidecar by default. Callers that know better can override
-        // via `set_mesh_dynamic`.
-        let should_be_dynamic = mesh.instanced
-            || self
-                .meshes
-                .mesh_skin_key(mesh_key)
-                .map(|opt| opt.is_some())
-                .unwrap_or(false);
 
         // If the node already exists, do a lightweight envelope update +
         // flag refresh. Otherwise, insert from scratch.
@@ -50,18 +43,6 @@ impl AwsmRenderer {
                 flags,
             });
         }
-
-        if self.scene_spatial.is_dynamic(mesh_key) != should_be_dynamic {
-            self.scene_spatial.set_dynamic(mesh_key, should_be_dynamic);
-        }
-    }
-
-    /// Routes a mesh through the linear-scan dynamic sidecar (when `true`)
-    /// or back into the R*-tree (when `false`). Use this for meshes whose
-    /// AABBs change every frame for reasons the auto-flagger can't see
-    /// — e.g. CPU-side procedural movers.
-    pub fn set_mesh_dynamic(&mut self, mesh_key: MeshKey, dynamic: bool) {
-        self.scene_spatial.set_dynamic(mesh_key, dynamic);
     }
 
     /// Removes the spatial entry for a mesh. Used by the various mesh
