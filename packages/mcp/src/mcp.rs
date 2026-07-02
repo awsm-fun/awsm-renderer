@@ -2614,7 +2614,9 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Delete a custom (dynamic/built-in) material by id.")]
+    #[tool(
+        description = "Delete a custom (dynamic/built-in) material by id. Params: { asset: <material asset UUID> } (NOT {material})."
+    )]
     async fn delete_custom_material(
         &self,
         Parameters(p): Parameters<AssetArg>,
@@ -2668,7 +2670,9 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Assign a material to a mesh node (or clear it with material omitted).")]
+    #[tool(
+        description = "Assign a material to a mesh node (or clear it with material omitted). Template→instance copy: the node's per-mesh inline store is re-seeded from the assigned material's def, but per-mesh CUSTOMIZATIONS — texture binds (set_node_texture) and inline extensions that differ from the PRIOR material's def — are carried over; slots that merely mirrored the prior material adopt the new one. Single-step undoable."
+    )]
     async fn assign_material(
         &self,
         Parameters(p): Parameters<AssignMaterialParams>,
@@ -3177,7 +3181,9 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Set a light node's intensity.")]
+    #[tool(
+        description = "Set a light node's intensity. Params: { node: <light node UUID>, value: <number> } — the same {node, value} shape as set_light_range/set_translation (NOT {light, intensity})."
+    )]
     async fn set_light_intensity(
         &self,
         Parameters(p): Parameters<LightScalarParams>,
@@ -3190,7 +3196,9 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Set a point/spot light node's range.")]
+    #[tool(
+        description = "Set a point/spot light node's range. Params: { node: <light node UUID>, value: <number> }."
+    )]
     async fn set_light_range(
         &self,
         Parameters(p): Parameters<LightScalarParams>,
@@ -3420,7 +3428,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment (skybox + IBL). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) for a two-color SKY GRADIENT (skybox + IBL) — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' (or omit) for the built-in default, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap. KTX IBL needs both ibl_prefiltered + ibl_irradiance. Precedence: zenith/nadir > skybox/ibl_*. A fresh scene already seeds the built-in environment."
+        description = "Set the scene environment (skybox + IBL). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) for a two-color SKY GRADIENT (skybox + IBL) — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / ibl_prefiltered / ibl_irradiance accepts: 'builtin' for the built-in default, an existing KTX texture asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED skybox / ibl_* slot keeps its current config (pass 'builtin' to explicitly reset one) — so setting just the IBL never silently resets the skybox, and vice versa (split skybox/IBL survives sequential calls). KTX IBL needs both ibl_prefiltered + ibl_irradiance. URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > skybox/ibl_*. A fresh scene already seeds the built-in environment."
     )]
     async fn set_environment(
         &self,
@@ -3442,6 +3450,8 @@ impl EditorMcp {
         // Resolve a cubemap arg → an existing KTX asset id, registering a
         // URL-sourced asset first when given a URL (the cubemap analogue of
         // import_texture_from_url; the env-sync fetches the bytes on apply).
+        // The import fetches + parse-validates the KTX2 NOW, so a bad URL
+        // fails THIS call loudly instead of a silent apply-time toast.
         macro_rules! resolve_ktx {
             ($v:expr) => {{
                 let v: &str = $v;
@@ -3458,14 +3468,18 @@ impl EditorMcp {
                 }
             }};
         }
+        // PARTIAL semantics: an omitted slot is `None` → the editor PRESERVES
+        // its current config; 'builtin' explicitly resets that slot.
         let skybox = match p.skybox.as_deref() {
-            None | Some("builtin") | Some("builtin_default") => SkyboxConfig::BuiltInDefault,
-            Some(v) => SkyboxConfig::Ktx {
+            None => None,
+            Some("builtin") | Some("builtin_default") => Some(SkyboxConfig::BuiltInDefault),
+            Some(v) => Some(SkyboxConfig::Ktx {
                 asset_id: resolve_ktx!(v),
-            },
+            }),
         };
         let ibl = match p.ibl_prefiltered.as_deref() {
-            None | Some("builtin") | Some("builtin_default") => IblConfig::BuiltInDefault,
+            None => None,
+            Some("builtin") | Some("builtin_default") => Some(IblConfig::BuiltInDefault),
             Some(prefiltered) => {
                 let irradiance = p.ibl_irradiance.as_deref().ok_or_else(|| {
                     McpError::invalid_params(
@@ -3473,16 +3487,14 @@ impl EditorMcp {
                         None,
                     )
                 })?;
-                IblConfig::Ktx {
+                Some(IblConfig::Ktx {
                     prefiltered_asset_id: resolve_ktx!(prefiltered),
                     irradiance_asset_id: resolve_ktx!(irradiance),
-                }
+                })
             }
         };
-        self.dispatch(EditorCommand::SetEnvironment {
-            env: EnvironmentConfig { skybox, ibl },
-        })
-        .await
+        self.dispatch(EditorCommand::PatchEnvironment { skybox, ibl })
+            .await
     }
 
     #[tool(
