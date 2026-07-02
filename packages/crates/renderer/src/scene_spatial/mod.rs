@@ -19,6 +19,6 @@ mod query;
 #[cfg(test)]
 mod tests;
 
-pub use index::{SceneSpatial, SceneSpatialConfig};
+pub use index::{SceneSpatial, SceneSpatialConfig, SpatialDirtyCursor};
 pub use node::{SceneNode, SceneNodeFlags};
 pub use query::NodeFilter;

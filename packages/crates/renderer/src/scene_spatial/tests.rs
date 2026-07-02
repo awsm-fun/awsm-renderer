@@ -303,6 +303,99 @@ fn mark_rebuild_preserves_query_results() {
     }
 }
 
+#[test]
+fn dirty_log_records_mutations_and_skips_noops() {
+    let mut keys: DenseSlotMap<MeshKey, ()> = DenseSlotMap::with_key();
+    let mut spatial = SceneSpatial::default();
+    let key = fake_mesh_key(&mut keys);
+
+    let cursor = spatial.dirty_cursor();
+    spatial.insert(node(key, Vec3::splat(-1.0), Vec3::splat(1.0)));
+    assert_eq!(
+        spatial.dirty_since(&cursor).unwrap().len(),
+        1,
+        "insert logs its region"
+    );
+
+    // A no-op update (same AABB, as the per-frame transform re-stamp
+    // produces) must NOT dirty anything.
+    let cursor = spatial.dirty_cursor();
+    spatial.update(
+        key,
+        Aabb {
+            min: Vec3::splat(-1.0),
+            max: Vec3::splat(1.0),
+        },
+    );
+    assert!(
+        spatial.dirty_since(&cursor).unwrap().is_empty(),
+        "no-op update logged a region"
+    );
+
+    // A real move logs BOTH the vacated and the occupied region.
+    let cursor = spatial.dirty_cursor();
+    spatial.update(
+        key,
+        Aabb {
+            min: Vec3::splat(9.0),
+            max: Vec3::splat(11.0),
+        },
+    );
+    let regions = spatial.dirty_since(&cursor).unwrap();
+    assert_eq!(regions.len(), 2, "move logs old + new regions");
+    assert!(regions[0].min.x < 0.0, "first region is the vacated box");
+    assert!(regions[1].min.x > 0.0, "second region is the new box");
+
+    // Flag flip logs; identical flags don't.
+    let cursor = spatial.dirty_cursor();
+    let mut flags = spatial.get(key).unwrap().flags;
+    spatial.set_flags(key, flags); // unchanged
+    assert!(spatial.dirty_since(&cursor).unwrap().is_empty());
+    flags.hidden = true;
+    spatial.set_flags(key, flags);
+    assert_eq!(spatial.dirty_since(&cursor).unwrap().len(), 1);
+
+    // Remove logs the vacated region.
+    let cursor = spatial.dirty_cursor();
+    spatial.remove(key);
+    assert_eq!(spatial.dirty_since(&cursor).unwrap().len(), 1);
+}
+
+#[test]
+fn dirty_log_wrap_reports_missed_events() {
+    let mut keys: DenseSlotMap<MeshKey, ()> = DenseSlotMap::with_key();
+    let mut spatial = SceneSpatial::default();
+    let key = fake_mesh_key(&mut keys);
+    spatial.insert(node(key, Vec3::splat(-1.0), Vec3::splat(1.0)));
+
+    let cursor = spatial.dirty_cursor();
+    // Blow past the log cap with teleports (2 regions each).
+    for i in 0..200 {
+        let p = i as f32;
+        spatial.update(
+            key,
+            Aabb {
+                min: Vec3::splat(p),
+                max: Vec3::splat(p + 1.0),
+            },
+        );
+    }
+    assert!(
+        spatial.dirty_since(&cursor).is_none(),
+        "wrapped log must report missed events, not a partial slice"
+    );
+    // A fresh cursor taken after the burst resumes precise tracking.
+    let cursor = spatial.dirty_cursor();
+    spatial.update(
+        key,
+        Aabb {
+            min: Vec3::splat(500.0),
+            max: Vec3::splat(501.0),
+        },
+    );
+    assert_eq!(spatial.dirty_since(&cursor).unwrap().len(), 2);
+}
+
 /// Deterministic xorshift (no `rand` dep; reproducible failures).
 struct Rng(u64);
 impl Rng {
@@ -402,7 +495,13 @@ fn randomized_mutations_match_linear_scan_oracle() {
         if round % 37 == 0 {
             spatial.mark_rebuild_needed();
         }
-        spatial.maintain();
+        // 20% of rounds query WITHOUT maintenance — the stale-tree
+        // linear fallback must still produce exact results (this is the
+        // path an out-of-band mutation between maintain() and a query
+        // takes at runtime).
+        if !rng.chance(0.2) {
+            spatial.maintain();
+        }
 
         assert_eq!(spatial.len(), live.len(), "leaf count diverged");
 

@@ -10,11 +10,14 @@
 //! forced a linear-scan "dynamic sidecar" plus periodic full rebuilds; the
 //! parry tree needs neither.
 //!
-//! **Ordering contract:** mutations (insert / update / remove) may leave
-//! internal tree bounds stale until the next [`SceneSpatial::maintain`], which
-//! `update_all` runs after the transform sync and before any query. Tree
-//! queries `debug_assert` that contract; `iter_all` / `iter_filtered` /
-//! `get` read the exact-AABB mirror and are always safe.
+//! **Ordering:** mutations (insert / update / remove) may leave internal
+//! tree bounds stale until the next [`SceneSpatial::maintain`] — run once
+//! per frame by `update_all` (post transform-sync) and defensively at the
+//! top of `render_all`. A query issued while maintenance is pending is
+//! still CORRECT: it transparently degrades to an exact linear scan over
+//! the mirror for that call (see [`SceneSpatial::query_frustum`]).
+//! `iter_all` / `iter_filtered` / `get` read the mirror directly and
+//! never involve the tree.
 
 use parry3d::bounding_volume::BoundingVolume;
 use parry3d::partitioning::{Bvh, BvhBuildStrategy, BvhWorkspace};
@@ -28,6 +31,23 @@ use super::{
     },
     query::NodeFilter,
 };
+
+/// Cap on the retained dirty-region log. When a burst of mutations
+/// exceeds this, the log wraps (generation bump) and consumers treat the
+/// whole scene as dirty — cheaper than testing thousands of regions, and
+/// exactly the frames where caches wouldn't survive anyway.
+const DIRTY_LOG_CAP: usize = 128;
+
+/// A consumer's position in the [`SceneSpatial`] dirty-region log. Obtain
+/// via [`SceneSpatial::dirty_cursor`], then pass to
+/// [`SceneSpatial::dirty_since`] each frame to learn which world regions
+/// were touched by mutations since the last look. `Default` starts at the
+/// log's origin (a fresh consumer sees every retained event, or a wrap).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SpatialDirtyCursor {
+    generation: u64,
+    len: usize,
+}
 
 /// Knobs picked once at construction (read-only thereafter).
 #[derive(Debug, Clone, Copy)]
@@ -68,11 +88,19 @@ pub struct SceneSpatial {
     /// Freed leaf slots for reuse (keeps `key_of` dense-ish).
     free_leaves: Vec<u32>,
     /// Set by mutations whose tree-bound propagation is deferred;
-    /// cleared by [`Self::maintain`]. Tree queries assert this is false.
+    /// cleared by [`Self::maintain`]. While true, tree queries degrade
+    /// to an exact linear scan over the mirror (correct, unaccelerated).
     needs_maintain: bool,
     /// Set by [`Self::mark_rebuild_needed`]; the next [`Self::maintain`]
     /// does a fresh binned build instead of an incremental pass.
     full_rebuild: bool,
+    /// Exact-AABB regions touched by recent mutations (insert / move —
+    /// old AND new box — / remove / flag flip). Consumers (per-shadow-view
+    /// caster caches) poll via [`Self::dirty_since`] to invalidate only
+    /// what a mutation could have affected. Capped at [`DIRTY_LOG_CAP`];
+    /// a wrap bumps `dirty_generation` so cursors detect missed events.
+    dirty_log: Vec<Aabb>,
+    dirty_generation: u64,
     config: SceneSpatialConfig,
 }
 
@@ -93,8 +121,40 @@ impl SceneSpatial {
             free_leaves: Vec::new(),
             needs_maintain: false,
             full_rebuild: false,
+            dirty_log: Vec::new(),
+            dirty_generation: 0,
             config,
         }
+    }
+
+    /// Records a mutated world region into the dirty log (wrapping with a
+    /// generation bump past [`DIRTY_LOG_CAP`]).
+    fn note_dirty(&mut self, aabb: Aabb) {
+        if self.dirty_log.len() >= DIRTY_LOG_CAP {
+            self.dirty_log.clear();
+            self.dirty_generation = self.dirty_generation.wrapping_add(1);
+        }
+        self.dirty_log.push(aabb);
+    }
+
+    /// The current end-of-log position. Store it, then pass to
+    /// [`Self::dirty_since`] later to learn what changed in between.
+    pub fn dirty_cursor(&self) -> SpatialDirtyCursor {
+        SpatialDirtyCursor {
+            generation: self.dirty_generation,
+            len: self.dirty_log.len(),
+        }
+    }
+
+    /// The exact-AABB regions mutated since `cursor` was taken, or `None`
+    /// when the log wrapped in between (consumer missed events — treat
+    /// everything as dirty). Take a fresh [`Self::dirty_cursor`] after
+    /// each call.
+    pub fn dirty_since(&self, cursor: &SpatialDirtyCursor) -> Option<&[Aabb]> {
+        if cursor.generation != self.dirty_generation || cursor.len > self.dirty_log.len() {
+            return None;
+        }
+        Some(&self.dirty_log[cursor.len..])
     }
 
     /// Returns the config picked at construction.
@@ -117,6 +177,10 @@ impl SceneSpatial {
         let mesh_key = node.mesh_key;
         if let Some(&leaf) = self.leaf_of.get(mesh_key) {
             // Existing mesh: in-place leaf update (same slot).
+            if let Some(old) = self.nodes.get(mesh_key) {
+                let old_aabb = old.aabb.clone();
+                self.note_dirty(old_aabb);
+            }
             self.bvh.insert_or_update_partially(
                 to_parry_aabb(&node.aabb),
                 leaf,
@@ -129,6 +193,7 @@ impl SceneSpatial {
             // immediately (no deferred refit needed for pure inserts).
             self.bvh.insert(to_parry_aabb(&node.aabb), leaf);
         }
+        self.note_dirty(node.aabb.clone());
         self.nodes.insert(mesh_key, node);
     }
 
@@ -138,12 +203,27 @@ impl SceneSpatial {
         let Some(&leaf) = self.leaf_of.get(mesh_key) else {
             return;
         };
-        self.bvh.insert_or_update_partially(
-            to_parry_aabb(&aabb),
-            leaf,
-            self.config.change_detection_margin,
-        );
-        self.needs_maintain = true;
+        // Both the vacated and the newly-occupied region are dirty (a
+        // mover leaves one shadow view and enters another). Skip the log
+        // entirely for a no-op update (transform sync re-stamps
+        // unmoved meshes every frame).
+        let moved = match self.nodes.get(mesh_key) {
+            Some(node) if node.aabb.min != aabb.min || node.aabb.max != aabb.max => {
+                let old_aabb = node.aabb.clone();
+                self.note_dirty(old_aabb);
+                self.note_dirty(aabb.clone());
+                true
+            }
+            _ => false,
+        };
+        if moved {
+            self.bvh.insert_or_update_partially(
+                to_parry_aabb(&aabb),
+                leaf,
+                self.config.change_detection_margin,
+            );
+            self.needs_maintain = true;
+        }
         if let Some(node) = self.nodes.get_mut(mesh_key) {
             node.aabb = aabb;
         }
@@ -151,9 +231,10 @@ impl SceneSpatial {
 
     /// Removes a node. No-op if the key is unknown.
     pub fn remove(&mut self, mesh_key: MeshKey) {
-        if self.nodes.remove(mesh_key).is_none() {
+        let Some(node) = self.nodes.remove(mesh_key) else {
             return;
-        }
+        };
+        self.note_dirty(node.aabb);
         let Some(leaf) = self.leaf_of.remove(mesh_key) else {
             return;
         };
@@ -166,10 +247,19 @@ impl SceneSpatial {
     }
 
     /// Sets flags on a live node. Flags live only in the exact mirror —
-    /// the tree never needs touching for a flag flip.
+    /// the tree never needs touching for a flag flip — but a real change
+    /// dirties the node's region (flags gate query filters, so cached
+    /// caster sets covering it must recompute).
     pub fn set_flags(&mut self, mesh_key: MeshKey, flags: SceneNodeFlags) {
-        if let Some(node) = self.nodes.get_mut(mesh_key) {
-            node.flags = flags;
+        let dirty_aabb = match self.nodes.get_mut(mesh_key) {
+            Some(node) if node.flags != flags => {
+                node.flags = flags;
+                Some(node.aabb.clone())
+            }
+            _ => None,
+        };
+        if let Some(aabb) = dirty_aabb {
+            self.note_dirty(aabb);
         }
     }
 
@@ -231,20 +321,28 @@ impl SceneSpatial {
     /// Frustum query returning borrowed `SceneNode` references. The tree
     /// prunes on fattened bounds; every candidate is re-tested against
     /// its exact AABB, so the surviving set is identical to a linear scan.
+    ///
+    /// If mutations landed since the last [`Self::maintain`] the tree's
+    /// internal bounds may be stale (a false-miss risk), so the query
+    /// transparently degrades to an exact linear scan over the mirror —
+    /// always correct, just unaccelerated for that call. The per-frame
+    /// `maintain()` in `update_all` / `render_all` makes this the cold
+    /// path (out-of-band mutations between maintenance and a query).
     pub fn query_frustum<'a>(
         &'a self,
         frustum: &Frustum,
         filter: NodeFilter,
     ) -> impl Iterator<Item = &'a SceneNode> + 'a {
-        debug_assert!(
-            !self.needs_maintain,
-            "scene_spatial tree query before maintain() — update_all must run \
-             maintenance between mutations and queries"
-        );
         let frustum = *frustum;
-        self.bvh
-            .leaves(move |node| frustum_intersects_parry(&frustum, &node.aabb()))
-            .filter_map(move |leaf| self.node_for_leaf(leaf))
+        let tree = (!self.needs_maintain).then(move || {
+            self.bvh
+                .leaves(move |node| frustum_intersects_parry(&frustum, &node.aabb()))
+                .filter_map(move |leaf| self.node_for_leaf(leaf))
+        });
+        let linear = self.needs_maintain.then(|| self.nodes.values());
+        tree.into_iter()
+            .flatten()
+            .chain(linear.into_iter().flatten())
             .filter(move |node| {
                 frustum_intersects(&frustum, node.aabb.min, node.aabb.max) && filter.matches(node)
             })
@@ -259,21 +357,24 @@ impl SceneSpatial {
     }
 
     /// AABB-overlap query returning borrowed `SceneNode` references.
-    /// Fattened-tree candidates, exact-tested before yielding.
+    /// Fattened-tree candidates, exact-tested before yielding. Degrades
+    /// to an exact linear scan when maintenance is pending (see
+    /// [`Self::query_frustum`]).
     pub fn query_envelope<'a>(&'a self, aabb: &Aabb) -> impl Iterator<Item = &'a SceneNode> + 'a {
-        debug_assert!(
-            !self.needs_maintain,
-            "scene_spatial tree query before maintain() — update_all must run \
-             maintenance between mutations and queries"
-        );
         let query = to_parry_aabb(aabb);
         let min = aabb.min;
         let max = aabb.max;
-        self.bvh
-            // Inlined `intersect_aabb` with an owned query (the upstream
-            // helper borrows the query for the iterator's lifetime).
-            .leaves(move |node| node.aabb().intersects(&query))
-            .filter_map(move |leaf| self.node_for_leaf(leaf))
+        let tree = (!self.needs_maintain).then(move || {
+            self.bvh
+                // Inlined `intersect_aabb` with an owned query (the upstream
+                // helper borrows the query for the iterator's lifetime).
+                .leaves(move |node| node.aabb().intersects(&query))
+                .filter_map(move |leaf| self.node_for_leaf(leaf))
+        });
+        let linear = self.needs_maintain.then(|| self.nodes.values());
+        tree.into_iter()
+            .flatten()
+            .chain(linear.into_iter().flatten())
             .filter(move |node| {
                 min.x <= node.aabb.max.x
                     && max.x >= node.aabb.min.x

@@ -95,8 +95,21 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
         .uv0_zero_buffer()
         .clone();
 
-    for (_light_key, record) in shadows.records() {
-        for view in &record.views {
+    // Conservative fallback set, ONCE per frame: meshes without a world
+    // AABB (procedural / mid-load) aren't in the spatial index, so they
+    // draw into every view unconditionally. This list can't change
+    // between views within a frame — hoisting it out of the view loop
+    // saves an O(meshes) walk per shadow view (with 8 point lights ×
+    // 6 faces that walk used to run 48× per frame).
+    let conservative_extra: Vec<_> = ctx
+        .meshes
+        .iter()
+        .filter(|(_, m)| m.cast_shadows && !m.hidden && !m.hud && m.world_aabb.is_none())
+        .map(|(k, _)| k)
+        .collect();
+
+    for (light_key, record) in shadows.records() {
+        for (view_index, view) in record.views.iter().enumerate() {
             if !view.should_render {
                 continue;
             }
@@ -198,28 +211,29 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                 .meta
                 .get_uniform_bind_group()?;
 
-            // Per-view frustum culling. Directional cascades especially
-            // see geometry the camera doesn't, so we test against the
-            // light-space frustum rather than the camera's. The
-            // frustum is rebuilt per view (cheap; 6 plane extractions
-            // from `view_projection`).
-            let shadow_frustum = Frustum::from_view_projection(view.view_projection);
-
             // Surviving caster set: BVH-pruned + shadow-caster filter
-            // (cast_shadows && !hidden && !hud). Meshes without a
-            // world AABB aren't in the index — fall back to a tail
-            // walk so procedural / mid-load content draws conservatively.
-            let bvh_visible: Vec<_> = ctx
-                .scene_spatial
-                .query_frustum(&shadow_frustum, NodeFilter::shadow_caster())
-                .map(|node| node.mesh_key)
-                .collect();
-            let conservative_extra: Vec<_> = ctx
-                .meshes
-                .iter()
-                .filter(|(_, m)| m.cast_shadows && !m.hidden && !m.hud && m.world_aabb.is_none())
-                .map(|(k, _)| k)
-                .collect();
+            // (cast_shadows && !hidden && !hud), read from the
+            // persistent per-view cache `write_gpu` refreshed this
+            // frame — a static light over static geometry re-culls
+            // nothing. The direct query below is the cold fallback
+            // (cache miss should not happen in the normal frame flow).
+            let cache_fallback: Vec<_>;
+            let bvh_visible: &[_] =
+                match shadows.cached_view_casters(light_key, view_index, &view.view_projection) {
+                    Some(casters) => casters,
+                    None => {
+                        // Directional cascades especially see geometry the
+                        // camera doesn't — cull against the light-space
+                        // frustum, not the camera's.
+                        let shadow_frustum = Frustum::from_view_projection(view.view_projection);
+                        cache_fallback = ctx
+                            .scene_spatial
+                            .query_frustum(&shadow_frustum, NodeFilter::shadow_caster())
+                            .map(|node| node.mesh_key)
+                            .collect();
+                        &cache_fallback
+                    }
+                };
 
             // Cache the last-bound pipeline key so we don't re-bind
             // when consecutive draws share the same variant.
@@ -228,7 +242,11 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             // bind group vs the plain shadow_view group, so we only rebind on
             // a solid↔masked transition. The plain group was bound just above.
             let mut last_group0_masked = Some(false);
-            for mesh_key in bvh_visible.into_iter().chain(conservative_extra) {
+            for mesh_key in bvh_visible
+                .iter()
+                .copied()
+                .chain(conservative_extra.iter().copied())
+            {
                 let Ok(mesh) = ctx.meshes.get(mesh_key) else {
                     continue;
                 };
