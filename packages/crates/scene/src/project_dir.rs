@@ -135,6 +135,7 @@ mod tests {
             kind: NodeKind::Mesh {
                 mesh: MeshRef(glb_mesh),
                 material: None,
+                material_variants: Vec::new(),
                 shadow: MeshShadowConfig::default(),
                 lod: MeshLodConfig::default(),
             },

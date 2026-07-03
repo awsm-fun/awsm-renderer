@@ -588,6 +588,35 @@ pub struct AssignMaterialParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SelectMaterialVariantParams {
+    /// Mesh node UUID.
+    pub node: String,
+    /// Variant index to swap in (see get_node_details → mesh.material_variants),
+    /// or omit/null to PARK the live material into the variants list, leaving
+    /// the mesh unassigned ("no blessed material").
+    #[serde(default)]
+    pub index: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddMaterialVariantParams {
+    /// Mesh node UUID.
+    pub node: String,
+    /// Library material asset UUID to seed the variant from (its defaults), or
+    /// omit/null to fork a COPY of the node's live material.
+    #[serde(default)]
+    pub material: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveMaterialVariantParams {
+    /// Mesh node UUID.
+    pub node: String,
+    /// Variant index to remove.
+    pub index: usize,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetWgslParams {
     /// Custom (dynamic-WGSL) material asset UUID.
     pub material: String,
@@ -2704,6 +2733,48 @@ impl EditorMcp {
         self.dispatch(EditorCommand::AssignMaterial {
             node: parse_node(&p.node)?,
             material: parse_asset_opt(&p.material)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Swap one of a mesh node's parked material VARIANTS (mesh.material_variants — a palette of alternates carried through save/load/bundle without rendering) with its LIVE assignment: index swaps variant i in (the previous live material takes its list slot); omitting index PARKS the live material leaving the mesh unassigned. Edit a variant by selecting it, using the normal material tools, then selecting the previous one back. Single-step undoable. The player loader pre-builds every variant into a ready MaterialKey (LoadedScene::node_material_variants) so games swap looks at runtime without carrier-node hacks."
+    )]
+    async fn select_material_variant(
+        &self,
+        Parameters(p): Parameters<SelectMaterialVariantParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SelectMaterialVariant {
+            node: parse_node(&p.node)?,
+            index: p.index,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Append a parked material VARIANT to a mesh node without touching its live assignment: pass a library material UUID to seed from its defaults, or omit it to fork a copy of the live material. Read variants back via get_node_details (mesh.material_variants); tweak one via select_material_variant + the normal material tools, or patch_kind. Single-step undoable."
+    )]
+    async fn add_material_variant(
+        &self,
+        Parameters(p): Parameters<AddMaterialVariantParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::AddMaterialVariant {
+            node: parse_node(&p.node)?,
+            material: parse_asset_opt(&p.material)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove a mesh node's parked material variant by index. Single-step undoable."
+    )]
+    async fn remove_material_variant(
+        &self,
+        Parameters(p): Parameters<RemoveMaterialVariantParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::RemoveMaterialVariant {
+            node: parse_node(&p.node)?,
+            index: p.index,
         })
         .await
     }

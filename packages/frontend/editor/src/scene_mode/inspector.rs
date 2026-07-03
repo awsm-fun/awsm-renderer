@@ -205,10 +205,12 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         NodeKind::Mesh {
             mesh,
             material,
+            material_variants,
             shadow,
             lod,
         } => html!("div", {
             .child(mesh_geometry_section(mesh.0))
+            .child(material_variants_section(node, &material_variants, material.is_some()))
             .child(material_editor(node, &inline_of(&material), material.is_some()))
             .child(mesh_shadow_editor(node, shadow))
             .child(mesh_lod_editor(node, lod))
@@ -3275,19 +3277,126 @@ fn node_material_instance(
 }
 
 /// Replace the node's `material` instance, preserving the rest of the kind.
+/// The "Material variants" section: the mesh's PARKED material alternates
+/// (carried through save/load/bundle without rendering). "Use" swaps a variant
+/// with the live assignment — tweak it with the normal Material editor, then
+/// swap back; "Park" moves the live material into the list leaving the mesh
+/// unassigned ("no blessed material"); "+ From current" parks a COPY of the
+/// live material as a new variant to fork from. All edits route through
+/// `SetKind`, so each is one undo step.
+fn material_variants_section(
+    node: &Arc<Node>,
+    variants: &[awsm_renderer_editor_protocol::dynamic_material::MaterialInstance],
+    has_live: bool,
+) -> Dom {
+    if variants.is_empty() && !has_live {
+        // Nothing to vary and nothing to park — stay out of the way.
+        return html!("div", {});
+    }
+    let mut sec = Section::new("Material variants");
+    for (i, v) in variants.iter().enumerate() {
+        let label = variant_label(v, i);
+        sec = sec.child(html!("div", {
+            .style("display", "flex").style("align-items", "center").style("gap", "6px")
+            .style("margin-top", "4px")
+            .child(html!("span", {
+                .style("flex", "1").style("font-size", "12px")
+                .style("overflow", "hidden").style("text-overflow", "ellipsis")
+                .style("white-space", "nowrap")
+                .text(&label)
+            }))
+            .child(Btn::new().label("Use").variant(BtnVariant::Ghost)
+                .on_click(clone!(node => move || select_material_variant(&node, Some(i))))
+                .render())
+            .child(Btn::new().label("×").variant(BtnVariant::Ghost)
+                .on_click(clone!(node => move || remove_material_variant(&node, i)))
+                .render())
+        }));
+    }
+    let mut actions = html!("div", {
+        .style("display", "flex").style("gap", "6px").style("margin-top", "8px")
+    });
+    if has_live {
+        actions = html!("div", {
+            .style("display", "flex").style("gap", "6px").style("margin-top", "8px")
+            .child(Btn::new().label("+ From current").variant(BtnVariant::Ghost)
+                .on_click(clone!(node => move || add_material_variant_from_live(&node)))
+                .render())
+            .child(Btn::new().label("Park current").variant(BtnVariant::Ghost)
+                .on_click(clone!(node => move || select_material_variant(&node, None)))
+                .render())
+        });
+    }
+    sec.child(actions).render()
+}
+
+/// A human label for a variant: its inline def's label, else the (short)
+/// library-asset id it references.
+fn variant_label(
+    v: &awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
+    index: usize,
+) -> String {
+    let name = v.inline.label.trim();
+    if name.is_empty() {
+        format!("variant {} · {}", index, &v.asset.to_string()[..8])
+    } else {
+        format!("{} · {}", name, &v.asset.to_string()[..8])
+    }
+}
+
+/// Swap a parked variant with the live assignment (`Some(i)`), or park the
+/// live material leaving the mesh unassigned (`None`). One undo step (the
+/// command delegates to `SetKind`).
+fn select_material_variant(node: &Arc<Node>, index: Option<usize>) {
+    let id = node.id;
+    spawn_local(async move {
+        let _ = controller()
+            .dispatch(EditorCommand::SelectMaterialVariant { node: id, index })
+            .await;
+    });
+}
+
+/// Park a COPY of the live material as a new variant (fork point).
+fn add_material_variant_from_live(node: &Arc<Node>) {
+    let id = node.id;
+    spawn_local(async move {
+        let _ = controller()
+            .dispatch(EditorCommand::AddMaterialVariant {
+                node: id,
+                material: None,
+            })
+            .await;
+    });
+}
+
+/// Delete a parked variant. One undo step.
+fn remove_material_variant(node: &Arc<Node>, index: usize) {
+    let id = node.id;
+    spawn_local(async move {
+        let _ = controller()
+            .dispatch(EditorCommand::RemoveMaterialVariant { node: id, index })
+            .await;
+    });
+}
+
 fn set_node_material(
     node: &Arc<Node>,
     inst: awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
 ) {
     match node.kind.get_cloned() {
         NodeKind::Mesh {
-            mesh, shadow, lod, ..
+            mesh,
+            material_variants,
+            shadow,
+            lod,
+            ..
         } => {
             dispatch_kind(
                 node.id,
                 NodeKind::Mesh {
                     mesh,
                     material: Some(inst),
+                    material_variants,
                     shadow,
                     lod,
                 },
@@ -3440,6 +3549,7 @@ fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
         NodeKind::Mesh {
             mesh,
             material,
+            material_variants,
             lod,
             ..
         } => {
@@ -3448,6 +3558,7 @@ fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
                 NodeKind::Mesh {
                     mesh,
                     material,
+                    material_variants,
                     shadow,
                     lod,
                 },
@@ -3481,6 +3592,7 @@ fn set_mesh_lod(node: &Arc<Node>, lod: MeshLodConfig) {
         NodeKind::Mesh {
             mesh,
             material,
+            material_variants,
             shadow,
             ..
         } => {
@@ -3489,6 +3601,7 @@ fn set_mesh_lod(node: &Arc<Node>, lod: MeshLodConfig) {
                 NodeKind::Mesh {
                     mesh,
                     material,
+                    material_variants,
                     shadow,
                     lod,
                 },

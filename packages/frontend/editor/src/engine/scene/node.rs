@@ -199,6 +199,7 @@ impl Node {
                     awsm_renderer_editor_protocol::AssetId::new(),
                 ),
                 material: None,
+                material_variants: Vec::new(),
                 shadow: Default::default(),
                 lod: Default::default(),
             },

@@ -552,6 +552,34 @@ pub enum EditorCommand {
     /// two meshes don't share the same material. Inverse: restore `to`'s prior kind.
     CopyMaterialInstance { from: NodeId, to: NodeId },
 
+    /// Swap one of a mesh node's parked material VARIANTS
+    /// (`NodeKind::Mesh::material_variants`) with its LIVE assignment
+    /// (`index: Some(i)` — the previous live material takes the variant's list
+    /// slot), or PARK the live material into the list leaving the mesh
+    /// unassigned (`index: None` — "no blessed material"). Editing a variant =
+    /// select it, edit with the normal material tools, select the previous one
+    /// back. Inverse: restore the node's prior kind (a `SetKind`).
+    SelectMaterialVariant {
+        node: NodeId,
+        #[serde(default)]
+        index: Option<usize>,
+    },
+
+    /// Append a parked material VARIANT to a mesh node without touching the
+    /// live assignment: a copy of the LIVE material (`material: None` — a fork
+    /// point to tweak), or a fresh instance of a library material by id
+    /// (seeded from its defaults, like `AssignMaterial`). Inverse: restore the
+    /// node's prior kind.
+    AddMaterialVariant {
+        node: NodeId,
+        #[serde(default)]
+        material: Option<AssetId>,
+    },
+
+    /// Remove a mesh node's parked material variant by index. Inverse: restore
+    /// the node's prior kind.
+    RemoveMaterialVariant { node: NodeId, index: usize },
+
     /// Bake a **skinned** mesh node to a static **editable** mesh: discard the
     /// skin (JOINTS/WEIGHTS + skeleton), capture the bind-pose geometry into a
     /// new captured `MeshDef{ stack:{ base: Captured } }` asset, and swap the
@@ -1284,6 +1312,9 @@ impl EditorCommand {
             EditorCommand::SetCustomMaterialAlphaWgsl { .. } => "Edit alpha shader",
             EditorCommand::SetCustomMaterialVertexWgsl { .. } => "Edit vertex shader",
             EditorCommand::AssignMaterial { .. } => "Assign material",
+            EditorCommand::SelectMaterialVariant { .. } => "Select material variant",
+            EditorCommand::AddMaterialVariant { .. } => "Add material variant",
+            EditorCommand::RemoveMaterialVariant { .. } => "Remove material variant",
             EditorCommand::UpdateBuiltinMaterial { .. } => "Edit material variant",
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
             EditorCommand::DropSkinning { .. } => "Drop skinning",

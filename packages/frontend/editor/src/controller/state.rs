@@ -776,6 +776,7 @@ impl EditorController {
             NodeKind::Mesh {
                 mesh: MeshRef(mesh_id),
                 material: None,
+                material_variants: Vec::new(),
                 shadow: Default::default(),
                 lod: Default::default(),
             },
@@ -1496,6 +1497,7 @@ impl EditorController {
                 n.kind.set(NodeKind::Mesh {
                     mesh: mesh_ref,
                     material,
+                    material_variants: Vec::new(),
                     shadow,
                     lod,
                 });
@@ -1917,6 +1919,7 @@ impl EditorController {
                     NodeKind::Mesh {
                         mesh: MeshRef(new_mesh_id),
                         material: src_material,
+                        material_variants: Vec::new(),
                         shadow: Default::default(),
                         lod: Default::default(),
                     },
@@ -2158,6 +2161,149 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
+            EditorCommand::SelectMaterialVariant { node, index } => {
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let NodeKind::Mesh {
+                    mesh,
+                    material,
+                    mut material_variants,
+                    shadow,
+                    lod,
+                } = n.kind.get_cloned()
+                else {
+                    return Err(crate::error::EditorError::msg(
+                        "select_material_variant: node is not a Mesh",
+                    ));
+                };
+                let material = match index {
+                    Some(i) => {
+                        if i >= material_variants.len() {
+                            return Err(crate::error::EditorError::msg(format!(
+                                "select_material_variant: index {i} out of range ({} variants)",
+                                material_variants.len()
+                            )));
+                        }
+                        let chosen = material_variants[i].clone();
+                        match material {
+                            // In-place swap keeps the list stable.
+                            Some(live) => material_variants[i] = live,
+                            // No live material — the variant moves out of the list.
+                            None => {
+                                material_variants.remove(i);
+                            }
+                        }
+                        Some(chosen)
+                    }
+                    None => {
+                        if let Some(live) = material {
+                            material_variants.push(live);
+                        }
+                        None
+                    }
+                };
+                // Delegate to SetKind: re-materialize + undo inverse for free.
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(NodeKind::Mesh {
+                        mesh,
+                        material,
+                        material_variants,
+                        shadow,
+                        lod,
+                    }),
+                }))
+                .await
+            }
+            EditorCommand::AddMaterialVariant { node, material } => {
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let NodeKind::Mesh {
+                    mesh,
+                    material: live,
+                    mut material_variants,
+                    shadow,
+                    lod,
+                } = n.kind.get_cloned()
+                else {
+                    return Err(crate::error::EditorError::msg(
+                        "add_material_variant: node is not a Mesh",
+                    ));
+                };
+                let variant = match material {
+                    // Fork the live assignment.
+                    None => live.clone().ok_or_else(|| {
+                        crate::error::EditorError::msg(
+                            "add_material_variant: no live material to copy — pass a \
+                             library material id, or assign one first",
+                        )
+                    })?,
+                    // Fresh instance of a library material, seeded from its defaults.
+                    Some(id) => {
+                        let Some(m) = find_material(&self.custom_materials, id) else {
+                            return Err(crate::error::EditorError::msg(format!(
+                                "add_material_variant: no material with id {id}"
+                            )));
+                        };
+                        awsm_renderer_editor_protocol::dynamic_material::MaterialInstance {
+                            asset: id,
+                            inline: m.builtin.get_cloned().unwrap_or_default(),
+                            uniform_overrides: Default::default(),
+                            texture_overrides: Default::default(),
+                            buffer_overrides: Default::default(),
+                        }
+                    }
+                };
+                material_variants.push(variant);
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(NodeKind::Mesh {
+                        mesh,
+                        material: live,
+                        material_variants,
+                        shadow,
+                        lod,
+                    }),
+                }))
+                .await
+            }
+            EditorCommand::RemoveMaterialVariant { node, index } => {
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let NodeKind::Mesh {
+                    mesh,
+                    material,
+                    mut material_variants,
+                    shadow,
+                    lod,
+                } = n.kind.get_cloned()
+                else {
+                    return Err(crate::error::EditorError::msg(
+                        "remove_material_variant: node is not a Mesh",
+                    ));
+                };
+                if index >= material_variants.len() {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "remove_material_variant: index {index} out of range ({} variants)",
+                        material_variants.len()
+                    )));
+                }
+                material_variants.remove(index);
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(NodeKind::Mesh {
+                        mesh,
+                        material,
+                        material_variants,
+                        shadow,
+                        lod,
+                    }),
+                }))
+                .await
+            }
             EditorCommand::AssignMaterial { node, material } => {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {
@@ -2215,10 +2361,15 @@ impl EditorController {
                         let next = match prev.clone() {
                             // The sole procedural-geometry node: one material slot.
                             NodeKind::Mesh {
-                                mesh, shadow, lod, ..
+                                mesh,
+                                material_variants,
+                                shadow,
+                                lod,
+                                ..
                             } => NodeKind::Mesh {
                                 mesh,
                                 material: instance,
+                                material_variants,
                                 shadow,
                                 lod,
                             },
@@ -2266,12 +2417,14 @@ impl EditorController {
                     NodeKind::Mesh {
                         mesh,
                         material: dst_mat,
+                        material_variants,
                         shadow,
                         lod,
                     } => (
                         NodeKind::Mesh {
                             mesh,
                             material: src_slot.clone(),
+                            material_variants,
                             shadow,
                             lod,
                         },
@@ -8287,6 +8440,7 @@ fn build_editor_subtree(
                 mesh_node.kind.set(NodeKind::Mesh {
                     mesh: mesh_ref,
                     material,
+                    material_variants: Vec::new(),
                     shadow: Default::default(),
                     lod: Default::default(),
                 });
@@ -8325,6 +8479,7 @@ fn build_editor_subtree(
                     part.kind.set(NodeKind::Mesh {
                         mesh: mesh_ref,
                         material,
+                        material_variants: Vec::new(),
                         shadow: Default::default(),
                         lod: Default::default(),
                     });

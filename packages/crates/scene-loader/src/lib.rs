@@ -208,6 +208,14 @@ pub struct LoadedScene {
     /// transforms. Freed last by [`teardown`](Self::teardown) (after the meshes
     /// rooted under them). Collected from `maps.transforms` + prefab capture.
     pub transforms: Vec<TransformKey>,
+    /// `NodeId → ` ready [`MaterialKey`]s for each mesh node's authored
+    /// **material variants** (`NodeKind::Mesh::material_variants`), in authored
+    /// order. Each variant is fully built in Phase 1 exactly like the live
+    /// assignment (inline def lowered, textures fetched + bound), so a game can
+    /// swap a mesh's look at runtime with a plain
+    /// [`AwsmRenderer::set_mesh_material`] — no carrier-node hacks. Nodes with
+    /// no variants are absent.
+    pub node_material_variants: HashMap<NodeId, Vec<MaterialKey>>,
 }
 
 /// A prefab-root subtree, materialized **once** (hidden) as a reusable template,
@@ -771,6 +779,18 @@ pub async fn load_scene_for_player(
             }
         }
     }
+    // Material VARIANTS (`NodeKind::Mesh::material_variants`): build each into a
+    // ready key exactly like the live assignment, so the game can swap looks
+    // with `set_mesh_material` alone. Built in Phase 1 with everything else so
+    // their pipelines compile in the same Phase-4 batch (no first-swap hitch).
+    let mut node_material_variants: HashMap<NodeId, Vec<MaterialKey>> = HashMap::new();
+    for (id, variants) in collect_material_variants(&scene.nodes) {
+        let mut keys = Vec::with_capacity(variants.len());
+        for v in variants {
+            keys.push(resolve_material(renderer, Some(v), placeholder, assets, &custom).await);
+        }
+        node_material_variants.insert(id, keys);
+    }
     on_phase(LoadPhase::BuildingMaterials { done: total, total });
     // The custom-WGSL asset → shader-id table (Phase 0) feeds Uniform resolution.
     maps.custom_shaders = custom;
@@ -780,7 +800,10 @@ pub async fn load_scene_for_player(
     //    single compile point), so there is no separate texture-finalize here.
 
     // ── Phase 3: upload meshes (geometry + skins) + lights ────────────────────
-    let mut loaded = LoadedScene::default();
+    let mut loaded = LoadedScene {
+        node_material_variants,
+        ..LoadedScene::default()
+    };
     let mut uploaded = 0usize;
     for node in &scene.nodes {
         materialize(
@@ -900,6 +923,28 @@ pub async fn load_scene_for_player(
 /// Flatten the tree (DFS) to the renderable nodes that carry a material —
 /// `Mesh` and `SkinnedMesh` — as `(node id, &material)`. Used to build every
 /// material up front (Phase 1) and to size the mesh-upload progress.
+/// Walk the tree collecting each mesh node's authored material VARIANTS (see
+/// `NodeKind::Mesh::material_variants`). Companion to [`collect_renderables`];
+/// nodes without variants are skipped.
+fn collect_material_variants(nodes: &[EditorNode]) -> Vec<(NodeId, &Vec<MaterialInstance>)> {
+    let mut out = Vec::new();
+    fn walk<'a>(nodes: &'a [EditorNode], out: &mut Vec<(NodeId, &'a Vec<MaterialInstance>)>) {
+        for n in nodes {
+            if let NodeKind::Mesh {
+                material_variants, ..
+            } = &n.kind
+            {
+                if !material_variants.is_empty() {
+                    out.push((n.id, material_variants));
+                }
+            }
+            walk(&n.children, out);
+        }
+    }
+    walk(nodes, &mut out);
+    out
+}
+
 fn collect_renderables(nodes: &[EditorNode]) -> Vec<(NodeId, &Option<MaterialInstance>)> {
     let mut out = Vec::new();
     fn walk<'a>(nodes: &'a [EditorNode], out: &mut Vec<(NodeId, &'a Option<MaterialInstance>)>) {

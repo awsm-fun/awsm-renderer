@@ -250,16 +250,33 @@ pub async fn bake_player_bundle(
 /// travels as a material folder instead.
 fn flatten_builtin_materials(nodes: &mut [awsm_renderer_editor_protocol::EditorNode]) {
     use awsm_renderer_editor_protocol::NodeKind;
+    let flatten = |inst: &mut awsm_renderer_editor_protocol::dynamic_material::MaterialInstance| {
+        if let Some(merged) = crate::engine::bridge::node_sync::builtin_merged(inst) {
+            inst.inline = merged;
+        }
+    };
     for node in nodes {
-        let material = match &mut node.kind {
-            NodeKind::Mesh { material, .. } => material.as_mut(),
-            NodeKind::SkinnedMesh { material, .. } => material.as_mut(),
-            _ => None,
-        };
-        if let Some(inst) = material {
-            if let Some(merged) = crate::engine::bridge::node_sync::builtin_merged(inst) {
-                inst.inline = merged;
+        match &mut node.kind {
+            NodeKind::Mesh {
+                material,
+                material_variants,
+                ..
+            } => {
+                if let Some(inst) = material.as_mut() {
+                    flatten(inst);
+                }
+                // Variants ship self-contained too — the player lowers each
+                // variant's `inline` standalone, same as the live assignment.
+                for inst in material_variants.iter_mut() {
+                    flatten(inst);
+                }
             }
+            NodeKind::SkinnedMesh { material, .. } => {
+                if let Some(inst) = material.as_mut() {
+                    flatten(inst);
+                }
+            }
+            _ => {}
         }
         flatten_builtin_materials(&mut node.children);
     }
@@ -668,7 +685,21 @@ async fn resolve_images(scene: &Scene, roots: &[Arc<Node>]) -> (Vec<ExportImage>
 /// nodes' effective materials reference.
 fn collect_texture_assets(node: &Node, ids: &mut Vec<AssetId>, seen: &mut HashSet<AssetId>) {
     let kind = node.kind.get_cloned();
+    // The LIVE assignment plus every parked material VARIANT — variants ship in
+    // the bundle (the player builds them into ready keys), so their textures
+    // must ship too.
+    let mut instances: Vec<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> =
+        Vec::new();
     if let Some(Some(inst)) = material_slot(&kind) {
+        instances.push(inst);
+    }
+    if let NodeKind::Mesh {
+        material_variants, ..
+    } = &kind
+    {
+        instances.extend(material_variants.iter());
+    }
+    for inst in instances {
         // Only a built-in assignment exports glTF textures (its per-mesh `inline`
         // carries the slots); custom-WGSL materials export as AWSM_materials_none.
         let is_builtin = crate::controller::custom_material::find_material(

@@ -227,10 +227,23 @@ pub enum NodeKind {
     /// asset.
     Mesh {
         mesh: MeshRef,
-        /// The node's single material assignment. `None` means *unassigned*
-        /// and renders flat magenta (the missing-material sentinel).
+        /// The node's LIVE material assignment — the one the mesh renders
+        /// with. `None` means *unassigned* and renders flat magenta (the
+        /// missing-material sentinel); a `None` with populated
+        /// [`material_variants`](Self::Mesh::material_variants) reads as "no
+        /// blessed material (yet), pick from the palette".
         #[serde(default)]
         material: Option<MaterialInstance>,
+        /// Additional material assignments the node CARRIES without
+        /// rendering — a palette of alternates that rides along
+        /// save → load → bundle. Entries may reference the same library
+        /// material as `material` with different per-mesh values, or entirely
+        /// different materials. The editor previews one by SELECTING it
+        /// (swap with the live assignment); the player loader pre-builds each
+        /// into a ready `MaterialKey` (`LoadedScene::node_material_variants`)
+        /// so a game can swap looks at runtime without carrier-node hacks.
+        #[serde(default)]
+        material_variants: Vec<MaterialInstance>,
         #[serde(default)]
         shadow: MeshShadowConfig,
         /// Per-mesh LOD opt-out (default on). Authored in the editable project,

@@ -513,6 +513,12 @@ fn resolve_texture(
         uv_index,
         transform_key,
     };
+    // Persist the slot's semantic role onto the texture ASSET: `color_kind` is
+    // what Save writes and what a reload's initial upload + the
+    // `screenshot_texture` readback use, so it must track how the texture is
+    // actually USED — not the import-time default (URL imports start `None`,
+    // which restores via name inference).
+    record_asset_color_kind(asset_id, kind);
     // Exact-semantics upload for this (asset, color space, mipmap kind)?
     if let Some(key) = TEXTURE_KEYS.with(|c| c.borrow().get(&(asset_id, srgb, kind)).copied()) {
         return Some(mk(key));
@@ -561,6 +567,43 @@ fn resolve_texture(
         .ok()?;
     register_texture_key_semantics(asset_id, &color, key);
     Some(mk(key))
+}
+
+/// The persistable [`TextureColorKind`] for an upload's mipmap kind — the
+/// inverse of [`color_info_for_kind`]'s kind mapping (color space is implied:
+/// `TextureColorKind::is_srgb` mirrors what the slot passes).
+fn color_kind_for_mipmap(kind: MipmapTextureKind) -> TextureColorKind {
+    use MipmapTextureKind as M;
+    use TextureColorKind as K;
+    match kind {
+        M::Albedo => K::Albedo,
+        M::Normal => K::Normal,
+        M::MetallicRoughness => K::MetallicRoughness,
+        M::Occlusion => K::Occlusion,
+        M::Emissive => K::Emissive,
+        M::Specular => K::Specular,
+        M::SpecularColor => K::SpecularColor,
+        M::Transmission => K::Transmission,
+        M::VolumeThickness => K::VolumeThickness,
+    }
+}
+
+/// Record the semantic role a slot binding resolved a RASTER texture asset
+/// with, so the persisted `color_kind` tracks actual use. No-op when the
+/// stored value already matches (re-materializes are frequent); a texture
+/// genuinely bound to slots with different roles keeps the LAST resolved one —
+/// advisory only, since rendering semantics are per-binding now.
+fn record_asset_color_kind(asset_id: AssetId, kind: MipmapTextureKind) {
+    let want = color_kind_for_mipmap(kind);
+    let ctrl = crate::controller::controller();
+    let mut assets = ctrl.scene.assets.lock().unwrap();
+    if let Some(entry) = assets.entries.get_mut(&asset_id) {
+        if let AssetSource::Texture(TextureDef::Raster { color_kind, .. }) = &mut entry.source {
+            if *color_kind != Some(want) {
+                *color_kind = Some(want);
+            }
+        }
+    }
 }
 
 /// Pool (or fetch) the sampler for a texture binding from its [`TextureSampler`]
