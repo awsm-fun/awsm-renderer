@@ -155,8 +155,7 @@ pub fn command_mode(cmd: &EditorCommand) -> Option<EditorMode> {
         C::SwitchMode { mode } => Some(*mode),
 
         // Material authoring (the Material workspace).
-        C::AssignMaterial { .. }
-        | C::CopyMaterialInstance { .. }
+        C::CopyMaterialInstance { .. }
         | C::AddMaterialAsset { .. }
         | C::AddBuiltinMaterial { .. }
         | C::AddCustomMaterial { .. }
@@ -382,15 +381,24 @@ fn describe(cmd: &EditorCommand) -> Option<(FocusTarget, String)> {
             },
         ),
         EditorCommand::SetKind { .. } => (F::Inspector, "edited a node".to_string()),
-        EditorCommand::AssignMaterial { material, .. } => (
+        EditorCommand::SelectMaterialVariant { variant, .. } => (
             F::Inspector,
-            if material.is_some() {
-                "assigned a material"
+            if variant.is_some() {
+                "selected a material variant"
             } else {
-                "cleared a material"
+                "unassigned a mesh's material"
             }
             .to_string(),
         ),
+        EditorCommand::AddMaterialVariant { .. } => {
+            (F::Inspector, "added a material variant".to_string())
+        }
+        EditorCommand::RemoveMaterialVariant { .. } => {
+            (F::Inspector, "removed a material variant".to_string())
+        }
+        EditorCommand::RenameMaterialVariant { .. } => {
+            (F::Inspector, "renamed a material variant".to_string())
+        }
         EditorCommand::CopyMaterialInstance { .. } => {
             (F::Inspector, "copied material settings".to_string())
         }

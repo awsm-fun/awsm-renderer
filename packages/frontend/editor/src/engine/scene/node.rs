@@ -198,8 +198,8 @@ impl Node {
                 mesh: awsm_renderer_editor_protocol::MeshRef(
                     awsm_renderer_editor_protocol::AssetId::new(),
                 ),
-                material: None,
                 material_variants: Vec::new(),
+                selected_variant: None,
                 shadow: Default::default(),
                 lod: Default::default(),
             },

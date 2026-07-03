@@ -390,7 +390,6 @@ where
 /// didn't persist it: the editor names every imported texture `"<material> · <slot>"`
 /// (see `ensure_import_texture` call sites in `state.rs`), so the slot suffix
 /// recovers the role. New projects store the kind on the asset and never reach this.
-
 /// Restore captured-mesh bytes into the [`mesh_cache`] store from a loaded
 /// project's asset table, reading each `assets/<id>.mesh.bin` via `read`. Called
 /// **before** [`apply_project`] rebuilds the scene so `NodeKind::Mesh` nodes

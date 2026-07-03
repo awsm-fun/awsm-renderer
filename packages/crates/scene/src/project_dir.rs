@@ -134,8 +134,8 @@ mod tests {
             transform: Default::default(),
             kind: NodeKind::Mesh {
                 mesh: MeshRef(glb_mesh),
-                material: None,
                 material_variants: Vec::new(),
+                selected_variant: None,
                 shadow: MeshShadowConfig::default(),
                 lod: MeshLodConfig::default(),
             },

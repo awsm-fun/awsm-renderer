@@ -216,11 +216,7 @@ pub fn rematerialize_for_material(id: crate::engine::scene::AssetId) {
     use crate::engine::scene::{AssetId, NodeKind};
 
     fn node_assigned_material(kind: &NodeKind) -> Option<AssetId> {
-        match kind {
-            NodeKind::Mesh { material, .. } => material.as_ref().map(|i| i.asset),
-            NodeKind::SkinnedMesh { material, .. } => material.as_ref().map(|i| i.asset),
-            _ => None,
-        }
+        kind.selected_material().map(|i| i.asset)
     }
 
     fn walk(nodes: &[Arc<Node>], id: AssetId) {

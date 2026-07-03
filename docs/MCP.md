@@ -216,9 +216,20 @@ every command/query, and each tool self-describes over the MCP schema.
 
 **Materials**
 - `add_builtin_material { shading }` (pbr/unlit), `add_custom_material` — **return
-  the new id.** `register_material`, `assign_material { node, material? }`,
-  `delete_custom_material`, `copy_material_instance { from, to }`,
-  `update_builtin_material` (replace a built-in's variant `MaterialDef` wholesale).
+  the new id.** `register_material`, `delete_custom_material`,
+  `copy_material_instance { from, to }`, `update_builtin_material` (replace a
+  built-in's variant `MaterialDef` wholesale).
+- **Material variants** — a mesh renders only entries of its own palette
+  (`mesh.material_variants`; each entry = a library material + THIS mesh's
+  independent overrides + a stable id + a display name). There is NO
+  `assign_material`: `add_material_variant { node, material, name? }` (returns
+  the new variant id; never changes what renders), then
+  `select_material_variant { node, variant? }` (omit variant → unassigned
+  magenta). `remove_material_variant { node, variant }`,
+  `rename_material_variant { node, variant, name }`. Every material tool
+  (`set_builtin_param`, `set_node_texture`, `set_node_material_uniform`, …)
+  edits the SELECTED variant, and each variant's tuning persists across
+  switches — add the same library material twice for two independent looks.
 - `set_material_wgsl { material, wgsl }` — replace source + synchronous recompile;
   **answers truthfully** (errors carry the compiler diagnostics, no silent `ok`).
   The WGSL is validated against the contract for the material's CURRENT alpha mode

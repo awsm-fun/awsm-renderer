@@ -1591,13 +1591,25 @@ fn assign_to_selection(material: AssetId) {
             Toast::warning("Register the material before assigning it.");
             return;
         }
+        // Variant model: a mesh renders only entries of its own palette, so
+        // "assign" = add a variant of this material, then select it. One
+        // undo step via Batch.
+        let variant = awsm_renderer_editor_protocol::VariantId::new();
         let _ = ctrl
-            .dispatch(EditorCommand::AssignMaterial {
-                node,
-                material: Some(material),
-            })
+            .dispatch(EditorCommand::Batch(vec![
+                EditorCommand::AddMaterialVariant {
+                    node,
+                    material,
+                    id: Some(variant),
+                    name: None,
+                },
+                EditorCommand::SelectMaterialVariant {
+                    node,
+                    variant: Some(variant),
+                },
+            ]))
             .await;
-        Toast::info("Material assigned to selection.");
+        Toast::info("Material added to the mesh's variants and selected.");
     });
 }
 

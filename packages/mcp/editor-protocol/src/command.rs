@@ -17,7 +17,7 @@ use awsm_renderer_scene::particle::{
 };
 use awsm_renderer_scene::{
     AssetId, EnvSlot, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind,
-    ToneMappingConfig, Trs,
+    ToneMappingConfig, Trs, VariantId,
 };
 
 use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
@@ -541,16 +541,6 @@ pub enum EditorCommand {
         normalize: bool,
     },
 
-    /// Assign a library material (built-in or custom WGSL, by id) to a scene
-    /// node's mesh, or clear it (`material: None` → magenta). Sets the node's
-    /// single `material: Option<MaterialInstance>` field. Inverse: restore the
-    /// node's prior kind (a `SetKind`). The bridge renders the assigned material
-    /// once it's registered with the renderer.
-    AssignMaterial {
-        node: NodeId,
-        material: Option<AssetId>,
-    },
-
     /// Copy a mesh's per-mesh material *instance* (its inline uniform values:
     /// base color / metallic / roughness / emissive / …) onto another mesh that
     /// references the **same** assigned material. Controller-only (no UI) — the
@@ -558,33 +548,45 @@ pub enum EditorCommand {
     /// two meshes don't share the same material. Inverse: restore `to`'s prior kind.
     CopyMaterialInstance { from: NodeId, to: NodeId },
 
-    /// Swap one of a mesh node's parked material VARIANTS
-    /// (`NodeKind::Mesh::material_variants`) with its LIVE assignment
-    /// (`index: Some(i)` — the previous live material takes the variant's list
-    /// slot), or PARK the live material into the list leaving the mesh
-    /// unassigned (`index: None` — "no blessed material"). Editing a variant =
-    /// select it, edit with the normal material tools, select the previous one
-    /// back. Inverse: restore the node's prior kind (a `SetKind`).
+    /// Point a mesh node at one of its material variants — the ONLY way a
+    /// mesh's rendered material changes. `variant: None` = unassigned
+    /// (magenta). Selection never mutates variant state: each variant keeps
+    /// its own overrides, so switching away and back preserves tuning.
+    /// Inverse: restore the node's prior kind (a `SetKind`).
     SelectMaterialVariant {
         node: NodeId,
         #[serde(default)]
-        index: Option<usize>,
+        variant: Option<VariantId>,
     },
 
-    /// Append a parked material VARIANT to a mesh node without touching the
-    /// live assignment: a copy of the LIVE material (`material: None` — a fork
-    /// point to tweak), or a fresh instance of a library material by id
-    /// (seeded from its defaults, like `AssignMaterial`). Inverse: restore the
-    /// node's prior kind.
+    /// Append a material variant to a mesh node's palette: a fresh instance
+    /// of the given LIBRARY material (seeded from its defaults). Never
+    /// changes the selection — select it explicitly to render it. `id` is
+    /// minted when omitted (pass one to make the command deterministic, e.g.
+    /// so the MCP layer can report it); `name` defaults to the library
+    /// material's name, counter-suffixed if that name is already taken on
+    /// this mesh. Inverse: restore the node's prior kind.
     AddMaterialVariant {
         node: NodeId,
+        material: AssetId,
         #[serde(default)]
-        material: Option<AssetId>,
+        id: Option<VariantId>,
+        #[serde(default)]
+        name: Option<String>,
     },
 
-    /// Remove a mesh node's parked material variant by index. Inverse: restore
-    /// the node's prior kind.
-    RemoveMaterialVariant { node: NodeId, index: usize },
+    /// Remove a variant from a mesh node's palette by id. Removing the
+    /// SELECTED variant leaves the mesh unassigned (magenta). Inverse:
+    /// restore the node's prior kind.
+    RemoveMaterialVariant { node: NodeId, variant: VariantId },
+
+    /// Rename a mesh node's material variant (display only — the id is the
+    /// identity and never changes). Inverse: restore the node's prior kind.
+    RenameMaterialVariant {
+        node: NodeId,
+        variant: VariantId,
+        name: String,
+    },
 
     /// Bake a **skinned** mesh node to a static **editable** mesh: discard the
     /// skin (JOINTS/WEIGHTS + skeleton), capture the bind-pose geometry into a
@@ -1317,10 +1319,10 @@ impl EditorCommand {
             EditorCommand::SetCustomMaterialWgsl { .. } => "Edit shader",
             EditorCommand::SetCustomMaterialAlphaWgsl { .. } => "Edit alpha shader",
             EditorCommand::SetCustomMaterialVertexWgsl { .. } => "Edit vertex shader",
-            EditorCommand::AssignMaterial { .. } => "Assign material",
             EditorCommand::SelectMaterialVariant { .. } => "Select material variant",
             EditorCommand::AddMaterialVariant { .. } => "Add material variant",
             EditorCommand::RemoveMaterialVariant { .. } => "Remove material variant",
+            EditorCommand::RenameMaterialVariant { .. } => "Rename material variant",
             EditorCommand::UpdateBuiltinMaterial { .. } => "Edit material variant",
             EditorCommand::CopyMaterialInstance { .. } => "Copy material settings",
             EditorCommand::DropSkinning { .. } => "Drop skinning",

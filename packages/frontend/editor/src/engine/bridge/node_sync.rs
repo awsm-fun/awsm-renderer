@@ -663,6 +663,9 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
     // session cache; reclaiming here would make the rebuilt mesh render untextured.
     teardown(&entry, false).await;
 
+    // The mesh kinds render their SELECTED variant's instance (magenta when
+    // none selected / empty palette).
+    let selected_material = kind.selected_material().cloned();
     match kind {
         NodeKind::Light(cfg) => apply_light(entry.clone(), cfg).await,
         NodeKind::Line(def) => materialize_line(entry.clone(), def).await,
@@ -679,12 +682,12 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         // The sole procedural-geometry path: read the baked stack from the mesh
         // cache + upload with the node's assigned material (magenta when None).
         // Primitives + sweeps are now `MeshDef` stacks behind this same arm.
-        NodeKind::Mesh { mesh, material, .. } => match super::mesh_cache::get_raw(mesh.0) {
+        NodeKind::Mesh { mesh, .. } => match super::mesh_cache::get_raw(mesh.0) {
             Some(raw) => {
                 upload_simple_mesh(
                     entry.clone(),
                     raw,
-                    MeshMaterial::Assigned(material),
+                    MeshMaterial::Assigned(selected_material),
                     declare_only,
                 )
                 .await;
@@ -697,15 +700,16 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         // skinned mesh + skeleton; we keep that copy rendering (it deforms via the
         // joints) and just (re)assign this node's material/shadow to it. NOT the
         // captured-mesh pipeline — skinned geometry isn't editable.
-        NodeKind::SkinnedMesh { skin, material, .. } => {
-            materialize_skinned_mesh(entry.clone(), skin, material, declare_only).await
+        NodeKind::SkinnedMesh { skin, .. } => {
+            materialize_skinned_mesh(entry.clone(), skin, selected_material, declare_only).await
         }
         // A view-only pre-baked nanite mesh: materialize through the SAME cluster
         // path the player uses (no in-editor re-bake, no dense explode). Cluster
         // data comes from the import-time `cluster_cache`.
-        NodeKind::ClusterMesh {
-            cluster, material, ..
-        } => materialize_cluster_mesh_node(entry.clone(), cluster, material, declare_only).await,
+        NodeKind::ClusterMesh { cluster, .. } => {
+            materialize_cluster_mesh_node(entry.clone(), cluster, selected_material, declare_only)
+                .await
+        }
         NodeKind::Camera(cfg) => materialize_camera(entry.clone(), cfg).await,
         // Group: no procedural geometry, no renderer resource.
         _ => {}

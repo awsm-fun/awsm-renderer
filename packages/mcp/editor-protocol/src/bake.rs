@@ -150,8 +150,8 @@ mod tests {
             transform: Default::default(),
             kind: NodeKind::Mesh {
                 mesh: MeshRef(mesh_id),
-                material: None,
                 material_variants: Vec::new(),
+                selected_variant: None,
                 shadow: MeshShadowConfig::default(),
                 lod: MeshLodConfig::default(),
             },

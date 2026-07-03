@@ -249,34 +249,19 @@ pub async fn bake_player_bundle(
 /// assignments (no builtin def) keep their instance untouched — their def
 /// travels as a material folder instead.
 fn flatten_builtin_materials(nodes: &mut [awsm_renderer_editor_protocol::EditorNode]) {
-    use awsm_renderer_editor_protocol::NodeKind;
     let flatten = |inst: &mut awsm_renderer_editor_protocol::dynamic_material::MaterialInstance| {
         if let Some(merged) = crate::engine::bridge::node_sync::builtin_merged(inst) {
             inst.inline = merged;
         }
     };
     for node in nodes {
-        match &mut node.kind {
-            NodeKind::Mesh {
-                material,
-                material_variants,
-                ..
-            } => {
-                if let Some(inst) = material.as_mut() {
-                    flatten(inst);
-                }
-                // Variants ship self-contained too — the player lowers each
-                // variant's `inline` standalone, same as the live assignment.
-                for inst in material_variants.iter_mut() {
-                    flatten(inst);
-                }
+        // EVERY palette entry ships self-contained — the player lowers each
+        // variant's `inline` standalone (the selected one is just the mesh's
+        // starting pick).
+        if let Some(variants) = node.kind.material_variants_mut() {
+            for v in variants.iter_mut() {
+                flatten(&mut v.instance);
             }
-            NodeKind::SkinnedMesh { material, .. } => {
-                if let Some(inst) = material.as_mut() {
-                    flatten(inst);
-                }
-            }
-            _ => {}
         }
         flatten_builtin_materials(&mut node.children);
     }
@@ -363,15 +348,14 @@ fn emit_buffer_overrides(
         files: &mut Vec<awsm_renderer_editor_protocol::BundleFile>,
         seen: &mut HashSet<AssetId>,
     ) {
-        use awsm_renderer_editor_protocol::{BundleFile, NodeKind};
+        use awsm_renderer_editor_protocol::BundleFile;
         for node in nodes {
-            let material = match &node.kind {
-                NodeKind::Mesh { material, .. } | NodeKind::SkinnedMesh { material, .. } => {
-                    material.as_ref()
-                }
-                _ => None,
-            };
-            if let Some(inst) = material {
+            let instances = node
+                .kind
+                .material_variants()
+                .map(|vs| vs.iter().map(|v| &v.instance).collect::<Vec<_>>())
+                .unwrap_or_default();
+            for inst in instances {
                 for bref in inst.buffer_overrides.values() {
                     if !seen.insert(bref.asset) {
                         continue;
@@ -403,7 +387,10 @@ fn collect_custom_texture_assets(
     seen: &mut HashSet<AssetId>,
 ) {
     let kind = node.kind.get_cloned();
-    if let Some(Some(inst)) = material_slot(&kind) {
+    // Every palette entry's custom-WGSL overrides ship, not just the selected
+    // one — the player builds all variants.
+    for v in kind.material_variants().into_iter().flatten() {
+        let inst = &v.instance;
         // A custom-WGSL material is one whose asset resolves to a custom-material
         // entry with NO built-in variant (the inverse of `collect_texture_assets`).
         let is_builtin =
@@ -685,20 +672,13 @@ async fn resolve_images(scene: &Scene, roots: &[Arc<Node>]) -> (Vec<ExportImage>
 /// nodes' effective materials reference.
 fn collect_texture_assets(node: &Node, ids: &mut Vec<AssetId>, seen: &mut HashSet<AssetId>) {
     let kind = node.kind.get_cloned();
-    // The LIVE assignment plus every parked material VARIANT — variants ship in
-    // the bundle (the player builds them into ready keys), so their textures
-    // must ship too.
-    let mut instances: Vec<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> =
-        Vec::new();
-    if let Some(Some(inst)) = material_slot(&kind) {
-        instances.push(inst);
-    }
-    if let NodeKind::Mesh {
-        material_variants, ..
-    } = &kind
-    {
-        instances.extend(material_variants.iter());
-    }
+    // EVERY palette entry ships in the bundle (the player builds each into a
+    // ready key), so every entry's textures must ship too — the selected
+    // variant is just one of them.
+    let instances: Vec<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> = kind
+        .material_variants()
+        .map(|vs| vs.iter().map(|v| &v.instance).collect())
+        .unwrap_or_default();
     for inst in instances {
         // Only a built-in assignment exports glTF textures (its per-mesh `inline`
         // carries the slots); custom-WGSL materials export as AWSM_materials_none.
@@ -856,8 +836,8 @@ fn node_to_export(
     if !rig_covers_this {
         if let Some(mesh) = node_mesh(scene, &kind) {
             out.mesh = Some(mesh);
-            if let Some(material) = material_slot(&kind) {
-                out.material = Some(map_material(material, tex_index));
+            if has_material_slot(&kind) {
+                out.material = Some(map_material(kind.selected_material(), tex_index));
             }
         }
     }
@@ -906,13 +886,12 @@ pub(crate) fn node_mesh(_scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
     }
 }
 
-/// Borrow the single material assignment of a geometry node kind.
-fn material_slot(kind: &NodeKind) -> Option<&Option<MaterialInstance>> {
-    match kind {
-        NodeKind::Mesh { material, .. } => Some(material),
-        NodeKind::SkinnedMesh { material, .. } => Some(material),
-        _ => None,
-    }
+/// Whether this node kind carries a material palette (geometry kinds).
+fn has_material_slot(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. } | NodeKind::ClusterMesh { .. }
+    )
 }
 
 /// Resolve a node's material assignment to the export representation.
@@ -924,7 +903,7 @@ fn material_slot(kind: &NodeKind) -> Option<&Option<MaterialInstance>> {
 /// - A **custom-WGSL** assignment (or one that doesn't resolve to a built-in) →
 ///   [`ExportMaterial::None`] carrying the assigned id for scene-level
 ///   re-resolution on import.
-fn map_material(material: &Option<MaterialInstance>, tex_index: &TexIndex) -> ExportMaterial {
+fn map_material(material: Option<&MaterialInstance>, tex_index: &TexIndex) -> ExportMaterial {
     let Some(inst) = material else {
         return ExportMaterial::None { id: None };
     };

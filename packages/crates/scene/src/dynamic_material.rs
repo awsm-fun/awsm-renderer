@@ -287,6 +287,64 @@ pub struct CustomMaterialRef {
 ///   (resolved against the renderer's `MaterialRegistry` at bridge time);
 ///   `inline` is ignored.
 ///
+/// Stable identity of one entry in a mesh's material-variant list. Display
+/// names are free-form and renameable; the id is what selection, undo, MCP,
+/// and the player key their references by.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+#[derive(Eq, Hash, Copy)]
+pub struct VariantId(pub uuid::Uuid);
+
+// A `VariantId` is a UUID string on the wire — describe it as such for JSON
+// Schema (the MCP server's typed tool params) rather than recursing into Uuid.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for VariantId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "VariantId".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "format": "uuid" })
+    }
+}
+
+impl VariantId {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for VariantId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for VariantId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// One entry in a mesh's material palette: a library material plus THIS
+/// mesh's independent per-instance state for it. A mesh renders the variant
+/// its `selected_variant` points at (or magenta when `None`); the whole list
+/// rides save → load → bundle, and the player pre-builds every entry into a
+/// ready `MaterialKey`. The same library material may appear in the list any
+/// number of times — each entry keeps its own overrides (that's how one mesh
+/// carries two tunings of one material).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MaterialVariant {
+    /// Stable identity (never changes; see [`VariantId`]).
+    pub id: VariantId,
+    /// Display name (defaults to the library material's name; renameable;
+    /// uniqueness NOT enforced — the id is the identity).
+    pub name: String,
+    /// The library-material reference + this mesh's independent overrides.
+    pub instance: MaterialInstance,
+}
+
 /// A `None` material on a node means *unassigned* and renders flat magenta —
 /// the missing-material sentinel.
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]

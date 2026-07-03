@@ -208,14 +208,26 @@ pub struct LoadedScene {
     /// transforms. Freed last by [`teardown`](Self::teardown) (after the meshes
     /// rooted under them). Collected from `maps.transforms` + prefab capture.
     pub transforms: Vec<TransformKey>,
-    /// `NodeId → ` ready [`MaterialKey`]s for each mesh node's authored
-    /// **material variants** (`NodeKind::Mesh::material_variants`), in authored
-    /// order. Each variant is fully built in Phase 1 exactly like the live
-    /// assignment (inline def lowered, textures fetched + bound), so a game can
-    /// swap a mesh's look at runtime with a plain
-    /// [`AwsmRenderer::set_mesh_material`] — no carrier-node hacks. Nodes with
-    /// no variants are absent.
-    pub node_material_variants: HashMap<NodeId, Vec<MaterialKey>>,
+    /// `NodeId → ` this mesh node's material palette, each variant fully
+    /// built in Phase 1 into a ready [`MaterialKey`] (inline def lowered,
+    /// textures fetched + bound, pipelines in the same Phase-4 compile batch).
+    /// In authored order, carrying each variant's stable id + display name so
+    /// a game addresses looks by NAME and swaps with a plain
+    /// [`AwsmRenderer::set_mesh_material`]. The SELECTED variant is already
+    /// the mesh's starting material. Nodes with empty palettes are absent.
+    pub node_material_variants: HashMap<NodeId, Vec<LoadedMaterialVariant>>,
+}
+
+/// One pre-built entry of a mesh's material palette — see
+/// [`LoadedScene::node_material_variants`].
+#[derive(Clone, Debug)]
+pub struct LoadedMaterialVariant {
+    /// The variant's stable id (`MaterialVariant::id`).
+    pub id: awsm_renderer_scene::VariantId,
+    /// The variant's display name (`MaterialVariant::name`).
+    pub name: String,
+    /// The ready-to-assign renderer material.
+    pub key: MaterialKey,
 }
 
 /// A prefab-root subtree, materialized **once** (hidden) as a reusable template,
@@ -768,28 +780,37 @@ pub async fn load_scene_for_player(
     let total = renderables.len();
     for (i, (id, material)) in renderables.iter().enumerate() {
         on_phase(LoadPhase::BuildingMaterials { done: i, total });
-        let key = resolve_material(renderer, material.as_ref(), placeholder, assets, &custom).await;
+        let key = resolve_material(renderer, *material, placeholder, assets, &custom).await;
         maps.node_materials.insert(*id, key);
         // A custom-WGSL asset's first built key is the one a Uniform track drives
         // (an asset assigned to N nodes mints N keys; mirror the editor's
         // first-match `material_key_for_shader`).
-        if let Some(inst) = material.as_ref() {
+        if let Some(inst) = material {
             if custom.contains_key(&inst.asset) {
                 maps.custom_materials.entry(inst.asset).or_insert(key);
             }
         }
     }
-    // Material VARIANTS (`NodeKind::Mesh::material_variants`): build each into a
-    // ready key exactly like the live assignment, so the game can swap looks
-    // with `set_mesh_material` alone. Built in Phase 1 with everything else so
-    // their pipelines compile in the same Phase-4 batch (no first-swap hitch).
-    let mut node_material_variants: HashMap<NodeId, Vec<MaterialKey>> = HashMap::new();
+    // The material palette (`NodeKind::material_variants`): build EVERY variant
+    // into a ready key exactly like the selected one, so the game can swap
+    // looks with `set_mesh_material` alone. Built in Phase 1 with everything
+    // else so pipelines compile in the same Phase-4 batch (no first-swap
+    // hitch). (The selected variant is built twice — once here, once as the
+    // node's starting material above; the texture cache dedupes the heavy
+    // work.)
+    let mut node_material_variants: HashMap<NodeId, Vec<LoadedMaterialVariant>> = HashMap::new();
     for (id, variants) in collect_material_variants(&scene.nodes) {
-        let mut keys = Vec::with_capacity(variants.len());
+        let mut entries = Vec::with_capacity(variants.len());
         for v in variants {
-            keys.push(resolve_material(renderer, Some(v), placeholder, assets, &custom).await);
+            let key =
+                resolve_material(renderer, Some(&v.instance), placeholder, assets, &custom).await;
+            entries.push(LoadedMaterialVariant {
+                id: v.id,
+                name: v.name.clone(),
+                key,
+            });
         }
-        node_material_variants.insert(id, keys);
+        node_material_variants.insert(id, entries);
     }
     on_phase(LoadPhase::BuildingMaterials { done: total, total });
     // The custom-WGSL asset → shader-id table (Phase 0) feeds Uniform resolution.
@@ -920,22 +941,21 @@ pub async fn load_scene_for_player(
     Ok(loaded)
 }
 
-/// Flatten the tree (DFS) to the renderable nodes that carry a material —
-/// `Mesh` and `SkinnedMesh` — as `(node id, &material)`. Used to build every
-/// material up front (Phase 1) and to size the mesh-upload progress.
-/// Walk the tree collecting each mesh node's authored material VARIANTS (see
-/// `NodeKind::Mesh::material_variants`). Companion to [`collect_renderables`];
-/// nodes without variants are skipped.
-fn collect_material_variants(nodes: &[EditorNode]) -> Vec<(NodeId, &Vec<MaterialInstance>)> {
+/// Walk the tree collecting each mesh node's material palette (see
+/// `NodeKind::material_variants`). Companion to [`collect_renderables`];
+/// nodes with empty palettes are skipped.
+fn collect_material_variants(
+    nodes: &[EditorNode],
+) -> Vec<(NodeId, &Vec<awsm_renderer_scene::MaterialVariant>)> {
     let mut out = Vec::new();
-    fn walk<'a>(nodes: &'a [EditorNode], out: &mut Vec<(NodeId, &'a Vec<MaterialInstance>)>) {
+    fn walk<'a>(
+        nodes: &'a [EditorNode],
+        out: &mut Vec<(NodeId, &'a Vec<awsm_renderer_scene::MaterialVariant>)>,
+    ) {
         for n in nodes {
-            if let NodeKind::Mesh {
-                material_variants, ..
-            } = &n.kind
-            {
-                if !material_variants.is_empty() {
-                    out.push((n.id, material_variants));
+            if let Some(variants) = n.kind.material_variants() {
+                if !variants.is_empty() {
+                    out.push((n.id, variants));
                 }
             }
             walk(&n.children, out);
@@ -945,13 +965,17 @@ fn collect_material_variants(nodes: &[EditorNode]) -> Vec<(NodeId, &Vec<Material
     out
 }
 
-fn collect_renderables(nodes: &[EditorNode]) -> Vec<(NodeId, &Option<MaterialInstance>)> {
+/// Flatten the tree (DFS) to the renderable nodes that carry a material
+/// palette — `Mesh` and `SkinnedMesh` — as `(node id, selected variant's
+/// instance)`. Used to build every mesh's STARTING material up front (Phase 1)
+/// and to size the mesh-upload progress.
+fn collect_renderables(nodes: &[EditorNode]) -> Vec<(NodeId, Option<&MaterialInstance>)> {
     let mut out = Vec::new();
-    fn walk<'a>(nodes: &'a [EditorNode], out: &mut Vec<(NodeId, &'a Option<MaterialInstance>)>) {
+    fn walk<'a>(nodes: &'a [EditorNode], out: &mut Vec<(NodeId, Option<&'a MaterialInstance>)>) {
         for n in nodes {
             match &n.kind {
-                NodeKind::Mesh { material, .. } | NodeKind::SkinnedMesh { material, .. } => {
-                    out.push((n.id, material));
+                NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. } => {
+                    out.push((n.id, n.kind.selected_material()));
                 }
                 _ => {}
             }

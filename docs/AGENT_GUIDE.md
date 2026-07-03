@@ -65,7 +65,8 @@ set_material_layout { "material": <mat>,
                       "textures": [{ "name": "tex", "ty": "texture_2d<f32>" }] }
 set_material_wgsl   { "material": <mat>, "wgsl": "<see material-recipes>" }
 get_material_diagnostics { "asset": <mat> }             // expect ok:true
-assign_material     { "node": <node>, "material": <mat> }
+add_material_variant    { "node": <node>, "material": <mat> }   // → variant id
+select_material_variant { "node": <node>, "variant": <variant> } // render it
 set_material_texture { "node": <node>, "slot": "tex", "texture": <texture> }
 frame_node          { "node": <node> }                  // fit it in view
 wait_render_settled
@@ -111,7 +112,7 @@ Prefer one batch over dozens of single calls when laying out a scene. Still
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Mesh is flat **magenta** | No material assigned (magenta = sentinel) | `assign_material { node, material }` |
+| Mesh is flat **magenta** | No variant selected (magenta = sentinel) | `add_material_variant { node, material }` then `select_material_variant { node, variant }` |
 | Mesh is **black** | No light/IBL, or unlit shader returns black | add/raise a light; `set_environment {}`; in WGSL add base color / `apply_lighting` |
 | Screenshot is **blank/empty** | Took it before the frame presented | `wait_render_settled` first; confirm object framed (`frame_node`, `canvas_stats`) |
 | `set_material_wgsl` returns an **error** | WGSL didn't compile | Read the error; it quotes the offending line. Re-read `get_material_contract` |
