@@ -52,14 +52,46 @@ pub async fn register_custom_materials(
     let mut out = HashMap::new();
     for cm in &scene.custom_materials {
         let folder = cm.folder.to_string_lossy();
-        let Ok(json) = assets.fetch(&format!("{folder}/material.json")).await else {
-            continue;
+        // Every failure below is LOUD: a declared custom material that doesn't
+        // register means its meshes silently render through their (meaningless
+        // for a custom assignment) inline defs instead of the authored shader.
+        // Not fatal only because pre-fix bundles listed BUILT-IN materials here
+        // with folders that were never written (those legitimately fail the
+        // fetch and correctly fall through to the builtin/inline path).
+        let json = match assets.fetch(&format!("{folder}/material.json")).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    "custom material `{}` ({}): fetch {folder}/material.json failed ({e}) — \
+                     meshes assigned to it will render via their inline def",
+                    cm.name,
+                    cm.id
+                );
+                continue;
+            }
         };
-        let Ok(wgsl) = assets.fetch(&format!("{folder}/material.wgsl")).await else {
-            continue;
+        let wgsl = match assets.fetch(&format!("{folder}/material.wgsl")).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    "custom material `{}` ({}): fetch {folder}/material.wgsl failed ({e})",
+                    cm.name,
+                    cm.id
+                );
+                continue;
+            }
         };
-        let Ok(def) = serde_json::from_slice::<MaterialDefinition>(&json) else {
-            continue;
+        let def = match serde_json::from_slice::<MaterialDefinition>(&json) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(
+                    "custom material `{}` ({}): {folder}/material.json didn't parse ({e}) — \
+                     is the server returning an HTML fallback for missing files?",
+                    cm.name,
+                    cm.id
+                );
+                continue;
+            }
         };
         let wgsl = String::from_utf8_lossy(&wgsl).into_owned();
         // Optional 2nd alpha-only WGSL window (masked cutouts). Absent for
@@ -70,8 +102,17 @@ pub async fn register_custom_materials(
             .ok()
             .map(|b| String::from_utf8_lossy(&b).into_owned());
         let reg = registration_from_definition(&cm.id, &def, wgsl, alpha_wgsl);
-        if let Ok(shader_id) = renderer.register_material(reg) {
-            out.insert(cm.id, shader_id);
+        match renderer.register_material(reg) {
+            Ok(shader_id) => {
+                out.insert(cm.id, shader_id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "custom material `{}` ({}): register/compile failed ({e})",
+                    cm.name,
+                    cm.id
+                );
+            }
         }
     }
     out

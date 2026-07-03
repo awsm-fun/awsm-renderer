@@ -98,10 +98,17 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         .map(|n| spec_from_node(n).to_editor_node())
         .collect();
 
+    // Only custom-WGSL materials get a ref: the ref's `folder` promises
+    // `material.json` + `material.wgsl` files, and `material_files` only writes
+    // those for non-builtin materials (a builtin round-trips via each node's
+    // inline MaterialDef). Emitting builtin refs made every bundle advertise
+    // phantom folders the player then fetched (dead URLs — or an SPA server's
+    // HTML fallback) on every load.
     let custom_materials = ctrl
         .custom_materials
         .lock_ref()
         .iter()
+        .filter(|m| m.builtin.get_cloned().is_none())
         .map(|m| {
             let name = m.name.get_cloned();
             let folder = material_folder_path(m.id, &name);
@@ -382,14 +389,32 @@ where
 /// recovers the role. New projects store the kind on the asset and never reach this.
 fn infer_texture_color_kind(display_name: &str) -> awsm_renderer_editor_protocol::TextureColorKind {
     use awsm_renderer_editor_protocol::TextureColorKind as K;
-    let n = display_name;
-    if n.contains("normal") {
+    // Heuristic LAST-RESORT for legacy saves without a persisted role, covering
+    // the common texture-name conventions (`_nor_gl`, `_mr`, `_arm`/`_orm`,
+    // `_ao`, …). Wrong guesses aren't fatal anymore — a slot binding
+    // re-materializes with the SLOT's semantics (see the bridge's
+    // semantics-keyed texture cache) — but the initial upload and
+    // `screenshot_texture` readback still honor this.
+    let n = display_name.to_ascii_lowercase();
+    let has_token = |tokens: &[&str]| tokens.iter().any(|t| n.contains(t));
+    if has_token(&["normal", "_nor", "nor_", "_nrm", "nrm_", "_nml"]) {
         K::Normal
-    } else if n.contains("metal/rough") {
+    } else if has_token(&[
+        "metal/rough",
+        "metallic",
+        "_metal",
+        "rough",
+        "_mr",
+        "mr_",
+        "_orm",
+        "orm_",
+        "_arm",
+        "arm_",
+    ]) {
         K::MetallicRoughness
-    } else if n.contains("occlusion") {
+    } else if has_token(&["occlusion", "_ao", "ao_"]) {
         K::Occlusion
-    } else if n.contains("emissive") {
+    } else if has_token(&["emissive", "emission", "_emit"]) {
         K::Emissive
     } else {
         K::Albedo
