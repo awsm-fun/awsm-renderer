@@ -409,14 +409,23 @@ fn demo_scene() -> awsm_renderer_scene::Scene {
             translation: tx,
             ..Trs::IDENTITY
         },
-        kind: NodeKind::Mesh {
-            mesh: MeshRef(mesh_id),
-            material: Some(MaterialInstance {
-                asset: mat,
-                ..Default::default()
-            }),
-            shadow: MeshShadowConfig::default(),
-            lod: MeshLodConfig::default(),
+        kind: {
+            // One selected variant of the shared demo material.
+            let variant = awsm_renderer_scene::MaterialVariant {
+                id: awsm_renderer_scene::VariantId::new(),
+                name: "Demo".into(),
+                instance: MaterialInstance {
+                    asset: mat,
+                    ..Default::default()
+                },
+            };
+            NodeKind::Mesh {
+                mesh: MeshRef(mesh_id),
+                selected_variant: Some(variant.id),
+                material_variants: vec![variant],
+                shadow: MeshShadowConfig::default(),
+                lod: MeshLodConfig::default(),
+            }
         },
         locked: false,
         visible: true,

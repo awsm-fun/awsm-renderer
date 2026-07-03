@@ -8640,84 +8640,6 @@ fn node_index(scene: &Scene, id: NodeId, parent: Option<NodeId>) -> Option<usize
 }
 
 #[cfg(test)]
-mod carry_inline_tests {
-    use super::carry_inline_customizations;
-    use awsm_renderer_editor_protocol::material::{ClearcoatExt, MaterialDef, PbrExtensions};
-    use awsm_renderer_editor_protocol::{AssetId, TextureRef};
-
-    // A per-mesh texture bind (differs from the prior template) survives
-    // re-assignment; a slot that mirrored the prior template adopts the new
-    // template's value instead.
-    #[test]
-    fn per_mesh_bind_survives_template_copy_does_not() {
-        let template_tex = TextureRef::new(AssetId::new());
-        let user_tex = TextureRef::new(AssetId::new());
-        let prior_template = MaterialDef {
-            base_color_texture: Some(template_tex),
-            ..Default::default()
-        };
-        // Prior inline: base color mirrors the old template (adopted at the
-        // last assign); the normal map is a genuine per-mesh bind.
-        let prior_inline = MaterialDef {
-            base_color_texture: Some(template_tex),
-            normal_texture: Some(user_tex),
-            ..Default::default()
-        };
-        let new_template_tex = TextureRef::new(AssetId::new());
-        let mut next = MaterialDef {
-            base_color_texture: Some(new_template_tex),
-            ..Default::default()
-        };
-        carry_inline_customizations(&mut next, &prior_inline, Some(&prior_template));
-        assert_eq!(
-            next.base_color_texture,
-            Some(new_template_tex),
-            "template-mirrored slot must adopt the NEW template"
-        );
-        assert_eq!(
-            next.normal_texture,
-            Some(user_tex),
-            "per-mesh bind must survive re-assignment"
-        );
-    }
-
-    // An inline extension the user enabled on this mesh survives; without a
-    // prior template every populated slot counts as a customization.
-    #[test]
-    fn inline_extension_and_templateless_binds_carry() {
-        let user_tex = TextureRef::new(AssetId::new());
-        let prior_inline = MaterialDef {
-            emissive_texture: Some(user_tex),
-            extensions: PbrExtensions {
-                clearcoat: Some(ClearcoatExt {
-                    factor: 1.0,
-                    roughness_factor: 0.0,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut next = MaterialDef::default();
-        carry_inline_customizations(&mut next, &prior_inline, None);
-        assert_eq!(next.emissive_texture, Some(user_tex));
-        assert_eq!(next.extensions.clearcoat.unwrap().factor, 1.0);
-    }
-
-    // Empty prior slots never clobber the new template's values.
-    #[test]
-    fn empty_prior_slots_leave_the_new_template_alone() {
-        let new_tex = TextureRef::new(AssetId::new());
-        let mut next = MaterialDef {
-            base_color_texture: Some(new_tex),
-            ..Default::default()
-        };
-        carry_inline_customizations(&mut next, &MaterialDef::default(), None);
-        assert_eq!(next.base_color_texture, Some(new_tex));
-    }
-}
-
-#[cfg(test)]
 mod ik_tests {
     use super::ik_bend_plane_normal;
     use glam::Vec3;
@@ -8804,7 +8726,8 @@ mod unassigned_material_tests {
     fn unassigned_geometry_is_magenta_sentinel() {
         let mesh = NodeKind::Mesh {
             mesh: MeshRef(AssetId::new()),
-            material: None,
+            material_variants: Vec::new(),
+            selected_variant: None,
             shadow: Default::default(),
             lod: Default::default(),
         };

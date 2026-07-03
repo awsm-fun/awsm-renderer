@@ -52,6 +52,8 @@ fn build_scanline_registration() -> awsm_renderer::dynamic_materials::MaterialRe
         ],
         textures: vec![TextureSlotRuntime {
             name: "base".into(),
+            srgb: true,
+            mipmap_kind: awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
         }],
         buffers: Vec::<BufferSlotRuntime>::new(),
     };

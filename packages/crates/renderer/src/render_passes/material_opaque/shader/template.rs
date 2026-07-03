@@ -869,7 +869,11 @@ mod transparent_dynamic_tests {
                     ty: FieldType::F32,
                 },
             ],
-            textures: vec![TextureSlotRuntime { name: "bg".into() }],
+            textures: vec![TextureSlotRuntime {
+                name: "bg".into(),
+                srgb: true,
+                mipmap_kind: awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+            }],
             buffers: Vec::new(),
         };
         let struct_decl =

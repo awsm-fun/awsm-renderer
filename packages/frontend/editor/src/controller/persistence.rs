@@ -1350,7 +1350,8 @@ mod cluster_persistence_tests {
             transform: Trs::default(),
             kind: NodeKind::ClusterMesh {
                 cluster: ClusterMeshRef { source },
-                material: None,
+                material_variants: Vec::new(),
+                selected_variant: None,
                 shadow: Default::default(),
             },
             locked: false,
