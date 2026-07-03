@@ -213,6 +213,16 @@ pub struct Settings {
     /// perspective. Kept authoritative by the `SetCameraProjection` handler, so the
     /// viewport toggle/keyboard shortcut and any MCP-driven change stay in sync.
     pub editor_ortho: Mutable<bool>,
+    /// Editor-camera clip planes: `false` (default) = AUTO — near/far are
+    /// re-derived from the orbit distance every move (clips scenes bigger or
+    /// closer than the assumed framing bounds); `true` = pin them to
+    /// [`Self::cam_clip_near`]/[`Self::cam_clip_far`]. Session-only (the
+    /// editor camera isn't persisted).
+    pub cam_clip_manual: Mutable<bool>,
+    /// Manual near plane (metres). Applied only when [`Self::cam_clip_manual`].
+    pub cam_clip_near: Mutable<f64>,
+    /// Manual far plane (metres). Applied only when [`Self::cam_clip_manual`].
+    pub cam_clip_far: Mutable<f64>,
 }
 
 impl Default for Settings {
@@ -232,6 +242,9 @@ impl Default for Settings {
             snap: Mutable::new(false),
             units: Mutable::new("meters".to_string()),
             editor_ortho: Mutable::new(false),
+            cam_clip_manual: Mutable::new(false),
+            cam_clip_near: Mutable::new(0.01),
+            cam_clip_far: Mutable::new(1000.0),
         }
     }
 }

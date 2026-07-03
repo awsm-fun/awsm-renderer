@@ -71,6 +71,13 @@ pub struct FreeCamera {
     margin: f32,
     aperture: f32,
     focus_distance: f32,
+    /// Session-only user override of the clip planes as `(near, far)`. `None`
+    /// (default) keeps the AUTO behaviour — `refresh_clip_planes` re-derives
+    /// near/far from the orbit distance against the framing AABB on every
+    /// move, which clips scenes larger (far) or closer (near) than that
+    /// assumed bounds. `Some` pins both planes; the auto refresh still runs
+    /// underneath but is masked at matrix build.
+    clip_override: Option<(f32, f32)>,
 }
 
 impl FreeCamera {
@@ -90,6 +97,7 @@ impl FreeCamera {
             margin,
             aperture: 5.6,
             focus_distance: 10.0,
+            clip_override: None,
         }
     }
 
@@ -105,8 +113,22 @@ impl FreeCamera {
 
     pub fn matrices(&self) -> CameraMatrices {
         let projection = match self.mode {
-            ProjectionMode::Perspective => self.perspective.projection_matrix(),
-            ProjectionMode::Orthographic => self.orthographic.projection_matrix(),
+            ProjectionMode::Perspective => {
+                let mut p = self.perspective.clone();
+                if let Some((near, far)) = self.clip_override {
+                    p.near = near;
+                    p.far = far;
+                }
+                p.projection_matrix()
+            }
+            ProjectionMode::Orthographic => {
+                let mut p = self.orthographic.clone();
+                if let Some((near, far)) = self.clip_override {
+                    p.near = near;
+                    p.far = far;
+                }
+                p.projection_matrix()
+            }
         };
         CameraMatrices {
             view: self.view.get_view_matrix(),
@@ -119,6 +141,18 @@ impl FreeCamera {
 
     pub fn set_aperture(&mut self, aperture: f32) {
         self.aperture = aperture;
+    }
+
+    /// Pin (`Some((near, far))`) or release (`None` → auto) the clip planes.
+    /// Values are sanitised: near is clamped to a positive minimum and far to
+    /// beyond near, so a half-typed UI value can't produce a degenerate
+    /// projection.
+    pub fn set_clip_override(&mut self, clip: Option<(f32, f32)>) {
+        self.clip_override = clip.map(|(near, far)| {
+            let near = near.max(1e-4);
+            let far = far.max(near * 1.001);
+            (near, far)
+        });
     }
 
     pub fn set_focus_distance(&mut self, focus_distance: f32) {

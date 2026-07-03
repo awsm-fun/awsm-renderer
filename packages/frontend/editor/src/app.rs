@@ -564,6 +564,29 @@ fn settings_drawer() -> Dom {
                         })
                         .render(),
                 )
+                .child(row("Manual clip planes", toggle(s.cam_clip_manual.clone())))
+                .child(row(
+                    "Near (m)",
+                    NumField::new(s.cam_clip_near.get())
+                        .min(0.0001)
+                        .step(0.01)
+                        .on_change(|v| controller().settings.cam_clip_near.set_neq(v.max(0.0001)))
+                        .render(),
+                ))
+                .child(row(
+                    "Far (m)",
+                    NumField::new(s.cam_clip_far.get())
+                        .min(0.01)
+                        .step(10.0)
+                        .on_change(|v| controller().settings.cam_clip_far.set_neq(v.max(0.01)))
+                        .render(),
+                ))
+                .child(html!("div", {
+                    .style("font-size", "11px").style("color", "var(--text-3)")
+                    .style("line-height", "1.4").style("padding", "2px 0 4px")
+                    .text("Off = auto: the planes track the orbit distance, which can clip very \
+                           large or very close geometry. On pins them for this session.")
+                }))
                 .render(),
         )
         .child(
