@@ -219,6 +219,13 @@ pub struct TextureSlot {
     /// [`MaterialInstance::texture_overrides`]).
     #[serde(default)]
     pub default: Option<PathBuf>,
+    /// The slot's semantic role — decides the upload's COLOR SPACE (sRGB
+    /// decode for color data, verbatim for data maps) and mipmap kind, for
+    /// both the editor bind and the player loader. Defaults to `Albedo`
+    /// (sRGB color), the right call for anything visual; declare `Normal` /
+    /// `MetallicRoughness` / … for data maps or they shade wrong.
+    #[serde(default)]
+    pub color_kind: crate::material::TextureColorKind,
 }
 
 /// A variable-length per-material buffer slot on a [`MaterialDefinition`].
@@ -647,6 +654,7 @@ mod tests {
             textures: vec![TextureSlot {
                 name: "base".into(),
                 default: Some(PathBuf::from("assets/base.png")),
+                color_kind: Default::default(),
             }],
             buffers: vec![BufferSlot {
                 name: "frames".into(),
@@ -713,6 +721,7 @@ mod tests {
         def.textures.push(TextureSlot {
             name: "tint".into(),
             default: None,
+            color_kind: Default::default(),
         });
         let err = validate_layout_names(&def).unwrap_err();
         match err {

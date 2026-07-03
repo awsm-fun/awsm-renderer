@@ -17,6 +17,9 @@ pub struct StoredSlot {
     pub val: String,
     #[serde(default)]
     pub debug: String,
+    /// Texture slots only: the slot's semantic role (see `SlotSpec::color_kind`).
+    #[serde(default)]
+    pub color_kind: awsm_renderer_scene::TextureColorKind,
 }
 
 /// A persisted editor custom material — the full library entry, so that built-in

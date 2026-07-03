@@ -149,6 +149,11 @@ pub struct UniformFieldRuntime {
 pub struct TextureSlotRuntime {
     /// Slot name.
     pub name: String,
+    /// Whether the bound image is sRGB COLOR data (decode on upload) —
+    /// false for data maps (normal / metallic-roughness / occlusion / …).
+    pub srgb: bool,
+    /// The mipmap-generation kind matching the slot's semantic role.
+    pub mipmap_kind: awsm_renderer_core::texture::mipmap::MipmapTextureKind,
 }
 
 /// One variable-length buffer slot. Becomes `<name>_offset: u32` and
@@ -833,6 +838,8 @@ mod tests {
     fn tslot(name: &str) -> TextureSlotRuntime {
         TextureSlotRuntime {
             name: name.to_string(),
+            srgb: true,
+            mipmap_kind: awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
         }
     }
     fn bslot(name: &str) -> BufferSlotRuntime {

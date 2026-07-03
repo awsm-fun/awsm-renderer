@@ -32,6 +32,7 @@ fn stored_from_material(m: &CustomMaterial) -> StoredMaterial {
         ty: s.ty.clone(),
         val: s.val.clone(),
         debug: s.debug.clone(),
+        color_kind: s.color_kind,
     };
     StoredMaterial {
         id: m.id,
@@ -61,6 +62,7 @@ fn material_from_stored(s: &StoredMaterial) -> Arc<CustomMaterial> {
         ty: x.ty.clone(),
         val: x.val.clone(),
         debug: x.debug.clone(),
+        color_kind: x.color_kind,
     };
     Arc::new(CustomMaterial {
         id: s.id,
@@ -299,10 +301,11 @@ where
             _ => continue,
         };
         // The persisted semantic role IS the source of truth — its color space +
-        // mipmap kind flow straight to the upload. Projects saved before the role
-        // was tracked have `None` → fall back to inferring it from the
-        // import-assigned display-name slot.
-        let kind = color_kind.unwrap_or_else(|| infer_texture_color_kind(display_name));
+        // mipmap kind flow straight to the upload. `None` (never bound this
+        // era) defaults to Albedo; the first slot bind re-materializes with the
+        // slot's semantics AND writes the role back onto the asset
+        // (`record_asset_color_kind`), so the next save persists it.
+        let kind = color_kind.unwrap_or_default();
         if let Ok(bytes) = read(format!("assets/{name}")).await {
             crate::engine::bridge::texture_cache::store(*id, bytes.clone(), mime);
             items.push((*id, bytes, mime_str.to_string(), kind));
@@ -387,39 +390,6 @@ where
 /// didn't persist it: the editor names every imported texture `"<material> · <slot>"`
 /// (see `ensure_import_texture` call sites in `state.rs`), so the slot suffix
 /// recovers the role. New projects store the kind on the asset and never reach this.
-fn infer_texture_color_kind(display_name: &str) -> awsm_renderer_editor_protocol::TextureColorKind {
-    use awsm_renderer_editor_protocol::TextureColorKind as K;
-    // Heuristic LAST-RESORT for legacy saves without a persisted role, covering
-    // the common texture-name conventions (`_nor_gl`, `_mr`, `_arm`/`_orm`,
-    // `_ao`, …). Wrong guesses aren't fatal anymore — a slot binding
-    // re-materializes with the SLOT's semantics (see the bridge's
-    // semantics-keyed texture cache) — but the initial upload and
-    // `screenshot_texture` readback still honor this.
-    let n = display_name.to_ascii_lowercase();
-    let has_token = |tokens: &[&str]| tokens.iter().any(|t| n.contains(t));
-    if has_token(&["normal", "_nor", "nor_", "_nrm", "nrm_", "_nml"]) {
-        K::Normal
-    } else if has_token(&[
-        "metal/rough",
-        "metallic",
-        "_metal",
-        "rough",
-        "_mr",
-        "mr_",
-        "_orm",
-        "orm_",
-        "_arm",
-        "arm_",
-    ]) {
-        K::MetallicRoughness
-    } else if has_token(&["occlusion", "_ao", "ao_"]) {
-        K::Occlusion
-    } else if has_token(&["emissive", "emission", "_emit"]) {
-        K::Emissive
-    } else {
-        K::Albedo
-    }
-}
 
 /// Restore captured-mesh bytes into the [`mesh_cache`] store from a loaded
 /// project's asset table, reading each `assets/<id>.mesh.bin` via `read`. Called

@@ -153,8 +153,12 @@ pub async fn build_custom_material(
                     .unwrap_or_else(|| default_value_for(u.ty))
             })
             .collect();
-        let texture_slots: Vec<String> =
-            reg.layout.textures.iter().map(|t| t.name.clone()).collect();
+        let texture_slots: Vec<(String, bool, MipmapTextureKind)> = reg
+            .layout
+            .textures
+            .iter()
+            .map(|t| (t.name.clone(), t.srgb, t.mipmap_kind))
+            .collect();
         let buffer_slots: Vec<String> = reg.layout.buffers.iter().map(|b| b.name.clone()).collect();
         (
             reg.alpha_mode,
@@ -176,21 +180,15 @@ pub async fn build_custom_material(
         }
     }
 
-    // Per-mesh texture overrides → pooled bindings (slot order). A custom texture
-    // is treated as color data (srgb + albedo mips), mirroring the editor's
-    // `resolve_texture_binding`. An override whose texture isn't in the bundle (or
-    // fails to decode) leaves the slot unbound.
+    // Per-mesh texture overrides → pooled bindings (slot order), each uploaded
+    // with ITS SLOT's declared semantics (color space + mipmap kind) — same as
+    // the editor's `resolve_texture_binding`. An override whose texture isn't
+    // in the bundle (or fails to decode) leaves the slot unbound.
     let mut textures: Vec<Option<DynamicTextureBinding>> = vec![None; texture_slots.len()];
-    for (i, name) in texture_slots.iter().enumerate() {
+    for (i, (name, srgb, mipmap_kind)) in texture_slots.iter().enumerate() {
         if let Some(tref) = inst.texture_overrides.get(name) {
-            if let Some(mt) = crate::texture::load_texture(
-                renderer,
-                assets,
-                tref,
-                true,
-                MipmapTextureKind::Albedo,
-            )
-            .await
+            if let Some(mt) =
+                crate::texture::load_texture(renderer, assets, tref, *srgb, *mipmap_kind).await
             {
                 if let Some(sampler) = mt.sampler_key {
                     textures[i] = Some(DynamicTextureBinding::Pooled {
@@ -256,8 +254,13 @@ fn registration_from_definition(
         textures: def
             .textures
             .iter()
-            .map(|t| TextureSlotRuntime {
-                name: t.name.clone(),
+            .map(|t| {
+                let (srgb, mipmap_kind) = crate::material::texture_color_semantics(t.color_kind);
+                TextureSlotRuntime {
+                    name: t.name.clone(),
+                    srgb,
+                    mipmap_kind,
+                }
             })
             .collect(),
         buffers: def
@@ -553,6 +556,7 @@ mod tests {
         with_tex.textures = vec![TextureSlot {
             name: "albedo".into(),
             default: None,
+            color_kind: Default::default(),
         }];
         assert_ne!(
             layout_hash(&minimal_def()),

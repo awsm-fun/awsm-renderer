@@ -689,6 +689,14 @@ pub struct SlotArg {
     /// Debug-preview source for textures/buffers (optional).
     #[serde(default)]
     pub debug: String,
+    /// Texture slots only: the slot's semantic ROLE — decides the bound
+    /// image's color space (sRGB decode for color data, verbatim for data
+    /// maps) and mipmap kind, in the editor AND the player. One of: albedo
+    /// (default, sRGB) | normal | metallic_roughness | occlusion | emissive
+    /// (sRGB) | specular | specular_color (sRGB) | transmission |
+    /// volume_thickness. Declare data maps or they shade wrong.
+    #[serde(default)]
+    pub color_kind: awsm_renderer_scene::TextureColorKind,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -4866,6 +4874,7 @@ fn slot_arg(s: SlotArg) -> SlotSpec {
         ty: s.ty,
         val: s.val,
         debug: s.debug,
+        color_kind: s.color_kind,
     }
 }
 

@@ -210,6 +210,28 @@ fn apply_extensions(pbr: &mut PbrMaterial, ext: &PbrExtensions) {
     }
 }
 
+/// A [`TextureColorKind`]'s upload semantics: `(srgb_to_linear, mipmap kind)`.
+/// The single mapping both the editor bind and the player loader use, so a
+/// declared slot role means the same thing everywhere.
+pub fn texture_color_semantics(
+    kind: awsm_renderer_scene::TextureColorKind,
+) -> (bool, awsm_renderer_core::texture::mipmap::MipmapTextureKind) {
+    use awsm_renderer_core::texture::mipmap::MipmapTextureKind as M;
+    use awsm_renderer_scene::TextureColorKind as K;
+    let mip = match kind {
+        K::Albedo => M::Albedo,
+        K::Normal => M::Normal,
+        K::MetallicRoughness => M::MetallicRoughness,
+        K::Occlusion => M::Occlusion,
+        K::Emissive => M::Emissive,
+        K::Specular => M::Specular,
+        K::SpecularColor => M::SpecularColor,
+        K::Transmission => M::Transmission,
+        K::VolumeThickness => M::VolumeThickness,
+    };
+    (kind.is_srgb(), mip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

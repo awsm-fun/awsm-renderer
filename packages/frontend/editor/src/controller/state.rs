@@ -7044,6 +7044,7 @@ fn slots_to_specs(slots: &[Slot]) -> Vec<awsm_renderer_editor_protocol::SlotSpec
             ty: s.ty.clone(),
             val: s.val.clone(),
             debug: s.debug.clone(),
+            color_kind: s.color_kind,
         })
         .collect()
 }
@@ -7056,6 +7057,7 @@ fn specs_to_slots(specs: &[awsm_renderer_editor_protocol::SlotSpec]) -> Vec<Slot
             ty: s.ty.clone(),
             val: s.val.clone(),
             debug: s.debug.clone(),
+            color_kind: s.color_kind,
         })
         .collect()
 }

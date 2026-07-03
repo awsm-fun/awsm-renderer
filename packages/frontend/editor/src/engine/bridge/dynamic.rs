@@ -272,15 +272,28 @@ fn build_custom(renderer: &mut AwsmRenderer, inst: &MaterialInstance) -> Option<
         // Per-mesh texture-slot overrides (#4.2): resolve each TextureRef to a
         // pooled renderer texture and bind it into the slot.
         if !inst.texture_overrides.is_empty() {
-            let tex_slots: Vec<String> = renderer
+            let tex_slots: Vec<(
+                String,
+                bool,
+                awsm_renderer_core::texture::mipmap::MipmapTextureKind,
+            )> = renderer
                 .dynamic_material_registration(dm.shader_id)
-                .map(|reg| reg.layout.textures.iter().map(|t| t.name.clone()).collect())
+                .map(|reg| {
+                    reg.layout
+                        .textures
+                        .iter()
+                        .map(|t| (t.name.clone(), t.srgb, t.mipmap_kind))
+                        .collect()
+                })
                 .unwrap_or_default();
-            for (i, name) in tex_slots.iter().enumerate() {
+            for (i, (name, srgb, mipmap_kind)) in tex_slots.iter().enumerate() {
                 if let Some(tref) = inst.texture_overrides.get(name) {
-                    if let Some((key, sampler)) =
-                        super::material::resolve_texture_binding(renderer, tref)
-                    {
+                    if let Some((key, sampler)) = super::material::resolve_texture_binding(
+                        renderer,
+                        tref,
+                        *srgb,
+                        *mipmap_kind,
+                    ) {
                         if let Some(slot) = dm.textures.get_mut(i) {
                             *slot = Some(DynamicTextureBinding::Pooled {
                                 texture: key,
@@ -435,8 +448,14 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
             .collect(),
         textures: textures
             .iter()
-            .map(|t| TextureSlotRuntime {
-                name: t.name.clone(),
+            .map(|t| {
+                let (srgb, mipmap_kind) =
+                    awsm_renderer_scene_loader::material::texture_color_semantics(t.color_kind);
+                TextureSlotRuntime {
+                    name: t.name.clone(),
+                    srgb,
+                    mipmap_kind,
+                }
             })
             .collect(),
         buffers: buffers
@@ -587,6 +606,7 @@ pub fn material_definition(
             .map(|t| TextureSlot {
                 name: t.name.clone(),
                 default: None,
+                color_kind: t.color_kind,
             })
             .collect(),
         buffers: mat

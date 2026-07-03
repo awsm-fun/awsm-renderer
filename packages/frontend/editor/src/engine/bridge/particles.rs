@@ -124,14 +124,20 @@ async fn build_runtime(
     // The sprite drives base-color (the blended/masked alpha) AND emissive (the
     // glow keeps the sprite shape).
     let sprite = def.texture.as_ref().and_then(|tref| {
-        super::material::resolve_texture_binding(renderer, tref).map(|(key, sampler_key)| {
-            awsm_renderer::materials::MaterialTexture {
+        super::material::resolve_texture_binding(
+            renderer,
+            tref,
+            true,
+            awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+        )
+        .map(
+            |(key, sampler_key)| awsm_renderer::materials::MaterialTexture {
                 key,
                 sampler_key: Some(sampler_key),
                 uv_index: Some(0),
                 transform_key: None,
-            }
-        })
+            },
+        )
     });
     let alpha_mode = if def.blend {
         MaterialAlphaMode::Blend

@@ -59,8 +59,10 @@ thread_local! {
 pub(crate) fn resolve_texture_binding(
     r: &mut AwsmRenderer,
     tref: &TextureRef,
+    srgb: bool,
+    kind: MipmapTextureKind,
 ) -> Option<(TextureKey, SamplerKey)> {
-    let mt = resolve_texture(r, tref, true, MipmapTextureKind::Albedo)?;
+    let mt = resolve_texture(r, tref, srgb, kind)?;
     Some((mt.key, mt.sampler_key?))
 }
 

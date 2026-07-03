@@ -62,6 +62,12 @@ pub struct SlotSpec {
     pub val: String,
     #[serde(default)]
     pub debug: String,
+    /// Texture slots only: the slot's semantic role — decides the bound
+    /// image's color space (sRGB decode vs verbatim) and mipmap kind in BOTH
+    /// the editor and the player. Defaults to `albedo` (sRGB color); declare
+    /// `normal` / `metallic_roughness` / … for data maps or they shade wrong.
+    #[serde(default)]
+    pub color_kind: crate::TextureColorKind,
 }
 
 /// Which texture slot of a built-in/inline `MaterialDef` a `SetBuiltinTexture`
