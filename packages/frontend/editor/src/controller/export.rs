@@ -175,9 +175,15 @@ pub async fn bake_player_bundle(
         collect_custom_texture_assets(ctrl, n, &mut ids, &mut seen);
     }
     for id in ids {
-        if let Some((_name, png)) = resolve_one_texture(&ctrl.scene, id).await {
-            files.push(BundleFile::asset(format!("{id}.png"), png));
-        }
+        // Referenced by a material ⇒ MUST ship, losslessly, or the export
+        // fails. No quiet skip and no lossy fallback (see `texture_source_bytes`).
+        let (_name, bytes, _mime) = texture_source_bytes(&ctrl.scene, id).ok_or_else(|| {
+            format!(
+                "bundle texture {id}: no original source bytes in the session cache — \
+                 re-import the texture (or reload the saved project) and re-export"
+            )
+        })?;
+        files.push(BundleFile::asset(format!("{id}.png"), bytes));
     }
 
     // 4. Skinned meshes: one clean rig glb (skeleton + mesh + skin + morph, built
@@ -648,13 +654,11 @@ async fn resolve_images(scene: &Scene, roots: &[Arc<Node>]) -> (Vec<ExportImage>
     let mut images = Vec::new();
     let mut index = TexIndex::new();
     for id in ids {
-        if let Some((name, bytes)) = resolve_one_texture(scene, id).await {
+        if let Some((name, bytes, mime)) = texture_source_bytes(scene, id) {
             index.insert(id, images.len());
-            images.push(ExportImage {
-                name,
-                bytes,
-                mime: ImageMime::Png,
-            });
+            images.push(ExportImage { name, bytes, mime });
+        } else {
+            tracing::warn!("glb export: texture {id} has no cached source bytes — skipped");
         }
     }
     (images, index)
@@ -742,7 +746,21 @@ fn material_texture_refs(def: &MaterialDef) -> Vec<TextureRef> {
 
 /// Resolve one texture asset to `(name, png_bytes)`. Procedural → regenerate +
 /// encode (sync); raster → GPU readback (async). `None` if missing/unavailable.
-async fn resolve_one_texture(scene: &Scene, id: AssetId) -> Option<(String, Vec<u8>)> {
+/// The ORIGINAL encoded bytes for a texture asset — the only lossless source.
+/// Procedural textures regenerate deterministically; raster textures come from
+/// the session `texture_cache` (the same bytes the project Save writes).
+///
+/// Deliberately NO GPU-readback fallback: `texture_png_bytes` linear→sRGB
+/// encodes non-sRGB DATA textures on the way out, so a normal map came back
+/// mean-shifted ((128,128,255) → ~(184,186,250)) and the player shaded with
+/// normals leaning ~30° — a strong view-dependent sheen/fresnel wash the
+/// editor viewport never showed. A missing cache entry is a bug to surface
+/// (the bundle export FAILS on it; see `save_census` for the load-side oracle),
+/// not a case to paper over with corrupted pixels.
+///
+/// Raster bytes may be JPEG even though the bundle names files `<id>.png` —
+/// the browser decoder sniffs content; the extension is only a hint.
+fn texture_source_bytes(scene: &Scene, id: AssetId) -> Option<(String, Vec<u8>, ImageMime)> {
     let def = {
         let assets = scene.assets.lock().unwrap();
         match assets.get(id).map(|e| &e.source) {
@@ -753,33 +771,10 @@ async fn resolve_one_texture(scene: &Scene, id: AssetId) -> Option<(String, Vec<
     match def {
         TextureDef::Procedural(p) => {
             let (rgba, w, h) = bridge_material::procedural_rgba(&p);
-            rgba_to_png(&rgba, w, h).map(|png| (format!("texture-{id}"), png))
+            rgba_to_png(&rgba, w, h).map(|png| (format!("texture-{id}"), png, ImageMime::Png))
         }
-        TextureDef::Raster { display_name, .. } => {
-            // Prefer the session texture_cache's ORIGINAL encoded bytes (what the
-            // project Save writes) — byte-perfect. The GPU round-trip below is
-            // LOSSY for non-sRGB DATA textures: `texture_png_bytes` linear→sRGB
-            // encodes them for PNG, so a normal map came back mean-shifted
-            // ((128,128,255) → ~(184,186,250)) and the player then shaded with
-            // normals leaning ~30°, a strong view-dependent sheen/fresnel wash
-            // the editor viewport never showed. (The bytes may be JPEG despite
-            // the bundle's `<id>.png` name — the browser decoder sniffs content,
-            // the extension is only a hint.)
-            if let Some((bytes, _mime)) = crate::engine::bridge::texture_cache::get(id) {
-                return Some((display_name, bytes));
-            }
-            // Fallback: read back from the GPU (needs the texture uploaded —
-            // assign the material / its model first). Loud: for data textures
-            // this bakes in an sRGB encode.
-            tracing::warn!(
-                "bundle texture {id} ({display_name}): no cached source bytes — GPU readback fallback (lossy for normal/MR/occlusion maps)"
-            );
-            let key = bridge_material::texture_key_for(id)?;
-            let handle = crate::engine::context::renderer_handle();
-            let r = handle.lock().await;
-            let png = r.texture_png_bytes(key).await.ok()?;
-            Some((display_name, png))
-        }
+        TextureDef::Raster { display_name, .. } => crate::engine::bridge::texture_cache::get(id)
+            .map(|(bytes, mime)| (display_name, bytes, mime)),
     }
 }
 
