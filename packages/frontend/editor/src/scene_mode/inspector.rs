@@ -3277,27 +3277,89 @@ fn node_material_instance(
 }
 
 /// Replace the node's `material` instance, preserving the rest of the kind.
-/// The "Material variants" section: the mesh's PARKED material alternates
-/// (carried through save/load/bundle without rendering). "Use" swaps a variant
-/// with the live assignment — tweak it with the normal Material editor, then
-/// swap back; "Park" moves the live material into the list leaving the mesh
-/// unassigned ("no blessed material"); "+ From current" parks a COPY of the
-/// live material as a new variant to fork from. All edits route through
-/// `SetKind`, so each is one undo step.
+/// The "Material variants" row: a live count + the button opening the variants
+/// MODAL. The modal (unlike this snapshot-built inspector) is fully REACTIVE —
+/// its body rebuilds from the node's live kind and the material library, so
+/// add / remove / swap update in place.
 fn material_variants_section(
     node: &Arc<Node>,
-    variants: &[awsm_renderer_editor_protocol::dynamic_material::MaterialInstance],
-    has_live: bool,
+    _variants: &[awsm_renderer_editor_protocol::dynamic_material::MaterialInstance],
+    _has_live: bool,
 ) -> Dom {
-    if variants.is_empty() && !has_live {
-        // Nothing to vary and nothing to park — stay out of the way.
-        return html!("div", {});
-    }
-    let mut sec = Section::new("Material variants");
-    for (i, v) in variants.iter().enumerate() {
-        let label = variant_label(v, i);
-        sec = sec.child(html!("div", {
+    let count = html!("span", {
+        .class("mono").style("font-size", "10px").style("color", "var(--text-3)")
+        .text_signal(node.kind.signal_cloned().map(|k| {
+            match &k {
+                NodeKind::Mesh { material_variants, .. } => material_variants.len().to_string(),
+                _ => "0".to_string(),
+            }
+        }))
+    });
+    let open_node = node.clone();
+    Section::new("Material variants")
+        .dense(true)
+        .right(count)
+        .child(
+            Btn::new()
+                .label("Manage variants…")
+                .icon("material")
+                .variant(BtnVariant::Ghost)
+                .full(true)
+                .on_click(move || open_material_variants_modal(open_node.clone()))
+                .render(),
+        )
+        .render()
+}
+
+/// The variants modal: the node's LIVE material, its parked variants
+/// (Use / remove), and the material library to add variants from. Everything
+/// re-renders on any change to the node's kind or the library.
+fn open_material_variants_modal(node: Arc<Node>) {
+    Modal::open(move || {
+        let node = node.clone();
+        let body = map_ref! {
+            let kind = node.kind.signal_cloned(),
+            let _mats = controller().custom_materials.signal_vec_cloned().to_signal_cloned() =>
+            kind.clone()
+        }
+        .map(clone!(node => move |kind| Some(variants_modal_body(&node, &kind))));
+        ModalCard::new("Material variants")
+            .subtitle(node.name.get_cloned())
+            .width(520.0)
+            .child(html!("div", { .child_signal(body) }))
+            .render()
+    });
+}
+
+fn variants_modal_body(node: &Arc<Node>, kind: &NodeKind) -> Dom {
+    let NodeKind::Mesh {
+        material,
+        material_variants,
+        ..
+    } = kind
+    else {
+        return html!("div", { .text("Not a mesh node.") });
+    };
+
+    let subhead = |t: &str| {
+        html!("div", {
+            .style("font-size", "11px").style("font-weight", "600")
+            .style("color", "var(--text-2)").style("text-transform", "uppercase")
+            .style("letter-spacing", "0.4px").style("margin", "12px 0 6px")
+            .text(t)
+        })
+    };
+    let note = |t: &str| {
+        html!("div", {
+            .style("font-size", "12px").style("color", "var(--text-3)").style("margin-top", "4px")
+            .text(t)
+        })
+    };
+    let row = |label: String, actions: Vec<Dom>| {
+        html!("div", {
             .style("display", "flex").style("align-items", "center").style("gap", "6px")
+            .style("padding", "5px 8px").style("background", "var(--bg-2)")
+            .style("border", "1px solid var(--line-soft)").style("border-radius", "var(--r1)")
             .style("margin-top", "4px")
             .child(html!("span", {
                 .style("flex", "1").style("font-size", "12px")
@@ -3305,29 +3367,85 @@ fn material_variants_section(
                 .style("white-space", "nowrap")
                 .text(&label)
             }))
-            .child(Btn::new().label("Use").variant(BtnVariant::Ghost)
-                .on_click(clone!(node => move || select_material_variant(&node, Some(i))))
-                .render())
-            .child(Btn::new().label("×").variant(BtnVariant::Ghost)
-                .on_click(clone!(node => move || remove_material_variant(&node, i)))
-                .render())
-        }));
+            .children(actions)
+        })
+    };
+
+    let mut children: Vec<Dom> = Vec::new();
+
+    // ── Live material ───────────────────────────────────────────────────────
+    children.push(subhead("Live material"));
+    match material {
+        Some(live) => children.push(row(
+            {
+                let name = live.inline.label.trim();
+                if name.is_empty() { "material".to_string() } else { name.to_string() }
+            },
+            vec![
+                Btn::new().label("Duplicate as variant").variant(BtnVariant::Ghost)
+                    .on_click(clone!(node => move || add_material_variant_from_live(&node)))
+                    .render(),
+                Btn::new().label("Park as variant").variant(BtnVariant::Ghost)
+                    .on_click(clone!(node => move || select_material_variant(&node, None)))
+                    .render(),
+            ],
+        )),
+        None => children.push(note(
+            "None — the mesh renders magenta. Use a variant below, or assign one in the Material section.",
+        )),
     }
-    let mut actions = html!("div", {
-        .style("display", "flex").style("gap", "6px").style("margin-top", "8px")
-    });
-    if has_live {
-        actions = html!("div", {
-            .style("display", "flex").style("gap", "6px").style("margin-top", "8px")
-            .child(Btn::new().label("+ From current").variant(BtnVariant::Ghost)
-                .on_click(clone!(node => move || add_material_variant_from_live(&node)))
-                .render())
-            .child(Btn::new().label("Park current").variant(BtnVariant::Ghost)
-                .on_click(clone!(node => move || select_material_variant(&node, None)))
-                .render())
-        });
+
+    // ── Parked variants ─────────────────────────────────────────────────────
+    children.push(subhead("Variants"));
+    if material_variants.is_empty() {
+        children.push(note("None yet."));
     }
-    sec.child(actions).render()
+    for (i, v) in material_variants.iter().enumerate() {
+        children.push(row(
+            variant_label(v, i),
+            vec![
+                Btn::new()
+                    .label("Use")
+                    .variant(BtnVariant::Ghost)
+                    .on_click(clone!(node => move || select_material_variant(&node, Some(i))))
+                    .render(),
+                Btn::new()
+                    .label("×")
+                    .variant(BtnVariant::Ghost)
+                    .on_click(clone!(node => move || remove_material_variant(&node, i)))
+                    .render(),
+            ],
+        ));
+    }
+
+    // ── Add from the material library ───────────────────────────────────────
+    children.push(subhead("Add from library"));
+    let mats: Vec<(AssetId, String)> = controller()
+        .custom_materials
+        .lock_ref()
+        .iter()
+        .map(|m| (m.id, m.name.get_cloned()))
+        .collect();
+    if mats.is_empty() {
+        children.push(note(
+            "No library materials — create one in the Material pane.",
+        ));
+    }
+    for (id, name) in mats {
+        children.push(row(
+            name,
+            vec![Btn::new()
+                .label("Add")
+                .variant(BtnVariant::Ghost)
+                .on_click(clone!(node => move || add_material_variant_from_library(&node, id)))
+                .render()],
+        ));
+    }
+
+    html!("div", {
+        .style("display", "flex").style("flex-direction", "column")
+        .children(children)
+    })
 }
 
 /// A human label for a variant: its inline def's label, else the (short)
@@ -3364,6 +3482,20 @@ fn add_material_variant_from_live(node: &Arc<Node>) {
             .dispatch(EditorCommand::AddMaterialVariant {
                 node: id,
                 material: None,
+            })
+            .await;
+    });
+}
+
+/// Append a variant seeded from a LIBRARY material's defaults (the live
+/// assignment is untouched).
+fn add_material_variant_from_library(node: &Arc<Node>, material: AssetId) {
+    let id = node.id;
+    spawn_local(async move {
+        let _ = controller()
+            .dispatch(EditorCommand::AddMaterialVariant {
+                node: id,
+                material: Some(material),
             })
             .await;
     });
