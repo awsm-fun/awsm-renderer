@@ -63,6 +63,9 @@ pub struct Slot {
     pub ty: String,
     pub val: String,
     pub debug: String,
+    /// Texture slots only: the slot's semantic role (color space + mipmap
+    /// kind for whatever binds into it). Ignored for uniform/buffer slots.
+    pub color_kind: awsm_renderer_editor_protocol::TextureColorKind,
 }
 
 impl Slot {
@@ -72,6 +75,7 @@ impl Slot {
             ty: ty.into(),
             val: val.into(),
             debug: String::new(),
+            color_kind: Default::default(),
         }
     }
     pub fn named(name: impl Into<String>, ty: impl Into<String>) -> Self {
@@ -80,6 +84,7 @@ impl Slot {
             ty: ty.into(),
             val: String::new(),
             debug: String::new(),
+            color_kind: Default::default(),
         }
     }
 }

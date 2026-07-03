@@ -203,27 +203,23 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         // per-mesh surface: material (built-in/dynamic + per-mesh uniforms) and
         // shadow flags.
         NodeKind::Mesh {
-            mesh,
-            material,
-            shadow,
-            lod,
-        } => html!("div", {
-            .child(mesh_geometry_section(mesh.0))
-            .child(material_editor(node, &inline_of(&material), material.is_some()))
-            .child(mesh_shadow_editor(node, shadow))
-            .child(mesh_lod_editor(node, lod))
-        }),
+            mesh, shadow, lod, ..
+        } => {
+            let selected = node_material_instance(node);
+            html!("div", {
+                .child(mesh_geometry_section(mesh.0))
+                .child(material_editor(node, &inline_of(&selected), selected.is_some()))
+                .child(mesh_shadow_editor(node, shadow))
+                .child(mesh_lod_editor(node, lod))
+            })
+        }
         // A skinned glTF import: not editable geometry (its per-vertex skin
         // weights can't survive topology edits). Shows the material + shadow
         // surface plus a "Drop Skinning" action that bakes the bind pose into a
         // static editable Mesh (terminal).
-        NodeKind::SkinnedMesh {
-            material,
-            shadow,
-            lod,
-            ..
-        } => {
+        NodeKind::SkinnedMesh { shadow, lod, .. } => {
             let node_id = node.id;
+            let selected = node_material_instance(node);
             html!("div", {
                 .child(info_section(
                     "Skinned Mesh",
@@ -232,7 +228,7 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
                      per-vertex skin weights can't survive topology-changing edits. \
                      Drop skinning to bake the bind pose into a static, editable mesh.",
                 ))
-                .child(material_editor(node, &inline_of(&material), material.is_some()))
+                .child(material_editor(node, &inline_of(&selected), selected.is_some()))
                 .child(mesh_shadow_editor(node, shadow))
                 .child(mesh_lod_editor(node, lod))
                 .child(html!("div", {
@@ -257,9 +253,9 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         // cluster pipeline from its baked DAG (same path the player uses). Not
         // editable — no modifier stack / per-vertex ops; it IS the LOD. Shows the
         // material + shadow surface only.
-        NodeKind::ClusterMesh {
-            material, shadow, ..
-        } => html!("div", {
+        NodeKind::ClusterMesh { shadow, .. } => {
+            let selected = node_material_instance(node);
+            html!("div", {
             .child(info_section(
                 "Nanite Mesh",
                 "A pre-baked cluster-LOD mesh, rendered as nanite (bounded draw + VRAM) \
@@ -268,9 +264,10 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
                  it offline with the awsm-renderer-lod-bake CLI). Move/scale it like any node and \
                  assign a material below.",
             ))
-            .child(material_editor(node, &inline_of(&material), material.is_some()))
+            .child(material_editor(node, &inline_of(&selected), selected.is_some()))
             .child(mesh_shadow_editor(node, shadow))
-        }),
+        })
+        }
         // A Group is purely an organisational transform parent — name + transform
         // (above) are its full property set.
         NodeKind::Group => info_section("Group", "An organizational parent. Its children inherit this node's transform; it has no geometry of its own."),
@@ -1592,50 +1589,56 @@ fn set_inline_material(node: &Arc<Node>, mat: MaterialDef) {
 /// library changes, so a material created *after* this mesh was selected appears
 /// immediately (previously the picker snapshotted the list once and went stale).
 fn material_picker(node: &Arc<Node>) -> Dom {
-    let node = node.clone();
-    let sig = controller()
-        .custom_materials
-        .signal_vec_cloned()
-        .to_signal_cloned()
-        .map(move |_mats| build_material_select(&node));
     html!("div", {
-        .child_signal(sig)
+        .child(build_material_select(node))
+        .child(html!("div", {
+            .style("margin-top", "6px")
+            .child({
+                let open_node = node.clone();
+                Btn::new()
+                    .label("Manage variants…")
+                    .icon("material")
+                    .variant(BtnVariant::Ghost)
+                    .size(BtnSize::Sm)
+                    .full(true)
+                    .on_click(move || open_material_variants_modal(open_node.clone()))
+                    .render()
+            })
+        }))
     })
 }
 
-/// Build the assignment dropdown from the current library snapshot — "Built-in
-/// (inline)" plus each custom (Studio) material. Dispatches `AssignMaterial`
-/// (id-keyed). Returns `None` when there are no custom materials and none is
-/// assigned (nothing to pick).
-fn dispatch_assign(node: NodeId, material: Option<AssetId>) {
+/// Point the mesh at one of its variants (`None` = unassigned/magenta).
+fn dispatch_select_variant(
+    node: NodeId,
+    variant: Option<awsm_renderer_editor_protocol::VariantId>,
+) {
     spawn_local(async move {
         let _ = controller()
-            .dispatch(EditorCommand::AssignMaterial { node, material })
+            .dispatch(EditorCommand::SelectMaterialVariant { node, variant })
             .await;
     });
 }
 
-fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
-    let ctrl = controller();
-    let mats: Vec<(AssetId, String)> = ctrl
-        .custom_materials
-        .lock_ref()
-        .iter()
-        .map(|m| (m.id, m.name.get_cloned()))
-        .collect();
-    let current: Option<AssetId> = node_material_instance(node).map(|i| i.asset);
-    // A DropButton whose items dispatch `AssignMaterial` directly on click —
-    // robust against the reactive rebuild (no Mutable-observer race). The button
-    // label reflects the current assignment; the inspector rebuilds on assign.
-    // "None" = no material (renders magenta); it is NOT a real material.
-    let current_label = match current {
-        None => "None".to_string(),
-        Some(id) => mats
-            .iter()
-            .find(|(mid, _)| *mid == id)
-            .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| "None".to_string()),
-    };
+/// The Material dropdown: EXACTLY the mesh's own variants (+ "None"), by
+/// display name — never the raw library (add library materials to the palette
+/// via the variants modal). Selecting dispatches `SelectMaterialVariant`; the
+/// inspector rebuilds (the palette + selection are part of the structure key).
+fn build_material_select(node: &Arc<Node>) -> Dom {
+    let kind = node.kind.get_cloned();
+    let variants: Vec<(awsm_renderer_editor_protocol::VariantId, String)> = kind
+        .material_variants()
+        .map(|vs| vs.iter().map(|v| (v.id, v.name.clone())).collect())
+        .unwrap_or_default();
+    let current = kind.selected_variant_id();
+    let current_label = current
+        .and_then(|id| {
+            variants
+                .iter()
+                .find(|(vid, _)| *vid == id)
+                .map(|(_, n)| n.clone())
+        })
+        .unwrap_or_else(|| "None".to_string());
     let node_id = node.id;
     let items = move |close: Close| -> Vec<Dom> {
         let mut rows = vec![MenuItem::new("None")
@@ -1643,12 +1646,12 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
             .on_click({
                 let close = close.clone();
                 move || {
-                    dispatch_assign(node_id, None);
+                    dispatch_select_variant(node_id, None);
                     (close.borrow_mut())();
                 }
             })
             .render()];
-        for (id, name) in mats.iter() {
+        for (id, name) in variants.iter() {
             let id = *id;
             rows.push(
                 MenuItem::new(name.clone())
@@ -1656,7 +1659,7 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
                     .on_click({
                         let close = close.clone();
                         move || {
-                            dispatch_assign(node_id, Some(id));
+                            dispatch_select_variant(node_id, Some(id));
                             (close.borrow_mut())();
                         }
                     })
@@ -1665,7 +1668,7 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
         }
         rows
     };
-    Some(row(
+    row(
         "Material",
         DropButton::new()
             .label(current_label)
@@ -1673,7 +1676,7 @@ fn build_material_select(node: &Arc<Node>) -> Option<Dom> {
             .size(BtnSize::Sm)
             .items(items)
             .render(),
-    ))
+    )
 }
 
 /// What library material (if any) a mesh has assigned.
@@ -3267,46 +3270,198 @@ fn texture_slot_rows(
 fn node_material_instance(
     node: &Arc<Node>,
 ) -> Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> {
-    match node.kind.get_cloned() {
-        NodeKind::Mesh { material, .. } => material,
-        NodeKind::SkinnedMesh { material, .. } => material,
-        _ => None,
-    }
+    node.kind.get_cloned().selected_material().cloned()
 }
 
-/// Replace the node's `material` instance, preserving the rest of the kind.
+/// The variants modal: manage the mesh's material palette — ADD entries from
+/// the project's material library (the only way a mesh gains a material),
+/// RENAME them (display only; the id is stable), and REMOVE them. Selection
+/// lives in the inspector's Material dropdown, not here. The body rebuilds
+/// reactively from the node's kind + the library.
+fn open_material_variants_modal(node: Arc<Node>) {
+    Modal::open(move || {
+        let node = node.clone();
+        let body = map_ref! {
+            let kind = node.kind.signal_cloned(),
+            let _mats = controller().custom_materials.signal_vec_cloned().to_signal_cloned() =>
+            kind.clone()
+        }
+        .map(clone!(node => move |kind| Some(variants_modal_body(&node, &kind))));
+        ModalCard::new("Material variants")
+            .subtitle(node.name.get_cloned())
+            .width(520.0)
+            .child(html!("div", { .child_signal(body) }))
+            .render()
+    });
+}
+
+fn variants_modal_body(node: &Arc<Node>, kind: &NodeKind) -> Dom {
+    let Some(variants) = kind.material_variants() else {
+        return html!("div", { .text("This node has no material palette.") });
+    };
+    let selected = kind.selected_variant_id();
+
+    let subhead = |t: &str| {
+        html!("div", {
+            .style("font-size", "11px").style("font-weight", "600")
+            .style("color", "var(--text-2)").style("text-transform", "uppercase")
+            .style("letter-spacing", "0.4px").style("margin", "12px 0 6px")
+            .text(t)
+        })
+    };
+    let note = |t: &str| {
+        html!("div", {
+            .style("font-size", "12px").style("color", "var(--text-3)").style("margin-top", "4px")
+            .text(t)
+        })
+    };
+
+    let mut children: Vec<Dom> = Vec::new();
+
+    // ── The palette ─────────────────────────────────────────────────────────
+    children.push(subhead("Variants"));
+    if variants.is_empty() {
+        children.push(note(
+            "None yet — add one from the library below. The mesh renders magenta \
+             until a variant is selected in the Material dropdown.",
+        ));
+    }
+    let ctrl = controller();
+    for v in variants.iter() {
+        let vid = v.id;
+        // The library material this variant instantiates (its own display
+        // name is free-form).
+        let lib_name = crate::controller::custom_material::find_material(
+            &ctrl.custom_materials,
+            v.instance.asset,
+        )
+        .map(|m| m.name.get_cloned())
+        .unwrap_or_else(|| "missing material".to_string());
+        // Inline rename: committing the text input dispatches
+        // RenameMaterialVariant (display only — the id never changes).
+        let name = Mutable::new(v.name.clone());
+        spawn_local(clone!(name, node => async move {
+            let mut first = true;
+            name.signal_cloned().for_each(move |n| {
+                let fire = !first; first = false;
+                clone!(node => async move {
+                    if fire && !n.trim().is_empty() {
+                        let _ = controller()
+                            .dispatch(EditorCommand::RenameMaterialVariant {
+                                node: node.id,
+                                variant: vid,
+                                name: n.trim().to_string(),
+                            })
+                            .await;
+                    }
+                })
+            }).await;
+        }));
+        children.push(html!("div", {
+            .style("display", "flex").style("align-items", "center").style("gap", "6px")
+            .style("padding", "5px 8px").style("background", "var(--bg-2)")
+            .style("border", "1px solid var(--line-soft)").style("border-radius", "var(--r1)")
+            .style("margin-top", "4px")
+            .child(html!("span", {
+                .attr("title", if selected == Some(vid) { "Selected (rendering)" } else { "Not selected" })
+                .style("width", "7px").style("height", "7px").style("border-radius", "50%")
+                .style("flex", "0 0 auto")
+                .style("background", if selected == Some(vid) { "var(--accent, #6cf)" } else { "var(--line)" })
+            }))
+            .child(html!("div", { .style("flex", "1").style("min-width", "0")
+                .child(TextInput::new(name).render()) }))
+            .child(html!("span", {
+                .class("mono").style("font-size", "10px").style("color", "var(--text-3)")
+                .style("flex", "0 0 auto")
+                .text(&lib_name)
+            }))
+            .child({
+                let node = node.clone();
+                Btn::new().label("×").variant(BtnVariant::Ghost)
+                    .on_click(move || {
+                        let node = node.clone();
+                        spawn_local(async move {
+                            let _ = controller()
+                                .dispatch(EditorCommand::RemoveMaterialVariant {
+                                    node: node.id,
+                                    variant: vid,
+                                })
+                                .await;
+                        });
+                    })
+                    .render()
+            })
+        }));
+    }
+
+    // ── Add from the material library ───────────────────────────────────────
+    children.push(subhead("Add from library"));
+    let mats: Vec<(AssetId, String)> = ctrl
+        .custom_materials
+        .lock_ref()
+        .iter()
+        .map(|m| (m.id, m.name.get_cloned()))
+        .collect();
+    if mats.is_empty() {
+        children.push(note(
+            "No library materials — create one in the Material pane first.",
+        ));
+    }
+    for (id, name) in mats {
+        children.push(html!("div", {
+            .style("display", "flex").style("align-items", "center").style("gap", "6px")
+            .style("padding", "5px 8px").style("background", "var(--bg-2)")
+            .style("border", "1px solid var(--line-soft)").style("border-radius", "var(--r1)")
+            .style("margin-top", "4px")
+            .child(html!("span", {
+                .style("flex", "1").style("font-size", "12px")
+                .style("overflow", "hidden").style("text-overflow", "ellipsis")
+                .style("white-space", "nowrap")
+                .text(&name)
+            }))
+            .child({
+                let node = node.clone();
+                Btn::new().label("Add").variant(BtnVariant::Ghost)
+                    .on_click(move || {
+                        let node = node.clone();
+                        spawn_local(async move {
+                            let _ = controller()
+                                .dispatch(EditorCommand::AddMaterialVariant {
+                                    node: node.id,
+                                    material: id,
+                                    id: None,
+                                    name: None,
+                                })
+                                .await;
+                        });
+                    })
+                    .render()
+            })
+        }));
+    }
+    children.push(note(
+        "Adding never changes what renders — pick the new variant in the \
+         Material dropdown. The same material can be added twice; each entry \
+         keeps its own overrides.",
+    ));
+
+    html!("div", {
+        .style("display", "flex").style("flex-direction", "column")
+        .children(children)
+    })
+}
+
+/// Replace the SELECTED variant's instance, preserving the rest of the kind
+/// (the write target of every per-mesh material edit). No selection → no-op
+/// (the material editor isn't shown for unassigned meshes).
 fn set_node_material(
     node: &Arc<Node>,
     inst: awsm_renderer_editor_protocol::dynamic_material::MaterialInstance,
 ) {
-    match node.kind.get_cloned() {
-        NodeKind::Mesh {
-            mesh, shadow, lod, ..
-        } => {
-            dispatch_kind(
-                node.id,
-                NodeKind::Mesh {
-                    mesh,
-                    material: Some(inst),
-                    shadow,
-                    lod,
-                },
-            );
-        }
-        NodeKind::SkinnedMesh {
-            skin, shadow, lod, ..
-        } => {
-            dispatch_kind(
-                node.id,
-                NodeKind::SkinnedMesh {
-                    skin,
-                    material: Some(inst),
-                    shadow,
-                    lod,
-                },
-            );
-        }
-        _ => {}
+    let mut next = node.kind.get_cloned();
+    if let Some(slot) = next.selected_material_mut() {
+        *slot = inst;
+        dispatch_kind(node.id, next);
     }
 }
 
@@ -3436,40 +3591,10 @@ fn uniform_bool(node: &Arc<Node>, name: &str, value: bool) -> Dom {
 
 /// Replace a Mesh / SkinnedMesh's `shadow`, preserving the rest of the kind.
 fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
-    match node.kind.get_cloned() {
-        NodeKind::Mesh {
-            mesh,
-            material,
-            lod,
-            ..
-        } => {
-            dispatch_kind(
-                node.id,
-                NodeKind::Mesh {
-                    mesh,
-                    material,
-                    shadow,
-                    lod,
-                },
-            );
-        }
-        NodeKind::SkinnedMesh {
-            skin,
-            material,
-            lod,
-            ..
-        } => {
-            dispatch_kind(
-                node.id,
-                NodeKind::SkinnedMesh {
-                    skin,
-                    material,
-                    shadow,
-                    lod,
-                },
-            );
-        }
-        _ => {}
+    let mut next = node.kind.get_cloned();
+    if let Some(s) = next.mesh_shadow_mut() {
+        *s = shadow;
+        dispatch_kind(node.id, next);
     }
 }
 
@@ -3477,40 +3602,10 @@ fn set_mesh_shadow(node: &Arc<Node>, shadow: MeshShadowConfig) {
 
 /// Replace a Mesh / SkinnedMesh's `lod`, preserving the rest of the kind.
 fn set_mesh_lod(node: &Arc<Node>, lod: MeshLodConfig) {
-    match node.kind.get_cloned() {
-        NodeKind::Mesh {
-            mesh,
-            material,
-            shadow,
-            ..
-        } => {
-            dispatch_kind(
-                node.id,
-                NodeKind::Mesh {
-                    mesh,
-                    material,
-                    shadow,
-                    lod,
-                },
-            );
-        }
-        NodeKind::SkinnedMesh {
-            skin,
-            material,
-            shadow,
-            ..
-        } => {
-            dispatch_kind(
-                node.id,
-                NodeKind::SkinnedMesh {
-                    skin,
-                    material,
-                    shadow,
-                    lod,
-                },
-            );
-        }
-        _ => {}
+    let mut next = node.kind.get_cloned();
+    if let Some(l) = next.mesh_lod_mut() {
+        *l = lod;
+        dispatch_kind(node.id, next);
     }
 }
 

@@ -579,12 +579,49 @@ pub struct AssetArg {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct AssignMaterialParams {
+pub struct SelectMaterialVariantParams {
     /// Mesh node UUID.
     pub node: String,
-    /// Material asset UUID, or omit/null to clear (→ magenta unassigned).
+    /// Variant UUID from this mesh's palette (get_node_details →
+    /// mesh.material_variants[].id), or omit/null to UNASSIGN the mesh
+    /// (renders magenta). Selection is the ONLY way a mesh's rendered
+    /// material changes, and it never mutates variant state — each variant
+    /// keeps its own overrides across switches.
     #[serde(default)]
-    pub material: Option<String>,
+    pub variant: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddMaterialVariantParams {
+    /// Mesh node UUID.
+    pub node: String,
+    /// LIBRARY material asset UUID to instantiate (a variant is always a
+    /// library material + this mesh's own overrides). Add the same material
+    /// twice for two independent tunings.
+    pub material: String,
+    /// Display name (defaults to the library material's name, counter-suffixed
+    /// if taken on this mesh). Renameable later; the returned id is stable.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveMaterialVariantParams {
+    /// Mesh node UUID.
+    pub node: String,
+    /// Variant UUID to remove. Removing the selected variant leaves the mesh
+    /// unassigned (magenta).
+    pub variant: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RenameMaterialVariantParams {
+    /// Mesh node UUID.
+    pub node: String,
+    /// Variant UUID to rename (display only — the id never changes).
+    pub variant: String,
+    /// New display name.
+    pub name: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -660,6 +697,14 @@ pub struct SlotArg {
     /// Debug-preview source for textures/buffers (optional).
     #[serde(default)]
     pub debug: String,
+    /// Texture slots only: the slot's semantic ROLE — decides the bound
+    /// image's color space (sRGB decode for color data, verbatim for data
+    /// maps) and mipmap kind, in the editor AND the player. One of: albedo
+    /// (default, sRGB) | normal | metallic_roughness | occlusion | emissive
+    /// (sRGB) | specular | specular_color (sRGB) | transmission |
+    /// volume_thickness. Declare data maps or they shade wrong.
+    #[serde(default)]
+    pub color_kind: awsm_renderer_scene::TextureColorKind,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2419,7 +2464,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Detach the faces fully covered by a vertex selection into a NEW sibling Mesh node — region isolation, e.g. to give one region (a belt, a panel, a bolt) its own material. A triangle moves when ALL 3 of its vertices are selected; pick the region with select_vertices_where (the {\"kind\":\"connected_to_seed\"} predicate grabs a whole connected piece). `node` is the source node UUID; pass `selection` (a stored handle) or `indices`. By default the source is left intact (the new node is an extracted COPY); pass `keep_remainder:true` to also REMOVE those faces from the source (no overlap / z-fighting). The new node inherits the source's transform + material — assign_material a different material to it next. Undoable. Returns ok."
+        description = "Detach the faces fully covered by a vertex selection into a NEW sibling Mesh node — region isolation, e.g. to give one region (a belt, a panel, a bolt) its own material. A triangle moves when ALL 3 of its vertices are selected; pick the region with select_vertices_where (the {\"kind\":\"connected_to_seed\"} predicate grabs a whole connected piece). `node` is the source node UUID; pass `selection` (a stored handle) or `indices`. By default the source is left intact (the new node is an extracted COPY); pass `keep_remainder:true` to also REMOVE those faces from the source (no overlap / z-fighting). The new node inherits the source's transform + material palette — add_material_variant + select_material_variant to give it a different look next. Undoable. Returns ok."
     )]
     async fn separate_mesh(
         &self,
@@ -2695,15 +2740,69 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Assign a material to a mesh node (or clear it with material omitted). Template→instance copy: the node's per-mesh inline store is re-seeded from the assigned material's def, but per-mesh CUSTOMIZATIONS — texture binds (set_node_texture) and inline extensions that differ from the PRIOR material's def — are carried over; slots that merely mirrored the prior material adopt the new one. Single-step undoable."
+        description = "Point a mesh node at one of its material VARIANTS — a mesh renders only entries of its own palette (mesh.material_variants; each = a library material + this mesh's independent overrides), and selection is the ONLY way its rendered material changes. variant omitted = unassign (magenta). Switching never mutates variant state: every material tool (set_builtin_param, set_node_texture, set_node_material_uniform, …) edits the SELECTED variant, and that tuning persists when you switch away and back. Single-step undoable. There is NO assign_material — add a variant (add_material_variant), then select it."
     )]
-    async fn assign_material(
+    async fn select_material_variant(
         &self,
-        Parameters(p): Parameters<AssignMaterialParams>,
+        Parameters(p): Parameters<SelectMaterialVariantParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::AssignMaterial {
+        self.dispatch(EditorCommand::SelectMaterialVariant {
             node: parse_node(&p.node)?,
-            material: parse_asset_opt(&p.material)?,
+            variant: parse_variant_opt(&p.variant)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Add a material VARIANT to a mesh node's palette: a fresh instance of the given LIBRARY material (seeded from its defaults) with a stable id, returned by this call. NEVER changes what renders — follow with select_material_variant to render it. Add the same library material twice for two independent tunings (each variant keeps its own overrides). Read the palette back via get_node_details (mesh.material_variants: id/name/instance). Single-step undoable."
+    )]
+    async fn add_material_variant(
+        &self,
+        Parameters(p): Parameters<AddMaterialVariantParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Mint the id HERE so the tool can report it (the command treats a
+        // provided id as authoritative).
+        let id = awsm_renderer_scene::VariantId::new();
+        let res = self
+            .dispatch(EditorCommand::AddMaterialVariant {
+                node: parse_node(&p.node)?,
+                material: parse_asset(&p.material)?,
+                id: Some(id),
+                name: p.name.clone(),
+            })
+            .await?;
+        // On success answer with the new variant's id instead of a bare "ok".
+        if res.is_error != Some(true) {
+            return Ok(CallToolResult::success(vec![Content::text(id.to_string())]));
+        }
+        Ok(res)
+    }
+
+    #[tool(
+        description = "Remove a variant from a mesh node's palette by its UUID. Removing the SELECTED variant leaves the mesh unassigned (magenta). Single-step undoable."
+    )]
+    async fn remove_material_variant(
+        &self,
+        Parameters(p): Parameters<RemoveMaterialVariantParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::RemoveMaterialVariant {
+            node: parse_node(&p.node)?,
+            variant: parse_variant(&p.variant)?,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Rename a mesh node's material variant (display name only — the UUID is the stable identity and never changes). Single-step undoable."
+    )]
+    async fn rename_material_variant(
+        &self,
+        Parameters(p): Parameters<RenameMaterialVariantParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::RenameMaterialVariant {
+            node: parse_node(&p.node)?,
+            variant: parse_variant(&p.variant)?,
+            name: p.name.clone(),
         })
         .await
     }
@@ -4449,6 +4548,18 @@ fn parse_node(s: &str) -> Result<NodeId, McpError> {
         .map_err(|e| McpError::invalid_params(format!("invalid node id {s:?}: {e}"), None))
 }
 
+fn parse_variant(s: &str) -> Result<awsm_renderer_scene::VariantId, McpError> {
+    uuid::Uuid::parse_str(s)
+        .map(awsm_renderer_scene::VariantId)
+        .map_err(|e| McpError::invalid_params(format!("invalid variant id {s:?}: {e}"), None))
+}
+
+fn parse_variant_opt(
+    s: &Option<String>,
+) -> Result<Option<awsm_renderer_scene::VariantId>, McpError> {
+    s.as_ref().map(|s| parse_variant(s)).transpose()
+}
+
 fn parse_node_opt(s: &Option<String>) -> Result<Option<NodeId>, McpError> {
     s.as_deref().map(parse_node).transpose()
 }
@@ -4701,7 +4812,8 @@ Author a lit custom WGSL material so it renders (never a silent black mesh):
    input.surface_to_camera etc. This recompiles synchronously and FAILS LOUDLY \
    with the compiler error if the WGSL is invalid (no silent ok).
 6. If it errored, get_material_diagnostics for details; fix and retry.
-7. assign_material to a mesh node, wait_render_settled, then screenshot_scene.
+7. add_material_variant { node, material } + select_material_variant { node, variant } \
+   on a mesh node, wait_render_settled, then screenshot_scene.
 8. A fresh scene already has a key light + IBL; if the mesh is still dark, check \
    set_light_intensity or set_environment.";
 
@@ -4795,6 +4907,7 @@ fn slot_arg(s: SlotArg) -> SlotSpec {
         ty: s.ty,
         val: s.val,
         debug: s.debug,
+        color_kind: s.color_kind,
     }
 }
 

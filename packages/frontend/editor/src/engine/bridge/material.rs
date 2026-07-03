@@ -31,11 +31,23 @@ pub(crate) use awsm_renderer_scene_loader::material::{
 };
 
 thread_local! {
-    /// Maps a texture-asset id → its uploaded renderer `TextureKey`, so a texture
-    /// is generated + uploaded once and reused across every mesh/material that
-    /// binds it (and across re-materializations). Session-scoped — a full page
-    /// reload rebuilds it (acceptable; project reset within a session is rare).
-    static TEXTURE_KEYS: RefCell<HashMap<AssetId, TextureKey>> = RefCell::new(HashMap::new());
+    /// `(texture asset, srgb_to_linear, mipmap kind)` → uploaded renderer
+    /// `TextureKey`. Keyed by the upload SEMANTICS as well as the asset —
+    /// binding decides color space + mipmap kind per SLOT (an albedo is
+    /// sRGB-decoded, a normal map is not), so one asset bound to slots with
+    /// different semantics gets one upload per semantic, exactly like the
+    /// player loader. (Keying by asset alone let the FIRST upload's semantics
+    /// win silently: a URL-imported texture is uploaded as sRGB albedo, so
+    /// binding it to a normal slot sampled sRGB-decoded normals — shading the
+    /// editor viewport differently from the player until a save→reload.)
+    /// Session-scoped — a full page reload rebuilds it.
+    static TEXTURE_KEYS: RefCell<HashMap<(AssetId, bool, MipmapTextureKind), TextureKey>> =
+        RefCell::new(HashMap::new());
+    /// Legacy per-asset entries with UNKNOWN upload semantics — glTF import
+    /// pre-registrations (`populate_gltf` uploaded them with its own per-slot
+    /// semantics and only hands back the key). Consulted as a fallback when no
+    /// exact-semantics entry exists.
+    static TEXTURE_KEYS_ANY: RefCell<HashMap<AssetId, TextureKey>> = RefCell::new(HashMap::new());
 }
 
 /// Resolve a texture ref → `(pooled texture key, sampler key)` for a dynamic
@@ -47,24 +59,49 @@ thread_local! {
 pub(crate) fn resolve_texture_binding(
     r: &mut AwsmRenderer,
     tref: &TextureRef,
+    srgb: bool,
+    kind: MipmapTextureKind,
 ) -> Option<(TextureKey, SamplerKey)> {
-    let mt = resolve_texture(r, tref, true, MipmapTextureKind::Albedo)?;
+    let mt = resolve_texture(r, tref, srgb, kind)?;
     Some((mt.key, mt.sampler_key?))
 }
 
-/// The renderer [`TextureKey`] a texture asset resolves to, if it's been
-/// materialized/registered this session. Used by the image-query seam to read a
-/// raster/file texture back from the GPU.
+/// A/the renderer [`TextureKey`] a texture asset resolves to, if it's been
+/// materialized/registered this session (any semantics). Used by the
+/// image-query seam to read a raster/file texture back from the GPU.
 pub(crate) fn texture_key_for(asset_id: AssetId) -> Option<TextureKey> {
-    TEXTURE_KEYS.with(|c| c.borrow().get(&asset_id).copied())
+    if let Some(key) = TEXTURE_KEYS_ANY.with(|c| c.borrow().get(&asset_id).copied()) {
+        return Some(key);
+    }
+    TEXTURE_KEYS.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|((id, _, _), _)| *id == asset_id)
+            .map(|(_, key)| *key)
+    })
 }
 
 /// Pre-register a texture-asset id against a renderer [`TextureKey`] that's
-/// already uploaded (e.g. one `populate_gltf` baked for an imported model), so
-/// `resolve_texture` returns it on the cache-hit path instead of re-decoding.
-/// Used by glTF import to wire extracted materials to their original textures.
+/// already uploaded with UNKNOWN (caller-chosen) semantics — e.g. one
+/// `populate_gltf` baked for an imported model. `resolve_texture` uses it as a
+/// fallback when it has no exact-semantics upload. Callers that KNOW the
+/// upload's semantics should use [`register_texture_key_semantics`] instead.
 pub(crate) fn register_texture_key(asset_id: AssetId, key: TextureKey) {
-    TEXTURE_KEYS.with(|c| c.borrow_mut().insert(asset_id, key));
+    TEXTURE_KEYS_ANY.with(|c| c.borrow_mut().insert(asset_id, key));
+}
+
+/// Register an uploaded texture under its exact upload semantics, so slot
+/// bindings that MATCH reuse it and slot bindings that DIFFER re-materialize
+/// with their own semantics instead of silently inheriting these.
+pub(crate) fn register_texture_key_semantics(
+    asset_id: AssetId,
+    color: &TextureColorInfo,
+    key: TextureKey,
+) {
+    TEXTURE_KEYS.with(|c| {
+        c.borrow_mut()
+            .insert((asset_id, color.srgb_to_linear, color.mipmap_kind), key)
+    });
 }
 
 /// Best-effort image mime from a URL's extension (query/fragment stripped). Only
@@ -160,6 +197,11 @@ pub(crate) async fn import_texture_url(
     let handle = crate::engine::context::renderer_handle();
     let mut r = handle.lock().await;
     let sampler_key = sampler_for(&mut r, None).ok_or("sampler")?;
+    // Uploaded as sRGB albedo — the common case for a URL import, and only a
+    // DEFAULT: the upload is registered under these exact semantics, so binding
+    // the asset to a data slot (normal / metallic-roughness / …) re-materializes
+    // it with that slot's color space + mipmap kind instead of sampling this
+    // sRGB-decoded copy.
     let color = TextureColorInfo {
         mipmap_kind: MipmapTextureKind::Albedo,
         srgb_to_linear: true,
@@ -176,7 +218,7 @@ pub(crate) async fn import_texture_url(
     r.commit_load(crate::engine::activity::commit_phase_handler())
         .await
         .map_err(|e| format!("commit_load: {e}"))?;
-    register_texture_key(id, key);
+    register_texture_key_semantics(id, &color, key);
     Ok((bytes, mime))
 }
 
@@ -247,13 +289,16 @@ pub(crate) async fn restore_raster_textures(
     };
     for (id, rgba, w, h, kind) in &decoded {
         // The role's full TextureColorInfo (color space + mipmap kind) — identical
-        // to what the fresh-import path uses, so RELOAD == IMPORT.
+        // to what the fresh-import path uses, so RELOAD == IMPORT. Registered
+        // under those exact semantics: a slot binding with a DIFFERENT role
+        // (persisted kind stale/inferred wrong) re-materializes with the slot's
+        // semantics rather than sampling this upload.
         let color = color_info_for_kind(*kind);
         match r
             .textures
             .add_image_rgba_raw(rgba, *w, *h, sampler_key, color)
         {
-            Ok(key) => register_texture_key(*id, key),
+            Ok(key) => register_texture_key_semantics(*id, &color, key),
             Err(e) => tracing::warn!("restore texture {id}: upload {e}"),
         }
     }
@@ -470,10 +515,45 @@ fn resolve_texture(
         uv_index,
         transform_key,
     };
-    if let Some(key) = TEXTURE_KEYS.with(|c| c.borrow().get(&asset_id).copied()) {
+    // Persist the slot's semantic role onto the texture ASSET: `color_kind` is
+    // what Save writes and what a reload's initial upload + the
+    // `screenshot_texture` readback use, so it must track how the texture is
+    // actually USED — not the import-time default (URL imports start `None`,
+    // which restores via name inference).
+    record_asset_color_kind(asset_id, kind);
+    // Exact-semantics upload for this (asset, color space, mipmap kind)?
+    if let Some(key) = TEXTURE_KEYS.with(|c| c.borrow().get(&(asset_id, srgb, kind)).copied()) {
         return Some(mk(key));
     }
-    // Look up the texture asset; only procedural textures are materializable today.
+    // Legacy unknown-semantics upload (glTF populate pre-registration).
+    if let Some(key) = TEXTURE_KEYS_ANY.with(|c| c.borrow().get(&asset_id).copied()) {
+        return Some(mk(key));
+    }
+    let color = TextureColorInfo {
+        mipmap_kind: kind,
+        srgb_to_linear: srgb,
+        premultiplied_alpha: None,
+    };
+    // Raster asset with captured bytes → decode + upload with THIS binding's
+    // semantics. (The `image` crate decodes synchronously; this runs once per
+    // (asset, semantics), then cache-hits above.)
+    if let Some((bytes, _mime)) = super::texture_cache::get(asset_id) {
+        let rgba = match image::load_from_memory(&bytes) {
+            Ok(img) => img.to_rgba8(),
+            Err(e) => {
+                tracing::warn!("texture {asset_id}: decode for slot bind failed ({e})");
+                return None;
+            }
+        };
+        let (w, h) = rgba.dimensions();
+        let key = r
+            .textures
+            .add_image_rgba_raw(rgba.as_raw(), w, h, sampler_key, color)
+            .ok()?;
+        register_texture_key_semantics(asset_id, &color, key);
+        return Some(mk(key));
+    }
+    // Procedural asset → generate + upload with this binding's semantics.
     let proc = {
         let ctrl = crate::controller::controller();
         let assets = ctrl.scene.assets.lock().unwrap();
@@ -483,17 +563,49 @@ fn resolve_texture(
         }
     }?;
     let (rgba, w, h) = procedural_rgba(&proc);
-    let color = TextureColorInfo {
-        mipmap_kind: kind,
-        srgb_to_linear: srgb,
-        premultiplied_alpha: None,
-    };
     let key = r
         .textures
         .add_image_rgba_raw(&rgba, w, h, sampler_key, color)
         .ok()?;
-    TEXTURE_KEYS.with(|c| c.borrow_mut().insert(asset_id, key));
+    register_texture_key_semantics(asset_id, &color, key);
     Some(mk(key))
+}
+
+/// The persistable [`TextureColorKind`] for an upload's mipmap kind — the
+/// inverse of [`color_info_for_kind`]'s kind mapping (color space is implied:
+/// `TextureColorKind::is_srgb` mirrors what the slot passes).
+fn color_kind_for_mipmap(kind: MipmapTextureKind) -> TextureColorKind {
+    use MipmapTextureKind as M;
+    use TextureColorKind as K;
+    match kind {
+        M::Albedo => K::Albedo,
+        M::Normal => K::Normal,
+        M::MetallicRoughness => K::MetallicRoughness,
+        M::Occlusion => K::Occlusion,
+        M::Emissive => K::Emissive,
+        M::Specular => K::Specular,
+        M::SpecularColor => K::SpecularColor,
+        M::Transmission => K::Transmission,
+        M::VolumeThickness => K::VolumeThickness,
+    }
+}
+
+/// Record the semantic role a slot binding resolved a RASTER texture asset
+/// with, so the persisted `color_kind` tracks actual use. No-op when the
+/// stored value already matches (re-materializes are frequent); a texture
+/// genuinely bound to slots with different roles keeps the LAST resolved one —
+/// advisory only, since rendering semantics are per-binding now.
+fn record_asset_color_kind(asset_id: AssetId, kind: MipmapTextureKind) {
+    let want = color_kind_for_mipmap(kind);
+    let ctrl = crate::controller::controller();
+    let mut assets = ctrl.scene.assets.lock().unwrap();
+    if let Some(entry) = assets.entries.get_mut(&asset_id) {
+        if let AssetSource::Texture(TextureDef::Raster { color_kind, .. }) = &mut entry.source {
+            if *color_kind != Some(want) {
+                *color_kind = Some(want);
+            }
+        }
+    }
 }
 
 /// Pool (or fetch) the sampler for a texture binding from its [`TextureSampler`]

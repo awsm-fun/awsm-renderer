@@ -1108,6 +1108,7 @@ fn to_specs(slots: &[Slot]) -> Vec<SlotSpec> {
             ty: s.ty.clone(),
             val: s.val.clone(),
             debug: s.debug.clone(),
+            color_kind: s.color_kind,
         })
         .collect()
 }
@@ -1174,12 +1175,6 @@ fn slot_row(mat: &Arc<CustomMaterial>, kind: SlotKind, i: usize, slot: &Slot) ->
         }).await;
     }));
 
-    let type_label = match kind {
-        SlotKind::Uniform => None,
-        SlotKind::Texture => Some("2D".to_string()),
-        SlotKind::Buffer => None,
-    };
-
     let f_rm = field.clone();
     let m_rm = mat.clone();
     html!("div", {
@@ -1188,10 +1183,10 @@ fn slot_row(mat: &Arc<CustomMaterial>, kind: SlotKind, i: usize, slot: &Slot) ->
             .style("display", "flex").style("align-items", "center").style("gap", "7px").style("padding", "5px 6px 5px 8px")
             .child(Icon::new(match kind { SlotKind::Uniform => "sliders", SlotKind::Texture => "texture", SlotKind::Buffer => "buffer" }).size(14.0).color("var(--text-2)").render())
             .child(html!("div", { .style("flex", "1").style("min-width", "0").child(TextInput::new(name).render()) }))
-            .apply(|b| match (kind, type_label) {
-                (SlotKind::Uniform, _) => b.child(uniform_type_select(mat, i)),
-                (_, Some(lbl)) => b.child(html!("span", { .class("mono").style("font-size", "10px").style("color", "var(--text-3)").text(&lbl) })),
-                _ => b,
+            .apply(|b| match kind {
+                SlotKind::Uniform => b.child(uniform_type_select(mat, i)),
+                SlotKind::Texture => b.child(texture_color_kind_select(mat, i)),
+                SlotKind::Buffer => b,
             })
             .child(html!("button", {
                 .class("t").style("background", "transparent").style("border-style", "none").style("cursor", "pointer")
@@ -1205,6 +1200,60 @@ fn slot_row(mat: &Arc<CustomMaterial>, kind: SlotKind, i: usize, slot: &Slot) ->
             }))
         }))
     })
+}
+
+/// The texture-slot ROLE select: sets the slot's `color_kind` (color space +
+/// mipmap kind for whatever binds into it). `albedo`/`emissive`/`specular color`
+/// are sRGB color; everything else is raw data.
+fn texture_color_kind_select(mat: &Arc<CustomMaterial>, i: usize) -> Dom {
+    use awsm_renderer_editor_protocol::TextureColorKind as K;
+    const KINDS: &[(K, &str)] = &[
+        (K::Albedo, "albedo (sRGB)"),
+        (K::Normal, "normal"),
+        (K::MetallicRoughness, "metal/rough"),
+        (K::Occlusion, "occlusion"),
+        (K::Emissive, "emissive (sRGB)"),
+        (K::Specular, "specular"),
+        (K::SpecularColor, "specular color (sRGB)"),
+        (K::Transmission, "transmission"),
+        (K::VolumeThickness, "volume thickness"),
+    ];
+    let key_of = |k: K| {
+        KINDS
+            .iter()
+            .find(|(kk, _)| *kk == k)
+            .map(|(_, l)| l.to_string())
+            .unwrap_or_default()
+    };
+    let field = mat.textures.clone();
+    let cur = field
+        .get_cloned()
+        .get(i)
+        .map(|s| key_of(s.color_kind))
+        .unwrap_or_else(|| key_of(K::Albedo));
+    let sel = Mutable::new(cur);
+    let f = field.clone();
+    let m = mat.clone();
+    spawn_local(clone!(sel => async move {
+        let mut first = true;
+        sel.signal_cloned().for_each(move |label| {
+            let fire = !first; first = false;
+            clone!(f, m => async move {
+                if fire {
+                    let Some((kind, _)) = KINDS.iter().find(|(_, l)| *l == label) else { return; };
+                    let mut arr = f.get_cloned();
+                    if let Some(s) = arr.get_mut(i) { s.color_kind = *kind; dispatch_layout(&m, SlotKind::Texture, arr); }
+                }
+            })
+        }).await;
+    }));
+    select(
+        sel,
+        KINDS
+            .iter()
+            .map(|(_, l)| (l.to_string(), l.to_string()))
+            .collect(),
+    )
 }
 
 fn uniform_type_select(mat: &Arc<CustomMaterial>, i: usize) -> Dom {
@@ -1542,13 +1591,25 @@ fn assign_to_selection(material: AssetId) {
             Toast::warning("Register the material before assigning it.");
             return;
         }
+        // Variant model: a mesh renders only entries of its own palette, so
+        // "assign" = add a variant of this material, then select it. One
+        // undo step via Batch.
+        let variant = awsm_renderer_editor_protocol::VariantId::new();
         let _ = ctrl
-            .dispatch(EditorCommand::AssignMaterial {
-                node,
-                material: Some(material),
-            })
+            .dispatch(EditorCommand::Batch(vec![
+                EditorCommand::AddMaterialVariant {
+                    node,
+                    material,
+                    id: Some(variant),
+                    name: None,
+                },
+                EditorCommand::SelectMaterialVariant {
+                    node,
+                    variant: Some(variant),
+                },
+            ]))
             .await;
-        Toast::info("Material assigned to selection.");
+        Toast::info("Material added to the mesh's variants and selected.");
     });
 }
 

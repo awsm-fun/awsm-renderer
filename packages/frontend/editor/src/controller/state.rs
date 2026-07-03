@@ -213,6 +213,16 @@ pub struct Settings {
     /// perspective. Kept authoritative by the `SetCameraProjection` handler, so the
     /// viewport toggle/keyboard shortcut and any MCP-driven change stay in sync.
     pub editor_ortho: Mutable<bool>,
+    /// Editor-camera clip planes: `false` (default) = AUTO — near/far are
+    /// re-derived from the orbit distance every move (clips scenes bigger or
+    /// closer than the assumed framing bounds); `true` = pin them to
+    /// [`Self::cam_clip_near`]/[`Self::cam_clip_far`]. Session-only (the
+    /// editor camera isn't persisted).
+    pub cam_clip_manual: Mutable<bool>,
+    /// Manual near plane (metres). Applied only when [`Self::cam_clip_manual`].
+    pub cam_clip_near: Mutable<f64>,
+    /// Manual far plane (metres). Applied only when [`Self::cam_clip_manual`].
+    pub cam_clip_far: Mutable<f64>,
 }
 
 impl Default for Settings {
@@ -232,6 +242,9 @@ impl Default for Settings {
             snap: Mutable::new(false),
             units: Mutable::new("meters".to_string()),
             editor_ortho: Mutable::new(false),
+            cam_clip_manual: Mutable::new(false),
+            cam_clip_near: Mutable::new(0.01),
+            cam_clip_far: Mutable::new(1000.0),
         }
     }
 }
@@ -775,7 +788,8 @@ impl EditorController {
             Trs::default(),
             NodeKind::Mesh {
                 mesh: MeshRef(mesh_id),
-                material: None,
+                material_variants: Vec::new(),
+                selected_variant: None,
                 shadow: Default::default(),
                 lod: Default::default(),
             },
@@ -1442,13 +1456,20 @@ impl EditorController {
                 let prev = n.kind.get_cloned();
                 // Only a SkinnedMesh can be dropped to editable — anything else is
                 // a no-op (the UI/MCP layer surfaces a clearer message).
-                let (skin, material, shadow, lod): (SkinnedMeshRef, _, _, _) = match prev.clone() {
+                let (skin, material_variants, selected_variant, shadow, lod): (
+                    SkinnedMeshRef,
+                    _,
+                    _,
+                    _,
+                    _,
+                ) = match prev.clone() {
                     NodeKind::SkinnedMesh {
                         skin,
-                        material,
+                        material_variants,
+                        selected_variant,
                         shadow,
                         lod,
-                    } => (skin, material, shadow, lod),
+                    } => (skin, material_variants, selected_variant, shadow, lod),
                     _ => return Ok(None),
                 };
                 // Bind-pose geometry stashed at import (no JOINTS/WEIGHTS).
@@ -1495,7 +1516,8 @@ impl EditorController {
                 }
                 n.kind.set(NodeKind::Mesh {
                     mesh: mesh_ref,
-                    material,
+                    material_variants,
+                    selected_variant,
                     shadow,
                     lod,
                 });
@@ -1884,13 +1906,21 @@ impl EditorController {
                     return Ok(None);
                 }
                 // Source transform + material to inherit onto the new node.
-                let (src_trs, src_material) = match mutate::find_by_id(&self.scene, node) {
-                    Some(n) => match n.kind.get_cloned() {
-                        NodeKind::Mesh { material, .. } => (n.transform.get(), material),
-                        _ => return Ok(None),
-                    },
-                    None => return Ok(None),
-                };
+                let (src_trs, src_variants, src_selected) =
+                    match mutate::find_by_id(&self.scene, node) {
+                        Some(n) => {
+                            let k = n.kind.get_cloned();
+                            if !matches!(k, NodeKind::Mesh { .. }) {
+                                return Ok(None);
+                            }
+                            (
+                                n.transform.get(),
+                                k.material_variants().cloned().unwrap_or_default(),
+                                k.selected_variant_id(),
+                            )
+                        }
+                        None => return Ok(None),
+                    };
                 // Mint the new node + asset (deterministic id ⇒ idempotent replay).
                 let new_node_id = new_node.unwrap_or_else(NodeId::new);
                 if mutate::find_by_id(&self.scene, new_node_id).is_some() {
@@ -1916,7 +1946,8 @@ impl EditorController {
                     src_trs,
                     NodeKind::Mesh {
                         mesh: MeshRef(new_mesh_id),
-                        material: src_material,
+                        material_variants: src_variants,
+                        selected_variant: src_selected,
                         shadow: Default::default(),
                         lod: Default::default(),
                     },
@@ -2158,94 +2189,136 @@ impl EditorController {
                     None => Ok(None),
                 }
             }
-            EditorCommand::AssignMaterial { node, material } => {
-                match mutate::find_by_id(&self.scene, node) {
-                    Some(n) => {
-                        let prev = n.kind.get_cloned();
-                        // The node's prior assignment (if any) — used to carry the
-                        // existing per-mesh inline store forward when reassigning.
-                        let prior = node_material_ref(&prev).cloned();
-                        // Assigning a material adopts its *defaults* (the full
-                        // uniform surface — factors, extension params, Toon knobs,
-                        // cutoff) into this mesh's inline store, so the mesh starts
-                        // looking like the material; the user then customizes
-                        // per-mesh from there. (A dynamic material has no built-in
-                        // defaults → keep the existing inline, which it ignores;
-                        // fall back to the node's prior inline, else a default.)
-                        // Id-keyed assignment: store the material's stable id (so
-                        // renaming it never orphans this mesh). Validate the id
-                        // exists in the custom-material list. `None` clears the
-                        // assignment → magenta.
-                        //
-                        // Template→instance copy, NOT a wipe: per-mesh inline
-                        // CUSTOMIZATIONS — texture binds (`set_node_texture`) and
-                        // extension entries that differ from the PRIOR material's
-                        // library def — are carried onto the new inline, so
-                        // re-assigning after a material reorganization doesn't
-                        // force a full re-dress of every texture slot. Slots that
-                        // merely mirrored the prior template adopt the new
-                        // template instead (see `carry_inline_customizations`).
-                        let instance = material
-                            .filter(|id| find_material(&self.custom_materials, *id).is_some())
-                            .map(|id| {
-                                let template = find_material(&self.custom_materials, id)
-                                    .and_then(|m| m.builtin.get_cloned());
-                                let mut inline = template
-                                    .clone()
-                                    .or_else(|| prior.as_ref().map(|p| p.inline.clone()))
-                                    .unwrap_or_default();
-                                if let (Some(p), Some(_)) = (prior.as_ref(), template.as_ref()) {
-                                    let prior_template =
-                                        find_material(&self.custom_materials, p.asset)
-                                            .and_then(|m| m.builtin.get_cloned());
-                                    carry_inline_customizations(
-                                        &mut inline,
-                                        &p.inline,
-                                        prior_template.as_ref(),
-                                    );
-                                }
-                                awsm_renderer_editor_protocol::dynamic_material::MaterialInstance {
-                                    asset: id,
-                                    inline,
-                                    uniform_overrides: Default::default(),
-                                    texture_overrides: Default::default(),
-                                    buffer_overrides: Default::default(),
-                                }
-                            });
-                        let next = match prev.clone() {
-                            // The sole procedural-geometry node: one material slot.
-                            NodeKind::Mesh {
-                                mesh, shadow, lod, ..
-                            } => NodeKind::Mesh {
-                                mesh,
-                                material: instance,
-                                shadow,
-                                lod,
-                            },
-                            // A skinned import carries the same one-material slot.
-                            NodeKind::SkinnedMesh {
-                                skin, shadow, lod, ..
-                            } => NodeKind::SkinnedMesh {
-                                skin,
-                                material: instance,
-                                shadow,
-                                lod,
-                            },
-                            _ => return Ok(None),
-                        };
-                        n.kind.set(next);
-                        // The material section's structure changes (built-in
-                        // knobs ↔ dynamic link ↔ none), so refresh the inspector.
-                        self.structure_rev
-                            .set(self.structure_rev.get().wrapping_add(1));
-                        self.scene.bump_revision();
-                        Ok(Some(EditorCommand::SetKind {
-                            id: node,
-                            kind: Box::new(prev),
-                        }))
+            EditorCommand::SelectMaterialVariant { node, variant } => {
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let mut next = n.kind.get_cloned();
+                let Some(variants) = next.material_variants() else {
+                    return Err(crate::error::EditorError::msg(
+                        "select_material_variant: node has no material palette",
+                    ));
+                };
+                if let Some(id) = variant {
+                    if !variants.iter().any(|v| v.id == id) {
+                        return Err(crate::error::EditorError::msg(format!(
+                            "select_material_variant: no variant {id} on this mesh"
+                        )));
                     }
-                    None => Ok(None),
                 }
+                next.set_selected_variant(variant);
+                // Delegate to SetKind: re-materialize + undo inverse for free.
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(next),
+                }))
+                .await
+            }
+            EditorCommand::AddMaterialVariant {
+                node,
+                material,
+                id,
+                name,
+            } => {
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let Some(m) = find_material(&self.custom_materials, material) else {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "add_material_variant: no library material with id {material}"
+                    )));
+                };
+                let mut next = n.kind.get_cloned();
+                let Some(variants) = next.material_variants_mut() else {
+                    return Err(crate::error::EditorError::msg(
+                        "add_material_variant: node has no material palette",
+                    ));
+                };
+                // Display name: explicit, else the library material's name,
+                // counter-suffixed until free on THIS mesh ("Felt", "Felt 2", …).
+                let name = name.unwrap_or_else(|| {
+                    let base = m.name.get_cloned();
+                    let mut candidate = base.clone();
+                    let mut i = 2;
+                    while variants.iter().any(|v| v.name == candidate) {
+                        candidate = format!("{base} {i}");
+                        i += 1;
+                    }
+                    candidate
+                });
+                variants.push(awsm_renderer_editor_protocol::MaterialVariant {
+                    id: id.unwrap_or_default(),
+                    name,
+                    // A fresh instance seeded from the library material's
+                    // defaults (a dynamic material has no built-in def → the
+                    // inline is ignored anyway).
+                    instance: awsm_renderer_editor_protocol::dynamic_material::MaterialInstance {
+                        asset: material,
+                        inline: m.builtin.get_cloned().unwrap_or_default(),
+                        uniform_overrides: Default::default(),
+                        texture_overrides: Default::default(),
+                        buffer_overrides: Default::default(),
+                    },
+                });
+                // NEVER changes the selection — rendering it is an explicit
+                // SelectMaterialVariant.
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(next),
+                }))
+                .await
+            }
+            EditorCommand::RemoveMaterialVariant { node, variant } => {
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let mut next = n.kind.get_cloned();
+                let Some(variants) = next.material_variants_mut() else {
+                    return Err(crate::error::EditorError::msg(
+                        "remove_material_variant: node has no material palette",
+                    ));
+                };
+                let Some(pos) = variants.iter().position(|v| v.id == variant) else {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "remove_material_variant: no variant {variant} on this mesh"
+                    )));
+                };
+                variants.remove(pos);
+                // Removing the rendered variant leaves the mesh unassigned.
+                if next.selected_variant_id() == Some(variant) {
+                    next.set_selected_variant(None);
+                }
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(next),
+                }))
+                .await
+            }
+            EditorCommand::RenameMaterialVariant {
+                node,
+                variant,
+                name,
+            } => {
+                let Some(n) = mutate::find_by_id(&self.scene, node) else {
+                    return Ok(None);
+                };
+                let mut next = n.kind.get_cloned();
+                let Some(variants) = next.material_variants_mut() else {
+                    return Err(crate::error::EditorError::msg(
+                        "rename_material_variant: node has no material palette",
+                    ));
+                };
+                let Some(v) = variants.iter_mut().find(|v| v.id == variant) else {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "rename_material_variant: no variant {variant} on this mesh"
+                    )));
+                };
+                v.name = name;
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(next),
+                }))
+                .await
             }
             EditorCommand::CopyMaterialInstance { from, to } => {
                 let (Some(src), Some(dst)) = (
@@ -2254,50 +2327,23 @@ impl EditorController {
                 ) else {
                     return Ok(None);
                 };
-                // The source node's material slot (geometry kinds only).
-                let src_slot = match src.kind.get_cloned() {
-                    NodeKind::Mesh { material, .. } => material,
-                    NodeKind::SkinnedMesh { material, .. } => material,
-                    _ => return Ok(None),
+                // The source's SELECTED variant's instance.
+                let src_kind = src.kind.get_cloned();
+                let Some(src_inst) = src_kind.selected_material().cloned() else {
+                    return Ok(None);
                 };
                 let prev = dst.kind.get_cloned();
-                // Build the next dst kind by replacing only its material slot.
-                let (next, dst_mat) = match prev.clone() {
-                    NodeKind::Mesh {
-                        mesh,
-                        material: dst_mat,
-                        shadow,
-                        lod,
-                    } => (
-                        NodeKind::Mesh {
-                            mesh,
-                            material: src_slot.clone(),
-                            shadow,
-                            lod,
-                        },
-                        dst_mat,
-                    ),
-                    NodeKind::SkinnedMesh {
-                        skin,
-                        material: dst_mat,
-                        shadow,
-                        lod,
-                    } => (
-                        NodeKind::SkinnedMesh {
-                            skin,
-                            material: src_slot.clone(),
-                            shadow,
-                            lod,
-                        },
-                        dst_mat,
-                    ),
-                    _ => return Ok(None),
+                let mut next = prev.clone();
+                // Paste onto the destination's SELECTED variant — and only
+                // between instances of the SAME library material.
+                let Some(dst_inst) = next.selected_material_mut() else {
+                    return Ok(None);
                 };
-                // Only copy between meshes that reference the same material.
-                if src_slot.as_ref().map(|i| i.asset) != dst_mat.as_ref().map(|i| i.asset) {
+                if dst_inst.asset != src_inst.asset {
                     return Ok(None);
                 }
                 // Copy the whole instance (inline uniforms + override maps).
+                *dst_inst = src_inst;
                 dst.kind.set(next);
                 self.structure_rev
                     .set(self.structure_rev.get().wrapping_add(1));
@@ -3066,7 +3112,8 @@ impl EditorController {
                                 cluster: awsm_renderer_editor_protocol::ClusterMeshRef {
                                     source: asset_id,
                                 },
-                                material: None,
+                                material_variants: Vec::new(),
+                                selected_variant: None,
                                 shadow: Default::default(),
                             },
                             locked: false,
@@ -6891,6 +6938,7 @@ fn slots_to_specs(slots: &[Slot]) -> Vec<awsm_renderer_editor_protocol::SlotSpec
             ty: s.ty.clone(),
             val: s.val.clone(),
             debug: s.debug.clone(),
+            color_kind: s.color_kind,
         })
         .collect()
 }
@@ -6903,6 +6951,7 @@ fn specs_to_slots(specs: &[awsm_renderer_editor_protocol::SlotSpec]) -> Vec<Slot
             ty: s.ty.clone(),
             val: s.val.clone(),
             debug: s.debug.clone(),
+            color_kind: s.color_kind,
         })
         .collect()
 }
@@ -6936,11 +6985,7 @@ fn node_is_skinned(scene: &Scene, node: NodeId) -> bool {
 fn node_material_ref(
     kind: &NodeKind,
 ) -> Option<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> {
-    match kind {
-        NodeKind::Mesh { material, .. } => material.as_ref(),
-        NodeKind::SkinnedMesh { material, .. } => material.as_ref(),
-        _ => None,
-    }
+    kind.selected_material()
 }
 
 thread_local! {
@@ -7098,11 +7143,7 @@ fn node_subtree_json(node: &crate::engine::scene::node::Node) -> serde_json::Val
 fn node_material_mut(
     kind: &mut NodeKind,
 ) -> Option<&mut awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> {
-    match kind {
-        NodeKind::Mesh { material, .. } => material.as_mut(),
-        NodeKind::SkinnedMesh { material, .. } => material.as_mut(),
-        _ => None,
-    }
+    kind.selected_material_mut()
 }
 
 /// Patch a built-in material factor on a node's per-mesh inline store. Returns
@@ -8206,9 +8247,8 @@ fn build_editor_subtree(
                     mesh.clone(),
                 );
             }
-            Node::new_with_transform_and_kind(
-                name,
-                trs,
+            Node::new_with_transform_and_kind(name, trs, {
+                let (material_variants, selected_variant) = palette_from_import(material);
                 NodeKind::SkinnedMesh {
                     skin: SkinnedMeshRef {
                         source: asset_id,
@@ -8219,11 +8259,12 @@ fn build_editor_subtree(
                         // complete) — see `assemble_skin_joints` / patch below.
                         joints: Vec::new(),
                     },
-                    material,
+                    material_variants,
+                    selected_variant,
                     shadow: Default::default(),
                     lod: Default::default(),
-                },
-            )
+                }
+            })
         } else {
             let group = Node::new_with_transform_and_kind(name.clone(), trs, NodeKind::Group);
             for (i, mi) in mat_indices.iter().enumerate() {
@@ -8248,9 +8289,8 @@ fn build_editor_subtree(
                         mesh.clone(),
                     );
                 }
-                let part = Node::new_with_transform_and_kind(
-                    part_label,
-                    Trs::IDENTITY,
+                let part = Node::new_with_transform_and_kind(part_label, Trs::IDENTITY, {
+                    let (material_variants, selected_variant) = palette_from_import(material);
                     NodeKind::SkinnedMesh {
                         skin: SkinnedMeshRef {
                             source: asset_id,
@@ -8259,11 +8299,12 @@ fn build_editor_subtree(
                             primitive_index: Some(i as u32),
                             joints: Vec::new(),
                         },
-                        material,
+                        material_variants,
+                        selected_variant,
                         shadow: Default::default(),
                         lod: Default::default(),
-                    },
-                );
+                    }
+                });
                 group.children.lock_mut().push_cloned(part);
             }
             group
@@ -8284,9 +8325,11 @@ fn build_editor_subtree(
             if let Some((mesh, tangents)) = node_meshes.get(&(tn.gltf_node_index, None)) {
                 let mesh_ref =
                     mint_imported_mesh(mesh_node.id, &name, mesh, tangents.as_ref(), asset_id);
+                let (material_variants, selected_variant) = palette_from_import(material);
                 mesh_node.kind.set(NodeKind::Mesh {
                     mesh: mesh_ref,
-                    material,
+                    material_variants,
+                    selected_variant,
                     shadow: Default::default(),
                     lod: Default::default(),
                 });
@@ -8322,9 +8365,11 @@ fn build_editor_subtree(
                 {
                     let mesh_ref =
                         mint_imported_mesh(part.id, &part_label, mesh, tangents.as_ref(), asset_id);
+                    let (material_variants, selected_variant) = palette_from_import(material);
                     part.kind.set(NodeKind::Mesh {
                         mesh: mesh_ref,
-                        material,
+                        material_variants,
+                        selected_variant,
                         shadow: Default::default(),
                         lod: Default::default(),
                     });
@@ -8435,6 +8480,36 @@ fn template_needs_default_material(
 /// material presence), but is invariant under numeric edits (radius, fov, …).
 /// Drives `structure_rev` so the inspector rebuilds on a discrete toggle but not
 /// on a continuous scrub.
+/// Wrap a glTF-imported material instance as the mesh's palette: ONE variant
+/// (named after its library material) that is already selected — an imported
+/// model must render its authored materials, not magenta. `None` → empty
+/// palette, no selection.
+fn palette_from_import(
+    material: Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
+) -> (
+    Vec<awsm_renderer_editor_protocol::MaterialVariant>,
+    Option<awsm_renderer_editor_protocol::VariantId>,
+) {
+    match material {
+        Some(instance) => {
+            let name = crate::controller::custom_material::find_material(
+                &controller().custom_materials,
+                instance.asset,
+            )
+            .map(|m| m.name.get_cloned())
+            .unwrap_or_else(|| "Material".to_string());
+            let v = awsm_renderer_editor_protocol::MaterialVariant {
+                id: awsm_renderer_editor_protocol::VariantId::new(),
+                name,
+                instance,
+            };
+            let id = v.id;
+            (vec![v], Some(id))
+        }
+        None => (Vec::new(), None),
+    }
+}
+
 fn structure_key(kind: &NodeKind) -> String {
     use awsm_renderer_editor_protocol::{CameraProjection, LightConfig, MaterialShading};
     match kind {
@@ -8443,15 +8518,27 @@ fn structure_key(kind: &NodeKind) -> String {
         // seeded from that variant. Unassigned → no material rows. (Geometry is no
         // longer edited inline — the base/stack display is informational — so the
         // structure key doesn't vary on the stack base.)
-        NodeKind::Mesh { material, .. } => {
-            let shading = match material.as_ref().map(|m| m.inline.shading) {
+        NodeKind::Mesh { .. } => {
+            let material = kind.selected_material();
+            let shading = match material.map(|m| m.inline.shading) {
                 Some(MaterialShading::Pbr) => "pbr",
                 Some(MaterialShading::Unlit) => "unlit",
                 Some(MaterialShading::Toon { .. }) => "toon",
                 Some(MaterialShading::FlipBook { .. }) => "flipbook",
                 None => "none",
             };
-            format!("mesh/{shading}/{}", material.is_some())
+            // The palette (ids + names) is part of the structure: the Material
+            // dropdown lists it, so adds/removes/renames must rebuild the rows.
+            let palette = kind
+                .material_variants()
+                .map(|vs| {
+                    vs.iter()
+                        .map(|v| format!("{}:{}", v.id, v.name))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            format!("mesh/{shading}/{:?}/{palette}", kind.selected_variant_id())
         }
         NodeKind::Camera(c) => match c.projection {
             CameraProjection::Perspective { .. } => "cam/persp".into(),
@@ -8565,140 +8652,6 @@ fn node_index(scene: &Scene, id: NodeId, parent: Option<NodeId>) -> Option<usize
     }
 }
 
-/// Carry a node's per-mesh inline CUSTOMIZATIONS across a material
-/// re-assignment (`AssignMaterial`'s template→instance copy). A "customization"
-/// is an inline value that DIFFERS from the prior material's library def —
-/// i.e. something the user set on this mesh (a `set_node_texture` bind, an
-/// inline extension) rather than the copy the last assignment seeded. Carried:
-/// the five standard texture slots + every per-extension entry. Slots that
-/// merely mirrored the prior template adopt the NEW template (so re-assigning
-/// swaps the look as expected); genuine per-mesh binds survive (so a material
-/// reorganization doesn't force re-dressing every slot on every mesh).
-///
-/// `prior_template == None` (prior assignment was a custom-WGSL material, or
-/// its def is gone) treats every populated prior slot as a customization.
-/// Pure — unit-tested below.
-fn carry_inline_customizations(
-    next: &mut awsm_renderer_editor_protocol::MaterialDef,
-    prior: &awsm_renderer_editor_protocol::MaterialDef,
-    prior_template: Option<&awsm_renderer_editor_protocol::MaterialDef>,
-) {
-    macro_rules! carry_tex {
-        ($($f:ident),+) => {$(
-            if prior.$f.is_some() && prior_template.is_none_or(|t| t.$f != prior.$f) {
-                next.$f = prior.$f;
-            }
-        )+};
-    }
-    carry_tex!(
-        base_color_texture,
-        metallic_roughness_texture,
-        normal_texture,
-        occlusion_texture,
-        emissive_texture
-    );
-    macro_rules! carry_ext {
-        ($($f:ident),+) => {$(
-            if prior.extensions.$f.is_some()
-                && prior_template.is_none_or(|t| t.extensions.$f != prior.extensions.$f)
-            {
-                next.extensions.$f = prior.extensions.$f;
-            }
-        )+};
-    }
-    carry_ext!(
-        emissive_strength,
-        ior,
-        specular,
-        transmission,
-        diffuse_transmission,
-        volume,
-        clearcoat,
-        sheen,
-        dispersion,
-        anisotropy,
-        iridescence
-    );
-}
-
-#[cfg(test)]
-mod carry_inline_tests {
-    use super::carry_inline_customizations;
-    use awsm_renderer_editor_protocol::material::{ClearcoatExt, MaterialDef, PbrExtensions};
-    use awsm_renderer_editor_protocol::{AssetId, TextureRef};
-
-    // A per-mesh texture bind (differs from the prior template) survives
-    // re-assignment; a slot that mirrored the prior template adopts the new
-    // template's value instead.
-    #[test]
-    fn per_mesh_bind_survives_template_copy_does_not() {
-        let template_tex = TextureRef::new(AssetId::new());
-        let user_tex = TextureRef::new(AssetId::new());
-        let prior_template = MaterialDef {
-            base_color_texture: Some(template_tex),
-            ..Default::default()
-        };
-        // Prior inline: base color mirrors the old template (adopted at the
-        // last assign); the normal map is a genuine per-mesh bind.
-        let prior_inline = MaterialDef {
-            base_color_texture: Some(template_tex),
-            normal_texture: Some(user_tex),
-            ..Default::default()
-        };
-        let new_template_tex = TextureRef::new(AssetId::new());
-        let mut next = MaterialDef {
-            base_color_texture: Some(new_template_tex),
-            ..Default::default()
-        };
-        carry_inline_customizations(&mut next, &prior_inline, Some(&prior_template));
-        assert_eq!(
-            next.base_color_texture,
-            Some(new_template_tex),
-            "template-mirrored slot must adopt the NEW template"
-        );
-        assert_eq!(
-            next.normal_texture,
-            Some(user_tex),
-            "per-mesh bind must survive re-assignment"
-        );
-    }
-
-    // An inline extension the user enabled on this mesh survives; without a
-    // prior template every populated slot counts as a customization.
-    #[test]
-    fn inline_extension_and_templateless_binds_carry() {
-        let user_tex = TextureRef::new(AssetId::new());
-        let prior_inline = MaterialDef {
-            emissive_texture: Some(user_tex),
-            extensions: PbrExtensions {
-                clearcoat: Some(ClearcoatExt {
-                    factor: 1.0,
-                    roughness_factor: 0.0,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut next = MaterialDef::default();
-        carry_inline_customizations(&mut next, &prior_inline, None);
-        assert_eq!(next.emissive_texture, Some(user_tex));
-        assert_eq!(next.extensions.clearcoat.unwrap().factor, 1.0);
-    }
-
-    // Empty prior slots never clobber the new template's values.
-    #[test]
-    fn empty_prior_slots_leave_the_new_template_alone() {
-        let new_tex = TextureRef::new(AssetId::new());
-        let mut next = MaterialDef {
-            base_color_texture: Some(new_tex),
-            ..Default::default()
-        };
-        carry_inline_customizations(&mut next, &MaterialDef::default(), None);
-        assert_eq!(next.base_color_texture, Some(new_tex));
-    }
-}
-
 #[cfg(test)]
 mod ik_tests {
     use super::ik_bend_plane_normal;
@@ -8786,7 +8739,8 @@ mod unassigned_material_tests {
     fn unassigned_geometry_is_magenta_sentinel() {
         let mesh = NodeKind::Mesh {
             mesh: MeshRef(AssetId::new()),
-            material: None,
+            material_variants: Vec::new(),
+            selected_variant: None,
             shadow: Default::default(),
             lod: Default::default(),
         };

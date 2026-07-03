@@ -10,6 +10,22 @@ use crate::engine::context::{renderer_handle, with_renderer_mut};
 use crate::prelude::*;
 
 pub fn start() {
+    // Editor-camera clip planes: manual pin ↔ auto (orbit-tracked). Applied
+    // straight onto the view camera — session-only, never persisted.
+    spawn_local(async {
+        let s = controller().settings.clone();
+        map_ref! {
+            let manual = s.cam_clip_manual.signal(),
+            let near = s.cam_clip_near.signal(),
+            let far = s.cam_clip_far.signal() =>
+            if *manual { Some((*near as f32, *far as f32)) } else { None }
+        }
+        .for_each(move |clip| async move {
+            crate::engine::context::try_with_camera_mut(move |c| c.set_clip_override(clip));
+        })
+        .await;
+    });
+
     // Light-culling debug heatmap (cheap, synchronous).
     spawn_local(async {
         let mut first = true;

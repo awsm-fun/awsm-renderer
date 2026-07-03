@@ -175,9 +175,15 @@ pub async fn bake_player_bundle(
         collect_custom_texture_assets(ctrl, n, &mut ids, &mut seen);
     }
     for id in ids {
-        if let Some((_name, png)) = resolve_one_texture(&ctrl.scene, id).await {
-            files.push(BundleFile::asset(format!("{id}.png"), png));
-        }
+        // Referenced by a material ⇒ MUST ship, losslessly, or the export
+        // fails. No quiet skip and no lossy fallback (see `texture_source_bytes`).
+        let (_name, bytes, _mime) = texture_source_bytes(&ctrl.scene, id).ok_or_else(|| {
+            format!(
+                "bundle texture {id}: no original source bytes in the session cache — \
+                 re-import the texture (or reload the saved project) and re-export"
+            )
+        })?;
+        files.push(BundleFile::asset(format!("{id}.png"), bytes));
     }
 
     // 4. Skinned meshes: one clean rig glb (skeleton + mesh + skin + morph, built
@@ -243,16 +249,18 @@ pub async fn bake_player_bundle(
 /// assignments (no builtin def) keep their instance untouched — their def
 /// travels as a material folder instead.
 fn flatten_builtin_materials(nodes: &mut [awsm_renderer_editor_protocol::EditorNode]) {
-    use awsm_renderer_editor_protocol::NodeKind;
+    let flatten = |inst: &mut awsm_renderer_editor_protocol::dynamic_material::MaterialInstance| {
+        if let Some(merged) = crate::engine::bridge::node_sync::builtin_merged(inst) {
+            inst.inline = merged;
+        }
+    };
     for node in nodes {
-        let material = match &mut node.kind {
-            NodeKind::Mesh { material, .. } => material.as_mut(),
-            NodeKind::SkinnedMesh { material, .. } => material.as_mut(),
-            _ => None,
-        };
-        if let Some(inst) = material {
-            if let Some(merged) = crate::engine::bridge::node_sync::builtin_merged(inst) {
-                inst.inline = merged;
+        // EVERY palette entry ships self-contained — the player lowers each
+        // variant's `inline` standalone (the selected one is just the mesh's
+        // starting pick).
+        if let Some(variants) = node.kind.material_variants_mut() {
+            for v in variants.iter_mut() {
+                flatten(&mut v.instance);
             }
         }
         flatten_builtin_materials(&mut node.children);
@@ -340,15 +348,14 @@ fn emit_buffer_overrides(
         files: &mut Vec<awsm_renderer_editor_protocol::BundleFile>,
         seen: &mut HashSet<AssetId>,
     ) {
-        use awsm_renderer_editor_protocol::{BundleFile, NodeKind};
+        use awsm_renderer_editor_protocol::BundleFile;
         for node in nodes {
-            let material = match &node.kind {
-                NodeKind::Mesh { material, .. } | NodeKind::SkinnedMesh { material, .. } => {
-                    material.as_ref()
-                }
-                _ => None,
-            };
-            if let Some(inst) = material {
+            let instances = node
+                .kind
+                .material_variants()
+                .map(|vs| vs.iter().map(|v| &v.instance).collect::<Vec<_>>())
+                .unwrap_or_default();
+            for inst in instances {
                 for bref in inst.buffer_overrides.values() {
                     if !seen.insert(bref.asset) {
                         continue;
@@ -380,7 +387,10 @@ fn collect_custom_texture_assets(
     seen: &mut HashSet<AssetId>,
 ) {
     let kind = node.kind.get_cloned();
-    if let Some(Some(inst)) = material_slot(&kind) {
+    // Every palette entry's custom-WGSL overrides ship, not just the selected
+    // one — the player builds all variants.
+    for v in kind.material_variants().into_iter().flatten() {
+        let inst = &v.instance;
         // A custom-WGSL material is one whose asset resolves to a custom-material
         // entry with NO built-in variant (the inverse of `collect_texture_assets`).
         let is_builtin =
@@ -648,13 +658,11 @@ async fn resolve_images(scene: &Scene, roots: &[Arc<Node>]) -> (Vec<ExportImage>
     let mut images = Vec::new();
     let mut index = TexIndex::new();
     for id in ids {
-        if let Some((name, bytes)) = resolve_one_texture(scene, id).await {
+        if let Some((name, bytes, mime)) = texture_source_bytes(scene, id) {
             index.insert(id, images.len());
-            images.push(ExportImage {
-                name,
-                bytes,
-                mime: ImageMime::Png,
-            });
+            images.push(ExportImage { name, bytes, mime });
+        } else {
+            tracing::warn!("glb export: texture {id} has no cached source bytes — skipped");
         }
     }
     (images, index)
@@ -664,7 +672,14 @@ async fn resolve_images(scene: &Scene, roots: &[Arc<Node>]) -> (Vec<ExportImage>
 /// nodes' effective materials reference.
 fn collect_texture_assets(node: &Node, ids: &mut Vec<AssetId>, seen: &mut HashSet<AssetId>) {
     let kind = node.kind.get_cloned();
-    if let Some(Some(inst)) = material_slot(&kind) {
+    // EVERY palette entry ships in the bundle (the player builds each into a
+    // ready key), so every entry's textures must ship too — the selected
+    // variant is just one of them.
+    let instances: Vec<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> = kind
+        .material_variants()
+        .map(|vs| vs.iter().map(|v| &v.instance).collect())
+        .unwrap_or_default();
+    for inst in instances {
         // Only a built-in assignment exports glTF textures (its per-mesh `inline`
         // carries the slots); custom-WGSL materials export as AWSM_materials_none.
         let is_builtin = crate::controller::custom_material::find_material(
@@ -742,7 +757,21 @@ fn material_texture_refs(def: &MaterialDef) -> Vec<TextureRef> {
 
 /// Resolve one texture asset to `(name, png_bytes)`. Procedural → regenerate +
 /// encode (sync); raster → GPU readback (async). `None` if missing/unavailable.
-async fn resolve_one_texture(scene: &Scene, id: AssetId) -> Option<(String, Vec<u8>)> {
+/// The ORIGINAL encoded bytes for a texture asset — the only lossless source.
+/// Procedural textures regenerate deterministically; raster textures come from
+/// the session `texture_cache` (the same bytes the project Save writes).
+///
+/// Deliberately NO GPU-readback fallback: `texture_png_bytes` linear→sRGB
+/// encodes non-sRGB DATA textures on the way out, so a normal map came back
+/// mean-shifted ((128,128,255) → ~(184,186,250)) and the player shaded with
+/// normals leaning ~30° — a strong view-dependent sheen/fresnel wash the
+/// editor viewport never showed. A missing cache entry is a bug to surface
+/// (the bundle export FAILS on it; see `save_census` for the load-side oracle),
+/// not a case to paper over with corrupted pixels.
+///
+/// Raster bytes may be JPEG even though the bundle names files `<id>.png` —
+/// the browser decoder sniffs content; the extension is only a hint.
+fn texture_source_bytes(scene: &Scene, id: AssetId) -> Option<(String, Vec<u8>, ImageMime)> {
     let def = {
         let assets = scene.assets.lock().unwrap();
         match assets.get(id).map(|e| &e.source) {
@@ -753,17 +782,10 @@ async fn resolve_one_texture(scene: &Scene, id: AssetId) -> Option<(String, Vec<
     match def {
         TextureDef::Procedural(p) => {
             let (rgba, w, h) = bridge_material::procedural_rgba(&p);
-            rgba_to_png(&rgba, w, h).map(|png| (format!("texture-{id}"), png))
+            rgba_to_png(&rgba, w, h).map(|png| (format!("texture-{id}"), png, ImageMime::Png))
         }
-        TextureDef::Raster { display_name, .. } => {
-            // Only available once uploaded to the GPU (assign the material / its
-            // model first). Skipped otherwise — referenced-only.
-            let key = bridge_material::texture_key_for(id)?;
-            let handle = crate::engine::context::renderer_handle();
-            let r = handle.lock().await;
-            let png = r.texture_png_bytes(key).await.ok()?;
-            Some((display_name, png))
-        }
+        TextureDef::Raster { display_name, .. } => crate::engine::bridge::texture_cache::get(id)
+            .map(|(bytes, mime)| (display_name, bytes, mime)),
     }
 }
 
@@ -814,8 +836,8 @@ fn node_to_export(
     if !rig_covers_this {
         if let Some(mesh) = node_mesh(scene, &kind) {
             out.mesh = Some(mesh);
-            if let Some(material) = material_slot(&kind) {
-                out.material = Some(map_material(material, tex_index));
+            if has_material_slot(&kind) {
+                out.material = Some(map_material(kind.selected_material(), tex_index));
             }
         }
     }
@@ -864,13 +886,12 @@ pub(crate) fn node_mesh(_scene: &Scene, kind: &NodeKind) -> Option<MeshData> {
     }
 }
 
-/// Borrow the single material assignment of a geometry node kind.
-fn material_slot(kind: &NodeKind) -> Option<&Option<MaterialInstance>> {
-    match kind {
-        NodeKind::Mesh { material, .. } => Some(material),
-        NodeKind::SkinnedMesh { material, .. } => Some(material),
-        _ => None,
-    }
+/// Whether this node kind carries a material palette (geometry kinds).
+fn has_material_slot(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. } | NodeKind::ClusterMesh { .. }
+    )
 }
 
 /// Resolve a node's material assignment to the export representation.
@@ -882,7 +903,7 @@ fn material_slot(kind: &NodeKind) -> Option<&Option<MaterialInstance>> {
 /// - A **custom-WGSL** assignment (or one that doesn't resolve to a built-in) →
 ///   [`ExportMaterial::None`] carrying the assigned id for scene-level
 ///   re-resolution on import.
-fn map_material(material: &Option<MaterialInstance>, tex_index: &TexIndex) -> ExportMaterial {
+fn map_material(material: Option<&MaterialInstance>, tex_index: &TexIndex) -> ExportMaterial {
     let Some(inst) = material else {
         return ExportMaterial::None { id: None };
     };

@@ -1,10 +1,19 @@
 use uuid::Uuid;
 
 use super::{
-    assets::AssetId, camera::CameraConfig, collider::ColliderShape, curve::CurveDef,
-    decal::DecalConfig, dynamic_material::MaterialInstance, instances::InstancesAlongCurveDef,
-    light::LightConfig, line::LineDef, particle::ParticleEmitterDef, primitive::MeshRef,
-    sprite::SpriteDef, transform::Trs,
+    assets::AssetId,
+    camera::CameraConfig,
+    collider::ColliderShape,
+    curve::CurveDef,
+    decal::DecalConfig,
+    dynamic_material::{MaterialInstance, MaterialVariant, VariantId},
+    instances::InstancesAlongCurveDef,
+    light::LightConfig,
+    line::LineDef,
+    particle::ParticleEmitterDef,
+    primitive::MeshRef,
+    sprite::SpriteDef,
+    transform::Trs,
 };
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -227,10 +236,17 @@ pub enum NodeKind {
     /// asset.
     Mesh {
         mesh: MeshRef,
-        /// The node's single material assignment. `None` means *unassigned*
-        /// and renders flat magenta (the missing-material sentinel).
+        /// The mesh's material palette. Every material this mesh can render
+        /// is an entry here — a library-material reference plus THIS mesh's
+        /// independent overrides (see [`MaterialVariant`]). The editor's
+        /// Material dropdown lists exactly this; the player loader pre-builds
+        /// every entry into a ready `MaterialKey`.
         #[serde(default)]
-        material: Option<MaterialInstance>,
+        material_variants: Vec<MaterialVariant>,
+        /// Which variant renders. `None` = unassigned (flat magenta, the
+        /// missing-material sentinel) — legal even with a populated list.
+        #[serde(default)]
+        selected_variant: Option<VariantId>,
         #[serde(default)]
         shadow: MeshShadowConfig,
         /// Per-mesh LOD opt-out (default on). Authored in the editable project,
@@ -249,10 +265,12 @@ pub enum NodeKind {
     /// swaps the node to `NodeKind::Mesh`.
     SkinnedMesh {
         skin: SkinnedMeshRef,
-        /// Single material assignment (same one-material-per-node model as
-        /// `Mesh`); `None` renders flat magenta.
+        /// The mesh's material palette (same model as [`Self::Mesh`]).
         #[serde(default)]
-        material: Option<MaterialInstance>,
+        material_variants: Vec<MaterialVariant>,
+        /// Which variant renders; `None` = magenta.
+        #[serde(default)]
+        selected_variant: Option<VariantId>,
         #[serde(default)]
         shadow: MeshShadowConfig,
         /// Per-mesh LOD opt-out (default on). See [`MeshLodConfig`].
@@ -267,9 +285,12 @@ pub enum NodeKind {
     /// or a dense explode. No `lod` toggle — it IS the LOD.
     ClusterMesh {
         cluster: ClusterMeshRef,
-        /// Single material assignment; `None` renders flat magenta.
+        /// The mesh's material palette (same model as [`Self::Mesh`]).
         #[serde(default)]
-        material: Option<MaterialInstance>,
+        material_variants: Vec<MaterialVariant>,
+        /// Which variant renders; `None` = magenta.
+        #[serde(default)]
+        selected_variant: Option<VariantId>,
         #[serde(default)]
         shadow: MeshShadowConfig,
     },
@@ -379,6 +400,96 @@ impl NodeKind {
         }
     }
 
+    /// The node's material palette, if this kind carries one (Mesh /
+    /// SkinnedMesh / ClusterMesh).
+    pub fn material_variants(&self) -> Option<&Vec<MaterialVariant>> {
+        match self {
+            Self::Mesh {
+                material_variants, ..
+            }
+            | Self::SkinnedMesh {
+                material_variants, ..
+            }
+            | Self::ClusterMesh {
+                material_variants, ..
+            } => Some(material_variants),
+            _ => None,
+        }
+    }
+
+    /// Mutable variant of [`Self::material_variants`].
+    pub fn material_variants_mut(&mut self) -> Option<&mut Vec<MaterialVariant>> {
+        match self {
+            Self::Mesh {
+                material_variants, ..
+            }
+            | Self::SkinnedMesh {
+                material_variants, ..
+            }
+            | Self::ClusterMesh {
+                material_variants, ..
+            } => Some(material_variants),
+            _ => None,
+        }
+    }
+
+    /// The id of the variant this mesh renders (`None` = unassigned/magenta,
+    /// or a non-mesh kind).
+    pub fn selected_variant_id(&self) -> Option<VariantId> {
+        match self {
+            Self::Mesh {
+                selected_variant, ..
+            }
+            | Self::SkinnedMesh {
+                selected_variant, ..
+            }
+            | Self::ClusterMesh {
+                selected_variant, ..
+            } => *selected_variant,
+            _ => None,
+        }
+    }
+
+    /// Point the mesh at a variant (or `None` = unassigned). Returns `false`
+    /// for kinds without a material palette.
+    pub fn set_selected_variant(&mut self, id: Option<VariantId>) -> bool {
+        match self {
+            Self::Mesh {
+                selected_variant, ..
+            }
+            | Self::SkinnedMesh {
+                selected_variant, ..
+            }
+            | Self::ClusterMesh {
+                selected_variant, ..
+            } => {
+                *selected_variant = id;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The SELECTED variant's material instance — what this mesh renders.
+    /// `None` = unassigned (magenta), a dangling selection, or a non-mesh kind.
+    pub fn selected_material(&self) -> Option<&MaterialInstance> {
+        let id = self.selected_variant_id()?;
+        self.material_variants()?
+            .iter()
+            .find(|v| v.id == id)
+            .map(|v| &v.instance)
+    }
+
+    /// Mutable variant of [`Self::selected_material`] — the write target for
+    /// every per-mesh material edit (inline params, texture binds, overrides).
+    pub fn selected_material_mut(&mut self) -> Option<&mut MaterialInstance> {
+        let id = self.selected_variant_id()?;
+        self.material_variants_mut()?
+            .iter_mut()
+            .find(|v| v.id == id)
+            .map(|v| &mut v.instance)
+    }
+
     /// Returns this node's mesh shadow config if the variant carries
     /// one; returns `None` for non-renderable nodes (groups, lights,
     /// cameras, curves, lines, sprites, particles).
@@ -454,7 +565,8 @@ mod tests {
                         },
                     ],
                 },
-                material: None,
+                material_variants: Vec::new(),
+                selected_variant: None,
                 shadow: MeshShadowConfig::default(),
                 lod: MeshLodConfig::default(),
             },

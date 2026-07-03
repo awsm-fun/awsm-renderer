@@ -2040,6 +2040,8 @@ mod tests {
         // A declared texture → generates `material_sample_albedo`.
         r.layout.textures.push(TextureSlotRuntime {
             name: "albedo".to_string(),
+            srgb: true,
+            mipmap_kind: awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
         });
         // Displace along the normal by a height sampled from `albedo` using the
         // SECOND UV set, then recompute the normal from neighbouring heights via

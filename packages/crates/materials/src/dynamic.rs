@@ -346,7 +346,11 @@ mod tests {
                 name: "a".into(),
                 ty: FieldType::F32,
             }],
-            textures: vec![TextureSlotRuntime { name: "tex".into() }],
+            textures: vec![TextureSlotRuntime {
+                name: "tex".into(),
+                srgb: true,
+                mipmap_kind: awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+            }],
             buffers: vec![BufferSlotRuntime { name: "buf".into() }],
         };
         let id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);

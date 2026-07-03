@@ -52,14 +52,46 @@ pub async fn register_custom_materials(
     let mut out = HashMap::new();
     for cm in &scene.custom_materials {
         let folder = cm.folder.to_string_lossy();
-        let Ok(json) = assets.fetch(&format!("{folder}/material.json")).await else {
-            continue;
+        // Every failure below is LOUD: a declared custom material that doesn't
+        // register means its meshes silently render through their (meaningless
+        // for a custom assignment) inline defs instead of the authored shader.
+        // Not fatal only because pre-fix bundles listed BUILT-IN materials here
+        // with folders that were never written (those legitimately fail the
+        // fetch and correctly fall through to the builtin/inline path).
+        let json = match assets.fetch(&format!("{folder}/material.json")).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    "custom material `{}` ({}): fetch {folder}/material.json failed ({e}) — \
+                     meshes assigned to it will render via their inline def",
+                    cm.name,
+                    cm.id
+                );
+                continue;
+            }
         };
-        let Ok(wgsl) = assets.fetch(&format!("{folder}/material.wgsl")).await else {
-            continue;
+        let wgsl = match assets.fetch(&format!("{folder}/material.wgsl")).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    "custom material `{}` ({}): fetch {folder}/material.wgsl failed ({e})",
+                    cm.name,
+                    cm.id
+                );
+                continue;
+            }
         };
-        let Ok(def) = serde_json::from_slice::<MaterialDefinition>(&json) else {
-            continue;
+        let def = match serde_json::from_slice::<MaterialDefinition>(&json) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(
+                    "custom material `{}` ({}): {folder}/material.json didn't parse ({e}) — \
+                     is the server returning an HTML fallback for missing files?",
+                    cm.name,
+                    cm.id
+                );
+                continue;
+            }
         };
         let wgsl = String::from_utf8_lossy(&wgsl).into_owned();
         // Optional 2nd alpha-only WGSL window (masked cutouts). Absent for
@@ -70,8 +102,17 @@ pub async fn register_custom_materials(
             .ok()
             .map(|b| String::from_utf8_lossy(&b).into_owned());
         let reg = registration_from_definition(&cm.id, &def, wgsl, alpha_wgsl);
-        if let Ok(shader_id) = renderer.register_material(reg) {
-            out.insert(cm.id, shader_id);
+        match renderer.register_material(reg) {
+            Ok(shader_id) => {
+                out.insert(cm.id, shader_id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "custom material `{}` ({}): register/compile failed ({e})",
+                    cm.name,
+                    cm.id
+                );
+            }
         }
     }
     out
@@ -112,8 +153,12 @@ pub async fn build_custom_material(
                     .unwrap_or_else(|| default_value_for(u.ty))
             })
             .collect();
-        let texture_slots: Vec<String> =
-            reg.layout.textures.iter().map(|t| t.name.clone()).collect();
+        let texture_slots: Vec<(String, bool, MipmapTextureKind)> = reg
+            .layout
+            .textures
+            .iter()
+            .map(|t| (t.name.clone(), t.srgb, t.mipmap_kind))
+            .collect();
         let buffer_slots: Vec<String> = reg.layout.buffers.iter().map(|b| b.name.clone()).collect();
         (
             reg.alpha_mode,
@@ -135,21 +180,15 @@ pub async fn build_custom_material(
         }
     }
 
-    // Per-mesh texture overrides → pooled bindings (slot order). A custom texture
-    // is treated as color data (srgb + albedo mips), mirroring the editor's
-    // `resolve_texture_binding`. An override whose texture isn't in the bundle (or
-    // fails to decode) leaves the slot unbound.
+    // Per-mesh texture overrides → pooled bindings (slot order), each uploaded
+    // with ITS SLOT's declared semantics (color space + mipmap kind) — same as
+    // the editor's `resolve_texture_binding`. An override whose texture isn't
+    // in the bundle (or fails to decode) leaves the slot unbound.
     let mut textures: Vec<Option<DynamicTextureBinding>> = vec![None; texture_slots.len()];
-    for (i, name) in texture_slots.iter().enumerate() {
+    for (i, (name, srgb, mipmap_kind)) in texture_slots.iter().enumerate() {
         if let Some(tref) = inst.texture_overrides.get(name) {
-            if let Some(mt) = crate::texture::load_texture(
-                renderer,
-                assets,
-                tref,
-                true,
-                MipmapTextureKind::Albedo,
-            )
-            .await
+            if let Some(mt) =
+                crate::texture::load_texture(renderer, assets, tref, *srgb, *mipmap_kind).await
             {
                 if let Some(sampler) = mt.sampler_key {
                     textures[i] = Some(DynamicTextureBinding::Pooled {
@@ -215,8 +254,13 @@ fn registration_from_definition(
         textures: def
             .textures
             .iter()
-            .map(|t| TextureSlotRuntime {
-                name: t.name.clone(),
+            .map(|t| {
+                let (srgb, mipmap_kind) = crate::material::texture_color_semantics(t.color_kind);
+                TextureSlotRuntime {
+                    name: t.name.clone(),
+                    srgb,
+                    mipmap_kind,
+                }
             })
             .collect(),
         buffers: def
@@ -512,6 +556,7 @@ mod tests {
         with_tex.textures = vec![TextureSlot {
             name: "albedo".into(),
             default: None,
+            color_kind: Default::default(),
         }];
         assert_ne!(
             layout_hash(&minimal_def()),
