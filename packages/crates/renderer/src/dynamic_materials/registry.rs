@@ -803,6 +803,36 @@ impl DynamicMaterials {
         self.registrations.get(&shader_id)
     }
 
+    /// Overwrite ONE uniform's authored default on a registration in place.
+    /// Live uniform edits push the new value into every ALREADY-inserted
+    /// material, but consumers that seed a fresh material from the
+    /// registration (`uniform_defaults`) would otherwise keep reading the
+    /// register-time snapshot — a mesh (re)materialized after the edit came
+    /// up with stale values. Returns `false` (no-op) on an unknown id, an
+    /// out-of-range index, or a type mismatch against the layout.
+    pub fn set_uniform_default(
+        &mut self,
+        shader_id: MaterialShaderId,
+        index: usize,
+        value: awsm_renderer_materials::dynamic_layout::UniformValue,
+    ) -> bool {
+        let Some(reg) = self.registrations.get_mut(&shader_id) else {
+            return false;
+        };
+        let Some(slot) = reg.layout.uniforms.get(index) else {
+            return false;
+        };
+        if value.field_type() != slot.ty {
+            return false;
+        }
+        if reg.uniform_defaults.len() < reg.layout.uniforms.len() {
+            let pad = reg.layout.uniforms.len();
+            reg.uniform_defaults.resize_with(pad, || value.clone());
+        }
+        reg.uniform_defaults[index] = value;
+        true
+    }
+
     /// Builds the [`DynamicShaderInfo`] (the `MaterialData` struct decl +
     /// `material_data_load` accessor + author fragment) for a registered
     /// dynamic material, or `None` for a first-party / unregistered id.
@@ -1883,6 +1913,18 @@ impl crate::AwsmRenderer {
         shader_id: MaterialShaderId,
     ) -> Option<&MaterialRegistration> {
         self.dynamic_materials.get(shader_id)
+    }
+
+    /// Overwrite one uniform's authored default on a registered dynamic
+    /// material — see [`DynamicMaterials::set_uniform_default`].
+    pub fn set_dynamic_material_uniform_default(
+        &mut self,
+        shader_id: MaterialShaderId,
+        index: usize,
+        value: awsm_renderer_materials::dynamic_layout::UniformValue,
+    ) -> bool {
+        self.dynamic_materials
+            .set_uniform_default(shader_id, index, value)
     }
 
     /// Iterator over all currently-registered dynamic materials.

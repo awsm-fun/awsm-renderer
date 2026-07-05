@@ -338,6 +338,12 @@ pub fn set_uniform_live(r: &mut AwsmRenderer, asset: AssetId, name: &str, value_
         return;
     };
     let value = parse_uniform_value(ty, value_str);
+    // ALSO overwrite the registration's authored default: fresh materials
+    // (`build_custom_for_shader`) seed from `uniform_defaults`, so without
+    // this a mesh (re)materialized after the edit reverts to the
+    // register-time snapshot (the "assign after uniform edit → stale zero
+    // values" hole).
+    r.set_dynamic_material_uniform_default(shader_id, idx, value.clone());
     // Collect first (immutable borrow) so the per-key `update_material` (mutable)
     // doesn't overlap the iterator.
     let keys: Vec<awsm_renderer::materials::MaterialKey> = r
@@ -475,7 +481,7 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
     let main_wgsl = mat.wgsl.get_cloned();
     let alpha_body = mat.alpha_wgsl.get_cloned();
     let vertex_body = mat.vertex_wgsl.get_cloned();
-    let alpha_mode = convert_alpha(mat.alpha.get(), mat.cutoff.get() as f32);
+    let mut alpha_mode = convert_alpha(mat.alpha.get(), mat.cutoff.get() as f32);
     // The 2nd ("alpha-only") WGSL window — only meaningful for MASK materials.
     // Empty body → `None` (no masked variant built).
     let alpha_wgsl = if matches!(mat.alpha.get(), AlphaMode::Mask) && !alpha_body.trim().is_empty()
@@ -484,6 +490,20 @@ pub fn build_registration(mat: &CustomMaterial) -> MaterialRegistration {
     } else {
         None
     };
+    // A MASK registration with NO alpha-only WGSL has no masked visibility
+    // variant to raster through — assigned meshes end up classified masked
+    // with no pipeline behind them and render SILENT BLACK. Downgrade to
+    // Opaque (the shading contract is identical) until the author supplies
+    // the cutout body via `set_custom_material_alpha_wgsl`.
+    if matches!(alpha_mode, MaterialAlphaMode::Mask { .. }) && alpha_wgsl.is_none() {
+        tracing::warn!(
+            "custom material {:?}: alpha_mode Mask with an EMPTY alpha-only WGSL \
+             window — registering as Opaque instead (a masked material must provide \
+             its cutout body via set_custom_material_alpha_wgsl, or it renders black)",
+            mat.id
+        );
+        alpha_mode = MaterialAlphaMode::Opaque;
+    }
     // CRITICAL: the bridge's register no-op + the registry's idempotency are keyed
     // on `wgsl_hash`, so it MUST cover everything that changes the compiled output
     // — not just the main WGSL. Fold in the alpha mode/cutoff and the alpha-only
