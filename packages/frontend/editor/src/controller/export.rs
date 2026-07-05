@@ -123,39 +123,90 @@ pub async fn bake_player_bundle(
     collect_lod_static_assets(&project.nodes, &mut lod_assets);
 
     // 1. One geometry-only glb per Glb-lowered mesh asset (+ discrete LOD levels
-    //    for LOD-enabled, above-floor static meshes).
-    for (id, entry) in &project.assets.entries {
-        if let AssetSource::Mesh(def) = &entry.source {
-            if matches!(lower_mesh(def), RuntimeMesh::Glb) {
-                if let Some(raw) = mesh_cache::get_raw(*id) {
-                    let mesh = MeshData {
-                        positions: raw.positions,
-                        normals: raw.normals,
-                        uvs: raw.uv_sets,
-                        colors: raw.colors,
-                        indices: raw.indices,
-                    };
-                    // Bake LOD from `mesh` by reference *before* it's moved into
-                    // the base glb below.
-                    let lod_files = if lod_assets.contains(id) {
-                        crate::controller::lod_bake::bake_static_lod(&id.0.to_string(), &mesh)
-                    } else {
-                        Vec::new()
-                    };
-                    // Cluster-LOD DAG (Phase B) for dense static meshes; consumed
-                    // at load only when the `virtual_geometry` feature is on.
-                    let cluster_files =
-                        crate::controller::lod_bake::bake_static_clusters(&id.0.to_string(), &mesh);
-                    let glb = write_glb(&GlbScene {
-                        nodes: vec![ExportNode::new("mesh").with_mesh(mesh)],
-                        ..Default::default()
-                    });
-                    files.push(BundleFile::asset(mesh_glb_filename(*id), glb));
-                    files.extend(lod_files);
-                    files.extend(cluster_files);
-                }
+    //    for LOD-enabled, above-floor static meshes) — DEDUPED BY CONTENT.
+    //
+    //    Duplicated nodes each own a distinct mesh asset with byte-identical
+    //    baked geometry (e.g. a floor of 40 duplicated tiles ships the same
+    //    ~13 KB glb 40 times without this). Group Glb-lowered assets by their
+    //    baked glb bytes; ONE canonical file set (base glb + LOD chain +
+    //    clusters) ships per group, `scene.toml` Mesh refs rewrite to the
+    //    canonical id, and the duplicate entries drop from the baked asset
+    //    table. Materials / transforms are per-node, so collapsing geometry
+    //    ids is invisible at runtime. The canonical is the group's lowest
+    //    asset id so repeated exports stay byte-stable; LOD is baked for the
+    //    canonical when ANY member's nodes opted in. Byte-equality compare
+    //    (no hashing): the asset count is small and equality short-circuits.
+    struct MeshBake {
+        id: AssetId,
+        glb: Vec<u8>,
+        mesh: MeshData,
+        lod_wanted: bool,
+    }
+    let mut glb_mesh_ids: Vec<AssetId> = project
+        .assets
+        .entries
+        .iter()
+        .filter(|(_, entry)| {
+            matches!(&entry.source, AssetSource::Mesh(def)
+                if matches!(lower_mesh(def), RuntimeMesh::Glb))
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    glb_mesh_ids.sort_by_key(|id| id.0);
+    let mut canonicals: Vec<MeshBake> = Vec::new();
+    let mut mesh_remap: HashMap<AssetId, AssetId> = HashMap::new();
+    for id in glb_mesh_ids {
+        let Some(raw) = mesh_cache::get_raw(id) else {
+            continue;
+        };
+        let mesh = MeshData {
+            positions: raw.positions,
+            normals: raw.normals,
+            uvs: raw.uv_sets,
+            colors: raw.colors,
+            indices: raw.indices,
+        };
+        let glb = write_glb(&GlbScene {
+            nodes: vec![ExportNode::new("mesh").with_mesh(mesh.clone())],
+            ..Default::default()
+        });
+        let lod_wanted = lod_assets.contains(&id);
+        match canonicals.iter_mut().find(|c| c.glb == glb) {
+            Some(canon) => {
+                canon.lod_wanted |= lod_wanted;
+                mesh_remap.insert(id, canon.id);
             }
+            None => canonicals.push(MeshBake {
+                id,
+                glb,
+                mesh,
+                lod_wanted,
+            }),
         }
+    }
+    for canon in canonicals {
+        let lod_files = if canon.lod_wanted {
+            crate::controller::lod_bake::bake_static_lod(&canon.id.0.to_string(), &canon.mesh)
+        } else {
+            Vec::new()
+        };
+        // Cluster-LOD DAG (Phase B) for dense static meshes; consumed
+        // at load only when the `virtual_geometry` feature is on.
+        let cluster_files =
+            crate::controller::lod_bake::bake_static_clusters(&canon.id.0.to_string(), &canon.mesh);
+        files.push(BundleFile::asset(mesh_glb_filename(canon.id), canon.glb));
+        files.extend(lod_files);
+        files.extend(cluster_files);
+    }
+    if !mesh_remap.is_empty() {
+        remap_mesh_refs(&mut scene.nodes, &mesh_remap);
+        for dup in mesh_remap.keys() {
+            scene.assets.entries.remove(dup);
+        }
+        tracing::info!(
+            "bundle bake: deduped {} identical mesh asset(s) onto shared geometry files",
+            mesh_remap.len()
+        );
     }
 
     // 2. Custom-material folders. `material_files` already returns paths rooted
@@ -240,6 +291,24 @@ pub async fn bake_player_bundle(
     files.extend(env_ktx_bundle_files(ctrl).await?);
 
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
+}
+
+/// Rewrite `NodeKind::Mesh` geometry refs in the baked node tree per the
+/// content-dedup remap (duplicate asset id → the canonical id whose glb
+/// actually ships). Only static `Mesh` nodes carry a [`MeshRef`]; skinned /
+/// cluster sources are separate per-source files and are not remapped here.
+fn remap_mesh_refs(
+    nodes: &mut [awsm_renderer_editor_protocol::EditorNode],
+    remap: &HashMap<AssetId, AssetId>,
+) {
+    for node in nodes {
+        if let awsm_renderer_editor_protocol::NodeKind::Mesh { mesh, .. } = &mut node.kind {
+            if let Some(canon) = remap.get(&mesh.0) {
+                mesh.0 = *canon;
+            }
+        }
+        remap_mesh_refs(&mut node.children, remap);
+    }
 }
 
 /// Replace every assigned built-in `MaterialInstance.inline` in the baked
