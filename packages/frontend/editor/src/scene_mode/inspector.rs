@@ -206,7 +206,14 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
             mesh, shadow, lod, ..
         } => {
             let selected = node_material_instance(node);
+            // Duplicates share the mesh ASSET — surface that before the
+            // geometry editor, since edits there change every sharer.
+            let shared = shared_geometry_note(&geometry_sharers(node.id, mesh.0, false), true);
             html!("div", {
+                .apply(|d| match shared {
+                    Some(note) => d.child(note),
+                    None => d,
+                })
                 .child(mesh_geometry_section(mesh.0))
                 .child(material_editor(node, &inline_of(&selected), selected.is_some()))
                 .child(mesh_shadow_editor(node, shadow))
@@ -217,9 +224,18 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         // weights can't survive topology edits). Shows the material + shadow
         // surface plus a "Drop Skinning" action that bakes the bind pose into a
         // static editable Mesh (terminal).
-        NodeKind::SkinnedMesh { shadow, lod, .. } => {
+        NodeKind::SkinnedMesh {
+            skin, shadow, lod, ..
+        } => {
             let node_id = node.id;
             let selected = node_material_instance(node);
+            // Duplicated rigs share the imported source asset (stored once in
+            // save/bundle) — surfaced as information, since skinned geometry
+            // isn't editable anyway. A rig's OWN per-primitive siblings (this
+            // import's other material meshes) share the source too and would
+            // be noise, so they are excluded.
+            let shared =
+                shared_geometry_note(&skinned_rig_sharers(node.id, skin.source), false);
             html!("div", {
                 .child(info_section(
                     "Skinned Mesh",
@@ -228,6 +244,10 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
                      per-vertex skin weights can't survive topology-changing edits. \
                      Drop skinning to bake the bind pose into a static, editable mesh.",
                 ))
+                .apply(|d| match shared {
+                    Some(note) => d.child(note),
+                    None => d,
+                })
                 .child(material_editor(node, &inline_of(&selected), selected.is_some()))
                 .child(mesh_shadow_editor(node, shadow))
                 .child(mesh_lod_editor(node, lod))
@@ -690,6 +710,85 @@ fn info_section(title: &str, body: &str) -> Dom {
             .text(body)
         }))
         .render()
+}
+
+/// The OTHER nodes referencing the same geometry asset as `current` — i.e.
+/// duplicates sharing this mesh (`skinned = false` matches `Mesh.mesh`) or this
+/// rig import (`skinned = true` matches `SkinnedMesh.skin.source`).
+fn geometry_sharers(
+    current: NodeId,
+    asset: awsm_renderer_editor_protocol::AssetId,
+    skinned: bool,
+) -> Vec<(NodeId, String)> {
+    collect_kind_nodes(|k| match k {
+        NodeKind::Mesh { mesh, .. } if !skinned => mesh.0 == asset,
+        NodeKind::SkinnedMesh { skin, .. } if skinned => skin.source == asset,
+        _ => false,
+    })
+    .into_iter()
+    .filter(|(id, _)| *id != current)
+    .collect()
+}
+
+/// Sharers of a skinned rig's import source, EXCLUDING this import's own
+/// per-primitive sibling meshes (a multi-material rig splits into one
+/// skinned-mesh node per primitive under one group — those share the source
+/// by construction and are not duplicates). Siblings are identified by
+/// sharing `current`'s parent.
+fn skinned_rig_sharers(
+    current: NodeId,
+    source: awsm_renderer_editor_protocol::AssetId,
+) -> Vec<(NodeId, String)> {
+    let scene = &controller().scene;
+    let my_parent = crate::engine::scene::mutate::find_parent(scene, current).map(|p| p.id);
+    geometry_sharers(current, source, true)
+        .into_iter()
+        .filter(|(id, _)| {
+            crate::engine::scene::mutate::find_parent(scene, *id).map(|p| p.id) != my_parent
+        })
+        .collect()
+}
+
+/// "Shared geometry" note: shown ONLY when other nodes reference the same
+/// geometry asset (i.e. this node is/was duplicated). Names the sharers so
+/// they're findable in the Outliner. Without this there is no way to tell a
+/// duplicate from an independent mesh — and for editable meshes that matters:
+/// geometry edits mutate the SHARED asset, changing every sharer at once.
+fn shared_geometry_note(sharers: &[(NodeId, String)], editable: bool) -> Option<Dom> {
+    if sharers.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = sharers.iter().map(|(_, n)| n.clone()).collect();
+    let body = if editable {
+        format!(
+            "Geometry shared with {} other node{}: {}. Geometry edits (modifiers, \
+             vertex ops) change ALL of them — materials and transforms stay \
+             per-node. The bundle stores the shared mesh once.",
+            sharers.len(),
+            if sharers.len() == 1 { "" } else { "s" },
+            names.join(", "),
+        )
+    } else {
+        format!(
+            "Rig geometry shared with {} other node{}: {} (same import source). \
+             Joints, pose, and materials are per-instance; the bundle stores the \
+             shared rig once.",
+            sharers.len(),
+            if sharers.len() == 1 { "" } else { "s" },
+            names.join(", "),
+        )
+    };
+    Some(
+        Section::new("Shared Geometry")
+            .dense(true)
+            .child(html!("div", {
+                .style("font-size", "12px")
+                .style("line-height", "1.5")
+                .style("color", if editable { "var(--warning, #e0af68)" } else { "var(--text-3)" })
+                .text(&body)
+            }))
+            .render(),
+    )
 }
 
 // ── Sweep / Instances curve-reference pickers ───────────────────────────────

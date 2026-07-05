@@ -66,7 +66,7 @@ pub enum Request {
 /// can react to what a human (or async work) did.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorEvent {
-    /// Event kind: `"toast"` | `"selection"`.
+    /// Event kind: `"toast"` | `"selection"` | `"visibility"`.
     pub kind: String,
     /// Toast severity (`"info"` | `"warning"` | `"error"`) for `kind == "toast"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +77,14 @@ pub struct EditorEvent {
     /// Selected node ids for `kind == "selection"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nodes: Option<Vec<String>>,
+    /// Tab visibility for `kind == "visibility"`: `true` when the tab is hidden
+    /// (the browser pauses/throttles `requestAnimationFrame`, so frame-bound
+    /// requests — screenshots, settles — stall until it is visible again). The
+    /// editor pushes one on attach and one per `visibilitychange`; the server
+    /// tracks the latest value per connection so agents can fail fast instead
+    /// of burning the full request timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
 }
 
 /// Server → browser WebSocket frame.
@@ -221,7 +229,13 @@ mod wire_roundtrip_tests {
                     ids: vec![NodeId::new()],
                 },
             ),
-            ("add_clip", EditorCommand::AddClip { id: AssetId::new() }),
+            (
+                "add_clip",
+                EditorCommand::AddClip {
+                    id: AssetId::new(),
+                    name: None,
+                },
+            ),
             (
                 "delete_clip",
                 EditorCommand::DeleteClip { id: AssetId::new() },
@@ -553,6 +567,19 @@ mod wire_roundtrip_tests {
             level: Some("info".to_string()),
             message: Some("hi".to_string()),
             nodes: None,
+            hidden: None,
+        });
+        let j = serde_json::to_string(&event).unwrap();
+        let back: WsClientMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        // Visibility push (tab hidden/shown) round-trips.
+        let event = WsClientMsg::Event(EditorEvent {
+            kind: "visibility".to_string(),
+            level: None,
+            message: None,
+            nodes: None,
+            hidden: Some(true),
         });
         let j = serde_json::to_string(&event).unwrap();
         let back: WsClientMsg = serde_json::from_str(&j).unwrap();

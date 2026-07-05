@@ -16,6 +16,7 @@ use crate::tree::NodeId;
 /// How a clip's shared clock wraps at its duration boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ClipLoop {
     Loop,
     PingPong,
@@ -25,6 +26,7 @@ pub enum ClipLoop {
 /// The default playback direction a clip's clock advances.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ClipDirection {
     Forward,
     Reverse,
@@ -33,6 +35,7 @@ pub enum ClipDirection {
 /// Per-keyframe interpolation (display); lowering uses the track's [`SamplerKind`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Interp {
     Step,
     Linear,
@@ -42,6 +45,7 @@ pub enum Interp {
 /// The renderer sampler kind a whole track lowers to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum SamplerKind {
     Step,
     Linear,
@@ -55,6 +59,7 @@ pub enum SamplerKind {
 // newtype variant requires a map payload — a `[f32;N]` is a sequence and errors
 // at runtime). `tag + content` round-trips any payload, in JSON *and* TOML.
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TrackValue {
     /// Translation / scale (vec3).
     Vec3([f32; 3]),
@@ -70,6 +75,7 @@ pub enum TrackValue {
 
 /// One keyframe, aligned to a track's shared `times[i]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Keyframe {
     pub value: TrackValue,
     pub interp: Interp,
@@ -80,6 +86,7 @@ pub struct Keyframe {
 /// Which transform component a transform track drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TransformProp {
     Translation,
     Rotation,
@@ -181,6 +188,7 @@ pub enum CameraParamKind {
 /// A serializable descriptor binding a track to a real animatable target.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "target", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TrackTarget {
     Transform {
         node: NodeId,
@@ -218,6 +226,7 @@ pub enum TrackTarget {
 
 /// Serializable snapshot of one track.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StoredTrack {
     pub target: TrackTarget,
     pub sampler: SamplerKind,
@@ -262,6 +271,7 @@ pub struct CustomAnimationRef {
 /// How a mixer layer composites (clips referenced by `AssetId`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum LayerModeDoc {
     #[default]
     Replace,
@@ -273,6 +283,7 @@ pub enum LayerModeDoc {
 
 /// One clip placement on a mixer layer's timeline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StripDoc {
     pub clip: AssetId,
     pub start: f64,
@@ -289,6 +300,7 @@ fn one_f64() -> f64 {
 
 /// One mixer layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct LayerDoc {
     pub mode: LayerModeDoc,
     #[serde(default = "one_f64")]

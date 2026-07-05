@@ -238,6 +238,7 @@ fn default_cascade_lambda() -> f32 {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Eq, Hash, Copy)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum LightKind {
     Directional,
     Point,

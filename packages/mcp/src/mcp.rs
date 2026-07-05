@@ -1242,6 +1242,36 @@ pub struct AddKeyframeParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetTrackKeysParams {
+    pub clip: String,
+    pub track: u32,
+    /// Key times in seconds (paired index-wise with `values`; need not be sorted).
+    pub times: Vec<f64>,
+    /// One value per time.
+    pub values: Vec<TrackValueArg>,
+    /// Interpolation for every key: step | linear | cubic, optional. Omit to
+    /// derive from the track's sampler.
+    #[serde(default)]
+    pub interp: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListCommandsParams {
+    /// Exact command tag (e.g. "reparent") for that command's full JSON Schema;
+    /// omit for the compact list of all commands.
+    #[serde(default)]
+    pub cmd: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddClipParams {
+    /// Optional display name for the new clip (e.g. "robot_wave"); omit for the
+    /// default "Clip N" numbering.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetKeyframeParams {
     pub clip: String,
     pub track: u32,
@@ -1421,11 +1451,20 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Health check: confirms an editor is attached (fails fast with 'no editor attached' if not). Returns the current mode."
+        description = "Health check: confirms an editor is attached (fails fast with 'no editor attached' if not). Returns the current mode and the tab's visibility — `tab=HIDDEN` means the browser paused rendering (rAF), so frame-bound tools (screenshots, wait_render_settled, re-materializations) will fail fast until the tab is visible again; JS-only queries still work."
     )]
     async fn ping(&self) -> Result<CallToolResult, McpError> {
         match self.req(Request::Mode).await? {
-            Response::Mode(m) => Ok(text(format!("pong — editor attached (mode={m:?})"))),
+            Response::Mode(m) => {
+                let vis = match self.link.current_visibility() {
+                    Some(true) => "HIDDEN — rendering paused; frame-bound tools will fail fast",
+                    Some(false) => "visible",
+                    None => "unknown",
+                };
+                Ok(text(format!(
+                    "pong — editor attached (mode={m:?}, tab={vis})"
+                )))
+            }
             other => Err(unexpected(other)),
         }
     }
@@ -1438,22 +1477,31 @@ impl EditorMcp {
         let editors = self.link.connection_count();
         let connected = editors > 0;
         let origin = self.link.self_origin();
-        Ok(text(
-            serde_json::json!({
-                "status": if connected {
-                    "connected (an editor tab is attached)"
-                } else {
-                    "waiting for an editor tab to connect"
-                },
-                "editor_connected": connected,
-                "editors_connected": editors,
-                "how_to_connect": format!(
-                    "open the awsm-renderer editor with `?mcp={origin}` appended to its URL, \
-                     or enter this server's address in its MCP connect modal"
-                ),
-            })
-            .to_string(),
-        ))
+        let mut body = serde_json::json!({
+            "status": if connected {
+                "connected (an editor tab is attached)"
+            } else {
+                "waiting for an editor tab to connect"
+            },
+            "editor_connected": connected,
+            "editors_connected": editors,
+            "how_to_connect": format!(
+                "open the awsm-renderer editor with `?mcp={origin}` appended to its URL, \
+                 or enter this server's address in its MCP connect modal"
+            ),
+        });
+        if let Some(hidden) = self.link.current_visibility() {
+            body["tab_hidden"] = serde_json::json!(hidden);
+            if hidden {
+                body["tab_hidden_note"] = serde_json::json!(
+                    "the tab reported itself HIDDEN: the browser paused rendering \
+                     (requestAnimationFrame), so frame-bound tools (screenshots, \
+                     wait_render_settled, re-materializations) fail fast until the \
+                     tab is visible again; JS-only queries still work"
+                );
+            }
+        }
+        Ok(text(body.to_string()))
     }
 
     #[tool(
@@ -2217,13 +2265,26 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Import a glTF/glb model from a URL.")]
+    #[tool(
+        description = "Import a glTF/glb model from a URL and return the import report (created root node ids/names, node/material/skin-joint/clip counts, source asset id). Fails with the load error when the fetch/parse fails — note the URL's server must send CORS headers (`Access-Control-Allow-Origin`): the editor is a browser app, and e.g. plain `python3 -m http.server` will fail."
+    )]
     async fn import_model_from_url(
         &self,
         Parameters(p): Parameters<UrlParams>,
     ) -> Result<CallToolResult, McpError> {
+        // Dispatch first (errors — e.g. CORS fetch failures — propagate here),
+        // then return WHAT the import created instead of a bare "ok".
         self.dispatch(EditorCommand::ImportModelFromUrl { url: p.url })
-            .await
+            .await?;
+        self.query(EditorQuery::LastImportReport).await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Report of the most recent model import this session: created root node ids/names, node/material/skin-joint/clip counts, and the source asset id. `report: null` when nothing has been imported. The import tools also return this inline; use this to re-read it later without re-importing."
+    )]
+    async fn get_last_import_report(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::LastImportReport).await
     }
 
     #[tool(
@@ -3391,7 +3452,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Rig discovery per skinned node: { source, primitive_index, joints:[{node,index,name,translation,rotation,scale}] }. Joints ARE ordinary scene nodes — POSE one with set_node_transform on its `node` id (the skin deforms live), ANIMATE one with add_track targeting it (transform). Pass node UUIDs, or empty for all skinned nodes."
+        description = "Rig discovery, grouped PER SKIN (keyed by source asset id): { source, meshes:[{node,name,primitive_index}], joints:[{node,index,name,live,translation,rotation,scale}] }. One joint table per rig — the skinned-mesh nodes sharing it are listed in `meshes` (a multi-material rig is one entry, not one copy per primitive). Joints ARE ordinary scene nodes — POSE one with set_node_transform on its `node` id (the skin deforms live), ANIMATE one with add_track targeting it (transform), or restore the whole rig with reset_to_bind_pose. Pass skinned-mesh node UUIDs, or empty for all."
     )]
     async fn get_skin_data(
         &self,
@@ -3763,21 +3824,67 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(
+        description = "Restore every SKIN-JOINT node under `node` (pass a rig root) to its import-time transform — the glTF bind/rest pose (T-pose). This is the way back after posing joints with set_node_transform / solve_ik, which EDIT the scene base transforms and are therefore untouched by reset_pose (that only reverts clip-preview poses). A real scene edit: single-step undoable. No-op for nodes without recorded rest data (non-joints)."
+    )]
+    async fn reset_to_bind_pose(
+        &self,
+        Parameters(p): Parameters<NodeArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ResetToBindPose {
+            id: parse_node(&p.node)?,
+        })
+        .await
+    }
+
     // ── animation (lifecycle + transport) ───────────────────────────────────
 
     #[tool(
-        description = "Create a fresh empty animation clip and make it current. Returns the new clip id."
+        description = "Create a fresh empty animation clip (optionally named) and make it current. Returns the new clip id."
     )]
-    async fn add_clip(&self) -> Result<CallToolResult, McpError> {
+    async fn add_clip(
+        &self,
+        Parameters(p): Parameters<AddClipParams>,
+    ) -> Result<CallToolResult, McpError> {
         let id = AssetId::new();
         match self
-            .req(Request::Dispatch(EditorCommand::AddClip { id }))
+            .req(Request::Dispatch(EditorCommand::AddClip {
+                id,
+                name: p.name,
+            }))
             .await?
         {
             Response::Ok => Ok(text(id.to_string())),
             Response::Err(e) => Err(McpError::internal_error(e, None)),
             other => Err(unexpected(other)),
         }
+    }
+
+    #[tool(
+        description = "REPLACE a track's entire key list in one call — the bulk authoring path (one call per track instead of one add_keyframe per key). `times` pairs index-wise with `values`; unsorted input is sorted by time. Single-step undoable (undo restores the prior keys exactly)."
+    )]
+    async fn set_track_keys(
+        &self,
+        Parameters(p): Parameters<SetTrackKeysParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let values = p
+            .values
+            .iter()
+            .map(build_track_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        let interp = match p.interp.as_deref() {
+            Some(s) => Some(parse_enum(s, "interp")?),
+            None => None,
+        };
+        self.dispatch(EditorCommand::SetTrackKeys {
+            clip: parse_asset(&p.clip)?,
+            track: p.track as usize,
+            times: p.times,
+            values,
+            interp,
+            keys: Vec::new(),
+        })
+        .await
     }
 
     #[tool(description = "Delete an animation clip by id.")]
@@ -4096,7 +4203,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Dispatch a list of raw EditorCommands as ONE atomic step (applied in order, collapsed into a single undo entry, one round-trip). Cuts latency for multi-step edits (e.g. building a rig). Each command is internally tagged by \"cmd\"."
+        description = "Dispatch a list of raw EditorCommands as ONE atomic step (applied in order, collapsed into a single undo entry, one round-trip). Cuts latency for multi-step edits (e.g. building a rig). Each command is internally tagged by \"cmd\" — discover tags + payload shapes with list_commands."
     )]
     async fn dispatch_batch(
         &self,
@@ -4112,6 +4219,84 @@ impl EditorMcp {
             Response::Err(e) => Err(McpError::internal_error(e, None)),
             other => Err(unexpected(other)),
         }
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Discover the raw EditorCommand vocabulary for dispatch_command / dispatch_batch (handoff #5/#12). No args: a compact list of every command tag with its field names ('*' marks required). With `cmd` (e.g. \"reparent\"): that command's FULL JSON Schema (exact payload shape + referenced $defs). Local — no editor round-trip."
+    )]
+    async fn list_commands(
+        &self,
+        Parameters(p): Parameters<ListCommandsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let root = serde_json::to_value(schemars::schema_for!(EditorCommand))
+            .map_err(|e| McpError::internal_error(format!("schema: {e}"), None))?;
+        let variants = root
+            .get("oneOf")
+            .or_else(|| root.get("anyOf"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // The variant's tag: properties.cmd is `{"const": "..."}` (or a 1-enum).
+        fn tag_of(variant: &serde_json::Value) -> Option<String> {
+            let c = variant.get("properties")?.get("cmd")?;
+            c.get("const")
+                .and_then(|v| v.as_str())
+                .or_else(|| c.get("enum")?.get(0)?.as_str())
+                .map(str::to_string)
+        }
+        if let Some(want) = p.cmd.as_deref() {
+            for v in &variants {
+                if tag_of(v).as_deref() == Some(want) {
+                    let body = serde_json::json!({
+                        "cmd": want,
+                        "schema": v,
+                        "$defs": root.get("$defs").cloned().unwrap_or(serde_json::json!({})),
+                    });
+                    return Ok(text(body.to_string()));
+                }
+            }
+            return Err(McpError::invalid_params(
+                format!("unknown command tag `{want}` — call list_commands with no args for the full list"),
+                None,
+            ));
+        }
+        let mut list = Vec::new();
+        for v in &variants {
+            let Some(tag) = tag_of(v) else { continue };
+            let required: std::collections::HashSet<&str> = v
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            let fields: Vec<String> = v
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .map(|props| {
+                    props
+                        .keys()
+                        .filter(|k| k.as_str() != "cmd")
+                        .map(|k| {
+                            if required.contains(k.as_str()) {
+                                format!("{k}*")
+                            } else {
+                                k.clone()
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            list.push(serde_json::json!({ "cmd": tag, "fields": fields }));
+        }
+        list.sort_by(|a, b| a["cmd"].as_str().cmp(&b["cmd"].as_str()));
+        Ok(text(
+            serde_json::json!({
+                "count": list.len(),
+                "note": "fields marked * are required; call list_commands{cmd} for a command's full JSON Schema",
+                "commands": list,
+            })
+            .to_string(),
+        ))
     }
 }
 
@@ -4987,6 +5172,21 @@ mod tests {
             }
             other => panic!("expected SetVertexOverrides, got {other:?}"),
         }
+    }
+
+    /// Regression (handoff #11): `set_current_clip` called with NO `clip`
+    /// argument must deserialize to `clip: None` (⇒ `SetCurrentClip { id: None }`
+    /// = CLEAR the current clip). A deployed build once left the previous clip
+    /// active on the no-arg form, so later animation re-lowers silently re-posed
+    /// the rig mid-scene-edit.
+    #[test]
+    fn clip_opt_params_omitted_clip_is_clear() {
+        let p: ClipOptParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(p.clip.is_none());
+        assert!(parse_asset_opt(&p.clip).unwrap().is_none());
+
+        let p: ClipOptParams = serde_json::from_value(serde_json::json!({ "clip": null })).unwrap();
+        assert!(p.clip.is_none());
     }
 
     /// The String-wrapped form (a JSON-encoded string arg) must still work.

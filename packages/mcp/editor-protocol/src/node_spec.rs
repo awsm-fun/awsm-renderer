@@ -19,6 +19,7 @@ use awsm_renderer_scene::{EditorNode, LightKind, NodeId, NodeKind, PrimitiveShap
 /// `build_insert` turns this into a reactive `Node`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum InsertSpec {
     Empty,
     Light(LightKind),
@@ -42,6 +43,7 @@ pub enum InsertSpec {
 
 /// A full serializable capture of a node subtree (preserves ids).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NodeSpec {
     pub id: NodeId,
     pub name: String,

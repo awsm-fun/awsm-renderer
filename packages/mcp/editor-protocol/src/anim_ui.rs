@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// not pure ephemeral UI.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum AnimView {
     #[default]
     Dope,
@@ -19,6 +20,7 @@ pub enum AnimView {
 /// A step-playhead direction (transport buttons).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum StepKind {
     /// Jump to clip start (t = 0).
     Home,
@@ -33,6 +35,7 @@ pub enum StepKind {
 /// The selected timeline element (track / keyframe). Identified by track index
 /// within the active clip + optional keyframe index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct AnimSel {
     /// Index of the selected track in the active clip's `tracks`.
     pub track: usize,

@@ -18,7 +18,7 @@
 //! session.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,6 +29,14 @@ use awsm_renderer_editor_protocol::{EditorEvent, Request, Response, WsServerMsg}
 /// Upper bound on one request's round-trip (an offline render / settle is the
 /// slow case).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Request timeout while the tab reports itself HIDDEN: the browser has paused
+/// `requestAnimationFrame`, so anything frame-bound (screenshots, settles,
+/// re-materializations that await a presented frame) will never complete — fail
+/// fast with a distinct error instead of burning the full [`REQUEST_TIMEOUT`].
+/// Kept generous enough for JS-only work (queries, pure state edits), which
+/// still completes when hidden (timers are throttled, not stopped).
+const HIDDEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Why a request couldn't be delivered.
 pub enum LinkError {
@@ -42,9 +50,23 @@ pub struct Connection {
     tx: mpsc::UnboundedSender<WsServerMsg>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Response>>>,
     next_req_id: AtomicU64,
+    /// Latest tab visibility the editor pushed (`kind: "visibility"` event):
+    /// `true` ⇒ the tab is hidden and rAF is paused, so frame-bound requests
+    /// cannot complete. Drives the fast-fail timeout + the `ping` report.
+    hidden: AtomicBool,
 }
 
 impl Connection {
+    /// Latest visibility the tab reported (`true` = hidden, rAF paused).
+    pub fn is_hidden(&self) -> bool {
+        self.hidden.load(Ordering::Relaxed)
+    }
+
+    /// Record a visibility push from the tab.
+    pub fn set_hidden(&self, hidden: bool) {
+        self.hidden.store(hidden, Ordering::Relaxed);
+    }
+
     /// Send one request to this tab and await its response.
     async fn request(&self, req: &Request) -> Result<Response, String> {
         let id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
@@ -56,7 +78,15 @@ impl Connection {
                 req: req.clone(),
             })
             .map_err(|_| "editor link closed".to_string())?;
-        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+        // A hidden tab has rAF paused: frame-bound work can never finish, and
+        // JS-only work still answers quickly — so use the short timeout and a
+        // distinct, actionable error.
+        let (limit, hidden_at_send) = if self.is_hidden() {
+            (HIDDEN_REQUEST_TIMEOUT, true)
+        } else {
+            (REQUEST_TIMEOUT, false)
+        };
+        match tokio::time::timeout(limit, rx).await {
             Ok(Ok(resp)) => Ok(resp),
             Ok(Err(_)) => {
                 self.pending.lock().unwrap().remove(&id);
@@ -64,13 +94,24 @@ impl Connection {
             }
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
-                Err(
-                    "editor request timed out — is the editor tab foregrounded? \
-                     A screenshot/render needs a live requestAnimationFrame frame, \
-                     which browsers throttle or pause in a backgrounded/hidden tab. \
-                     Foreground the tab (or keep it visible) and retry."
-                        .into(),
-                )
+                if hidden_at_send || self.is_hidden() {
+                    Err("editor tab is HIDDEN — the browser has paused rendering \
+                         (requestAnimationFrame), so frame-bound operations \
+                         (screenshots, render settles, material re-materialization) \
+                         cannot complete until the tab is visible again. Make the \
+                         tab visible (foreground it / wake the display) and retry. \
+                         JS-only queries (get_snapshot, get_mode, …) still work \
+                         while hidden."
+                        .into())
+                } else {
+                    Err(
+                        "editor request timed out — is the editor tab foregrounded? \
+                         A screenshot/render needs a live requestAnimationFrame frame, \
+                         which browsers throttle or pause in a backgrounded/hidden tab. \
+                         Foreground the tab (or keep it visible) and retry."
+                            .into(),
+                    )
+                }
             }
         }
     }
@@ -151,6 +192,7 @@ impl EditorLink {
             tx,
             pending: Mutex::new(HashMap::new()),
             next_req_id: AtomicU64::new(1),
+            hidden: AtomicBool::new(false),
         });
         let mut conns = self.inner.connections.lock().unwrap();
         // Evict every prior tab — one server, one tab.
@@ -223,6 +265,18 @@ impl EditorLink {
     /// The id of the tab requests currently route to (for the event forwarder).
     pub fn current_conn_id(&self) -> Option<u64> {
         self.inner.connections.lock().unwrap().last().map(|c| c.id)
+    }
+
+    /// Latest visibility the attached tab reported: `Some(true)` = hidden (rAF
+    /// paused, frame-bound requests will fail fast), `Some(false)` = visible,
+    /// `None` = no tab attached. Surfaced by `ping` / `pairing_status`.
+    pub fn current_visibility(&self) -> Option<bool> {
+        self.inner
+            .connections
+            .lock()
+            .unwrap()
+            .last()
+            .map(|c| c.is_hidden())
     }
 
     /// Send a request from `agent` to the attached tab.

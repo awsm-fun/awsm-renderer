@@ -43,7 +43,22 @@ pub async fn handle_socket(socket: WebSocket, link: EditorLink) {
         match msg {
             Message::Text(txt) => match serde_json::from_str::<WsClientMsg>(txt.as_str()) {
                 Ok(WsClientMsg::Response { id, resp }) => conn.complete(id, resp),
-                Ok(WsClientMsg::Event(ev)) => link.publish_event(conn.id, ev),
+                Ok(WsClientMsg::Event(ev)) => {
+                    // Visibility pushes update the per-connection state that
+                    // drives fast-fail timeouts + the `ping` report (and are
+                    // still relayed to the agent like any other event).
+                    if ev.kind == "visibility" {
+                        if let Some(hidden) = ev.hidden {
+                            conn.set_hidden(hidden);
+                            tracing::info!(
+                                "connection {}: tab visibility → {}",
+                                conn.id,
+                                if hidden { "hidden" } else { "visible" }
+                            );
+                        }
+                    }
+                    link.publish_event(conn.id, ev)
+                }
                 Err(e) => tracing::warn!("connection {}: bad ws frame: {e}", conn.id),
             },
             Message::Close(_) => break,

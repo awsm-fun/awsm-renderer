@@ -62,6 +62,7 @@ pub fn init() {
                 level: Some(level.to_string()),
                 message: Some(msg.to_string()),
                 nodes: None,
+                hidden: None,
             });
         }
     });
@@ -131,6 +132,10 @@ pub struct EditorController {
     pub custom_materials: MutableVec<Arc<CM>>,
     /// The material the Studio is currently editing.
     pub current_material: Mutable<Option<AssetId>>,
+    /// Report of the most recent model import (roots, counts, source asset) —
+    /// served by [`EditorQuery::LastImportReport`] and returned inline by the
+    /// MCP import tools. `None` until the first import of the session.
+    pub last_import_report: Mutable<Option<serde_json::Value>>,
     /// The animation clips authored in Animation mode (mirrors `custom_materials`).
     /// Reactive — the studio edits their tracks/keys live.
     pub custom_animations: MutableVec<Arc<CA>>,
@@ -269,6 +274,7 @@ impl EditorController {
             asset_selection: Mutable::new(None),
             custom_materials: MutableVec::new(),
             current_material: Mutable::new(None),
+            last_import_report: Mutable::new(None),
             custom_animations: MutableVec::new(),
             current_clip: Mutable::new(None),
             playhead: Mutable::new(0.0),
@@ -817,6 +823,7 @@ impl EditorController {
                     level: None,
                     message: None,
                     nodes: Some(ids.iter().map(|id| id.to_string()).collect()),
+                    hidden: None,
                 });
                 self.selected.set(ids);
                 Ok(None)
@@ -1000,6 +1007,46 @@ impl EditorController {
                     }
                     None => Ok(None),
                 }
+            }
+            EditorCommand::ResetToBindPose { id } => {
+                let Some(root) = mutate::find_by_id(&self.scene, id) else {
+                    return Err(crate::error::EditorError::msg(format!("no node {id}")));
+                };
+                let rest = crate::engine::bridge::bridge()
+                    .joint_rest
+                    .lock()
+                    .unwrap()
+                    .clone();
+                // Restore every joint in the subtree that has a recorded rest;
+                // collect per-node inverses so undo replays the prior pose.
+                fn walk(
+                    node: &std::sync::Arc<crate::engine::scene::node::Node>,
+                    rest: &std::collections::HashMap<NodeId, crate::engine::scene::Trs>,
+                    inverses: &mut Vec<EditorCommand>,
+                ) {
+                    if let Some(r) = rest.get(&node.id) {
+                        let prev = node.transform.get();
+                        if prev != *r {
+                            node.transform.set(*r);
+                            inverses.push(EditorCommand::SetTransform {
+                                id: node.id,
+                                transform: prev,
+                            });
+                        }
+                    }
+                    for child in node.children.lock_ref().iter() {
+                        walk(child, rest, inverses);
+                    }
+                }
+                let mut inverses = Vec::new();
+                walk(&root, &rest, &mut inverses);
+                if inverses.is_empty() {
+                    // Nothing was posed away from rest (or no joints under here).
+                    return Ok(None);
+                }
+                self.scene.bump_revision();
+                inverses.reverse();
+                Ok(Some(EditorCommand::Batch(inverses)))
             }
             EditorCommand::Rename { id, name } => match mutate::find_by_id(&self.scene, id) {
                 Some(node) => {
@@ -2067,17 +2114,22 @@ impl EditorController {
                          use the SetCustomMaterial* commands)"
                     )));
                 };
-                mat.builtin.set(Some(*def));
-                // Variant changed → refresh its card thumbnail + re-materialize
-                // every assigned mesh DIRECTLY. This used to ride a per-material
+                mat.builtin.set(Some((*def).clone()));
+                // Variant changed → refresh its card thumbnail + re-seed every
+                // assigned mesh's per-variant inline store DIRECTLY (which also
+                // re-materializes it). This used to ride a per-material
                 // `spawn_builtin_resync` observer, which only existed for
                 // materials created through `AddBuiltinMaterial` / project load —
                 // glTF-IMPORTED library materials never spawned one, so updating
                 // them (e.g. enabling a PBR extension over MCP) silently changed
-                // nothing on screen. A direct call can't have coverage holes.
+                // nothing on screen. And a bare re-materialize is not enough
+                // either: each variant renders from its own inline VALUE copy
+                // (seeded at import/assign), so without the field-wise re-seed a
+                // def edit re-applied the stale values and nothing visibly
+                // changed. Slots the mesh customized (≠ prior def) are kept.
                 crate::engine::thumbnail::invalidate(mat.id);
                 crate::engine::thumbnail::request(mat.clone());
-                crate::engine::bridge::rematerialize_for_material(id);
+                crate::engine::bridge::reseed_inline_for_material(id, &prior, &def);
                 // A variant edit changes which per-mesh controls exist on every
                 // node assigned this material (extension rows appear/disappear,
                 // texture slots gate on it) — rebuild the node inspector like
@@ -3071,7 +3123,21 @@ impl EditorController {
             EditorCommand::ImportModelFromUrl { url } => {
                 let _activity =
                     crate::engine::activity::begin_activity("Inserting model — uploading to GPU…");
-                self.finish_model_import(crate::engine::bridge::gltf::import(&url).await);
+                self.finish_model_import(crate::engine::bridge::gltf::import(&url).await)
+                    .map_err(|e| {
+                        // A cross-origin fetch the host didn't allow surfaces as a bare
+                        // "Failed to fetch" — the single most common silent-import
+                        // trap for MCP agents (e.g. `python3 -m http.server` sends no
+                        // CORS headers). Name the cause in the error the agent sees.
+                        let hint = if e.contains("Failed to fetch") {
+                            "\n(likely CORS: the editor is a browser app, so the file \
+                             server must send `Access-Control-Allow-Origin` — plain \
+                             `python3 -m http.server` does not)"
+                        } else {
+                            ""
+                        };
+                        crate::error::EditorError::msg(format!("import failed: {e}{hint}"))
+                    })?;
                 Ok(None)
             }
             EditorCommand::ImportModelFromFile { name, url } => {
@@ -3080,7 +3146,8 @@ impl EditorController {
                 let result = crate::engine::bridge::gltf::import_file(&name, &url).await;
                 // The blob: object URL was minted just for this load; release it.
                 let _ = web_sys::Url::revoke_object_url(&url);
-                self.finish_model_import(result);
+                self.finish_model_import(result)
+                    .map_err(|e| crate::error::EditorError::msg(format!("import failed: {e}")))?;
                 Ok(None)
             }
             // Import a PRE-BAKED nanite asset (awsm-renderer-lod-bake CLI output) as a
@@ -3239,12 +3306,15 @@ impl EditorController {
                 Ok(Some(EditorCommand::DeleteAsset { id }))
             }
             // ───────────────────── Animation: clip lifecycle ─────────────────
-            EditorCommand::AddClip { id } => {
+            EditorCommand::AddClip { id, name } => {
                 // Idempotent: a cross-tab relay replays this; if the clip id
                 // already exists (or a self-echo slips through) it's a no-op.
                 if find_clip(&self.custom_animations, id).is_none() {
-                    let n = self.custom_animations.lock_ref().len() + 1;
-                    let clip = CA::new(id, format!("Clip {n}"));
+                    let name = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| {
+                        let n = self.custom_animations.lock_ref().len() + 1;
+                        format!("Clip {n}")
+                    });
+                    let clip = CA::new(id, name);
                     self.custom_animations.lock_mut().push_cloned(clip);
                     Toast::info("Created clip");
                 }
@@ -3527,6 +3597,64 @@ impl EditorController {
                 }
             }
             // ───────────────────── Animation: keyframes ──────────────────────
+            EditorCommand::SetTrackKeys {
+                clip,
+                track,
+                times,
+                values,
+                interp,
+                keys,
+            } => match find_track(&self.custom_animations, clip, track) {
+                Some(tr) => {
+                    // Build the replacement key list: full `keys` win (lossless
+                    // undo form), else one keyframe per (time, value) pair.
+                    let new_keys: Vec<animation::Keyframe> = if !keys.is_empty() {
+                        if keys.len() != times.len() {
+                            return Err(crate::error::EditorError::msg(format!(
+                                "set_track_keys: {} times but {} keys",
+                                times.len(),
+                                keys.len()
+                            )));
+                        }
+                        keys
+                    } else {
+                        if values.len() != times.len() {
+                            return Err(crate::error::EditorError::msg(format!(
+                                "set_track_keys: {} times but {} values",
+                                times.len(),
+                                values.len()
+                            )));
+                        }
+                        let interp = interp
+                            .unwrap_or_else(|| animation::sampler_to_interp(tr.sampler.get()));
+                        values
+                            .into_iter()
+                            .map(|v| animation::new_keyframe(v, interp))
+                            .collect()
+                    };
+                    // Sort by time (callers need not pre-sort).
+                    let mut paired: Vec<(f64, animation::Keyframe)> =
+                        times.into_iter().zip(new_keys).collect();
+                    paired.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let (sorted_times, sorted_keys): (Vec<f64>, Vec<animation::Keyframe>) =
+                        paired.into_iter().unzip();
+
+                    let prev_times = tr.times.lock_ref().to_vec();
+                    let prev_keys = tr.keys.lock_ref().to_vec();
+                    *tr.times.lock_mut() = sorted_times;
+                    *tr.keys.lock_mut() = sorted_keys;
+                    self.dirty.set_neq(true);
+                    Ok(Some(EditorCommand::SetTrackKeys {
+                        clip,
+                        track,
+                        times: prev_times,
+                        values: Vec::new(),
+                        interp: None,
+                        keys: prev_keys,
+                    }))
+                }
+                None => Ok(None),
+            },
             EditorCommand::AddKeyframe {
                 clip,
                 track,
@@ -3968,18 +4096,24 @@ impl EditorController {
     /// node template is cached under a freshly-minted source-file `AssetId` so
     /// each `Model` node can find + duplicate its meshes (see
     /// `node_sync::materialize_model`). On failure, surface the error.
-    fn finish_model_import(&self, result: Result<crate::engine::bridge::gltf::GltfImport, String>) {
+    /// Returns `Err` with the load/parse failure so command dispatch can surface
+    /// it to the caller (the MCP agent sees a real error instead of a silent
+    /// "ok"); the toast is kept so local UI flows still get visible feedback.
+    fn finish_model_import(
+        &self,
+        result: Result<crate::engine::bridge::gltf::GltfImport, String>,
+    ) -> Result<(), String> {
         let import = match result {
             Ok(i) => i,
             Err(e) => {
                 Toast::error(format!("Import failed: {e}"));
-                return;
+                return Err(e);
             }
         };
 
         if import.template.roots.is_empty() {
             Toast::error("This model contains no nodes to insert");
-            return;
+            return Err("this model contains no nodes to insert".to_string());
         }
 
         // Bring the imported materials into the **assignable library** (so they
@@ -4207,6 +4341,17 @@ impl EditorController {
             crate::engine::bridge::bridge().register_template_instances(asset_id, ids);
         }
 
+        // Captured for the import report (LastImportReport query / MCP return).
+        let report_roots: Vec<serde_json::Value> = roots
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id.to_string(),
+                    "name": r.name.get_cloned(),
+                })
+            })
+            .collect();
+
         for root in roots {
             mutate::insert_under(&self.scene, None, root);
         }
@@ -4218,8 +4363,10 @@ impl EditorController {
         // per-frame `skin_bridge` copies the mirror's local onto the baked key so
         // animating/posing the bone deforms the skin (otherwise the mesh freezes:
         // the skin reads the baked copy, the animation drives the mirror).
+        let mut skin_joint_count = 0;
         {
             fn walk_skin_joints(
+                scene: &crate::engine::scene::Scene,
                 nodes: &[crate::engine::bridge::asset_template::AssetTemplateNode],
                 node_map: &std::collections::HashMap<u32, NodeId>,
                 count: &mut usize,
@@ -4229,14 +4376,24 @@ impl EditorController {
                     if n.is_skin_joint {
                         if let Some(node_id) = node_map.get(&n.gltf_node_index) {
                             bridge.register_skin_joint(*node_id, n.baked_transform_key);
+                            // The freshly-built editor node still carries the
+                            // glTF-parsed local — record it as this joint's
+                            // bind/rest pose for `ResetToBindPose`.
+                            if let Some(bone) = mutate::find_by_id(scene, *node_id) {
+                                bridge.register_joint_rest(*node_id, bone.transform.get());
+                            }
                             *count += 1;
                         }
                     }
-                    walk_skin_joints(&n.children, node_map, count);
+                    walk_skin_joints(scene, &n.children, node_map, count);
                 }
             }
-            let mut skin_joint_count = 0;
-            walk_skin_joints(&template.roots, &node_map, &mut skin_joint_count);
+            walk_skin_joints(
+                &self.scene,
+                &template.roots,
+                &node_map,
+                &mut skin_joint_count,
+            );
             tracing::debug!("skin bridge: registered {skin_joint_count} skin-joint mappings");
         }
 
@@ -4254,6 +4411,18 @@ impl EditorController {
         } else {
             Toast::info(format!("Imported {}", import.display_name));
         }
+
+        // Publish the import report (LastImportReport query / inline MCP return).
+        self.last_import_report.set(Some(serde_json::json!({
+            "display_name": import.display_name,
+            "source_asset": asset_id.to_string(),
+            "roots": report_roots,
+            "node_count": node_map.len(),
+            "materials": mat_ids.iter().map(|m| m.to_string()).collect::<Vec<_>>(),
+            "skin_joints": skin_joint_count,
+            "clips": clip_count,
+        })));
+        Ok(())
     }
 
     /// Remove animation clips that are now FULLY orphaned — every track targets
@@ -4727,6 +4896,19 @@ impl EditorController {
         use query::*;
         match q {
             EditorQuery::Snapshot => QueryResult::Snapshot(Box::new(self.snapshot())),
+            EditorQuery::LastImportReport => {
+                let mut entries = std::collections::BTreeMap::new();
+                entries.insert(
+                    "report".to_string(),
+                    self.last_import_report
+                        .get_cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                QueryResult::Map(MapResult {
+                    kind: "import_report".to_string(),
+                    entries,
+                })
+            }
             EditorQuery::SampleClipTimeseries {
                 clip,
                 times,
@@ -5667,12 +5849,28 @@ impl EditorController {
             }
             EditorQuery::SkinData { nodes } => {
                 use serde_json::json;
-                // Rig discovery: every SkinnedMesh node's joint table, each joint
-                // resolved to its live editor bone node (name + current local TRS).
-                // Joints are ordinary scene nodes — SetTransform poses them and a
-                // Transform animation track animates them; this query is just the
-                // map that makes the rig reachable without walking the outliner.
+                // Rig discovery: every skin's joint table, each joint resolved to
+                // its live editor bone node (name + current local TRS). Joints are
+                // ordinary scene nodes — SetTransform poses them and a Transform
+                // animation track animates them; this query is just the map that
+                // makes the rig reachable without walking the outliner.
+                //
+                // Grouped BY SKIN (source asset), not by skinned-mesh node: a
+                // multi-material import splits into one skinned_mesh node per
+                // primitive, all sharing one joint table — the old per-node shape
+                // repeated the identical joint array once per primitive (4× the
+                // payload for a 4-material rig; handoff #7). Each entry lists the
+                // sharing mesh nodes instead.
                 let ids = self.resolve_node_ids(&nodes);
+                let bridge = crate::engine::bridge::bridge();
+                let baked_map = bridge.skin_joint_baked.lock().unwrap().clone();
+                // A bone is drivable through EITHER path: the legacy template
+                // populate (baked-copy skin bridge) or the rig-decode
+                // materializer, whose renderer skin reads the editor bone's own
+                // TransformKey directly — for the latter (e.g. every DUPLICATED
+                // rig) the bone just needs to be a live bridge node.
+                let live_nodes: std::collections::HashSet<NodeId> =
+                    bridge.nodes.lock().unwrap().keys().copied().collect();
                 let mut entries = std::collections::BTreeMap::new();
                 for id in ids {
                     let Some(n) = mutate::find_by_id(&self.scene, id) else {
@@ -5681,15 +5879,35 @@ impl EditorController {
                     let NodeKind::SkinnedMesh { skin, .. } = n.kind.get_cloned() else {
                         continue;
                     };
+                    let mesh_entry = json!({
+                        "node": id.to_string(),
+                        "name": n.name.get_cloned(),
+                        "primitive_index": skin.primitive_index,
+                    });
+                    // Group key: the first JOINT's node id — unique per rig
+                    // INSTANCE (a duplicated rig shares the original's `source`
+                    // asset but owns remapped joints), shared by all of one
+                    // rig's per-primitive meshes. Fall back to the source for a
+                    // joint-less skin.
+                    let key = skin
+                        .joints
+                        .first()
+                        .map(|j| j.node.to_string())
+                        .unwrap_or_else(|| skin.source.to_string());
+                    if let Some(existing) = entries.get_mut(&key) {
+                        // Same skin — just record the additional sharing mesh.
+                        let serde_json::Value::Object(map) = existing else {
+                            continue;
+                        };
+                        if let Some(serde_json::Value::Array(meshes)) = map.get_mut("meshes") {
+                            meshes.push(mesh_entry);
+                        }
+                        continue;
+                    }
                     // `live`: the skin bridge holds a mirror→baked mapping for
                     // this bone, i.e. posing it actually deforms the skin. False
                     // means the rig is display-only (registration failed/skipped)
                     // — surfaced so an agent (and we) can SEE a broken chain.
-                    let baked_map = crate::engine::bridge::bridge()
-                        .skin_joint_baked
-                        .lock()
-                        .unwrap()
-                        .clone();
                     let joints: Vec<serde_json::Value> = skin
                         .joints
                         .iter()
@@ -5707,7 +5925,8 @@ impl EditorController {
                                 "node": j.node.to_string(),
                                 "index": j.index,
                                 "name": name,
-                                "live": baked_map.contains_key(&j.node),
+                                "live": baked_map.contains_key(&j.node)
+                                    || live_nodes.contains(&j.node),
                                 "translation": trs.translation,
                                 "rotation": trs.rotation,
                                 "scale": trs.scale,
@@ -5715,10 +5934,10 @@ impl EditorController {
                         })
                         .collect();
                     entries.insert(
-                        id.to_string(),
+                        key,
                         json!({
                             "source": skin.source.to_string(),
-                            "primitive_index": skin.primitive_index,
+                            "meshes": vec![mesh_entry],
                             "joints": joints,
                         }),
                     );

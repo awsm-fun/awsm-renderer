@@ -22,6 +22,7 @@ use awsm_renderer_scene::{mesh_asset_filename, AssetId, MaterialDef, TextureDef}
 // player/editor match site for marginal benefit; assets are not stored in hot,
 // densely-packed arrays.
 #[allow(clippy::large_enum_variant)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum AssetSource {
     /// Editor on-disk file (glb / gltf / ktx). The inner String is the
     /// user's original filename, kept for UI labels and to derive the
@@ -52,6 +53,7 @@ pub enum AssetSource {
 /// what the UI / `get_node_details` want to show without loading the file.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BufferDef {
     /// Number of little-endian `u32` words in the buffer.
     #[serde(default)]
@@ -77,6 +79,7 @@ impl AssetSource {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct AssetEntry {
     pub source: AssetSource,
     /// Editable `MaterialDef` asset ids extracted from a glTF file on
