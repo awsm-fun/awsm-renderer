@@ -266,3 +266,11 @@ fn _texture_pool_sample_lod0(
     }
     return color;
 }
+
+// Compute-kernel alias for the dynamic-material helpers' uniformity-safe
+// entry point (see the transparent pass's texture_pool_sample_nu): explicit
+// LOD sampling has no uniform-control-flow requirement, so the plain path
+// serves directly.
+fn texture_pool_sample_nu(info: TextureInfo, attribute_uv: vec2<f32>) -> vec4<f32> {
+    return texture_pool_sample(info, attribute_uv);
+}
