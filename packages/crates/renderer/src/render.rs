@@ -1826,7 +1826,34 @@ impl AwsmRenderer {
         use futures::FutureExt;
         use std::collections::HashMap;
 
-        if !self.meshes.has_seen_hud() || self.hud_resolve.inflight.is_some() {
+        if self.hud_resolve.inflight.is_some() {
+            return Ok(());
+        }
+
+        // World transparents are normally resolved on the scene-load path
+        // (`prewarm_pipelines` inside `commit_load`) — but a mesh that
+        // BECOMES transparency-pass after the last commit (a custom
+        // material's alpha mode flipped to Blend and the mesh
+        // re-materialized, a live material-key swap, …) has no pipeline
+        // key and used to draw through the fallback stock transparent,
+        // silently ignoring a dynamic material's authored WGSL. Count the
+        // unkeyed transparent meshes into the resolve signature so this
+        // per-frame reconcile picks them up the frame they appear.
+        let unkeyed_world = self
+            .meshes
+            .iter()
+            .filter(|(mesh_key, mesh)| {
+                !mesh.hud
+                    && self.materials.is_transparency_pass(mesh.material_key)
+                    && self
+                        .render_passes
+                        .material_transparent
+                        .pipelines
+                        .get_render_pipeline_key(*mesh_key)
+                        .is_none()
+            })
+            .count();
+        if !self.meshes.has_seen_hud() && unkeyed_world == 0 {
             return Ok(());
         }
 
@@ -1836,23 +1863,29 @@ impl AwsmRenderer {
             pool_samplers_len: bind_groups.texture_pool_sampler_keys.len(),
             msaa: self.anti_aliasing.msaa_sample_count,
             hud_revision: self.meshes.hud_revision(),
+            unkeyed_world,
         };
         if self.hud_resolve.last_sig == Some(sig) {
             return Ok(());
         }
 
-        // Collect the HUD meshes. Only `mesh.hud` meshes are touched —
-        // world transparents are resolved on the scene-load path, so we
-        // neither duplicate that work nor risk re-resolving the world.
+        // Collect the HUD meshes + any world transparent still missing its
+        // pipeline key (see `unkeyed_world` above).
         let mut requests: Vec<TransparentMeshPipelineRequest> = Vec::new();
         for (mesh_key, mesh) in self.meshes.iter() {
-            if !mesh.hud {
-                continue;
-            }
             // Only warm transparent pipelines for meshes that route to the
             // transparent pass — an opaque (incl. opaque-dynamic) material's
             // fragment can't compile against the transparent contract.
             if !self.materials.is_transparency_pass(mesh.material_key) {
+                continue;
+            }
+            let unkeyed = self
+                .render_passes
+                .material_transparent
+                .pipelines
+                .get_render_pipeline_key(mesh_key)
+                .is_none();
+            if !mesh.hud && !unkeyed {
                 continue;
             }
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
@@ -2024,6 +2057,11 @@ struct HudResolveSig {
     pool_samplers_len: usize,
     msaa: Option<u32>,
     hud_revision: u64,
+    /// World (non-HUD) transparency-pass meshes with NO transparent
+    /// pipeline key yet — meshes that became transparent after the last
+    /// scene-load resolve. Non-zero forces a resolve pass; keying them
+    /// drops it back to zero (a new, settled signature).
+    unkeyed_world: usize,
 }
 
 /// In-flight HUD transparent pipeline compile, held between

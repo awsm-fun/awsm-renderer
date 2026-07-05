@@ -338,11 +338,20 @@ impl EditorController {
         // async fn doesn't recurse into itself.
         if let EditorCommand::Batch(cmds) = cmd {
             let mut inverses = Vec::new();
-            for c in cmds {
+            for (i, c) in cmds.into_iter().enumerate() {
                 let touches_anim = c.affects_animation();
                 let touches_mesh = c.affects_mesh();
-                if let Some(inv) = Box::pin(self.apply_inner(c)).await? {
-                    inverses.push(inv);
+                // Name the failing sub-command (index + human label) — a bare
+                // index is useless in a 150-command batch.
+                let label = c.label();
+                match Box::pin(self.apply_inner(c)).await {
+                    Ok(Some(inv)) => inverses.push(inv),
+                    Ok(None) => {}
+                    Err(e) => {
+                        return Err(crate::error::EditorError::msg(format!(
+                            "batch[{i}] ({label}): {e}"
+                        )));
+                    }
                 }
                 if touches_anim {
                     self.anim_revision.replace_with(|v| v.wrapping_add(1));
@@ -372,9 +381,14 @@ impl EditorController {
     pub async fn dispatch_batch(&self, cmds: Vec<EditorCommand>) -> EditorResult<()> {
         let mut inverses = Vec::new();
         let mut any_recorded = false;
-        for cmd in cmds {
+        for (i, cmd) in cmds.into_iter().enumerate() {
             let transient = cmd.is_transient();
-            let inv = self.apply(cmd).await?;
+            // Name the failing sub-command (index + human label) — a bare
+            // index is useless in a 150-command batch.
+            let label = cmd.label();
+            let inv = self.apply(cmd).await.map_err(|e| {
+                crate::error::EditorError::msg(format!("batch[{i}] ({label}): {e}"))
+            })?;
             if !transient {
                 any_recorded = true;
                 if let Some(i) = inv {
@@ -868,7 +882,9 @@ impl EditorController {
                         kind: Box::new(prev),
                     }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::PatchKind { id, patch } => {
                 // RFC 7386 merge-patch over the node's serialized kind (§3). Reject
@@ -1005,7 +1021,9 @@ impl EditorController {
                             transform: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::ResetToBindPose { id } => {
@@ -1055,19 +1073,21 @@ impl EditorController {
                     self.scene.bump_revision();
                     Ok(Some(EditorCommand::Rename { id, name: prev }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
-            EditorCommand::SetVisible { id, visible } => {
-                match mutate::find_by_id(&self.scene, id) {
-                    Some(node) => {
-                        let prev = node.visible.get();
-                        node.visible.set_neq(visible);
-                        self.scene.bump_revision();
-                        Ok(Some(EditorCommand::SetVisible { id, visible: prev }))
-                    }
-                    None => Ok(None),
+            EditorCommand::SetVisible { id, visible } => match mutate::find_by_id(&self.scene, id) {
+                Some(node) => {
+                    let prev = node.visible.get();
+                    node.visible.set_neq(visible);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetVisible { id, visible: prev }))
                 }
-            }
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
+            },
             EditorCommand::SetLocked { id, locked } => match mutate::find_by_id(&self.scene, id) {
                 Some(node) => {
                     let prev = node.locked.get();
@@ -1075,7 +1095,9 @@ impl EditorController {
                     self.scene.bump_revision();
                     Ok(Some(EditorCommand::SetLocked { id, locked: prev }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::SetPrefab { id, prefab } => match mutate::find_by_id(&self.scene, id) {
                 Some(node) => {
@@ -1084,7 +1106,9 @@ impl EditorController {
                     self.scene.bump_revision();
                     Ok(Some(EditorCommand::SetPrefab { id, prefab: prev }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::Duplicate { id, new_id } => {
                 match mutate::duplicate_by_id(&self.scene, id, new_id) {
@@ -1093,7 +1117,9 @@ impl EditorController {
                         self.selected.set(vec![new_id]);
                         Ok(Some(EditorCommand::Delete { id: new_id }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::Reparent {
@@ -1234,6 +1260,14 @@ impl EditorController {
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
                 crate::engine::bridge::buffer_cache::clear();
+                // Unregister the editor session's dynamic materials BEFORE the
+                // player populate: the round-trip shares this renderer, and the
+                // bundle re-registers the same material ids — with the session
+                // registrations still live, the loader's register hits the
+                // duplicate-name guard and every custom-material mesh falls back
+                // to the default (white) material. A real player boots a fresh
+                // renderer and can't collide; this is round-trip-seam-only.
+                crate::engine::bridge::dynamic::unregister_all().await;
                 self.missing_assets.set(Vec::new());
                 self.scene.environment.set(scene.environment.clone());
                 self.scene.bump_revision();
@@ -1394,7 +1428,9 @@ impl EditorController {
                             index,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::AddMaterialAsset { id, shading } => {
@@ -1445,7 +1481,9 @@ impl EditorController {
                             entry: Box::new(entry),
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::RestoreAsset { id, entry } => {
@@ -2200,7 +2238,9 @@ impl EditorController {
                             wgsl: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetCustomMaterialAlphaWgsl { id, wgsl } => {
@@ -2219,7 +2259,9 @@ impl EditorController {
                             wgsl: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetCustomMaterialVertexWgsl { id, wgsl } => {
@@ -2238,7 +2280,9 @@ impl EditorController {
                             wgsl: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SelectMaterialVariant { node, variant } => {
@@ -2428,24 +2472,29 @@ impl EditorController {
                             mode: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
-            EditorCommand::SetCustomMaterialDoubleSided { id, double_sided } => {
-                match find_material(&self.custom_materials, id) {
-                    Some(mat) => {
-                        let prev = mat.double_sided.get();
-                        mat.double_sided.set_neq(double_sided);
-                        mark_material_draft(&mat);
-                        self.dirty.set_neq(true);
-                        Ok(Some(EditorCommand::SetCustomMaterialDoubleSided {
-                            id,
-                            double_sided: prev,
-                        }))
-                    }
-                    None => Ok(None),
+            EditorCommand::SetCustomMaterialDoubleSided { id, double_sided } => match find_material(
+                &self.custom_materials,
+                id,
+            ) {
+                Some(mat) => {
+                    let prev = mat.double_sided.get();
+                    mat.double_sided.set_neq(double_sided);
+                    mark_material_draft(&mat);
+                    self.dirty.set_neq(true);
+                    Ok(Some(EditorCommand::SetCustomMaterialDoubleSided {
+                        id,
+                        double_sided: prev,
+                    }))
                 }
-            }
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
+            },
             EditorCommand::SetCustomMaterialDebugColor { id, hex } => {
                 match find_material(&self.custom_materials, id) {
                     Some(mat) => {
@@ -2459,7 +2508,9 @@ impl EditorController {
                             hex: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetCustomMaterialLayout {
@@ -2482,7 +2533,9 @@ impl EditorController {
                     self.dirty.set_neq(true);
                     Ok(Some(prev))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::SetCustomMaterialShaderIncludes { id, includes } => {
                 match find_material(&self.custom_materials, id) {
@@ -2499,7 +2552,9 @@ impl EditorController {
                             includes: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetCustomMaterialFragmentInputs { id, inputs } => {
@@ -2515,7 +2570,9 @@ impl EditorController {
                             inputs: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetMaterialUniform {
@@ -2524,9 +2581,12 @@ impl EditorController {
                 value,
             } => match find_material(&self.custom_materials, material) {
                 Some(mat) => {
+                    let value = value.into_text();
                     let mut slots = mat.uniforms.get_cloned();
                     let Some(slot) = slots.iter_mut().find(|s| s.name == name) else {
-                        return Ok(None);
+                        return Err(crate::error::EditorError::msg(format!(
+                            "material has no uniform named `{name}` — check the layout"
+                        )));
                     };
                     let prev = slot.val.clone();
                     slot.val = value.clone();
@@ -2549,10 +2609,12 @@ impl EditorController {
                     Ok(Some(EditorCommand::SetMaterialUniform {
                         material,
                         name,
-                        value: prev,
+                        value: prev.into(),
                     }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::SetNodeMaterialUniform { node, name, value } => {
                 match mutate::find_by_id(&self.scene, node) {
@@ -2573,13 +2635,34 @@ impl EditorController {
                             kind: Box::new(prev),
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetBuiltinParam { node, param, value } => {
                 match mutate::find_by_id(&self.scene, node) {
                     Some(n) => {
                         let prev = n.kind.get_cloned();
+                        // A selected CUSTOM (dynamic-WGSL) variant has no builtin
+                        // def to patch — this used to return Ok and silently do
+                        // nothing. Point the caller at the right tool instead.
+                        if let Some(inst) = prev.selected_material() {
+                            let is_custom = crate::controller::custom_material::find_material(
+                                &self.custom_materials,
+                                inst.asset,
+                            )
+                            .map(|m| m.builtin.get_cloned().is_none())
+                            .unwrap_or(false);
+                            if is_custom {
+                                return Err(crate::error::EditorError::msg(
+                                    "this node's selected variant is a CUSTOM material — \
+                                     builtin params don't apply; use set_material_uniform \
+                                     (shared default) or set_node_material_uniform \
+                                     (per-instance) instead",
+                                ));
+                            }
+                        }
                         let mut next = prev.clone();
                         let patched = patch_builtin_param(&mut next, param, &value);
                         if !patched {
@@ -2592,7 +2675,9 @@ impl EditorController {
                             kind: Box::new(prev),
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetBuiltinAlphaMode { node, mode } => {
@@ -2610,7 +2695,9 @@ impl EditorController {
                             kind: Box::new(prev),
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetBuiltinTexture {
@@ -2631,7 +2718,9 @@ impl EditorController {
                         kind: Box::new(prev),
                     }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::SetNodeTextureTransform {
                 node,
@@ -2675,7 +2764,9 @@ impl EditorController {
                         kind: Box::new(prev),
                     }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::SetLightParam { node, param, value } => {
                 match mutate::find_by_id(&self.scene, node) {
@@ -2698,7 +2789,9 @@ impl EditorController {
                             kind: Box::new(prev),
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetFrameTime { seconds } => {
@@ -2846,7 +2939,9 @@ impl EditorController {
                         kind: Box::new(prev),
                     }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::SetMaterialBuffer { node, slot, data } => {
                 match mutate::find_by_id(&self.scene, node) {
@@ -2863,7 +2958,9 @@ impl EditorController {
                             kind: Box::new(prev),
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetEnvironment { env } => {
@@ -3359,17 +3456,17 @@ impl EditorController {
                 Ok(None)
             }
             // ───────────────────── Animation: clip props ─────────────────────
-            EditorCommand::RenameClip { id, name } => {
-                match find_clip(&self.custom_animations, id) {
-                    Some(c) => {
-                        let prev = c.name.get_cloned();
-                        c.name.set(name);
-                        self.dirty.set_neq(true);
-                        Ok(Some(EditorCommand::RenameClip { id, name: prev }))
-                    }
-                    None => Ok(None),
+            EditorCommand::RenameClip { id, name } => match find_clip(&self.custom_animations, id) {
+                Some(c) => {
+                    let prev = c.name.get_cloned();
+                    c.name.set(name);
+                    self.dirty.set_neq(true);
+                    Ok(Some(EditorCommand::RenameClip { id, name: prev }))
                 }
-            }
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
+            },
             EditorCommand::SetClipDuration { id, duration } => {
                 match find_clip(&self.custom_animations, id) {
                     Some(c) => {
@@ -3378,7 +3475,9 @@ impl EditorController {
                         self.dirty.set_neq(true);
                         Ok(Some(EditorCommand::SetClipDuration { id, duration: prev }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetClipLoop { id, loop_style } => {
@@ -3392,7 +3491,9 @@ impl EditorController {
                             loop_style: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetClipSpeed { id, speed } => {
@@ -3403,7 +3504,9 @@ impl EditorController {
                         self.dirty.set_neq(true);
                         Ok(Some(EditorCommand::SetClipSpeed { id, speed: prev }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetClipDirection { id, direction } => {
@@ -3417,7 +3520,9 @@ impl EditorController {
                             direction: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetClipColor { id, color } => {
@@ -3428,7 +3533,9 @@ impl EditorController {
                         self.dirty.set_neq(true);
                         Ok(Some(EditorCommand::SetClipColor { id, color: prev }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             // ───────────────────── Animation: tracks ─────────────────────────
@@ -3464,7 +3571,9 @@ impl EditorController {
                         Toast::info(format!("Added track {key}"));
                         Ok(Some(EditorCommand::DeleteTrack { clip, track: index }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::AddSpinTrack {
@@ -3507,7 +3616,9 @@ impl EditorController {
                         Toast::info(format!("Added spin track ({turns} turn(s))"));
                         Ok(Some(EditorCommand::DeleteTrack { clip, track: index }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::DeleteTrack { clip, track } => {
@@ -3529,10 +3640,14 @@ impl EditorController {
                                     track: Box::new(st),
                                 }))
                             }
-                            None => Ok(None),
+                            None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                         }
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::RestoreTrack { clip, index, track } => {
@@ -3546,7 +3661,9 @@ impl EditorController {
                         self.dirty.set_neq(true);
                         Ok(Some(EditorCommand::DeleteTrack { clip, track: index }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetTrackSampler {
@@ -3564,7 +3681,9 @@ impl EditorController {
                         sampler: prev,
                     }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::SetTrackMute { clip, track, mute } => {
                 match find_track(&self.custom_animations, clip, track) {
@@ -3578,7 +3697,9 @@ impl EditorController {
                             mute: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetTrackSolo { clip, track, solo } => {
@@ -3593,7 +3714,9 @@ impl EditorController {
                             solo: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             // ───────────────────── Animation: keyframes ──────────────────────
@@ -3653,7 +3776,9 @@ impl EditorController {
                         keys: prev_keys,
                     }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::AddKeyframe {
                 clip,
@@ -3700,7 +3825,9 @@ impl EditorController {
                         index: pos,
                     }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::DeleteKeyframe { clip, track, index } => {
                 match find_track(&self.custom_animations, clip, track) {
@@ -3723,7 +3850,9 @@ impl EditorController {
                             key: Box::new(kf),
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::InsertKeyframe {
@@ -3744,7 +3873,9 @@ impl EditorController {
                     self.dirty.set_neq(true);
                     Ok(Some(EditorCommand::DeleteKeyframe { clip, track, index }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             EditorCommand::SetKeyframe {
                 clip,
@@ -3795,7 +3926,9 @@ impl EditorController {
                         out_tangent: out_tangent.map(|_| prev_kf.out_tangent),
                     }))
                 }
-                None => Ok(None),
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
             },
             // ───────────────────── Animation: transport ──────────────────────
             EditorCommand::SetPlayhead { t } => {
@@ -3880,7 +4013,9 @@ impl EditorController {
                         self.dirty.set_neq(true);
                         Ok(Some(EditorCommand::SetLayerMode { layer, mode: prev }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetLayerWeight { layer, weight } => {
@@ -3896,7 +4031,9 @@ impl EditorController {
                             weight: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetLayerMask {
@@ -3918,7 +4055,9 @@ impl EditorController {
                             include_descendants: prev_inc,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::AddStrip {
@@ -3945,7 +4084,9 @@ impl EditorController {
                             strip: index,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::DeleteStrip { layer, strip } => {
@@ -3974,7 +4115,9 @@ impl EditorController {
                         self.dirty.set_neq(true);
                         Ok(Some(EditorCommand::DeleteStrip { layer, strip }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::MoveStrip {
@@ -3999,7 +4142,9 @@ impl EditorController {
                             start: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::TrimStrip {
@@ -4027,7 +4172,9 @@ impl EditorController {
                             len: pl,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
             EditorCommand::SetStripRepeat {
@@ -4052,7 +4199,9 @@ impl EditorController {
                             repeat: prev,
                         }))
                     }
-                    None => Ok(None),
+                    None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
                 }
             }
         }

@@ -154,15 +154,20 @@ per-shader-id sort order; only per-mesh world-space depth.
 
 `alpha_mode = Blend` → this contract (transparent fragment pass).
 
-`alpha_mode = Mask { cutoff }` → **also this contract**. The
-codebase treats masked materials as part of the transparency pass
-(`MaterialShader::is_transparency_pass` returns true whenever
-`alpha_cutoff().is_some()`); the transparent WGSL path runs
-`discard` for fragments whose alpha is below the cutoff. So your
-soft-glass / etched-glass / cut-out leaf material wires the same
-way: write the WGSL fragment against `TransparentShadingInput`,
-return your alpha through `TransparentShadingOutput.color.a`,
-and the renderer handles the cutoff comparison.
+`alpha_mode = Mask { cutoff }` → **NOT this contract** — masked custom
+materials are alpha-tested **opaque**: the main fragment shades in the
+opaque compute path (`OpaqueShadingInput` / `OpaqueShadingOutput`, see the
+[opaque contract](contract-opaque.md)) and the cutout itself is a
+**second, alpha-only WGSL window** (`set_custom_material_alpha_wgsl`,
+wrapped into `fn custom_alpha_dynamic(input: MaskAlphaInput) -> f32`)
+compiled into the masked visibility raster — so cut fragments never enter
+the depth/visibility buffer at all, and the mask gets the optimized opaque
+shading path instead of transparent sorting. A Mask registration with an
+EMPTY alpha window has no cutout variant to raster through; the editor
+bridge and the player scene-loader both downgrade that combination to
+plain Opaque with a warning (it used to render silent black). Cut-out
+leaves / grates / etched panels → Mask + alpha window. Genuinely
+see-through surfaces (soft glass, fades) → Blend, this contract.
 
 `alpha_mode = Opaque` → [opaque contract](contract-opaque.md).
 

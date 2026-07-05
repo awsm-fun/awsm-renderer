@@ -557,11 +557,19 @@ pub fn generate_wgsl_texture_helpers(struct_name: &str, layout: &MaterialLayout)
         //   sampler_index, mipmapped, address_mode_u, address_mode_v,
         //   uv_transform_index
         out.push_str(&format!(
+            // UNIFORMITY: the unbound-slot guard must NOT early-return around
+            // the sample — `textureSample` needs uniform control flow in the
+            // fragment (transparent) stage, and `m` is per-material data naga
+            // treats as non-uniform. Sample unconditionally with sanitized
+            // (0) indices when unbound and `select` the result instead; the
+            // compute kernels are indifferent (explicit-LOD there), so one
+            // branchless shape serves both contexts.
             "fn material_{name}_texture_info(m: {struct_name}) -> TextureInfo {{\n\
-             \x20   let packed = m.{name}_index;\n\
-             \x20   let uv_samp = m.{name}_uv_sampler;\n\
+             \x20   let bound = m.{name}_index != 0xFFFFFFFFu;\n\
+             \x20   let packed = select(0u, m.{name}_index, bound);\n\
+             \x20   let uv_samp = select(0u, m.{name}_uv_sampler, bound);\n\
              \x20   return TextureInfo(\n\
-             \x20       packed != 0xFFFFFFFFu,\n\
+             \x20       bound,\n\
              \x20       vec2<u32>(0u, 0u),\n\
              \x20       packed & 0xFFFu,\n\
              \x20       packed >> 12u,\n\
@@ -574,8 +582,9 @@ pub fn generate_wgsl_texture_helpers(struct_name: &str, layout: &MaterialLayout)
              \x20   );\n\
              }}\n\
              fn material_sample_{name}(m: {struct_name}, uv: vec2<f32>) -> vec4<f32> {{\n\
-             \x20   if (m.{name}_index == 0xFFFFFFFFu) {{ return vec4<f32>(0.0, 0.0, 0.0, 0.0); }}\n\
-             \x20   return texture_pool_sample(material_{name}_texture_info(m), uv);\n\
+             \x20   let info = material_{name}_texture_info(m);\n\
+             \x20   let s = texture_pool_sample_nu(info, uv);\n\
+             \x20   return select(vec4<f32>(0.0, 0.0, 0.0, 0.0), s, info.exists);\n\
              }}\n"
         ));
     }

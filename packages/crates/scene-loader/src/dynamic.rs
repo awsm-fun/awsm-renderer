@@ -279,9 +279,32 @@ fn registration_from_definition(
     // Buffer defaults aren't exported yet (see module docs); empty per slot.
     let buffer_defaults: Vec<Vec<u32>> = def.buffers.iter().map(|_| Vec::new()).collect();
 
+    // A Mask registration with NO alpha-only cutout window has no masked
+    // visibility variant behind it — meshes classified masked would render
+    // silent black. Downgrade to Opaque (identical shading contract), the
+    // same guard the editor bridge applies at author time; this covers
+    // bundles baked before that guard existed.
+    let mut reg_alpha_mode = alpha_mode(def.alpha_mode.clone());
+    let has_alpha_window = alpha_wgsl
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if matches!(
+        reg_alpha_mode,
+        awsm_renderer_materials::MaterialAlphaMode::Mask { .. }
+    ) && !has_alpha_window
+    {
+        tracing::warn!(
+            "custom material {id:?}: alpha_mode Mask with no material.alpha.wgsl \
+             sidecar — registering as Opaque (a masked material must ship its \
+             cutout window, or it renders black)"
+        );
+        reg_alpha_mode = awsm_renderer_materials::MaterialAlphaMode::Opaque;
+    }
+
     MaterialRegistration {
         name: id.0.to_string(),
-        alpha_mode: alpha_mode(def.alpha_mode.clone()),
+        alpha_mode: reg_alpha_mode,
         double_sided: def.double_sided,
         layout_hash: layout_hash(def),
         wgsl_hash: hash_str(&wgsl),

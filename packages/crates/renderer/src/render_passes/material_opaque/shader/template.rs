@@ -1119,8 +1119,14 @@ mod size_regression {
     // permanent, intended ABI addition (normal mapping without re-deriving a TBN),
     // not a regression. Ceilings bumped to ~87.6 KB empty / ~125.6 KB all (measured)
     // plus headroom. (`normal_map` itself is opt-in, so the *helpers* aren't in all.)
+    // **Uniformity-safe dynamic sampling (blend-custom fix):** the texture
+    // helper surface gained `texture_pool_sample_nu` — a thin alias here (the
+    // compute kernels have no uniform-control-flow restriction), the real
+    // sample-all-select body lives in the transparent fragment. A permanent,
+    // intended ~0.3 KB addition so dynamic-material helpers compile in BOTH
+    // contexts. Measured 88.4 KB empty / 127.0 KB all; ALL ceiling bumped.
     const CEIL_EMPTY_MSAA4_MIPS: usize = 90_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 127_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 130_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {
