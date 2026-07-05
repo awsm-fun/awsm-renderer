@@ -183,24 +183,26 @@ struct OpaqueShadingOutput {
     // Linear HDR color (the kernel writes it directly to `opaque_tex`;
     // tonemap + display-encode is the post-processing pass's job).
     color: vec3<f32>,
-    // Final alpha — for opaque materials, normally `1.0`. For
-    // alpha-masked (`alpha_mode: Mask`), set to `0.0` for discarded
-    // fragments — the kernel passes through your alpha to the output
-    // and downstream passes treat `alpha < 1.0` as transparent in the
-    // alpha-aware sort.
+    // Final alpha — return `1.0`. The value is stored to `opaque_tex`
+    // but does NOT composite or cut: returning `< 1.0` here just writes
+    // a dimmer/black pixel over whatever the tile already holds. Cutouts
+    // come from the Mask alpha-only window (below); real translucency is
+    // `alpha_mode: Blend` (the transparent contract).
     alpha: f32,
 }
 ```
 
 There is no `discard` on the compute side, and the kernel **always**
 `textureStore`s whatever your wrapper returns — a material cannot skip the
-write by early-returning (the returned value is written regardless). To
-represent a dropped / cut-out fragment, return `alpha = 0.0` (with
-`alpha_mode: Mask`): the kernel passes your alpha through to `opaque_tex`
-and downstream passes treat `alpha < 1.0` as transparent in the alpha-aware
-sort (see `OpaqueShadingOutput.alpha` above). Skybox / uncovered pixels
-(`triangle_index == U32_MAX`) are not your concern — a dedicated skybox
-pipeline (`skybox_primary.wgsl`) writes them in a separate pass.
+write by early-returning (the returned value is written regardless), and
+returning a low alpha does **not** remove the fragment (the pixel was
+already claimed at raster time). Cut-out fragments are removed EARLIER,
+in the masked visibility raster, via the alpha-only WGSL window
+(`set_custom_material_alpha_wgsl` — see "Alpha mode" below); by the time
+your fragment runs, every pixel it is asked to shade is a keeper. Skybox
+/ uncovered pixels (`triangle_index == U32_MAX`) are not your concern — a
+dedicated skybox pipeline (`skybox_primary.wgsl`) writes them in a
+separate pass.
 
 ---
 
@@ -416,10 +418,20 @@ double-write and no per-material skybox cost.
 (this contract).
 
 `alpha_mode = Mask { cutoff }` ALSO routes through the opaque compute
-kernel — the alpha-mask discard happens via your fragment setting
-`output.alpha = 0.0` when `sampled.a < cutoff`, and the downstream
-transparency pass picks up the partially-transparent fragments for
-alpha-aware sorting.
+kernel — masked customs keep the optimized opaque shading path. The
+cutout does **NOT** come from your main fragment's returned alpha: it is
+a **second, alpha-only WGSL window** you author via
+`set_custom_material_alpha_wgsl` (wrapped into
+`fn custom_alpha_dynamic(input: MaskAlphaInput) -> f32`, see
+`shared_wgsl/masked_alpha.wgsl`), compiled into the masked visibility
+raster so cut fragments never enter the depth/visibility buffer. The
+window gets your `MaterialData` + the `material_sample_<name>` texture
+helpers, so a texture-alpha or procedural cutout reads the same
+per-instance state as the main fragment. **A Mask registration with an
+EMPTY alpha window is downgraded to plain Opaque with a warning** (both
+by the editor bridge at author time and by the player scene-loader at
+bundle load) — there is no masked variant to raster through without it,
+and the historical behavior was a silent black mesh.
 
 `alpha_mode = Blend` routes through the transparent fragment shader —
 see [contract-transparent.md](contract-transparent.md).
