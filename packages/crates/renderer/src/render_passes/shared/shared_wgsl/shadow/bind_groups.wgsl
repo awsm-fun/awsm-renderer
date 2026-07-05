@@ -844,6 +844,14 @@ fn sample_shadow_evsm(
     let clamped_uv = clamp(atlas_uv, evsm_tile_min, evsm_tile_max);
 
     let moments = textureSampleLevel(evsm_atlas, evsm_atlas_sampler, clamped_uv, 0.0);
+    // Never-blurred or stale FP16 atlas texels (a throttled far-cascade
+    // EVSM dispatch pointed at a fresh rect) decode to Inf/NaN; the
+    // Chebyshev math below then emits NaN, and NaN radiance survives
+    // tonemapping as a white-hot smear. Fail toward LIT — same
+    // fallback as the out-of-range early-outs above.
+    if any(abs(moments) > vec4<f32>(1e30)) || any(moments != moments) {
+        return 1.0;
+    }
     let exponent = shadow_globals.evsm_sscs.x;
     // Map receiver depth [0,1] to the same [-1,1] space the writer
     // used (see `shadows::evsm::MOMENT_WRITE_WGSL`).

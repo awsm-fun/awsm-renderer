@@ -184,6 +184,14 @@ pub struct ShadowViewThrottle {
     /// layers), the cached entry is stale: the new layer holds depth
     /// from a different cascade, so we force a re-render.
     pub last_cascade_layer: Option<u32>,
+    /// Last `evsm_atlas` rect this view's moments were BLURRED into
+    /// (`[u32::MAX; 4]` = never). Receivers sample the rect written
+    /// into this frame's descriptor, so if the EVSM allocator assigns
+    /// a different rect than the one the moments currently occupy, a
+    /// throttled (skipped) blur would leave them sampling texels that
+    /// were never written — FP16 garbage that Chebyshev turns into
+    /// NaN. Compared each frame to force a re-blur on any move.
+    pub last_evsm_rect: [u32; 4],
 }
 
 #[cfg(test)]

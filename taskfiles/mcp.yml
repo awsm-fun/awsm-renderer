@@ -7,11 +7,11 @@ includes:
 
 tasks:
   serve:
-    desc: "MCP server: the /editor WebSocket link the editor dials into + the rmcp /mcp endpoint + the /png byte side-channel + /debug (raw-request seam) + /health."
+    desc: "MCP server: the /editor WebSocket link the editor dials into + the rmcp /mcp endpoint + the /png byte side-channel + /debug (raw-request seam) + /health. Override the port with MCP_PORT (e.g. `MCP_PORT=9186 task mcp:serve`) to run a second instance alongside a prod server on the default port."
     cmds:
       - >
         cargo run -p awsm-renderer-scene-mcp --
-        --port {{.PORT_MCP_HTTP_DEV}}
+        --port {{.MCP_PORT | default .PORT_MCP_HTTP_DEV}}
 
   build:
     desc: "Build the MCP server binary (debug)."

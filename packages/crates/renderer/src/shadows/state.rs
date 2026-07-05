@@ -2508,6 +2508,7 @@ impl Shadows {
                     last_view_projection: Mat4::ZERO,
                     last_atlas_rect: [0; 4],
                     last_cascade_layer: None,
+                    last_evsm_rect: [u32::MAX; 4],
                 },
             );
             for (i, view) in record.views.iter_mut().enumerate() {
@@ -2568,12 +2569,35 @@ impl Shadows {
         // Match queue entries to views by `cascade_layer` — the
         // layer cursor is monotonic per frame, so the mapping is
         // unique.
+        //
+        // EXCEPTION: receivers sample the `evsm_rect` written into
+        // THIS frame's descriptor/params, but the moments live at the
+        // rect they were last blurred into. If the allocator assigned
+        // a different rect than the moments occupy, skipping the blur
+        // would leave shading reading texels that were never written —
+        // FP16 garbage that the Chebyshev math turns into NaN and the
+        // tonemapper into a white-hot smear (seen as "white arms" on
+        // anything past the first cascade split in a static scene with
+        // `far_cascade_update_rate` throttling). Force the re-blur
+        // whenever the rect moved; the depth at the cascade layer is
+        // still current enough (layer changes force a full re-render
+        // via `last_cascade_layer` above).
         for entry in self.evsm_dispatch_queue.iter_mut() {
             let mut should_render = true;
-            'outer: for record in self.records.values() {
-                for view in &record.views {
+            'outer: for (light_key, record) in self.records.iter() {
+                for (view_index, view) in record.views.iter().enumerate() {
                     if view.cascade_layer == Some(entry.cascade_layer) {
                         should_render = view.should_render;
+                        if let Some(throttle) = self.throttle.get_mut(light_key) {
+                            if let Some(t) = throttle.get_mut(view_index) {
+                                if t.last_evsm_rect != entry.evsm_rect {
+                                    should_render = true;
+                                }
+                                if should_render {
+                                    t.last_evsm_rect = entry.evsm_rect;
+                                }
+                            }
+                        }
                         break 'outer;
                     }
                 }
