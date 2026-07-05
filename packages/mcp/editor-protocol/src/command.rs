@@ -53,6 +53,68 @@ pub enum CustomAlphaMode {
 /// One declared slot in a custom material's layout (uniform / texture / buffer).
 /// A string-typed mirror of the editor's live `Slot` — `val` is the uniform's
 /// default (comma-separated for vectors, e.g. `"0.6, 0.7, 1.0"`); `debug` is the
+/// `SetMaterialUniform`'s value — accepted in BOTH encodings so callers
+/// don't juggle two formats across the two uniform commands:
+/// the editor's comma-separated text form (`"0.85, 0.07, 0.05"`), or the
+/// tagged form `{"kind":"vec3","value":[0.85,0.07,0.05]}` — the same
+/// encoding `SetNodeMaterialUniform` takes. Untagged: an object parses as
+/// `Tagged`, a JSON string as `Text`; nothing else is accepted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum UniformValueArg {
+    Tagged(crate::dynamic_material::UniformValue),
+    Text(String),
+}
+
+impl UniformValueArg {
+    /// Normalize to the editor's canonical comma-separated text form (what
+    /// `Slot::val` stores and `parse_uniform_value` consumes downstream).
+    pub fn into_text(self) -> String {
+        fn join_f(v: &[f32]) -> String {
+            v.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        fn join_i(v: &[i32]) -> String {
+            v.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        use crate::dynamic_material::UniformValue as V;
+        match self {
+            UniformValueArg::Text(s) => s,
+            UniformValueArg::Tagged(v) => match v {
+                V::F32(x) => x.to_string(),
+                V::U32(x) => x.to_string(),
+                V::Bool(b) => {
+                    if b {
+                        "1".into()
+                    } else {
+                        "0".into()
+                    }
+                }
+                V::Vec2(a) => join_f(&a),
+                V::Vec3(a) | V::Color3(a) => join_f(&a),
+                V::Vec4(a) | V::Color4(a) => join_f(&a),
+                V::Mat3(a) => join_f(&a),
+                V::Mat4(a) => join_f(&a),
+                V::IVec2(a) => join_i(&a),
+                V::IVec3(a) => join_i(&a),
+                V::IVec4(a) => join_i(&a),
+            },
+        }
+    }
+}
+
+impl From<String> for UniformValueArg {
+    fn from(s: String) -> Self {
+        UniformValueArg::Text(s)
+    }
+}
+
 /// texture/buffer debug-preview source. Used by `SetCustomMaterialLayout`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -899,7 +961,7 @@ pub enum EditorCommand {
     SetMaterialUniform {
         material: AssetId,
         name: String,
-        value: String,
+        value: UniformValueArg,
     },
     /// Set a PER-MESH uniform override for a node assigned a CUSTOM-WGSL material —
     /// writes `MaterialInstance::uniform_overrides[name]`, the per-instance
@@ -1463,5 +1525,43 @@ impl EditorCommand {
             EditorCommand::TrimStrip { .. } => "Trim strip",
             EditorCommand::SetStripRepeat { .. } => "Set strip repeat",
         }
+    }
+}
+
+#[cfg(test)]
+mod uniform_value_arg_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_comma_string() {
+        let cmd: EditorCommand = serde_json::from_str(
+            r#"{"cmd":"set_material_uniform","material":"7a1c2e40-0000-4000-8000-00000000ca4d","name":"tint","value":"0.85, 0.07, 0.05"}"#,
+        )
+        .unwrap();
+        let EditorCommand::SetMaterialUniform { value, .. } = cmd else {
+            panic!("wrong variant");
+        };
+        assert_eq!(value.into_text(), "0.85, 0.07, 0.05");
+    }
+
+    #[test]
+    fn accepts_tagged_value_and_normalizes() {
+        let cmd: EditorCommand = serde_json::from_str(
+            r#"{"cmd":"set_material_uniform","material":"7a1c2e40-0000-4000-8000-00000000ca4d","name":"tint","value":{"kind":"vec3","value":[0.85,0.07,0.05]}}"#,
+        )
+        .unwrap();
+        let EditorCommand::SetMaterialUniform { value, .. } = cmd else {
+            panic!("wrong variant");
+        };
+        assert_eq!(value.into_text(), "0.85, 0.07, 0.05");
+    }
+
+    #[test]
+    fn rejects_non_string_non_object() {
+        // A bare array is neither encoding — must NOT silently coerce.
+        let r: Result<EditorCommand, _> = serde_json::from_str(
+            r#"{"cmd":"set_material_uniform","material":"7a1c2e40-0000-4000-8000-00000000ca4d","name":"tint","value":[0.85,0.07,0.05]}"#,
+        );
+        assert!(r.is_err());
     }
 }

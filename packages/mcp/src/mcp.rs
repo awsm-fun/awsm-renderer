@@ -3102,7 +3102,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the default value of a custom material's declared uniform slot (by name). `value` is comma-separated (e.g. \"0.6, 0.7, 1.0\"). The writable counterpart of reading a uniform back. A uniform (e.g. a scroll `speed` / time multiplier) is the usual handle a custom-WGSL scroll animates — see the 'Geometry-locked scroll (conveyor / tread / road)' recipe in awsm://docs/material-recipes for the geometry-locked vs normal-derived distinction."
+        description = "Set the default value of a custom material's declared uniform slot (by name). `value` here is comma-separated text (e.g. \"0.6, 0.7, 1.0\"); the raw dispatch_command form also accepts the tagged encoding {\"kind\":\"vec3\",\"value\":[..]} — the SAME shape set_node_material_uniform takes. Applies live to every mesh using the material AND updates the registration default (fresh assigns pick it up). The writable counterpart of reading a uniform back. A uniform (e.g. a scroll `speed` / time multiplier) is the usual handle a custom-WGSL scroll animates — see the 'Geometry-locked scroll (conveyor / tread / road)' recipe in awsm://docs/material-recipes for the geometry-locked vs normal-derived distinction."
     )]
     async fn set_material_uniform(
         &self,
@@ -3111,7 +3111,7 @@ impl EditorMcp {
         self.dispatch(EditorCommand::SetMaterialUniform {
             material: parse_asset(&p.material)?,
             name: p.name,
-            value: p.value,
+            value: p.value.into(),
         })
         .await
     }

@@ -245,24 +245,15 @@ pub enum EditorQuery {
     MaterialDiagnostics { material: AssetId },
     /// Local TRS + world matrix for each node (empty `nodes` = all nodes). Reads
     /// the live scene — no animation-clip pin hack needed.
-    NodeTransforms {
-        #[serde(default)]
-        nodes: Vec<NodeId>,
-    },
+    NodeTransforms { nodes: Vec<NodeId> },
     /// The full per-kind config (primitive shape, light/camera config, assigned +
     /// inline material) for each node, as the serialized `NodeKind` (empty
     /// `nodes` = all nodes).
-    NodeKindDetails {
-        #[serde(default)]
-        nodes: Vec<NodeId>,
-    },
+    NodeKindDetails { nodes: Vec<NodeId> },
     /// World-space axis-aligned bounding box `{min,max}` for each node (empty
     /// `nodes` = all nodes). CPU-estimated from primitive dims + world transform;
     /// used to frame the camera (`FrameNode`) and size objects.
-    NodeBounds {
-        #[serde(default)]
-        nodes: Vec<NodeId>,
-    },
+    NodeBounds { nodes: Vec<NodeId> },
     /// The full stored data for one animation track (target, sampler, mute/solo,
     /// times, keyframes incl. interp/tangents) — lets a driver verify what it
     /// authored. `SampleClipTimeseries` samples rendered output; this returns the
@@ -276,10 +267,7 @@ pub enum EditorQuery {
     /// morph buffer (the same store `SetMorphWeight` writes and morph animation
     /// tracks drive). Nodes without materialized morphs are omitted. Returned as
     /// a `Map` result with `kind = "morph_data"`.
-    MorphData {
-        #[serde(default)]
-        nodes: Vec<NodeId>,
-    },
+    MorphData { nodes: Vec<NodeId> },
     /// Rig discovery for each skinned node (empty `nodes` = every SkinnedMesh):
     /// `{ source, primitive_index, joints: [{ node, index, name, translation,
     /// rotation, scale }] }`. Joints ARE editor scene nodes (mirror bones synced
@@ -287,10 +275,7 @@ pub enum EditorQuery {
     /// joint's `node` id and ANIMATING is a `Transform` track targeting it — this
     /// query is the lookup that makes those reachable for an agent. Returned as a
     /// `Map` result with `kind = "skin_data"`.
-    SkinData {
-        #[serde(default)]
-        nodes: Vec<NodeId>,
-    },
+    SkinData { nodes: Vec<NodeId> },
     /// Analytic two-bone IK solve (read-only). `end_node` is the chain tip (a
     /// joint scene node, e.g. a foot); the chain is its parent (mid, e.g. knee)
     /// and grandparent (root, e.g. upper leg) from the scene hierarchy.
@@ -655,4 +640,34 @@ pub struct SettledResult {
     pub settled: bool,
     /// How long the barrier actually waited (ms).
     pub waited_ms: u32,
+}
+
+#[cfg(test)]
+mod required_nodes_tests {
+    use super::*;
+
+    /// The multi-node queries used to default `nodes` to "everything" —
+    /// so a TYPO'D field name (e.g. `"node"` instead of `"nodes"`) silently
+    /// returned the whole scene instead of erroring (internally-tagged enums
+    /// can't deny unknown fields). `nodes` is now REQUIRED: the misspelled
+    /// payload fails loudly with "missing field nodes".
+    #[test]
+    fn node_kind_details_requires_nodes() {
+        let ok: Result<EditorQuery, _> =
+            serde_json::from_str(r#"{"query":"node_kind_details","nodes":[]}"#);
+        assert!(ok.is_ok());
+        let missing: Result<EditorQuery, _> =
+            serde_json::from_str(r#"{"query":"node_kind_details"}"#);
+        assert!(missing.is_err());
+        let typoed: Result<EditorQuery, _> = serde_json::from_str(
+            r#"{"query":"node_kind_details","node":"2da8cc95-8fe1-4977-9708-da0be0fd197e"}"#,
+        );
+        assert!(typoed.is_err(), "typo'd field must not silently match-all");
+    }
+
+    #[test]
+    fn skin_data_requires_nodes() {
+        assert!(serde_json::from_str::<EditorQuery>(r#"{"query":"skin_data"}"#).is_err());
+        assert!(serde_json::from_str::<EditorQuery>(r#"{"query":"skin_data","nodes":[]}"#).is_ok());
+    }
 }
