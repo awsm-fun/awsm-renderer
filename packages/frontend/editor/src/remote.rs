@@ -82,6 +82,44 @@ thread_local! {
     /// the MCP server (with backoff) until [`disconnect`] clears it. Lets a server
     /// restart reconnect seamlessly without a manual page reload.
     static RECONNECT: Cell<bool> = const { Cell::new(false) };
+    /// Whether the `visibilitychange` push listener is installed (once per page —
+    /// it outlives individual link sessions; `notify_event` is a no-op when
+    /// disconnected).
+    static VISIBILITY_HOOKED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Push the tab's current visibility to the server (`kind: "visibility"`). The
+/// server records it per connection so frame-bound requests can fail fast with a
+/// "tab hidden" error instead of burning the full request timeout, and surfaces
+/// it in `ping`/`pairing_status`. Sent on attach and on every `visibilitychange`.
+fn push_visibility() {
+    let hidden = web_sys::window()
+        .and_then(|w| w.document())
+        .map(|d| d.hidden())
+        .unwrap_or(false);
+    notify_event(EditorEvent {
+        kind: "visibility".to_string(),
+        level: None,
+        message: None,
+        nodes: None,
+        hidden: Some(hidden),
+    });
+}
+
+/// Install the page-level `visibilitychange` listener (idempotent). Lives for the
+/// page: reconnects reuse it, and pushes while disconnected are dropped by
+/// [`notify_event`].
+fn hook_visibility() {
+    if VISIBILITY_HOOKED.with(|h| h.replace(true)) {
+        return;
+    }
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(push_visibility);
+    use wasm_bindgen::JsCast;
+    let _ = doc.add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref());
+    cb.forget(); // page-lifetime listener
 }
 
 /// Reactive connection status (for the UI button).
@@ -294,6 +332,11 @@ async fn run(control_origin: String) -> Result<(), String> {
     status().set(RemoteStatus::Connected);
     notify_info("MCP connected");
     tracing::info!("mcp: attached");
+    // Seed the server with this tab's visibility (and keep it updated for the
+    // life of the page) so agents get fast, explicit "tab hidden" errors instead
+    // of full request timeouts when rAF is paused.
+    hook_visibility();
+    push_visibility();
 
     loop {
         futures::select! {

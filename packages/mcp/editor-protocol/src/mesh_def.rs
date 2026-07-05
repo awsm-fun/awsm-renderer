@@ -13,6 +13,7 @@ use awsm_renderer_scene::{AssetId, PrimitiveShape};
 /// having to find a source node in the tree.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshDef {
     pub label: String,
     #[serde(default)]
@@ -199,6 +200,7 @@ impl VertexOverrides {
 /// falls back to the legacy "pick a source from scene" picker.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CapturedSource {
     Primitive(PrimitiveShape),
     Sweep(SweepAlongCurveDef),
@@ -221,6 +223,7 @@ pub enum CapturedSource {
 /// The consuming crates own conversion helpers (editor bake → runtime MeshBlob).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CapturedMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Option<Vec<[f32; 3]>>,

@@ -292,6 +292,7 @@ ext_struct!(/// `KHR_materials_iridescence` — thin-film interference (soap bub
 /// GPU texture at load time via `awsm-renderer-meshgen::procedural_texture::*`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ProceduralTextureDef {
     Checker {
         width: u32,
@@ -363,6 +364,7 @@ impl TextureColorKind {
 /// Texture asset variants.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TextureDef {
     /// External raster file (PNG, JPEG, WebP) shipped alongside the
     /// project. `display_name` is the user-facing label + provides the

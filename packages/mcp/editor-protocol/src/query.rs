@@ -204,6 +204,12 @@ fn default_units() -> String {
 pub enum EditorQuery {
     /// The existing editor snapshot.
     Snapshot,
+    /// Report of the most recent model import (glTF url/file): created root
+    /// node ids + names, node/material/skin-joint/clip counts, and the source
+    /// asset id. `None`-shaped (empty report) when nothing was imported this
+    /// session. Answers "what did that import just create?" without diffing
+    /// snapshots (handoff #6/F2); the MCP import tools also return it inline.
+    LastImportReport,
     /// Sample a clip's targets across a set of pinned times — *video as numbers*.
     /// GPU-independent (reads CPU-side renderer state after `update_animations(0.0)`).
     SampleClipTimeseries {

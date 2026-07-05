@@ -13,6 +13,7 @@ use super::assets::AssetId;
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct EnvironmentConfig {
     #[serde(default)]
     pub skybox: EnvSlot,
@@ -48,6 +49,7 @@ impl EnvironmentConfig {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Copy, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EnvSlot {
     /// The baked-in "Default sky" — a procedural [`CubemapSkyGradient`] default.
     /// Referenced by no asset.

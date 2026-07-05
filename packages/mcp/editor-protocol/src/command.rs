@@ -32,6 +32,7 @@ use crate::node_spec::{InsertSpec, NodeSpec};
 /// Maps to `ProceduralTextureDef` with sensible defaults at apply-time.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ProceduralKind {
     Checker,
     Gradient,
@@ -42,6 +43,7 @@ pub enum ProceduralKind {
 /// carries its alpha cutoff. Mirrors the editor's `AlphaMode` + cutoff pair.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CustomAlphaMode {
     Opaque,
     Mask { cutoff: f64 },
@@ -53,6 +55,7 @@ pub enum CustomAlphaMode {
 /// default (comma-separated for vectors, e.g. `"0.6, 0.7, 1.0"`); `debug` is the
 /// texture/buffer debug-preview source. Used by `SetCustomMaterialLayout`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SlotSpec {
     pub name: String,
     /// WGSL type, e.g. `"f32"`, `"vec3<f32>"`, `"texture_2d<f32>"`,
@@ -87,6 +90,7 @@ pub enum BuiltinTextureSlot {
 /// camera ends up on that axis looking back at the orbit target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CameraAxis {
     PosX,
     NegX,
@@ -99,6 +103,7 @@ pub enum CameraAxis {
 /// Top-level workspace mode (the Scene/Material switch in the top bar).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EditorMode {
     #[default]
     Scene,
@@ -122,6 +127,7 @@ pub struct SkinWeightEntry {
 /// Every editor mutation, as serializable data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EditorCommand {
     /// Switch the workspace mode. **Transient** — dispatched but not recorded in
     /// the undo log.
@@ -508,6 +514,15 @@ pub enum EditorCommand {
     /// view doesn't keep showing e.g. raised arms after `SetCurrentClip {}`.
     /// **Transient** (re-syncs renderer locals from the scene; no scene edit).
     ResetPose { node: NodeId },
+
+    /// Restore every SKIN-JOINT node in `id`'s subtree (including `id`) to its
+    /// import-time local transform — the glTF bind/rest pose. This is the way
+    /// back to T-pose after direct `SetTransform` pose edits, which MUTATE the
+    /// scene-base transforms and are therefore untouched by [`Self::ResetPose`]
+    /// (that only re-syncs the renderer FROM the scene). A real scene edit:
+    /// undoable (inverse restores the prior pose), and a no-op for nodes with
+    /// no recorded rest (non-joints, procedural meshes).
+    ResetToBindPose { id: NodeId },
 
     /// Pin the renderer's `frame_globals.time` to `seconds` (overrides the
     /// wall-clock). A temporal material (`sin(time*f)`) then screenshots the same
@@ -956,7 +971,13 @@ pub enum EditorCommand {
     /// `apply`) so the command is deterministic data — a cross-tab relay that
     /// replays it produces the *same* clip id in every tab. Idempotent: applying
     /// it when the id already exists is a no-op.
-    AddClip { id: AssetId },
+    AddClip {
+        id: AssetId,
+        /// Optional display name for the new clip; `None` ⇒ the default
+        /// "Clip N" numbering (prior behavior; saves the create+rename pair).
+        #[serde(default)]
+        name: Option<String>,
+    },
     /// Delete a clip from the library. Lifecycle.
     DeleteClip { id: AssetId },
     /// Duplicate a clip (deep copy, fresh id) and select it. Lifecycle.
@@ -1042,6 +1063,27 @@ pub enum EditorCommand {
         /// `Some` sets it in one step (no follow-up `SetKeyframe`).
         #[serde(default)]
         interp: Option<Interp>,
+    },
+    /// REPLACE a track's entire key list in one step — the bulk authoring path
+    /// (one command per track instead of one `AddKeyframe` per key; handoff F4).
+    /// `times` pairs index-wise with `values` (public form; per-key interp from
+    /// `interp` or the track's sampler) OR with `keys` (full-fidelity form —
+    /// non-empty `keys` wins; used by the inverse to restore tangents/interp
+    /// exactly). Inverse: another `SetTrackKeys` carrying the prior keys.
+    SetTrackKeys {
+        clip: AssetId,
+        track: usize,
+        /// Key times in seconds (need not be pre-sorted; sorted on apply).
+        times: Vec<f64>,
+        /// One value per time (ignored when `keys` is non-empty).
+        #[serde(default)]
+        values: Vec<TrackValue>,
+        /// Interpolation for every new key; `None` ⇒ the track sampler's.
+        #[serde(default)]
+        interp: Option<Interp>,
+        /// Full keyframes (one per time) — the lossless/internal form.
+        #[serde(default)]
+        keys: Vec<Keyframe>,
     },
     /// Delete a keyframe (by index). Inverse: `InsertKeyframe` of the captured key.
     DeleteKeyframe {
@@ -1224,6 +1266,7 @@ impl EditorCommand {
                 | EditorCommand::SetTrackSolo { .. }
                 // Keyframes.
                 | EditorCommand::AddKeyframe { .. }
+                | EditorCommand::SetTrackKeys { .. }
                 | EditorCommand::DeleteKeyframe { .. }
                 | EditorCommand::InsertKeyframe { .. }
                 | EditorCommand::SetKeyframe { .. }
@@ -1292,6 +1335,7 @@ impl EditorCommand {
             EditorCommand::PatchKind { .. } => "Patch properties",
             EditorCommand::SetParticleEmitter { .. } => "Configure emitter",
             EditorCommand::SetTransform { .. } => "Transform",
+            EditorCommand::ResetToBindPose { .. } => "Reset to bind pose",
             EditorCommand::Rename { .. } => "Rename",
             EditorCommand::SetVisible { .. } => "Toggle visibility",
             EditorCommand::SetLocked { .. } => "Toggle lock",
@@ -1392,6 +1436,7 @@ impl EditorCommand {
             EditorCommand::SetTrackMute { .. } => "Mute track",
             EditorCommand::SetTrackSolo { .. } => "Solo track",
             EditorCommand::AddKeyframe { .. } => "Add keyframe",
+            EditorCommand::SetTrackKeys { .. } => "Set track keys",
             EditorCommand::DeleteKeyframe { .. } | EditorCommand::InsertKeyframe { .. } => {
                 "Delete keyframe"
             }

@@ -92,6 +92,13 @@ pub struct Bridge {
     /// transform; each frame [`skin_bridge`] copies the mirror's local onto the
     /// baked key so animation + posing actually deform the skin (#2).
     pub skin_joint_baked: Mutex<HashMap<NodeId, TransformKey>>,
+    /// Each skin-joint node's IMPORT-TIME local transform — the glTF rest/bind
+    /// pose. Captured once per import (alongside [`Self::skin_joint_baked`])
+    /// and read by `ResetToBindPose`, which is otherwise impossible after
+    /// direct `SetTransform` pose edits mutate the scene-base transforms
+    /// (handoff #8: `reset_pose` re-syncs FROM scene base, so it can't undo
+    /// them).
+    pub joint_rest: Mutex<HashMap<NodeId, crate::engine::scene::Trs>>,
 }
 
 impl Bridge {
@@ -105,6 +112,7 @@ impl Bridge {
             template_instances: Mutex::new(HashMap::new()),
             node_to_template: Mutex::new(HashMap::new()),
             skin_joint_baked: Mutex::new(HashMap::new()),
+            joint_rest: Mutex::new(HashMap::new()),
         }
     }
 
@@ -179,13 +187,20 @@ impl Bridge {
     pub fn register_skin_joint(&self, node: NodeId, baked: TransformKey) {
         self.skin_joint_baked.lock().unwrap().insert(node, baked);
     }
+    /// Record a skin-joint node's import-time local TRS — the bind/rest pose
+    /// `ResetToBindPose` restores.
+    pub fn register_joint_rest(&self, node: NodeId, rest: crate::engine::scene::Trs) {
+        self.joint_rest.lock().unwrap().insert(node, rest);
+    }
     /// Drop all skin-joint mappings (project reset).
     pub fn clear_skin_joints(&self) {
         self.skin_joint_baked.lock().unwrap().clear();
+        self.joint_rest.lock().unwrap().clear();
     }
     /// Drop a single skin-joint mapping (a skinned-model bone node deleted).
     pub fn unregister_skin_joint(&self, node: NodeId) {
         self.skin_joint_baked.lock().unwrap().remove(&node);
+        self.joint_rest.lock().unwrap().remove(&node);
     }
 
     /// Drop all cached import templates + their instance tracking (project reset).
@@ -206,6 +221,95 @@ impl Bridge {
     pub fn node_for_mesh(&self, mesh: MeshKey) -> Option<NodeId> {
         self.mesh_to_node.lock().unwrap().get(&mesh).copied()
     }
+}
+
+/// Propagate a BUILT-IN library material's def edit to every mesh variant that
+/// references it: each variant's per-mesh `instance.inline` store re-seeds
+/// **field-wise** — a slot that still MIRRORED the prior library def adopts the
+/// new def's value, while a slot the mesh customized (≠ prior def) is preserved.
+/// This is `assign_material`-style template→instance carry-over applied in
+/// place, and it is what makes `update_builtin_material`'s documented "assigned
+/// meshes re-materialize" true for VALUES, not just for shader variants: without
+/// it the re-trigger below re-applies the stale inline copy and nothing visibly
+/// changes (glTF-imported materials seeded every mesh's inline store at import).
+/// Every touched node's kind is re-`set`, which fires its observer and
+/// re-materializes it.
+pub fn reseed_inline_for_material(
+    id: crate::engine::scene::AssetId,
+    prior: &awsm_renderer_editor_protocol::MaterialDef,
+    new_def: &awsm_renderer_editor_protocol::MaterialDef,
+) {
+    use crate::engine::scene::node::Node;
+    use crate::engine::scene::AssetId;
+    use awsm_renderer_editor_protocol::MaterialDef;
+
+    /// Field-wise template→instance merge; `true` when anything changed.
+    fn reseed(inline: &mut MaterialDef, prior: &MaterialDef, new_def: &MaterialDef) -> bool {
+        let mut changed = false;
+        macro_rules! seed {
+            ($($path:ident).+) => {
+                if inline.$($path).+ == prior.$($path).+ && inline.$($path).+ != new_def.$($path).+ {
+                    inline.$($path).+ = new_def.$($path).+.clone();
+                    changed = true;
+                }
+            };
+        }
+        seed!(label);
+        seed!(base_color);
+        seed!(base_color_texture);
+        seed!(metallic);
+        seed!(roughness);
+        seed!(metallic_roughness_texture);
+        seed!(emissive);
+        seed!(emissive_texture);
+        seed!(normal_texture);
+        seed!(normal_scale);
+        seed!(occlusion_texture);
+        seed!(occlusion_strength);
+        seed!(double_sided);
+        seed!(vertex_colors_enabled);
+        seed!(alpha_mode);
+        seed!(shading);
+        // Extensions per-slot, so one customized extension doesn't pin the rest.
+        seed!(extensions.emissive_strength);
+        seed!(extensions.ior);
+        seed!(extensions.specular);
+        seed!(extensions.transmission);
+        seed!(extensions.diffuse_transmission);
+        seed!(extensions.volume);
+        seed!(extensions.clearcoat);
+        seed!(extensions.sheen);
+        seed!(extensions.dispersion);
+        seed!(extensions.anisotropy);
+        seed!(extensions.iridescence);
+        changed
+    }
+
+    fn walk(nodes: &[Arc<Node>], id: AssetId, prior: &MaterialDef, new_def: &MaterialDef) {
+        for node in nodes {
+            let mut kind = node.kind.get_cloned();
+            let mut touched = false;
+            if let Some(variants) = kind.material_variants_mut() {
+                for v in variants.iter_mut() {
+                    if v.instance.asset == id {
+                        reseed(&mut v.instance.inline, prior, new_def);
+                        // Re-set even when no field changed: the def edit may
+                        // still be a shader-variant change (extensions toggled)
+                        // the observer must pick up.
+                        touched = true;
+                    }
+                }
+            }
+            if touched {
+                node.kind.set(kind);
+            }
+            walk(&node.children.lock_ref(), id, prior, new_def);
+        }
+    }
+
+    let ctrl = crate::controller::controller();
+    let roots: Vec<Arc<Node>> = ctrl.scene.nodes.lock_ref().iter().cloned().collect();
+    walk(&roots, id, prior, new_def);
 }
 
 /// Re-materialize every mesh that references custom material `id` — called

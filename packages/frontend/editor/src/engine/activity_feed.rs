@@ -570,7 +570,10 @@ mod mode_tests {
             Some(EditorMode::Scene)
         );
         assert_eq!(
-            command_mode(&C::AddClip { id: AssetId::new() }),
+            command_mode(&C::AddClip {
+                id: AssetId::new(),
+                name: None
+            }),
             Some(EditorMode::Animation)
         );
         assert_eq!(command_mode(&C::AddLayer), Some(EditorMode::Animation));

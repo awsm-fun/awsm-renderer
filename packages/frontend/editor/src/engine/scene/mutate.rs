@@ -105,6 +105,30 @@ pub fn duplicate_by_id(scene: &Scene, id: NodeId, new_root_id: Option<NodeId>) -
         Some(rid) => original.deep_clone_with_root_id(rid),
         None => original.deep_clone_with_new_ids(),
     };
+    // The clone copied every node's `kind` verbatim, so intra-subtree NodeId
+    // references still point at the ORIGINAL's nodes — most importantly a
+    // skinned mesh's `skin.joints[].node` bone bindings (leaving those stale
+    // makes a duplicated rig deform to the original's skeleton, rendering
+    // superimposed on it while its own joints do nothing). Remap every
+    // reference that resolves inside the duplicated subtree onto the cloned
+    // ids; references to nodes OUTSIDE the subtree (e.g. an instances node
+    // whose curve lives elsewhere) are intentionally left pointing at the
+    // shared original.
+    let mut id_map = std::collections::HashMap::new();
+    collect_clone_id_map(&original, &clone, &mut id_map);
+    remap_cloned_node_refs(&clone, &id_map);
+    // Propagate per-joint bind/rest records onto the cloned bone ids so
+    // `ResetToBindPose` works on duplicated rigs too (rest is otherwise only
+    // registered at import, keyed by the ORIGINAL bone ids).
+    {
+        let bridge = crate::engine::bridge::bridge();
+        let mut rest = bridge.joint_rest.lock().unwrap();
+        let copies: Vec<_> = id_map
+            .iter()
+            .filter_map(|(old, new)| rest.get(old).map(|r| (*new, *r)))
+            .collect();
+        rest.extend(copies);
+    }
     let new_id = clone.id;
 
     // Insert as sibling after the original.
@@ -129,6 +153,59 @@ pub fn duplicate_by_id(scene: &Scene, id: NodeId, new_root_id: Option<NodeId>) -
     }
 
     Some(new_id)
+}
+
+/// Build the original→clone [`NodeId`] map by walking both trees in lockstep
+/// (a deep clone mirrors the original's child order exactly).
+fn collect_clone_id_map(
+    original: &Arc<Node>,
+    clone: &Arc<Node>,
+    map: &mut std::collections::HashMap<NodeId, NodeId>,
+) {
+    map.insert(original.id, clone.id);
+    let oc = original.children.lock_ref();
+    let cc = clone.children.lock_ref();
+    for (o, c) in oc.iter().zip(cc.iter()) {
+        collect_clone_id_map(o, c, map);
+    }
+}
+
+/// Rewrite intra-subtree [`NodeId`] references inside a freshly-cloned
+/// subtree's kinds (skin joint bindings, instances-along-curve node refs) onto
+/// the cloned ids. Ids absent from `map` reference nodes outside the
+/// duplicated subtree and are preserved. Runs before the clone is inserted
+/// into the scene, so no observer sees the intermediate state.
+fn remap_cloned_node_refs(clone: &Arc<Node>, map: &std::collections::HashMap<NodeId, NodeId>) {
+    use crate::engine::scene::NodeKind;
+    let mut kind = clone.kind.get_cloned();
+    let mut changed = false;
+    match &mut kind {
+        NodeKind::SkinnedMesh { skin, .. } => {
+            for joint in skin.joints.iter_mut() {
+                if let Some(new) = map.get(&joint.node) {
+                    joint.node = *new;
+                    changed = true;
+                }
+            }
+        }
+        NodeKind::InstancesAlongCurve(def) => {
+            if let Some(new) = map.get(&def.curve_node) {
+                def.curve_node = *new;
+                changed = true;
+            }
+            if let Some(new) = map.get(&def.source_node) {
+                def.source_node = *new;
+                changed = true;
+            }
+        }
+        _ => {}
+    }
+    if changed {
+        clone.kind.set(kind);
+    }
+    for child in clone.children.lock_ref().iter() {
+        remap_cloned_node_refs(child, map);
+    }
 }
 
 /// Move `id` to become a child of `new_parent_id` at `position` (or `None`
