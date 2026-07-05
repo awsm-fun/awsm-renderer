@@ -1234,6 +1234,14 @@ impl EditorController {
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
                 crate::engine::bridge::buffer_cache::clear();
+                // Unregister the editor session's dynamic materials BEFORE the
+                // player populate: the round-trip shares this renderer, and the
+                // bundle re-registers the same material ids — with the session
+                // registrations still live, the loader's register hits the
+                // duplicate-name guard and every custom-material mesh falls back
+                // to the default (white) material. A real player boots a fresh
+                // renderer and can't collide; this is round-trip-seam-only.
+                crate::engine::bridge::dynamic::unregister_all().await;
                 self.missing_assets.set(Vec::new());
                 self.scene.environment.set(scene.environment.clone());
                 self.scene.bump_revision();

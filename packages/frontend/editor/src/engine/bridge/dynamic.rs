@@ -139,6 +139,20 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
     Ok(shader_id)
 }
 
+/// Drop EVERY live dynamic-material registration (the whole session
+/// REGISTRY). The player-bundle round-trip uses this: it shares the editor's
+/// renderer, and the bundle re-registers the same material ids — any
+/// still-live session registration makes the loader's register hit the
+/// duplicate-name guard and the mesh falls back to default-white. Keyed off
+/// the REGISTRY itself (not the controller's model list, which the
+/// round-trip teardown clears earlier).
+pub async fn unregister_all() {
+    let ids: Vec<AssetId> = REGISTRY.with(|r| r.borrow().keys().copied().collect());
+    for id in ids {
+        unregister(id).await;
+    }
+}
+
 /// Drop a custom material's renderer registration when it's DELETED. Without
 /// this the renderer keeps the dynamic registration — and its compiled GPU
 /// compute pipelines + shader modules — forever, so repeated create/delete
