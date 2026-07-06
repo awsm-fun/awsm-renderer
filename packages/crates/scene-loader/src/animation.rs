@@ -82,6 +82,17 @@ pub struct AnimResolveMaps {
     /// own scene transform key — no per-frame mirror copy needed (the player
     /// equivalent of the editor's skin bridge).
     pub skin_joints: HashMap<NodeId, TransformKey>,
+    /// Rig-glb loads already performed this scene load, keyed by
+    /// `(glb leaf, first joint scene NodeId)` — one rig instance per
+    /// PLACED rig (several sibling `SkinnedMesh` nodes share one rig;
+    /// two placed dancers each get their own). Values: the instance's
+    /// glb-node-index → joint TransformKey map + glb-node-index → mesh
+    /// keys map (for per-scene-node material rebinding).
+    #[allow(clippy::type_complexity)]
+    pub rig_cache: HashMap<
+        (String, NodeId),
+        (HashMap<usize, TransformKey>, HashMap<usize, Vec<MeshKey>>),
+    >,
     /// Mesh/skinned nodes → the material key built for them (BuiltinParam target).
     pub node_materials: HashMap<NodeId, MaterialKey>,
     /// Custom-WGSL material asset → the shader id it registered as (Phase 0).

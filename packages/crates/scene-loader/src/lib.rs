@@ -216,6 +216,20 @@ pub struct LoadedScene {
     /// [`AwsmRenderer::set_mesh_material`]. The SELECTED variant is already
     /// the mesh's starting material. Nodes with empty palettes are absent.
     pub node_material_variants: HashMap<NodeId, Vec<LoadedMaterialVariant>>,
+    /// Skeleton bone `NodeId → ` the rig glb's baked joint [`TransformKey`]
+    /// the skin actually reads (the player-grade skin bridge — see
+    /// `AnimResolveMaps::skin_joints`). A game that drives a skinned rig
+    /// per frame writes THESE keys (via `renderer.transforms.set_local`),
+    /// not the bone's own scene transform key. Bones of every skinned
+    /// mesh in the static world are included; prefab-template rigs are
+    /// not (instantiate + resolve per instance instead).
+    pub skin_joints: HashMap<NodeId, TransformKey>,
+    /// Mesh/skinned nodes → the material key built for them (the same map
+    /// the loader's BuiltinParam animation targets resolve against).
+    /// Complements [`node_material_variants`](Self::node_material_variants)
+    /// for direct "the node's current material" addressing when a game
+    /// drives per-node material params (uniforms, emissive) at runtime.
+    pub node_materials: HashMap<NodeId, MaterialKey>,
 }
 
 /// One pre-built entry of a mesh's material palette — see
@@ -878,6 +892,11 @@ pub async fn load_scene_for_player(
     // lights are inserted; lines/decals are gathered here from the resolved maps.
     loaded.lines.extend(maps.lines.values().copied());
     loaded.decals.extend(maps.decals.values().copied());
+    // Surface the skin bridge + per-node material keys to the consumer:
+    // games driving skinned rigs / material params per frame resolve
+    // through these (see the field docs on `LoadedScene`).
+    loaded.skin_joints = maps.skin_joints.clone();
+    loaded.node_materials = maps.node_materials.clone();
 
     // ── Phase 3b: load animation clips + the NLA mixer ────────────────────────
     // Now that every node's transform / material / light / camera / mesh key
@@ -1074,7 +1093,7 @@ async fn materialize(
                         } else {
                             // Bare geometry glb (single identity node) — root it
                             // UNDER the scene node's transform, which is what places it.
-                            let (keys, _) = load_glb_under(
+                            let (keys, _, _) = load_glb_under(
                                 renderer,
                                 assets,
                                 &mesh_glb_filename(mesh.0),
@@ -1166,9 +1185,87 @@ async fn materialize(
         #[cfg(not(feature = "lod"))]
         NodeKind::ClusterMesh { .. } => {}
         NodeKind::SkinnedMesh { skin, .. } => {
-            let (keys, node_index_transforms) =
-                load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
-                    .await?;
+            // Multi-mesh, multi-instance rigs: several sibling
+            // `SkinnedMesh` nodes share one rig glb (same `skin.source`
+            // + joints), and the same rig can be PLACED more than once
+            // (two dancers). Load the rig ONCE per placed instance —
+            // keyed by (glb leaf, first joint's scene NodeId, which is
+            // shared by the siblings but distinct across placements) —
+            // parented under THIS node's transform so the authored
+            // scene placement applies, then rebind each scene node's
+            // material onto its own glb node's primitives.
+            let rig_key = (
+                mesh_glb_filename(skin.source),
+                skin.joints.first().map(|j| j.node).unwrap_or(node.id),
+            );
+            if !maps.rig_cache.contains_key(&rig_key) {
+                let (all_keys, node_index_transforms, node_index_meshes) =
+                    load_glb_under(renderer, assets, &rig_key.0, Some(tk), mat).await?;
+                // Bind each skeleton bone (scene NodeId) → THIS rig
+                // instance's baked joint transform (by the joint's
+                // clean-glb node index), so clips / a game host drive
+                // the joints the skin reads.
+                let mut joints_resolved = 0usize;
+                for j in &skin.joints {
+                    if let Some(&jtk) = node_index_transforms.get(&(j.index as usize)) {
+                        maps.skin_joints.insert(j.node, jtk);
+                        joints_resolved += 1;
+                    }
+                }
+                if joints_resolved < skin.joints.len() {
+                    let mut available: Vec<usize> =
+                        node_index_transforms.keys().copied().collect();
+                    available.sort_unstable();
+                    tracing::warn!(
+                        "skinned mesh `{}`: only {}/{} skin joints resolved — joint indices {:?} vs glb node indices {:?}",
+                        node.name,
+                        joints_resolved,
+                        skin.joints.len(),
+                        skin.joints.iter().map(|j| j.index).collect::<Vec<_>>(),
+                        available
+                    );
+                }
+                loaded.meshes.extend(all_keys.iter().copied());
+                maps.rig_cache
+                    .insert(rig_key.clone(), (node_index_transforms, node_index_meshes));
+            }
+            let (node_index_transforms, node_index_meshes) = maps
+                .rig_cache
+                .get(&rig_key)
+                .cloned()
+                .expect("rig cache entry just ensured");
+
+            // This scene node's own primitive within the shared rig.
+            // `all_mesh_keys` is keyed by glTF MESH index (a multi-part
+            // rig is one glTF mesh with one primitive per part), so
+            // flatten in key order and select by `skin.primitive_index`.
+            let flat: Vec<MeshKey> = {
+                let mut mesh_indices: Vec<usize> = node_index_meshes.keys().copied().collect();
+                mesh_indices.sort_unstable();
+                mesh_indices
+                    .iter()
+                    .flat_map(|i| node_index_meshes[i].iter().copied())
+                    .collect()
+            };
+            // `primitive_index: None` (legacy single-part rigs) takes
+            // every primitive.
+            let keys: Vec<MeshKey> = match skin.primitive_index {
+                Some(pi) => flat.get(pi as usize).map(|k| vec![*k]).unwrap_or_default(),
+                None => flat.clone(),
+            };
+            if keys.is_empty() {
+                tracing::warn!(
+                    "skinned mesh `{}`: primitive {:?} not found (rig produced {} primitives)",
+                    node.name,
+                    skin.primitive_index,
+                    flat.len()
+                );
+            }
+            // The rig loaded with the FIRST sibling's material — rebind
+            // this node's own.
+            for &k in &keys {
+                let _ = renderer.set_mesh_material(k, mat);
+            }
             if let Some(&first) = keys.first() {
                 maps.meshes.entry(node.id).or_insert(first);
             }
@@ -1176,19 +1273,7 @@ async fn materialize(
                 .entry(node.id)
                 .or_default()
                 .extend(keys.iter().copied());
-            // Bind each skeleton bone (NodeId) → the rig glb's baked joint
-            // transform (by the joint's clean-glb node index), so our clips'
-            // Transform tracks drive the joints the skin reads. (Empty `joints`
-            // for legacy projects → no binding → bind-pose, as before.)
-            for j in &skin.joints {
-                if let Some(&tk) = node_index_transforms.get(&(j.index as usize)) {
-                    maps.skin_joints.insert(j.node, tk);
-                }
-            }
-            // Discrete LOD (skinned/morph): load each level's mesh REBOUND to the
-            // base rig's animated joint transforms (so a level deforms with the
-            // base), hidden, and register the chain. No-op unless `lod` is on, a
-            // manifest exists, AND this node opts in (per-node toggle).
+            // Discrete LOD (skinned/morph): unchanged, per node opt-in.
             if let (Some(&base_key), true) = (keys.first(), node_lod_enabled(&node.kind)) {
                 load_skinned_lod_chain(
                     renderer,
@@ -1200,7 +1285,6 @@ async fn materialize(
                 )
                 .await?;
             }
-            loaded.meshes.extend(keys);
             *uploaded += 1;
             on_phase(LoadPhase::UploadingMeshes {
                 done: *uploaded,
@@ -1526,7 +1610,7 @@ async fn build_node_meshes(
                         keys.push(key);
                     }
                     AssetSource::Mesh(RuntimeMesh::Glb) => {
-                        let (glb_keys, _) = load_glb_under(
+                        let (glb_keys, _, _) = load_glb_under(
                             renderer,
                             assets,
                             &mesh_glb_filename(mesh.0),
@@ -1544,7 +1628,7 @@ async fn build_node_meshes(
             // Self-placing rig glb (rooted at None, like the live arm). For a
             // prefab template the joint binding is omitted (skin-correspondence is
             // a follow-on even outside prefabs); the rig poses at bind pose.
-            let (glb_keys, _) =
+            let (glb_keys, _, _) =
                 load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
                     .await?;
             keys.extend(glb_keys);
@@ -2731,7 +2815,7 @@ async fn load_static_lod_chain(
     let mut levels = Vec::with_capacity(manifest.levels.len());
     for lvl in &manifest.levels {
         let leaf = awsm_renderer_lod_bake::lod_level_filename(asset_id, lvl.index);
-        let (keys, _) = load_glb_under(renderer, assets, &leaf, Some(tk), mat).await?;
+        let (keys, _, _) = load_glb_under(renderer, assets, &leaf, Some(tk), mat).await?;
         let Some(&level_key) = keys.first() else {
             continue;
         };
@@ -2937,7 +3021,7 @@ pub async fn load_glb_under(
     leaf: &str,
     parent: Option<TransformKey>,
     material: MaterialKey,
-) -> Result<(Vec<MeshKey>, HashMap<usize, TransformKey>)> {
+) -> Result<(Vec<MeshKey>, HashMap<usize, TransformKey>, HashMap<usize, Vec<MeshKey>>)> {
     let key = format!("{ASSETS_DIR}/{leaf}");
     let bytes = assets
         .fetch(&key)
@@ -2961,14 +3045,25 @@ pub async fn load_glb_under(
             },
         )
         .await?;
-    let (keys, node_index_transforms): (Vec<MeshKey>, HashMap<usize, TransformKey>) = {
+    let (keys, node_index_transforms, node_index_meshes): (
+        Vec<MeshKey>,
+        HashMap<usize, TransformKey>,
+        HashMap<usize, Vec<MeshKey>>,
+    ) = {
         let lookups = ctx.key_lookups.lock().unwrap();
         // The renderer mesh keys this glb produced (one per primitive), so the host
         // can remove them on teardown.
         let keys = lookups.all_mesh_keys.values().flatten().copied().collect();
         // glb node index → baked transform key — the skinned-mesh arm binds each
         // skeleton joint (by its clean-glb node index) to drive the skin.
-        (keys, lookups.node_index_to_transform.clone())
+        // glb node index → its mesh keys — the skinned-mesh arm rebinds each
+        // scene node's material onto its own glb node's primitives when a
+        // multi-mesh rig loads once for several scene skinned-mesh nodes.
+        (
+            keys,
+            lookups.node_index_to_transform.clone(),
+            lookups.all_mesh_keys.clone(),
+        )
     };
     // A transparent mesh is built with transparency geometry only (above), so it
     // must NOT enter the shadow pass — that pass draws from VISIBILITY geometry
@@ -2987,7 +3082,7 @@ pub async fn load_glb_under(
             );
         }
     }
-    Ok((keys, node_index_transforms))
+    Ok((keys, node_index_transforms, node_index_meshes))
 }
 
 /// Materialize just one node's renderable **mesh(es)** with the given `material`,
