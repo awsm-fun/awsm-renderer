@@ -88,7 +88,18 @@ impl IblTexture {
         gpu: &AwsmRendererWebGpu,
         default_colors: CubemapBitmapColors,
     ) -> Result<IblTextureResources> {
-        let (texture, view, mip_count) = CubemapImage::new_colors(default_colors, 256, 256)
+        Self::prepare_resources_sized(gpu, default_colors, 256).await
+    }
+
+    /// [`Self::prepare_resources`] at an explicit face size. `size = 1`
+    /// produces the deferred-boot placeholder (structurally valid, swapped
+    /// for the real default before any content frame samples it).
+    pub async fn prepare_resources_sized(
+        gpu: &AwsmRendererWebGpu,
+        default_colors: CubemapBitmapColors,
+        size: u32,
+    ) -> Result<IblTextureResources> {
+        let (texture, view, mip_count) = CubemapImage::new_colors(default_colors, size, size)
             .await?
             .create_texture_and_view(gpu, Some("IBL Cubemap"))
             .await?;

@@ -56,6 +56,33 @@ impl Default for BrdfLutOptions {
 }
 
 impl BrdfLut {
+    /// A 1×1 zero-initialized placeholder — no shader, no pipeline, no draw.
+    /// For deferred-boot renderers: a structurally-valid LUT that satisfies
+    /// every bind-group layout, swapped for the real bake
+    /// ([`Self::new`]) before the first content frame samples it.
+    pub async fn placeholder(gpu: &AwsmRendererWebGpu) -> Result<Self> {
+        let texture = gpu.create_texture(
+            &TextureDescriptor::new(
+                TextureFormat::Rgba16float,
+                Extent3d::new(1, Some(1), None),
+                TextureUsage::new()
+                    .with_copy_dst()
+                    .with_render_attachment()
+                    .with_texture_binding(),
+            )
+            .into(),
+        )?;
+        let view = texture
+            .create_view()
+            .map_err(|e| AwsmCoreError::TextureView(format!("{e:?}")))?;
+        let sampler = get_sampler(gpu).await?;
+        Ok(Self {
+            texture,
+            view,
+            sampler,
+        })
+    }
+
     /// Generates a BRDF LUT texture.
     pub async fn new(gpu: &AwsmRendererWebGpu, options: BrdfLutOptions) -> Result<Self> {
         let render_pipeline = get_pipeline(gpu).await?;

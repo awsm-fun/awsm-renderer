@@ -656,12 +656,18 @@ impl BindGroups {
                         .recreate_main(&ctx)?;
                 }
                 FunctionToCall::MaterialDecalComposite => {
-                    render_passes
+                    // Deferred-boot: composite may not be compiled yet — its
+                    // eventual `new()` builds bind groups against the
+                    // then-current views, so skipping here loses nothing.
+                    if let Some(composite) = render_passes
                         .material_decal
                         .as_mut()
                         .expect("Decal pass missing despite decals feature on")
                         .composite
-                        .recreate(&ctx)?;
+                        .as_mut()
+                    {
+                        composite.recreate(&ctx)?;
+                    }
                 }
                 FunctionToCall::MaterialDecalClassify => {
                     render_passes

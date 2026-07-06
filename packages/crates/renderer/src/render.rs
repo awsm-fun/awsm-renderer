@@ -1177,12 +1177,17 @@ impl AwsmRenderer {
             // resize, AA flip, T2.5 mip-chain grow, T2.6 HUD-depth
             // grow) so the cache stays paired with the right
             // `GpuTexture` identity.
-            if ctx.render_texture_views.views_recreated {
-                self.opaque_mipgen.invalidate();
-            }
-            if let Some((texture, mip_count)) = opaque_info {
-                self.opaque_mipgen
-                    .record(&self.gpu, &ctx.command_encoder, &texture, mip_count)?;
+            // Deferred-boot: `None` only between a runtime material change to
+            // transmission and the next commit's config ensure — skip the mip
+            // chain that frame (transmission samples mip 0, slightly sharper
+            // refraction, never wrong data).
+            if let Some(mipgen) = self.opaque_mipgen.as_ref() {
+                if ctx.render_texture_views.views_recreated {
+                    mipgen.invalidate();
+                }
+                if let Some((texture, mip_count)) = opaque_info {
+                    mipgen.record(&self.gpu, &ctx.command_encoder, &texture, mip_count)?;
+                }
             }
         }
 

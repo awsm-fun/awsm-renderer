@@ -727,15 +727,11 @@ impl RenderPasses {
             compute_pool.len()..compute_pool.len() + opaque_descs.pipeline_cache_keys.len();
         compute_pool.extend(opaque_descs.pipeline_cache_keys.iter().cloned());
 
-        // Decal composite — only the typed handle, no cache keys to
-        // pool. The composite uses inline WGSL and internal
-        // `try_join` for its 2 pipelines; building it here keeps the
-        // construction ordering identical to the pre-refactor flow.
-        let material_decal_composite = if bindings.decal_bg.is_some() {
-            Some(material_decal::composite::MaterialDecalComposite::new(ctx).await?)
-        } else {
-            None
-        };
+        // Decal composite — deferred-boot: NOT built here anymore. Its two
+        // inline-WGSL pipelines compile in `ensure_config_pipelines`
+        // (`ensure_decal_composite_compiled`), so build() stays compile-free.
+        let material_decal_composite: Option<material_decal::composite::MaterialDecalComposite> =
+            None;
 
         // HZB texture — tiny initial allocation, recreated against
         // the live viewport on the first frame. Allocated here
@@ -955,7 +951,6 @@ impl RenderPasses {
             decal_classify_bg,
             ranges.decal_classify,
             per_pass_descs.decal_is_msaa,
-            material_decal_composite,
         ) {
             (
                 Some(decal_bg),
@@ -963,14 +958,14 @@ impl RenderPasses {
                 Some(decal_classify_bg),
                 Some(decal_classify_range),
                 Some(decal_is_msaa),
-                Some(composite),
             ) => Some(MaterialDecalRenderPass {
                 bind_groups: decal_bg,
                 pipelines: MaterialDecalPipelines::from_resolved(
                     decal_is_msaa,
                     compute_keys[decal_range].to_vec(),
                 ),
-                composite,
+                // Deferred-boot: compiled by `ensure_decal_composite_compiled`.
+                composite: material_decal_composite,
                 classify_pass: material_decal::classify::render_pass::DecalClassifyRenderPass {
                     bind_groups: decal_classify_bg,
                     pipelines: DecalClassifyPipelines::from_resolved(

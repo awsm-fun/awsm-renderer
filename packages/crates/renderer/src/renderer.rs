@@ -305,7 +305,17 @@ pub struct AwsmRenderer {
     pub(crate) hud_resolve: crate::render::HudResolveState,
     /// Per-frame mipmap generator for the opaque RT — only dispatched
     /// when the visible material set contains a transmissive material.
-    pub opaque_mipgen: opaque_mipgen::OpaqueMipgen,
+    /// Transmission-only mipgen pipeline. `None` until the first commit whose
+    /// content has a transmissive material (`ensure_config_pipelines`) —
+    /// non-transmission scenes never compile it.
+    pub opaque_mipgen: Option<opaque_mipgen::OpaqueMipgen>,
+    /// Deferred-boot placeholder tracking: true while the corresponding
+    /// lighting resource is still the 1×1 build-time placeholder. Cleared by
+    /// the real `set_*` (app/scene-loader content) or by
+    /// `ensure_config_pipelines` generating the authored defaults.
+    skybox_is_placeholder: bool,
+    ibl_is_placeholder: bool,
+    brdf_lut_is_placeholder: bool,
     /// Shadow mapping subsystem. Owns the depth atlas, EVSM atlas,
     /// cube-array pool, descriptors, and the comparison / filterable
     /// samplers used by the shadow-aware shading passes.
@@ -581,7 +591,21 @@ impl AwsmRenderer {
                 .await?;
         }
 
-        // 4. The eager pass groups registered Pending at build are real now.
+        // 4. Real lighting defaults: build() installs 1×1 placeholders for
+        //    the skybox / IBL cubemaps and the BRDF LUT. If content hasn't
+        //    replaced them by now (the scene loader's environment apply
+        //    happens BEFORE its commit, so a real scene skips all of this),
+        //    generate the authored defaults from the config snapshot through
+        //    the same setter paths. One-shot per slot.
+        self.ensure_lighting_defaults().await?;
+
+        // 5. Content-gated pipelines that used to compile at build:
+        //    the transmission mipgen (only if a transmissive material is
+        //    actually attached) and the decal composite (feature-gated).
+        self.ensure_opaque_mipgen_compiled().await?;
+        self.ensure_decal_composite_compiled().await?;
+
+        // 6. The eager pass groups registered Pending at build are real now.
         let eager_ids = std::mem::take(&mut self.eager_pass_ids);
         for id in &eager_ids {
             self.pipeline_scheduler.mark_ready(*id);
@@ -594,6 +618,112 @@ impl AwsmRenderer {
             );
         }
         Ok(compiled)
+    }
+
+    /// Deferred-boot flag clears — called by the real `set_skybox` /
+    /// `set_ibl` / `set_brdf_lut` so `ensure_lighting_defaults` knows the
+    /// placeholder was replaced by content.
+    pub(crate) fn mark_skybox_real(&mut self) {
+        self.skybox_is_placeholder = false;
+    }
+    pub(crate) fn mark_ibl_real(&mut self) {
+        self.ibl_is_placeholder = false;
+    }
+    pub(crate) fn mark_brdf_lut_real(&mut self) {
+        self.brdf_lut_is_placeholder = false;
+    }
+
+    /// Swap any still-placeholder lighting resource for the authored default
+    /// (from the build-time config snapshot), through the same setter paths a
+    /// scene load uses. One-shot per slot; no-op once real content or a prior
+    /// call replaced it.
+    async fn ensure_lighting_defaults(&mut self) -> crate::error::Result<()> {
+        if self.skybox_is_placeholder {
+            let resources =
+                Skybox::prepare_resources(&self.gpu, self.config_spec.skybox_colors.clone())
+                    .await?;
+            let skybox = Skybox::register(&self.gpu, &mut self.textures, resources)?;
+            self.set_skybox(skybox);
+        }
+        if self.ibl_is_placeholder {
+            let (filtered, irradiance) = futures::try_join!(
+                IblTexture::prepare_resources(
+                    &self.gpu,
+                    self.config_spec.ibl_filtered_env_colors.clone()
+                ),
+                IblTexture::prepare_resources(
+                    &self.gpu,
+                    self.config_spec.ibl_irradiance_colors.clone()
+                ),
+            )?;
+            let ibl = Ibl::new(
+                IblTexture::register(&self.gpu, &mut self.textures, filtered)?,
+                IblTexture::register(&self.gpu, &mut self.textures, irradiance)?,
+            );
+            self.set_ibl(ibl);
+        }
+        if self.brdf_lut_is_placeholder {
+            let lut = BrdfLut::new(&self.gpu, self.config_spec.brdf_lut_options.clone()).await?;
+            self.set_brdf_lut(lut);
+        }
+        Ok(())
+    }
+
+    /// Compile the transmission mipgen pipeline iff any attached mesh's
+    /// material is transmissive and it isn't compiled yet. Content-gated —
+    /// non-transmission scenes never pay for it.
+    async fn ensure_opaque_mipgen_compiled(&mut self) -> crate::error::Result<()> {
+        if self.opaque_mipgen.is_some() {
+            return Ok(());
+        }
+        let any_transmission = self
+            .meshes
+            .iter()
+            .any(|(_, mesh)| self.materials.has_transmission(mesh.material_key));
+        if any_transmission {
+            self.opaque_mipgen = Some(opaque_mipgen::OpaqueMipgen::new(&self.gpu).await?);
+        }
+        Ok(())
+    }
+
+    /// Compile the decal composite's two inline-WGSL pipelines iff the decals
+    /// feature is on and they aren't compiled yet (moved out of build()).
+    async fn ensure_decal_composite_compiled(&mut self) -> crate::error::Result<()> {
+        let needs = self
+            .render_passes
+            .material_decal
+            .as_ref()
+            .is_some_and(|d| d.composite.is_none());
+        if !needs {
+            return Ok(());
+        }
+        let mut ctx = crate::render_passes::RenderPassInitContext {
+            gpu: &self.gpu,
+            bind_group_layouts: &mut self.bind_group_layouts,
+            pipeline_layouts: &mut self.pipeline_layouts,
+            pipelines: &mut self.pipelines,
+            shaders: &mut self.shaders,
+            render_texture_formats: &mut self.render_textures.formats,
+            textures: &mut self.textures,
+            features: &self.features,
+            anti_aliasing: &self.anti_aliasing,
+            post_processing: &self.post_processing,
+            prep_config: &self.prep_config,
+            max_edge_budget: self
+                .material_edge_buffers
+                .as_ref()
+                .map(|b| b.max_edge_budget)
+                .unwrap_or(
+                    crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+                ),
+        };
+        let composite =
+            crate::render_passes::material_decal::composite::MaterialDecalComposite::new(&mut ctx)
+                .await?;
+        if let Some(decal) = self.render_passes.material_decal.as_mut() {
+            decal.composite = Some(composite);
+        }
+        Ok(())
     }
 
     /// Drain every reserved (uncompiled) slot in the compute + render
@@ -1703,10 +1833,26 @@ impl AwsmRendererBuilder {
         };
         emit_phase(RendererLoadingPhase::Init);
 
+        // Init sub-phase wall-clock marks (same `boot_timing` target as the
+        // phase log) — Init used to lump device acquisition, resource
+        // generation, and descriptor staging into one number; these say
+        // where a slow Init actually goes.
+        let mut sub_t = web_sys::js_sys::Date::now();
+        let mut submark = move |label: &str| {
+            let now = web_sys::js_sys::Date::now();
+            tracing::info!(
+                target: "awsm_renderer::boot_timing",
+                "init sub-phase: {label} (+{:.0}ms)",
+                now - sub_t,
+            );
+            sub_t = now;
+        };
+
         let gpu = match gpu {
             AwsmRendererGpuBuilderKind::WebGpuBuilder(builder) => builder.build().await?,
             AwsmRendererGpuBuilderKind::WebGpuBuilt(gpu) => gpu,
         };
+        submark("WebGPU device acquired");
 
         // Resolve `indirect_first_instance` against device capability.
         // After this point any `Auto` in the toggle is replaced by
@@ -1840,25 +1986,34 @@ impl AwsmRendererBuilder {
         // transition fires further down, right before the
         // cross-renderer `Shaders::ensure_keys` call where actual
         // WGSL → MSL compilation begins.
+        // Deferred-boot: the IBL / skybox slots get 1×1 PLACEHOLDER cubemaps
+        // and the BRDF LUT a 1×1 zero texture — structurally valid (every
+        // lighting bind-group layout binds *something*) but generated for
+        // free. `ensure_config_pipelines` swaps in the real defaults (via
+        // the same `set_skybox`/`set_ibl`/`set_brdf_lut` paths a scene load
+        // uses) unless the app already replaced them — so an empty project
+        // never generates 256² cubemaps or bakes a 1024² LUT it won't show.
+        // The opaque-mipgen pipeline (transmission-only) is likewise
+        // deferred: compiled by `ensure_config_pipelines` on the first
+        // commit whose content actually has a transmissive material.
+        // The builder's authored colors + LUT options ride `config_spec`
+        // (snapshotted above) for the deferred real-default generation;
+        // the placeholders reuse the same colors so even a stray sample
+        // reads the authored tint.
+        let _ = brdf_lut_options;
         let (
             ibl_filtered_resources,
             ibl_irradiance_resources,
             skybox_resources,
             brdf_lut,
-            opaque_mipgen,
             mut render_passes_plan,
             render_textures,
         ) = futures::try_join!(
-            IblTexture::prepare_resources(&gpu, ibl_filtered_env_colors),
-            IblTexture::prepare_resources(&gpu, ibl_irradiance_colors),
-            Skybox::prepare_resources(&gpu, skybox_colors),
+            IblTexture::prepare_resources_sized(&gpu, ibl_filtered_env_colors, 1),
+            IblTexture::prepare_resources_sized(&gpu, ibl_irradiance_colors, 1),
+            Skybox::prepare_resources_sized(&gpu, skybox_colors, 1),
             async {
-                BrdfLut::new(&gpu, brdf_lut_options)
-                    .await
-                    .map_err(crate::error::AwsmError::from)
-            },
-            async {
-                opaque_mipgen::OpaqueMipgen::new(&gpu)
+                BrdfLut::placeholder(&gpu)
                     .await
                     .map_err(crate::error::AwsmError::from)
             },
@@ -1874,6 +2029,8 @@ impl AwsmRendererBuilder {
                 .map_err(crate::error::AwsmError::from)
             },
         )?;
+        let opaque_mipgen: Option<opaque_mipgen::OpaqueMipgen> = None;
+        submark("render textures + placeholder lighting resources + shader plan");
         // Move `render_pass_init` into a discard binding so its
         // `&mut`-borrows of bind_group_layouts / pipeline_layouts /
         // pipelines / shaders / render_texture_formats / textures /
@@ -2109,13 +2266,12 @@ impl AwsmRendererBuilder {
         )
         .await?;
 
-        // ── 3. EVSM validate join. Single await covering all 3
-        //       inline-shader validations in parallel.
-        let evsm_results =
-            futures::future::join_all(shadows_descs.evsm.validate_shader_futures()).await;
-        for result in evsm_results {
-            result.map_err(crate::shadows::AwsmShadowError::Core)?;
-        }
+        // ── 3. EVSM validation is NOT awaited (deferred-boot): the modules
+        //       were created synchronously inside `build_descriptors` and the
+        //       browser validates in the background. Any error surfaces at
+        //       the (already-deferred, Block B.1) EVSM pipeline creation with
+        //       the shader diagnostic attached — the same trade-off the
+        //       pooled `ensure_keys_sync_skip_validate` path accepts.
 
         // Register the 3 EVSM modules into the shader cache via
         // `insert_uncached`; the resulting `ShaderKey`s let us build
@@ -2127,6 +2283,7 @@ impl AwsmRendererBuilder {
             shaders.insert_uncached(shadows_descs.evsm.modules[2].clone()),
         ];
         let evsm_pipeline_cache_keys = shadows_descs.evsm.pipeline_cache_keys(evsm_shader_keys);
+        submark("shadow descriptors (EVSM modules created, validation deferred)");
 
         // ── 4. Now that all shaders are warm, drive RenderPasses
         //       phase 2 (build pipeline cache keys per pass) and the
@@ -2208,6 +2365,7 @@ impl AwsmRendererBuilder {
         //       wants to overlap the warmup with its asset fetches)
         //       drains the reserved slots in one batched, concurrent
         //       compile. An empty project therefore compiles NOTHING.
+        submark("pipeline descriptors staged");
         emit_phase(RendererLoadingPhase::BuildingPipelines);
         let compute_keys = pipelines.compute.reserve_keys(compute_pool);
         let render_keys = pipelines.render.reserve_keys(render_pool);
@@ -2353,6 +2511,9 @@ impl AwsmRendererBuilder {
             hud_resolve: crate::render::HudResolveState::default(),
             pipeline_scheduler: crate::pipeline_scheduler::PipelineScheduler::new(),
             eager_pass_ids: Vec::new(),
+            skybox_is_placeholder: true,
+            ibl_is_placeholder: true,
+            brdf_lut_is_placeholder: true,
             last_ensured_bucket_layout: None,
             // Flipped to true at end of build(). Used by config-change
             // APIs to enforce the race policy from the architecture doc.

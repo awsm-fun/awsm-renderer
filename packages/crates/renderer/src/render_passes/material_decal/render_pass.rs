@@ -20,7 +20,10 @@ use crate::{
 pub struct MaterialDecalRenderPass {
     pub bind_groups: MaterialDecalBindGroups,
     pub pipelines: MaterialDecalPipelines,
-    pub composite: MaterialDecalComposite,
+    /// Deferred-boot: `None` until `ensure_config_pipelines` compiles the
+    /// two inline-WGSL composite pipelines (they're not part of the pooled
+    /// shader cache by design). Dispatch warn-skips while missing.
+    pub composite: Option<MaterialDecalComposite>,
     pub classify_pass: DecalClassifyRenderPass,
 }
 
@@ -28,7 +31,7 @@ impl MaterialDecalRenderPass {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = MaterialDecalBindGroups::new(ctx).await?;
         let pipelines = MaterialDecalPipelines::new(ctx, &bind_groups).await?;
-        let composite = MaterialDecalComposite::new(ctx).await?;
+        let composite = Some(MaterialDecalComposite::new(ctx).await?);
         let classify_pass = DecalClassifyRenderPass::new(ctx).await?;
         Ok(Self {
             bind_groups,
@@ -84,8 +87,12 @@ impl MaterialDecalRenderPass {
 
         // Composite pass — blit decal_color onto transparent. Cheap
         // fullscreen-tri with per-fragment discard; per-frame cost is
-        // negligible vs the compute that just ran.
-        self.composite.render(ctx)?;
+        // negligible vs the compute that just ran. `None` only between a
+        // runtime decal insert and the next commit's config ensure — skip
+        // (the decal simply doesn't composite that frame).
+        if let Some(composite) = self.composite.as_ref() {
+            composite.render(ctx)?;
+        }
 
         Ok(())
     }
