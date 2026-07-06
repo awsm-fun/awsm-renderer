@@ -354,6 +354,9 @@ pub struct AwsmRenderer {
     /// futures are currently stubs — Stage 1 follow-up wires each
     /// `PipelineGroupDef` variant to the real compile path.
     pub pipeline_scheduler: crate::pipeline_scheduler::PipelineScheduler,
+    /// The eager pass groups registered at build (Pending). Marked Ready by
+    /// [`Self::ensure_config_pipelines`] once the deferred boot pool drains.
+    eager_pass_ids: Vec<crate::pipeline_scheduler::PipelineGroupId>,
     /// Bucket-layout fingerprint of the last `ensure_scene_pipelines`
     /// run. The render-driven compile path
     /// ([`crate::AwsmRenderer::ensure_scene_pipelines`]) compares the
@@ -516,11 +519,196 @@ impl AwsmRenderer {
     ///
     /// Cheap no-op when nothing changed since the last commit (the content-keyed
     /// caches make finalize + every compile a hit).
+    /// Compile everything the CURRENT config needs that isn't compiled yet —
+    /// the deferred boot pool (reserved at `build()`) plus any config-keyed
+    /// piece that re-keyed since (material-prep SSCS/denoise drift, the
+    /// MSAA edge-resolve set). Idempotent and cheap when warm: every ensure
+    /// is cache-keyed, so a second call is a no-op.
+    ///
+    /// `build()` compiles NOTHING — an empty project never pays for pipelines
+    /// it doesn't draw. This is the single warm-up point:
+    /// - [`Self::commit_load`] calls it first, so content loads Just Work and
+    ///   report the compile through their existing progress callback;
+    /// - an app that knows its config up front can call it right after
+    ///   `build()` to overlap the warm-up with its own asset fetching;
+    /// - config setters (`set_anti_aliasing`) drain the pool before their
+    ///   branch bookkeeping so `has_branch_for`-style guards see reality.
+    ///
+    /// Returns the number of pipelines compiled (0 when already warm).
+    pub async fn ensure_config_pipelines(&mut self) -> crate::error::Result<usize> {
+        // 1. Drain the reserved boot pool (concurrent; both classes overlap
+        //    inside Dawn's worker pool).
+        let compiled = self.compile_pending_pipelines().await?;
+
+        // 2. Material prep: re-derive the ACTIVE branch's cache keys from the
+        //    live config and ensure them. Catches SSCS / denoise re-keys that
+        //    happened after boot (`set_shadows_config` mirrors them into
+        //    `prep_config` but compiles nothing) — unchanged configs resolve
+        //    as cache hits.
+        self.ensure_material_prep_pipelines().await?;
+
+        // 3. The layout-level MSAA edge-resolve set (moved out of build()).
+        //    Cache-keyed like everything else; the commit path's
+        //    `launch_edge_resolve_compile` covers later bucket changes.
+        if self.material_edge_buffers.is_some() {
+            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
+                self.render_textures.formats.color,
+            )?;
+            let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
+            let pipelines::Pipelines {
+                render: _render_pipelines,
+                compute: compute_pipelines,
+            } = &mut self.pipelines;
+            self.render_passes
+                .material_opaque
+                .edge_pipelines
+                .ensure_compiled(
+                    &self.gpu,
+                    &mut self.shaders,
+                    compute_pipelines,
+                    &mut self.pipeline_layouts,
+                    &mut self.bind_group_layouts,
+                    &self.render_passes.material_opaque.bind_groups,
+                    &self.render_passes.material_opaque.edge_bind_group_layouts,
+                    &bucket_entries,
+                    &self.anti_aliasing,
+                    color_wgsl,
+                    None,
+                    self.prep_config.clamped_k(),
+                    self.prep_config.sscs_enabled,
+                    self.prep_config.sscs_step_count,
+                )
+                .await?;
+        }
+
+        // 4. The eager pass groups registered Pending at build are real now.
+        let eager_ids = std::mem::take(&mut self.eager_pass_ids);
+        for id in &eager_ids {
+            self.pipeline_scheduler.mark_ready(*id);
+        }
+        if !eager_ids.is_empty() {
+            tracing::info!(
+                target: "awsm_renderer::pipeline_readiness",
+                "ensure_config_pipelines: boot pool drained ({compiled} compiled), {} eager groups marked Ready",
+                eager_ids.len()
+            );
+        }
+        Ok(compiled)
+    }
+
+    /// Drain every reserved (uncompiled) slot in the compute + render
+    /// pipeline caches in one concurrent batch. Idempotent.
+    pub(crate) async fn compile_pending_pipelines(&mut self) -> crate::error::Result<usize> {
+        if self.pipelines.compute.pending_count() == 0
+            && self.pipelines.render.pending_count() == 0
+        {
+            return Ok(0);
+        }
+        let pipelines::Pipelines {
+            render: render_pipelines,
+            compute: compute_pipelines,
+        } = &mut self.pipelines;
+        let compute_fut = async {
+            compute_pipelines
+                .compile_pending(&self.gpu, &self.shaders, &self.pipeline_layouts)
+                .await
+                .map_err(crate::error::AwsmError::from)
+        };
+        let render_fut = async {
+            render_pipelines
+                .compile_pending(&self.gpu, &self.shaders, &self.pipeline_layouts)
+                .await
+                .map_err(crate::error::AwsmError::from)
+        };
+        let (c, r) = futures::future::try_join(compute_fut, render_fut).await?;
+        Ok(c + r)
+    }
+
+    /// Ensure the material-prep pipelines for the LIVE config (active MSAA
+    /// branch, edge under MSAA + device support, blur pair while denoise is
+    /// on). Re-derives cache keys from `prep_config`, so SSCS / denoise
+    /// changes re-key + recompile here; unchanged configs are cache hits.
+    pub(crate) async fn ensure_material_prep_pipelines(&mut self) -> crate::error::Result<()> {
+        use crate::render_passes::material_prep::render_pass::MaterialPrepPipelines;
+        if self.render_passes.material_prep.is_none() {
+            return Ok(());
+        }
+        let multisampled = self.anti_aliasing.has_msaa_checked()?;
+        let edge_resolve = multisampled && crate::edge_resolve_supported(&self.gpu);
+        self.shaders
+            .ensure_keys(
+                &self.gpu,
+                MaterialPrepPipelines::shader_cache_keys(multisampled, &self.prep_config),
+            )
+            .await?;
+        let mut ctx = crate::render_passes::RenderPassInitContext {
+            gpu: &self.gpu,
+            bind_group_layouts: &mut self.bind_group_layouts,
+            pipeline_layouts: &mut self.pipeline_layouts,
+            pipelines: &mut self.pipelines,
+            shaders: &mut self.shaders,
+            render_texture_formats: &mut self.render_textures.formats,
+            textures: &mut self.textures,
+            features: &self.features,
+            anti_aliasing: &self.anti_aliasing,
+            post_processing: &self.post_processing,
+            prep_config: &self.prep_config,
+            max_edge_budget: self
+                .material_edge_buffers
+                .as_ref()
+                .map(|b| b.max_edge_budget)
+                .unwrap_or(
+                    crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+                ),
+        };
+        let prep = self
+            .render_passes
+            .material_prep
+            .as_ref()
+            .expect("checked is_none above");
+        let descs = MaterialPrepPipelines::build_descriptors_for_config(
+            &mut ctx,
+            &prep.bind_groups,
+            multisampled,
+            edge_resolve,
+        )
+        .await?;
+        let keys = self
+            .pipelines
+            .compute
+            .ensure_keys(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                descs.pipeline_cache_keys.clone(),
+            )
+            .await?;
+        if let Some(prep) = self.render_passes.material_prep.as_mut() {
+            prep.pipelines.merge_resolved(&descs.slots, keys);
+        }
+        Ok(())
+    }
+
     pub async fn commit_load(
         &mut self,
         mut on_progress: impl FnMut(crate::loading::LoadingStats),
     ) -> crate::error::Result<crate::loading::LoadingStats> {
         use crate::loading::{LoadPhase, LoadingStats};
+
+        // ── Phase -1: the deferred boot pool — compile everything the current
+        //    config needs that build() only reserved (plus any config re-keys
+        //    since). Cheap no-op when already warm. Reported under `Compiling`
+        //    so loading UIs label the (first-visit-expensive) wait honestly.
+        {
+            let pending = self.pipelines.compute.pending_count() + self.pipelines.render.pending_count();
+            if pending > 0 {
+                self.load_phase = LoadPhase::Compiling;
+                let mut stats = self.loading_stats();
+                stats.pipelines_pending = pending;
+                on_progress(stats);
+            }
+            self.ensure_config_pipelines().await?;
+        }
 
         // ── Phase 0: resolve geometry — derive + upload each registered geometry's
         //    needed pass representations (visibility/transparency) from the union of
@@ -1872,11 +2060,16 @@ impl AwsmRendererBuilder {
                 &post_processing,
             ),
         );
-        // Phase transition: the actual WGSL → MSL compile happens
-        // inside the next await. Emit `CompilingShaders` here so the
-        // frontend's "Browser is compiling shaders…" label is correct.
+        // Deferred-boot: create every module SYNCHRONOUSLY without awaiting
+        // validation — `compile_shader` returns immediately and the browser
+        // compiles in the background; nothing blocks here. Validation errors
+        // surface through the (deferred) pipeline creations, which carry the
+        // shader diagnostics. This is what makes `build()` compile-free: the
+        // pipelines that consume these modules are RESERVED below and only
+        // compiled by `ensure_config_pipelines` (first `commit_load`, or the
+        // app's explicit call).
         emit_phase(RendererLoadingPhase::CompilingShaders);
-        shaders.ensure_keys(&gpu, all_shader_keys).await?;
+        shaders.ensure_keys_sync_skip_validate(&gpu, all_shader_keys)?;
 
         // ── 2. Tail descriptors (cache-hit shader resolutions for
         //       Shadows caster; Shadows internally issues 3 EVSM
@@ -2007,35 +2200,17 @@ impl AwsmRendererBuilder {
             s..render_pool.len()
         };
 
-        // ── 6. ONE try_join'd compute + render ensure_keys covering
-        //       every compute + render pipeline across the entire
-        //       renderer (~36 compute + ~27 render on a fully-
-        //       featured build). Split-borrow Pipelines.compute /
-        //       Pipelines.render so Dawn overlaps both classes inside
-        //       its worker pool.
-        let pipelines::Pipelines {
-            render: render_pipelines,
-            compute: compute_pipelines,
-        } = &mut pipelines;
-        let compute_fut = async {
-            compute_pipelines
-                .ensure_keys(&gpu, &shaders, &pipeline_layouts, compute_pool)
-                .await
-                .map_err(crate::error::AwsmError::from)
-        };
-        let render_fut = async {
-            render_pipelines
-                .ensure_keys(&gpu, &shaders, &pipeline_layouts, render_pool)
-                .await
-                .map_err(crate::error::AwsmError::from)
-        };
-        // Phase transition: every shader is now warm; the pipeline
-        // assembly happens inside the next await. Emit
-        // `BuildingPipelines` so the frontend's "Building render
-        // pipelines…" label is correct.
+        // ── 6. RESERVE every compute + render pipeline key across the
+        //       entire renderer (~36 compute + ~27 render on a fully-
+        //       featured build) WITHOUT compiling — the deferred boot
+        //       pool. `AwsmRenderer::ensure_config_pipelines` (called by
+        //       the first `commit_load`, or explicitly by an app that
+        //       wants to overlap the warmup with its asset fetches)
+        //       drains the reserved slots in one batched, concurrent
+        //       compile. An empty project therefore compiles NOTHING.
         emit_phase(RendererLoadingPhase::BuildingPipelines);
-        let (compute_keys, render_keys) =
-            futures::future::try_join(compute_fut, render_fut).await?;
+        let compute_keys = pipelines.compute.reserve_keys(compute_pool);
+        let render_keys = pipelines.render.reserve_keys(render_pool);
 
         // ── 7. Sync fold-up — slice resolved keys back to each
         //       subsystem.
@@ -2087,42 +2262,12 @@ impl AwsmRendererBuilder {
             crate::dynamic_materials::extras_pool::DEFAULT_CAPACITY_WORDS,
         )?;
 
-        // Edge-resolve pipeline compile (Priority 3 dispatch wiring). Only
-        // when MSAA is on AND device supports the required limits. We
-        // pass first_party-only bucket entries — the edge pipelines
-        // recompile through the same path when dynamic materials
-        // register (Stage 1.14 follow-up will route through the
-        // scheduler).
-        if edge_resolve_enabled {
-            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
-                render_textures.formats.color,
-            )?;
-            let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
-            let pipelines::Pipelines {
-                render: _render_pipelines,
-                compute: compute_pipelines,
-            } = &mut pipelines;
-            render_passes
-                .material_opaque
-                .edge_pipelines
-                .ensure_compiled(
-                    &gpu,
-                    &mut shaders,
-                    compute_pipelines,
-                    &mut pipeline_layouts,
-                    &mut bind_group_layouts,
-                    &render_passes.material_opaque.bind_groups,
-                    &render_passes.material_opaque.edge_bind_group_layouts,
-                    &bucket_entries,
-                    &anti_aliasing,
-                    color_wgsl,
-                    None,
-                    prep_config.clamped_k(),
-                    prep_config.sscs_enabled,
-                    prep_config.sscs_step_count,
-                )
-                .await?;
-        }
+        // NOTE: the layout-level edge-resolve pipeline set (Priority 3
+        // dispatch wiring) is no longer compiled here — it moved into
+        // `ensure_config_pipelines` (the deferred boot pool's drain), keyed
+        // off the same MSAA + device gate. The commit path also rebuilds it
+        // for config changes via `ensure_scene_pipelines` →
+        // `launch_edge_resolve_compile` (cache-keyed, so overlaps are hits).
 
         let mut _self = AwsmRenderer {
             gpu,
@@ -2207,6 +2352,7 @@ impl AwsmRendererBuilder {
             renderable_pool: crate::renderable::RenderablePool::default(),
             hud_resolve: crate::render::HudResolveState::default(),
             pipeline_scheduler: crate::pipeline_scheduler::PipelineScheduler::new(),
+            eager_pass_ids: Vec::new(),
             last_ensured_bucket_layout: None,
             // Flipped to true at end of build(). Used by config-change
             // APIs to enforce the race policy from the architecture doc.
@@ -2317,14 +2463,17 @@ impl AwsmRendererBuilder {
             let pass_ids = _self
                 .pipeline_scheduler
                 .submit_pipeline_group_batch(eager_passes);
-            for id in &pass_ids {
-                if matches!(id, PipelineGroupId::Pass(_)) {
-                    _self.pipeline_scheduler.mark_ready(*id);
-                }
-            }
+            // Deferred-boot: the pass pipelines are RESERVED, not compiled, so
+            // the groups stay Pending here. `ensure_config_pipelines` marks
+            // them Ready once the reserved pool actually drains.
+            _self.eager_pass_ids = pass_ids
+                .iter()
+                .copied()
+                .filter(|id| matches!(id, PipelineGroupId::Pass(_)))
+                .collect();
             tracing::info!(
                 target: "awsm_renderer::pipeline_readiness",
-                "eager-set registered with scheduler: {} groups marked Ready",
+                "eager-set registered with scheduler: {} groups Pending until ensure_config_pipelines",
                 pass_ids.len()
             );
         }

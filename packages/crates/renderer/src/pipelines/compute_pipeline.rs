@@ -27,7 +27,11 @@ use crate::{
 
 /// Cache of compute pipelines by key.
 pub struct ComputePipelines {
-    lookup: SlotMap<ComputePipelineKey, web_sys::GpuComputePipeline>,
+    // `None` = a RESERVED slot: the key was handed out (build()'s deferred
+    // boot pool) but the pipeline hasn't compiled yet. `compile_pending`
+    // drains every reserved slot in one batch; `get_key`/`ensure_keys` treat
+    // a reserved cache hit as a miss that fills the reserved slot in place.
+    lookup: SlotMap<ComputePipelineKey, Option<web_sys::GpuComputePipeline>>,
     cache: HashMap<ComputePipelineCacheKey, ComputePipelineKey>,
 }
 
@@ -176,9 +180,11 @@ impl ComputePipelines {
         pipeline_layouts: &PipelineLayouts,
         cache_key: ComputePipelineCacheKey,
     ) -> Result<ComputePipelineKey> {
-        // Fast path: cache hit, no allocation, no async.
-        if let Some(key) = self.cache.get(&cache_key) {
-            return Ok(*key);
+        // Fast path: RESOLVED cache hit, no allocation, no async. A reserved
+        // (pending) hit falls through to `ensure_keys`, which compiles into
+        // the reserved slot.
+        if let Some(key) = self.resolved_cache_hit(&cache_key) {
+            return Ok(key);
         }
         let keys = self
             .ensure_keys(gpu, shaders, pipeline_layouts, std::iter::once(cache_key))
@@ -227,8 +233,8 @@ impl ComputePipelines {
         let mut unique_miss_targets: Vec<Vec<usize>> = Vec::new();
         let mut unique_miss_index_for_key: HashMap<ComputePipelineCacheKey, usize> = HashMap::new();
         for (i, k) in inputs.iter().enumerate() {
-            if let Some(key) = self.cache.get(k) {
-                slot[i] = Some(*key);
+            if let Some(key) = self.resolved_cache_hit(k) {
+                slot[i] = Some(key);
             } else if let Some(&u_idx) = unique_miss_index_for_key.get(k) {
                 unique_miss_targets[u_idx].push(i);
             } else {
@@ -444,25 +450,39 @@ impl ComputePipelines {
             .zip(results)
             .zip(pending_targets)
         {
-            // Cache-hit early-rejoin path: if the cache already has the
-            // key (e.g. a parallel-submit raced to install first), skip
-            // the duplicate install.
+            // Cache-hit early-rejoin path: if the cache already has a
+            // RESOLVED key (e.g. a parallel-submit raced to install first),
+            // skip the duplicate install. A RESERVED entry instead receives
+            // this pipeline into its existing slot, so every holder of the
+            // reserved key sees it resolve.
             let cache_key_ref = inputs_owned[input_idx]
                 .as_ref()
                 .expect("pending input slot must own its key");
             if let Some(existing) = self.cache.get(cache_key_ref).copied() {
+                if self.lookup.get(existing).is_some_and(Option::is_some) {
+                    for i in input_targets {
+                        slot[i] = Some(existing);
+                    }
+                    // Drop the now-unused descriptor result if it was Ok;
+                    // the cache hit wins (the racing promise's pipeline is
+                    // discarded silently).
+                    let _ = result;
+                    continue;
+                }
+                let pipeline: web_sys::GpuComputePipeline = result.map_err(|e| {
+                    AwsmComputePipelineError::Core(AwsmCoreError::pipeline_creation(e))
+                })?;
+                if let Some(entry) = self.lookup.get_mut(existing) {
+                    *entry = Some(pipeline);
+                }
                 for i in input_targets {
                     slot[i] = Some(existing);
                 }
-                // Drop the now-unused descriptor result if it was Ok;
-                // the cache hit wins (the racing promise's pipeline is
-                // discarded silently).
-                let _ = result;
                 continue;
             }
             let pipeline: web_sys::GpuComputePipeline = result
                 .map_err(|e| AwsmComputePipelineError::Core(AwsmCoreError::pipeline_creation(e)))?;
-            let key = self.lookup.insert(pipeline);
+            let key = self.lookup.insert(Some(pipeline));
             let cache_key = inputs_owned[input_idx]
                 .take()
                 .expect("pending input slot must own its key");
@@ -481,7 +501,77 @@ impl ComputePipelines {
     /// (Block D.1 PART 2) to skip already-installed sub-pipelines
     /// before kicking off a new compile.
     pub fn cache_lookup(&self, cache_key: &ComputePipelineCacheKey) -> Option<&ComputePipelineKey> {
-        self.cache.get(cache_key)
+        // A RESERVED (pending) entry is not "installed" — callers use this to
+        // skip compiles, so reporting it would leave the slot empty forever.
+        self.cache
+            .get(cache_key)
+            .filter(|key| self.lookup.get(**key).is_some_and(Option::is_some))
+    }
+
+    /// RESOLVED-only cache probe: `Some(key)` iff the cache key maps to a slot
+    /// whose pipeline has actually compiled. Reserved (pending) entries return
+    /// `None` so compile paths treat them as misses that fill the slot.
+    fn resolved_cache_hit(&self, cache_key: &ComputePipelineCacheKey) -> Option<ComputePipelineKey> {
+        self.cache
+            .get(cache_key)
+            .copied()
+            .filter(|key| self.lookup.get(*key).is_some_and(Option::is_some))
+    }
+
+    /// Allocate keys for a batch of cache keys WITHOUT compiling — the
+    /// deferred boot pool. Each miss gets a reserved (empty) slot that
+    /// `compile_pending` (or any later `ensure_keys`/`get_key` on the same
+    /// cache key) fills in place; hits (resolved or reserved) return the
+    /// existing key. Sync: no Dawn work at all.
+    pub fn reserve_keys<I>(&mut self, cache_keys: I) -> Vec<ComputePipelineKey>
+    where
+        I: IntoIterator<Item = ComputePipelineCacheKey>,
+    {
+        cache_keys
+            .into_iter()
+            .map(|cache_key| {
+                if let Some(key) = self.cache.get(&cache_key) {
+                    *key
+                } else {
+                    let key = self.lookup.insert(None);
+                    self.cache.insert(cache_key, key);
+                    key
+                }
+            })
+            .collect()
+    }
+
+    /// Number of reserved slots still awaiting their compile.
+    pub fn pending_count(&self) -> usize {
+        self.lookup.values().filter(|v| v.is_none()).count()
+    }
+
+    /// Compile every reserved slot in one batched pass (the deferred boot
+    /// pool's drain — `AwsmRenderer::ensure_config_pipelines`). Idempotent:
+    /// no-op when nothing is pending. Returns how many pipelines compiled.
+    pub async fn compile_pending(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        shaders: &Shaders,
+        pipeline_layouts: &PipelineLayouts,
+    ) -> Result<usize> {
+        let pending: Vec<ComputePipelineCacheKey> = self
+            .cache
+            .iter()
+            .filter(|(_, key)| self.lookup.get(**key).is_some_and(|v| v.is_none()))
+            .map(|(cache_key, _)| cache_key.clone())
+            .collect();
+        if pending.is_empty() {
+            return Ok(0);
+        }
+        let n = pending.len();
+        let mut prepped = Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, pending)?;
+        let promises = std::mem::take(&mut prepped.promises);
+        let results = futures::future::join_all(promises).await;
+        // Install fills the reserved slots via the early-rejoin path (the
+        // cache already maps every input to its reserved key).
+        self.ensure_keys_install(prepped.prep, results)?;
+        Ok(n)
     }
 
     /// Sync install of a resolved `GpuComputePipeline` — inserts into
@@ -497,18 +587,27 @@ impl ComputePipelines {
         pipeline: web_sys::GpuComputePipeline,
         cache_key: ComputePipelineCacheKey,
     ) -> ComputePipelineKey {
-        if let Some(existing) = self.cache.get(&cache_key) {
-            return *existing;
+        if let Some(existing) = self.cache.get(&cache_key).copied() {
+            // A reserved slot receives the pipeline in place; a resolved one
+            // wins the race and the parameter pipeline is dropped.
+            if let Some(entry @ None) = self.lookup.get_mut(existing) {
+                *entry = Some(pipeline);
+            }
+            return existing;
         }
-        let key = self.lookup.insert(pipeline);
+        let key = self.lookup.insert(Some(pipeline));
         self.cache.insert(cache_key, key);
         key
     }
 
-    /// Returns a compute pipeline for a key.
+    /// Returns a compute pipeline for a key. A reserved-but-uncompiled slot
+    /// reports `NotFound` — dispatch paths never see one once the commit /
+    /// config-ensure invariant holds (`commit_load` drains reserved slots
+    /// before `scene_committed` flips true).
     pub fn get(&self, key: ComputePipelineKey) -> Result<&web_sys::GpuComputePipeline> {
         self.lookup
             .get(key)
+            .and_then(Option::as_ref)
             .ok_or(AwsmComputePipelineError::NotFound(key))
     }
 }

@@ -32,7 +32,9 @@ use crate::{
 
 /// Cache of render pipelines by key.
 pub struct RenderPipelines {
-    lookup: SlotMap<RenderPipelineKey, web_sys::GpuRenderPipeline>,
+    // `None` = a RESERVED slot (see `ComputePipelines::lookup` — same
+    // deferred-boot-pool mechanism).
+    lookup: SlotMap<RenderPipelineKey, Option<web_sys::GpuRenderPipeline>>,
     cache: HashMap<RenderPipelineCacheKey, RenderPipelineKey>,
 }
 
@@ -100,9 +102,11 @@ impl RenderPipelines {
         pipeline_layouts: &PipelineLayouts,
         cache_key: RenderPipelineCacheKey,
     ) -> Result<RenderPipelineKey> {
-        // Fast path: cache hit, no allocation, no async.
-        if let Some(key) = self.cache.get(&cache_key) {
-            return Ok(*key);
+        // Fast path: RESOLVED cache hit, no allocation, no async. A reserved
+        // (pending) hit falls through to `ensure_keys`, which compiles into
+        // the reserved slot.
+        if let Some(key) = self.resolved_cache_hit(&cache_key) {
+            return Ok(key);
         }
         let keys = self
             .ensure_keys(gpu, shaders, pipeline_layouts, std::iter::once(cache_key))
@@ -154,8 +158,8 @@ impl RenderPipelines {
         let mut unique_miss_targets: Vec<Vec<usize>> = Vec::new();
         let mut unique_miss_index_for_key: HashMap<RenderPipelineCacheKey, usize> = HashMap::new();
         for (i, k) in inputs.iter().enumerate() {
-            if let Some(key) = self.cache.get(k) {
-                slot[i] = Some(*key);
+            if let Some(key) = self.resolved_cache_hit(k) {
+                slot[i] = Some(key);
             } else if let Some(&u_idx) = unique_miss_index_for_key.get(k) {
                 unique_miss_targets[u_idx].push(i);
             } else {
@@ -334,15 +338,28 @@ impl RenderPipelines {
                 .as_ref()
                 .expect("pending input slot must own its key");
             if let Some(existing) = self.cache.get(cache_key_ref).copied() {
+                if self.lookup.get(existing).is_some_and(Option::is_some) {
+                    for i in input_targets {
+                        slot[i] = Some(existing);
+                    }
+                    let _ = result;
+                    continue;
+                }
+                // RESERVED entry — this compile fills the existing slot.
+                let pipeline: web_sys::GpuRenderPipeline = result.map_err(|e| {
+                    AwsmRenderPipelineError::Core(AwsmCoreError::pipeline_creation(e))
+                })?;
+                if let Some(entry) = self.lookup.get_mut(existing) {
+                    *entry = Some(pipeline);
+                }
                 for i in input_targets {
                     slot[i] = Some(existing);
                 }
-                let _ = result;
                 continue;
             }
             let pipeline: web_sys::GpuRenderPipeline = result
                 .map_err(|e| AwsmRenderPipelineError::Core(AwsmCoreError::pipeline_creation(e)))?;
-            let key = self.lookup.insert(pipeline);
+            let key = self.lookup.insert(Some(pipeline));
             let cache_key = inputs_owned[input_idx]
                 .take()
                 .expect("pending input slot must own its key");
@@ -356,17 +373,76 @@ impl RenderPipelines {
     }
 
     /// Sync cache peek: returns the already-resolved key for a cache
-    /// key, or `None` if it was never compiled. Used by the per-frame
-    /// HUD-resolve kick to install already-cached variants immediately
-    /// and only issue `createRenderPipelineAsync` for genuine misses.
+    /// key, or `None` if it was never compiled (reserved-but-pending
+    /// entries also report `None` — callers use this to skip compiles).
     pub fn get_cached_key(&self, cache_key: &RenderPipelineCacheKey) -> Option<RenderPipelineKey> {
-        self.cache.get(cache_key).copied()
+        self.resolved_cache_hit(cache_key)
     }
 
-    /// Returns a render pipeline for a key.
+    /// RESOLVED-only cache probe (see `ComputePipelines::resolved_cache_hit`).
+    fn resolved_cache_hit(&self, cache_key: &RenderPipelineCacheKey) -> Option<RenderPipelineKey> {
+        self.cache
+            .get(cache_key)
+            .copied()
+            .filter(|key| self.lookup.get(*key).is_some_and(Option::is_some))
+    }
+
+    /// Allocate keys for a batch of cache keys WITHOUT compiling — the
+    /// deferred boot pool (see `ComputePipelines::reserve_keys`).
+    pub fn reserve_keys<I>(&mut self, cache_keys: I) -> Vec<RenderPipelineKey>
+    where
+        I: IntoIterator<Item = RenderPipelineCacheKey>,
+    {
+        cache_keys
+            .into_iter()
+            .map(|cache_key| {
+                if let Some(key) = self.cache.get(&cache_key) {
+                    *key
+                } else {
+                    let key = self.lookup.insert(None);
+                    self.cache.insert(cache_key, key);
+                    key
+                }
+            })
+            .collect()
+    }
+
+    /// Number of reserved slots still awaiting their compile.
+    pub fn pending_count(&self) -> usize {
+        self.lookup.values().filter(|v| v.is_none()).count()
+    }
+
+    /// Compile every reserved slot in one batched pass (the deferred boot
+    /// pool's drain). Idempotent; returns how many pipelines compiled.
+    pub async fn compile_pending(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        shaders: &Shaders,
+        pipeline_layouts: &PipelineLayouts,
+    ) -> Result<usize> {
+        let pending: Vec<RenderPipelineCacheKey> = self
+            .cache
+            .iter()
+            .filter(|(_, key)| self.lookup.get(**key).is_some_and(|v| v.is_none()))
+            .map(|(cache_key, _)| cache_key.clone())
+            .collect();
+        if pending.is_empty() {
+            return Ok(0);
+        }
+        let n = pending.len();
+        let mut prepped = Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, pending)?;
+        let promises = std::mem::take(&mut prepped.promises);
+        let results = futures::future::join_all(promises).await;
+        self.ensure_keys_install(prepped.prep, results)?;
+        Ok(n)
+    }
+
+    /// Returns a render pipeline for a key. A reserved-but-uncompiled slot
+    /// reports `NotFound` (see `ComputePipelines::get`).
     pub fn get(&self, key: RenderPipelineKey) -> Result<&web_sys::GpuRenderPipeline> {
         self.lookup
             .get(key)
+            .and_then(Option::as_ref)
             .ok_or(AwsmRenderPipelineError::NotFound(key))
     }
 }

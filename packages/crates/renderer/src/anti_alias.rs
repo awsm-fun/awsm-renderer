@@ -72,6 +72,11 @@ impl AwsmRenderer {
         if self.anti_aliasing == aa {
             return Ok(());
         }
+        // Deferred-boot: drain any still-reserved boot-pool slots first, so
+        // the branch guards below (`has_branch_for`) reflect COMPILED reality
+        // — a reserved-but-pending branch must not be mistaken for a ready
+        // one. No-op after the first commit_load / ensure_config_pipelines.
+        self.compile_pending_pipelines().await?;
         let prev_msaa_on = self.anti_aliasing.has_msaa_checked()?;
         self.anti_aliasing = aa;
         let new_msaa_on = self.anti_aliasing.has_msaa_checked()?;
