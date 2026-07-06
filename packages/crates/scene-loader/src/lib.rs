@@ -773,6 +773,29 @@ pub async fn load_scene_for_player(
     assets: &impl SceneAssets,
     mut on_phase: impl FnMut(LoadPhase),
 ) -> Result<LoadedScene> {
+    // ── Asset prefetch ───────────────────────────────────────────────────────
+    // Wrap the source so the bundle files we can ENUMERATE up front — mesh
+    // glbs, their LOD manifests, the environment cubemaps — are fetched
+    // concurrently now and served from memory when the (serial, renderer-
+    // holding) walk below consumes them. The wrapper also dedupes: a glb
+    // shared by N nodes downloads once, not N times. Texture images aren't
+    // seeded here — they have their own decode-level prefetch below.
+    let assets = &crate::assets::PrefetchedAssets::new(assets);
+    {
+        let mut paths: Vec<String> = scene
+            .environment
+            .ktx_asset_ids()
+            .into_iter()
+            .map(awsm_renderer_scene::env_ktx_path)
+            .collect();
+        collect_prefetch_paths(&scene.nodes, scene, &mut paths);
+        assets
+            .seed(paths, |done, total| {
+                on_phase(LoadPhase::FetchingAssets { done, total })
+            })
+            .await;
+    }
+
     // ── Phase 0: register custom-WGSL materials ──────────────────────────────
     // Build + register each custom material (material.json + wgsl) once; nodes
     // assigned one resolve to its shader id below. Built-in materials have no
@@ -792,9 +815,59 @@ pub async fn load_scene_for_player(
     // they are distinct renderer materials.
     let renderables = collect_renderables(&scene.nodes);
     let total = renderables.len();
+
+    // ── Texture prefetch ─────────────────────────────────────────────────────
+    // Fetch + decode every unique texture image the scene's materials (and
+    // their variants) reference, CONCURRENTLY — network fetches and the
+    // browser's `createImageBitmap` decode threads overlap instead of
+    // serializing one slot at a time through the material walk below. On a
+    // deployed bundle this step dominates the load, so it reports live
+    // per-image progress. Anything the collector misses (sprite atlases,
+    // decal textures) falls back to `load_texture`'s on-demand path — same
+    // result, just without the overlap. The cache also dedupes pool staging:
+    // an image shared by N material slots uploads ONCE per color semantics
+    // instead of N times.
+    let mut cache = texture::TextureCache::default();
+    {
+        let mut seen = std::collections::HashSet::new();
+        let mut ids: Vec<awsm_renderer_scene::AssetId> = Vec::new();
+        let mut collect = |inst: &MaterialInstance| {
+            if custom.contains_key(&inst.asset) {
+                // Custom-WGSL assignment: only its texture overrides bind images.
+                for tref in inst.texture_overrides.values() {
+                    if seen.insert(tref.asset) {
+                        ids.push(tref.asset);
+                    }
+                }
+            } else {
+                for tref in inst.inline.texture_refs() {
+                    if seen.insert(tref.asset) {
+                        ids.push(tref.asset);
+                    }
+                }
+            }
+        };
+        for (_, material) in &renderables {
+            if let Some(inst) = material {
+                collect(inst);
+            }
+        }
+        for (_, variants) in collect_material_variants(&scene.nodes) {
+            for v in variants {
+                collect(&v.instance);
+            }
+        }
+        cache
+            .prefetch(assets, ids, |done, total| {
+                on_phase(LoadPhase::FetchingTextures { done, total })
+            })
+            .await;
+    }
+    let cache = &mut cache;
+
     for (i, (id, material)) in renderables.iter().enumerate() {
         on_phase(LoadPhase::BuildingMaterials { done: i, total });
-        let key = resolve_material(renderer, *material, placeholder, assets, &custom).await;
+        let key = resolve_material(renderer, cache, *material, placeholder, assets, &custom).await;
         maps.node_materials.insert(*id, key);
         // A custom-WGSL asset's first built key is the one a Uniform track drives
         // (an asset assigned to N nodes mints N keys; mirror the editor's
@@ -816,8 +889,15 @@ pub async fn load_scene_for_player(
     for (id, variants) in collect_material_variants(&scene.nodes) {
         let mut entries = Vec::with_capacity(variants.len());
         for v in variants {
-            let key =
-                resolve_material(renderer, Some(&v.instance), placeholder, assets, &custom).await;
+            let key = resolve_material(
+                renderer,
+                cache,
+                Some(&v.instance),
+                placeholder,
+                assets,
+                &custom,
+            )
+            .await;
             entries.push(LoadedMaterialVariant {
                 id: v.id,
                 name: v.name.clone(),
@@ -843,6 +923,7 @@ pub async fn load_scene_for_player(
     for node in &scene.nodes {
         materialize(
             renderer,
+            cache,
             scene,
             node,
             None,
@@ -946,7 +1027,11 @@ pub async fn load_scene_for_player(
                     done: stats.geometry_uploaded,
                     total: stats.geometry_total,
                 }),
-                P::FinalizingTextures => on_phase(LoadPhase::UploadingTextures),
+                P::FinalizingTextures => on_phase(LoadPhase::UploadingTextures {
+                    done: stats.textures_uploaded,
+                    total: stats.textures_total,
+                }),
+                P::PreparingMaterials => on_phase(LoadPhase::PreparingMaterials),
                 P::Compiling => on_phase(LoadPhase::CompilingPipelines(CompileProgress {
                     materials_pending: stats.pipelines_pending,
                     materials_ready: stats.pipelines_ready,
@@ -958,6 +1043,48 @@ pub async fn load_scene_for_player(
         })
         .await?;
     Ok(loaded)
+}
+
+/// Walk the node tree collecting every bundle path the materialize walk below
+/// will fetch that we can ENUMERATE up front — mesh / skinned-rig glbs and
+/// (with the `lod` feature, for opted-in nodes) their LOD manifests — for
+/// [`assets::PrefetchedAssets`] seeding. Path derivations mirror the
+/// consumption sites exactly ([`load_glb_under`], [`load_static_lod_chain`],
+/// [`load_skinned_lod_chain`]); a drifted path is only a cache miss, never a
+/// wrong load. Cluster meshes are skipped — their pages stream on demand by
+/// design.
+fn collect_prefetch_paths(nodes: &[EditorNode], scene: &Scene, paths: &mut Vec<String>) {
+    #[cfg(feature = "lod")]
+    let manifest_path = |asset_id: String| {
+        format!(
+            "{ASSETS_DIR}/{}",
+            awsm_renderer_lod_bake::lod_manifest_filename(&asset_id)
+        )
+    };
+    for node in nodes {
+        match &node.kind {
+            NodeKind::Mesh { mesh, .. } => {
+                if let Some(entry) = scene.assets.get(mesh.0) {
+                    if matches!(entry.source, AssetSource::Mesh(RuntimeMesh::Glb)) {
+                        paths.push(format!("{ASSETS_DIR}/{}", mesh_glb_filename(mesh.0)));
+                        #[cfg(feature = "lod")]
+                        if node_lod_enabled(&node.kind) {
+                            paths.push(manifest_path(mesh.0.to_string()));
+                        }
+                    }
+                }
+            }
+            NodeKind::SkinnedMesh { skin, .. } => {
+                paths.push(format!("{ASSETS_DIR}/{}", mesh_glb_filename(skin.source)));
+                #[cfg(feature = "lod")]
+                if node_lod_enabled(&node.kind) {
+                    paths.push(manifest_path(skin.source.to_string()));
+                }
+            }
+            _ => {}
+        }
+        collect_prefetch_paths(&node.children, scene, paths);
+    }
 }
 
 /// Walk the tree collecting each mesh node's material palette (see
@@ -1008,6 +1135,7 @@ fn collect_renderables(nodes: &[EditorNode]) -> Vec<(NodeId, Option<&MaterialIns
 #[allow(clippy::too_many_arguments)]
 async fn materialize(
     renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
     scene: &Scene,
     node: &EditorNode,
     parent: Option<TransformKey>,
@@ -1035,6 +1163,7 @@ async fn materialize(
     if node.prefab {
         let tmpl = capture_prefab(
             renderer,
+            cache,
             scene,
             node,
             None,
@@ -1213,8 +1342,7 @@ async fn materialize(
                     }
                 }
                 if joints_resolved < skin.joints.len() {
-                    let mut available: Vec<usize> =
-                        node_index_transforms.keys().copied().collect();
+                    let mut available: Vec<usize> = node_index_transforms.keys().copied().collect();
                     available.sort_unstable();
                     tracing::warn!(
                         "skinned mesh `{}`: only {}/{} skin joints resolved — joint indices {:?} vs glb node indices {:?}",
@@ -1339,12 +1467,12 @@ async fn materialize(
             }
         }
         NodeKind::Sprite(def) => {
-            materialize_sprite(renderer, assets, def, node.id, tk, maps, loaded).await?;
+            materialize_sprite(renderer, cache, assets, def, node.id, tk, maps, loaded).await?;
         }
         NodeKind::Decal(cfg) => {
             // Skip a hidden node's decal entirely (no per-decal hide toggle).
             if effective_visible {
-                materialize_decal(renderer, assets, cfg, node.id, node_world, maps).await?;
+                materialize_decal(renderer, cache, assets, cfg, node.id, node_world, maps).await?;
             }
         }
         NodeKind::InstancesAlongCurve(def) => {
@@ -1397,6 +1525,7 @@ async fn materialize(
     for child in &node.children {
         Box::pin(materialize(
             renderer,
+            cache,
             scene,
             child,
             Some(tk),
@@ -1441,6 +1570,7 @@ async fn materialize(
 #[allow(clippy::too_many_arguments)]
 async fn capture_prefab(
     renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
     scene: &Scene,
     node: &EditorNode,
     parent: Option<NodeId>,
@@ -1468,6 +1598,7 @@ async fn capture_prefab(
             // Nested prefab → captured as its OWN template; not inlined here.
             let tmpl = Box::pin(capture_prefab(
                 renderer,
+                cache,
                 scene,
                 n,
                 None,
@@ -1484,7 +1615,7 @@ async fn capture_prefab(
         // Build this node's meshes (hidden) under the scratch transform; non-mesh
         // kinds yield an empty vec (their transform is still recorded).
         let template_meshes =
-            build_node_meshes(renderer, scene, n, scratch, mat, assets, true).await?;
+            build_node_meshes(renderer, cache, scene, n, scratch, mat, assets, true).await?;
         // A.3: capture the non-mesh renderable to replay per instance. The decal
         // texture is resolved NOW (assets are available here; `instantiate` is
         // asset-free). Light/Camera/Line carry their authored config verbatim.
@@ -1493,7 +1624,7 @@ async fn capture_prefab(
             NodeKind::Camera(cfg) => PrefabReplay::Camera(cfg.clone()),
             NodeKind::Line(def) => PrefabReplay::Line(def.clone()),
             NodeKind::Decal(cfg) => PrefabReplay::Decal {
-                texture_index: resolve_decal_texture_index(renderer, assets, cfg).await,
+                texture_index: resolve_decal_texture_index(renderer, cache, assets, cfg).await,
                 alpha: cfg.alpha,
             },
             NodeKind::ParticleEmitter(def) => PrefabReplay::ParticleEmitter(def.clone()),
@@ -1590,8 +1721,10 @@ fn prefab_subtree_layout(root: &EditorNode) -> Vec<PrefabLayoutStep<'_>> {
 /// prefab path stores them on the template). Sprites build their own material
 /// here (sprites aren't in Phase-1 `collect_renderables`), so `mat` is ignored
 /// for the `Sprite` arm.
+#[allow(clippy::too_many_arguments)]
 async fn build_node_meshes(
     renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
     scene: &Scene,
     node: &EditorNode,
     tk: TransformKey,
@@ -1634,7 +1767,7 @@ async fn build_node_meshes(
             keys.extend(glb_keys);
         }
         NodeKind::Sprite(def) => {
-            let key = build_sprite_mesh(renderer, assets, def, tk).await?;
+            let key = build_sprite_mesh(renderer, cache, assets, def, tk).await?;
             keys.push(key);
         }
         // Non-mesh kinds: no geometry to share. Their transform is still recorded
@@ -1710,8 +1843,10 @@ async fn materialize_line(
 /// [`AwsmRenderer::set_mesh_billboard_mode`] (the `Mesh.billboard_mode` field the
 /// vertex shader already reads — see `apply_vertex.wgsl`). `None` leaves the quad
 /// world-aligned as authored.
+#[allow(clippy::too_many_arguments)]
 async fn materialize_sprite(
     renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
     assets: &impl SceneAssets,
     def: &SpriteDef,
     node_id: NodeId,
@@ -1719,7 +1854,7 @@ async fn materialize_sprite(
     maps: &mut AnimResolveMaps,
     loaded: &mut LoadedScene,
 ) -> Result<()> {
-    let key = build_sprite_mesh(renderer, assets, def, tk).await?;
+    let key = build_sprite_mesh(renderer, cache, assets, def, tk).await?;
     maps.meshes.entry(node_id).or_insert(key);
     maps.node_meshes.entry(node_id).or_default().push(key);
     loaded.meshes.push(key);
@@ -1732,6 +1867,7 @@ async fn materialize_sprite(
 /// build their own material here (they aren't in Phase-1 `collect_renderables`).
 async fn build_sprite_mesh(
     renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
     assets: &impl SceneAssets,
     def: &SpriteDef,
     tk: TransformKey,
@@ -1753,7 +1889,7 @@ async fn build_sprite_mesh(
     // base-color slot. `None` keeps the slot unbound (a flat-tint sprite).
     let tex = match &def.texture {
         Some(t) => {
-            texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await
+            texture::load_texture(renderer, cache, assets, t, true, MipmapTextureKind::Albedo).await
         }
         None => None,
     };
@@ -1825,6 +1961,7 @@ async fn build_sprite_mesh(
 /// returns [`AwsmDecalError::FeatureNotEnabled`]; we warn once and skip.
 async fn materialize_decal(
     renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
     assets: &impl SceneAssets,
     cfg: &DecalConfig,
     node_id: NodeId,
@@ -1833,7 +1970,7 @@ async fn materialize_decal(
 ) -> Result<()> {
     use awsm_renderer::decals::AwsmDecalError;
 
-    let texture_index = resolve_decal_texture_index(renderer, assets, cfg).await;
+    let texture_index = resolve_decal_texture_index(renderer, cache, assets, cfg).await;
 
     match renderer.insert_decal(node_world, texture_index, cfg.alpha) {
         Ok(key) => {
@@ -1854,6 +1991,7 @@ async fn materialize_decal(
 /// resolve at load time because [`PrefabTemplate::instantiate`] has no assets).
 async fn resolve_decal_texture_index(
     renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
     assets: &impl SceneAssets,
     cfg: &DecalConfig,
 ) -> u32 {
@@ -1864,7 +2002,8 @@ async fn resolve_decal_texture_index(
     let stride = awsm_renderer::decals::decal_texture_index_stride(&renderer.gpu);
     match &cfg.texture {
         Some(t) => {
-            match texture::load_texture(renderer, assets, t, true, MipmapTextureKind::Albedo).await
+            match texture::load_texture(renderer, cache, assets, t, true, MipmapTextureKind::Albedo)
+                .await
             {
                 Some(mt) => renderer
                     .textures
@@ -3014,6 +3153,15 @@ async fn load_skinned_lod_chain(
     Ok(())
 }
 
+/// What [`load_glb_under`] hands back per glb: the renderer mesh keys it
+/// produced (one per primitive), plus the glb-node-index → transform-key and
+/// glb-node-index → mesh-keys lookups the skinned-mesh arm rebinds with.
+type LoadedGlb = (
+    Vec<MeshKey>,
+    HashMap<usize, TransformKey>,
+    HashMap<usize, Vec<MeshKey>>,
+);
+
 /// our material-source semantics outside the full scene pass.
 pub async fn load_glb_under(
     renderer: &mut AwsmRenderer,
@@ -3021,7 +3169,7 @@ pub async fn load_glb_under(
     leaf: &str,
     parent: Option<TransformKey>,
     material: MaterialKey,
-) -> Result<(Vec<MeshKey>, HashMap<usize, TransformKey>, HashMap<usize, Vec<MeshKey>>)> {
+) -> Result<LoadedGlb> {
     let key = format!("{ASSETS_DIR}/{leaf}");
     let bytes = assets
         .fetch(&key)
@@ -3045,11 +3193,7 @@ pub async fn load_glb_under(
             },
         )
         .await?;
-    let (keys, node_index_transforms, node_index_meshes): (
-        Vec<MeshKey>,
-        HashMap<usize, TransformKey>,
-        HashMap<usize, Vec<MeshKey>>,
-    ) = {
+    let (keys, node_index_transforms, node_index_meshes): LoadedGlb = {
         let lookups = ctx.key_lookups.lock().unwrap();
         // The renderer mesh keys this glb produced (one per primitive), so the host
         // can remove them on teardown.
@@ -3108,7 +3252,13 @@ pub async fn materialize_node_mesh(
     let tk = renderer
         .transforms
         .insert(trs_to_transform(&node.transform), None);
-    build_node_meshes(renderer, scene, node, tk, material, assets, false).await
+    // Public API: no caller-visible cache — a fresh per-call one still dedupes
+    // and on-demand-fetches within this node's own slots.
+    let mut cache = texture::TextureCache::default();
+    build_node_meshes(
+        renderer, &mut cache, scene, node, tk, material, assets, false,
+    )
+    .await
 }
 
 fn trs_to_transform(trs: &Trs) -> Transform {
@@ -3147,6 +3297,7 @@ pub fn mesh_data_to_raw(md: awsm_renderer_meshgen::MeshData) -> RawMeshData {
 /// magenta placeholder.
 async fn resolve_material(
     renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
     instance: Option<&MaterialInstance>,
     placeholder: MaterialKey,
     assets: &impl SceneAssets,
@@ -3158,7 +3309,9 @@ async fn resolve_material(
     // Custom-WGSL assignment: the asset resolved to a registered shader (Phase 0).
     // Build a Material::Custom (defaults + uniform overrides); `inline` is ignored.
     if let Some(&shader_id) = custom.get(&inst.asset) {
-        if let Some(mat) = dynamic::build_custom_material(renderer, shader_id, inst, assets).await {
+        if let Some(mat) =
+            dynamic::build_custom_material(renderer, cache, shader_id, inst, assets).await
+        {
             // Upload the instance's per-slot buffer-override words into the extras
             // pool BEFORE insert (insert packs `MaterialData.<slot>_offset` from
             // `extras_pool.slice_for`, so the slice must exist first).
@@ -3182,26 +3335,28 @@ async fn resolve_material(
             use MipmapTextureKind as K;
             if let Some(t) = &def.base_color_texture {
                 pbr.base_color_tex =
-                    texture::load_texture(renderer, assets, t, true, K::Albedo).await;
+                    texture::load_texture(renderer, cache, assets, t, true, K::Albedo).await;
             }
             if let Some(t) = &def.metallic_roughness_texture {
                 pbr.metallic_roughness_tex =
-                    texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+                    texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                        .await;
             }
             if let Some(t) = &def.normal_texture {
-                pbr.normal_tex = texture::load_texture(renderer, assets, t, false, K::Normal).await;
+                pbr.normal_tex =
+                    texture::load_texture(renderer, cache, assets, t, false, K::Normal).await;
             }
             if let Some(t) = &def.occlusion_texture {
                 pbr.occlusion_tex =
-                    texture::load_texture(renderer, assets, t, false, K::Occlusion).await;
+                    texture::load_texture(renderer, cache, assets, t, false, K::Occlusion).await;
             }
             if let Some(t) = &def.emissive_texture {
                 pbr.emissive_tex =
-                    texture::load_texture(renderer, assets, t, true, K::Emissive).await;
+                    texture::load_texture(renderer, cache, assets, t, true, K::Emissive).await;
             }
             // KHR-extension texture slots (the factors are already mapped by
             // `material_to_pbr`; bind their textures the same way the editor does).
-            bind_extension_textures(renderer, assets, def, &mut pbr).await;
+            bind_extension_textures(renderer, cache, assets, def, &mut pbr).await;
             Material::Pbr(Box::new(pbr))
         }
         _ => material::material_to_renderer(def),
@@ -3222,6 +3377,7 @@ async fn resolve_material(
 /// rest are linear data (metallic-roughness mips).
 async fn bind_extension_textures(
     renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
     assets: &impl SceneAssets,
     def: &awsm_renderer_scene::MaterialDef,
     pbr: &mut awsm_renderer::materials::pbr::PbrMaterial,
@@ -3230,15 +3386,17 @@ async fn bind_extension_textures(
     let ext = &def.extensions;
     if let (Some(e), Some(p)) = (ext.specular.as_ref(), pbr.specular.as_mut()) {
         if let Some(t) = &e.tex {
-            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+            p.tex = texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                .await;
         }
         if let Some(t) = &e.color_tex {
-            p.color_tex = texture::load_texture(renderer, assets, t, true, K::Albedo).await;
+            p.color_tex = texture::load_texture(renderer, cache, assets, t, true, K::Albedo).await;
         }
     }
     if let (Some(e), Some(p)) = (ext.transmission.as_ref(), pbr.transmission.as_mut()) {
         if let Some(t) = &e.tex {
-            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+            p.tex = texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                .await;
         }
     }
     if let (Some(e), Some(p)) = (
@@ -3246,51 +3404,59 @@ async fn bind_extension_textures(
         pbr.diffuse_transmission.as_mut(),
     ) {
         if let Some(t) = &e.tex {
-            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+            p.tex = texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                .await;
         }
         if let Some(t) = &e.color_tex {
-            p.color_tex = texture::load_texture(renderer, assets, t, true, K::Albedo).await;
+            p.color_tex = texture::load_texture(renderer, cache, assets, t, true, K::Albedo).await;
         }
     }
     if let (Some(e), Some(p)) = (ext.volume.as_ref(), pbr.volume.as_mut()) {
         if let Some(t) = &e.thickness_tex {
             p.thickness_tex =
-                texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+                texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                    .await;
         }
     }
     if let (Some(e), Some(p)) = (ext.clearcoat.as_ref(), pbr.clearcoat.as_mut()) {
         if let Some(t) = &e.tex {
-            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+            p.tex = texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                .await;
         }
         if let Some(t) = &e.roughness_tex {
             p.roughness_tex =
-                texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+                texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                    .await;
         }
         if let Some(t) = &e.normal_tex {
-            p.normal_tex = texture::load_texture(renderer, assets, t, false, K::Normal).await;
+            p.normal_tex =
+                texture::load_texture(renderer, cache, assets, t, false, K::Normal).await;
         }
     }
     if let (Some(e), Some(p)) = (ext.sheen.as_ref(), pbr.sheen.as_mut()) {
         if let Some(t) = &e.color_tex {
-            p.color_tex = texture::load_texture(renderer, assets, t, true, K::Albedo).await;
+            p.color_tex = texture::load_texture(renderer, cache, assets, t, true, K::Albedo).await;
         }
         if let Some(t) = &e.roughness_tex {
             p.roughness_tex =
-                texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+                texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                    .await;
         }
     }
     if let (Some(e), Some(p)) = (ext.anisotropy.as_ref(), pbr.anisotropy.as_mut()) {
         if let Some(t) = &e.tex {
-            p.tex = texture::load_texture(renderer, assets, t, false, K::Normal).await;
+            p.tex = texture::load_texture(renderer, cache, assets, t, false, K::Normal).await;
         }
     }
     if let (Some(e), Some(p)) = (ext.iridescence.as_ref(), pbr.iridescence.as_mut()) {
         if let Some(t) = &e.tex {
-            p.tex = texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+            p.tex = texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                .await;
         }
         if let Some(t) = &e.thickness_tex {
             p.thickness_tex =
-                texture::load_texture(renderer, assets, t, false, K::MetallicRoughness).await;
+                texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                    .await;
         }
     }
 }

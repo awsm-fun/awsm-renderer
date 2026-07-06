@@ -563,6 +563,7 @@ dependencies = [
  "awsm-renderer-meshgen",
  "awsm-renderer-particles",
  "awsm-renderer-scene",
+ "futures",
  "glam 0.32.1",
  "gloo-net",
  "serde_json",

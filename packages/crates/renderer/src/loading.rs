@@ -24,6 +24,11 @@ pub enum LoadPhase {
     UploadingGeometry,
     /// Finalizing the texture pool — the one batched GPU upload of every staged image.
     FinalizingTextures,
+    /// Reconciling material variants against the final pool (synchronous WGSL
+    /// codegen + kicking the scene's pipeline compiles). Reported so this CPU
+    /// work isn't misattributed to the texture phase's last snapshot — on slow
+    /// machines it can dominate the commit's wall clock.
+    PreparingMaterials,
     /// Driving the scene's pipeline compiles to completion.
     Compiling,
     /// The commit landed; the scene is committed and renders this frame on.
@@ -76,6 +81,7 @@ impl LoadingStats {
                 "Uploading textures {}/{}",
                 self.textures_uploaded, self.textures_total
             )),
+            LoadPhase::PreparingMaterials => Some("Preparing materials".to_string()),
             LoadPhase::Compiling => Some(format!(
                 "Compiling pipelines ({} remaining)",
                 self.pipelines_remaining()

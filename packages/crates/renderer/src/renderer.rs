@@ -557,13 +557,24 @@ impl AwsmRenderer {
         //    render-preamble compile: `reconcile_material_variants` internally
         //    drives `ensure_scene_pipelines` (opaque + classify + edge) — run
         //    ONLY here now, never per render frame.
+        //
+        //    Reported as its OWN phase: this is synchronous WGSL codegen that
+        //    can dominate a commit's wall clock on slow machines, and without
+        //    the report it displays under the texture phase's last snapshot
+        //    (a stale "Uploading textures n/n" while no upload is happening).
+        self.load_phase = LoadPhase::PreparingMaterials;
+        on_progress(self.loading_stats());
         self.reconcile_material_variants()?;
 
         // ── Phase 3: drain every kicked compile to completion CONCURRENTLY,
         //    mapping each resolution into `LoadingStats`. This reuses the
         //    existing concurrent drain (which also warms the transparent + line
-        //    pipelines) — it is not reimplemented here.
+        //    pipelines) — it is not reimplemented here. Reported once on entry —
+        //    the drain's own callback only fires per RESOLUTION, so without this
+        //    the label would sit on the previous phase until the first pipeline
+        //    lands.
         self.load_phase = LoadPhase::Compiling;
+        on_progress(self.loading_stats());
         let textures_total = self.loading_textures_total;
         let geometry_total = self.loading_geometry_total;
         self.drain_commit_compiles(|cp| {

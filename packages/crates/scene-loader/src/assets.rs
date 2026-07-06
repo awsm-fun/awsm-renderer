@@ -14,7 +14,8 @@
 //! `dyn SceneAssets`, no object-safety concern, and no `Send` bound (the wasm
 //! target is single-threaded).
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 /// Async accessor the loader uses to fetch bundle bytes by bundle-relative path.
 ///
@@ -48,6 +49,89 @@ impl SceneAssets for HashMap<String, Vec<u8>> {
         self.get(path)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("asset not found: {path}"))
+    }
+}
+
+/// How many seed fetches [`PrefetchedAssets::seed`] drives concurrently —
+/// bounds resource pressure, not parallelism opportunity (HTTP/2 multiplexes;
+/// HTTP/1.1 pools ~6 per origin).
+const SEED_CONCURRENCY: usize = 8;
+
+/// A [`SceneAssets`] wrapper that concurrently pre-fetches a KNOWN set of
+/// bundle paths and serves them from memory.
+///
+/// Two wins over fetching at the consumption site:
+///
+/// * **Concurrency** — the loader's node walk is serial (it holds
+///   `&mut AwsmRenderer`), so every fetch it makes is a full round trip in
+///   series. Seeding runs them [`SEED_CONCURRENCY`]-wide up front.
+/// * **Dedupe** — a seeded path is fetched from the source exactly once,
+///   however many nodes consume it. (Mesh glbs shared by several nodes
+///   previously re-downloaded per referencing node.)
+///
+/// Only SEEDED paths are cached: unknown paths pass straight through to the
+/// inner source, so memory stays bounded by the seed set (which drops with the
+/// wrapper at the end of the load), and streams with their own downstream
+/// cache (texture PNGs → the loader's decoded-image cache) aren't
+/// double-buffered. Seed failures are cached too — the consumption site sees
+/// the same `Err` it would have seen fetching directly (e.g. a missing LOD
+/// manifest still means "no LOD"), without paying the round trip again.
+pub struct PrefetchedAssets<'a, A: SceneAssets> {
+    inner: &'a A,
+    /// path → fetched bytes (`None` = the seed fetch failed).
+    cache: RefCell<HashMap<String, Option<Vec<u8>>>>,
+}
+
+impl<'a, A: SceneAssets> PrefetchedAssets<'a, A> {
+    pub fn new(inner: &'a A) -> Self {
+        Self {
+            inner,
+            cache: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Concurrently fetch `paths` (duplicates and already-seeded paths are
+    /// skipped) into the cache, reporting `(done, total)` per completion.
+    pub async fn seed(&self, paths: Vec<String>, mut on_progress: impl FnMut(usize, usize)) {
+        use futures::StreamExt;
+        let pending: Vec<String> = {
+            let cache = self.cache.borrow();
+            let mut seen = HashSet::new();
+            paths
+                .into_iter()
+                .filter(|p| !cache.contains_key(p) && seen.insert(p.clone()))
+                .collect()
+        };
+        let total = pending.len();
+        if total == 0 {
+            return;
+        }
+        on_progress(0, total);
+        let mut stream = futures::stream::iter(pending.into_iter().map(|path| async move {
+            let bytes = self.inner.fetch(&path).await.ok();
+            (path, bytes)
+        }))
+        .buffer_unordered(SEED_CONCURRENCY);
+        let mut done = 0;
+        while let Some((path, bytes)) = stream.next().await {
+            self.cache.borrow_mut().insert(path, bytes);
+            done += 1;
+            on_progress(done, total);
+        }
+    }
+}
+
+impl<A: SceneAssets> SceneAssets for PrefetchedAssets<'_, A> {
+    async fn fetch(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+        if let Some(cached) = self.cache.borrow().get(path) {
+            return match cached {
+                Some(bytes) => Ok(bytes.clone()),
+                None => Err(anyhow::anyhow!(
+                    "asset unavailable (cached seed failure): {path}"
+                )),
+            };
+        }
+        self.inner.fetch(path).await
     }
 }
 

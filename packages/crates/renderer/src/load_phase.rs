@@ -14,10 +14,22 @@ use crate::pipeline_scheduler::CompileProgress;
 /// One stage of a scene/asset load, in the order a phased loader runs them.
 #[derive(Clone, Debug)]
 pub enum LoadPhase {
+    /// Concurrently pre-fetching the bundle's known non-texture files (mesh
+    /// glbs, LOD manifests, environment cubemaps) so the serial node walk
+    /// later reads them from memory.
+    FetchingAssets { done: usize, total: usize },
+    /// Fetching + decoding the bundle's unique texture images (network +
+    /// `createImageBitmap`, concurrent) — on a deployed bundle this is the
+    /// dominant load step, so it gets live per-image progress.
+    FetchingTextures { done: usize, total: usize },
     /// Lowering authored materials to renderer materials + inserting them.
     BuildingMaterials { done: usize, total: usize },
     /// Committing all staged texture images to the GPU (one batched upload).
-    UploadingTextures,
+    UploadingTextures { done: usize, total: usize },
+    /// Reconciling material variants against the final texture pool
+    /// (synchronous WGSL codegen; mirrors the renderer commit phase of the
+    /// same name).
+    PreparingMaterials,
     /// Uploading mesh geometry (+ skins) referencing the already-built materials.
     UploadingMeshes { done: usize, total: usize },
     /// Driving pipeline compilation to completion (wraps the renderer's
@@ -29,10 +41,19 @@ impl LoadPhase {
     /// A short human label for an activity indicator / log line.
     pub fn label(&self) -> String {
         match self {
+            LoadPhase::FetchingAssets { done, total } => {
+                format!("Fetching assets {done}/{total}…")
+            }
+            LoadPhase::FetchingTextures { done, total } => {
+                format!("Fetching textures {done}/{total}…")
+            }
             LoadPhase::BuildingMaterials { done, total } => {
                 format!("Building materials {done}/{total}…")
             }
-            LoadPhase::UploadingTextures => "Uploading textures…".to_string(),
+            LoadPhase::UploadingTextures { done, total } => {
+                format!("Uploading textures {done}/{total}…")
+            }
+            LoadPhase::PreparingMaterials => "Preparing materials…".to_string(),
             LoadPhase::UploadingMeshes { done, total } => {
                 format!("Uploading meshes {done}/{total}…")
             }
