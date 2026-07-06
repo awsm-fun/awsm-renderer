@@ -135,13 +135,23 @@ impl MaterialShader for ToonMaterial {
         write(data, self.alpha_mode.variant_as_u32().into());
         write(data, self.alpha_cutoff().unwrap_or(0.0f32).into());
 
-        write_material_texture(data, self.base_color_tex.as_ref(), ctx);
+        write_material_texture(
+            data,
+            self.base_color_tex.as_ref(),
+            ctx,
+            crate::NeutralTexture::White,
+        );
         write(data, self.base_color_factor[0].into());
         write(data, self.base_color_factor[1].into());
         write(data, self.base_color_factor[2].into());
         write(data, self.base_color_factor[3].into());
 
-        write_material_texture(data, self.emissive_tex.as_ref(), ctx);
+        write_material_texture(
+            data,
+            self.emissive_tex.as_ref(),
+            ctx,
+            crate::NeutralTexture::White,
+        );
         write(data, self.emissive_factor[0].into());
         write(data, self.emissive_factor[1].into());
         write(data, self.emissive_factor[2].into());

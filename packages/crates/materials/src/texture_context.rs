@@ -12,12 +12,44 @@ use awsm_renderer_core::{
     texture::texture_pool::{TexturePoolArray, TexturePoolEntryInfo},
 };
 
+/// Which shared 1×1 NEUTRAL a built-in material slot packs when no image is
+/// bound. The five core PBR slots always compile their sampling path, so an
+/// unbound slot must still resolve to a real pool entry; sampling the neutral
+/// reproduces glTF's defined no-texture result exactly (white = identity
+/// multiply; flat normal = the geometry normal through the TBN math).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NeutralTexture {
+    /// 1×1 white — base color / metallic-roughness / occlusion / emissive.
+    White,
+    /// 1×1 flat normal, packed rgba8 `[128, 128, 255]` — the same encoding
+    /// (and the same ~0.2° quantization off exact `(0.5, 0.5, 1.0)`) that every
+    /// authored normal map carries in its flat regions. Unpacks to tangent
+    /// `≈(0, 0, 1)`, so `TBN · tangent ≈` the geometry normal. Note the residual
+    /// `128/255 ≈ 0.502` on x/y is scaled by `normal_scale`, so a large
+    /// `normal_scale` with no bound normal map tilts the normal very slightly.
+    FlatNormal,
+}
+
 /// Renderer-side context that lets a material's `write_uniform_buffer` resolve
 /// pooled texture / sampler / texture-transform keys to the on-GPU layout the
 /// shader will read.
 ///
 /// `awsm-renderer::Textures` implements this trait.
 pub trait TextureContext {
+    /// Resolves a NEUTRAL's pool placement: `(array, entry)` for the shared
+    /// 1×1 white / flat-normal entries the renderer registers at boot, plus
+    /// the default sampler's shader-visible index. `None` only in contexts
+    /// with no pool at all (tests); packers then fall back to the zero
+    /// sentinel, which is fine anywhere no shader actually samples.
+    fn neutral_texture(
+        &self,
+        kind: NeutralTexture,
+    ) -> Option<(
+        &TexturePoolArray<TextureKey>,
+        &TexturePoolEntryInfo<TextureKey>,
+        u32,
+    )>;
+
     /// Returns the array slot for a pooled texture, if it exists.
     fn pool_array_by_index(&self, index: usize) -> Option<&TexturePoolArray<TextureKey>>;
 

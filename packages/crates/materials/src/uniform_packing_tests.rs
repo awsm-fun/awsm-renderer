@@ -20,6 +20,16 @@ use crate::{MaterialAlphaMode, MaterialShader, MaterialShaderId, TextureContext}
 struct NullTextureContext;
 
 impl TextureContext for NullTextureContext {
+    fn neutral_texture(
+        &self,
+        _kind: crate::NeutralTexture,
+    ) -> Option<(
+        &TexturePoolArray<TextureKey>,
+        &TexturePoolEntryInfo<TextureKey>,
+        u32,
+    )> {
+        None
+    }
     fn pool_array_by_index(&self, _index: usize) -> Option<&TexturePoolArray<TextureKey>> {
         None
     }

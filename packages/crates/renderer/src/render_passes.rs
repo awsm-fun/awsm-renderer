@@ -37,15 +37,24 @@ use crate::{
     pipeline_layouts::PipelineLayouts,
     pipelines::Pipelines,
     render_passes::{
-        coverage::render_pass::CoverageRenderPass, display::render_pass::DisplayRenderPass,
-        geometry::render_pass::GeometryRenderPass, hzb::render_pass::HzbRenderPass,
+        coverage::render_pass::CoverageRenderPass,
+        display::render_pass::DisplayRenderPass,
+        geometry::render_pass::GeometryRenderPass,
+        hzb::render_pass::HzbRenderPass,
+        light_culling::bind_group::LightCullingBindGroups,
+        light_culling::pipeline::{LightCullingPipelines, LightCullingPrewarmDescriptors},
         light_culling::render_pass::LightCullingRenderPass,
         material_classify::render_pass::MaterialClassifyRenderPass,
         material_decal::render_pass::MaterialDecalRenderPass,
         material_opaque::render_pass::MaterialOpaqueRenderPass,
-        material_prep::render_pass::MaterialPrepRenderPass,
+        material_prep::bind_group::MaterialPrepBindGroups,
+        material_prep::buffers::EdgeShadowBuffer,
+        material_prep::render_pass::{
+            MaterialPrepPipelines, MaterialPrepPrewarmDescriptors, MaterialPrepRenderPass,
+        },
         material_transparent::render_pass::MaterialTransparentRenderPass,
-        occlusion::compaction::CompactionRenderPass, occlusion::render_pass::OcclusionRenderPass,
+        occlusion::compaction::CompactionRenderPass,
+        occlusion::render_pass::OcclusionRenderPass,
     },
     render_textures::RenderTextureFormats,
     shaders::Shaders,
@@ -160,14 +169,12 @@ struct RenderPassesBindings {
     hzb_bg: Option<hzb::bind_group::HzbBindGroups>,
     occlusion_bg: Option<occlusion::bind_group::OcclusionBindGroups>,
     compaction_bg: Option<occlusion::compaction::CompactionBindGroups>,
-    light_culling: LightCullingRenderPass,
+    light_culling_bg: LightCullingBindGroups,
     /// Built eagerly + gated by `virtual_geometry`; passed straight through to
     /// `from_resolved`.
     #[cfg(feature = "lod")]
     cluster_lod: Option<ClusterLodRenderPass>,
-    /// Built eagerly (like `light_culling`) and passed straight through to
-    /// `from_resolved`. Always `Some` (prep is unconditional).
-    material_prep: Option<MaterialPrepRenderPass>,
+    material_prep_bg: MaterialPrepBindGroups,
     classify_bg: material_classify::bind_group::MaterialClassifyBindGroups,
     decal_bg: Option<material_decal::bind_group::MaterialDecalBindGroups>,
     decal_classify_bg: Option<material_decal::classify::bind_group::DecalClassifyBindGroups>,
@@ -246,6 +253,8 @@ struct RenderPassesRanges {
     occlusion: Option<Range<usize>>,
     compaction: Option<Range<usize>>,
     classify: Range<usize>,
+    light_culling: Range<usize>,
+    material_prep: Range<usize>,
     decal: Option<Range<usize>>,
     decal_classify: Option<Range<usize>>,
     opaque: Range<usize>,
@@ -257,6 +266,12 @@ struct RenderPassesRanges {
 /// `slots`, or the decal pass's `is_msaa`).
 struct RenderPassesPerPassDescs {
     geometry: crate::render_passes::geometry::pipeline::GeometryPrewarmDescriptors,
+    light_culling: LightCullingPrewarmDescriptors,
+    material_prep: MaterialPrepPrewarmDescriptors,
+    /// Stage 5b-shadow: the compact edge-shadow texture, allocated in
+    /// `describe_pipelines` (which has a gpu handle) only when MSAA is on and
+    /// the device supports edge resolve — `from_resolved` is sync.
+    prep_edge_shadow: Option<EdgeShadowBuffer>,
     opaque_slots: Vec<crate::render_passes::material_opaque::pipeline::OpaquePipelineSlot>,
     /// One slot per entry in the classify pass's pipeline pool —
     /// records the `msaa_sample_count` so `from_resolved` can route
@@ -414,7 +429,12 @@ impl RenderPasses {
         } else {
             None
         };
-        let light_culling = LightCullingRenderPass::new(ctx).await?;
+        // Light culling + material prep: bind groups only here — their
+        // shader/pipeline cache keys join the cross-renderer pool below
+        // (phase 2), like every other pooled pass. Previously both compiled
+        // eagerly inside their `new()` (sequential single-pipeline awaits);
+        // the prep megashader alone was ~2.6s of cold boot.
+        let light_culling_bg = LightCullingBindGroups::new(ctx).await?;
         // Cluster-LOD cut pass (Phase B). Eager + gated; creating its pipeline
         // validates `cluster_cut.wgsl` on-device. Buffers/bind-group instance
         // come when a cluster mesh loads.
@@ -424,11 +444,7 @@ impl RenderPasses {
         } else {
             None
         };
-        // Shared material-prep compute pass (Plan B). The shared prep pass is
-        // unconditional now — always built (both MSAA variants). Kept as an
-        // `Option` (always-`Some`) so the `if let Some(prep)` dispatch sites
-        // stay valid.
-        let material_prep = Some(MaterialPrepRenderPass::new(ctx).await?);
+        let material_prep_bg = MaterialPrepBindGroups::new(ctx).await?;
         let classify_bg =
             material_classify::bind_group::MaterialClassifyBindGroups::new(ctx).await?;
         let (decal_bg, decal_classify_bg) = if features.decals {
@@ -473,6 +489,15 @@ impl RenderPasses {
         // set_anti_aliasing flip.
         let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
         shader_cache_keys.extend(GeometryPipelines::shader_cache_keys(multisampled_geometry));
+        // Light culling: one module, two entry points, MSAA-agnostic.
+        shader_cache_keys.extend(LightCullingPipelines::shader_cache_keys());
+        // Material prep: active MSAA branch only (the megashader module also
+        // covers cs_prep_edge); the blur module rides along while denoise is
+        // configured on.
+        shader_cache_keys.extend(MaterialPrepPipelines::shader_cache_keys(
+            multisampled_geometry,
+            ctx.prep_config,
+        ));
         if features.gpu_culling {
             shader_cache_keys.extend(HzbPipelines::shader_cache_keys(ctx.anti_aliasing));
             shader_cache_keys.extend(OcclusionPipelines::shader_cache_keys());
@@ -522,10 +547,10 @@ impl RenderPasses {
                 hzb_bg,
                 occlusion_bg,
                 compaction_bg,
-                light_culling,
+                light_culling_bg,
                 #[cfg(feature = "lod")]
                 cluster_lod,
-                material_prep,
+                material_prep_bg,
                 classify_bg,
                 decal_bg,
                 decal_classify_bg,
@@ -618,6 +643,43 @@ impl RenderPasses {
             compute_pool.len()..compute_pool.len() + classify_descs.pipeline_cache_keys.len();
         compute_pool.extend(classify_descs.pipeline_cache_keys.iter().cloned());
 
+        // Light culling: 2 keys (cs_main + cs_tile), one shared module.
+        let light_culling_descs =
+            LightCullingPipelines::build_descriptors(ctx, &bindings.light_culling_bg).await?;
+        let light_culling_range =
+            compute_pool.len()..compute_pool.len() + light_culling_descs.pipeline_cache_keys.len();
+        compute_pool.extend(light_culling_descs.pipeline_cache_keys.iter().cloned());
+
+        // Material prep: ACTIVE MSAA branch only (the other branch fills on the
+        // first set_anti_aliasing flip); cs_prep_edge + the compact edge-shadow
+        // texture only when the MSAA edge-resolve path is actually live; the
+        // blur pair only while denoise is configured on.
+        let edge_resolve_enabled = multisampled_geometry && crate::edge_resolve_supported(ctx.gpu);
+        let material_prep_descs = MaterialPrepPipelines::build_descriptors_for_config(
+            ctx,
+            &bindings.material_prep_bg,
+            multisampled_geometry,
+            edge_resolve_enabled,
+        )
+        .await?;
+        let material_prep_range =
+            compute_pool.len()..compute_pool.len() + material_prep_descs.pipeline_cache_keys.len();
+        compute_pool.extend(material_prep_descs.pipeline_cache_keys.iter().cloned());
+        // Allocated here (gpu handle in scope; `from_resolved` is sync).
+        // Gated on MSAA alone — NOT on `edge_resolve_supported` — because the
+        // opaque MSAA main bind group binds this view (binding 27)
+        // unconditionally under MSAA; only the cs_prep_edge pipeline is
+        // additionally support-gated. Single-sampled sessions skip the ~8 MB.
+        let prep_edge_shadow = if multisampled_geometry {
+            Some(EdgeShadowBuffer::new(
+                ctx.gpu,
+                ctx.max_edge_budget,
+                ctx.prep_config.shadow_visibility_layers(),
+            )?)
+        } else {
+            None
+        };
+
         let coverage_single_range = if let Some(bg) = bindings.coverage_bg_single.as_ref() {
             let descs = CoveragePipelines::build_descriptors(ctx, bg).await?;
             let start = compute_pool.len();
@@ -667,15 +729,11 @@ impl RenderPasses {
             compute_pool.len()..compute_pool.len() + opaque_descs.pipeline_cache_keys.len();
         compute_pool.extend(opaque_descs.pipeline_cache_keys.iter().cloned());
 
-        // Decal composite — only the typed handle, no cache keys to
-        // pool. The composite uses inline WGSL and internal
-        // `try_join` for its 2 pipelines; building it here keeps the
-        // construction ordering identical to the pre-refactor flow.
-        let material_decal_composite = if bindings.decal_bg.is_some() {
-            Some(material_decal::composite::MaterialDecalComposite::new(ctx).await?)
-        } else {
-            None
-        };
+        // Decal composite — deferred-boot: NOT built here anymore. Its two
+        // inline-WGSL pipelines compile in `ensure_config_pipelines`
+        // (`ensure_decal_composite_compiled`), so build() stays compile-free.
+        let material_decal_composite: Option<material_decal::composite::MaterialDecalComposite> =
+            None;
 
         // HZB texture — tiny initial allocation, recreated against
         // the live viewport on the first frame. Allocated here
@@ -699,12 +757,17 @@ impl RenderPasses {
                 occlusion: occlusion_range,
                 compaction: compaction_range,
                 classify: classify_range,
+                light_culling: light_culling_range,
+                material_prep: material_prep_range,
                 decal: decal_range,
                 decal_classify: decal_classify_range,
                 opaque: opaque_range,
             },
             per_pass_descs: RenderPassesPerPassDescs {
                 geometry: geometry_descs,
+                light_culling: light_culling_descs,
+                material_prep: material_prep_descs,
+                prep_edge_shadow,
                 opaque_slots: opaque_descs.slots,
                 classify_slot_msaa: classify_descs.slot_msaa,
                 hzb_slot,
@@ -761,10 +824,10 @@ impl RenderPasses {
             hzb_bg,
             occlusion_bg,
             compaction_bg,
-            light_culling,
+            light_culling_bg,
             #[cfg(feature = "lod")]
             cluster_lod,
-            material_prep,
+            material_prep_bg,
             classify_bg,
             decal_bg,
             decal_classify_bg,
@@ -861,13 +924,35 @@ impl RenderPasses {
             pipeline_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         };
 
+        let light_culling = LightCullingRenderPass {
+            bind_groups: light_culling_bg,
+            pipelines: LightCullingPipelines::from_resolved(
+                &per_pass_descs.light_culling,
+                compute_keys[ranges.light_culling].to_vec(),
+            )?,
+        };
+
+        let material_prep = {
+            let mut pipelines = MaterialPrepPipelines::default();
+            pipelines.merge_resolved(
+                &per_pass_descs.material_prep.slots,
+                compute_keys[ranges.material_prep].to_vec(),
+            );
+            // Kept as an always-`Some` `Option` so the `if let Some(prep)`
+            // dispatch sites stay valid (prep is unconditional).
+            Some(MaterialPrepRenderPass::from_resolved(
+                material_prep_bg,
+                pipelines,
+                per_pass_descs.prep_edge_shadow,
+            ))
+        };
+
         let material_decal = match (
             decal_bg,
             ranges.decal,
             decal_classify_bg,
             ranges.decal_classify,
             per_pass_descs.decal_is_msaa,
-            material_decal_composite,
         ) {
             (
                 Some(decal_bg),
@@ -875,14 +960,14 @@ impl RenderPasses {
                 Some(decal_classify_bg),
                 Some(decal_classify_range),
                 Some(decal_is_msaa),
-                Some(composite),
             ) => Some(MaterialDecalRenderPass {
                 bind_groups: decal_bg,
                 pipelines: MaterialDecalPipelines::from_resolved(
                     decal_is_msaa,
                     compute_keys[decal_range].to_vec(),
                 ),
-                composite,
+                // Deferred-boot: compiled by `ensure_decal_composite_compiled`.
+                composite: material_decal_composite,
                 classify_pass: material_decal::classify::render_pass::DecalClassifyRenderPass {
                     bind_groups: decal_classify_bg,
                     pipelines: DecalClassifyPipelines::from_resolved(

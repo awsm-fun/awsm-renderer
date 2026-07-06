@@ -132,12 +132,10 @@ fn pbr_material_base_color(
     fragment_input: FragmentInput
 ) -> vec4<f32> {
     var color = material.base_color_factor;
-    {% if pbr_features.base_color_tex %}
-    if material.base_color_tex_info.exists {
-        let uv = texture_uv(material.base_color_tex_info, fragment_input);
-        color *= texture_pool_sample(material.base_color_tex_info, uv);
-    }
-    {% endif %}
+    // Branchless: an unbound slot packs the shared 1x1 NEUTRAL (white) —
+    // identity multiply, glTF's defined no-texture result.
+    let uv = texture_uv(material.base_color_tex_info, fragment_input);
+    color *= texture_pool_sample(material.base_color_tex_info, uv);
     return color;
 }
 
@@ -148,13 +146,10 @@ fn pbr_material_metallic_roughness(
     fragment_input: FragmentInput
 ) -> vec2<f32> {
     var color = vec2<f32>(material.metallic_factor, material.roughness_factor);
-    {% if pbr_features.metallic_roughness_tex %}
-    if material.metallic_roughness_tex_info.exists {
-        let uv = texture_uv(material.metallic_roughness_tex_info, fragment_input);
-        let tex = texture_pool_sample(material.metallic_roughness_tex_info, uv);
-        color *= vec2<f32>(tex.b, tex.g);
-    }
-    {% endif %}
+    // Branchless: unbound slot = the 1x1 NEUTRAL (white).
+    let uv = texture_uv(material.metallic_roughness_tex_info, fragment_input);
+    let tex = texture_pool_sample(material.metallic_roughness_tex_info, uv);
+    color *= vec2<f32>(tex.b, tex.g);
     return color;
 }
 
@@ -166,28 +161,25 @@ fn pbr_normal(
     world_tangent: vec4<f32>,  // w = handedness (+1 or -1)
     fragment_input: FragmentInput
 ) -> vec3<f32> {
-    {% if pbr_features.normal_tex %}
-    if material.normal_tex_info.exists {
-        // Sample normal map and unpack from [0,1] to [-1,1] range
-        let uv = texture_uv(material.normal_tex_info, fragment_input);
-        let tex = texture_pool_sample(material.normal_tex_info, uv);
-        let tangent_normal = vec3<f32>(
-            (tex.r * 2.0 - 1.0) * material.normal_scale,
-            (tex.g * 2.0 - 1.0) * material.normal_scale,
-            tex.b * 2.0 - 1.0,
-        );
+    // Branchless: unbound slot = the 1x1 NEUTRAL flat normal (0.5, 0.5, 1)
+    // → tangent (0,0,1) → tbn * (0,0,1) == N exactly.
+    // Sample normal map and unpack from [0,1] to [-1,1] range
+    let uv = texture_uv(material.normal_tex_info, fragment_input);
+    let tex = texture_pool_sample(material.normal_tex_info, uv);
+    let tangent_normal = vec3<f32>(
+        (tex.r * 2.0 - 1.0) * material.normal_scale,
+        (tex.g * 2.0 - 1.0) * material.normal_scale,
+        tex.b * 2.0 - 1.0,
+    );
 
-        // Build TBN matrix from interpolated vertex data
-        let N = normalize(world_normal);
-        let T = orthonormal_tangent_from_vertex(N, world_tangent.xyz);
-        let B = cross(N, T) * world_tangent.w;
-        let tbn = mat3x3<f32>(T, B, N);
+    // Build TBN matrix from interpolated vertex data
+    let N = normalize(world_normal);
+    let T = orthonormal_tangent_from_vertex(N, world_tangent.xyz);
+    let B = cross(N, T) * world_tangent.w;
+    let tbn = mat3x3<f32>(T, B, N);
 
-        // Transform tangent-space normal to world space
-        return normalize(tbn * tangent_normal);
-    }
-    {% endif %}
-    return normalize(world_normal);
+    // Transform tangent-space normal to world space
+    return normalize(tbn * tangent_normal);
 }
 
 // Sample occlusion texture and apply strength factor
@@ -195,14 +187,10 @@ fn pbr_occlusion(
     material: PbrMaterial,
     fragment_input: FragmentInput
 ) -> f32 {
-    var occlusion = 1.0;
-    {% if pbr_features.occlusion_tex %}
-    if material.occlusion_tex_info.exists {
-        let uv = texture_uv(material.occlusion_tex_info, fragment_input);
-        let tex = texture_pool_sample(material.occlusion_tex_info, uv);
-        occlusion = mix(1.0, tex.r, material.occlusion_strength);
-    }
-    {% endif %}
+    // Branchless: unbound slot = the 1x1 NEUTRAL (white) → mix(1,1,s) == 1.
+    let uv = texture_uv(material.occlusion_tex_info, fragment_input);
+    let tex = texture_pool_sample(material.occlusion_tex_info, uv);
+    let occlusion = mix(1.0, tex.r, material.occlusion_strength);
     return occlusion;
 }
 
@@ -213,12 +201,9 @@ fn pbr_emissive(
     fragment_input: FragmentInput
 ) -> vec3<f32> {
     var color = material.emissive_factor;
-    {% if pbr_features.emissive_tex %}
-    if material.emissive_tex_info.exists {
-        let uv = texture_uv(material.emissive_tex_info, fragment_input);
-        color *= texture_pool_sample(material.emissive_tex_info, uv).rgb;
-    }
-    {% endif %}
+    // Branchless: unbound slot = the 1x1 NEUTRAL (white) — identity multiply.
+    let uv = texture_uv(material.emissive_tex_info, fragment_input);
+    color *= texture_pool_sample(material.emissive_tex_info, uv).rgb;
     color *= emissive_strength;
     return color;
 }

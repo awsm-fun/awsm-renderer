@@ -144,7 +144,7 @@ impl GeometryCustomVertexPipelines {
             shader_id: variant.shader_id,
             dynamic_vertex: variant.dynamic_vertex.clone(),
             texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
-            texture_pool_samplers_len: masked_bind_group.texture_pool_sampler_keys.len() as u32,
+            texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
             msaa_samples,
             instancing_transforms: variant.instancing_transforms,
             // The reused masked bind groups declare the uniform meta binding, so

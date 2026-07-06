@@ -229,7 +229,7 @@ impl MaterialOpaquePipelines {
         )?;
 
         let texture_pool_arrays_len = bind_groups.texture_pool_arrays_len;
-        let texture_pool_samplers_len = bind_groups.texture_pool_sampler_keys.len() as u32;
+        let texture_pool_samplers_len = bind_groups.texture_pool_samplers_len;
 
         let mut shader_descs: Vec<OpaqueShaderDesc> = Vec::with_capacity(OPAQUE_SHADER_IDS.len());
 

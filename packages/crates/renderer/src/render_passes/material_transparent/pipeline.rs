@@ -177,7 +177,7 @@ impl MaterialTransparentPipelines {
         I: IntoIterator<Item = &'a TransparentMeshPipelineRequest<'a>>,
     {
         let texture_pool_arrays_len = material_bind_groups.texture_pool_arrays_len;
-        let texture_pool_samplers_len = material_bind_groups.texture_pool_sampler_keys.len() as u32;
+        let texture_pool_samplers_len = material_bind_groups.texture_pool_samplers_len;
         let mut out = Vec::new();
         for req in requests {
             let mesh_buffer_info = mesh_buffer_infos.get(req.buffer_info_key)?;
@@ -234,7 +234,7 @@ impl MaterialTransparentPipelines {
         ];
 
         let texture_pool_arrays_len = material_bind_groups.texture_pool_arrays_len;
-        let texture_pool_samplers_len = material_bind_groups.texture_pool_sampler_keys.len() as u32;
+        let texture_pool_samplers_len = material_bind_groups.texture_pool_samplers_len;
 
         let mut out = Vec::new();
         for req in requests {
@@ -323,7 +323,7 @@ impl MaterialTransparentPipelines {
         }
 
         let texture_pool_arrays_len = material_bind_groups.texture_pool_arrays_len;
-        let texture_pool_samplers_len = material_bind_groups.texture_pool_sampler_keys.len() as u32;
+        let texture_pool_samplers_len = material_bind_groups.texture_pool_samplers_len;
 
         // Build all shader cache keys first.
         let mut shader_cache_keys: Vec<ShaderCacheKeyMaterialTransparent> =

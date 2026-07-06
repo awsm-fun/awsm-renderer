@@ -274,7 +274,7 @@ impl MaterialEdgePipelines {
         }
 
         let texture_pool_arrays_len = opaque_bind_groups.texture_pool_arrays_len;
-        let texture_pool_samplers_len = opaque_bind_groups.texture_pool_sampler_keys.len() as u32;
+        let texture_pool_samplers_len = opaque_bind_groups.texture_pool_samplers_len;
         let mipmaps = anti_aliasing.mipmap;
 
         // Build per-shader-id edge-resolve pipeline layout (reused

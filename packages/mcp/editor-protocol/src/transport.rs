@@ -298,7 +298,7 @@ mod wire_roundtrip_tests {
             (
                 "set_builtin_alpha_mode",
                 EditorCommand::SetBuiltinAlphaMode {
-                    node: NodeId::new(),
+                    material: AssetId::new(),
                     mode: crate::MaterialAlphaMode::Mask { cutoff: 0.4 },
                 },
             ),

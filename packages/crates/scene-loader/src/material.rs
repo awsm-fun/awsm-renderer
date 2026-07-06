@@ -105,18 +105,15 @@ pub fn material_to_pbr(
     pbr
 }
 
-/// Resolve the authored alpha mode to the renderer's, applying the legacy
-/// "`Opaque` but `base_color.a < 1` ⇒ blend" heuristic the editor has always
-/// used for inline procedural materials.
+/// Resolve the authored alpha mode to the renderer's. A straight type
+/// conversion — per glTF, `Opaque` IGNORES the base-color alpha factor.
+/// (The legacy "`Opaque` but `base_color.a < 1` ⇒ blend" promotion was
+/// removed: it silently rerouted meshes to the transparent pass on a mere
+/// factor tweak — a footgun. Transparency now requires the material to be
+/// explicitly authored `Blend`.)
 pub fn alpha_mode_of(def: &MaterialDef) -> MaterialAlphaMode {
     match def.alpha_mode {
-        awsm_renderer_scene::MaterialAlphaMode::Opaque => {
-            if def.base_color[3] < 0.999 {
-                MaterialAlphaMode::Blend
-            } else {
-                MaterialAlphaMode::Opaque
-            }
-        }
+        awsm_renderer_scene::MaterialAlphaMode::Opaque => MaterialAlphaMode::Opaque,
         awsm_renderer_scene::MaterialAlphaMode::Mask { cutoff } => {
             MaterialAlphaMode::Mask { cutoff }
         }
@@ -241,14 +238,16 @@ mod tests {
         MaterialDef::default()
     }
 
-    // ── alpha_mode_of: the legacy opaque-but-translucent heuristic ───────────
+    // ── alpha_mode_of: a straight type conversion (per glTF, opaque ignores
+    //    the base-color alpha factor — the legacy translucent-base→blend
+    //    promotion is gone; transparency must be authored `Blend`) ──────────
 
     #[test]
-    fn alpha_opaque_with_translucent_base_becomes_blend() {
+    fn alpha_opaque_ignores_translucent_base() {
         let mut d = def();
         d.alpha_mode = awsm_renderer_scene::MaterialAlphaMode::Opaque;
         d.base_color = [1.0, 1.0, 1.0, 0.5];
-        assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Blend);
+        assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Opaque);
     }
 
     #[test]
@@ -259,15 +258,22 @@ mod tests {
         assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Opaque);
     }
 
+    // The five texture-slot feature bits are RETIRED: texture presence must
+    // NOT split buckets (an unbound slot samples the shared 1x1 neutral).
     #[test]
-    fn alpha_opaque_heuristic_threshold_is_0_999() {
-        let mut d = def();
-        d.alpha_mode = awsm_renderer_scene::MaterialAlphaMode::Opaque;
-        // 0.999 is NOT < 0.999 → opaque; just under it → blend.
-        d.base_color[3] = 0.999;
-        assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Opaque);
-        d.base_color[3] = 0.998;
-        assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Blend);
+    fn texture_presence_does_not_split_buckets() {
+        use awsm_renderer::materials::pbr::PbrFeatures;
+        let plain = material_to_pbr(&def(), MaterialAlphaMode::Opaque, None);
+        let mut with_tex = def();
+        with_tex.normal_texture = Some(awsm_renderer_scene::TextureRef::new(
+            awsm_renderer_scene::AssetId::new(),
+        ));
+        let textured = material_to_pbr(&with_tex, MaterialAlphaMode::Opaque, None);
+        assert_eq!(
+            PbrFeatures::from_material(&plain).bits(),
+            PbrFeatures::from_material(&textured).bits(),
+            "texture binds are data-only and must never re-key the bucket"
+        );
     }
 
     #[test]

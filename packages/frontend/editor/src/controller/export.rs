@@ -258,7 +258,7 @@ pub async fn bake_player_bundle(
     for n in &roots {
         collect_skinned(n, &mut skinned_sources, &mut lod_skinned);
     }
-    for src in skinned_sources {
+    for &src in &skinned_sources {
         if let Some(glb) = crate::engine::bridge::skinned_bake_cache::get_rig_glb(src) {
             // Bake LOD levels (from the rig glb bytes) before `glb` is moved.
             let lod_files = if lod_skinned.contains(&src) {
@@ -282,7 +282,64 @@ pub async fn bake_player_bundle(
         files.push(BundleFile::new(path, bytes));
     }
 
-    // 6. Environment skybox / IBL KTX2 cubemaps → the shared `env_ktx_path`
+    // 6. Baked-asset-table hygiene. The editor keeps `AssetSource::Filename`
+    //    as import-provenance (a UI label; the editor's on-disk path derives
+    //    from `content_hash`), but in a BAKED bundle that filename is the only
+    //    path downstream tooling (CAS publishers re-hashing file-backed
+    //    entries) can resolve the shipped bytes by. Two fixes:
+    //    * a shipped skinned rig's entry is rewritten to name the file that
+    //      ACTUALLY ships (`assets/<uuid>.glb`, step 4) instead of the
+    //      original import filename (which is not in the bundle), and
+    //    * Filename entries nothing references at runtime (e.g. the original
+    //      combined glb of a fully static import — its geometry ships as
+    //      per-mesh baked glbs) are dropped from the baked table entirely.
+    //    Cluster sources keep their entries (their side files ship keyed by
+    //    the asset id, `assets/<source>.clusters.bin`).
+    {
+        fn collect_cluster_sources(node: &Node, out: &mut HashSet<AssetId>) {
+            if let NodeKind::ClusterMesh { cluster, .. } = &node.kind.get_cloned() {
+                out.insert(cluster.source);
+            }
+            for c in node.children.lock_ref().iter() {
+                collect_cluster_sources(c, out);
+            }
+        }
+        let mut cluster_sources: HashSet<AssetId> = HashSet::new();
+        for n in &roots {
+            collect_cluster_sources(n, &mut cluster_sources);
+        }
+        let mut dropped = 0usize;
+        scene.assets.entries.retain(|id, entry| {
+            if !matches!(entry.source, awsm_renderer_scene::AssetSource::Filename(_)) {
+                return true;
+            }
+            if skinned_sources.contains(id) {
+                return true;
+            }
+            if cluster_sources.contains(id) {
+                return true;
+            }
+            dropped += 1;
+            false
+        });
+        for src in &skinned_sources {
+            if let Some(entry) = scene.assets.entries.get_mut(src) {
+                if matches!(entry.source, awsm_renderer_scene::AssetSource::Filename(_)) {
+                    entry.source = awsm_renderer_scene::AssetSource::Filename(
+                        awsm_renderer_editor_protocol::mesh_glb_filename(*src),
+                    );
+                }
+            }
+        }
+        if dropped > 0 {
+            tracing::info!(
+                "bundle bake: dropped {dropped} import-provenance asset entr{}                  (no runtime reference)",
+                if dropped == 1 { "y" } else { "ies" }
+            );
+        }
+    }
+
+    // 7. Environment skybox / IBL KTX2 cubemaps → the shared `env_ktx_path`
     //    convention (`assets/<id>.ktx2`) the player's `scene_loader::environment`
     //    fetches. STRICT (unlike Save's `ktx_files`): a KTX env id whose bytes
     //    can't be resolved FAILS the export instead of silently baking a bundle

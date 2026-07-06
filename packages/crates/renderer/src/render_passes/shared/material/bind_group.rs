@@ -19,10 +19,27 @@ use crate::{
 };
 
 /// Bind group layout data for the texture pool.
+///
+/// `arrays_len` / `samplers_len` are the PADDED TIER counts (see
+/// [`pool_binding_tier`]) — they size the layout, the generated WGSL
+/// bindings, and the shader cache keys. The real pool contents fill the
+/// leading slots; the rest bind the shared neutral/default placeholders.
+/// Pool growth therefore only re-keys shaders when it crosses a tier
+/// boundary, instead of on every new (size, format) group.
 pub struct TexturePoolDeps {
     pub bind_group_layout_key: BindGroupLayoutKey,
     pub arrays_len: u32,
+    /// Padded sampler-slot count (tier over `sampler_keys.len()`).
+    pub samplers_len: u32,
     pub sampler_keys: IndexSet<SamplerKey>,
+}
+
+/// The padded binding-slot count for a real count `n`: a floor of 4, then
+/// powers of two. Small enough to stay far from device binding limits,
+/// coarse enough that a growing pool re-keys shaders only at 4 → 8 → 16 …
+/// crossings.
+pub fn pool_binding_tier(n: usize) -> usize {
+    n.next_power_of_two().max(4)
 }
 
 /// Shader stage visibility for texture pool bindings.
@@ -54,9 +71,11 @@ impl TexturePoolDeps {
         ctx: &mut RenderPassInitContext<'_>,
         visibility: TexturePoolVisibility,
     ) -> Result<Self> {
-        // textures
+        // textures — the layout declares the padded TIER; real arrays fill
+        // the leading slots and the rest bind the neutral placeholder view.
         let device_limits = ctx.gpu.device.limits();
-        let texture_arrays_len = ctx.textures.pool.arrays_len();
+        let real_arrays_len = ctx.textures.pool.arrays_len();
+        let texture_arrays_len = pool_binding_tier(real_arrays_len);
 
         let mut entries = Vec::new();
 
@@ -80,6 +99,7 @@ impl TexturePoolDeps {
                 visibility_compute: visibility.compute(),
             });
 
+            // Padded slots (i >= real_arrays_len) have no array → 0 layers.
             let layer_count = ctx
                 .textures
                 .pool
@@ -97,18 +117,20 @@ impl TexturePoolDeps {
             }
         }
 
-        // samplers
+        // samplers — same tiering; real samplers first (the default sampler
+        // is index 0 from boot), padded slots bind it again.
         let sampler_keys = ctx.textures.pool_sampler_set.clone();
+        let samplers_len = pool_binding_tier(sampler_keys.len());
 
-        if sampler_keys.len() > device_limits.max_samplers_per_shader_stage() as usize {
+        if samplers_len > device_limits.max_samplers_per_shader_stage() as usize {
             return Err(AwsmCoreError::TexturePoolTooManySamplers {
-                total_samplers: sampler_keys.len() as u32,
+                total_samplers: samplers_len as u32,
                 max_samplers: device_limits.max_samplers_per_shader_stage(),
             }
             .into());
         }
 
-        for _ in 0..sampler_keys.len() {
+        for _ in 0..samplers_len {
             entries.push(BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Sampler(
                     SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
@@ -125,6 +147,7 @@ impl TexturePoolDeps {
 
         Ok(Self {
             arrays_len: texture_arrays_len as u32,
+            samplers_len: samplers_len as u32,
             bind_group_layout_key,
             sampler_keys,
         })

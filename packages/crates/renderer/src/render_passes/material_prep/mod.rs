@@ -60,17 +60,25 @@ pub struct PrepPassConfig {
     /// params stay live uniforms in `ShadowsConfig` / `ShadowGlobals`.
     pub sscs_enabled: bool,
     pub sscs_step_count: u32,
+    /// `ShadowsConfig::denoise`, mirrored here (kept in sync by
+    /// `AwsmRenderer::set_shadows_config`) because it gates which prep
+    /// pipelines exist at all: the `cs_blur_h`/`cs_blur_v` pair is only
+    /// compiled while denoise is on. A runtime enable flags the same
+    /// "re-ensure on next commit" path the SSCS fields use; until that runs,
+    /// `render_blur` warn-skips.
+    pub denoise: bool,
 }
 
 impl Default for PrepPassConfig {
     fn default() -> Self {
         Self {
             max_shadow_casters_per_pixel: 4,
-            // Match `ShadowsConfig::default()` (SSCS off; 16-step march) so the
-            // initial pipeline build and the shadow config agree before any
-            // `set_shadows_config` sync runs.
+            // Match `ShadowsConfig::default()` (SSCS off; 16-step march;
+            // denoise on) so the initial pipeline build and the shadow config
+            // agree before any `set_shadows_config` sync runs.
             sscs_enabled: false,
             sscs_step_count: 16,
+            denoise: true,
         }
     }
 }

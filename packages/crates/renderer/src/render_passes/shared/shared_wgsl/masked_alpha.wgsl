@@ -164,10 +164,11 @@ fn mask_alpha_at(
     let base_index = (material_offset / 4u) + 1u;
     let base_color_tex = material_load_texture_info(base_index + 2u);
     var alpha = material_load_f32(base_index + 10u);
-    if base_color_tex.exists {
-        let uv = mask_texture_uv(attribute_data_offset, triangle_indices, bary, base_color_tex, vertex_attribute_stride, uv_sets_index);
-        alpha = alpha * texture_pool_sample(base_color_tex, uv).a;
-    }
+    // Branchless: an unbound base-color slot packs the shared 1×1 NEUTRAL
+    // (white, alpha 1) — identity multiply, so the cutout alpha is exactly
+    // the factor alpha, glTF's defined no-texture result.
+    let uv = mask_texture_uv(attribute_data_offset, triangle_indices, bary, base_color_tex, vertex_attribute_stride, uv_sets_index);
+    alpha = alpha * texture_pool_sample(base_color_tex, uv).a;
     return alpha;
 }
 {% endif %}

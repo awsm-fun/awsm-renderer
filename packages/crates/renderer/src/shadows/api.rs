@@ -78,6 +78,11 @@ impl AwsmRenderer {
             || self.prep_config.sscs_step_count != config.sscs_step_count;
         self.prep_config.sscs_enabled = config.sscs_enabled;
         self.prep_config.sscs_step_count = config.sscs_step_count;
+        // `denoise` gates whether the prep blur pipelines exist at all (they
+        // are only compiled while it's on). Mirror it so the next
+        // commit_load's config-ensure compiles the pair on an off→on flip;
+        // until then `render_blur` warn-skips (never a frame error).
+        self.prep_config.denoise = config.denoise;
         if recompile {
             self.last_ensured_bucket_layout = None;
             self.materials.mark_variants_dirty();

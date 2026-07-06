@@ -2,7 +2,7 @@
 
 use crate::{
     shader::MaterialShader,
-    writer::{write, write_material_texture},
+    writer::{write, write_material_texture, write_material_texture_or_skip},
     MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext,
 };
 
@@ -59,13 +59,18 @@ pub struct PbrMaterial {
 }
 
 /// Compile-time feature set of a PBR material: which optional code paths
-/// its specialized shader actually needs. Derived from a [`PbrMaterial`]'s
-/// present texture slots + extensions (the `Option` fields). This is the
-/// input to:
+/// its specialized shader actually needs. The five core texture-slot bits
+/// are RETIRED (permanently false): slot sampling is always compiled and an
+/// unbound slot packs the shared 1×1 NEUTRAL, so texture binds are pure
+/// data and never key a pipeline. The extension bits are STRICT (derived
+/// from the `Option` fields: an enabled extension's code runs
+/// unconditionally for every instance). This is the input to:
 ///
-/// 1. **Compile-time gating** — the Askama `{% if features.<x> %}` checks
-///    in the PBR shader (opaque compute + transparent fragment), so a
-///    material with (say) no normal map compiles no normal-map code.
+/// 1. **Compile-time gating** — the Askama `{% if pbr_features.<x> %}`
+///    checks in the PBR shader (opaque compute + transparent fragment) for
+///    the EXTENSION features, so a material without (say) clearcoat compiles
+///    no clearcoat code. (Texture-slot sampling is NOT gated — it is always
+///    present and unbound slots sample the 1×1 neutral.)
 /// 2. **Bucket identity** — [`Self::bits`] is the stable feature-hash that
 ///    maps a feature-set to its own `shader_id` / bucket, so two materials
 ///    with the same feature-set share one specialized pipeline.
@@ -123,14 +128,18 @@ impl PbrFeatures {
     /// The number of distinct feature bits (≤ 32 so [`Self::bits`] fits a u32).
     pub const COUNT: u32 = 17;
 
-    /// Derives the feature set actually used by a material.
+    /// Derives the feature set from a material. The five texture-slot bits
+    /// are RETIRED — always `false` (bit positions kept for the stable
+    /// append-only layout): slot sampling code is unconditionally present
+    /// and unbound slots sample the 1×1 NEUTRAL, so texture presence never
+    /// splits buckets. Extension bits remain presence-derived (strict).
     pub fn from_material(m: &PbrMaterial) -> Self {
         Self {
-            base_color_tex: m.base_color_tex.is_some(),
-            metallic_roughness_tex: m.metallic_roughness_tex.is_some(),
-            normal_tex: m.normal_tex.is_some(),
-            occlusion_tex: m.occlusion_tex.is_some(),
-            emissive_tex: m.emissive_tex.is_some(),
+            base_color_tex: false,
+            metallic_roughness_tex: false,
+            normal_tex: false,
+            occlusion_tex: false,
+            emissive_tex: false,
             vertex_color: m.vertex_color_info.is_some(),
             emissive_strength: m.emissive_strength.is_some(),
             ior: m.ior.is_some(),
@@ -514,23 +523,48 @@ impl MaterialShader for PbrMaterial {
         write(data, self.alpha_mode.variant_as_u32().into());
         write(data, self.alpha_cutoff().unwrap_or(0.0f32).into());
 
-        write_material_texture(data, self.base_color_tex.as_ref(), ctx);
+        write_material_texture(
+            data,
+            self.base_color_tex.as_ref(),
+            ctx,
+            crate::NeutralTexture::White,
+        );
         write(data, self.base_color_factor[0].into());
         write(data, self.base_color_factor[1].into());
         write(data, self.base_color_factor[2].into());
         write(data, self.base_color_factor[3].into());
 
-        write_material_texture(data, self.metallic_roughness_tex.as_ref(), ctx);
+        write_material_texture(
+            data,
+            self.metallic_roughness_tex.as_ref(),
+            ctx,
+            crate::NeutralTexture::White,
+        );
         write(data, self.metallic_factor.into());
         write(data, self.roughness_factor.into());
 
-        write_material_texture(data, self.normal_tex.as_ref(), ctx);
+        write_material_texture(
+            data,
+            self.normal_tex.as_ref(),
+            ctx,
+            crate::NeutralTexture::FlatNormal,
+        );
         write(data, self.normal_scale.into());
 
-        write_material_texture(data, self.occlusion_tex.as_ref(), ctx);
+        write_material_texture(
+            data,
+            self.occlusion_tex.as_ref(),
+            ctx,
+            crate::NeutralTexture::White,
+        );
         write(data, self.occlusion_strength.into());
 
-        write_material_texture(data, self.emissive_tex.as_ref(), ctx);
+        write_material_texture(
+            data,
+            self.emissive_tex.as_ref(),
+            ctx,
+            crate::NeutralTexture::White,
+        );
         write(data, self.emissive_factor[0].into());
         write(data, self.emissive_factor[1].into());
         write(data, self.emissive_factor[2].into());
@@ -610,10 +644,10 @@ impl MaterialShader for PbrMaterial {
         {
             feature_indices.specular = current_index(data);
 
-            write_material_texture(data, tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, tex.as_ref(), ctx);
             write(data, factor.into());
 
-            write_material_texture(data, color_tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, color_tex.as_ref(), ctx);
             write(data, color_factor[0].into());
             write(data, color_factor[1].into());
             write(data, color_factor[2].into());
@@ -622,7 +656,7 @@ impl MaterialShader for PbrMaterial {
         if let Some(PbrMaterialTransmission { tex, factor }) = &self.transmission {
             feature_indices.transmission = current_index(data);
 
-            write_material_texture(data, tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, tex.as_ref(), ctx);
             write(data, factor.into());
         }
 
@@ -635,10 +669,10 @@ impl MaterialShader for PbrMaterial {
         {
             feature_indices.diffuse_transmission = current_index(data);
 
-            write_material_texture(data, tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, tex.as_ref(), ctx);
             write(data, factor.into());
 
-            write_material_texture(data, color_tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, color_tex.as_ref(), ctx);
             write(data, color_factor[0].into());
             write(data, color_factor[1].into());
             write(data, color_factor[2].into());
@@ -653,7 +687,7 @@ impl MaterialShader for PbrMaterial {
         {
             feature_indices.volume = current_index(data);
 
-            write_material_texture(data, thickness_tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, thickness_tex.as_ref(), ctx);
             write(data, thickness_factor.into());
             write(data, attenuation_distance.into());
             write(data, attenuation_color[0].into());
@@ -672,13 +706,13 @@ impl MaterialShader for PbrMaterial {
         {
             feature_indices.clearcoat = current_index(data);
 
-            write_material_texture(data, tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, tex.as_ref(), ctx);
             write(data, factor.into());
 
-            write_material_texture(data, roughness_tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, roughness_tex.as_ref(), ctx);
             write(data, roughness_factor.into());
 
-            write_material_texture(data, normal_tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, normal_tex.as_ref(), ctx);
             write(data, normal_scale.into());
         }
 
@@ -691,10 +725,10 @@ impl MaterialShader for PbrMaterial {
         {
             feature_indices.sheen = current_index(data);
 
-            write_material_texture(data, roughness_tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, roughness_tex.as_ref(), ctx);
             write(data, roughness_factor.into());
 
-            write_material_texture(data, color_tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, color_tex.as_ref(), ctx);
             write(data, color_factor[0].into());
             write(data, color_factor[1].into());
             write(data, color_factor[2].into());
@@ -713,7 +747,7 @@ impl MaterialShader for PbrMaterial {
         {
             feature_indices.anisotropy = current_index(data);
 
-            write_material_texture(data, tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, tex.as_ref(), ctx);
             write(data, strength.into());
             write(data, rotation.into());
         }
@@ -729,11 +763,11 @@ impl MaterialShader for PbrMaterial {
         {
             feature_indices.iridescence = current_index(data);
 
-            write_material_texture(data, tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, tex.as_ref(), ctx);
             write(data, factor.into());
             write(data, ior.into());
 
-            write_material_texture(data, thickness_tex.as_ref(), ctx);
+            write_material_texture_or_skip(data, thickness_tex.as_ref(), ctx);
             write(data, thickness_min.into());
             write(data, thickness_max.into());
         }

@@ -406,7 +406,7 @@ impl crate::AwsmRenderer {
         )?;
         let opaque_bg = &self.render_passes.material_opaque.bind_groups;
         let texture_pool_arrays_len = opaque_bg.texture_pool_arrays_len;
-        let texture_pool_samplers_len = opaque_bg.texture_pool_sampler_keys.len() as u32;
+        let texture_pool_samplers_len = opaque_bg.texture_pool_samplers_len;
         let opaque_layout_msaa = self.pipeline_layouts.get_key(
             &self.gpu,
             &self.bind_group_layouts,

@@ -16,6 +16,7 @@ impl AwsmRenderer {
     /// Sets the active skybox.
     pub fn set_skybox(&mut self, skybox: Skybox) {
         self.environment.skybox = skybox;
+        self.mark_skybox_real();
         self.bind_groups
             .mark_create(BindGroupCreate::EnvironmentSkyboxCreate);
     }
@@ -132,7 +133,17 @@ impl Skybox {
         gpu: &AwsmRendererWebGpu,
         default_colors: CubemapBitmapColors,
     ) -> Result<SkyboxResources> {
-        let (texture, view, mip_count) = CubemapImage::new_colors(default_colors, 256, 256)
+        Self::prepare_resources_sized(gpu, default_colors, 256).await
+    }
+
+    /// [`Self::prepare_resources`] at an explicit face size. `size = 1`
+    /// produces the deferred-boot placeholder (see `IblTexture`).
+    pub async fn prepare_resources_sized(
+        gpu: &AwsmRendererWebGpu,
+        default_colors: CubemapBitmapColors,
+        size: u32,
+    ) -> Result<SkyboxResources> {
+        let (texture, view, mip_count) = CubemapImage::new_colors(default_colors, size, size)
             .await?
             .create_texture_and_view(gpu, Some("Skybox Cubemap"))
             .await?;

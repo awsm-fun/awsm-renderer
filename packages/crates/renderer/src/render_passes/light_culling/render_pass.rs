@@ -17,34 +17,24 @@ use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 use crate::{
     error::Result,
     render::RenderContext,
-    render_passes::{
-        light_culling::{bind_group::LightCullingBindGroups, pipeline::LightCullingPipelines},
-        RenderPassInitContext,
+    render_passes::light_culling::{
+        bind_group::LightCullingBindGroups, pipeline::LightCullingPipelines,
     },
 };
 
-/// Light culling pass bind groups and pipelines.
+/// Light culling pass bind groups and pipelines. Constructed through the
+/// staged `describe → from_resolved` flow in `render_passes.rs` — bind
+/// groups in phase 1, the two pipelines through the cross-renderer pool.
+/// The cull dispatch itself is gated on `live_light_count() > 0` at frame
+/// time (see `render()`): it must run for directional-only scenes too, to
+/// clear the froxel counts the consumers still read; only truly light-free
+/// frames skip it.
 pub struct LightCullingRenderPass {
     pub bind_groups: LightCullingBindGroups,
     pub pipelines: LightCullingPipelines,
 }
 
 impl LightCullingRenderPass {
-    /// Creates the light culling render pass resources. Eager compile
-    /// — matches the existing scaffold and every other compute pass in
-    /// this codebase. The cull dispatch itself is gated on
-    /// `live_light_count() > 0` at frame time (see `render()`): it must
-    /// run for directional-only scenes too, to clear the froxel counts
-    /// the consumers still read; only truly light-free frames skip it.
-    pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let bind_groups = LightCullingBindGroups::new(ctx).await?;
-        let pipelines = LightCullingPipelines::new(ctx, &bind_groups).await?;
-        Ok(Self {
-            bind_groups,
-            pipelines,
-        })
-    }
-
     /// Executes the light culling pass.
     ///
     /// The dispatch may only be skipped when there are **no lights at

@@ -97,6 +97,17 @@ pub struct Vec3Params {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LookAtParams {
+    /// Target node UUID (typically a light or camera).
+    pub node: String,
+    /// World-space point to aim at, `[x, y, z]`.
+    pub target: [f32; 3],
+    /// Optional up-hint for the roll-free frame (default `[0,1,0]`;
+    /// auto-falls back when the aim direction is parallel to it).
+    pub up: Option<[f32; 3]>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EulerParams {
     /// Target node UUID.
     pub node: String,
@@ -670,10 +681,12 @@ pub struct MaterialBoolParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct BuiltinAlphaModeParams {
-    /// Mesh node UUID (its built-in/inline material).
-    pub node: String,
+    /// Built-in library material UUID (see get_snapshot's materials list).
+    pub material: String,
     pub mode: AlphaModeArg,
-    /// Alpha cutoff for `mask` mode (default 0.5; ignored otherwise).
+    /// Alpha cutoff for `mask` mode (default 0.5; ignored otherwise). The
+    /// cutoff VALUE is a per-mesh uniform — tune it per node afterwards via
+    /// set_builtin_param alpha_cutoff.
     #[serde(default)]
     pub cutoff: Option<f64>,
 }
@@ -2090,6 +2103,63 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Aim a node at a world-space target: computes the roll-free rotation that points the node's local -Z (the forward axis of lights and cameras) at `target`, converts it into the node's parent space, and applies it — translation and scale are untouched. Params: { node, target: [x,y,z], up?: [x,y,z] }. Replaces hand-computing quaternions for spot/camera aiming."
+    )]
+    async fn node_look_at(
+        &self,
+        Parameters(p): Parameters<LookAtParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use glam::{Mat3, Mat4, Quat, Vec3};
+        let node = parse_node(&p.node)?;
+        let (trs, world) = self.current_trs_and_world(node).await?;
+
+        let world_mat = Mat4::from_cols_array(&world);
+        let world_pos = world_mat.w_axis.truncate();
+        let target = Vec3::from_array(p.target);
+        let dir = target - world_pos;
+        if dir.length_squared() < 1e-12 {
+            return Err(McpError::invalid_params(
+                "look_at target coincides with the node's position",
+                None,
+            ));
+        }
+        let dir = dir.normalize();
+
+        // Roll-free frame: -Z = dir; X ⊥ up-hint; fall back when the aim
+        // direction is (anti)parallel to the hint.
+        let mut up = Vec3::from_array(p.up.unwrap_or([0.0, 1.0, 0.0]));
+        if up.cross(dir).length_squared() < 1e-8 {
+            up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+        }
+        let z = -dir;
+        let x = up.cross(z).normalize();
+        let y = z.cross(x);
+        let world_rot = Quat::from_mat3(&Mat3::from_cols(x, y, z));
+
+        // Local = parent⁻¹ * world. Parent rotation from the node's world
+        // basis with scale stripped, divided by its current local rotation.
+        let local_rot_cur = Quat::from_array(trs.rotation);
+        let basis = Mat3::from_cols(
+            world_mat.x_axis.truncate().normalize(),
+            world_mat.y_axis.truncate().normalize(),
+            world_mat.z_axis.truncate().normalize(),
+        );
+        let world_rot_cur = Quat::from_mat3(&basis).normalize();
+        let parent_rot = (world_rot_cur * local_rot_cur.inverse()).normalize();
+        let local_rot = (parent_rot.inverse() * world_rot).normalize();
+
+        self.dispatch(EditorCommand::SetTransform {
+            id: node,
+            transform: Trs {
+                translation: trs.translation,
+                rotation: local_rot.to_array(),
+                scale: trs.scale,
+            },
+        })
+        .await
+    }
+
+    #[tool(
         description = "Set a node's local translation [x,y,z], keeping its current rotation + scale."
     )]
     async fn set_translation(
@@ -3198,7 +3268,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength (1 float). For KHR extension params (clearcoat, sheen, transmission, ior, ...) use patch_kind on mesh.material.inline.extensions — e.g. {\"mesh\":{\"material\":{\"inline\":{\"extensions\":{\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}}}}} — an inline extension ENABLES it for that mesh (recompiles its variant) and null disables."
+        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength (1 float). For KHR extension PARAMS (clearcoat, sheen, transmission, ior, ...) use patch_kind on mesh.material.inline.extensions — e.g. {\"mesh\":{\"material\":{\"inline\":{\"extensions\":{\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}}}}}. Extension ENABLES are owned by the library material (update_builtin_material) — inline params only take effect when the material enables the extension; an inline-only extension is dropped."
     )]
     async fn set_builtin_param(
         &self,
@@ -3230,7 +3300,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a mesh node's BUILT-IN/inline material alpha mode: opaque | mask (with `cutoff`) | blend. The typed alternative to resending the whole NodeKind via set_kind. For glass: `blend` + set_builtin_param base_color with a 4th alpha float < 1. Re-materializes the node (pipeline-feature flip)."
+        description = "Set a BUILT-IN library MATERIAL's alpha mode: opaque | mask (with `cutoff`) | blend. Alpha mode is pipeline routing owned by the material asset — it applies to every node using the material (their variants re-materialize). Per glTF, opaque IGNORES base-color alpha; for glass set the material to `blend`, then set_builtin_param base_color with a 4th alpha float < 1 per node. Mask cutoff VALUE stays per-node tunable (set_builtin_param alpha_cutoff)."
     )]
     async fn set_builtin_alpha_mode(
         &self,
@@ -3244,14 +3314,14 @@ impl EditorMcp {
             AlphaModeArg::Blend => awsm_renderer_editor_protocol::MaterialAlphaMode::Blend,
         };
         self.dispatch(EditorCommand::SetBuiltinAlphaMode {
-            node: parse_node(&p.node)?,
+            material: parse_asset(&p.material)?,
             mode,
         })
         .await
     }
 
     #[tool(
-        description = "Bind a texture asset onto a mesh node's BUILT-IN (inline PBR) material slot: base_color | metallic_roughness | normal | occlusion | emissive. Omit `texture` to clear. Create textures with import_texture_from_url (raster) or add_texture_asset (procedural). (set_material_texture is the custom-WGSL-material counterpart.)"
+        description = "Bind a texture asset onto a mesh node's BUILT-IN (inline PBR) material slot: base_color | metallic_roughness | normal | occlusion | emissive. Binds are pure data — every core slot's sampling code is always compiled (unbound slots sample a shared 1x1 neutral), so binding any slot on any node never recompiles anything. Omit `texture` to clear. Create textures with import_texture_from_url (raster) or add_texture_asset (procedural). (set_material_texture is the custom-WGSL-material counterpart.)"
     )]
     async fn set_node_texture(
         &self,
@@ -4377,6 +4447,43 @@ impl EditorMcp {
         serde_json::from_value(v.clone()).map_err(|e| {
             McpError::internal_error(format!("node {node} kind did not parse: {e}"), None)
         })
+    }
+
+    /// Read a node's current local TRS + world matrix (column-major 16)
+    /// via the `NodeTransforms` query — for tools that need world-space
+    /// context (`node_look_at`).
+    async fn current_trs_and_world(&self, node: NodeId) -> Result<(Trs, [f32; 16]), McpError> {
+        let trs = self.current_trs(node).await?;
+        let resp = self
+            .req(Request::Query(EditorQuery::NodeTransforms {
+                nodes: vec![node],
+            }))
+            .await?;
+        let Response::Query(qr) = resp else {
+            return Err(unexpected(resp));
+        };
+        let QueryResult::Map(m) = *qr else {
+            return Err(McpError::internal_error(
+                "unexpected transforms result",
+                None,
+            ));
+        };
+        let mut world = [0.0f32; 16];
+        world[0] = 1.0;
+        world[5] = 1.0;
+        world[10] = 1.0;
+        world[15] = 1.0;
+        if let Some(a) = m
+            .entries
+            .get(&node.to_string())
+            .and_then(|v| v.get("world"))
+            .and_then(|a| a.as_array())
+        {
+            for (i, x) in a.iter().take(16).enumerate() {
+                world[i] = x.as_f64().unwrap_or(world[i] as f64) as f32;
+            }
+        }
+        Ok((trs, world))
     }
 
     /// Read a node's current local TRS (for the partial-transform convenience

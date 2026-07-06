@@ -764,23 +764,21 @@ pub(crate) fn merged_builtin_def(
     use awsm_renderer_editor_protocol::TextureRef;
     let inline = &inst.inline;
 
-    // ── The override rule ────────────────────────────────────────────────────
-    // Most VARIANT fields (shading model, alpha *mode*, double-sided cull,
-    // vertex-colors, KHR extension *enables*) come ONLY from the shared `variant`,
-    // so meshes sharing those features share one pipeline. The uniform-buffer
-    // surface — factors + extension *parameters* + Toon knobs + mask cutoff — is
-    // per-mesh from `inline`.
-    //
-    // Texture-slot *presence* (§11) is ALSO per-mesh: a per-node `inline` texture
-    // (what `set_node_texture` / `set_node_texture_transform` write) ENABLES the
-    // slot even when the shared variant lacks it, re-specializing THIS mesh's
-    // pipeline to sample it — instead of storing the binding and silently
-    // rendering flat. Variants key on texture *presence* (not the image), so this
-    // adds at most one extra bucket per distinct slot-presence combination, not
-    // one per mesh; the bound *image* is still a per-mesh binding (no recompile).
+    // ── The override rule: the MATERIAL owns the pipeline, the NODE owns data ─
+    // Everything pipeline-shaped comes ONLY from the shared `variant`: shading
+    // model, alpha MODE, double-sided cull, vertex-colors, extension ENABLES,
+    // and texture-slot CAPABILITIES. The per-mesh `inline` surface is pure
+    // data: factors, extension PARAMETERS (where the variant enables the
+    // extension), Toon/FlipBook knobs, the Mask cutoff value, and texture
+    // IMAGES bound into CAPABLE slots. A capable slot's sampling code is
+    // compiled into the shared bucket behind a runtime `exists` flag, so
+    // binding/unbinding an image is a data write — never a recompile, and
+    // never a per-mesh pipeline.
 
-    // Texture binding: per-mesh `inline` texture wins (+ enables the slot), then a
-    // custom `texture_overrides` swap, then the shared variant's default image.
+    // Texture binding is pure DATA — every slot's sampling code is always
+    // compiled (unbound slots pack the shared 1×1 neutral), so a per-mesh
+    // `inline` image wins, then a custom `texture_overrides` swap, then the
+    // variant's default image. Binds never re-key the pipeline.
     let tex = |slot: &str,
                inline_tex: Option<TextureRef>,
                default: Option<TextureRef>|
@@ -792,19 +790,15 @@ pub(crate) fn merged_builtin_def(
         )
     };
 
-    // Extension merge, mirroring texture-slot presence (§11): enabled when
-    // EITHER layer carries the extension — a per-node `inline` extension
-    // re-specializes THIS mesh's pipeline (one extra bucket per distinct
-    // feature combination, not one per mesh) instead of being silently
-    // dropped. Params: inline wins, else the variant's AUTHORED values
-    // (previously an enabled-but-inline-unseeded extension fell back to
-    // struct DEFAULTS, discarding the library material's factors). The rule
-    // lives on `PbrExtensions::merged_over` — shared with the inspector so
-    // the UI shows exactly what renders.
+    // Extension ENABLES are variant-only (strict capabilities); an enabled
+    // extension's parameters come from `inline` when seeded. The rule lives
+    // on `PbrExtensions::merged_over` — shared with the inspector so the UI
+    // shows exactly what renders.
     let extensions = PbrExtensions::merged_over(&inline.extensions, &variant.extensions);
 
-    // Alpha MODE (Opaque/Mask/Blend) is variant routing; the Mask *cutoff* value
-    // is a per-mesh uniform compare, so carry it from inline when both are Mask.
+    // Alpha MODE is variant-only (pipeline routing). The Mask *cutoff* is a
+    // per-mesh uniform compare, so inline's value wins when both layers are
+    // Mask.
     let alpha_mode = match (&variant.alpha_mode, &inline.alpha_mode) {
         (MaterialAlphaMode::Mask { .. }, MaterialAlphaMode::Mask { cutoff }) => {
             MaterialAlphaMode::Mask { cutoff: *cutoff }
@@ -1992,19 +1986,18 @@ mod builtin_merge_tests {
         }
     }
 
-    // Regression guard for "inline extensions stored but never rendered":
-    // library None + inline Some(clearcoat) must ENABLE the extension for
-    // this mesh (the variant bit comes from presence in EITHER layer).
+    // Extensions are STRICT capabilities: the ENABLE set is variant-only.
+    // Library None + inline Some(clearcoat) must NOT enable the extension —
+    // an inline-only extension has no compiled code to render through, so
+    // the merge drops it (enabling clearcoat is a material edit).
     #[test]
-    fn inline_extension_enables_what_the_library_lacks() {
+    fn inline_extension_cannot_enable_what_the_library_lacks() {
         let variant = MaterialDef::default();
         let merged = merged_builtin_def(&inst(with_clearcoat(1.0, 0.0)), &variant);
-        let cc = merged
-            .extensions
-            .clearcoat
-            .expect("inline-only clearcoat must survive");
-        assert_eq!(cc.factor, 1.0);
-        assert_eq!(cc.roughness_factor, 0.0);
+        assert!(
+            merged.extensions.clearcoat.is_none(),
+            "extension enables are variant-only; inline-only clearcoat must be dropped"
+        );
     }
 
     // Library Some(factor 0) + inline Some(factor 1): the inline factors must
@@ -2048,5 +2041,46 @@ mod builtin_merge_tests {
         // per-instance override maps empty (they don't ship in the bundle).
         let reflattened = merged_builtin_def(&inst(merged.clone()), &variant);
         assert_eq!(reflattened, merged);
+    }
+
+    // Alpha MODE is variant-only routing: a per-node inline mode must never
+    // reroute the mesh. Only the Mask cutoff VALUE (a uniform) carries from
+    // inline, and only when the variant is Mask.
+    #[test]
+    fn alpha_mode_is_variant_only() {
+        use awsm_renderer_editor_protocol::material::MaterialAlphaMode;
+        let variant = MaterialDef::default(); // Opaque
+        let inline = MaterialDef {
+            alpha_mode: MaterialAlphaMode::Mask { cutoff: 0.5 },
+            ..Default::default()
+        };
+        let merged = merged_builtin_def(&inst(inline), &variant);
+        assert_eq!(merged.alpha_mode, MaterialAlphaMode::Opaque);
+
+        let mask_variant = MaterialDef {
+            alpha_mode: MaterialAlphaMode::Mask { cutoff: 0.5 },
+            ..Default::default()
+        };
+        let inline = MaterialDef {
+            alpha_mode: MaterialAlphaMode::Mask { cutoff: 0.25 },
+            ..Default::default()
+        };
+        let merged = merged_builtin_def(&inst(inline), &mask_variant);
+        assert_eq!(merged.alpha_mode, MaterialAlphaMode::Mask { cutoff: 0.25 });
+    }
+
+    // Texture binds are pure data: an inline image binds into ANY slot (the
+    // slot code is always compiled; unbound slots sample the 1×1 neutral).
+    #[test]
+    fn inline_textures_bind_any_slot() {
+        let variant = MaterialDef::default();
+        let inline = MaterialDef {
+            normal_texture: Some(TextureRef::new(AssetId::new())),
+            emissive_texture: Some(TextureRef::new(AssetId::new())),
+            ..Default::default()
+        };
+        let merged = merged_builtin_def(&inst(inline), &variant);
+        assert!(merged.normal_texture.is_some());
+        assert!(merged.emissive_texture.is_some());
     }
 }

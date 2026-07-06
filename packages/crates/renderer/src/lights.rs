@@ -38,12 +38,14 @@ impl AwsmRenderer {
     /// Sets the BRDF LUT texture used for IBL.
     pub fn set_brdf_lut(&mut self, brdf_lut: BrdfLut) {
         self.lights.brdf_lut = brdf_lut;
+        self.mark_brdf_lut_real();
         self.bind_groups
             .mark_create(BindGroupCreate::BrdfLutTextures);
     }
     /// Sets image-based lighting textures.
     pub fn set_ibl(&mut self, ibl: Ibl) {
         self.lights.ibl = ibl;
+        self.mark_ibl_real();
         self.bind_groups.mark_create(BindGroupCreate::IblTextures);
         self.lights.lighting_info_gpu_dirty = true;
     }
