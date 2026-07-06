@@ -290,6 +290,7 @@ dependencies = [
  "awsm-renderer-materials",
  "awsm-renderer-meshgen",
  "awsm-renderer-particles",
+ "awsm-renderer-scene",
  "awsm-renderer-scene-loader",
  "awsm-renderer-web-shared",
  "awsm_web 0.45.0",
