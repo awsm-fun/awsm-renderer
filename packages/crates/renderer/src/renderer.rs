@@ -729,8 +729,7 @@ impl AwsmRenderer {
     /// Drain every reserved (uncompiled) slot in the compute + render
     /// pipeline caches in one concurrent batch. Idempotent.
     pub(crate) async fn compile_pending_pipelines(&mut self) -> crate::error::Result<usize> {
-        if self.pipelines.compute.pending_count() == 0
-            && self.pipelines.render.pending_count() == 0
+        if self.pipelines.compute.pending_count() == 0 && self.pipelines.render.pending_count() == 0
         {
             return Ok(0);
         }
@@ -830,7 +829,8 @@ impl AwsmRenderer {
         //    since). Cheap no-op when already warm. Reported under `Compiling`
         //    so loading UIs label the (first-visit-expensive) wait honestly.
         {
-            let pending = self.pipelines.compute.pending_count() + self.pipelines.render.pending_count();
+            let pending =
+                self.pipelines.compute.pending_count() + self.pipelines.render.pending_count();
             if pending > 0 {
                 self.load_phase = LoadPhase::Compiling;
                 let mut stats = self.loading_stats();

@@ -163,10 +163,11 @@ impl AwsmRenderer {
         let masked_builtin_missing = self.meshes.iter().any(|(_, mesh)| {
             !mesh.instanced
                 && self.materials.alpha_cutoff(mesh.material_key).is_some()
-                && !self.render_passes.geometry.masked_pipelines.has_variant(
-                    msaa,
-                    self.materials.canonical_shader_id(mesh.material_key),
-                )
+                && !self
+                    .render_passes
+                    .geometry
+                    .masked_pipelines
+                    .has_variant(msaa, self.materials.canonical_shader_id(mesh.material_key))
         });
         let was_dirty = pool_dirty || sampler_pool_dirty;
 

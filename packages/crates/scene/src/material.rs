@@ -51,11 +51,11 @@ pub struct MaterialDef {
     pub occlusion_strength: f32,
     pub double_sided: bool,
     pub vertex_colors_enabled: bool,
-    /// glTF-style alpha rendering mode. Defaults to `Opaque` so
-    /// pre-extension project.json round-trips identically (the
-    /// material_to_pbr translation then falls back to the
-    /// "base_color.a < 1 → blend" heuristic the editor has always used
-    /// for inline procedural materials).
+    /// glTF-style alpha rendering mode. Defaults to `Opaque`, which — per
+    /// glTF — IGNORES the base-color alpha factor. Transparency requires
+    /// explicitly authoring `Blend`; cutouts require `Mask`. The alpha mode
+    /// is pipeline ROUTING and therefore owned by the material asset alone
+    /// (never a per-node override).
     #[serde(default)]
     pub alpha_mode: MaterialAlphaMode,
     /// Shading model selector. `Pbr` is the default; `Unlit` is the existing
@@ -65,8 +65,47 @@ pub struct MaterialDef {
     /// Optional KHR PBR extensions (only meaningful when `shading == Pbr`). Each
     /// enabled extension is a variant bit; its factors are per-mesh uniforms.
     /// `#[serde(default)]` so pre-extension projects round-trip cleanly.
+    ///
+    /// Extensions are STRICT capabilities: enabling one on the material means
+    /// every mesh using this material runs its code unconditionally (nodes
+    /// override only the parameter uniforms). A mesh that shouldn't have the
+    /// extension uses a different material.
     #[serde(default)]
     pub extensions: PbrExtensions,
+    /// Texture-slot CAPABILITIES — which of the five standard PBR slots this
+    /// material's compiled shader is ABLE to sample. Declaring a capability
+    /// compiles the slot's sampling path in (guarded by a cheap per-material
+    /// runtime "bound?" check), so meshes sharing this material can each bind
+    /// or omit an image without minting a new pipeline. A slot that is neither
+    /// declared here nor bound on the material itself compiles NO code and
+    /// per-node binds to it are rejected.
+    ///
+    /// `None` (the default, and every pre-capability project) derives the
+    /// capabilities from texture presence — byte-identical pipelines to the
+    /// old behavior. Binding a texture on the material always implies the
+    /// capability; this field can only WIDEN, never narrow. See
+    /// [`MaterialDef::slot_capabilities`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_capabilities: Option<TextureCapabilities>,
+}
+
+/// Which of the five standard PBR texture slots a material's shader can
+/// sample — the compile-time half of the capability/usage split (usage is the
+/// per-mesh binding). See [`MaterialDef::texture_capabilities`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct TextureCapabilities {
+    #[serde(default)]
+    pub base_color: bool,
+    #[serde(default)]
+    pub metallic_roughness: bool,
+    #[serde(default)]
+    pub normal: bool,
+    #[serde(default)]
+    pub occlusion: bool,
+    #[serde(default)]
+    pub emissive: bool,
 }
 
 fn default_one() -> f32 {
@@ -93,6 +132,23 @@ impl MaterialDef {
         }
         self.extensions.texture_refs(&mut out);
         out
+    }
+
+    /// EFFECTIVE slot capabilities: the declared [`Self::texture_capabilities`]
+    /// widened by the material's own bound textures (a bound default image
+    /// always implies the capability). This — not raw texture presence — is
+    /// what keys the compiled shader's feature set, so meshes sharing this
+    /// material share one pipeline regardless of which of them bind images.
+    pub fn slot_capabilities(&self) -> TextureCapabilities {
+        let declared = self.texture_capabilities.unwrap_or_default();
+        TextureCapabilities {
+            base_color: declared.base_color || self.base_color_texture.is_some(),
+            metallic_roughness: declared.metallic_roughness
+                || self.metallic_roughness_texture.is_some(),
+            normal: declared.normal || self.normal_texture.is_some(),
+            occlusion: declared.occlusion || self.occlusion_texture.is_some(),
+            emissive: declared.emissive || self.emissive_texture.is_some(),
+        }
     }
 }
 
@@ -132,6 +188,7 @@ impl Default for MaterialDef {
             alpha_mode: MaterialAlphaMode::Opaque,
             shading: MaterialShading::Pbr,
             extensions: PbrExtensions::default(),
+            texture_capabilities: None,
         }
     }
 }
@@ -286,25 +343,33 @@ impl PbrExtensions {
 
     /// The per-mesh MERGED view of a node's `inline` extension layer over the
     /// shared library `variant`: per extension, the inline value wins when
-    /// present, otherwise the variant's authored values carry through —
-    /// presence in EITHER layer enables the extension (an inline-only
-    /// extension re-specializes that mesh's pipeline, mirroring texture-slot
-    /// presence). THE single definition of this rule: the editor's mesh
-    /// materialization and the inspector's extension controls both call this,
-    /// so what the UI shows is what actually renders.
+    /// present, otherwise the variant's authored values carry through.
+    /// Extensions are STRICT capabilities: the ENABLE set comes from the
+    /// shared `variant` alone (an extension is pipeline-shaped — enabling one
+    /// is a material edit, never a per-node override), while an enabled
+    /// extension's per-mesh PARAMETERS come from `inline` when seeded there.
+    /// An inline-only extension (variant disabled) is dropped — it can't
+    /// render without the variant's compiled code. THE single definition of
+    /// this rule: the editor's mesh materialization and the inspector's
+    /// extension controls both call this, so what the UI shows is what
+    /// actually renders.
     pub fn merged_over(inline: &Self, variant: &Self) -> Self {
         Self {
-            emissive_strength: inline.emissive_strength.or(variant.emissive_strength),
-            ior: inline.ior.or(variant.ior),
-            specular: inline.specular.or(variant.specular),
-            transmission: inline.transmission.or(variant.transmission),
-            diffuse_transmission: inline.diffuse_transmission.or(variant.diffuse_transmission),
-            volume: inline.volume.or(variant.volume),
-            clearcoat: inline.clearcoat.or(variant.clearcoat),
-            sheen: inline.sheen.or(variant.sheen),
-            dispersion: inline.dispersion.or(variant.dispersion),
-            anisotropy: inline.anisotropy.or(variant.anisotropy),
-            iridescence: inline.iridescence.or(variant.iridescence),
+            emissive_strength: variant
+                .emissive_strength
+                .map(|v| inline.emissive_strength.unwrap_or(v)),
+            ior: variant.ior.map(|v| inline.ior.unwrap_or(v)),
+            specular: variant.specular.map(|v| inline.specular.unwrap_or(v)),
+            transmission: variant.transmission.map(|v| inline.transmission.unwrap_or(v)),
+            diffuse_transmission: variant
+                .diffuse_transmission
+                .map(|v| inline.diffuse_transmission.unwrap_or(v)),
+            volume: variant.volume.map(|v| inline.volume.unwrap_or(v)),
+            clearcoat: variant.clearcoat.map(|v| inline.clearcoat.unwrap_or(v)),
+            sheen: variant.sheen.map(|v| inline.sheen.unwrap_or(v)),
+            dispersion: variant.dispersion.map(|v| inline.dispersion.unwrap_or(v)),
+            anisotropy: variant.anisotropy.map(|v| inline.anisotropy.unwrap_or(v)),
+            iridescence: variant.iridescence.map(|v| inline.iridescence.unwrap_or(v)),
         }
     }
 }

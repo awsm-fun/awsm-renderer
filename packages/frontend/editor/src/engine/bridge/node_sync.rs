@@ -764,27 +764,31 @@ pub(crate) fn merged_builtin_def(
     use awsm_renderer_editor_protocol::TextureRef;
     let inline = &inst.inline;
 
-    // ── The override rule ────────────────────────────────────────────────────
-    // Most VARIANT fields (shading model, alpha *mode*, double-sided cull,
-    // vertex-colors, KHR extension *enables*) come ONLY from the shared `variant`,
-    // so meshes sharing those features share one pipeline. The uniform-buffer
-    // surface — factors + extension *parameters* + Toon knobs + mask cutoff — is
-    // per-mesh from `inline`.
-    //
-    // Texture-slot *presence* (§11) is ALSO per-mesh: a per-node `inline` texture
-    // (what `set_node_texture` / `set_node_texture_transform` write) ENABLES the
-    // slot even when the shared variant lacks it, re-specializing THIS mesh's
-    // pipeline to sample it — instead of storing the binding and silently
-    // rendering flat. Variants key on texture *presence* (not the image), so this
-    // adds at most one extra bucket per distinct slot-presence combination, not
-    // one per mesh; the bound *image* is still a per-mesh binding (no recompile).
+    // ── The override rule: the MATERIAL owns the pipeline, the NODE owns data ─
+    // Everything pipeline-shaped comes ONLY from the shared `variant`: shading
+    // model, alpha MODE, double-sided cull, vertex-colors, extension ENABLES,
+    // and texture-slot CAPABILITIES. The per-mesh `inline` surface is pure
+    // data: factors, extension PARAMETERS (where the variant enables the
+    // extension), Toon/FlipBook knobs, the Mask cutoff value, and texture
+    // IMAGES bound into CAPABLE slots. A capable slot's sampling code is
+    // compiled into the shared bucket behind a runtime `exists` flag, so
+    // binding/unbinding an image is a data write — never a recompile, and
+    // never a per-mesh pipeline.
 
-    // Texture binding: per-mesh `inline` texture wins (+ enables the slot), then a
-    // custom `texture_overrides` swap, then the shared variant's default image.
-    let tex = |slot: &str,
+    // Texture binding: only CAPABLE slots accept a binding — per-mesh `inline`
+    // image wins, then a custom `texture_overrides` swap, then the variant's
+    // default image. Non-capable slots merge to `None` unconditionally
+    // (`set_node_texture` rejects them at command time; this drop is the
+    // belt-and-braces for stale stored bindings).
+    let caps = variant.slot_capabilities();
+    let tex = |capable: bool,
+               slot: &str,
                inline_tex: Option<TextureRef>,
                default: Option<TextureRef>|
      -> Option<TextureRef> {
+        if !capable {
+            return None;
+        }
         merge_slot_texture(
             inline_tex,
             inst.texture_overrides.get(slot).cloned(),
@@ -792,35 +796,19 @@ pub(crate) fn merged_builtin_def(
         )
     };
 
-    // Extension merge, mirroring texture-slot presence (§11): enabled when
-    // EITHER layer carries the extension — a per-node `inline` extension
-    // re-specializes THIS mesh's pipeline (one extra bucket per distinct
-    // feature combination, not one per mesh) instead of being silently
-    // dropped. Params: inline wins, else the variant's AUTHORED values
-    // (previously an enabled-but-inline-unseeded extension fell back to
-    // struct DEFAULTS, discarding the library material's factors). The rule
-    // lives on `PbrExtensions::merged_over` — shared with the inspector so
-    // the UI shows exactly what renders.
+    // Extension ENABLES are variant-only (strict capabilities); an enabled
+    // extension's parameters come from `inline` when seeded. The rule lives
+    // on `PbrExtensions::merged_over` — shared with the inspector so the UI
+    // shows exactly what renders.
     let extensions = PbrExtensions::merged_over(&inline.extensions, &variant.extensions);
 
-    // Alpha MODE (Opaque/Mask/Blend): a NON-DEFAULT per-node `inline` mode wins
-    // (what `set_builtin_alpha_mode` / the inspector dropdown write) — like
-    // texture-slot presence (§11 above), it re-specializes THIS mesh's routing
-    // instead of being silently dropped. `inline` Opaque is the unset default,
-    // so it falls through to the shared variant's authored mode (assigning a
-    // Blend/Mask library material keeps working). The Mask *cutoff* is a
-    // per-mesh uniform compare, so inline's value also wins when both layers
-    // are Mask.
-    //
-    // (Regression this fixes: per-node `mask` was ignored → mode stayed the
-    // variant's Opaque → the lowering's `alpha_mode_of` convenience heuristic
-    // saw base_color.a < 1 and routed the mesh to the BLEND/transparent pass —
-    // ghost render, no cutout, no shadow.)
+    // Alpha MODE is variant-only (pipeline routing). The Mask *cutoff* is a
+    // per-mesh uniform compare, so inline's value wins when both layers are
+    // Mask.
     let alpha_mode = match (&variant.alpha_mode, &inline.alpha_mode) {
         (MaterialAlphaMode::Mask { .. }, MaterialAlphaMode::Mask { cutoff }) => {
             MaterialAlphaMode::Mask { cutoff: *cutoff }
         }
-        (_, inline_mode) if *inline_mode != MaterialAlphaMode::Opaque => inline_mode.clone(),
         _ => variant.alpha_mode.clone(),
     };
 
@@ -841,26 +829,31 @@ pub(crate) fn merged_builtin_def(
         normal_scale: inline.normal_scale,
         occlusion_strength: inline.occlusion_strength,
         base_color_texture: tex(
+            caps.base_color,
             "base_color_texture",
             inline.base_color_texture,
             variant.base_color_texture,
         ),
         metallic_roughness_texture: tex(
+            caps.metallic_roughness,
             "metallic_roughness_texture",
             inline.metallic_roughness_texture,
             variant.metallic_roughness_texture,
         ),
         normal_texture: tex(
+            caps.normal,
             "normal_texture",
             inline.normal_texture,
             variant.normal_texture,
         ),
         occlusion_texture: tex(
+            caps.occlusion,
             "occlusion_texture",
             inline.occlusion_texture,
             variant.occlusion_texture,
         ),
         emissive_texture: tex(
+            caps.emissive,
             "emissive_texture",
             inline.emissive_texture,
             variant.emissive_texture,
@@ -868,6 +861,11 @@ pub(crate) fn merged_builtin_def(
         alpha_mode,
         shading,
         extensions,
+        // Carry the EFFECTIVE capabilities (declared ∪ variant-bound) so the
+        // flattened export def keys the same bucket in the player as the
+        // shared variant does in the editor — even for capable slots nobody
+        // bound an image into.
+        texture_capabilities: Some(caps),
         // variant-only: double_sided, vertex_colors_enabled, label.
         ..variant.clone()
     }
@@ -2004,19 +2002,18 @@ mod builtin_merge_tests {
         }
     }
 
-    // Regression guard for "inline extensions stored but never rendered":
-    // library None + inline Some(clearcoat) must ENABLE the extension for
-    // this mesh (the variant bit comes from presence in EITHER layer).
+    // Extensions are STRICT capabilities: the ENABLE set is variant-only.
+    // Library None + inline Some(clearcoat) must NOT enable the extension —
+    // an inline-only extension has no compiled code to render through, so
+    // the merge drops it (enabling clearcoat is a material edit).
     #[test]
-    fn inline_extension_enables_what_the_library_lacks() {
+    fn inline_extension_cannot_enable_what_the_library_lacks() {
         let variant = MaterialDef::default();
         let merged = merged_builtin_def(&inst(with_clearcoat(1.0, 0.0)), &variant);
-        let cc = merged
-            .extensions
-            .clearcoat
-            .expect("inline-only clearcoat must survive");
-        assert_eq!(cc.factor, 1.0);
-        assert_eq!(cc.roughness_factor, 0.0);
+        assert!(
+            merged.extensions.clearcoat.is_none(),
+            "extension enables are variant-only; inline-only clearcoat must be dropped"
+        );
     }
 
     // Library Some(factor 0) + inline Some(factor 1): the inline factors must
@@ -2060,5 +2057,57 @@ mod builtin_merge_tests {
         // per-instance override maps empty (they don't ship in the bundle).
         let reflattened = merged_builtin_def(&inst(merged.clone()), &variant);
         assert_eq!(reflattened, merged);
+    }
+
+    // Alpha MODE is variant-only routing: a per-node inline mode must never
+    // reroute the mesh. Only the Mask cutoff VALUE (a uniform) carries from
+    // inline, and only when the variant is Mask.
+    #[test]
+    fn alpha_mode_is_variant_only() {
+        use awsm_renderer_editor_protocol::material::MaterialAlphaMode;
+        let variant = MaterialDef::default(); // Opaque
+        let mut inline = MaterialDef::default();
+        inline.alpha_mode = MaterialAlphaMode::Mask { cutoff: 0.5 };
+        let merged = merged_builtin_def(&inst(inline), &variant);
+        assert_eq!(merged.alpha_mode, MaterialAlphaMode::Opaque);
+
+        let mut mask_variant = MaterialDef::default();
+        mask_variant.alpha_mode = MaterialAlphaMode::Mask { cutoff: 0.5 };
+        let mut inline = MaterialDef::default();
+        inline.alpha_mode = MaterialAlphaMode::Mask { cutoff: 0.25 };
+        let merged = merged_builtin_def(&inst(inline), &mask_variant);
+        assert_eq!(merged.alpha_mode, MaterialAlphaMode::Mask { cutoff: 0.25 });
+    }
+
+    // Texture-slot capability: an inline image binds only into a CAPABLE slot
+    // (declared on the variant, or implied by the variant's own binding). A
+    // non-capable inline binding is dropped; a declared-but-unbound capability
+    // accepts it and the merged def carries the effective capabilities so the
+    // player keys the same bucket.
+    #[test]
+    fn inline_textures_bind_only_capable_slots() {
+        use awsm_renderer_editor_protocol::material::TextureCapabilities;
+        // Variant declares the normal slot capable but binds no image.
+        let mut variant = MaterialDef::default();
+        variant.texture_capabilities = Some(TextureCapabilities {
+            normal: true,
+            ..Default::default()
+        });
+        let mut inline = MaterialDef::default();
+        inline.normal_texture = Some(TextureRef::new(AssetId::new()));
+        inline.emissive_texture = Some(TextureRef::new(AssetId::new()));
+        let merged = merged_builtin_def(&inst(inline), &variant);
+        assert!(
+            merged.normal_texture.is_some(),
+            "capable slot accepts the per-node image"
+        );
+        assert!(
+            merged.emissive_texture.is_none(),
+            "non-capable slot drops the per-node image"
+        );
+        let caps = merged
+            .texture_capabilities
+            .expect("merged def carries effective capabilities");
+        assert!(caps.normal && !caps.emissive);
     }
 }

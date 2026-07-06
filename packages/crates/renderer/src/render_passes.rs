@@ -37,8 +37,10 @@ use crate::{
     pipeline_layouts::PipelineLayouts,
     pipelines::Pipelines,
     render_passes::{
-        coverage::render_pass::CoverageRenderPass, display::render_pass::DisplayRenderPass,
-        geometry::render_pass::GeometryRenderPass, hzb::render_pass::HzbRenderPass,
+        coverage::render_pass::CoverageRenderPass,
+        display::render_pass::DisplayRenderPass,
+        geometry::render_pass::GeometryRenderPass,
+        hzb::render_pass::HzbRenderPass,
         light_culling::bind_group::LightCullingBindGroups,
         light_culling::pipeline::{LightCullingPipelines, LightCullingPrewarmDescriptors},
         light_culling::render_pass::LightCullingRenderPass,
@@ -51,7 +53,8 @@ use crate::{
             MaterialPrepPipelines, MaterialPrepPrewarmDescriptors, MaterialPrepRenderPass,
         },
         material_transparent::render_pass::MaterialTransparentRenderPass,
-        occlusion::compaction::CompactionRenderPass, occlusion::render_pass::OcclusionRenderPass,
+        occlusion::compaction::CompactionRenderPass,
+        occlusion::render_pass::OcclusionRenderPass,
     },
     render_textures::RenderTextureFormats,
     shaders::Shaders,
@@ -643,16 +646,15 @@ impl RenderPasses {
         // Light culling: 2 keys (cs_main + cs_tile), one shared module.
         let light_culling_descs =
             LightCullingPipelines::build_descriptors(ctx, &bindings.light_culling_bg).await?;
-        let light_culling_range = compute_pool.len()
-            ..compute_pool.len() + light_culling_descs.pipeline_cache_keys.len();
+        let light_culling_range =
+            compute_pool.len()..compute_pool.len() + light_culling_descs.pipeline_cache_keys.len();
         compute_pool.extend(light_culling_descs.pipeline_cache_keys.iter().cloned());
 
         // Material prep: ACTIVE MSAA branch only (the other branch fills on the
         // first set_anti_aliasing flip); cs_prep_edge + the compact edge-shadow
         // texture only when the MSAA edge-resolve path is actually live; the
         // blur pair only while denoise is configured on.
-        let edge_resolve_enabled =
-            multisampled_geometry && crate::edge_resolve_supported(ctx.gpu);
+        let edge_resolve_enabled = multisampled_geometry && crate::edge_resolve_supported(ctx.gpu);
         let material_prep_descs = MaterialPrepPipelines::build_descriptors_for_config(
             ctx,
             &bindings.material_prep_bg,
@@ -660,8 +662,8 @@ impl RenderPasses {
             edge_resolve_enabled,
         )
         .await?;
-        let material_prep_range = compute_pool.len()
-            ..compute_pool.len() + material_prep_descs.pipeline_cache_keys.len();
+        let material_prep_range =
+            compute_pool.len()..compute_pool.len() + material_prep_descs.pipeline_cache_keys.len();
         compute_pool.extend(material_prep_descs.pipeline_cache_keys.iter().cloned());
         // Allocated here (gpu handle in scope; `from_resolved` is sync).
         // Gated on MSAA alone — NOT on `edge_resolve_supported` — because the

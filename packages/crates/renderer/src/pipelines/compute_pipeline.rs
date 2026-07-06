@@ -511,7 +511,10 @@ impl ComputePipelines {
     /// RESOLVED-only cache probe: `Some(key)` iff the cache key maps to a slot
     /// whose pipeline has actually compiled. Reserved (pending) entries return
     /// `None` so compile paths treat them as misses that fill the slot.
-    fn resolved_cache_hit(&self, cache_key: &ComputePipelineCacheKey) -> Option<ComputePipelineKey> {
+    fn resolved_cache_hit(
+        &self,
+        cache_key: &ComputePipelineCacheKey,
+    ) -> Option<ComputePipelineKey> {
         self.cache
             .get(cache_key)
             .copied()

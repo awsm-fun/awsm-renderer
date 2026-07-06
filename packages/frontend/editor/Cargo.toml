@@ -27,6 +27,9 @@ awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export"
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 awsm-renderer-scene-loader = { workspace = true }
+# Direct dep for the RUNTIME asset-table types (editor-protocol's glob
+# re-export shadows AssetSource/AssetEntry with its authoring variants).
+awsm-renderer-scene = { workspace = true }
 awsm-renderer-editor-protocol = { workspace = true }
 awsm-renderer-web-shared = { workspace = true }
 

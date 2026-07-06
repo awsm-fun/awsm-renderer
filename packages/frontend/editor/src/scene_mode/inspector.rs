@@ -1924,9 +1924,11 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
                 if let Some(cur) = current_primitive_material(&n) {
                     let mut base_color = cur.base_color;
                     base_color[3] = v as f32;
-                    // alpha_MODE (opaque/mask/blend) is a variant setting on the
-                    // material; opacity is just the per-mesh alpha factor. The
-                    // bridge's alpha_mode_of heuristic still blends when a < 1.
+                    // Opacity is the per-mesh base-color ALPHA factor. It only
+                    // renders when the material's alpha MODE (a material-asset
+                    // setting) is Blend (translucency) or Mask (vs the cutoff).
+                    // Per glTF, an Opaque material ignores it — the old
+                    // "alpha < 1 silently becomes blend" promotion is gone.
                     set_inline_material(&n, MaterialDef { base_color, ..cur });
                 }
             })

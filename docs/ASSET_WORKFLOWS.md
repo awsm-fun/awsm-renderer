@@ -61,19 +61,30 @@ Notes:
 
 ## 2. Textures → built-in PBR material slots
 
+The rule: **the material asset owns the pipeline, the node owns data.** A slot must
+be a CAPABILITY of the library material before nodes can bind images into it;
+capable-slot binds are pure data (no recompile, ever).
+
 1. Author + host the image (PNG/JPEG). Generate normal/roughness/occlusion maps as
    needed (they're `linear` data, not sRGB).
 2. `import_texture_from_url { url }` → returns a texture asset id. (Persists on Save.)
-3. Assign it to a slot on a mesh's **built-in** material:
+3. Make the slot capable on the node's **library material** (skip if the material
+   already binds a default image there — that implies the capability):
+   `update_builtin_material { id, def: { …, texture_capabilities: { normal: true, … } } }`.
+4. Bind per-node:
    `set_node_texture { node, slot: base_color|metallic_roughness|normal|occlusion|emissive, texture: <id> }`
-   (writes the node's per-mesh inline slot). In the editor UI, the mesh inspector's
-   material section now shows a picker for all five core slots (empty or not).
-4. Tune sampling: `set_node_texture_transform { node, slot, offset|scale|rotation|flow|
+   (writes the node's per-mesh inline slot; rejected if the slot isn't a capability).
+   In the editor UI, the mesh inspector shows pickers for the capable slots.
+5. Tune sampling: `set_node_texture_transform { node, slot, offset|scale|rotation|flow|
    wrap_u|wrap_v|mag_filter|min_filter|mipmap_filter|uv_set }` (patch-style; slot must
    already have a texture bound).
-5. Scalars/colors: `set_builtin_param { node, param: base_color|metallic|roughness|
-   emissive|normal_scale|occlusion_strength|…, value:[…] }`;
-   `set_builtin_alpha_mode` for opaque/mask/blend.
+6. Scalars/colors (per node): `set_builtin_param { node, param: base_color|metallic|roughness|
+   emissive|normal_scale|occlusion_strength|…, value:[…] }`.
+   Alpha MODE (opaque/mask/blend) is pipeline routing and lives on the MATERIAL:
+   `set_builtin_alpha_mode { material, mode }` — per glTF, opaque ignores base-color
+   alpha (no silent blend promotion); the mask cutoff VALUE stays per-node tunable.
+   Extension ENABLES likewise live on the material (`update_builtin_material`);
+   per-node inline extensions only carry parameters.
 
 ---
 

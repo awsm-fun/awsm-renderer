@@ -143,15 +143,13 @@ impl MaterialPrepPipelines {
         }
 
         if ctx.prep_config.denoise {
-            pipeline_cache_keys.push(
-                blur_cache_key(ctx, bind_groups, multisampled_geometry, "cs_blur_h").await?,
-            );
+            pipeline_cache_keys
+                .push(blur_cache_key(ctx, bind_groups, multisampled_geometry, "cs_blur_h").await?);
             slots.push(PrepPipelineSlot::BlurH {
                 multisampled: multisampled_geometry,
             });
-            pipeline_cache_keys.push(
-                blur_cache_key(ctx, bind_groups, multisampled_geometry, "cs_blur_v").await?,
-            );
+            pipeline_cache_keys
+                .push(blur_cache_key(ctx, bind_groups, multisampled_geometry, "cs_blur_v").await?);
             slots.push(PrepPipelineSlot::BlurV {
                 multisampled: multisampled_geometry,
             });
@@ -356,16 +354,18 @@ impl MaterialPrepRenderPass {
         // Past this point the edge path IS live — a missing pipeline/texture is
         // a broken invariant (cs_edge reads the compact texture this dispatch
         // fills; skipping silently would shade edges with garbage shadows).
-        let edge_pipeline_key = self.pipelines.edge.ok_or(
-            crate::error::AwsmError::PipelineVariantNotCompiled(
-                "cs_prep_edge (edge buffers live but the edge prep pipeline never compiled)",
-            ),
-        )?;
-        let edge_shadow = self.edge_shadow.as_ref().ok_or(
-            crate::error::AwsmError::PipelineVariantNotCompiled(
+        let edge_pipeline_key =
+            self.pipelines
+                .edge
+                .ok_or(crate::error::AwsmError::PipelineVariantNotCompiled(
+                    "cs_prep_edge (edge buffers live but the edge prep pipeline never compiled)",
+                ))?;
+        let edge_shadow =
+            self.edge_shadow
+                .as_ref()
+                .ok_or(crate::error::AwsmError::PipelineVariantNotCompiled(
                 "edge-shadow texture (edge buffers live but the compact texture never allocated)",
-            ),
-        )?;
+            ))?;
         let edge_bgl_key = match self.bind_groups.edge_bind_group_layout_key {
             Some(k) => k,
             None => return Ok(()),

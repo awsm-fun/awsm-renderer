@@ -342,11 +342,10 @@ impl AwsmRenderer {
         //    piece within the branch — resolves as a hit.
         let prep_edge_resolve = new_msaa_on && crate::edge_resolve_supported(&self.gpu);
         let prep_denoise = self.prep_config.denoise;
-        let prep_branch_missing = self
-            .render_passes
-            .material_prep
-            .as_ref()
-            .is_some_and(|p| !p.pipelines.has_branch_for(new_msaa_on, prep_edge_resolve, prep_denoise));
+        let prep_branch_missing = self.render_passes.material_prep.as_ref().is_some_and(|p| {
+            !p.pipelines
+                .has_branch_for(new_msaa_on, prep_edge_resolve, prep_denoise)
+        });
         if prep_branch_missing {
             use crate::render_passes::material_prep::render_pass::MaterialPrepPipelines;
             // Phase 4c.i: shader batch for the branch (megashader module +

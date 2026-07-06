@@ -35,6 +35,17 @@ pub struct PbrMaterial {
     pub emissive_tex: Option<MaterialTexture>,
     pub emissive_factor: [f32; 3],
 
+    /// Texture-slot CAPABILITIES: which of the five core slots the compiled
+    /// shader can sample even when this material carries no bound image. A
+    /// capable slot compiles its sampling path in, guarded by the per-slot
+    /// runtime `exists` flag (already packed unconditionally by
+    /// `write_material_texture`), so instances sharing the bucket can bind or
+    /// omit images as pure data. The EFFECTIVE feature bit is
+    /// `capability || bound` — see [`PbrFeatures::from_material`] — so
+    /// constructors that never touch this field keep today's usage-derived
+    /// buckets exactly.
+    pub texture_capabilities: PbrTextureCapabilities,
+
     /// Debug settings.
     pub debug: PbrMaterialDebug,
 
@@ -58,10 +69,27 @@ pub struct PbrMaterial {
     double_sided: bool,
 }
 
+/// Which of the five core texture slots a [`PbrMaterial`]'s shader can
+/// sample — the compile-time half of the capability/usage split. Usage (a
+/// bound image) is per-instance data behind the runtime `exists` flag;
+/// capability is bucket identity. All-false by default: a slot then only
+/// compiles in when the material itself binds an image (the legacy
+/// usage-derived behavior).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PbrTextureCapabilities {
+    pub base_color: bool,
+    pub metallic_roughness: bool,
+    pub normal: bool,
+    pub occlusion: bool,
+    pub emissive: bool,
+}
+
 /// Compile-time feature set of a PBR material: which optional code paths
-/// its specialized shader actually needs. Derived from a [`PbrMaterial`]'s
-/// present texture slots + extensions (the `Option` fields). This is the
-/// input to:
+/// its specialized shader actually needs. The five core texture-slot bits
+/// are CAPABILITY-derived (`declared || bound` — see
+/// [`PbrMaterial::texture_capabilities`]); the extension bits are STRICT
+/// (derived from the `Option` fields: an enabled extension's code runs
+/// unconditionally for every instance). This is the input to:
 ///
 /// 1. **Compile-time gating** — the Askama `{% if features.<x> %}` checks
 ///    in the PBR shader (opaque compute + transparent fragment), so a
@@ -123,14 +151,20 @@ impl PbrFeatures {
     /// The number of distinct feature bits (≤ 32 so [`Self::bits`] fits a u32).
     pub const COUNT: u32 = 17;
 
-    /// Derives the feature set actually used by a material.
+    /// Derives the feature set from a material. Texture-slot bits are
+    /// capability-derived (`declared || bound`): a capable-but-unbound slot
+    /// still compiles its (runtime-`exists`-guarded) sampling path so
+    /// instances can bind images later without a new pipeline. Extension
+    /// bits remain presence-derived (strict).
     pub fn from_material(m: &PbrMaterial) -> Self {
+        let caps = &m.texture_capabilities;
         Self {
-            base_color_tex: m.base_color_tex.is_some(),
-            metallic_roughness_tex: m.metallic_roughness_tex.is_some(),
-            normal_tex: m.normal_tex.is_some(),
-            occlusion_tex: m.occlusion_tex.is_some(),
-            emissive_tex: m.emissive_tex.is_some(),
+            base_color_tex: caps.base_color || m.base_color_tex.is_some(),
+            metallic_roughness_tex: caps.metallic_roughness
+                || m.metallic_roughness_tex.is_some(),
+            normal_tex: caps.normal || m.normal_tex.is_some(),
+            occlusion_tex: caps.occlusion || m.occlusion_tex.is_some(),
+            emissive_tex: caps.emissive || m.emissive_tex.is_some(),
             vertex_color: m.vertex_color_info.is_some(),
             emissive_strength: m.emissive_strength.is_some(),
             ior: m.ior.is_some(),
@@ -382,6 +416,7 @@ impl PbrMaterial {
     /// Creates a PBR material with default parameters.
     pub fn new(alpha_mode: MaterialAlphaMode, double_sided: bool) -> Self {
         Self {
+            texture_capabilities: PbrTextureCapabilities::default(),
             base_color_tex: None,
             base_color_factor: [1.0, 1.0, 1.0, 1.0],
             metallic_roughness_tex: None,

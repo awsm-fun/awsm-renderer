@@ -90,6 +90,17 @@ pub fn material_to_pbr(
     vertex_color_set: Option<u32>,
 ) -> PbrMaterial {
     let mut pbr = PbrMaterial::new(alpha_mode, def.double_sided);
+    // Slot capabilities (declared ∪ bound-on-the-asset) key the bucket, so
+    // every instance of this material shares one pipeline whether or not it
+    // binds an image into a capable slot.
+    let caps = def.slot_capabilities();
+    pbr.texture_capabilities = awsm_renderer::materials::pbr::PbrTextureCapabilities {
+        base_color: caps.base_color,
+        metallic_roughness: caps.metallic_roughness,
+        normal: caps.normal,
+        occlusion: caps.occlusion,
+        emissive: caps.emissive,
+    };
     pbr.base_color_factor = def.base_color;
     pbr.metallic_factor = def.metallic;
     pbr.roughness_factor = def.roughness;
@@ -105,18 +116,15 @@ pub fn material_to_pbr(
     pbr
 }
 
-/// Resolve the authored alpha mode to the renderer's, applying the legacy
-/// "`Opaque` but `base_color.a < 1` ⇒ blend" heuristic the editor has always
-/// used for inline procedural materials.
+/// Resolve the authored alpha mode to the renderer's. A straight type
+/// conversion — per glTF, `Opaque` IGNORES the base-color alpha factor.
+/// (The legacy "`Opaque` but `base_color.a < 1` ⇒ blend" promotion was
+/// removed: it silently rerouted meshes to the transparent pass on a mere
+/// factor tweak — a footgun. Transparency now requires the material to be
+/// explicitly authored `Blend`.)
 pub fn alpha_mode_of(def: &MaterialDef) -> MaterialAlphaMode {
     match def.alpha_mode {
-        awsm_renderer_scene::MaterialAlphaMode::Opaque => {
-            if def.base_color[3] < 0.999 {
-                MaterialAlphaMode::Blend
-            } else {
-                MaterialAlphaMode::Opaque
-            }
-        }
+        awsm_renderer_scene::MaterialAlphaMode::Opaque => MaterialAlphaMode::Opaque,
         awsm_renderer_scene::MaterialAlphaMode::Mask { cutoff } => {
             MaterialAlphaMode::Mask { cutoff }
         }
@@ -241,14 +249,16 @@ mod tests {
         MaterialDef::default()
     }
 
-    // ── alpha_mode_of: the legacy opaque-but-translucent heuristic ───────────
+    // ── alpha_mode_of: a straight type conversion (per glTF, opaque ignores
+    //    the base-color alpha factor — the legacy translucent-base→blend
+    //    promotion is gone; transparency must be authored `Blend`) ──────────
 
     #[test]
-    fn alpha_opaque_with_translucent_base_becomes_blend() {
+    fn alpha_opaque_ignores_translucent_base() {
         let mut d = def();
         d.alpha_mode = awsm_renderer_scene::MaterialAlphaMode::Opaque;
         d.base_color = [1.0, 1.0, 1.0, 0.5];
-        assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Blend);
+        assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Opaque);
     }
 
     #[test]
@@ -259,15 +269,28 @@ mod tests {
         assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Opaque);
     }
 
+    // Capability plumbing: a declared-but-unbound slot must reach the
+    // renderer material's capability mask, so the bucket compiles the
+    // (runtime-guarded) sampling path and instances can bind images later
+    // with no recompile.
     #[test]
-    fn alpha_opaque_heuristic_threshold_is_0_999() {
+    fn declared_capability_reaches_pbr_material() {
+        use awsm_renderer_scene::material::TextureCapabilities;
         let mut d = def();
-        d.alpha_mode = awsm_renderer_scene::MaterialAlphaMode::Opaque;
-        // 0.999 is NOT < 0.999 → opaque; just under it → blend.
-        d.base_color[3] = 0.999;
-        assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Opaque);
-        d.base_color[3] = 0.998;
-        assert_eq!(alpha_mode_of(&d), MaterialAlphaMode::Blend);
+        d.texture_capabilities = Some(TextureCapabilities {
+            normal: true,
+            ..Default::default()
+        });
+        let pbr = material_to_pbr(&d, alpha_mode_of(&d), None);
+        assert!(pbr.texture_capabilities.normal);
+        assert!(!pbr.texture_capabilities.emissive);
+        use awsm_renderer::materials::pbr::PbrFeatures;
+        let features = PbrFeatures::from_material(&pbr);
+        assert!(
+            features.normal_tex,
+            "capable-but-unbound slot must set the feature bit"
+        );
+        assert!(!features.emissive_tex);
     }
 
     #[test]

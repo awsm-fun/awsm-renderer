@@ -2680,25 +2680,28 @@ impl EditorController {
                 )),
                 }
             }
-            EditorCommand::SetBuiltinAlphaMode { node, mode } => {
-                match mutate::find_by_id(&self.scene, node) {
-                    Some(n) => {
-                        let prev = n.kind.get_cloned();
-                        let mut next = prev.clone();
-                        if !patch_builtin_alpha_mode(&mut next, mode) {
-                            return Ok(None);
-                        }
-                        n.kind.set(next);
-                        self.scene.bump_revision();
-                        Ok(Some(EditorCommand::SetKind {
-                            id: node,
-                            kind: Box::new(prev),
-                        }))
-                    }
-                    None => Err(crate::error::EditorError::msg(
-                    "target id not found — command not applied (check ids against get_snapshot)",
-                )),
-                }
+            EditorCommand::SetBuiltinAlphaMode { material, mode } => {
+                // Alpha mode is pipeline routing → a MATERIAL edit. Delegate to
+                // the full def-update path (thumbnail refresh, per-mesh inline
+                // reseed, inspector rebuild, inverse = prior def) so the typed
+                // command and `update_builtin_material` behave identically.
+                let Some(mat) = find_material(&self.custom_materials, material) else {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "no material {material}"
+                    )));
+                };
+                let Some(mut def) = mat.builtin.get_cloned() else {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "material {material} is not a built-in (custom WGSL materials \
+                         author their alpha via set_material_alpha_wgsl)"
+                    )));
+                };
+                def.alpha_mode = mode;
+                Box::pin(self.apply_inner(EditorCommand::UpdateBuiltinMaterial {
+                    id: material,
+                    def: Box::new(def),
+                }))
+                .await
             }
             EditorCommand::SetBuiltinTexture {
                 node,
@@ -2708,6 +2711,36 @@ impl EditorController {
                 Some(n) => {
                     let prev = n.kind.get_cloned();
                     let mut next = prev.clone();
+                    // BINDING (not clearing) requires the slot to be CAPABLE on
+                    // the assigned library material — capability is pipeline
+                    // identity and lives on the material asset; a per-node bind
+                    // can only fill a slot the material's shader can sample.
+                    if texture.is_some() {
+                        if let Some(asset) = node_material_mut(&mut next).map(|inst| inst.asset) {
+                            let capable = find_material(&self.custom_materials, asset)
+                                .and_then(|m| m.builtin.get_cloned())
+                                .is_some_and(|def| {
+                                    let caps = def.slot_capabilities();
+                                    use awsm_renderer_editor_protocol::BuiltinTextureSlot as S;
+                                    match slot {
+                                        S::BaseColor => caps.base_color,
+                                        S::MetallicRoughness => caps.metallic_roughness,
+                                        S::Normal => caps.normal,
+                                        S::Occlusion => caps.occlusion,
+                                        S::Emissive => caps.emissive,
+                                    }
+                                });
+                            if !capable {
+                                return Err(crate::error::EditorError::msg(format!(
+                                    "slot {slot:?} is not a capability of this node's material — \
+                                     texture-slot capabilities are pipeline identity and live on \
+                                     the material asset. Enable the slot on the material first \
+                                     (update_builtin_material with texture_capabilities, or bind \
+                                     a default image there), then bind per-node images freely."
+                                )));
+                            }
+                        }
+                    }
                     if !patch_builtin_texture(&mut next, slot, texture) {
                         return Ok(None);
                     }
@@ -7614,21 +7647,6 @@ fn patch_builtin_param(
             }
         }
     }
-    true
-}
-
-/// Set the alpha mode (Opaque | Mask { cutoff } | Blend) of a node's
-/// **built-in/inline** `MaterialDef` (§13). Changing the mode is a pipeline
-/// feature flip, so the node re-materializes (the kind observer). Returns false
-/// if the node has no inline material (unassigned / non-geometry).
-fn patch_builtin_alpha_mode(
-    kind: &mut NodeKind,
-    mode: awsm_renderer_editor_protocol::MaterialAlphaMode,
-) -> bool {
-    let Some(inst) = node_material_mut(kind) else {
-        return false;
-    };
-    inst.inline.alpha_mode = mode;
     true
 }
 

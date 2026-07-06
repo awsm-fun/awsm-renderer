@@ -983,13 +983,16 @@ pub enum EditorCommand {
         param: BuiltinParamKind,
         value: Vec<f32>,
     },
-    /// Set the alpha mode of a mesh node's **built-in/inline** material (§13) —
-    /// `Opaque | Mask { cutoff } | Blend`. A pipeline-feature flip (e.g. glass =
-    /// `Blend` + a sub-1 base-color alpha), so the node re-materializes. The typed
-    /// alternative to resending the whole `NodeKind` via `set_kind`. Inverse:
-    /// restore the node's prior kind.
+    /// Set the alpha mode of a built-in **library material** —
+    /// `Opaque | Mask { cutoff } | Blend`. Alpha mode is pipeline ROUTING and
+    /// therefore owned by the material asset: the change applies to every
+    /// node using the material (their variants re-materialize). Per-node
+    /// state stays data-only — the Mask *cutoff* value can still be tuned
+    /// per node via the inline def. The typed alternative to resending the
+    /// whole def via `update_builtin_material`. Inverse: restore the
+    /// material's prior def.
     SetBuiltinAlphaMode {
-        node: NodeId,
+        material: AssetId,
         mode: crate::MaterialAlphaMode,
     },
     /// Set a light parameter on a light node (writable counterpart of

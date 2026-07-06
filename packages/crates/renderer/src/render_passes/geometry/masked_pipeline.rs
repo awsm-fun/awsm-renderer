@@ -79,11 +79,7 @@ impl GeometryMaskedPipelines {
     /// no texture change (e.g. the editor flipping a builtin's alpha mode to
     /// Mask) still gets its variant compiled instead of silently falling back
     /// to the solid pipeline forever.
-    pub fn has_variant(
-        &self,
-        msaa_sample_count: Option<u32>,
-        shader_id: MaterialShaderId,
-    ) -> bool {
+    pub fn has_variant(&self, msaa_sample_count: Option<u32>, shader_id: MaterialShaderId) -> bool {
         self.main
             .keys()
             .any(|k| k.msaa_sample_count == msaa_sample_count && k.shader_id == shader_id)
