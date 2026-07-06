@@ -45,8 +45,11 @@ pub fn start() {
             .await;
     });
 
-    // Shadow denoise blur (cheap, synchronous — no pipeline recompile, just a
-    // per-frame dispatch gate in ShadowsConfig).
+    // Shadow denoise blur. `denoise` gates whether the prep blur pipelines are
+    // COMPILED (not just dispatched), so an off→on flip must drain the config
+    // pipelines to build the pair — otherwise render_blur warn-skips until an
+    // unrelated commit_load. Async + guarded against redundant re-applies,
+    // mirroring the MSAA observer below.
     spawn_local(async {
         let mut first = true;
         controller()
@@ -57,15 +60,20 @@ pub fn start() {
                 let skip = first;
                 first = false;
                 async move {
-                    if !skip {
-                        with_renderer_mut(move |r| {
-                            let mut cfg = r.shadows_config().clone();
-                            if cfg.denoise != on {
-                                cfg.denoise = on;
-                                r.set_shadows_config(cfg);
-                            }
-                        })
-                        .await;
+                    if skip {
+                        return;
+                    }
+                    let handle = renderer_handle();
+                    let mut r = handle.lock().await;
+                    let mut cfg = r.shadows_config().clone();
+                    if cfg.denoise != on {
+                        cfg.denoise = on;
+                        r.set_shadows_config(cfg);
+                        // Compile the blur pair for the new config (no-op on
+                        // off, a cache hit on a later on→off→on).
+                        if let Err(e) = r.ensure_config_pipelines().await {
+                            tracing::warn!("ensure_config_pipelines after denoise flip: {e}");
+                        }
                     }
                 }
             })

@@ -21,7 +21,12 @@ use awsm_renderer_core::{
 pub enum NeutralTexture {
     /// 1×1 white — base color / metallic-roughness / occlusion / emissive.
     White,
-    /// 1×1 flat normal `(0.5, 0.5, 1.0)` in a float format (exact 0.5).
+    /// 1×1 flat normal, packed rgba8 `[128, 128, 255]` — the same encoding
+    /// (and the same ~0.2° quantization off exact `(0.5, 0.5, 1.0)`) that every
+    /// authored normal map carries in its flat regions. Unpacks to tangent
+    /// `≈(0, 0, 1)`, so `TBN · tangent ≈` the geometry normal. Note the residual
+    /// `128/255 ≈ 0.502` on x/y is scaled by `normal_scale`, so a large
+    /// `normal_scale` with no bound normal map tilts the normal very slightly.
     FlatNormal,
 }
 
