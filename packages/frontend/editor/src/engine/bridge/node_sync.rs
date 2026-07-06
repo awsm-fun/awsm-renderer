@@ -775,20 +775,14 @@ pub(crate) fn merged_builtin_def(
     // binding/unbinding an image is a data write — never a recompile, and
     // never a per-mesh pipeline.
 
-    // Texture binding: only CAPABLE slots accept a binding — per-mesh `inline`
-    // image wins, then a custom `texture_overrides` swap, then the variant's
-    // default image. Non-capable slots merge to `None` unconditionally
-    // (`set_node_texture` rejects them at command time; this drop is the
-    // belt-and-braces for stale stored bindings).
-    let caps = variant.slot_capabilities();
-    let tex = |capable: bool,
-               slot: &str,
+    // Texture binding is pure DATA — every slot's sampling code is always
+    // compiled (unbound slots pack the shared 1×1 neutral), so a per-mesh
+    // `inline` image wins, then a custom `texture_overrides` swap, then the
+    // variant's default image. Binds never re-key the pipeline.
+    let tex = |slot: &str,
                inline_tex: Option<TextureRef>,
                default: Option<TextureRef>|
      -> Option<TextureRef> {
-        if !capable {
-            return None;
-        }
         merge_slot_texture(
             inline_tex,
             inst.texture_overrides.get(slot).cloned(),
@@ -829,31 +823,26 @@ pub(crate) fn merged_builtin_def(
         normal_scale: inline.normal_scale,
         occlusion_strength: inline.occlusion_strength,
         base_color_texture: tex(
-            caps.base_color,
             "base_color_texture",
             inline.base_color_texture,
             variant.base_color_texture,
         ),
         metallic_roughness_texture: tex(
-            caps.metallic_roughness,
             "metallic_roughness_texture",
             inline.metallic_roughness_texture,
             variant.metallic_roughness_texture,
         ),
         normal_texture: tex(
-            caps.normal,
             "normal_texture",
             inline.normal_texture,
             variant.normal_texture,
         ),
         occlusion_texture: tex(
-            caps.occlusion,
             "occlusion_texture",
             inline.occlusion_texture,
             variant.occlusion_texture,
         ),
         emissive_texture: tex(
-            caps.emissive,
             "emissive_texture",
             inline.emissive_texture,
             variant.emissive_texture,
@@ -861,11 +850,6 @@ pub(crate) fn merged_builtin_def(
         alpha_mode,
         shading,
         extensions,
-        // Carry the EFFECTIVE capabilities (declared ∪ variant-bound) so the
-        // flattened export def keys the same bucket in the player as the
-        // shared variant does in the editor — even for capable slots nobody
-        // bound an image into.
-        texture_capabilities: Some(caps),
         // variant-only: double_sided, vertex_colors_enabled, label.
         ..variant.clone()
     }
@@ -2066,48 +2050,37 @@ mod builtin_merge_tests {
     fn alpha_mode_is_variant_only() {
         use awsm_renderer_editor_protocol::material::MaterialAlphaMode;
         let variant = MaterialDef::default(); // Opaque
-        let mut inline = MaterialDef::default();
-        inline.alpha_mode = MaterialAlphaMode::Mask { cutoff: 0.5 };
+        let inline = MaterialDef {
+            alpha_mode: MaterialAlphaMode::Mask { cutoff: 0.5 },
+            ..Default::default()
+        };
         let merged = merged_builtin_def(&inst(inline), &variant);
         assert_eq!(merged.alpha_mode, MaterialAlphaMode::Opaque);
 
-        let mut mask_variant = MaterialDef::default();
-        mask_variant.alpha_mode = MaterialAlphaMode::Mask { cutoff: 0.5 };
-        let mut inline = MaterialDef::default();
-        inline.alpha_mode = MaterialAlphaMode::Mask { cutoff: 0.25 };
+        let mask_variant = MaterialDef {
+            alpha_mode: MaterialAlphaMode::Mask { cutoff: 0.5 },
+            ..Default::default()
+        };
+        let inline = MaterialDef {
+            alpha_mode: MaterialAlphaMode::Mask { cutoff: 0.25 },
+            ..Default::default()
+        };
         let merged = merged_builtin_def(&inst(inline), &mask_variant);
         assert_eq!(merged.alpha_mode, MaterialAlphaMode::Mask { cutoff: 0.25 });
     }
 
-    // Texture-slot capability: an inline image binds only into a CAPABLE slot
-    // (declared on the variant, or implied by the variant's own binding). A
-    // non-capable inline binding is dropped; a declared-but-unbound capability
-    // accepts it and the merged def carries the effective capabilities so the
-    // player keys the same bucket.
+    // Texture binds are pure data: an inline image binds into ANY slot (the
+    // slot code is always compiled; unbound slots sample the 1×1 neutral).
     #[test]
-    fn inline_textures_bind_only_capable_slots() {
-        use awsm_renderer_editor_protocol::material::TextureCapabilities;
-        // Variant declares the normal slot capable but binds no image.
-        let mut variant = MaterialDef::default();
-        variant.texture_capabilities = Some(TextureCapabilities {
-            normal: true,
+    fn inline_textures_bind_any_slot() {
+        let variant = MaterialDef::default();
+        let inline = MaterialDef {
+            normal_texture: Some(TextureRef::new(AssetId::new())),
+            emissive_texture: Some(TextureRef::new(AssetId::new())),
             ..Default::default()
-        });
-        let mut inline = MaterialDef::default();
-        inline.normal_texture = Some(TextureRef::new(AssetId::new()));
-        inline.emissive_texture = Some(TextureRef::new(AssetId::new()));
+        };
         let merged = merged_builtin_def(&inst(inline), &variant);
-        assert!(
-            merged.normal_texture.is_some(),
-            "capable slot accepts the per-node image"
-        );
-        assert!(
-            merged.emissive_texture.is_none(),
-            "non-capable slot drops the per-node image"
-        );
-        let caps = merged
-            .texture_capabilities
-            .expect("merged def carries effective capabilities");
-        assert!(caps.normal && !caps.emissive);
+        assert!(merged.normal_texture.is_some());
+        assert!(merged.emissive_texture.is_some());
     }
 }

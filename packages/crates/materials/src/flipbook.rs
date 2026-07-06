@@ -12,7 +12,7 @@
 
 use crate::{
     shader::MaterialShader,
-    writer::{write, write_material_texture},
+    writer::{write, write_material_texture_or_skip},
     MaterialAlphaMode, MaterialShaderId, MaterialTexture, TextureContext,
 };
 
@@ -256,7 +256,7 @@ impl MaterialShader for FlipBookMaterial {
         write(data, self.alpha_mode.variant_as_u32().into());
         write(data, self.alpha_cutoff().unwrap_or(0.0f32).into());
 
-        write_material_texture(data, self.atlas_tex.as_ref(), ctx);
+        write_material_texture_or_skip(data, self.atlas_tex.as_ref(), ctx);
 
         write(data, self.tint[0].into());
         write(data, self.tint[1].into());

@@ -3321,7 +3321,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Bind a texture asset onto a mesh node's BUILT-IN (inline PBR) material slot: base_color | metallic_roughness | normal | occlusion | emissive. The slot must be a CAPABILITY of the node's library material (declared via update_builtin_material texture_capabilities, or implied by a default image bound on the material) — capabilities are pipeline identity and live on the material; per-node binds are pure data and never recompile. Omit `texture` to clear (always allowed). Create textures with import_texture_from_url (raster) or add_texture_asset (procedural). (set_material_texture is the custom-WGSL-material counterpart.)"
+        description = "Bind a texture asset onto a mesh node's BUILT-IN (inline PBR) material slot: base_color | metallic_roughness | normal | occlusion | emissive. Binds are pure data — every core slot's sampling code is always compiled (unbound slots sample a shared 1x1 neutral), so binding any slot on any node never recompiles anything. Omit `texture` to clear. Create textures with import_texture_from_url (raster) or add_texture_asset (procedural). (set_material_texture is the custom-WGSL-material counterpart.)"
     )]
     async fn set_node_texture(
         &self,

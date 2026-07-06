@@ -1864,8 +1864,11 @@ impl AwsmRenderer {
 
         let bind_groups = &self.render_passes.material_transparent.bind_groups;
         let sig = HudResolveSig {
+            // Both counts are the PADDED TIER values (see
+            // `pool_binding_tier`) stored on the bind groups, so the
+            // fingerprint only changes at tier crossings.
             pool_arrays_len: bind_groups.texture_pool_arrays_len,
-            pool_samplers_len: bind_groups.texture_pool_sampler_keys.len(),
+            pool_samplers_len: bind_groups.texture_pool_samplers_len as usize,
             msaa: self.anti_aliasing.msaa_sample_count,
             hud_revision: self.meshes.hud_revision(),
             unkeyed_world,

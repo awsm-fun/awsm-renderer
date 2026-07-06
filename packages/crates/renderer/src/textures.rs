@@ -914,8 +914,25 @@ impl AwsmRenderer {
         // recompiles every bucket against the new pool. `finalize_gpu_textures`
         // runs at the START of `commit_load`, so `mark_variants_dirty` here is
         // consumed by the commit's own `reconcile_material_variants`.
-        self.last_ensured_bucket_layout = None;
-        self.materials.mark_variants_dirty();
+        //
+        // Tier gate: the cache keys embed the PADDED TIER counts (see
+        // `pool_binding_tier`), not the raw pool counts — so this reset is
+        // only needed when the tier of (arrays, samplers) actually crosses a
+        // boundary since the last finalize. Within a tier, growth is absorbed
+        // by the placeholder-padded bind groups rebuilt above.
+        let tier_now = (
+            crate::render_passes::shared::material::bind_group::pool_binding_tier(
+                self.textures.pool.arrays_len(),
+            ),
+            crate::render_passes::shared::material::bind_group::pool_binding_tier(
+                self.textures.pool_sampler_set.len(),
+            ),
+        );
+        if self.last_pool_tier != Some(tier_now) {
+            self.last_ensured_bucket_layout = None;
+            self.materials.mark_variants_dirty();
+            self.last_pool_tier = Some(tier_now);
+        }
 
         // (Removed: the eager `edge_pipelines.ensure_compiled(...)` block that
         // used to recompile the full edge-resolve set HERE, against the new
@@ -994,6 +1011,15 @@ pub struct Textures {
     pub pool: TexturePool<TextureKey>,
     pub pool_sampler_set: IndexSet<SamplerKey>,
     pub texture_transform_identity_offset: usize,
+    /// The shared 1×1 NEUTRAL pool entries (white + flat normal) + the default
+    /// filtering sampler, registered by [`Self::ensure_neutrals`] at build.
+    /// Every unbound built-in texture slot packs one of these, so slot
+    /// sampling is unconditional (branchless) and always an identity
+    /// operation. The default sampler is inserted FIRST so it takes pool
+    /// sampler index 0 (the decal shader hard-codes `pool_sampler_0`).
+    neutral_white: Option<TextureKey>,
+    neutral_flat_normal: Option<TextureKey>,
+    neutral_sampler: Option<SamplerKey>,
     pool_textures: SlotMap<TextureKey, TexturePoolEntryInfo<TextureKey>>,
     cubemaps: SlotMap<CubemapTextureKey, web_sys::GpuTexture>,
     samplers: SlotMap<SamplerKey, web_sys::GpuSampler>,
@@ -1198,6 +1224,9 @@ impl Textures {
         Ok(Self {
             pool: TexturePool::new(),
             pool_sampler_set: IndexSet::new(),
+            neutral_white: None,
+            neutral_flat_normal: None,
+            neutral_sampler: None,
             pool_textures: SlotMap::with_key(),
             cubemaps: SlotMap::with_key(),
             texture_transforms,
@@ -1222,6 +1251,66 @@ impl Textures {
         &self,
     ) -> crate::buffer::mapped_staging_ring::UploadStats {
         self.texture_transforms_uploader.stats()
+    }
+
+    /// Registers the shared NEUTRAL pool entries + default sampler (idempotent;
+    /// called once from `build()`). One 1×1 rgba8 array holds both layers:
+    /// white (identity multiply for base-color / MR / occlusion / emissive)
+    /// and the flat normal (128,128,255 — the same u8 quantization every
+    /// authored normal map's flat regions carry; ~0.2° from exact, invisible).
+    /// The default sampler is inserted before any content sampler so it lands
+    /// at pool index 0.
+    pub(crate) fn ensure_neutrals(&mut self, gpu: &AwsmRendererWebGpu) -> Result<()> {
+        if self.neutral_white.is_some() {
+            return Ok(());
+        }
+        let sampler_key = self.get_sampler_key(gpu, SamplerCacheKey::default())?;
+        if self.pool_sampler_set.insert(sampler_key) {
+            self.sampler_pool_dirty = true;
+        }
+        self.neutral_sampler = Some(sampler_key);
+        let white = self.add_image_rgba_raw(
+            &[255, 255, 255, 255],
+            1,
+            1,
+            sampler_key,
+            TextureColorInfo {
+                mipmap_kind: awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+                srgb_to_linear: false,
+                premultiplied_alpha: Some(false),
+            },
+        )?;
+        let flat_normal = self.add_image_rgba_raw(
+            &[128, 128, 255, 255],
+            1,
+            1,
+            sampler_key,
+            TextureColorInfo {
+                mipmap_kind: awsm_renderer_core::texture::mipmap::MipmapTextureKind::Normal,
+                srgb_to_linear: false,
+                premultiplied_alpha: Some(false),
+            },
+        )?;
+        self.neutral_white = Some(white);
+        self.neutral_flat_normal = Some(flat_normal);
+        Ok(())
+    }
+
+    /// The neutral-white pool array's GPU view — the placeholder bound into
+    /// PADDED texture-pool slots (tier > real array count). `None` only
+    /// before the first `finalize_gpu_textures` upload, which precedes any
+    /// bind-group recreate.
+    pub fn pool_placeholder_view(&self) -> Option<&web_sys::GpuTextureView> {
+        let entry = self.pool_textures.get(self.neutral_white?)?;
+        self.pool
+            .array_by_index(entry.array_index)
+            .and_then(|a| a.gpu_texture_view.as_ref())
+    }
+
+    /// The default filtering sampler — the placeholder bound into PADDED
+    /// sampler slots (and pool sampler index 0 from boot).
+    pub fn pool_placeholder_sampler(&self) -> Option<&web_sys::GpuSampler> {
+        self.samplers.get(self.neutral_sampler?)
     }
 
     /// Adds an image to the texture pool and returns its key.
@@ -1686,6 +1775,24 @@ fn create_sampler_key(
 pub use awsm_renderer_core::keys::{SamplerKey, TextureKey, TextureTransformKey};
 
 impl awsm_renderer_materials::TextureContext for Textures {
+    fn neutral_texture(
+        &self,
+        kind: awsm_renderer_materials::NeutralTexture,
+    ) -> Option<(
+        &awsm_renderer_core::texture::texture_pool::TexturePoolArray<TextureKey>,
+        &TexturePoolEntryInfo<TextureKey>,
+        u32,
+    )> {
+        let key = match kind {
+            awsm_renderer_materials::NeutralTexture::White => self.neutral_white?,
+            awsm_renderer_materials::NeutralTexture::FlatNormal => self.neutral_flat_normal?,
+        };
+        let entry = self.pool_textures.get(key)?;
+        let array = self.pool.array_by_index(entry.array_index)?;
+        let sampler_index = self.pool_sampler_set.get_index_of(&self.neutral_sampler?)? as u32;
+        Some((array, entry, sampler_index))
+    }
+
     fn pool_array_by_index(
         &self,
         index: usize,

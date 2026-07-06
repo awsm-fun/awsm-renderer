@@ -36,7 +36,7 @@ pub use shader::MaterialShader;
 pub use shader_id::MaterialShaderId;
 pub use shader_includes::{FragmentInputs, ShaderIncludes};
 pub use texture::MaterialTexture;
-pub use texture_context::TextureContext;
+pub use texture_context::{NeutralTexture, TextureContext};
 
 #[cfg(test)]
 mod uniform_packing_tests;

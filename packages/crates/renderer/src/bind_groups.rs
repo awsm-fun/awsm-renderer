@@ -712,4 +712,7 @@ impl BindGroups {
 pub enum AwsmBindGroupError {
     #[error("[bind group] bind group not found for {0}")]
     NotFound(String),
+
+    #[error("[bind group] texture pool placeholder {0} missing (neutrals not uploaded yet)")]
+    TexturePoolPlaceholderMissing(&'static str),
 }

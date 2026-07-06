@@ -2711,36 +2711,6 @@ impl EditorController {
                 Some(n) => {
                     let prev = n.kind.get_cloned();
                     let mut next = prev.clone();
-                    // BINDING (not clearing) requires the slot to be CAPABLE on
-                    // the assigned library material — capability is pipeline
-                    // identity and lives on the material asset; a per-node bind
-                    // can only fill a slot the material's shader can sample.
-                    if texture.is_some() {
-                        if let Some(asset) = node_material_mut(&mut next).map(|inst| inst.asset) {
-                            let capable = find_material(&self.custom_materials, asset)
-                                .and_then(|m| m.builtin.get_cloned())
-                                .is_some_and(|def| {
-                                    let caps = def.slot_capabilities();
-                                    use awsm_renderer_editor_protocol::BuiltinTextureSlot as S;
-                                    match slot {
-                                        S::BaseColor => caps.base_color,
-                                        S::MetallicRoughness => caps.metallic_roughness,
-                                        S::Normal => caps.normal,
-                                        S::Occlusion => caps.occlusion,
-                                        S::Emissive => caps.emissive,
-                                    }
-                                });
-                            if !capable {
-                                return Err(crate::error::EditorError::msg(format!(
-                                    "slot {slot:?} is not a capability of this node's material — \
-                                     texture-slot capabilities are pipeline identity and live on \
-                                     the material asset. Enable the slot on the material first \
-                                     (update_builtin_material with texture_capabilities, or bind \
-                                     a default image there), then bind per-node images freely."
-                                )));
-                            }
-                        }
-                    }
                     if !patch_builtin_texture(&mut next, slot, texture) {
                         return Ok(None);
                     }

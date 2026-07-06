@@ -72,40 +72,6 @@ pub struct MaterialDef {
     /// extension uses a different material.
     #[serde(default)]
     pub extensions: PbrExtensions,
-    /// Texture-slot CAPABILITIES — which of the five standard PBR slots this
-    /// material's compiled shader is ABLE to sample. Declaring a capability
-    /// compiles the slot's sampling path in (guarded by a cheap per-material
-    /// runtime "bound?" check), so meshes sharing this material can each bind
-    /// or omit an image without minting a new pipeline. A slot that is neither
-    /// declared here nor bound on the material itself compiles NO code and
-    /// per-node binds to it are rejected.
-    ///
-    /// `None` (the default, and every pre-capability project) derives the
-    /// capabilities from texture presence — byte-identical pipelines to the
-    /// old behavior. Binding a texture on the material always implies the
-    /// capability; this field can only WIDEN, never narrow. See
-    /// [`MaterialDef::slot_capabilities`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub texture_capabilities: Option<TextureCapabilities>,
-}
-
-/// Which of the five standard PBR texture slots a material's shader can
-/// sample — the compile-time half of the capability/usage split (usage is the
-/// per-mesh binding). See [`MaterialDef::texture_capabilities`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub struct TextureCapabilities {
-    #[serde(default)]
-    pub base_color: bool,
-    #[serde(default)]
-    pub metallic_roughness: bool,
-    #[serde(default)]
-    pub normal: bool,
-    #[serde(default)]
-    pub occlusion: bool,
-    #[serde(default)]
-    pub emissive: bool,
 }
 
 fn default_one() -> f32 {
@@ -132,23 +98,6 @@ impl MaterialDef {
         }
         self.extensions.texture_refs(&mut out);
         out
-    }
-
-    /// EFFECTIVE slot capabilities: the declared [`Self::texture_capabilities`]
-    /// widened by the material's own bound textures (a bound default image
-    /// always implies the capability). This — not raw texture presence — is
-    /// what keys the compiled shader's feature set, so meshes sharing this
-    /// material share one pipeline regardless of which of them bind images.
-    pub fn slot_capabilities(&self) -> TextureCapabilities {
-        let declared = self.texture_capabilities.unwrap_or_default();
-        TextureCapabilities {
-            base_color: declared.base_color || self.base_color_texture.is_some(),
-            metallic_roughness: declared.metallic_roughness
-                || self.metallic_roughness_texture.is_some(),
-            normal: declared.normal || self.normal_texture.is_some(),
-            occlusion: declared.occlusion || self.occlusion_texture.is_some(),
-            emissive: declared.emissive || self.emissive_texture.is_some(),
-        }
     }
 }
 
@@ -188,7 +137,6 @@ impl Default for MaterialDef {
             alpha_mode: MaterialAlphaMode::Opaque,
             shading: MaterialShading::Pbr,
             extensions: PbrExtensions::default(),
-            texture_capabilities: None,
         }
     }
 }
@@ -360,7 +308,9 @@ impl PbrExtensions {
                 .map(|v| inline.emissive_strength.unwrap_or(v)),
             ior: variant.ior.map(|v| inline.ior.unwrap_or(v)),
             specular: variant.specular.map(|v| inline.specular.unwrap_or(v)),
-            transmission: variant.transmission.map(|v| inline.transmission.unwrap_or(v)),
+            transmission: variant
+                .transmission
+                .map(|v| inline.transmission.unwrap_or(v)),
             diffuse_transmission: variant
                 .diffuse_transmission
                 .map(|v| inline.diffuse_transmission.unwrap_or(v)),

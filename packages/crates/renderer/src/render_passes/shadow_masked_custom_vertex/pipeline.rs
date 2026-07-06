@@ -127,7 +127,7 @@ impl ShadowMaskedCustomVertexPipelines {
             dynamic_vertex: variant.dynamic_vertex.clone(),
             dynamic_alpha: variant.dynamic_alpha.clone(),
             texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
-            texture_pool_samplers_len: masked_bind_group.texture_pool_sampler_keys.len() as u32,
+            texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
         };
         ctx.shaders
             .ensure_keys(ctx.gpu, vec![shader_cache.clone().into()])

@@ -32,6 +32,7 @@ pub struct MaterialOpaqueBindGroups {
     pub texture_pool_textures_bind_group_layout_key: BindGroupLayoutKey,
     pub shadows_bind_group_layout_key: BindGroupLayoutKey,
     pub texture_pool_arrays_len: u32,
+    pub texture_pool_samplers_len: u32,
     pub texture_pool_sampler_keys: IndexSet<SamplerKey>,
     // this is set via `recreate` mechanism
     _main_bind_group: Option<web_sys::GpuBindGroup>,
@@ -118,6 +119,7 @@ impl MaterialOpaqueBindGroups {
         let TexturePoolDeps {
             bind_group_layout_key: texture_pool_textures_bind_group_layout_key,
             arrays_len: texture_pool_arrays_len,
+            samplers_len: texture_pool_samplers_len,
             sampler_keys: texture_pool_sampler_keys,
         } = TexturePoolDeps::new(ctx, TexturePoolVisibility::Compute)?;
 
@@ -128,6 +130,7 @@ impl MaterialOpaqueBindGroups {
             texture_pool_textures_bind_group_layout_key,
             shadows_bind_group_layout_key,
             texture_pool_arrays_len,
+            texture_pool_samplers_len,
             texture_pool_sampler_keys,
             _main_bind_group: None,
             _lights_bind_group: None,
@@ -144,6 +147,7 @@ impl MaterialOpaqueBindGroups {
         let TexturePoolDeps {
             bind_group_layout_key: texture_pool_textures_bind_group_layout_key,
             arrays_len: texture_pool_arrays_len,
+            samplers_len: texture_pool_samplers_len,
             sampler_keys: texture_pool_sampler_keys,
         } = TexturePoolDeps::new(ctx, TexturePoolVisibility::Compute)?;
 
@@ -154,6 +158,7 @@ impl MaterialOpaqueBindGroups {
             texture_pool_textures_bind_group_layout_key,
             shadows_bind_group_layout_key: self.shadows_bind_group_layout_key,
             texture_pool_arrays_len,
+            texture_pool_samplers_len,
             texture_pool_sampler_keys,
             _main_bind_group: self._main_bind_group.clone(),
             _lights_bind_group: self._lights_bind_group.clone(),
@@ -504,12 +509,39 @@ impl MaterialOpaqueBindGroups {
             ));
         }
 
+        // Pad texture slots up to the layout's tier with the placeholder
+        // view — the layout declares the tier, so every slot must bind.
+        let placeholder_view = ctx
+            .textures
+            .pool_placeholder_view()
+            .ok_or(AwsmBindGroupError::TexturePoolPlaceholderMissing("view"))?;
+        while entries.len() < self.texture_pool_arrays_len as usize {
+            entries.push(BindGroupEntry::new(
+                entries.len() as u32,
+                BindGroupResource::TextureView(Cow::Borrowed(placeholder_view)),
+            ));
+        }
+
         for sampler_key in self.texture_pool_sampler_keys.iter() {
             let sampler = ctx.textures.get_sampler(*sampler_key)?;
 
             entries.push(BindGroupEntry::new(
                 entries.len() as u32,
                 BindGroupResource::Sampler(sampler),
+            ));
+        }
+
+        // Pad sampler slots up to the tier with the placeholder sampler.
+        let placeholder_sampler = ctx
+            .textures
+            .pool_placeholder_sampler()
+            .ok_or(AwsmBindGroupError::TexturePoolPlaceholderMissing("sampler"))?;
+        while entries.len()
+            < (self.texture_pool_arrays_len + self.texture_pool_samplers_len) as usize
+        {
+            entries.push(BindGroupEntry::new(
+                entries.len() as u32,
+                BindGroupResource::Sampler(placeholder_sampler),
             ));
         }
 

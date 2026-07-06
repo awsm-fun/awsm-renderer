@@ -100,10 +100,49 @@ pub fn write(data: &mut Vec<u8>, value: Value) {
     }
 }
 
-/// Convenience: write the `MaterialTexture` if present, else `SkipTexture`.
+/// Write a BUILT-IN core slot: the `MaterialTexture` if present + resolvable,
+/// else the slot's shared 1×1 NEUTRAL. The five core slots always compile
+/// their sampling path (no feature gate, no exists branch), so an unbound
+/// slot must still point at a real pool entry — the neutral makes the sample
+/// an identity operation (glTF's defined no-texture result).
 ///
-/// Returns `()` so callers can fold it into a sequence of `write(...)` calls.
+/// Falls back to the zero sentinel only when the context has no neutral
+/// (test contexts without a pool) — nothing samples there.
+///
+/// CUSTOM dynamic-material slots do NOT use this — their layouts detect
+/// unbound declared slots via the zero sentinel (`write_material_texture_or_skip`).
 pub fn write_material_texture(
+    data: &mut Vec<u8>,
+    tex: Option<&MaterialTexture>,
+    ctx: &dyn TextureContext,
+    neutral: crate::NeutralTexture,
+) {
+    match tex.and_then(|t| map_texture(t, ctx)) {
+        Some(v) => write(data, v),
+        None => match ctx.neutral_texture(neutral) {
+            Some((array, entry_info, sampler_index)) => {
+                let packed = pack_texture_info_raw(
+                    array,
+                    entry_info,
+                    0, // uv set 0 — a 1×1 sample is UV-independent
+                    sampler_index,
+                    encode_address_mode(None),
+                    encode_address_mode(None),
+                    ctx.texture_transform_identity_offset(),
+                );
+                for word in packed {
+                    data.extend_from_slice(&word.to_le_bytes());
+                }
+            }
+            None => write(data, Value::SkipTexture),
+        },
+    }
+}
+
+/// Write the `MaterialTexture` if present, else the zero sentinel — the
+/// CUSTOM dynamic-material slot path, whose layouts key "unbound" off the
+/// zero first word (see `dynamic_layout.rs`).
+pub fn write_material_texture_or_skip(
     data: &mut Vec<u8>,
     tex: Option<&MaterialTexture>,
     ctx: &dyn TextureContext,

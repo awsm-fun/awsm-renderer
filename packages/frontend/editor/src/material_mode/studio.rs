@@ -386,41 +386,6 @@ fn textures_section(
             },
         ));
     }
-    // Slot CAPABILITIES (PBR): a checked slot compiles its sampling path into
-    // the material's shared pipeline (runtime-guarded), so meshes can each
-    // bind or omit a per-node image with no recompile and no per-mesh
-    // pipeline. A slot with a default image above is implicitly capable
-    // (shown checked + disabled would be nicer; keep it simple: the OR rule
-    // lives in `MaterialDef::slot_capabilities`). Unchecked + no default
-    // image = the slot's code doesn't exist and per-node binds are rejected.
-    if matches!(def.shading, MaterialShading::Pbr) {
-        let caps = def.texture_capabilities.unwrap_or_default();
-        let mut cap_sec = Section::new("Per-node texture slots (capabilities)");
-        macro_rules! cap_toggle {
-            ($label:expr, $field:ident, $bound:expr) => {
-                cap_sec = cap_sec.child(builtin_toggle_row(
-                    mat,
-                    $label,
-                    caps.$field || $bound,
-                    |d, on| {
-                        let mut c = d.texture_capabilities.unwrap_or_default();
-                        c.$field = on;
-                        d.texture_capabilities = Some(c);
-                    },
-                ));
-            };
-        }
-        cap_toggle!("Base color", base_color, def.base_color_texture.is_some());
-        cap_toggle!(
-            "Metal/rough",
-            metallic_roughness,
-            def.metallic_roughness_texture.is_some()
-        );
-        cap_toggle!("Normal", normal, def.normal_texture.is_some());
-        cap_toggle!("Occlusion", occlusion, def.occlusion_texture.is_some());
-        cap_toggle!("Emissive", emissive, def.emissive_texture.is_some());
-        sec = sec.child(cap_sec.render());
-    }
     sec.render()
 }
 

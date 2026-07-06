@@ -274,6 +274,12 @@ pub struct AwsmRenderer {
     /// (alpha-tested) pipelines for MASK customs even if no texture changed
     /// (a procedural cutout needs no texture). Cleared by `finalize_gpu_textures`.
     pub masked_dynamic_dirty: bool,
+    /// The PADDED texture-pool tier `(arrays, samplers)` (see
+    /// [`crate::render_passes::shared::material::bind_group::pool_binding_tier`])
+    /// as of the last `finalize_gpu_textures`. The pool-grow recompile reset
+    /// in that fn only fires when this tier changes — within-tier growth is
+    /// absorbed by the placeholder-padded bind groups.
+    pub(crate) last_pool_tier: Option<(usize, usize)>,
     /// Renderer-wide variable-length per-material data pool. Backs
     /// `BufferSlot` declarations on registered dynamic materials.
     pub extras_pool: crate::dynamic_materials::extras_pool::ExtrasPool,
@@ -1915,6 +1921,12 @@ impl AwsmRendererBuilder {
         let mut shaders = Shaders::new();
 
         let mut textures = Textures::new(&gpu)?;
+        // The shared 1×1 NEUTRALS (white + flat normal) + default sampler:
+        // every unbound built-in texture slot packs one of these, so the five
+        // core slots sample unconditionally (branchless) with identity
+        // results. Registered before ANY material can pack. Also guarantees
+        // the pool is never empty, which the tiered pool layout leans on.
+        textures.ensure_neutrals(&gpu)?;
         let camera = camera::CameraBuffer::new(&gpu)?;
         let frame_globals = crate::frame_globals::FrameGlobals::new(&gpu)?;
 
@@ -2472,6 +2484,7 @@ impl AwsmRendererBuilder {
             materials,
             dynamic_materials: crate::dynamic_materials::DynamicMaterials::new(),
             masked_dynamic_dirty: false,
+            last_pool_tier: None,
             extras_pool: extras_pool_built,
             pipeline_layouts,
             pipelines,

@@ -40,6 +40,7 @@ const MASKED_GROUP0_BUFFER_BINDINGS: u32 = 6;
 pub struct GeometryMaskedBindGroup {
     pub bind_group_layout_key: BindGroupLayoutKey,
     pub texture_pool_arrays_len: u32,
+    pub texture_pool_samplers_len: u32,
     pub texture_pool_sampler_keys: IndexSet<SamplerKey>,
     _bind_group: Option<web_sys::GpuBindGroup>,
 }
@@ -52,6 +53,7 @@ impl GeometryMaskedBindGroup {
         Ok(Self {
             bind_group_layout_key,
             texture_pool_arrays_len: pool.arrays_len,
+            texture_pool_samplers_len: pool.samplers_len,
             texture_pool_sampler_keys: pool.sampler_keys,
             _bind_group: None,
         })
@@ -69,6 +71,7 @@ impl GeometryMaskedBindGroup {
         Ok(Self {
             bind_group_layout_key,
             texture_pool_arrays_len: pool.arrays_len,
+            texture_pool_samplers_len: pool.samplers_len,
             texture_pool_sampler_keys: pool.sampler_keys,
             _bind_group: None,
         })
@@ -122,11 +125,40 @@ impl GeometryMaskedBindGroup {
                 BindGroupResource::TextureView(Cow::Borrowed(view)),
             ));
         }
+        // Pad texture slots up to the layout's tier with the placeholder
+        // view — the layout declares the tier, so every slot must bind.
+        let placeholder_view = ctx
+            .textures
+            .pool_placeholder_view()
+            .ok_or(AwsmBindGroupError::TexturePoolPlaceholderMissing("view"))?;
+        while entries.len()
+            < (MASKED_GROUP0_BUFFER_BINDINGS + self.texture_pool_arrays_len) as usize
+        {
+            entries.push(BindGroupEntry::new(
+                entries.len() as u32,
+                BindGroupResource::TextureView(Cow::Borrowed(placeholder_view)),
+            ));
+        }
         for sampler_key in self.texture_pool_sampler_keys.iter() {
             let sampler = ctx.textures.get_sampler(*sampler_key)?;
             entries.push(BindGroupEntry::new(
                 entries.len() as u32,
                 BindGroupResource::Sampler(sampler),
+            ));
+        }
+        // Pad sampler slots up to the tier with the placeholder sampler.
+        let placeholder_sampler = ctx
+            .textures
+            .pool_placeholder_sampler()
+            .ok_or(AwsmBindGroupError::TexturePoolPlaceholderMissing("sampler"))?;
+        while entries.len()
+            < (MASKED_GROUP0_BUFFER_BINDINGS
+                + self.texture_pool_arrays_len
+                + self.texture_pool_samplers_len) as usize
+        {
+            entries.push(BindGroupEntry::new(
+                entries.len() as u32,
+                BindGroupResource::Sampler(placeholder_sampler),
             ));
         }
 
@@ -157,9 +189,10 @@ fn build_layout_key(
     ctx: &mut RenderPassInitContext<'_>,
     arrays_len: u32,
 ) -> Result<BindGroupLayoutKey> {
-    // Re-read the sampler set so the layout matches what `recreate` will bind.
+    // Re-read the pool deps so the layout matches what `recreate` will bind
+    // (tier-padded sampler count).
     let pool = TexturePoolDeps::new(ctx, TexturePoolVisibility::Render)?;
-    let samplers_len = pool.sampler_keys.len() as u32;
+    let samplers_len = pool.samplers_len;
 
     let uniform_vf = || BindGroupLayoutCacheKeyEntry {
         resource: BindGroupLayoutResource::Buffer(
