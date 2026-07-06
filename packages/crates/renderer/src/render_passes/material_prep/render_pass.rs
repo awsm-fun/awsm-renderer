@@ -4,12 +4,23 @@
 //! A static compute pass (mirrors [`crate::render_passes::light_culling`]): runs
 //! once per pixel over the visibility buffer, after classify and before
 //! per-material shading, materializing the material-INDEPENDENT geometry-pool
-//! attributes (UV0 + vertex color) into the prep output storage textures. There
-//! are exactly two pipeline variants — multisampled-geometry on/off — both built
-//! up-front so an MSAA change needs only a bind-group rebuild, not a recompile.
+//! attributes (UV0 + vertex color) into the prep output storage textures.
 //!
-//! The prep pass is unconditional — always constructed and dispatched. The
-//! opaque deferred path reads its outputs.
+//! **Lazy-pool, active-branch-only.** The prep megashader is the single most
+//! expensive compile in the renderer (~1s per pipeline on a cold cache), so
+//! only the pipelines the LIVE config can dispatch are compiled at boot,
+//! through the cross-renderer pool (`describe → from_resolved`, like the
+//! geometry/classify passes):
+//! - `cs_prep` for the active MSAA-geometry branch only;
+//! - `cs_prep_edge` only under MSAA on a device with edge-resolve support;
+//! - the denoise blur pair only while `ShadowsConfig::denoise` is on.
+//!
+//! The other MSAA branch compiles on the first `set_anti_aliasing` flip (which
+//! is already a modal-covered, material-recompiling operation); a runtime
+//! denoise enable compiles the blur pair through the same config-ensure path.
+//!
+//! The prep pass itself is unconditional — always constructed and dispatched.
+//! The opaque deferred path reads its outputs.
 
 use std::borrow::Cow;
 
@@ -33,85 +44,246 @@ use crate::{
     },
 };
 
-/// Material prep pass bind groups + the two compiled (MSAA on/off) pipelines.
+/// Which prep pipeline a pooled cache-key slot resolves to. Parallel to the
+/// `pipeline_cache_keys` vec in [`MaterialPrepPrewarmDescriptors`] — the same
+/// routing trick the classify/HZB passes use so `merge_resolved` can drop each
+/// compiled key into the right [`MaterialPrepPipelines`] field.
+#[derive(Clone, Copy, Debug)]
+pub enum PrepPipelineSlot {
+    /// `cs_prep` for one MSAA-geometry branch.
+    Main { multisampled: bool },
+    /// `cs_prep_edge` (multisampled main layout + edge group(3)). MSAA-only.
+    Edge,
+    /// `cs_blur_h` for one MSAA-geometry branch.
+    BlurH { multisampled: bool },
+    /// `cs_blur_v` for one MSAA-geometry branch.
+    BlurV { multisampled: bool },
+}
+
+/// Phase-2 output of [`MaterialPrepPipelines::build_descriptors`]: the pooled
+/// compute cache keys + the slot each resolves to.
+pub struct MaterialPrepPrewarmDescriptors {
+    pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
+    pub slots: Vec<PrepPipelineSlot>,
+}
+
+/// The prep pass's compiled pipelines, branch-keyed. Every field is an
+/// `Option`: only the live config's branch is compiled at boot (through the
+/// cross-renderer pool); the other MSAA branch fills on the first
+/// `set_anti_aliasing` flip, and the blur pair only exists while denoise is
+/// configured on. `merge_resolved` preserves already-populated fields, so a
+/// flip-back is a cache hit, never a loss.
+#[derive(Default)]
+pub struct MaterialPrepPipelines {
+    multisampled: Option<ComputePipelineKey>,
+    singlesampled: Option<ComputePipelineKey>,
+    edge: Option<ComputePipelineKey>,
+    blur_h_multisampled: Option<ComputePipelineKey>,
+    blur_h_singlesampled: Option<ComputePipelineKey>,
+    blur_v_multisampled: Option<ComputePipelineKey>,
+    blur_v_singlesampled: Option<ComputePipelineKey>,
+}
+
+impl MaterialPrepPipelines {
+    /// The shader cache keys the ACTIVE config's prep pipelines need — pooled
+    /// into the cross-renderer `Shaders::ensure_keys` batch by
+    /// `RenderPasses::describe_shaders`. One prep megashader module covers
+    /// both `cs_prep` and `cs_prep_edge` (same cache key); the blur module is
+    /// separate and only needed while denoise is on.
+    pub fn shader_cache_keys(
+        multisampled_geometry: bool,
+        prep_config: &crate::render_passes::material_prep::PrepPassConfig,
+    ) -> Vec<crate::shaders::ShaderCacheKey> {
+        let msaa_sample_count = if multisampled_geometry { Some(4) } else { None };
+        let mut keys: Vec<crate::shaders::ShaderCacheKey> = vec![ShaderCacheKeyMaterialPrep {
+            msaa_sample_count,
+            max_shadow_casters: prep_config.clamped_k(),
+            sscs_enabled: prep_config.sscs_enabled,
+            sscs_step_count: prep_config.sscs_step_count,
+        }
+        .into()];
+        if prep_config.denoise {
+            keys.push(
+                ShaderCacheKeyShadowBlur {
+                    msaa_sample_count,
+                    max_shadow_casters: prep_config.clamped_k(),
+                }
+                .into(),
+            );
+        }
+        keys
+    }
+
+    /// Build the pooled pipeline cache keys for ONE MSAA-geometry branch of
+    /// the current `ctx.prep_config`. Shared by the boot orchestrator (active
+    /// branch) and `set_anti_aliasing` (incoming branch). Sync apart from
+    /// cache-hit `shaders.get_key` awaits — the shader modules are already
+    /// warm from the pooled shader batch.
+    ///
+    /// `edge_resolve_enabled` gates `cs_prep_edge` (multisampled branch only —
+    /// its layout binds the multisampled main BGL); the blur pair is gated on
+    /// `prep_config.denoise`.
+    pub async fn build_descriptors_for_config(
+        ctx: &mut RenderPassInitContext<'_>,
+        bind_groups: &MaterialPrepBindGroups,
+        multisampled_geometry: bool,
+        edge_resolve_enabled: bool,
+    ) -> Result<MaterialPrepPrewarmDescriptors> {
+        let mut pipeline_cache_keys = Vec::new();
+        let mut slots = Vec::new();
+
+        pipeline_cache_keys.push(main_cache_key(ctx, bind_groups, multisampled_geometry).await?);
+        slots.push(PrepPipelineSlot::Main {
+            multisampled: multisampled_geometry,
+        });
+
+        if multisampled_geometry && edge_resolve_enabled {
+            pipeline_cache_keys.push(edge_cache_key(ctx, bind_groups).await?);
+            slots.push(PrepPipelineSlot::Edge);
+        }
+
+        if ctx.prep_config.denoise {
+            pipeline_cache_keys.push(
+                blur_cache_key(ctx, bind_groups, multisampled_geometry, "cs_blur_h").await?,
+            );
+            slots.push(PrepPipelineSlot::BlurH {
+                multisampled: multisampled_geometry,
+            });
+            pipeline_cache_keys.push(
+                blur_cache_key(ctx, bind_groups, multisampled_geometry, "cs_blur_v").await?,
+            );
+            slots.push(PrepPipelineSlot::BlurV {
+                multisampled: multisampled_geometry,
+            });
+        }
+
+        Ok(MaterialPrepPrewarmDescriptors {
+            pipeline_cache_keys,
+            slots,
+        })
+    }
+
+    /// Route resolved pipeline keys into their branch fields. Preserves
+    /// already-populated fields not mentioned in `slots` (the lazy-branch
+    /// merge contract, mirroring `GeometryPipelines::merge_resolved`).
+    pub fn merge_resolved(&mut self, slots: &[PrepPipelineSlot], keys: Vec<ComputePipelineKey>) {
+        debug_assert_eq!(slots.len(), keys.len());
+        for (slot, key) in slots.iter().zip(keys) {
+            match slot {
+                PrepPipelineSlot::Main { multisampled: true } => self.multisampled = Some(key),
+                PrepPipelineSlot::Main {
+                    multisampled: false,
+                } => self.singlesampled = Some(key),
+                PrepPipelineSlot::Edge => self.edge = Some(key),
+                PrepPipelineSlot::BlurH { multisampled: true } => {
+                    self.blur_h_multisampled = Some(key)
+                }
+                PrepPipelineSlot::BlurH {
+                    multisampled: false,
+                } => self.blur_h_singlesampled = Some(key),
+                PrepPipelineSlot::BlurV { multisampled: true } => {
+                    self.blur_v_multisampled = Some(key)
+                }
+                PrepPipelineSlot::BlurV {
+                    multisampled: false,
+                } => self.blur_v_singlesampled = Some(key),
+            }
+        }
+    }
+
+    /// Whether everything the given config needs is already compiled — the
+    /// `set_anti_aliasing` / config-ensure guard that makes a flip-back a
+    /// no-op (mirrors `GeometryPipelines::has_branch_for`).
+    pub fn has_branch_for(
+        &self,
+        multisampled_geometry: bool,
+        edge_resolve_enabled: bool,
+        denoise: bool,
+    ) -> bool {
+        let main = if multisampled_geometry {
+            self.multisampled.is_some()
+        } else {
+            self.singlesampled.is_some()
+        };
+        let edge = !(multisampled_geometry && edge_resolve_enabled) || self.edge.is_some();
+        let blur = !denoise
+            || if multisampled_geometry {
+                self.blur_h_multisampled.is_some() && self.blur_v_multisampled.is_some()
+            } else {
+                self.blur_h_singlesampled.is_some() && self.blur_v_singlesampled.is_some()
+            };
+        main && edge && blur
+    }
+}
+
+/// Material prep pass bind groups + the branch-keyed compiled pipelines.
 pub struct MaterialPrepRenderPass {
     pub bind_groups: MaterialPrepBindGroups,
-    /// Compiled `cs_prep` pipeline for the multisampled-geometry variant.
-    pub multisampled_pipeline_key: ComputePipelineKey,
-    /// Compiled `cs_prep` pipeline for the single-sample variant.
-    pub singlesampled_pipeline_key: ComputePipelineKey,
-    /// Stage 5b-shadow: `cs_prep_edge` pipeline (MSAA only — `None` otherwise).
-    /// Indirect-dispatched over `edge_count`, filling `edge_shadow` so the MSAA
-    /// `cs_edge` reads per-edge-sample shadow visibility instead of inline
-    /// sampling.
-    pub edge_pipeline_key: Option<ComputePipelineKey>,
+    pub pipelines: MaterialPrepPipelines,
     /// Stage 5b-shadow: the compact per-edge-sample shadow texture cs_prep_edge
-    /// writes + cs_edge reads. `None` when not MSAA.
+    /// writes + cs_edge reads. `Some` only under MSAA on a device with
+    /// edge-resolve support (~8 MB — allocated on the MSAA-on flip, dropped on
+    /// MSAA-off, mirroring `material_edge_buffers`).
     pub edge_shadow: Option<EdgeShadowBuffer>,
-    /// Optional shadow-denoise blur pipelines (`cs_blur_h` / `cs_blur_v`), one
-    /// per MSAA-geometry variant. Built eagerly; dispatched by `render_blur`
-    /// only when the runtime `ShadowsConfig::denoise` toggle is on.
-    blur_h_multisampled_pipeline_key: ComputePipelineKey,
-    blur_h_singlesampled_pipeline_key: ComputePipelineKey,
-    blur_v_multisampled_pipeline_key: ComputePipelineKey,
-    blur_v_singlesampled_pipeline_key: ComputePipelineKey,
+    /// One-shot "blur pipelines not compiled yet" warning latch (mirrors the
+    /// shadow pass's `warn_pipeline_not_compiled` discipline): a runtime
+    /// denoise enable is only picked up by the next config-ensure/commit, so
+    /// the frames in between skip the blur with a single warn instead of
+    /// erroring the whole frame.
+    blur_warned: std::cell::Cell<bool>,
 }
 
 impl MaterialPrepRenderPass {
-    /// Creates the prep render pass resources. Eager compile of both MSAA
-    /// variants — matches the static-compute-pass convention
-    /// ([`crate::render_passes::light_culling`]). Always called (prep is
-    /// unconditional).
-    pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let bind_groups = MaterialPrepBindGroups::new(ctx).await?;
-        let multisampled_pipeline_key = build_pipeline(ctx, &bind_groups, true).await?;
-        let singlesampled_pipeline_key = build_pipeline(ctx, &bind_groups, false).await?;
-
-        // Stage 5b-shadow: the cs_prep_edge pipeline + compact edge-shadow
-        // texture. Built eagerly (not gated on build-time MSAA) so an
-        // `set_anti_aliasing(off → on)` flip finds them ready — the cs_prep_edge
-        // pipeline shares the always-built multisampled main layout, and the
-        // texture costs ~8 MB. `render_edge` only dispatches when the edge
-        // buffers exist (MSAA on), so this is inert otherwise. The texture is
-        // sized from the resolved edge budget; layers = ceil(K/4).
-        let edge_pipeline_key = Some(build_edge_pipeline(ctx, &bind_groups).await?);
-        let edge_shadow = Some(EdgeShadowBuffer::new(
-            ctx.gpu,
-            ctx.max_edge_budget,
-            ctx.prep_config.shadow_visibility_layers(),
-        )?);
-
-        let blur_h_multisampled_pipeline_key =
-            build_blur_pipeline(ctx, &bind_groups, true, "cs_blur_h").await?;
-        let blur_h_singlesampled_pipeline_key =
-            build_blur_pipeline(ctx, &bind_groups, false, "cs_blur_h").await?;
-        let blur_v_multisampled_pipeline_key =
-            build_blur_pipeline(ctx, &bind_groups, true, "cs_blur_v").await?;
-        let blur_v_singlesampled_pipeline_key =
-            build_blur_pipeline(ctx, &bind_groups, false, "cs_blur_v").await?;
-
-        Ok(Self {
+    /// Assemble the pass from staged parts (bind groups from
+    /// `describe_shaders`, pipelines merged from the cross-renderer pool,
+    /// edge-shadow texture allocated by `describe_pipelines` when gated in).
+    pub fn from_resolved(
+        bind_groups: MaterialPrepBindGroups,
+        pipelines: MaterialPrepPipelines,
+        edge_shadow: Option<EdgeShadowBuffer>,
+    ) -> Self {
+        Self {
             bind_groups,
-            multisampled_pipeline_key,
-            singlesampled_pipeline_key,
-            edge_pipeline_key,
+            pipelines,
             edge_shadow,
-            blur_h_multisampled_pipeline_key,
-            blur_h_singlesampled_pipeline_key,
-            blur_v_multisampled_pipeline_key,
-            blur_v_singlesampled_pipeline_key,
-        })
+            blur_warned: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Stage 5b-shadow: allocate the compact edge-shadow texture if absent
+    /// (the MSAA-on flip path). No-op when already allocated.
+    pub fn ensure_edge_shadow(
+        &mut self,
+        gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
+        max_edge_budget: u32,
+        layers: u32,
+    ) -> Result<()> {
+        if self.edge_shadow.is_none() {
+            self.edge_shadow = Some(EdgeShadowBuffer::new(gpu, max_edge_budget, layers)?);
+        }
+        Ok(())
+    }
+
+    /// Stage 5b-shadow: drop the compact edge-shadow texture (the MSAA-off
+    /// flip path — mirrors `material_edge_buffers` teardown; the ~8 MB
+    /// texture is pure waste while single-sampled).
+    pub fn drop_edge_shadow(&mut self) {
+        self.edge_shadow = None;
     }
 
     /// Dispatches the prep shader: one workgroup per 8×8 tile of the
     /// visibility buffer. Picks the pipeline variant matching the live MSAA
-    /// state.
+    /// state — which MUST be compiled (boot compiles the active branch;
+    /// `set_anti_aliasing` compiles the incoming one before flipping).
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
         let pipeline_key = if ctx.anti_aliasing.msaa_sample_count.is_some() {
-            self.multisampled_pipeline_key
+            self.pipelines.multisampled
         } else {
-            self.singlesampled_pipeline_key
+            self.pipelines.singlesampled
         };
+        let pipeline_key = pipeline_key.ok_or(crate::error::AwsmError::PipelineVariantNotCompiled(
+            "material prep pipeline for the live MSAA branch (set_anti_aliasing must compile the incoming branch before flipping)",
+        ))?;
         let pipeline = ctx.pipelines.compute.get(pipeline_key)?;
         let bind_group = self.bind_groups.get_bind_group()?;
         let lights_bind_group = self.bind_groups.get_lights_bind_group()?;
@@ -173,20 +345,31 @@ impl MaterialPrepRenderPass {
         if ctx.anti_aliasing.msaa_sample_count.is_none() {
             return Ok(());
         }
-        let (edge_pipeline_key, edge_shadow) =
-            match (self.edge_pipeline_key, self.edge_shadow.as_ref()) {
-                (Some(k), Some(b)) => (k, b),
-                _ => return Ok(()),
-            };
-        let edge_bgl_key = match self.bind_groups.edge_bind_group_layout_key {
-            Some(k) => k,
-            None => return Ok(()),
-        };
+        // Edge buffers exist ⟺ MSAA-on AND the device supports edge resolve
+        // (see `set_anti_aliasing`) — absent means this frame legitimately has
+        // no edge-resolve path, so skip.
         let (edge_buffers, edge_layout_uniform) =
             match (ctx.material_edge_buffers, ctx.material_edge_layout_uniform) {
                 (Some(b), Some(u)) => (b, u),
                 _ => return Ok(()),
             };
+        // Past this point the edge path IS live — a missing pipeline/texture is
+        // a broken invariant (cs_edge reads the compact texture this dispatch
+        // fills; skipping silently would shade edges with garbage shadows).
+        let edge_pipeline_key = self.pipelines.edge.ok_or(
+            crate::error::AwsmError::PipelineVariantNotCompiled(
+                "cs_prep_edge (edge buffers live but the edge prep pipeline never compiled)",
+            ),
+        )?;
+        let edge_shadow = self.edge_shadow.as_ref().ok_or(
+            crate::error::AwsmError::PipelineVariantNotCompiled(
+                "edge-shadow texture (edge buffers live but the compact texture never allocated)",
+            ),
+        )?;
+        let edge_bgl_key = match self.bind_groups.edge_bind_group_layout_key {
+            Some(k) => k,
+            None => return Ok(()),
+        };
 
         let pipeline = ctx.pipelines.compute.get(edge_pipeline_key)?;
         let bind_group = self.bind_groups.get_bind_group()?;
@@ -254,17 +437,34 @@ impl MaterialPrepRenderPass {
             return Ok(());
         }
         let msaa = ctx.anti_aliasing.msaa_sample_count.is_some();
-        let (h_key, v_key) = if msaa {
+        let keys = if msaa {
             (
-                self.blur_h_multisampled_pipeline_key,
-                self.blur_v_multisampled_pipeline_key,
+                self.pipelines.blur_h_multisampled,
+                self.pipelines.blur_v_multisampled,
             )
         } else {
             (
-                self.blur_h_singlesampled_pipeline_key,
-                self.blur_v_singlesampled_pipeline_key,
+                self.pipelines.blur_h_singlesampled,
+                self.pipelines.blur_v_singlesampled,
             )
         };
+        let (h_key, v_key) = match keys {
+            (Some(h), Some(v)) => (h, v),
+            _ => {
+                // Denoise was enabled at runtime and the config-ensure that
+                // compiles the blur pair hasn't run yet — skip the blur (the
+                // un-denoised visibility is still correct) with a one-shot
+                // warn, mirroring the shadow pass's not-compiled discipline.
+                if !self.blur_warned.replace(true) {
+                    tracing::warn!(
+                        "shadow denoise blur pipelines not compiled for the live MSAA branch — \
+                         skipping the blur until the next commit_load / config ensure"
+                    );
+                }
+                return Ok(());
+            }
+        };
+        self.blur_warned.set(false);
         let h_pipeline = ctx.pipelines.compute.get(h_key)?;
         let v_pipeline = ctx.pipelines.compute.get(v_key)?;
         let h_bind_group = self.bind_groups.get_blur_h_bind_group()?;
@@ -297,12 +497,14 @@ impl MaterialPrepRenderPass {
     }
 }
 
-/// Builds the `cs_prep` pipeline for one MSAA-geometry variant.
-async fn build_pipeline(
+/// Derives the `cs_prep` pipeline CACHE KEY for one MSAA-geometry variant —
+/// no compile; the key joins the cross-renderer pool. The `shaders.get_key`
+/// await is a cache hit (the pooled shader batch ran first).
+async fn main_cache_key(
     ctx: &mut RenderPassInitContext<'_>,
     bind_groups: &MaterialPrepBindGroups,
     multisampled_geometry: bool,
-) -> Result<ComputePipelineKey> {
+) -> Result<ComputePipelineCacheKey> {
     let bgl_key = if multisampled_geometry {
         bind_groups.multisampled_bind_group_layout_key
     } else {
@@ -329,28 +531,18 @@ async fn build_pipeline(
             },
         )
         .await?;
-    let pipeline_key = ctx
-        .pipelines
-        .compute
-        .get_key(
-            ctx.gpu,
-            ctx.shaders,
-            ctx.pipeline_layouts,
-            ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
-                .with_entry_point("cs_prep"),
-        )
-        .await?;
-    Ok(pipeline_key)
+    Ok(ComputePipelineCacheKey::new(shader_key, pipeline_layout_key).with_entry_point("cs_prep"))
 }
 
-/// Stage 5b-shadow: builds the `cs_prep_edge` pipeline (MSAA only). Shares the
-/// MSAA prep shader module (same cache key as the multisampled `cs_prep`); its
-/// pipeline layout adds group(3) = the edge layout (edge_data + edge_layout +
-/// edge_shadow_out) on top of the multisampled main + lights + shadows groups.
-async fn build_edge_pipeline(
+/// Stage 5b-shadow: derives the `cs_prep_edge` pipeline CACHE KEY (MSAA only).
+/// Shares the MSAA prep shader module (same cache key as the multisampled
+/// `cs_prep`); its pipeline layout adds group(3) = the edge layout (edge_data +
+/// edge_layout + edge_shadow_out) on top of the multisampled main + lights +
+/// shadows groups.
+async fn edge_cache_key(
     ctx: &mut RenderPassInitContext<'_>,
     bind_groups: &MaterialPrepBindGroups,
-) -> Result<ComputePipelineKey> {
+) -> Result<ComputePipelineCacheKey> {
     let edge_bgl_key = bind_groups
         .edge_bind_group_layout_key
         .expect("edge bind group layout must exist under MSAA");
@@ -376,31 +568,23 @@ async fn build_edge_pipeline(
             },
         )
         .await?;
-    let pipeline_key = ctx
-        .pipelines
-        .compute
-        .get_key(
-            ctx.gpu,
-            ctx.shaders,
-            ctx.pipeline_layouts,
-            ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
-                .with_entry_point("cs_prep_edge"),
-        )
-        .await?;
-    Ok(pipeline_key)
+    Ok(
+        ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
+            .with_entry_point("cs_prep_edge"),
+    )
 }
 
-/// Builds one shadow-denoise blur pipeline (`entry_point` = `cs_blur_h` or
-/// `cs_blur_v`) for one MSAA-geometry variant. Both entry points share the one
-/// blur shader module (same `ShaderCacheKeyShadowBlur`); only the pipeline's
-/// entry point + the H/V bind group differ. Pipeline layout = the single blur
-/// bind group at group(0).
-async fn build_blur_pipeline(
+/// Derives one shadow-denoise blur pipeline CACHE KEY (`entry_point` =
+/// `cs_blur_h` or `cs_blur_v`) for one MSAA-geometry variant. Both entry
+/// points share the one blur shader module (same `ShaderCacheKeyShadowBlur`);
+/// only the pipeline's entry point + the H/V bind group differ. Pipeline
+/// layout = the single blur bind group at group(0).
+async fn blur_cache_key(
     ctx: &mut RenderPassInitContext<'_>,
     bind_groups: &MaterialPrepBindGroups,
     multisampled_geometry: bool,
     entry_point: &str,
-) -> Result<ComputePipelineKey> {
+) -> Result<ComputePipelineCacheKey> {
     let bgl_key = if multisampled_geometry {
         bind_groups.blur_multisampled_bind_group_layout_key
     } else {
@@ -421,16 +605,5 @@ async fn build_blur_pipeline(
             },
         )
         .await?;
-    let pipeline_key = ctx
-        .pipelines
-        .compute
-        .get_key(
-            ctx.gpu,
-            ctx.shaders,
-            ctx.pipeline_layouts,
-            ComputePipelineCacheKey::new(shader_key, pipeline_layout_key)
-                .with_entry_point(entry_point),
-        )
-        .await?;
-    Ok(pipeline_key)
+    Ok(ComputePipelineCacheKey::new(shader_key, pipeline_layout_key).with_entry_point(entry_point))
 }
