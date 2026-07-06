@@ -89,10 +89,8 @@ pub struct AnimResolveMaps {
     /// glb-node-index → joint TransformKey map + glb-node-index → mesh
     /// keys map (for per-scene-node material rebinding).
     #[allow(clippy::type_complexity)]
-    pub rig_cache: HashMap<
-        (String, NodeId),
-        (HashMap<usize, TransformKey>, HashMap<usize, Vec<MeshKey>>),
-    >,
+    pub rig_cache:
+        HashMap<(String, NodeId), (HashMap<usize, TransformKey>, HashMap<usize, Vec<MeshKey>>)>,
     /// Mesh/skinned nodes → the material key built for them (BuiltinParam target).
     pub node_materials: HashMap<NodeId, MaterialKey>,
     /// Custom-WGSL material asset → the shader id it registered as (Phase 0).
