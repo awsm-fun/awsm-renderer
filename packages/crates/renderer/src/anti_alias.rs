@@ -135,6 +135,29 @@ impl AwsmRenderer {
             self.material_edge_layout_uniform = None;
         }
 
+        // The prep pass's compact edge-shadow texture (~8 MB) follows the
+        // same MSAA lifecycle: allocated on the off→on flip (the opaque MSAA
+        // main bind group binds its view at binding 27 — unconditionally
+        // under MSAA, independent of `edge_resolve_supported`), dropped on
+        // on→off. The `TextureViewRecreate` mark below re-clones the view
+        // into the dependent bind groups next frame.
+        if let Some(prep) = self.render_passes.material_prep.as_mut() {
+            if new_msaa_on {
+                let max_edge_budget = self
+                    .material_edge_buffers
+                    .as_ref()
+                    .map(|b| b.max_edge_budget)
+                    .unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP);
+                prep.ensure_edge_shadow(
+                    &self.gpu,
+                    max_edge_budget,
+                    self.prep_config.shadow_visibility_layers(),
+                )?;
+            } else {
+                prep.drop_edge_shadow();
+            }
+        }
+
         self.bind_groups
             .mark_create(BindGroupCreate::AntiAliasingChange);
         self.bind_groups
@@ -304,6 +327,79 @@ impl AwsmRenderer {
                 .geometry
                 .pipelines
                 .merge_resolved(&geometry_descs, geometry_pipeline_keys)?;
+        }
+
+        // ── Phase 4c: material-prep MSAA branch recompile (lazy-pool,
+        //    mirrors Phase 4b). Boot compiled only the then-active branch;
+        //    fill the incoming branch's cs_prep (+ cs_prep_edge under MSAA on
+        //    a supporting device, + the blur pair while denoise is on) if any
+        //    of it is missing. Cache-keyed, so a flip-back — or a redundant
+        //    piece within the branch — resolves as a hit.
+        let prep_edge_resolve = new_msaa_on && crate::edge_resolve_supported(&self.gpu);
+        let prep_denoise = self.prep_config.denoise;
+        let prep_branch_missing = self
+            .render_passes
+            .material_prep
+            .as_ref()
+            .is_some_and(|p| !p.pipelines.has_branch_for(new_msaa_on, prep_edge_resolve, prep_denoise));
+        if prep_branch_missing {
+            use crate::render_passes::material_prep::render_pass::MaterialPrepPipelines;
+            // Phase 4c.i: shader batch for the branch (megashader module +
+            // blur module). Warm already when only e.g. the blur pair is
+            // missing — ensure_keys is cache-keyed.
+            self.shaders
+                .ensure_keys(
+                    &self.gpu,
+                    MaterialPrepPipelines::shader_cache_keys(new_msaa_on, &self.prep_config),
+                )
+                .await?;
+
+            // Phase 4c.ii: build the branch's pipeline cache keys. Same
+            // RenderPassInitContext shape as Phase 4b; `render_passes` is not
+            // part of the ctx, so borrowing the prep bind groups alongside is
+            // disjoint.
+            let mut ctx = crate::render_passes::RenderPassInitContext {
+                gpu: &self.gpu,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                render_texture_formats: &mut self.render_textures.formats,
+                textures: &mut self.textures,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
+            };
+            let prep = self
+                .render_passes
+                .material_prep
+                .as_ref()
+                .expect("checked is_some_and above");
+            let prep_descs = MaterialPrepPipelines::build_descriptors_for_config(
+                &mut ctx,
+                &prep.bind_groups,
+                new_msaa_on,
+                prep_edge_resolve,
+            )
+            .await?;
+
+            // Phase 4c.iii: batched compute compile + merge (preserves the
+            // other branch's already-resolved keys).
+            let prep_keys = self
+                .pipelines
+                .compute
+                .ensure_keys(
+                    &self.gpu,
+                    &self.shaders,
+                    &self.pipeline_layouts,
+                    prep_descs.pipeline_cache_keys.clone(),
+                )
+                .await?;
+            if let Some(prep) = self.render_passes.material_prep.as_mut() {
+                prep.pipelines.merge_resolved(&prep_descs.slots, prep_keys);
+            }
         }
 
         // ── Phase 5: transparent pipelines depend on per-mesh
