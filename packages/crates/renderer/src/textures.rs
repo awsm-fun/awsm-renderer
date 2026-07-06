@@ -1383,15 +1383,18 @@ impl Textures {
             AwsmTextureError::ImageBitmapCreate("cast OffscreenCanvas 2d context".to_string())
         })?;
 
-        // The FFI binding accepts `Clamped<&[u8]>`; web-sys will copy the
-        // slice into a Wasm-side Uint8ClampedArray when constructing the
-        // ImageData.
-        let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
-            wasm_bindgen::Clamped(rgba_bytes),
-            width,
-            height,
-        )
-        .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("ImageData::new: {e:?}")))?;
+        // Copy the pixels into a JS-owned (non-shared) `Uint8ClampedArray`
+        // before building the `ImageData`. A `Clamped<&[u8]>` would hand
+        // `ImageData` a view straight over the Wasm memory — and under
+        // `crossOriginIsolated` (players enable SharedArrayBuffer for worker
+        // threads) that memory IS a SharedArrayBuffer, which `ImageData` rejects
+        // ("The provided Uint8ClampedArray value must not be shared").
+        // `Uint8ClampedArray::from` copies into a fresh non-shared buffer — the
+        // same pattern `renderer-core`'s `create_from_rgba` / `create_color` use.
+        let clamped = web_sys::js_sys::Uint8ClampedArray::from(rgba_bytes);
+        let image_data =
+            web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(&clamped, width, height)
+                .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("ImageData::new: {e:?}")))?;
         ctx.put_image_data(&image_data, 0, 0)
             .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("put_image_data: {e:?}")))?;
         let bitmap = canvas
