@@ -126,6 +126,7 @@ pub async fn register_custom_materials(
 /// Slots without an override stay unbound (no "default texture" concept).
 pub async fn build_custom_material(
     renderer: &mut AwsmRenderer,
+    cache: &mut crate::texture::TextureCache,
     shader_id: MaterialShaderId,
     inst: &MaterialInstance,
     assets: &impl SceneAssets,
@@ -188,7 +189,8 @@ pub async fn build_custom_material(
     for (i, (name, srgb, mipmap_kind)) in texture_slots.iter().enumerate() {
         if let Some(tref) = inst.texture_overrides.get(name) {
             if let Some(mt) =
-                crate::texture::load_texture(renderer, assets, tref, *srgb, *mipmap_kind).await
+                crate::texture::load_texture(renderer, cache, assets, tref, *srgb, *mipmap_kind)
+                    .await
             {
                 if let Some(sampler) = mt.sampler_key {
                     textures[i] = Some(DynamicTextureBinding::Pooled {

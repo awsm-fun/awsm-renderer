@@ -109,6 +109,9 @@ pub fn phase_fraction(stats: &awsm_renderer::loading::LoadingStats) -> (u8, f32)
             2,
             0.40 + 0.10 * frac(stats.textures_uploaded, stats.textures_total),
         ),
+        // Reconcile/WGSL-codegen bridge between textures and the compile drain —
+        // no per-item counts, so it pins to the compile segment's start.
+        LoadPhase::PreparingMaterials => (3, 0.50),
         LoadPhase::Compiling => {
             let total = stats.pipelines_pending + stats.pipelines_ready;
             (3, 0.50 + 0.50 * frac(stats.pipelines_ready, total))

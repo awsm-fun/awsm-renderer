@@ -73,6 +73,45 @@ fn default_one() -> f32 {
     1.0
 }
 
+impl MaterialDef {
+    /// Every texture-asset reference this material carries — the five standard
+    /// PBR slots plus every enabled extension's slots (the extension side is
+    /// macro-generated per field via [`CollectTextureRefs`], so a new `tex`
+    /// field in an `ext_struct!` is enumerated automatically). Loaders use this
+    /// to prefetch/decode a scene's unique images concurrently before the
+    /// material walk binds them.
+    pub fn texture_refs(&self) -> Vec<&TextureRef> {
+        let mut out = Vec::new();
+        for slot in [
+            &self.base_color_texture,
+            &self.metallic_roughness_texture,
+            &self.emissive_texture,
+            &self.normal_texture,
+            &self.occlusion_texture,
+        ] {
+            slot.collect_texture_refs(&mut out);
+        }
+        self.extensions.texture_refs(&mut out);
+        out
+    }
+}
+
+/// Per-field texture-ref collection, implemented as a no-op for scalar field
+/// types so the `ext_struct!` macro can invoke it on EVERY field — new texture
+/// slots are enumerated without anyone remembering to update a list.
+trait CollectTextureRefs {
+    fn collect_texture_refs<'a>(&'a self, _out: &mut Vec<&'a TextureRef>) {}
+}
+impl CollectTextureRefs for f32 {}
+impl CollectTextureRefs for [f32; 3] {}
+impl CollectTextureRefs for Option<TextureRef> {
+    fn collect_texture_refs<'a>(&'a self, out: &mut Vec<&'a TextureRef>) {
+        if let Some(t) = self {
+            out.push(t);
+        }
+    }
+}
+
 impl Default for MaterialDef {
     fn default() -> Self {
         Self {
@@ -221,6 +260,30 @@ pub struct PbrExtensions {
 }
 
 impl PbrExtensions {
+    /// Texture refs across every enabled extension (each extension's side is
+    /// macro-generated, so new slots enumerate automatically; the per-extension
+    /// list here mirrors [`Self::merged_over`]).
+    fn texture_refs<'a>(&'a self, out: &mut Vec<&'a TextureRef>) {
+        macro_rules! collect {
+            ($($f:ident),* $(,)?) => {
+                $(if let Some(e) = &self.$f { e.texture_refs(out); })*
+            };
+        }
+        collect!(
+            emissive_strength,
+            ior,
+            specular,
+            transmission,
+            diffuse_transmission,
+            volume,
+            clearcoat,
+            sheen,
+            dispersion,
+            anisotropy,
+            iridescence,
+        );
+    }
+
     /// The per-mesh MERGED view of a node's `inline` extension layer over the
     /// shared library `variant`: per extension, the inline value wins when
     /// present, otherwise the variant's authored values carry through —
@@ -255,6 +318,13 @@ macro_rules! ext_struct {
         pub struct $name { $(#[serde(default)] pub $field: $ty),* }
         impl Default for $name {
             fn default() -> Self { Self { $($field: $def),* } }
+        }
+        impl $name {
+            /// Texture refs carried by this extension (generated per field —
+            /// scalar fields no-op via [`CollectTextureRefs`]).
+            fn texture_refs<'a>(&'a self, out: &mut Vec<&'a TextureRef>) {
+                $(CollectTextureRefs::collect_texture_refs(&self.$field, out);)*
+            }
         }
     };
 }

@@ -22,6 +22,7 @@ lod = ["awsm-renderer/lod", "dep:awsm-renderer-lod-bake"]
 http = ["dep:gloo-net"]
 
 [dependencies]
+futures = { workspace = true }
 # The core renderer (GPU) + the glTF loader we reuse for the per-mesh glbs.
 # `scene-schema` pulls in the reusable animation lowering
 # (`animation::scene_loader::lower_stored_clip` / `lower_stored_mixer`) we feed
