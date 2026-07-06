@@ -150,9 +150,27 @@ impl AwsmRenderer {
         // the rebuild below runs; with an unchanged pool the opaque/transparent
         // descriptors below are cache hits and only the new masked variant compiles.
         let force_masked = std::mem::take(&mut self.masked_dynamic_dirty);
+        // A BUILTIN material can also start routing masked with no texture
+        // change — the editor flipping a node's alpha mode to Mask. Nothing
+        // sets a dirty flag on that path, so probe directly: any non-instanced
+        // mesh whose material carries a cutoff but whose masked variant isn't
+        // compiled at the live MSAA needs this rebuild (else it silently
+        // renders solid via the plain-geometry fallback forever).
+        let msaa = match self.anti_aliasing.msaa_sample_count {
+            Some(4) => Some(4u32),
+            _ => None,
+        };
+        let masked_builtin_missing = self.meshes.iter().any(|(_, mesh)| {
+            !mesh.instanced
+                && self.materials.alpha_cutoff(mesh.material_key).is_some()
+                && !self.render_passes.geometry.masked_pipelines.has_variant(
+                    msaa,
+                    self.materials.canonical_shader_id(mesh.material_key),
+                )
+        });
         let was_dirty = pool_dirty || sampler_pool_dirty;
 
-        if !was_dirty && !force_masked {
+        if !was_dirty && !force_masked && !masked_builtin_missing {
             return Ok(());
         }
 

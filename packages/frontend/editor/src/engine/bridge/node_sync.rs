@@ -803,12 +803,24 @@ pub(crate) fn merged_builtin_def(
     // the UI shows exactly what renders.
     let extensions = PbrExtensions::merged_over(&inline.extensions, &variant.extensions);
 
-    // Alpha MODE (Opaque/Mask/Blend) is variant routing; the Mask *cutoff* value
-    // is a per-mesh uniform compare, so carry it from inline when both are Mask.
+    // Alpha MODE (Opaque/Mask/Blend): a NON-DEFAULT per-node `inline` mode wins
+    // (what `set_builtin_alpha_mode` / the inspector dropdown write) — like
+    // texture-slot presence (§11 above), it re-specializes THIS mesh's routing
+    // instead of being silently dropped. `inline` Opaque is the unset default,
+    // so it falls through to the shared variant's authored mode (assigning a
+    // Blend/Mask library material keeps working). The Mask *cutoff* is a
+    // per-mesh uniform compare, so inline's value also wins when both layers
+    // are Mask.
+    //
+    // (Regression this fixes: per-node `mask` was ignored → mode stayed the
+    // variant's Opaque → the lowering's `alpha_mode_of` convenience heuristic
+    // saw base_color.a < 1 and routed the mesh to the BLEND/transparent pass —
+    // ghost render, no cutout, no shadow.)
     let alpha_mode = match (&variant.alpha_mode, &inline.alpha_mode) {
         (MaterialAlphaMode::Mask { .. }, MaterialAlphaMode::Mask { cutoff }) => {
             MaterialAlphaMode::Mask { cutoff: *cutoff }
         }
+        (_, inline_mode) if *inline_mode != MaterialAlphaMode::Opaque => inline_mode.clone(),
         _ => variant.alpha_mode.clone(),
     };
 

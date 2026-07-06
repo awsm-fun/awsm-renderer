@@ -73,6 +73,22 @@ impl GeometryMaskedPipelines {
         })
     }
 
+    /// True when a masked variant for `(msaa, shader_id)` is already compiled
+    /// (any cull — [`Self::ensure_variant`] inserts all three together). The
+    /// texture-finalize gate probes this so a material that ROUTES masked with
+    /// no texture change (e.g. the editor flipping a builtin's alpha mode to
+    /// Mask) still gets its variant compiled instead of silently falling back
+    /// to the solid pipeline forever.
+    pub fn has_variant(
+        &self,
+        msaa_sample_count: Option<u32>,
+        shader_id: MaterialShaderId,
+    ) -> bool {
+        self.main
+            .keys()
+            .any(|k| k.msaa_sample_count == msaa_sample_count && k.shader_id == shader_id)
+    }
+
     /// Re-resolves the pipeline layout after the masked group-0 layout changed
     /// (texture-pool growth). Existing pool entries are cleared — the caller
     /// recompiles the live variants against the new layout.
