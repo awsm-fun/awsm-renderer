@@ -32,7 +32,7 @@ use awsm_renderer_editor_protocol::dynamic_material::MaterialInstance;
 use awsm_renderer_editor_protocol::{
     AssetId, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, LightConfig,
     MaterialAlphaMode, MaterialDef, MaterialShading, NodeId, NodeKind, SweepAlongCurveDef,
-    SweepUvMode, TextureDef, TextureRef,
+    SweepUvMode, TextureDef, TextureExport, TextureRef,
 };
 use awsm_renderer_glb_export::{
     write_glb, AlphaMode, AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation, ExportCamera,
@@ -225,10 +225,6 @@ pub async fn bake_player_bundle(
         collect_texture_assets(n, &mut ids, &mut seen);
         collect_custom_texture_assets(ctrl, n, &mut ids, &mut seen);
     }
-    // Bundle export preference: re-encode raster textures to WebP (smaller
-    // download, same browser-decodable fast path as PNG on the player).
-    let export_webp = ctrl.settings.export_webp.get();
-    let webp_quality = ctrl.settings.webp_quality.get();
     for id in ids {
         // Referenced by a material ⇒ MUST ship, losslessly, or the export
         // fails. No quiet skip and no lossy fallback (see `texture_source_bytes`).
@@ -238,23 +234,42 @@ pub async fn bake_player_bundle(
                  re-import the texture (or reload the saved project) and re-export"
             )
         })?;
-        // Ship the image under its REAL extension and record the encoding on the
-        // asset entry, so the player derives `assets/<id>.<ext>` + its decode path
-        // from data instead of assuming `.png`. Missing = `Png` on the loader
-        // side, so this stays backward-shaped for PNG bundles.
-        let (encoding, bytes) = if export_webp {
-            match encode_webp(&bytes, mime.as_str(), webp_quality).await {
+        // Per-texture bundle-export preference (authored on the asset, persisted
+        // in the project; `None` ⇒ the default lossless WebP). This re-encodes
+        // the image under its REAL extension and records the resulting encoding
+        // on the runtime asset entry, so the player derives `assets/<id>.<ext>` +
+        // its decode path from data. Encode failure warns and ships the source
+        // bytes + their real encoding, so a bake never silently drops a texture.
+        let pref = project
+            .assets
+            .entries
+            .get(&id)
+            .and_then(|e| e.texture_export)
+            .unwrap_or_default();
+        let (encoding, bytes) = match pref {
+            TextureExport::Source => (texture_encoding_from_mime(mime), bytes),
+            TextureExport::WebpLossless => match encode_webp_lossless(&bytes, mime) {
                 Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
                 None => {
                     tracing::warn!(
-                        "bundle texture {id}: WebP encode failed — shipping source {}",
+                        "bundle texture {id}: lossless WebP encode failed — shipping source {}",
                         mime.ext()
                     );
                     (texture_encoding_from_mime(mime), bytes)
                 }
+            },
+            TextureExport::WebpLossy { quality } => {
+                match encode_webp(&bytes, mime.as_str(), quality as f64).await {
+                    Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
+                    None => {
+                        tracing::warn!(
+                            "bundle texture {id}: lossy WebP encode failed — shipping source {}",
+                            mime.ext()
+                        );
+                        (texture_encoding_from_mime(mime), bytes)
+                    }
+                }
             }
-        } else {
-            (texture_encoding_from_mime(mime), bytes)
         };
         files.push(BundleFile::asset(format!("{id}.{}", encoding.ext()), bytes));
         if let Some(entry) = scene.assets.entries.get_mut(&id) {
@@ -952,6 +967,33 @@ fn texture_encoding_from_mime(
         ImageMime::Png => TextureEncoding::Png,
         ImageMime::Jpeg => TextureEncoding::Jpeg,
     }
+}
+
+/// Re-encode a source image to LOSSLESS WebP via the pure-Rust `image` crate
+/// (`WebPEncoder::new_lossless`, VP8L — no libwebp/C dependency, so it works in
+/// wasm). Decodes the PNG/JPEG source to RGBA8, then encodes: the result is
+/// pixel-identical to the source but typically smaller than PNG. `Some(bytes)` on
+/// success; `None` (caller falls back to the source bytes) on any decode/encode
+/// failure. Unlike [`encode_webp`], this is fully deterministic and needs no
+/// browser canvas.
+fn encode_webp_lossless(
+    source: &[u8],
+    mime: awsm_renderer_glb_export::ImageMime,
+) -> Option<Vec<u8>> {
+    use awsm_renderer_glb_export::ImageMime;
+    let format = match mime {
+        ImageMime::Png => image::ImageFormat::Png,
+        ImageMime::Jpeg => image::ImageFormat::Jpeg,
+    };
+    let rgba = image::load_from_memory_with_format(source, format)
+        .ok()?
+        .into_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut out = Vec::new();
+    image::codecs::webp::WebPEncoder::new_lossless(&mut out)
+        .encode(rgba.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+        .ok()?;
+    Some(out)
 }
 
 /// Re-encode a source image (`source` bytes of `source_mime`) to WebP at

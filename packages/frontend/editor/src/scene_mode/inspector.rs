@@ -17,7 +17,7 @@ use awsm_renderer_editor_protocol::{
     AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, EvsmCutoff,
     FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, MaterialAlphaMode,
     MaterialDef, MaterialShading, MeshLodConfig, MeshShadowConfig, ParticleEmitterDef,
-    PrimitiveShape, ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef,
+    PrimitiveShape, ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef, TextureExport,
 };
 
 /// The right rail shows the **Asset Inspector** when an asset is selected in the
@@ -4598,7 +4598,15 @@ fn asset_panel(id: AssetId) -> Dom {
             .child(asset_identity(id, &source))
             .apply(|b| match &source {
                 AssetSource::Material(_) => b.child(asset_authoring()),
-                AssetSource::Texture(TextureDef::Procedural(p)) => b.child(asset_procedural(p)),
+                // Texture assets (raster + procedural) carry a per-texture bundle
+                // export choice; procedural ones also show their generator params.
+                AssetSource::Texture(def) => {
+                    let b = match def {
+                        TextureDef::Procedural(p) => b.child(asset_procedural(p)),
+                        TextureDef::Raster { .. } => b,
+                    };
+                    b.child(asset_export(id))
+                }
                 _ => b,
             })
         }))
@@ -4720,6 +4728,110 @@ fn asset_procedural(p: &ProceduralTextureDef) -> Dom {
         sec = sec.child(r);
     }
     sec.render()
+}
+
+/// Per-texture bundle-export choice (Source / WebP lossless / WebP lossy),
+/// persisted on the texture asset. The default is lossless WebP; a texture with
+/// no stored preference shows that. Takes effect on the next player-bundle export.
+fn asset_export(id: AssetId) -> Dom {
+    let cur = controller()
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .get(id)
+        .and_then(|e| e.texture_export)
+        .unwrap_or_default();
+    let mode = Mutable::new(
+        match cur {
+            TextureExport::Source => "source",
+            TextureExport::WebpLossless => "webp_lossless",
+            TextureExport::WebpLossy { .. } => "webp_lossy",
+        }
+        .to_string(),
+    );
+    let quality = Mutable::new(match cur {
+        TextureExport::WebpLossy { quality } => quality as f64,
+        _ => 0.85,
+    });
+
+    // Dispatch on mode change (skip the seed emission so opening the panel is inert).
+    spawn_local(clone!(mode, quality => async move {
+        let mut first = true;
+        mode.signal_cloned().for_each(move |m| {
+            let fire = !first;
+            first = false;
+            clone!(quality => async move {
+                if fire {
+                    dispatch_texture_export(id, &m, quality.get());
+                }
+            })
+        }).await;
+    }));
+
+    let mut sec = Section::new("Bundle export").child(row(
+        "Encoding",
+        segmented(
+            mode.clone(),
+            vec![
+                SegOption::new("webp_lossless", "Lossless"),
+                SegOption::new("webp_lossy", "Lossy"),
+                SegOption::new("source", "Source"),
+            ],
+            true,
+            true,
+        ),
+    ));
+
+    // Quality row — only meaningful for lossy WebP, shown only in that mode.
+    sec = sec.child(html!("div", {
+        .child_signal(mode.signal_cloned().map(clone!(quality => move |m| {
+            if m != "webp_lossy" {
+                return None;
+            }
+            Some(row(
+                "Quality",
+                NumField::new(quality.get())
+                    .min(0.0)
+                    .max(1.0)
+                    .step(0.05)
+                    .on_change(clone!(quality => move |v| {
+                        let v = v.clamp(0.0, 1.0);
+                        quality.set_neq(v);
+                        dispatch_texture_export(id, "webp_lossy", v);
+                    }))
+                    .render(),
+            ))
+        })))
+    }));
+
+    sec.child(html!("div", {
+        .style("font-size", "11px").style("color", "var(--text-3)")
+        .style("line-height", "1.45").style("margin-top", "4px")
+        .text("How this texture is encoded in an exported player bundle. Lossless WebP \
+               (default) is pixel-identical and usually smaller than PNG; Lossy trades \
+               quality for size; Source ships the original bytes unchanged. Takes effect \
+               on the next bundle export.")
+    }))
+    .render()
+}
+
+/// Build a [`TextureExport`] from the inspector's mode string + quality and
+/// dispatch a `SetTextureExport` for the texture asset (no-op on the handler side
+/// if unchanged).
+fn dispatch_texture_export(id: AssetId, mode: &str, quality: f64) {
+    let export = Some(match mode {
+        "source" => TextureExport::Source,
+        "webp_lossy" => TextureExport::WebpLossy {
+            quality: quality as f32,
+        },
+        _ => TextureExport::WebpLossless,
+    });
+    spawn_local(async move {
+        let _ = controller()
+            .dispatch(EditorCommand::SetTextureExport { id, export })
+            .await;
+    });
 }
 
 /// A read-only labelled value row for the asset inspector's procedural params.

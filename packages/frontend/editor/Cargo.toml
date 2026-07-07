@@ -62,8 +62,9 @@ xutex = "0.2.1"
 # Content-hashing for asset dedup + collision-free on-disk paths.
 sha2 = "0.10.8"
 awsm_web = { version = "0.45.0", default-features = false, features = ["dom", "file"] }
-# Raster decode for gltf-extracted textures.
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+# Raster decode for gltf-extracted textures + bundle-export re-encode (incl.
+# lossless WebP). Features (png/jpeg/webp) come from the single workspace dep.
+image = { workspace = true }
 # Parse glTF documents at editor-import time.
 gltf = { workspace = true }
 # TOML project directory persistence.
