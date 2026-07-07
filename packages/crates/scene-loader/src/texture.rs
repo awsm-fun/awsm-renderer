@@ -93,26 +93,139 @@ impl TextureCache {
 
 /// Fetch `assets/<id>.png` and decode it to an `ImageBitmap` — the pure
 /// (renderer-free) half of texture loading, so it can run concurrently.
+/// The on-disk encoding of a bundle texture image — and, crucially, WHO can
+/// decode it. This is the format half of the zero-copy discriminator: the URL
+/// fast path in [`fetch_decode`] is valid only when the source exposes a URL
+/// ([`asset_url`](crate::assets::SceneAssets::asset_url)) AND the encoding is
+/// [`browser_decodable`](Self::browser_decodable). "Has a URL" alone is NOT
+/// enough — a URL to a format the browser can't decode buys nothing.
+///
+/// Player bundles emit every material texture as PNG today (`assets/<id>.png`),
+/// so PNG is the only encoding the runtime loader actually constructs. The other
+/// browser-native rasters (JPEG, WebP) are here so the fast path already covers
+/// them the day the bundle format carries a per-texture extension. [`Ktx2`] is
+/// here so the discriminator is HONEST rather than "everything is decodable": a
+/// GPU-compressed container is NOT browser-decodable and must transit wasm to be
+/// transcoded, even when a URL exists. (Environment KTX2 cubemaps already load
+/// that way via `environment.rs`; material KTX2 has no loader arm yet.)
+///
+/// [`Ktx2`]: Self::Ktx2
+#[derive(Clone, Copy)]
+enum ImageEncoding {
+    Png,
+    Jpeg,
+    Webp,
+    Ktx2,
+}
+
+impl ImageEncoding {
+    /// Map a bundle file extension (no dot, any case) to an encoding, or `None`
+    /// for one we don't handle. Constructs every variant, so the whole set stays
+    /// live even while the runtime loader only ever asks for `png`.
+    fn from_ext(ext: &str) -> Option<Self> {
+        Some(match ext.to_ascii_lowercase().as_str() {
+            "png" => Self::Png,
+            "jpg" | "jpeg" => Self::Jpeg,
+            "webp" => Self::Webp,
+            "ktx2" => Self::Ktx2,
+            _ => return None,
+        })
+    }
+
+    /// True iff the browser's `createImageBitmap` can decode this encoding
+    /// directly from a URL/blob — i.e. the zero-copy `asset_url` path is valid.
+    /// GPU-compressed containers return `false` even with a URL: only our own
+    /// wasm transcoder understands them, so their bytes must transit wasm.
+    fn browser_decodable(self) -> bool {
+        match self {
+            Self::Png | Self::Jpeg | Self::Webp => true,
+            Self::Ktx2 => false,
+        }
+    }
+
+    /// MIME type for the byte-decode fallback (`createImageBitmap` on a `Blob`
+    /// built from wasm bytes). Only meaningful for browser-decodable encodings.
+    fn mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+            Self::Ktx2 => "image/ktx2",
+        }
+    }
+}
+
 async fn fetch_decode(assets: &impl SceneAssets, asset: AssetId) -> Option<DecodedImage> {
-    let path = format!("{ASSETS_DIR}/{asset}.png");
-    let Ok(bytes) = assets.fetch(&path).await else {
-        // A material references this texture but the bundle didn't ship it — the
-        // slot renders unbound (e.g. an extension factor with no mask → applied
-        // everywhere). Loud because it's silent-wrong otherwise.
-        tracing::warn!("scene-loader: bundle missing texture `{path}` — slot left unbound");
+    // Player bundles emit every material texture as PNG (`assets/<id>.png`). When
+    // the bundle format grows a per-texture encoding, derive `ext` from the asset
+    // entry instead — everything below already follows from `ImageEncoding`.
+    let ext = "png";
+    let path = format!("{ASSETS_DIR}/{asset}.{ext}");
+    let Some(encoding) = ImageEncoding::from_ext(ext) else {
+        tracing::warn!("scene-loader: texture `{path}` has an unrecognized encoding — slot left unbound");
         return None;
     };
 
-    // Decode the PNG to an ImageBitmap (browser), same options the glTF loader
-    // uses for embedded images.
+    // Same decode options the glTF loader uses for embedded images.
     let options = Some(
         ImageBitmapOptions::new()
             .with_premultiply_alpha(PremultiplyAlpha::None)
             .with_color_space_conversion(ColorSpaceConversion::Default),
     );
-    let image = awsm_renderer_core::image::bitmap::load_u8(&bytes, "image/png", options.clone())
-        .await
-        .ok()?;
+
+    // Zero-copy fast path needs BOTH halves of the discriminator: the source can
+    // serve a URL, AND the browser can decode this encoding. A URL to a format
+    // only our wasm transcoder understands (KTX2/basis) is useless here, so
+    // non-browser-decodable encodings never take it — they fall through to the
+    // byte path below.
+    let fast_url = if encoding.browser_decodable() {
+        assets.asset_url(&path)
+    } else {
+        None
+    };
+
+    let image = if let Some(url) = fast_url {
+        // Decode straight from the network response — the compressed image never
+        // enters wasm memory.
+        match awsm_renderer_core::image::bitmap::load(url, options.clone()).await {
+            Ok(image) => image,
+            Err(e) => {
+                // Covers "bundle didn't ship it" (404 / SPA-fallback HTML that
+                // won't decode) and a genuinely corrupt image. Loud because an
+                // unbound slot is silent-wrong otherwise (e.g. an extension
+                // factor with no mask → applied everywhere).
+                tracing::warn!(
+                    "scene-loader: texture `{path}` missing or undecodable — slot left unbound ({e:?})"
+                );
+                return None;
+            }
+        }
+    } else {
+        let Ok(bytes) = assets.fetch(&path).await else {
+            tracing::warn!("scene-loader: bundle missing texture `{path}` — slot left unbound");
+            return None;
+        };
+        // Byte path: the source has no URL (in-memory / CAS), or the encoding
+        // isn't browser-decodable. Decode / transcode in wasm, by encoding.
+        match encoding {
+            ImageEncoding::Png | ImageEncoding::Jpeg | ImageEncoding::Webp => {
+                awsm_renderer_core::image::bitmap::load_u8(&bytes, encoding.mime(), options.clone())
+                    .await
+                    .ok()?
+            }
+            ImageEncoding::Ktx2 => {
+                // No in-loader transcode for MATERIAL KTX2 yet (environment KTX2
+                // cubemaps load via `environment.rs`). A URL wouldn't have helped
+                // either — KTX2 isn't browser-decodable. Add a transcode arm here
+                // when material KTX2 ships.
+                tracing::warn!(
+                    "scene-loader: texture `{path}` is KTX2 — material KTX2 not supported yet, slot left unbound"
+                );
+                return None;
+            }
+        }
+    };
+
     Some(DecodedImage {
         image_data: ImageData::Bitmap { image, options },
     })
