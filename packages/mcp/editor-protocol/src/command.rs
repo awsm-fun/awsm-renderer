@@ -22,7 +22,7 @@ use awsm_renderer_scene::{
 
 use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
 
-use crate::assets::AssetEntry;
+use crate::assets::{AssetEntry, TextureExport};
 use crate::mesh_def::{CapturedMesh, VertexOverrides};
 
 use crate::anim_ui::{AnimSel, AnimView, StepKind};
@@ -424,6 +424,15 @@ pub enum EditorCommand {
     /// Re-insert a captured asset entry at its original id (the inverse of
     /// `DeleteAsset`). `entry` is boxed — `AssetEntry` is a large payload.
     RestoreAsset { id: AssetId, entry: Box<AssetEntry> },
+
+    /// Set a texture asset's per-texture bundle-bake export encoding (see
+    /// [`TextureExport`]). Persisted in the project; the player-bundle bake
+    /// consults it per texture. `None` restores the default (lossless WebP).
+    /// Inverse: a `SetTextureExport` carrying the previous value.
+    SetTextureExport {
+        id: AssetId,
+        export: Option<TextureExport>,
+    },
 
     /// Delete every asset NOT reachable from the live scene (no node material /
     /// mesh / texture / buffer binding, environment KTX, or animation target
@@ -1419,6 +1428,7 @@ impl EditorCommand {
             EditorCommand::DeleteAsset { .. } | EditorCommand::RestoreAsset { .. } => {
                 "Delete asset"
             }
+            EditorCommand::SetTextureExport { .. } => "Set texture export",
             EditorCommand::SetAssetSelection { .. } => "Select asset",
             EditorCommand::AddCustomMaterial { .. } => "New material",
             EditorCommand::AddBuiltinMaterial { .. } => "New material",

@@ -77,6 +77,35 @@ impl AssetSource {
     }
 }
 
+/// Per-texture choice of how the bundle bake encodes this texture's image. An
+/// AUTHORING preference, persisted per texture in the project (`project.toml`)
+/// and read by the bundle bake — distinct from the runtime
+/// [`TextureEncoding`](awsm_renderer_scene::TextureEncoding), which records the
+/// RESULT the bake produced and travels in the bundle.
+///
+/// `None` on the asset entry — and any project saved before this field existed —
+/// means the default [`WebpLossless`](Self::WebpLossless): every raster texture
+/// ships as lossless WebP (pixel-identical to the source, smaller than PNG,
+/// decoded by the player exactly like PNG) unless the author opts a specific
+/// texture down to lossy or out to its verbatim source bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TextureExport {
+    /// Ship the source bytes verbatim under their real extension — no re-encode.
+    /// Use for a texture already in an optimal format, or to preserve the exact
+    /// source bytes.
+    Source,
+    /// Re-encode to lossless WebP (the default): pixel-identical to the source,
+    /// typically smaller than PNG, browser-decodable.
+    #[default]
+    WebpLossless,
+    /// Re-encode to lossy WebP at `quality` (0.0..=1.0). Smaller still, at a
+    /// visible-quality cost the author accepts for this texture. Higher = larger,
+    /// closer to lossless.
+    WebpLossy { quality: f32 },
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -134,6 +163,14 @@ pub struct AssetEntry {
     /// migrated or hand-edited project.json files.
     #[serde(default)]
     pub content_hash: String,
+    /// For a texture asset (`AssetSource::Texture`), the author's chosen
+    /// bundle-bake encoding (see [`TextureExport`]). `None` (untouched textures,
+    /// and projects saved before this field existed) means the default
+    /// [`TextureExport::WebpLossless`], so every raster texture bakes as lossless
+    /// WebP unless overridden here. Ignored for non-texture entries.
+    /// `#[serde(default)]` keeps pre-field `project.json` files round-tripping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_export: Option<TextureExport>,
 }
 
 impl AssetEntry {
@@ -147,6 +184,7 @@ impl AssetEntry {
             gltf_material_asset_ids: Vec::new(),
             gltf_image_asset_ids: Vec::new(),
             content_hash: String::new(),
+            texture_export: None,
         }
     }
 
@@ -160,6 +198,7 @@ impl AssetEntry {
             gltf_material_asset_ids: Vec::new(),
             gltf_image_asset_ids: Vec::new(),
             content_hash,
+            texture_export: None,
         }
     }
 }
