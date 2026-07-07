@@ -225,6 +225,10 @@ pub async fn bake_player_bundle(
         collect_texture_assets(n, &mut ids, &mut seen);
         collect_custom_texture_assets(ctrl, n, &mut ids, &mut seen);
     }
+    // Bundle export preference: re-encode raster textures to WebP (smaller
+    // download, same browser-decodable fast path as PNG on the player).
+    let export_webp = ctrl.settings.export_webp.get();
+    let webp_quality = ctrl.settings.webp_quality.get();
     for id in ids {
         // Referenced by a material ⇒ MUST ship, losslessly, or the export
         // fails. No quiet skip and no lossy fallback (see `texture_source_bytes`).
@@ -238,7 +242,20 @@ pub async fn bake_player_bundle(
         // asset entry, so the player derives `assets/<id>.<ext>` + its decode path
         // from data instead of assuming `.png`. Missing = `Png` on the loader
         // side, so this stays backward-shaped for PNG bundles.
-        let encoding = texture_encoding_from_mime(mime);
+        let (encoding, bytes) = if export_webp {
+            match encode_webp(&bytes, mime.as_str(), webp_quality).await {
+                Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
+                None => {
+                    tracing::warn!(
+                        "bundle texture {id}: WebP encode failed — shipping source {}",
+                        mime.ext()
+                    );
+                    (texture_encoding_from_mime(mime), bytes)
+                }
+            }
+        } else {
+            (texture_encoding_from_mime(mime), bytes)
+        };
         files.push(BundleFile::asset(format!("{id}.{}", encoding.ext()), bytes));
         if let Some(entry) = scene.assets.entries.get_mut(&id) {
             entry.texture_encoding = Some(encoding);
@@ -935,6 +952,40 @@ fn texture_encoding_from_mime(
         ImageMime::Png => TextureEncoding::Png,
         ImageMime::Jpeg => TextureEncoding::Jpeg,
     }
+}
+
+/// Re-encode a source image (`source` bytes of `source_mime`) to WebP at
+/// `quality` (0.0–1.0) via the browser's `OffscreenCanvas.convertToBlob`. Lossy
+/// WebP with a quality knob, no C/libwebp dependency — the editor runs in the
+/// browser, so we let it encode. `Some(webp_bytes)` on success; `None` (caller
+/// falls back to the source bytes) if decode / canvas / encode fails.
+async fn encode_webp(source: &[u8], source_mime: &str, quality: f64) -> Option<Vec<u8>> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    // Decode the source to an ImageBitmap (browser-native), then draw it onto a
+    // plain 2D OffscreenCanvas we can re-encode from.
+    let bitmap = awsm_renderer_core::image::bitmap::load_u8(source, source_mime, None)
+        .await
+        .ok()?;
+    let canvas = web_sys::OffscreenCanvas::new(bitmap.width(), bitmap.height()).ok()?;
+    let ctx = canvas
+        .get_context("2d")
+        .ok()??
+        .dyn_into::<web_sys::OffscreenCanvasRenderingContext2d>()
+        .ok()?;
+    ctx.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0).ok()?;
+
+    let opts = web_sys::ImageEncodeOptions::new();
+    opts.set_type("image/webp");
+    opts.set_quality(quality.clamp(0.0, 1.0));
+    let blob: web_sys::Blob = JsFuture::from(canvas.convert_to_blob_with_options(&opts).ok()?)
+        .await
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let buf = JsFuture::from(blob.array_buffer()).await.ok()?;
+    Some(js_sys::Uint8Array::new(&buf).to_vec())
 }
 
 /// Encode tightly-packed RGBA8 to PNG bytes (via the `image` crate).
