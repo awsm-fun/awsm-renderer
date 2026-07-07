@@ -97,6 +97,72 @@ impl AssetSource {
     }
 }
 
+/// The on-disk encoding of a bundle texture image — recorded per texture asset
+/// so the player derives the file extension and decode path from DATA, never
+/// from a hardcoded `.png` or content-sniffing.
+///
+/// This is what lets new formats land without breaking older bundles: a bundle
+/// that predates the field (or a procedurally-generated PNG) deserializes as the
+/// default [`Png`](Self::Png), so old bundles keep loading `<id>.png`; a bundle
+/// that ships WebP records [`Webp`](Self::Webp) and the loader fetches
+/// `<id>.webp`. The split between `browser_decodable` rasters and GPU-compressed
+/// containers is intrinsic to the format, so it lives here, not in the loader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TextureEncoding {
+    #[default]
+    Png,
+    Jpeg,
+    Webp,
+    Ktx2,
+}
+
+impl TextureEncoding {
+    /// Map a bundle file extension (no dot, any case) to an encoding, or `None`
+    /// for one we don't handle.
+    pub fn from_ext(ext: &str) -> Option<Self> {
+        Some(match ext.to_ascii_lowercase().as_str() {
+            "png" => Self::Png,
+            "jpg" | "jpeg" => Self::Jpeg,
+            "webp" => Self::Webp,
+            "ktx2" => Self::Ktx2,
+            _ => return None,
+        })
+    }
+
+    /// The bundle file extension (no dot) for this encoding.
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Webp => "webp",
+            Self::Ktx2 => "ktx2",
+        }
+    }
+
+    /// True iff a web browser can decode this directly (`createImageBitmap`), so
+    /// the player's zero-copy URL path is valid. GPU-compressed containers
+    /// (KTX2/basis) return `false`: only a transcoder understands them, so their
+    /// bytes must transit wasm even when a URL exists.
+    pub fn browser_decodable(self) -> bool {
+        match self {
+            Self::Png | Self::Jpeg | Self::Webp => true,
+            Self::Ktx2 => false,
+        }
+    }
+
+    /// MIME type (for decoding a byte blob via `createImageBitmap`).
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+            Self::Ktx2 => "image/ktx2",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AssetEntry {
@@ -153,6 +219,15 @@ pub struct AssetEntry {
     /// migrated or hand-edited project.json files.
     #[serde(default)]
     pub content_hash: String,
+    /// For a texture asset (`AssetSource::Texture`), the on-disk encoding of the
+    /// image the bundle ships at `assets/<id>.<ext>` — the player derives the
+    /// extension and decode path from this, not a hardcoded `.png`. `None` for
+    /// non-texture entries and for bundles baked before the field existed; the
+    /// loader treats `None` as [`TextureEncoding::Png`] (the legacy default), so
+    /// old bundles keep loading unchanged. Set by the bundle bake from the
+    /// texture's source MIME.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_encoding: Option<TextureEncoding>,
 }
 
 impl AssetEntry {
@@ -166,6 +241,7 @@ impl AssetEntry {
             gltf_material_asset_ids: Vec::new(),
             gltf_image_asset_ids: Vec::new(),
             content_hash: String::new(),
+            texture_encoding: None,
         }
     }
 
@@ -179,6 +255,7 @@ impl AssetEntry {
             gltf_material_asset_ids: Vec::new(),
             gltf_image_asset_ids: Vec::new(),
             content_hash,
+            texture_encoding: None,
         }
     }
 }

@@ -228,13 +228,21 @@ pub async fn bake_player_bundle(
     for id in ids {
         // Referenced by a material ⇒ MUST ship, losslessly, or the export
         // fails. No quiet skip and no lossy fallback (see `texture_source_bytes`).
-        let (_name, bytes, _mime) = texture_source_bytes(&ctrl.scene, id).ok_or_else(|| {
+        let (_name, bytes, mime) = texture_source_bytes(&ctrl.scene, id).ok_or_else(|| {
             format!(
                 "bundle texture {id}: no original source bytes in the session cache — \
                  re-import the texture (or reload the saved project) and re-export"
             )
         })?;
-        files.push(BundleFile::asset(format!("{id}.png"), bytes));
+        // Ship the image under its REAL extension and record the encoding on the
+        // asset entry, so the player derives `assets/<id>.<ext>` + its decode path
+        // from data instead of assuming `.png`. Missing = `Png` on the loader
+        // side, so this stays backward-shaped for PNG bundles.
+        let encoding = texture_encoding_from_mime(mime);
+        files.push(BundleFile::asset(format!("{id}.{}", encoding.ext()), bytes));
+        if let Some(entry) = scene.assets.entries.get_mut(&id) {
+            entry.texture_encoding = Some(encoding);
+        }
     }
 
     // 4. Skinned meshes: one clean rig glb (skeleton + mesh + skin + morph, built
@@ -912,6 +920,20 @@ fn texture_source_bytes(scene: &Scene, id: AssetId) -> Option<(String, Vec<u8>, 
         }
         TextureDef::Raster { display_name, .. } => crate::engine::bridge::texture_cache::get(id)
             .map(|(bytes, mime)| (display_name, bytes, mime)),
+    }
+}
+
+/// Map an exported texture's source MIME to the bundle [`TextureEncoding`] the
+/// player records and decodes by. The bake ships the source bytes verbatim under
+/// the matching extension (`assets/<id>.<ext>`).
+fn texture_encoding_from_mime(
+    mime: awsm_renderer_glb_export::ImageMime,
+) -> awsm_renderer_scene::TextureEncoding {
+    use awsm_renderer_glb_export::ImageMime;
+    use awsm_renderer_scene::TextureEncoding;
+    match mime {
+        ImageMime::Png => TextureEncoding::Png,
+        ImageMime::Jpeg => TextureEncoding::Jpeg,
     }
 }
 
