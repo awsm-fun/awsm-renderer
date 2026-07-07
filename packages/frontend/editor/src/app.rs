@@ -537,6 +537,30 @@ fn settings_drawer() -> Dom {
         .child(shadows_section())
         .child(post_processing_section())
         .child(
+            DrawerSection::new("Bundle export")
+                .child(row("Textures as WebP", toggle(s.export_webp.clone())))
+                .child(row(
+                    "WebP quality",
+                    NumField::new(s.webp_quality.get())
+                        .min(0.0)
+                        .max(1.0)
+                        .step(0.05)
+                        .on_change(|v| {
+                            controller().settings.webp_quality.set_neq(v.clamp(0.0, 1.0))
+                        })
+                        .render(),
+                ))
+                .child(html!("div", {
+                    .style("font-size", "11px").style("color", "var(--text-3)")
+                    .style("line-height", "1.4").style("padding", "2px 0 4px")
+                    .text("Re-encodes every bundled raster texture to WebP when you export a \
+                           player bundle — smaller downloads, decoded by the player exactly like \
+                           PNG. Quality 0\u{2013}1 (higher = larger, closer to lossless). Takes \
+                           effect on the next bundle export.")
+                }))
+                .render(),
+        )
+        .child(
             DrawerSection::new("Camera")
                 .child(html!("div", {
                     .style("display", "grid")

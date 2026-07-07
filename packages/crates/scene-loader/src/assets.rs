@@ -39,6 +39,27 @@ pub trait SceneAssets {
     /// unavailable (missing / unreachable); callers map that to their existing
     /// missing-asset behavior (skip the slot, warn, or bubble the error).
     async fn fetch(&self, bundle_relative_path: &str) -> anyhow::Result<Vec<u8>>;
+
+    /// If this source can expose `bundle_relative_path` as a URL the browser can
+    /// fetch directly, return it; otherwise `None` (the default).
+    ///
+    /// When it returns `Some`, the loader decodes images straight from the
+    /// network response (`createImageBitmap` on `fetch(url).blob()`) instead of
+    /// pulling the compressed bytes into wasm via [`fetch`](Self::fetch) and
+    /// copying them back out to a JS buffer to decode. On a large, HTTP-served
+    /// game that removes a full round trip of *every* texture through wasm
+    /// linear memory (browser→wasm→JS), plus the transient heap it occupies.
+    ///
+    /// This is an explicit, opt-in capability — NOT tied to [`HttpAssets`]. Any
+    /// URL-backed source (a custom CDN / content-addressed store that serves
+    /// over HTTP) implements it to get the fast path; byte-only sources (the
+    /// in-memory map, a source with no addressable URL) keep the default `None`
+    /// and the loader falls back to `fetch` + decode with no behavior change.
+    /// The URL returned MUST GET the same bytes `fetch` would for that path.
+    fn asset_url(&self, bundle_relative_path: &str) -> Option<String> {
+        let _ = bundle_relative_path;
+        None
+    }
 }
 
 /// The model-test round-trip's in-memory bundle: a prebuilt
@@ -133,6 +154,15 @@ impl<A: SceneAssets> SceneAssets for PrefetchedAssets<'_, A> {
         }
         self.inner.fetch(path).await
     }
+
+    fn asset_url(&self, path: &str) -> Option<String> {
+        // Texture images aren't seeded into this byte cache (see the struct
+        // docs — only glbs / buffers / material files are), so there is nothing
+        // to serve from memory for an image path. Expose the inner source's URL
+        // so the loader keeps its zero-copy image decode instead of falling back
+        // to a wasm byte round trip.
+        self.inner.asset_url(path)
+    }
 }
 
 /// An HTTP [`SceneAssets`] that fetches bundle bytes from a base origin — the
@@ -181,5 +211,12 @@ impl SceneAssets for HttpAssets {
             .await
             .map_err(|e| anyhow::anyhow!("fetch {url} body: {e}"))?;
         Ok(bytes)
+    }
+
+    fn asset_url(&self, path: &str) -> Option<String> {
+        // The exact URL `fetch` GETs — so the loader's zero-copy image path
+        // decodes from the same origin/response, just without dragging the
+        // compressed bytes through wasm and back.
+        Some(format!("{}/{}", self.base, path))
     }
 }

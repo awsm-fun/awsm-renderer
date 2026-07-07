@@ -247,6 +247,7 @@ features = [
     "ImageBitmap",
     "ImageBitmapOptions",
     "ImageData",
+    "ImageEncodeOptions",
     "PremultiplyAlpha",
     "ColorSpaceConversion",
     "ImageOrientation",

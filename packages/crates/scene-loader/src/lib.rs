@@ -827,7 +827,7 @@ pub async fn load_scene_for_player(
     // result, just without the overlap. The cache also dedupes pool staging:
     // an image shared by N material slots uploads ONCE per color semantics
     // instead of N times.
-    let mut cache = texture::TextureCache::default();
+    let mut cache = texture::TextureCache::new(scene);
     {
         let mut seen = std::collections::HashSet::new();
         let mut ids: Vec<awsm_renderer_scene::AssetId> = Vec::new();
@@ -3254,7 +3254,7 @@ pub async fn materialize_node_mesh(
         .insert(trs_to_transform(&node.transform), None);
     // Public API: no caller-visible cache — a fresh per-call one still dedupes
     // and on-demand-fetches within this node's own slots.
-    let mut cache = texture::TextureCache::default();
+    let mut cache = texture::TextureCache::new(scene);
     build_node_meshes(
         renderer, &mut cache, scene, node, tk, material, assets, false,
     )

@@ -39,6 +39,10 @@ pub fn project_to_scene(project: &EditorProject) -> Scene {
                 gltf_material_asset_ids: entry.gltf_material_asset_ids.clone(),
                 gltf_image_asset_ids: entry.gltf_image_asset_ids.clone(),
                 content_hash: entry.content_hash.clone(),
+                // Set by the editor's bundle bake from each texture's source MIME
+                // (see `controller::export`). `None` here ⇒ the loader defaults to
+                // PNG, which is what this lowering path has always emitted.
+                texture_encoding: None,
             },
         );
     }

@@ -1,10 +1,13 @@
-//! Player-side texture loading: decode a bundle's `assets/<id>.png` and bind it
-//! to a renderer material slot.
+//! Player-side texture loading: decode a bundle's `assets/<id>.<ext>` and bind
+//! it to a renderer material slot. The extension + decode path come from each
+//! asset's recorded [`TextureEncoding`](awsm_renderer_scene::TextureEncoding)
+//! (seeded into [`TextureCache`] from the scene's asset table), so the bundle can
+//! ship PNG / JPEG / WebP without the loader guessing.
 //!
 //! The shared [`material`](crate::material) conversion is texture-LESS by design
 //! (the editor and player resolve textures differently). The editor resolves
 //! against its session pool (procedural / GPU-readback); the player has the raw
-//! PNG bytes the bundle exported, so it decodes them here — mirroring the glTF
+//! image bytes the bundle exported, so it decodes them here — mirroring the glTF
 //! loader's embedded-image path (`bitmap::load_u8` → `ImageData::Bitmap` →
 //! `textures.add_image`) and the editor's `sampler_for` / `apply_textures`.
 
@@ -20,7 +23,8 @@ use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_core::texture::texture_pool::TextureColorInfo;
 use awsm_renderer_scene::{
-    AssetId, TextureFilter, TextureRef, TextureSampler, TextureWrap, ASSETS_DIR,
+    AssetId, Scene, TextureEncoding, TextureFilter, TextureRef, TextureSampler, TextureWrap,
+    ASSETS_DIR,
 };
 
 use crate::assets::SceneAssets;
@@ -49,6 +53,11 @@ const PREFETCH_CONCURRENCY: usize = 8;
 pub struct TextureCache {
     decoded: HashMap<AssetId, Option<DecodedImage>>,
     bound: HashMap<(AssetId, bool, MipmapTextureKind), Option<TextureKey>>,
+    /// Per-asset image encoding, seeded once from the scene's asset table so
+    /// every fetch derives its extension + decode path from data — never a
+    /// hardcoded `.png`. Assets the bake left unset (legacy bundles, procedural
+    /// PNGs) resolve to `Png` on lookup, so old bundles load unchanged.
+    encodings: HashMap<AssetId, TextureEncoding>,
 }
 
 /// A fetched + decoded bundle image, not yet staged in the pool.
@@ -57,6 +66,29 @@ struct DecodedImage {
 }
 
 impl TextureCache {
+    /// Seed the cache with every texture asset's [`TextureEncoding`] from the
+    /// scene's asset table. Assets with no recorded encoding resolve to `Png`
+    /// (the legacy default) on lookup, so old `assets/<id>.png` bundles — which
+    /// predate the field — keep loading unchanged.
+    pub fn new(scene: &Scene) -> Self {
+        let encodings = scene
+            .assets
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| entry.texture_encoding.map(|enc| (*id, enc)))
+            .collect();
+        Self {
+            encodings,
+            ..Default::default()
+        }
+    }
+
+    /// The recorded encoding for `asset`, or `Png` if the bundle didn't record
+    /// one (legacy bundle / procedural PNG).
+    fn encoding(&self, asset: AssetId) -> TextureEncoding {
+        self.encodings.get(&asset).copied().unwrap_or_default()
+    }
+
     /// Concurrently fetch + decode `ids` (deduped by the caller), reporting
     /// `(done, total)` per completion. Assets already decoded are skipped, so
     /// calling this twice (or after on-demand fills) never refetches.
@@ -67,9 +99,12 @@ impl TextureCache {
         mut on_progress: impl FnMut(usize, usize),
     ) {
         use futures::StreamExt;
-        let pending: Vec<AssetId> = ids
+        // Resolve each pending asset's encoding up front so the fetch futures
+        // capture a plain `TextureEncoding` (not `&self`).
+        let pending: Vec<(AssetId, TextureEncoding)> = ids
             .into_iter()
             .filter(|id| !self.decoded.contains_key(id))
+            .map(|id| (id, self.encoding(id)))
             .collect();
         let total = pending.len();
         if total == 0 {
@@ -79,7 +114,7 @@ impl TextureCache {
         let mut stream = futures::stream::iter(
             pending
                 .into_iter()
-                .map(|id| async move { (id, fetch_decode(assets, id).await) }),
+                .map(|(id, enc)| async move { (id, fetch_decode(assets, id, enc).await) }),
         )
         .buffer_unordered(PREFETCH_CONCURRENCY);
         let mut done = 0;
@@ -91,28 +126,79 @@ impl TextureCache {
     }
 }
 
-/// Fetch `assets/<id>.png` and decode it to an `ImageBitmap` — the pure
-/// (renderer-free) half of texture loading, so it can run concurrently.
-async fn fetch_decode(assets: &impl SceneAssets, asset: AssetId) -> Option<DecodedImage> {
-    let path = format!("{ASSETS_DIR}/{asset}.png");
-    let Ok(bytes) = assets.fetch(&path).await else {
-        // A material references this texture but the bundle didn't ship it — the
-        // slot renders unbound (e.g. an extension factor with no mask → applied
-        // everywhere). Loud because it's silent-wrong otherwise.
-        tracing::warn!("scene-loader: bundle missing texture `{path}` — slot left unbound");
-        return None;
-    };
+/// Fetch `assets/<id>.<ext>` and decode it to an `ImageBitmap` — the pure
+/// (renderer-free) half of texture loading, so it can run concurrently. The
+/// extension AND the decode route come from `encoding` (the bundle's recorded
+/// [`TextureEncoding`], resolved via [`TextureCache::encoding`]), never a
+/// hardcoded `.png`: a browser-decodable raster takes the zero-copy URL path
+/// when the source exposes one; a GPU-compressed container always transits wasm.
+async fn fetch_decode(
+    assets: &impl SceneAssets,
+    asset: AssetId,
+    encoding: TextureEncoding,
+) -> Option<DecodedImage> {
+    let path = format!("{ASSETS_DIR}/{asset}.{}", encoding.ext());
 
-    // Decode the PNG to an ImageBitmap (browser), same options the glTF loader
-    // uses for embedded images.
+    // Same decode options the glTF loader uses for embedded images.
     let options = Some(
         ImageBitmapOptions::new()
             .with_premultiply_alpha(PremultiplyAlpha::None)
             .with_color_space_conversion(ColorSpaceConversion::Default),
     );
-    let image = awsm_renderer_core::image::bitmap::load_u8(&bytes, "image/png", options.clone())
-        .await
-        .ok()?;
+
+    // Zero-copy fast path needs BOTH halves of the discriminator: the source can
+    // serve a URL, AND the browser can decode this encoding. A URL to a format
+    // only our wasm transcoder understands (KTX2/basis) is useless here, so
+    // non-browser-decodable encodings never take it — they fall through to the
+    // byte path below.
+    let fast_url = if encoding.browser_decodable() {
+        assets.asset_url(&path)
+    } else {
+        None
+    };
+
+    let image = if let Some(url) = fast_url {
+        // Decode straight from the network response — the compressed image never
+        // enters wasm memory.
+        match awsm_renderer_core::image::bitmap::load(url, options.clone()).await {
+            Ok(image) => image,
+            Err(e) => {
+                // Covers "bundle didn't ship it" (404 / SPA-fallback HTML that
+                // won't decode) and a genuinely corrupt image. Loud because an
+                // unbound slot is silent-wrong otherwise (e.g. an extension
+                // factor with no mask → applied everywhere).
+                tracing::warn!(
+                    "scene-loader: texture `{path}` missing or undecodable — slot left unbound ({e:?})"
+                );
+                return None;
+            }
+        }
+    } else {
+        let Ok(bytes) = assets.fetch(&path).await else {
+            tracing::warn!("scene-loader: bundle missing texture `{path}` — slot left unbound");
+            return None;
+        };
+        // Byte path: the source has no URL (in-memory / CAS), or the encoding
+        // isn't browser-decodable. Decode / transcode in wasm, by encoding.
+        match encoding {
+            TextureEncoding::Png | TextureEncoding::Jpeg | TextureEncoding::Webp => {
+                awsm_renderer_core::image::bitmap::load_u8(&bytes, encoding.mime(), options.clone())
+                    .await
+                    .ok()?
+            }
+            TextureEncoding::Ktx2 => {
+                // No in-loader transcode for MATERIAL KTX2 yet (environment KTX2
+                // cubemaps load via `environment.rs`). A URL wouldn't have helped
+                // either — KTX2 isn't browser-decodable. Add a transcode arm here
+                // when material KTX2 ships.
+                tracing::warn!(
+                    "scene-loader: texture `{path}` is KTX2 — material KTX2 not supported yet, slot left unbound"
+                );
+                return None;
+            }
+        }
+    };
+
     Some(DecodedImage {
         image_data: ImageData::Bitmap { image, options },
     })
@@ -175,12 +261,14 @@ pub async fn load_texture(
     let key = match cache.bound.get(&bound_at) {
         Some(cached) => *cached,
         None => {
+            // Resolve the encoding before the mutable `decoded` borrow below.
+            let encoding = cache.encoding(tref.asset);
             let decoded = match cache.decoded.entry(tref.asset) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 // Not prefetched (e.g. a slot the collector doesn't know about)
                 // — fall back to the old on-demand path, cached for next time.
                 std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(fetch_decode(assets, tref.asset).await)
+                    v.insert(fetch_decode(assets, tref.asset, encoding).await)
                 }
             };
             let key = decoded.as_ref().and_then(|d| {

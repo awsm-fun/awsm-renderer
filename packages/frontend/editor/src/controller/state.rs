@@ -228,6 +228,16 @@ pub struct Settings {
     pub cam_clip_near: Mutable<f64>,
     /// Manual far plane (metres). Applied only when [`Self::cam_clip_manual`].
     pub cam_clip_far: Mutable<f64>,
+    /// Bundle export: re-encode raster textures to WebP at bake time. WebP is
+    /// browser-decodable, so the player loads it via the same zero-copy path as
+    /// PNG — this just makes the shipped bundle smaller. Applies to every raster
+    /// texture the bundle carries; the encoding is recorded per asset so the
+    /// player fetches `assets/<id>.webp`. Session-only (a bake preference).
+    pub export_webp: Mutable<bool>,
+    /// WebP quality in `0.0..=1.0` for [`Self::export_webp`], handed to the
+    /// browser's `OffscreenCanvas.convertToBlob("image/webp", quality)`. Higher =
+    /// larger + closer to lossless. Session-only.
+    pub webp_quality: Mutable<f64>,
 }
 
 impl Default for Settings {
@@ -250,6 +260,8 @@ impl Default for Settings {
             cam_clip_manual: Mutable::new(false),
             cam_clip_near: Mutable::new(0.01),
             cam_clip_far: Mutable::new(1000.0),
+            export_webp: Mutable::new(false),
+            webp_quality: Mutable::new(0.85),
         }
     }
 }
