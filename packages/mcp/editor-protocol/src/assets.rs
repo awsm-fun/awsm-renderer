@@ -169,7 +169,11 @@ pub struct AssetEntry {
     /// [`TextureExport::WebpLossless`], so every raster texture bakes as lossless
     /// WebP unless overridden here. Ignored for non-texture entries.
     /// `#[serde(default)]` keeps pre-field `project.json` files round-tripping.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// We deliberately don't add `skip_serializing_if = "Option::is_none"`
+    /// because bitcode (used for the per-game build artifact) doesn't support
+    /// serde's skip hint — a `None` Option serializes as a zero discriminant
+    /// anyway. See `gltf_material_asset_ids` above.
+    #[serde(default)]
     pub texture_export: Option<TextureExport>,
 }
 
