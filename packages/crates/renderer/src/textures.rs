@@ -1394,7 +1394,9 @@ impl Textures {
         let clamped = web_sys::js_sys::Uint8ClampedArray::from(rgba_bytes);
         let image_data =
             web_sys::ImageData::new_with_js_u8_clamped_array_and_sh(&clamped, width, height)
-                .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("ImageData::new: {e:?}")))?;
+                .map_err(|e| {
+                    AwsmTextureError::ImageBitmapCreate(format!("ImageData::new: {e:?}"))
+                })?;
         ctx.put_image_data(&image_data, 0, 0)
             .map_err(|e| AwsmTextureError::ImageBitmapCreate(format!("put_image_data: {e:?}")))?;
         let bitmap = canvas
