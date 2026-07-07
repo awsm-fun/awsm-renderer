@@ -162,7 +162,9 @@ async fn fetch_decode(assets: &impl SceneAssets, asset: AssetId) -> Option<Decod
     let ext = "png";
     let path = format!("{ASSETS_DIR}/{asset}.{ext}");
     let Some(encoding) = ImageEncoding::from_ext(ext) else {
-        tracing::warn!("scene-loader: texture `{path}` has an unrecognized encoding — slot left unbound");
+        tracing::warn!(
+            "scene-loader: texture `{path}` has an unrecognized encoding — slot left unbound"
+        );
         return None;
     };
 
