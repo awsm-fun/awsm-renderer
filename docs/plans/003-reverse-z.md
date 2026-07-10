@@ -593,3 +593,14 @@ is a mistake — they are already convention-independent.
    "what's-currently-bound" audit — flag it before promoting Hi-Z. (Bonus: its
    coarse-mip banding is partly forward-Z far-precision, so reverse-Z should
    help — see §9.E.)
+
+## Post-completion addendum (2026-07-10, found during 006 Phase 0)
+One depth consumer was MISSED by this plan's sweep: the froxel light-culling
+compute shader anchored its tile unproject at NDC z=0 (forward-Z near = the
+infinite-reverse FAR, w->0 -> NaN side planes), silently culling EVERY
+punctual light under the new default convention. Directional lights bypass
+froxels, so top-level scenes kept looking lit. Fixed in 006
+(`006: fix froxel light culling under reverse-Z`) via the standard
+template-axis pattern. Lesson recorded: "grep every `vec4<f32>(ndc" /
+NDC-z literal in WGSL when changing depth conventions" — the lights-many
+test scene now locks this permanently.
