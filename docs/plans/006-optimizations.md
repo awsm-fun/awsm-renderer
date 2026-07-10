@@ -279,9 +279,16 @@ upright identical mid-stride walkers; was mangled frozen bind poses):
 - **Census** (new metrics `mesh_resources` / `mesh_geometry_bytes` in
   memory_stats): 3 walkers = meshes 6, resources 4, geometry 2.24 MB FLAT
   across duplicates (pre-fix each duplicate re-uploaded).
-- Residuals documented in code: morph-only skinless nodes still full-upload;
-  per-instance skin-weight edits mutate the shared stream; loader
-  PrefabInstance teardown leak (pre-existing).
+- Residuals — ALL CLOSED in the 2026-07-10 follow-up sweep: morph-only
+  skinless duplicates now share geometry (`materialize_skinned_duplicate`
+  branches on the rig decode's skin; `duplicate_with_transform` gained the
+  resource-level morph-weights fallback so the first clone of an original
+  morphed mesh gets its own weights slot); per-instance skin-weight edits
+  copy-on-write (`Skins::make_weights_owned` +
+  `AwsmRenderer::update_skin_weights` re-patches geometry meta); loader
+  `PrefabInstance::teardown` frees the cloned skeleton joints (locked by
+  player-tests `prefab-churn-skinned` over the prefab-skinned-morph bundle's
+  hidden skinned template).
 
 ### Axis 5 — Instancing as a first-class authoring feature
 GPU instancing exists (`renderer/src/instances.rs`, 64-byte world-matrix stride) but is
@@ -308,10 +315,33 @@ materializes through the same enable_mesh_instancing path; MCP
 insert_instancer / set_instancer_transforms tools; 6 native tests (TOML
 round-trip, wire shapes, replace+undo). instancing-stress scene verified
 on-device: 3000 instances = 4 scene nodes / 3 mesh resources (geometry
-shared) / vsync frame / 1.7 ms render_cpu. Known limits documented in
-code: no PrefabReplay of instancers, AABB/glb-export ignore instance
-extents, instanced draws don't reroute discrete-LOD chains (flags carried
-for future) — all matching InstancesAlongCurve precedent.
+shared) / vsync frame / 1.7 ms render_cpu. Known limits (2026-07-10 follow-up):
+- CLOSED — PrefabReplay of instancers: a prefab-marked subtree containing an
+  `Instancer` now captures it (`PrefabReplay::Instancer`; the mesh asset builds
+  as the node's own hidden template mesh via the `build_node_meshes` Instancer
+  arm, flat-default material shared with the live path) and `instantiate`'s
+  second pass enables instancing on the instance's own duplicated mesh — the
+  same mechanism as the InstancesAlongCurve replay. Teardown extended:
+  `PrefabInstance::instanced_transforms` + `LoadedScene::instanced_transforms`
+  track minted GPU instance rows, freed via the new
+  `Instances::transform_remove` (+ `attribute_remove`) — which also closes the
+  pre-existing instance-row leak for live/replayed InstancesAlongCurve.
+- CLOSED — AABB/glb-export instance extents: the renderer's world-AABB path
+  already unioned (instance transform × source local AABB) at instance-set
+  update time (`Meshes::update_world` instanced branch), so frustum culling /
+  scene_spatial / player scene_bounds were correct; the actual under-measurers
+  were the editor's kind-only fallback (`local_aabb` now unions the
+  instancer's authored transforms — `instancer_local_aabb`, unit-tested) and
+  glb export (an `Instancer` now exports one child node per instance carrying
+  the baked mesh — correct geometry/bounds; buffers duplicate per instance
+  since the writer has no mesh sharing, `EXT_mesh_gpu_instancing` is the
+  follow-up if exported size matters; per-instance colours aren't
+  glTF-representable and are dropped). `InstancesAlongCurve`'s kind-only
+  fallback stays a unit box (its placement derives from another node's
+  curve) — its live renderer world AABB is exact.
+- OPEN — instanced draws don't reroute discrete-LOD chains (`lod`/`shadow`
+  flags carried for future), matching InstancesAlongCurve precedent; handled
+  separately.
 
 ### Axis 6 — LOD robustness (classic + nanite)
 Both paths exist (skinned→discrete chain, static→cluster DAG; bake at export). The
@@ -403,6 +433,14 @@ selection_box thread-local scratch; skin_bridge was already pooled
 (d4561d33). Deliberately left (reasons recorded in commit): readback
 future ownership moves, core descriptor-vec API (pervasive, collides with
 axis-1 files), blend AnimationData in-place redesign (flagged follow-up).
+FOLLOW-UP CLOSED (2026-07-10 sweep): blend.rs now exposes
+`blend_replace_into` / `blend_additive_into` as the primary in-place
+primitives (by-value forms are thin clone+into wrappers, so the full
+masked-morph test suite pins the mutating path); the mixer folds and the
+rest-restore arm (rest mem::take'n around the write loop) no longer
+allocate per sample/target. Remaining clone: the first-touch rest seed
+per contributed target per frame (inherent to seeding a taken scratch
+map; persistent per-target buffers judged not worth the complexity).
 
 ## Method / sequencing
 1. Phase 0 scenes + README (with the axes list), Phase 0.5 feature gaps.

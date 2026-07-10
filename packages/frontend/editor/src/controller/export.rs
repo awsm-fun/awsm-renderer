@@ -1085,17 +1085,59 @@ fn node_to_export(
     match &kind {
         NodeKind::Light(cfg) => out.light = Some(map_light(cfg)),
         NodeKind::Camera(cfg) => out.camera = Some(map_camera(cfg)),
+        // Explicit instancer: glTF (as this writer emits it) has no GPU-
+        // instancing representation, so bake one child node PER authored
+        // instance, each carrying the instanced mesh asset's triangles at that
+        // instance's transform. This keeps the export CORRECT — the geometry
+        // and scene bounds match what renders — at the cost of duplicating the
+        // mesh buffers per instance (the writer has no mesh sharing;
+        // `EXT_mesh_gpu_instancing` / shared-mesh emission is the follow-up if
+        // exported size matters for huge instancers). Per-instance colours are
+        // not glTF-representable and are dropped; instances render
+        // flat-default live, so each copy exports the default PBR def to
+        // match. A nil / un-captured mesh ref exports as the bare transform
+        // node (nothing renders live either).
+        NodeKind::Instancer(def) => {
+            if let Some(raw) = mesh_cache::get_raw(def.mesh.0) {
+                let mesh = MeshData {
+                    positions: raw.positions,
+                    normals: raw.normals,
+                    uvs: raw.uv_sets,
+                    colors: raw.colors,
+                    indices: raw.indices,
+                };
+                let material = map_material_def(&MaterialDef::default(), None, tex_index);
+                out.children = def
+                    .transforms
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| ExportNode {
+                        name: format!("{}_instance_{i}", out.name),
+                        transform: Trs {
+                            translation: t.translation,
+                            rotation: t.rotation,
+                            scale: t.scale,
+                        },
+                        mesh: Some(mesh.clone()),
+                        material: Some(material.clone()),
+                        ..Default::default()
+                    })
+                    .collect();
+            }
+        }
         // Group + non-geometry leaves export as plain transform nodes; their
         // children still recurse below.
         _ => {}
     }
 
-    out.children = node
-        .children
-        .lock_ref()
-        .iter()
-        .map(|c| node_to_export(scene, c, tex_index, rig_embedded))
-        .collect();
+    // Appended after any instancer-baked children above (a node's authored
+    // children and its baked instance copies coexist).
+    out.children.extend(
+        node.children
+            .lock_ref()
+            .iter()
+            .map(|c| node_to_export(scene, c, tex_index, rig_embedded)),
+    );
     out
 }
 

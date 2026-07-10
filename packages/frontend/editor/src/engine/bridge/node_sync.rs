@@ -398,7 +398,10 @@ async fn add_node(
                             materialize_collider(entry.clone(), shape).await;
                         }
                         NodeKind::Decal(cfg) => {
-                            materialize_decal(entry.clone(), cfg).await;
+                            // Live re-bake (never a bulk load): the texture is
+                            // already resolved, so the cache-hit probe inside
+                            // skips the commit.
+                            materialize_decal(entry.clone(), cfg, false).await;
                         }
                         _ => {}
                     }
@@ -740,7 +743,7 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
         NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def, declare_only).await,
         NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
-        NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg).await,
+        NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg, declare_only).await,
         NodeKind::InstancesAlongCurve(def) => {
             materialize_instances(entry.clone(), def, declare_only).await
         }
@@ -1164,10 +1167,12 @@ fn find_skinned_geometry_donor(
         }
         // Node-owned drawables only (`model_meshes`) — the legacy
         // template-reuse path's meshes are template-owned and never land here.
-        // Validate liveness + skinnedness against the renderer (the entry
-        // could be mid-rematerialize).
+        // Validate liveness against the renderer (the entry could be
+        // mid-rematerialize). No skin requirement: a MORPH-ONLY source's
+        // drawable carries no skin, and same source/rig-node/primitive ⇒ same
+        // skinned-ness — the caller branches on the rig decode.
         for mk in entry.model_meshes.lock().unwrap().iter() {
-            if r.meshes.get(*mk).is_ok() && r.meshes.mesh_skin_key(*mk).flatten().is_some() {
+            if r.meshes.get(*mk).is_ok() {
                 return Some(*mk);
             }
         }
@@ -1208,12 +1213,11 @@ async fn materialize_skinned_duplicate(
     let Some(donor_mk) = find_skinned_geometry_donor(&r, entry.node_id, skin) else {
         return false;
     };
-    let Some(donor_skin) = r.meshes.mesh_skin_key(donor_mk).flatten() else {
-        return false;
-    };
     // Joint order comes from the rig decode (the order the donor's skin — and
-    // every renderer skin of this source — was inserted in); a morph-only node
-    // (no skin) or an uncached rig can't take this path.
+    // every renderer skin of this source — was inserted in); an uncached rig
+    // can't take this path. A MORPH-ONLY node (rig decode has no skin) shares
+    // geometry too — it skips the skin clone and mints only a fresh
+    // morph-weights instance (`duplicate_mesh_with_transform`).
     let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
         skin.source,
         skin.rig_node_index,
@@ -1221,11 +1225,19 @@ async fn materialize_skinned_duplicate(
     ) else {
         return false;
     };
-    let Some(ext_skin) = decode.skin.as_ref() else {
-        return false;
-    };
-    let Some(instance_joints) = resolve_skin_joint_transforms(skin, ext_skin) else {
-        return false;
+    // Skinned: resolve the donor skin + this node's cloned joints up front
+    // (before any allocation) so every bail below stays create-nothing.
+    let skin_parts = match decode.skin.as_ref() {
+        Some(ext_skin) => {
+            let Some(donor_skin) = r.meshes.mesh_skin_key(donor_mk).flatten() else {
+                return false;
+            };
+            let Some(instance_joints) = resolve_skin_joint_transforms(skin, ext_skin) else {
+                return false;
+            };
+            Some((donor_skin, instance_joints))
+        }
+        None => None,
     };
 
     // Same geometry ⇒ same vertex-colour classification as the donor.
@@ -1254,16 +1266,26 @@ async fn materialize_skinned_duplicate(
     // joints; the glTF rule ignores a skinned mesh node's own transform).
     let root = r.transforms.root_node;
     let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(root));
-    let new_skin = match r.clone_skin_for_joints(donor_skin, instance_joints) {
-        Ok(k) => k,
-        Err(e) => {
-            r.transforms.remove(sub_tk);
-            r.remove_material(mat_key);
-            tracing::warn!("skinned duplicate: clone_skin_for_joints failed: {e}");
-            return false;
+    let dup_result = match skin_parts {
+        Some((donor_skin, instance_joints)) => {
+            let new_skin = match r.clone_skin_for_joints(donor_skin, instance_joints) {
+                Ok(k) => k,
+                Err(e) => {
+                    r.transforms.remove(sub_tk);
+                    r.remove_material(mat_key);
+                    tracing::warn!("skinned duplicate: clone_skin_for_joints failed: {e}");
+                    return false;
+                }
+            };
+            r.duplicate_skinned_mesh_with_skin(donor_mk, sub_tk, new_skin)
+                .inspect_err(|_| {
+                    r.meshes.skins.remove(new_skin, None);
+                })
         }
+        // Morph-only: shared geometry, fresh per-instance morph weights.
+        None => r.duplicate_mesh_with_transform(donor_mk, sub_tk),
     };
-    match r.duplicate_skinned_mesh_with_skin(donor_mk, sub_tk, new_skin) {
+    match dup_result {
         Ok(mk) => {
             let _ = r.set_mesh_material(mk, mat_key);
             let _ = r.set_mesh_hidden(mk, !visible);
@@ -1284,10 +1306,11 @@ async fn materialize_skinned_duplicate(
             true
         }
         Err(e) => {
-            r.meshes.skins.remove(new_skin, None);
+            // A failed skinned duplicate already freed its cloned skin (see
+            // the map_err above); only the shared allocations remain.
             r.transforms.remove(sub_tk);
             r.remove_material(mat_key);
-            tracing::warn!("skinned duplicate: duplicate_skinned_mesh_with_skin failed: {e}");
+            tracing::warn!("skinned duplicate: duplicate failed: {e}");
             false
         }
     }
@@ -1809,9 +1832,15 @@ async fn materialize_collider(
 /// `inverse_transform` + AABB) and the wireframe (world-baked line geometry)
 /// are snapshots of the node's world matrix — without the re-bake they'd stay
 /// at the materialize-time placement while the node moved on.
+///
+/// `declare_only` mirrors the other materializers (⭐ TRANSACTION PRINCIPLE):
+/// when the decal's texture resolve stages a FRESH pool upload on a LIVE edit
+/// (`declare_only == false`), this issues the `commit_load` that finalizes it;
+/// a bulk load leaves the staged upload for the Replace join's single commit.
 async fn materialize_decal(
     entry: Arc<RendererNode>,
     cfg: awsm_renderer_editor_protocol::DecalConfig,
+    declare_only: bool,
 ) {
     let key = entry.transform_key;
     let entry2 = entry.clone();
@@ -1819,76 +1848,102 @@ async fn materialize_decal(
     let texture = cfg.texture;
     let old_decals: Vec<_> = entry.decal_keys.lock().unwrap().drain(..).collect();
     let old_lines: Vec<_> = entry.line_keys.lock().unwrap().drain(..).collect();
-    with_renderer_mut(move |r| {
-        for dk in old_decals {
-            r.remove_decal(dk);
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    for dk in old_decals {
+        r.remove_decal(dk);
+    }
+    for lk in old_lines {
+        r.remove_line(lk);
+    }
+    // Fresh world = parent's CURRENT world × this node's local. `get_world`
+    // on the node itself is a cached matrix only refreshed by the render
+    // loop's update_transforms, so reading it right after `set_local` (the
+    // transform-observer re-bake) or right after the transform was first
+    // established (whose cached world is seeded local-only, missing
+    // ancestors) would bake a stale/incomplete placement into the decal —
+    // same fix as `materialize_collider`.
+    let local = r
+        .transforms
+        .get_local(key)
+        .map(|t| t.to_matrix())
+        .unwrap_or(glam::Mat4::IDENTITY);
+    let parent_world = r
+        .transforms
+        .get_parent(key)
+        .ok()
+        .and_then(|p| r.transforms.get_world(p).ok().copied())
+        .unwrap_or(glam::Mat4::IDENTITY);
+    let world = parent_world * local;
+    // A cache MISS below means the resolve STAGES a fresh pool upload
+    // (procedural assets upload lazily at first bind) — probe it BEFORE the
+    // resolve registers the key, so we know whether to commit afterwards.
+    let texture_was_cached = texture.as_ref().map(|tref| {
+        super::material::texture_binding_cached(
+            tref.asset,
+            true,
+            awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+        )
+    });
+    // Resolve the decal's texture asset to the pool's flat index the decal
+    // shader unpacks (`array_index * stride + layer_index` — the same
+    // packing the scene-loader uses). This was hard-coded to 0, which
+    // sampled whatever texture happened to occupy pool slot (0,0) — an
+    // editor decal never projected its ASSIGNED texture.
+    let resolved = texture.as_ref().and_then(|tref| {
+        super::material::resolve_texture_binding(
+            &mut r,
+            tref,
+            true,
+            awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+        )
+    });
+    let texture_index = resolved
+        .and_then(|(key, _sampler)| {
+            let stride = awsm_renderer::decals::decal_texture_index_stride(&r.gpu);
+            r.textures
+                .get_entry(key)
+                .ok()
+                .map(|e| (e.array_index as u32) * stride + e.layer_index as u32)
+        })
+        .unwrap_or(0);
+    match r.insert_decal(world, texture_index, alpha) {
+        Ok(key) => entry2.decal_keys.lock().unwrap().push(key),
+        Err(err) => tracing::warn!("insert_decal: {err:?}"),
+    }
+    // The decal volume is the ±1 oriented unit cube (2×2×2 m under unit
+    // scale) — half-extents 1.0, so the wireframe shows the TRUE
+    // projection volume. (Was 0.5: the affordance covered an eighth of
+    // the volume the decal actually projects into.)
+    let (positions, colors) = super::collider_wire::build(
+        &awsm_renderer_editor_protocol::ColliderShape::Box {
+            half_extents: [1.0, 1.0, 1.0],
+        },
+        &world,
+    );
+    if !positions.is_empty() {
+        if let Ok(Some(lk)) = r.add_line_segments(&positions, &colors, 1.5, false) {
+            entry2.line_keys.lock().unwrap().push(lk);
         }
-        for lk in old_lines {
-            r.remove_line(lk);
+    }
+    // The resolve above staged a FRESH texture upload (first bind of a
+    // procedural / captured-raster asset): the image only lives in the pool's
+    // CPU staging until `commit_load` finalizes it — uploads the array,
+    // rebuilds the decal pass's texture-pool bind group, and recompiles the
+    // pool-baked shaders. No other path commits for a decal (it inserts no
+    // mesh), so without this the decal projected the pool PLACEHOLDER (solid
+    // white) until some unrelated edit happened to commit. Cache hits (incl.
+    // every transform-observer re-bake) skip it, and a bulk load
+    // (`declare_only`) defers to the Replace join's single commit — loading
+    // is ONE transaction.
+    if !declare_only && resolved.is_some() && texture_was_cached == Some(false) {
+        if let Err(e) = r
+            .commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+        {
+            tracing::warn!("materialize_decal commit_load: {e}");
         }
-        // Fresh world = parent's CURRENT world × this node's local. `get_world`
-        // on the node itself is a cached matrix only refreshed by the render
-        // loop's update_transforms, so reading it right after `set_local` (the
-        // transform-observer re-bake) or right after the transform was first
-        // established (whose cached world is seeded local-only, missing
-        // ancestors) would bake a stale/incomplete placement into the decal —
-        // same fix as `materialize_collider`.
-        let local = r
-            .transforms
-            .get_local(key)
-            .map(|t| t.to_matrix())
-            .unwrap_or(glam::Mat4::IDENTITY);
-        let parent_world = r
-            .transforms
-            .get_parent(key)
-            .ok()
-            .and_then(|p| r.transforms.get_world(p).ok().copied())
-            .unwrap_or(glam::Mat4::IDENTITY);
-        let world = parent_world * local;
-        // Resolve the decal's texture asset to the pool's flat index the decal
-        // shader unpacks (`array_index * stride + layer_index` — the same
-        // packing the scene-loader uses). This was hard-coded to 0, which
-        // sampled whatever texture happened to occupy pool slot (0,0) — an
-        // editor decal never projected its ASSIGNED texture.
-        let texture_index = texture
-            .as_ref()
-            .and_then(|tref| {
-                super::material::resolve_texture_binding(
-                    r,
-                    tref,
-                    true,
-                    awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
-                )
-            })
-            .and_then(|(key, _sampler)| {
-                let stride = awsm_renderer::decals::decal_texture_index_stride(&r.gpu);
-                r.textures
-                    .get_entry(key)
-                    .ok()
-                    .map(|e| (e.array_index as u32) * stride + e.layer_index as u32)
-            })
-            .unwrap_or(0);
-        match r.insert_decal(world, texture_index, alpha) {
-            Ok(key) => entry2.decal_keys.lock().unwrap().push(key),
-            Err(err) => tracing::warn!("insert_decal: {err:?}"),
-        }
-        // The decal volume is the ±1 oriented unit cube (2×2×2 m under unit
-        // scale) — half-extents 1.0, so the wireframe shows the TRUE
-        // projection volume. (Was 0.5: the affordance covered an eighth of
-        // the volume the decal actually projects into.)
-        let (positions, colors) = super::collider_wire::build(
-            &awsm_renderer_editor_protocol::ColliderShape::Box {
-                half_extents: [1.0, 1.0, 1.0],
-            },
-            &world,
-        );
-        if !positions.is_empty() {
-            if let Ok(Some(lk)) = r.add_line_segments(&positions, &colors, 1.5, false) {
-                entry2.line_keys.lock().unwrap().push(lk);
-            }
-        }
-    })
-    .await;
+    }
 }
 
 /// The single curve node referenced by a sweep/instances node, if it exists and

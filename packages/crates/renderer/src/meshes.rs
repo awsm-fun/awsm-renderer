@@ -99,6 +99,36 @@ impl AwsmRenderer {
         Ok(new_mesh_key)
     }
 
+    /// Per-instance skin-weight edit. If `skin_key` is a weight-SHARING
+    /// instance (a prefab/duplicate clone), copy-on-write it onto its own
+    /// stream first — so the edit diverges only this instance, not every
+    /// sharer — then apply `f` in place (layout per
+    /// [`skins::Skins::read_joint_index_weights`]). When the CoW moves the
+    /// skin's buffer offset, the geometry meta of every mesh reading this
+    /// skin is re-patched so the GPU keeps pointing at the right stream.
+    pub fn update_skin_weights(
+        &mut self,
+        skin_key: skins::SkinKey,
+        f: impl FnOnce(&mut [u8]),
+    ) -> crate::error::Result<()> {
+        let moved = self.meshes.skins.make_weights_owned(skin_key)?;
+        self.meshes
+            .skins
+            .update_joint_index_weights_with(skin_key, f);
+        if moved {
+            let offset = self.meshes.skins.joint_index_weights_offset(skin_key)? as u32;
+            let affected: Vec<MeshKey> = self
+                .meshes
+                .keys()
+                .filter(|mk| self.meshes.mesh_skin_key(*mk).flatten() == Some(skin_key))
+                .collect();
+            for mk in affected {
+                self.meshes.meta.set_skin_weights_offset(mk, offset);
+            }
+        }
+        Ok(())
+    }
+
     /// Clones a mesh and its current transform under the same parent.
     pub fn clone_mesh(&mut self, mesh_key: MeshKey) -> crate::error::Result<MeshKey> {
         let transform_key = self.meshes.get(mesh_key)?.transform_key;
@@ -1534,11 +1564,22 @@ impl Meshes {
             }
             None => None,
         };
-        let instance_geometry_morph_key = match mesh.instance_geometry_morph_key {
-            Some(mk) => Some(self.morphs.geometry.insert_instance(mk)?),
-            None => None,
-        };
         let resource_key = self.resource_key(mesh_key)?;
+        // Same fallback as `duplicate_skinned_with_new_skin`: when the source
+        // is the ORIGINAL (morph weights live on the resource, no instance
+        // key), the duplicate still mints its own weights slot — otherwise the
+        // two meshes would animate through the one resource-level slot.
+        let instance_geometry_morph_key = {
+            let source_morph = mesh.instance_geometry_morph_key.or_else(|| {
+                self.resources
+                    .get(resource_key)
+                    .and_then(|r| r.geometry_morph_key)
+            });
+            match source_morph {
+                Some(mk) => Some(self.morphs.geometry.insert_instance(mk)?),
+                None => None,
+            }
+        };
         let resource_aabb = {
             let resource = self
                 .resources

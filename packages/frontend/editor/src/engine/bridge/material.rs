@@ -66,6 +66,22 @@ pub(crate) fn resolve_texture_binding(
     Some((mt.key, mt.sampler_key?))
 }
 
+/// Whether `resolve_texture` for this `(asset, semantics)` would CACHE-HIT an
+/// already-uploaded key (exact-semantics or the legacy any-semantics glTF
+/// pre-registration). A `false` here means a subsequent resolve STAGES a fresh
+/// pool upload (procedural / captured-raster assets upload lazily at first
+/// bind) that isn't on the GPU until a `commit_load` finalizes the pool — so
+/// callers with no mesh-materialize commit of their own (e.g. the decal path)
+/// probe this to decide whether they must issue that commit themselves.
+pub(crate) fn texture_binding_cached(
+    asset_id: AssetId,
+    srgb: bool,
+    kind: MipmapTextureKind,
+) -> bool {
+    TEXTURE_KEYS.with(|c| c.borrow().contains_key(&(asset_id, srgb, kind)))
+        || TEXTURE_KEYS_ANY.with(|c| c.borrow().contains_key(&asset_id))
+}
+
 /// A/the renderer [`TextureKey`] a texture asset resolves to, if it's been
 /// materialized/registered this session (any semantics). Used by the
 /// image-query seam to read a raster/file texture back from the GPU.

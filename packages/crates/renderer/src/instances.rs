@@ -449,6 +449,20 @@ impl Instances {
         Ok(())
     }
 
+    /// Removes the instance-transform slice for a key — the teardown
+    /// counterpart of [`Self::transform_insert`]. Frees the dynamic-buffer
+    /// slot and the CPU mirror so an instanced mesh's rows don't leak when
+    /// its mesh + transform are removed (e.g. a scene/prefab teardown).
+    /// Callers remove the mesh first: a still-live instanced mesh whose rows
+    /// were removed would draw nothing (`transform_list` → `None`).
+    pub fn transform_remove(&mut self, key: TransformKey) {
+        self.transform_buffer.remove(key);
+        self.cpu_transforms.remove(key);
+        self.transform_count.remove(key);
+        self.transform_dirty.remove(&key);
+        self.transform_gpu_dirty = true;
+    }
+
     /// Removes the per-instance attribute slice for a key.
     pub fn attribute_remove(&mut self, key: TransformKey) {
         self.attribute_buffer.remove(key);

@@ -14,6 +14,10 @@
 // Golden: three identical mid-stride walkers side by side. (Pre-axis-4 the
 // clones rendered a frozen bind pose and each duplicate re-uploaded the full
 // geometry — meshes 2 -> 4 with resources growing in lockstep.)
+// The scene ALSO carries a 4th duplicate marked prefab=true + visible=false:
+// invisible in both editor golden and player render, it exists so the player
+// bundle exposes a SKINNED PrefabTemplate for player-tests'
+// prefab-churn-skinned check (per-instance cloned-skeleton lifecycle).
 async () => {
   const d = async (o) => {
     const r = await window.wasmBindings.editor_dispatch_json(JSON.stringify(o));
@@ -45,6 +49,18 @@ async () => {
   await q({ query: 'wait_render_settled' });
   const snap = await q({ query: 'snapshot' });
   const roots = (snap.scene_tree || []).filter(n => n.name === 'Z_UP').map(n => n.id);
+  // A FOURTH duplicate marked prefab=true: the player loader materializes it as
+  // a HIDDEN PrefabTemplate (not rendered — golden stays 3 walkers). It exists
+  // for player-tests' prefab-churn-skinned check, which instantiates/tears it
+  // down xN and asserts the per-instance cloned skeleton joints don't leak.
+  await d({ cmd: 'duplicate', id: root });
+  const snap2 = await q({ query: 'snapshot' });
+  const templ = (snap2.scene_tree || []).map(n => n.id).find(id => !roots.includes(id) && (snap2.scene_tree || []).find(n => n.id === id).name === 'Z_UP');
+  if (!templ) throw new Error('4th duplicate not found');
+  await d({ cmd: 'set_prefab', id: templ, prefab: true });
+  // Hidden in the EDITOR golden too (the editor renders prefab sources; the
+  // player loader captures the template before visibility gating).
+  await d({ cmd: 'set_visible', id: templ, visible: false });
   const pos = [[-1.4, 0, 0], [0, 0, 0], [1.4, 0, 0]];
   // Spread on x while PRESERVING each root's authored rotation/scale (Z_UP
   // carries the Z-up -> Y-up rotation; clobbering it lays the figures flat).

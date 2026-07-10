@@ -99,8 +99,9 @@ numbers recorded here and in `docs/plans/006-optimizations.md`.
 All 21 scenes are authored and versioned. `instancing-stress` landed with
 axis 5 (the explicit instancer NodeKind): 3000 per-instance-colored boxes
 from ONE instancer node and ONE shared geometry at vsync.
-`prefab-skinned-morph`'s golden deliberately captures the CURRENT broken
-duplicate-skinned behavior (see its author.js) — regenerate after axis 4.
+`prefab-skinned-morph` renders three shared-geometry walkers and additionally
+carries a hidden skinned prefab template (prefab=true + visible=false 4th
+duplicate) for player-tests' `prefab-churn-skinned` joint-lifecycle check.
 `lod-nanite`'s bake recipe (export-pipeline bake, no standalone CLI) is in
 its author.js.
 

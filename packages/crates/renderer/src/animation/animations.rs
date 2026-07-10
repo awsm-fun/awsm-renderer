@@ -10,7 +10,7 @@ use crate::{
     AwsmRenderer,
 };
 
-use super::blend::{blend_additive, blend_replace};
+use super::blend::{blend_additive_into, blend_replace_into};
 use super::clip_group::{
     AnimationClipGroup, AnimationClipKey, AnimationTarget, BuiltinMaterialParam, CameraParam,
     LightParam,
@@ -430,7 +430,7 @@ impl AwsmRenderer {
                         continue;
                     };
                     let entry = acc.entry(target).or_insert_with(|| rest_ref.clone());
-                    *entry = blend_replace(entry, value, 1.0);
+                    blend_replace_into(entry, value, 1.0);
                 }
             }
             clip_keys.clear();
@@ -443,26 +443,31 @@ impl AwsmRenderer {
         let mut targets = std::mem::take(&mut self.animations.scratch_targets);
         targets.clear();
         targets.extend(self.animations.rest.keys().copied());
+        // `acc` is an owned local (mem::take'n scratch), so the composited
+        // value can be written by reference — no per-target clone (a heap
+        // alloc for morph `Vertex` data). The rest-restore arm writes by
+        // reference too: `rest` is mem::take'n around the loop (its borrow
+        // couldn't otherwise cross the `&mut self` write call) and restored
+        // unconditionally — including across the `?` — below.
+        let rest = std::mem::take(&mut self.animations.rest);
+        let mut write_result = Ok(());
         for &target in &targets {
-            // `acc` is an owned local (mem::take'n scratch), so the composited
-            // value can be written by reference — no per-target clone (a heap
-            // alloc for morph `Vertex` data). Only the rest-restore arm clones
-            // (its borrow of `self.animations.rest` can't cross the `&mut self`
-            // write call), and that arm only runs for targets with no
-            // contribution this frame.
-            match acc.get(&target) {
-                Some(v) => self.write_anim_target(target, v)?,
+            let result = match acc.get(&target) {
+                Some(v) => self.write_anim_target(target, v),
                 None => {
-                    let value = self
-                        .animations
-                        .rest
+                    let value = rest
                         .get(&target)
-                        .cloned()
                         .expect("rest entry exists for a key drawn from rest");
-                    self.write_anim_target(target, &value)?;
+                    self.write_anim_target(target, value)
                 }
+            };
+            if let Err(e) = result {
+                write_result = Err(e);
+                break;
             }
         }
+        self.animations.rest = rest;
+        write_result?;
 
         // Return the scratch buffers (cleared — capacity retained for next frame).
         acc.clear();
@@ -544,14 +549,14 @@ impl AwsmRenderer {
                     let entry = acc.entry(target).or_insert_with(|| rest_ref.clone());
                     match &layer.mode {
                         LayerMode::Replace => {
-                            *entry = blend_replace(entry, value, w);
+                            blend_replace_into(entry, value, w);
                         }
                         LayerMode::Additive { base_clip } => {
                             let reference = match base_clip {
                                 Some(_) => base.get(&target).unwrap_or(rest_ref),
                                 None => rest_ref,
                             };
-                            *entry = blend_additive(entry, value, reference, w);
+                            blend_additive_into(entry, value, reference, w);
                         }
                     }
                 }

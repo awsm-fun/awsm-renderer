@@ -326,13 +326,50 @@ impl Skins {
             .collect())
     }
 
+    /// Copy-on-write for a weight-SHARING instance skin (see
+    /// [`Self::insert_instance`]): mint the skin its OWN copy of the shared
+    /// per-vertex joint/weight stream, so a subsequent
+    /// [`Self::update_joint_index_weights_with`] edits only this instance.
+    /// Returns `false` (no-op) when the skin already owns its slot.
+    ///
+    /// On `true`, this skin's [`Self::joint_index_weights_offset`] CHANGED —
+    /// the caller must re-patch any geometry meta that baked the old offset
+    /// (see `AwsmRenderer::update_skin_weights`, which does).
+    pub fn make_weights_owned(&mut self, skin_key: SkinKey) -> Result<bool> {
+        let owner = self.weights_owner(skin_key);
+        if owner == skin_key {
+            return Ok(false);
+        }
+        let bytes = self
+            .joint_index_weights
+            .get(owner)
+            .map(|s| s.to_vec())
+            .ok_or(AwsmSkinError::SkinNotFound(skin_key))?;
+        self.joint_index_weights
+            .update(skin_key, &bytes)
+            .map_err(|e| {
+                AwsmSkinError::BufferCapacityOverflow(format!("joint index weights: {e}"))
+            })?;
+        // Same alias-drop bookkeeping as `remove`'s sharing arm.
+        self.joint_weights_alias.remove(skin_key);
+        if let Some(refs) = self.joint_weights_alias_refs.get_mut(owner) {
+            *refs = refs.saturating_sub(1);
+            if *refs == 0 {
+                self.joint_weights_alias_refs.remove(owner);
+            }
+        }
+        self.joint_index_weights_gpu_dirty = true;
+        Ok(true)
+    }
+
     /// In-place edit of the packed joint/weight stream (same layout as
     /// [`Self::read_joint_index_weights`]). Marks the GPU copy dirty — the next
     /// `write_gpu` uploads it, so live skinned meshes re-deform immediately.
     ///
     /// NOTE: an instance skin ([`Self::insert_instance`]) SHARES its weights
-    /// slot with its source — editing through the instance edits every sharer
-    /// (the stream is geometry data; per-instance weight edits aren't a thing).
+    /// slot with its source — editing through it edits every sharer. For a
+    /// per-instance edit, call [`Self::make_weights_owned`] first (the editor's
+    /// weight-edit command does, via `AwsmRenderer::update_skin_weights`).
     pub fn update_joint_index_weights_with(
         &mut self,
         skin_key: SkinKey,

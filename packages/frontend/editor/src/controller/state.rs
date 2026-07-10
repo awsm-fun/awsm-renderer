@@ -3022,34 +3022,37 @@ impl EditorController {
                             weights,
                         });
                     }
-                    // Write the new values.
-                    r.meshes
-                        .skins
-                        .update_joint_index_weights_with(skin_key, |buf| {
-                            for e in &entries {
-                                let v = e.vertex as usize;
-                                if v >= vertex_count {
-                                    continue;
-                                }
-                                let mut w = e.weights;
-                                if normalize {
-                                    let sum: f32 = w.iter().sum();
-                                    if sum > 1e-6 {
-                                        for x in &mut w {
-                                            *x /= sum;
-                                        }
+                    // Write the new values. `update_skin_weights` copies-on-
+                    // write when this node is a weight-sharing duplicate, so
+                    // the edit diverges only THIS instance (and re-patches its
+                    // meshes' geometry meta if the stream moved).
+                    let write_result = r.update_skin_weights(skin_key, |buf| {
+                        for e in &entries {
+                            let v = e.vertex as usize;
+                            if v >= vertex_count {
+                                continue;
+                            }
+                            let mut w = e.weights;
+                            if normalize {
+                                let sum: f32 = w.iter().sum();
+                                if sum > 1e-6 {
+                                    for x in &mut w {
+                                        *x /= sum;
                                     }
                                 }
-                                let off = v * stride;
-                                for (i, (joint, weight)) in
-                                    e.joints.iter().zip(w.iter()).enumerate()
-                                {
-                                    let p = off + i * 8;
-                                    buf[p..p + 4].copy_from_slice(&joint.to_le_bytes());
-                                    buf[p + 4..p + 8].copy_from_slice(&weight.to_le_bytes());
-                                }
                             }
-                        });
+                            let off = v * stride;
+                            for (i, (joint, weight)) in e.joints.iter().zip(w.iter()).enumerate() {
+                                let p = off + i * 8;
+                                buf[p..p + 4].copy_from_slice(&joint.to_le_bytes());
+                                buf[p + 4..p + 8].copy_from_slice(&weight.to_le_bytes());
+                            }
+                        }
+                    });
+                    if let Err(e) = write_result {
+                        tracing::warn!("set_skin_weights: copy-on-write failed: {e}");
+                        return None;
+                    }
                     Some(prior)
                 })
                 .await;
@@ -7144,6 +7147,21 @@ fn local_aabb(kind: &NodeKind) -> Aabb3 {
         // The shapes are centered on the node origin and Capsule/Cylinder/Cone are
         // Y-aligned in their local frame. (FIXES.md #1.)
         NodeKind::Collider(shape) => return collider_local_aabb(shape),
+        // An explicit instancer's bounds span ALL its authored instances — the
+        // def is self-contained (it owns the transform list), so the union of
+        // (instance transform × instanced-mesh AABB) is computable right here.
+        // Without this the fallback was a unit box, and framing / NodeBounds on
+        // a spread-out instancer under-measured whenever the renderer's live
+        // world AABB (which already unions instances) wasn't available.
+        // (`InstancesAlongCurve` still falls through to the unit box: its
+        // placement derives from ANOTHER node's curve, which this kind-only
+        // helper can't see — its live renderer AABB is exact, though.)
+        NodeKind::Instancer(def) => {
+            let base = crate::engine::bridge::mesh_cache::get_raw(def.mesh.0)
+                .and_then(|raw| aabb_from_positions(&raw.positions))
+                .unwrap_or(([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]));
+            return instancer_local_aabb(base, &def.transforms);
+        }
         _ => {}
     }
     // Lights / cameras / empties / un-baked meshes: a small unit box centered on
@@ -7177,6 +7195,43 @@ fn collider_local_aabb(shape: &ColliderShape) -> Aabb3 {
             radius,
         } => half(*radius, *half_height, *radius),
     }
+}
+
+/// Node-local AABB of an explicit instancer: the union of
+/// (instance transform × `base`) over every authored instance transform, where
+/// `base` is the instanced mesh's local AABB. Instance transforms are relative
+/// to the instancer node, so the union lives in the node's local frame — the
+/// caller composes it with the node's world matrix like any other local AABB.
+/// An empty transform list yields `base` unchanged (the "renders nothing"
+/// authored state still frames as a unit-ish box at the node). Pure, so it is
+/// unit-tested natively (see `instancer_aabb_tests`).
+fn instancer_local_aabb(base: Aabb3, transforms: &[awsm_renderer_editor_protocol::Trs]) -> Aabb3 {
+    let (bmin, bmax) = base;
+    let mut acc: Option<Aabb3> = None;
+    for trs in transforms {
+        let m = glam::Mat4::from_scale_rotation_translation(
+            glam::Vec3::from_array(trs.scale),
+            glam::Quat::from_array(trs.rotation),
+            glam::Vec3::from_array(trs.translation),
+        );
+        let (tmin, tmax) = transform_aabb(m, bmin, bmax);
+        acc = Some(match acc {
+            None => (tmin, tmax),
+            Some((amin, amax)) => (
+                [
+                    amin[0].min(tmin[0]),
+                    amin[1].min(tmin[1]),
+                    amin[2].min(tmin[2]),
+                ],
+                [
+                    amax[0].max(tmax[0]),
+                    amax[1].max(tmax[1]),
+                    amax[2].max(tmax[2]),
+                ],
+            ),
+        });
+    }
+    acc.unwrap_or(base)
 }
 
 /// Transform a local AABB by a world matrix and return the enclosing world AABB.
@@ -9587,6 +9642,70 @@ mod instancer_tests {
             per_instance_colors: None,
         }));
         assert!(r.is_err(), "group node must be rejected");
+    }
+}
+
+#[cfg(test)]
+mod instancer_aabb_tests {
+    //! Native tests for the pure instancer-bounds fold used by `local_aabb`
+    //! (frame_node / NodeBounds fallback): the node-local AABB of an explicit
+    //! instancer is the UNION of (instance transform × instanced-mesh AABB)
+    //! over all authored instances — not just one copy at the origin.
+    use super::instancer_local_aabb;
+    use awsm_renderer_editor_protocol::Trs;
+
+    const UNIT: ([f32; 3], [f32; 3]) = ([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]);
+
+    fn trs(t: [f32; 3]) -> Trs {
+        Trs {
+            translation: t,
+            ..Trs::IDENTITY
+        }
+    }
+
+    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5)
+    }
+
+    #[test]
+    fn empty_transforms_yield_base() {
+        assert_eq!(instancer_local_aabb(UNIT, &[]), UNIT);
+    }
+
+    #[test]
+    fn spread_instances_union_their_extents() {
+        // Two unit boxes 10 apart on X: the union spans [-10.5, 10.5] on X and
+        // stays [-0.5, 0.5] on Y/Z — the exact under-measure the unit-box
+        // fallback had.
+        let (min, max) =
+            instancer_local_aabb(UNIT, &[trs([-10.0, 0.0, 0.0]), trs([10.0, 0.0, 0.0])]);
+        assert!(close(min, [-10.5, -0.5, -0.5]), "min {min:?}");
+        assert!(close(max, [10.5, 0.5, 0.5]), "max {max:?}");
+    }
+
+    #[test]
+    fn instance_scale_expands_its_copy() {
+        let big = Trs {
+            translation: [0.0, 4.0, 0.0],
+            scale: [3.0, 3.0, 3.0],
+            ..Trs::IDENTITY
+        };
+        let (min, max) = instancer_local_aabb(UNIT, &[trs([0.0, 0.0, 0.0]), big]);
+        assert!(close(min, [-1.5, -0.5, -1.5]), "min {min:?}");
+        assert!(close(max, [1.5, 5.5, 1.5]), "max {max:?}");
+    }
+
+    #[test]
+    fn rotation_encloses_the_rotated_box() {
+        // A unit box rotated 45° about Y encloses within ±(√2/2) on X/Z.
+        let rot = Trs {
+            rotation: glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4).to_array(),
+            ..Trs::IDENTITY
+        };
+        let (min, max) = instancer_local_aabb(UNIT, &[rot]);
+        let r = std::f32::consts::SQRT_2 / 2.0;
+        assert!(close(min, [-r, -0.5, -r]), "min {min:?}");
+        assert!(close(max, [r, 0.5, r]), "max {max:?}");
     }
 }
 

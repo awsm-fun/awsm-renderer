@@ -152,6 +152,7 @@ const SCENES: &[SceneSpec] = &[
 /// The scene whose bundle carries `prefab = true` roots — the clone-surface
 /// scene for the prefab-churn check.
 const PREFAB_CHURN_SCENE: &str = "prefab-static";
+const PREFAB_CHURN_SKINNED_SCENE: &str = "prefab-skinned-morph";
 
 pub async fn run_all() {
     let mut report = Report::default();
@@ -184,7 +185,25 @@ pub async fn run_all() {
         .unwrap_or(true);
     if churn_enabled {
         set_hud("player-tests: prefab-churn");
-        report.emit_result("prefab-churn", prefab_churn(&origin).await);
+        report.emit_result(
+            "prefab-churn",
+            prefab_churn(&origin, PREFAB_CHURN_SCENE, false).await,
+        );
+    }
+
+    // ── 5b. prefab-churn-skinned — same churn over a SKINNED template, which
+    // additionally exercises the per-instance cloned skeleton (each spawn mints
+    // a TransformKey per joint; teardown must free them or transforms leak). ──
+    let churn_skinned_enabled = filter
+        .as_ref()
+        .map(|f| f.iter().any(|s| s == PREFAB_CHURN_SKINNED_SCENE))
+        .unwrap_or(true);
+    if churn_skinned_enabled {
+        set_hud("player-tests: prefab-churn-skinned");
+        report.emit_result(
+            "prefab-churn-skinned",
+            prefab_churn(&origin, PREFAB_CHURN_SKINNED_SCENE, true).await,
+        );
     }
 
     report.complete();
@@ -420,10 +439,14 @@ async fn nanite_check(renderer: &mut AwsmRenderer) -> Result<String> {
 /// 2× its radius, then steps out until a coarser level engages; the assert is
 /// on the selection reroute (level index rises) AND the triangle drop.
 ///
-/// Calibration note (renderer-side finding, recorded by the detail line): the
-/// bake's QEM-sqrt errors are so small (helmet: 4e-4..4.6e-3 object units,
-/// radius 1.27) that at 600px/45° the level-1/2 switch distances (~0.3u/1.0u)
-/// are INSIDE the mesh — LOD0/1 can never display from an exterior camera.
+/// Calibration note (RESOLVED): the bake's raw QEM-sqrt errors are ≈RMS
+/// deviation and so small (helmet: 4e-4..4.6e-3 object units, radius 1.27)
+/// that projecting them directly put the level-1/2 switches (~0.3u/1.0u)
+/// INSIDE the mesh — LOD0/1 could never display from an exterior camera.
+/// Selection now multiplies the baked error by
+/// `AwsmRenderer::LOD_ERROR_CONSERVATISM` (16.0), putting the helmet switches
+/// at ~4.6u/16u/53u ≈ 3.6/12.6/42 radii — the inspect-range camera below sees
+/// the base mesh.
 async fn lod_tri_drop_check(renderer: &mut AwsmRenderer) -> Result<String> {
     // The first registered chain = the LOD'd mesh under test.
     let Some((base_key, errors)) = renderer
@@ -453,9 +476,10 @@ async fn lod_tri_drop_check(renderer: &mut AwsmRenderer) -> Result<String> {
             .unwrap_or(0)
     };
 
-    // Near: inspect-the-object framing at 1.2× its radius (with this bake's
-    // tight error metrics the coarsest switch sits at ~2x the object radius —
-    // see the calibration finding in the plan doc); 10 frames to settle.
+    // Near: inspect-the-object framing at 1.2× its radius — with the
+    // calibrated selection (LOD_ERROR_CONSERVATISM) this sits well inside the
+    // level-1 switch (~3.6× radius for the helmet bake), so the BASE mesh
+    // draws here; 10 frames to settle.
     run_frames(renderer, center, radius, 10, |_| {
         orbit_eye(center, radius, 1.2, 0.8)
     })
@@ -502,9 +526,11 @@ async fn lod_tri_drop_check(renderer: &mut AwsmRenderer) -> Result<String> {
 /// `PrefabInstance::teardown`), asserting object counts return to baseline and
 /// geometry uploads stay shared (resource count flat while instances live).
 /// Falls back to load/unload ×5 of the whole bundle if the scene exposes no
-/// prefab template.
-async fn prefab_churn(origin: &str) -> Result<String> {
-    let bundle_base = format!("{origin}/{PREFAB_CHURN_SCENE}/bundle");
+/// prefab template — unless `require_skinned` is set, in which case a missing
+/// template (or a template with no cloned skeleton) is a FAIL: the skinned
+/// variant exists precisely to lock the per-instance joint-transform lifecycle.
+async fn prefab_churn(origin: &str, scene_name: &str, require_skinned: bool) -> Result<String> {
+    let bundle_base = format!("{origin}/{scene_name}/bundle");
     let scene = fetch_scene(&bundle_base).await?;
     let (mut renderer, _canvas) = create_renderer(base_features()).await?;
     let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
@@ -528,6 +554,11 @@ async fn prefab_churn(origin: &str) -> Result<String> {
                     ..Trs::IDENTITY
                 },
             )?;
+            if require_skinned && instance.skin_joints.is_empty() {
+                return Err(anyhow!(
+                    "prefab template {root:?} in {scene_name} is not skinned (no cloned joints) — the skinned churn check is not exercising the joint lifecycle"
+                ));
+            }
             // Render one frame with the instance live, and assert the clone
             // shared the template's geometry (no new uploads).
             run_frames(&mut renderer, center, radius, 1, |_| {
@@ -557,6 +588,10 @@ async fn prefab_churn(origin: &str) -> Result<String> {
         Ok(format!(
             "prefab root {root:?}: {PREFAB_CHURN_CYCLES} instantiate/teardown cycles, counts flat (meshes={}, transforms={}, geometry resources={}, bytes={})",
             baseline.meshes, baseline.transforms, baseline.mesh_resources, baseline.geometry_bytes
+        ))
+    } else if require_skinned {
+        Err(anyhow!(
+            "{scene_name} exposes no prefab template — mark one duplicate prefab=true in its author.js and regenerate the bundle"
         ))
     } else {
         // No clone surface on this bundle — fall back to whole-bundle
