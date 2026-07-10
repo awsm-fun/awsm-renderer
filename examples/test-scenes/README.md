@@ -107,7 +107,15 @@ its author.js.
 ## Baselines
 
 Recorded as axes land (scene → census / frame time / bundle bytes / load ms).
+Census source: `memory_stats` query on a cold page reload (editor :9085,
+2026-07-10, pre-axis-1).
 
-| Scene | Pipelines @init | After 1st frame | Frame ms (`?stress`) | Bundle bytes | Cold load ms |
+| Scene | Render pipelines | Compute pipelines | Shaders | Pool tex | render_cpu ms |
 |---|---|---|---|---|---|
-| _empty_ | — | — | — | — | — |
+| _empty_ (cold boot) | 68 | 31 | 49 | 2 | 1.5 |
+| kitchen-sink | 69 | 32 | 51 | 4 | 1.8 |
+
+**Axis-1 headline (pre-optimization):** an EMPTY scene already compiles
+68/31/49 — the full pipeline surface is eager at init; the busiest scene
+adds only ~1/1/2 on top. "Build only what we need" means moving most of
+that eager set behind lazy/deferred compilation.
