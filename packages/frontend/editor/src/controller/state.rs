@@ -136,6 +136,11 @@ pub struct EditorController {
     /// served by [`EditorQuery::LastImportReport`] and returned inline by the
     /// MCP import tools. `None` until the first import of the session.
     pub last_import_report: Mutable<Option<serde_json::Value>>,
+    /// Report of the most recent `VerifyRoundtrip` self-test (before/after
+    /// save-census + equality flags) — served by
+    /// [`EditorQuery::VerifyRoundtripReport`] (mirrors
+    /// [`Self::last_import_report`]). `None` until the self-test first runs.
+    pub verify_roundtrip_report: Mutable<Option<serde_json::Value>>,
     /// The animation clips authored in Animation mode (mirrors `custom_materials`).
     /// Reactive — the studio edits their tracks/keys live.
     pub custom_animations: MutableVec<Arc<CA>>,
@@ -280,6 +285,7 @@ impl EditorController {
             custom_materials: MutableVec::new(),
             current_material: Mutable::new(None),
             last_import_report: Mutable::new(None),
+            verify_roundtrip_report: Mutable::new(None),
             custom_animations: MutableVec::new(),
             current_clip: Mutable::new(None),
             playhead: Mutable::new(0.0),
@@ -1346,6 +1352,53 @@ impl EditorController {
                 crate::engine::bridge::cluster_cache::clear();
                 persistence::apply_inmem(self, toml, mesh_map).await?;
                 Toast::info("Round-trip: project reloaded in-memory (cold caches)");
+                Ok(None)
+            }
+            EditorCommand::VerifyRoundtrip => {
+                use crate::controller::persistence;
+                // End-to-end losslessness proof (destructive self-test, not
+                // undoable). Census FIRST — the ground truth the cold reload
+                // must reproduce — then serialize while every cache is warm.
+                let before = persistence::save_census(self);
+                let (toml, byte_map) = persistence::serialize_inmem(self)?;
+                // Clear EVERY byte cache the reload path could otherwise
+                // reuse — unlike `ReloadProjectInMemory`, which deliberately
+                // keeps `mesh_cache` warm (exactly where the historical
+                // byte-loss bug hid). If `apply_inmem` can rebuild the census
+                // from the serialized bytes ALONE, save→load drops nothing.
+                crate::engine::bridge::bridge().clear_skin_joints();
+                clear_untracked_renderer_resources().await;
+                crate::engine::bridge::bridge().clear_templates();
+                crate::engine::bridge::skinned_bake_cache::clear();
+                crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::buffer_cache::clear();
+                crate::engine::bridge::cluster_cache::clear();
+                crate::engine::bridge::mesh_cache::clear();
+                crate::engine::bridge::env_sync::clear_ktx_stash();
+                persistence::apply_inmem(self, toml, byte_map).await?;
+                let after = persistence::save_census(self);
+                let equal = before == after;
+                // Lossless = the reload reproduced the census exactly AND the
+                // reloaded project is itself fully persistable (no cache went
+                // missing on the way back in).
+                let after_complete = after.is_complete();
+                let lossless = equal && after_complete;
+                let report = serde_json::json!({
+                    "before": before,
+                    "after": after,
+                    "equal": equal,
+                    "after_complete": after_complete,
+                    "lossless": lossless,
+                });
+                tracing::info!("verify_roundtrip: {report}");
+                self.verify_roundtrip_report.set(Some(report));
+                if lossless {
+                    Toast::info("Verify round-trip: LOSSLESS (census identical)");
+                } else {
+                    Toast::error(
+                        "Verify round-trip: census MISMATCH — see verify_roundtrip_report",
+                    );
+                }
                 Ok(None)
             }
             EditorCommand::Insert { id, spec, parent } => {
@@ -5919,6 +5972,12 @@ impl EditorController {
             EditorQuery::SaveCensus => QueryResult::Text(
                 serde_json::to_string(&crate::controller::persistence::save_census(self))
                     .unwrap_or_default(),
+            ),
+            EditorQuery::VerifyRoundtripReport => QueryResult::Text(
+                self.verify_roundtrip_report
+                    .get_cloned()
+                    .unwrap_or(serde_json::Value::Null)
+                    .to_string(),
             ),
             EditorQuery::PostProcess => QueryResult::Text(
                 serde_json::to_string(&self.scene.post_process.get_cloned()).unwrap_or_default(),

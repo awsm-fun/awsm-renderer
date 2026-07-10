@@ -339,6 +339,19 @@ pub enum EditorCommand {
     /// Destructive (replaces the open project with the reloaded one); not undoable.
     ReloadProjectInMemory,
 
+    /// Debug **destructive self-test**: prove a project save→load is lossless
+    /// END TO END. Serializes the open project to its persisted form (the same
+    /// `project.toml` + side-file bytes a Save writes), clears **every** session
+    /// byte cache — including the captured-mesh cache that
+    /// `ReloadProjectInMemory` deliberately keeps warm (exactly where a
+    /// historical byte-loss bug hid) — then re-applies the serialized project
+    /// through the same path as a directory Load. A save-census (asset / byte /
+    /// clip / material counts) is taken before and after; the resulting report
+    /// (`before` / `after` / `equal` / `lossless`) is served by the
+    /// `VerifyRoundtripReport` query and surfaced via the activity/census path.
+    /// Replaces the open project with the reloaded one; NOT undoable.
+    VerifyRoundtrip,
+
     /// Insert a fresh node (from a ribbon Insert action) under `parent` (root
     /// when `None`). **Carries its `id`** (minted by the dispatcher, not in
     /// `apply`) so the command is deterministic data — the MCP path can echo the
@@ -1496,6 +1509,7 @@ impl EditorCommand {
             EditorCommand::NewProject => "New project",
             EditorCommand::LoadPlayerBundle => "Load player bundle",
             EditorCommand::ReloadProjectInMemory => "Reload project (round-trip)",
+            EditorCommand::VerifyRoundtrip => "Verify save/load round-trip",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",

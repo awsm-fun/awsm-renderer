@@ -66,6 +66,14 @@ pub fn has_ktx(id: AssetId) -> bool {
     KTX_BYTES.with(|m| m.borrow().contains_key(&id))
 }
 
+/// Drop every stashed KTX payload. Only the `VerifyRoundtrip` self-test calls
+/// this: it models a truly cold load, where `restore_ktx` (re-reading the
+/// serialized `assets/<id>.ktx2` bytes) is the ONLY way an HDR environment
+/// comes back.
+pub fn clear_ktx_stash() {
+    KTX_BYTES.with(|m| m.borrow_mut().clear());
+}
+
 /// Apply the current `scene.environment` (skybox + IBL) ONCE, awaited — call at
 /// boot AFTER the renderer is ready but BEFORE the render loop starts.
 ///

@@ -876,17 +876,33 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
 /// table; `*_missing_cache` = how many lack their bytes in the session cache (so a
 /// save would drop them); `texture_unhashed` = raster textures whose import never
 /// captured a content_hash (can't be addressed/persisted at all).
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SaveCensus {
     pub mesh_assets: usize,
     pub mesh_missing_cache: usize,
+    /// Captured-base mesh assets whose cache bytes are present AND non-empty
+    /// (the persisted-byte population — procedural bases re-bake and are
+    /// exempt). With `mesh_missing_cache == 0`, this is the count a lossless
+    /// round-trip must reproduce exactly.
+    pub mesh_with_bytes: usize,
     pub texture_assets: usize,
     pub texture_missing_cache: usize,
     pub texture_unhashed: usize,
+    /// Raster texture assets with non-empty encoded bytes in the session cache.
+    pub texture_with_bytes: usize,
     pub buffer_assets: usize,
     pub buffer_missing_cache: usize,
     pub env_ktx_assets: usize,
     pub env_ktx_missing_stash: usize,
+    /// Material assets in the Studio list (custom WGSL + built-in variants) —
+    /// persisted inline in `project.toml`, so the count must survive a reload.
+    pub material_count: usize,
+    /// Animation clips authored in the project (persisted as side TOMLs).
+    pub clip_count: usize,
+    /// Total tracks across every clip.
+    pub track_count: usize,
+    /// Total keyframes across every track of every clip.
+    pub keyframe_count: usize,
 }
 
 impl SaveCensus {
@@ -917,6 +933,10 @@ pub fn save_census(ctrl: &EditorController) -> SaveCensus {
                         || (snap != *id && mesh_cache::get_captured(snap).is_none())
                     {
                         c.mesh_missing_cache += 1;
+                    } else if mesh_cache::has_captured_bytes(*id)
+                        && (snap == *id || mesh_cache::has_captured_bytes(snap))
+                    {
+                        c.mesh_with_bytes += 1;
                     }
                 }
             }
@@ -929,6 +949,8 @@ pub fn save_census(ctrl: &EditorController) -> SaveCensus {
                     c.texture_unhashed += 1;
                 } else if texture_cache::get(*id).is_none() {
                     c.texture_missing_cache += 1;
+                } else if texture_cache::has_bytes(*id) {
+                    c.texture_with_bytes += 1;
                 }
             }
             // Custom-material buffer data: the words are the only copy (the
@@ -952,6 +974,18 @@ pub fn save_census(ctrl: &EditorController) -> SaveCensus {
         c.env_ktx_assets += 1;
         if !crate::engine::bridge::env_sync::has_ktx(id) {
             c.env_ktx_missing_stash += 1;
+        }
+    }
+    // Authoring-side counts (materials / clips / tracks / keyframes) — all
+    // persisted inline in `project.toml` + side TOMLs, so a lossless
+    // save→reload must reproduce every one. The `VerifyRoundtrip` self-test
+    // compares this whole census before/after its cold in-memory reload.
+    c.material_count = ctrl.custom_materials.lock_ref().len();
+    for clip in ctrl.custom_animations.lock_ref().iter() {
+        c.clip_count += 1;
+        for track in clip.tracks.lock_ref().iter() {
+            c.track_count += 1;
+            c.keyframe_count += track.keys.lock_ref().len();
         }
     }
     c

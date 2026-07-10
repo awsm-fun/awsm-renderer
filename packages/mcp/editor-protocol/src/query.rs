@@ -333,6 +333,12 @@ pub enum EditorQuery {
     /// caches" probe — `*_missing_cache`/`*_unhashed` of 0 means a lossless save.
     /// A read — no mutation.
     SaveCensus,
+    /// The report from the LAST `VerifyRoundtrip` self-test run this session,
+    /// as a JSON `Text` payload: `{ before, after, equal, after_complete,
+    /// lossless }` where `before`/`after` are the full save-census taken
+    /// pre-serialize and post-reload. `null` when the self-test has not run.
+    /// A read — no mutation (the destructive part is the command itself).
+    VerifyRoundtripReport,
     /// Renderer-side animation runtime state (clip/channel lowering diagnostics):
     /// how many clip groups + RESOLVED channels actually lowered into the
     /// renderer, the rest-cache size, and the mixer layer count — plus the

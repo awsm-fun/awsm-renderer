@@ -2440,6 +2440,17 @@ impl EditorMcp {
         self.dispatch(EditorCommand::LoadPlayerBundle).await
     }
 
+    #[tool(
+        description = "Round-trip regression self-test: prove project save→load is lossless END TO END. Serializes the open project to its persisted form, clears EVERY session byte cache (captured meshes, textures, buffers, skinned rigs/bind poses, nanite cluster DAGs, env KTX), reloads through the same path as a directory Load, and returns a JSON report comparing a full save-census before vs after ({ before, after, equal, after_complete, lossless }). DESTRUCTIVE: replaces the open project with the reloaded one; not undoable. Stricter than reload_project_in_memory (which keeps the mesh cache warm). Re-read the report later via editor_query_json({\"query\":\"verify_roundtrip_report\"})."
+    )]
+    async fn verify_roundtrip(&self) -> Result<CallToolResult, McpError> {
+        // Dispatch (errors — e.g. a serialize failure — propagate here), then
+        // return the stored report instead of a bare "ok" (mirrors
+        // import_model_from_url's dispatch-then-query pattern).
+        self.dispatch(EditorCommand::VerifyRoundtrip).await?;
+        self.query(EditorQuery::VerifyRoundtripReport).await
+    }
+
     #[tool(description = "Load a project from a base URL (fetches <base>/project.toml).")]
     async fn load_project_from_url(
         &self,
