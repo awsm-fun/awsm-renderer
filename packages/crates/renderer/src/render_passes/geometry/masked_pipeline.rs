@@ -147,6 +147,7 @@ impl GeometryMaskedPipelines {
                 &color_targets,
                 msaa_samples,
                 cull_mode,
+                ctx.features.depth().compare(),
             ));
             slots.push(MaskedPipelineKeyId {
                 msaa_sample_count: msaa_samples,
@@ -222,6 +223,7 @@ fn build_masked_cache_key(
     color_targets: &[ColorTargetState],
     msaa_samples: Option<u32>,
     cull_mode: CullMode,
+    depth_compare: CompareFunction,
 ) -> RenderPipelineCacheKey {
     let primitive_state = PrimitiveState::new()
         .with_topology(PrimitiveTopology::TriangleList)
@@ -230,7 +232,8 @@ fn build_masked_cache_key(
 
     let depth_stencil = DepthStencilState::new(depth_format)
         .with_depth_write_enabled(true)
-        .with_depth_compare(CompareFunction::LessEqual);
+        // Main-camera depth convention (003).
+        .with_depth_compare(depth_compare);
 
     let mut key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)
         .with_primitive(primitive_state)

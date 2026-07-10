@@ -290,6 +290,7 @@ impl GeometryPipelines {
                     shader_key,
                     layout_key,
                     depth_format,
+                    ctx.features.depth().compare(),
                     &color_targets,
                     msaa_samples,
                     instancing,
@@ -503,6 +504,7 @@ fn build_geometry_cache_key(
     shader_key: crate::shaders::ShaderKey,
     pipeline_layout_key: PipelineLayoutKey,
     depth_format: awsm_renderer_core::texture::TextureFormat,
+    depth_compare: CompareFunction,
     color_targets: &[ColorTargetState],
     msaa_samples: Option<u32>,
     instancing: bool,
@@ -515,7 +517,9 @@ fn build_geometry_cache_key(
 
     let depth_stencil = DepthStencilState::new(depth_format)
         .with_depth_write_enabled(true)
-        .with_depth_compare(CompareFunction::LessEqual);
+        // Main-camera depth convention (003): LessEqual forward-Z /
+        // GreaterEqual reverse-Z.
+        .with_depth_compare(depth_compare);
 
     let mut vertex_buffer_layouts = vec![VERTEX_BUFFER_LAYOUT.clone()];
     if instancing {

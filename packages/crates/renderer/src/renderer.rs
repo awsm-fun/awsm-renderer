@@ -1147,6 +1147,7 @@ impl AwsmRenderer {
                 &self.anti_aliasing,
                 &self.textures,
                 &self.render_textures.formats,
+                self.features.depth().compare(),
             )
             .await?;
 

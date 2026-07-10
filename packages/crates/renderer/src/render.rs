@@ -202,6 +202,7 @@ impl AwsmRenderer {
             &mut self.bind_group_layouts,
             &mut self.pipeline_layouts,
             &self.render_textures.formats,
+            self.features.depth().compare_strict(),
         )?;
         self.lines.poll_compile(&mut self.pipelines.render)?;
 
@@ -2079,6 +2080,7 @@ impl AwsmRenderer {
                 &self.meshes.buffer_infos,
                 &self.anti_aliasing,
                 &self.render_textures.formats,
+                self.features.depth().compare(),
             )
             .now_or_never()
         {
@@ -2481,7 +2483,7 @@ impl<'a> RenderContext<'a> {
                     depth_stencil_attachment: Some(
                         DepthStencilAttachment::new(hud_depth_view)
                             .with_depth_load_op(LoadOp::Clear)
-                            .with_depth_clear_value(1.0)
+                            .with_depth_clear_value(self.features.depth().clear_value())
                             .with_depth_store_op(StoreOp::Store),
                     ),
                     ..Default::default()

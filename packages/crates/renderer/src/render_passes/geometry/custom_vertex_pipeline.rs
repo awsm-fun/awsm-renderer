@@ -175,6 +175,7 @@ impl GeometryCustomVertexPipelines {
                 msaa_samples,
                 variant.instancing_transforms,
                 cull_mode,
+                ctx.features.depth().compare(),
             ));
             slots.push(CustomVertexPipelineKeyId {
                 msaa_sample_count: msaa_samples,
@@ -285,6 +286,7 @@ fn build_custom_vertex_cache_key(
     msaa_samples: Option<u32>,
     instancing: bool,
     cull_mode: CullMode,
+    depth_compare: CompareFunction,
 ) -> RenderPipelineCacheKey {
     let primitive_state = PrimitiveState::new()
         .with_topology(PrimitiveTopology::TriangleList)
@@ -293,7 +295,8 @@ fn build_custom_vertex_cache_key(
 
     let depth_stencil = DepthStencilState::new(depth_format)
         .with_depth_write_enabled(true)
-        .with_depth_compare(CompareFunction::LessEqual);
+        // Main-camera depth convention (003).
+        .with_depth_compare(depth_compare);
 
     // Slot 0: plain visibility geometry. Slot 1: instancing (when instanced).
     // Final slot: the uv0 buffer (location 10) — kept LAST so it doesn't shift

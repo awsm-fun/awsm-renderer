@@ -407,6 +407,7 @@ impl AwsmRenderer {
                 &self.meshes.buffer_infos,
                 &self.anti_aliasing,
                 &self.render_textures.formats,
+                self.features.depth().compare(),
             )
             .await?;
 

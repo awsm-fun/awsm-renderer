@@ -8,7 +8,6 @@ use awsm_renderer::{
             BufferBindingLayout, BufferBindingType,
         },
         buffers::BufferBinding,
-        compare::CompareFunction,
         pipeline::{
             depth_stencil::DepthStencilState,
             fragment::{BlendComponent, BlendFactor, BlendOperation, BlendState, ColorTargetState},
@@ -95,7 +94,9 @@ async fn load_grid_pipeline(
 
     let depth_stencil = DepthStencilState::new(renderer.render_textures.formats.depth)
         .with_depth_write_enabled(false)
-        .with_depth_compare(CompareFunction::Less);
+        // Main-camera depth convention (003): the grid depth-tests against the
+        // shared depth buffer, so it must follow the renderer's flag.
+        .with_depth_compare(renderer.features().depth().compare_strict());
 
     // Standard non-premultiplied alpha blending
     let color_target =

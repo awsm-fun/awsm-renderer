@@ -5,6 +5,8 @@ use awsm_renderer_core::renderer::AwsmRendererWebGpu;
 use slotmap::SlotMap;
 use wasm_bindgen::JsValue;
 
+use awsm_renderer_core::compare::CompareFunction;
+
 use crate::{
     bind_group_layout::BindGroupLayouts,
     error::Result,
@@ -97,10 +99,17 @@ impl LineRenderer {
         pipelines: &mut Pipelines,
         shaders: &mut Shaders,
         formats: &RenderTextureFormats,
+        depth_compare_strict: CompareFunction,
     ) -> Result<Self> {
-        let descs =
-            Self::build_descriptors(gpu, bind_group_layouts, pipeline_layouts, shaders, formats)
-                .await?;
+        let descs = Self::build_descriptors(
+            gpu,
+            bind_group_layouts,
+            pipeline_layouts,
+            shaders,
+            formats,
+            depth_compare_strict,
+        )
+        .await?;
         let resolved = pipelines
             .render
             .ensure_keys(
@@ -149,6 +158,7 @@ impl LineRenderer {
         pipelines: &mut Pipelines,
         shaders: &mut Shaders,
         formats: &RenderTextureFormats,
+        depth_compare_strict: CompareFunction,
     ) -> Result<()> {
         if self.pipelines.variants.is_some() {
             self.pipelines_compile_requested = false;
@@ -160,6 +170,7 @@ impl LineRenderer {
             pipeline_layouts,
             shaders,
             formats,
+            depth_compare_strict,
         )
         .await?;
         let resolved = pipelines
@@ -204,6 +215,7 @@ impl LineRenderer {
         bind_group_layouts: &mut BindGroupLayouts,
         pipeline_layouts: &mut PipelineLayouts,
         formats: &RenderTextureFormats,
+        depth_compare_strict: CompareFunction,
     ) -> Result<()> {
         if !self.pipelines_compile_requested
             || self.pipelines.variants.is_some()
@@ -224,6 +236,7 @@ impl LineRenderer {
             pipeline_layouts,
             shader_key,
             formats,
+            depth_compare_strict,
         )?;
         let mut prepped =
             RenderPipelines::ensure_keys_prepare(gpu, shaders, pipeline_layouts, cache_keys)?;
@@ -269,6 +282,7 @@ impl LineRenderer {
         pipeline_layouts: &mut PipelineLayouts,
         shaders: &mut Shaders,
         formats: &RenderTextureFormats,
+        depth_compare_strict: CompareFunction,
     ) -> Result<LineRendererDescriptors> {
         let inner = LinePipelines::build_descriptors(
             gpu,
@@ -276,6 +290,7 @@ impl LineRenderer {
             pipeline_layouts,
             shaders,
             formats,
+            depth_compare_strict,
         )
         .await?;
         Ok(LineRendererDescriptors { inner })

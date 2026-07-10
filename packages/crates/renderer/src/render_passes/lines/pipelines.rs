@@ -102,6 +102,7 @@ impl LinePipelines {
         pipeline_layouts: &mut PipelineLayouts,
         shaders: &mut Shaders,
         formats: &RenderTextureFormats,
+        depth_compare_strict: CompareFunction,
     ) -> Result<LinePipelinesDescriptors> {
         let bind_group_layout_key =
             bind_group_layouts.get_key(gpu, line_bind_group_layout_cache_key())?;
@@ -119,7 +120,15 @@ impl LinePipelines {
 
         let pipeline_cache_keys: Vec<RenderPipelineCacheKey> = VARIANT_KEYS
             .iter()
-            .map(|v| build_pipeline_cache_key(shader_key, pipeline_layout_key, formats, *v))
+            .map(|v| {
+                build_pipeline_cache_key(
+                    shader_key,
+                    pipeline_layout_key,
+                    formats,
+                    *v,
+                    depth_compare_strict,
+                )
+            })
             .collect();
 
         Ok(LinePipelinesDescriptors {
@@ -142,6 +151,7 @@ impl LinePipelines {
         pipeline_layouts: &mut PipelineLayouts,
         shader_key: crate::shaders::ShaderKey,
         formats: &RenderTextureFormats,
+        depth_compare_strict: CompareFunction,
     ) -> Result<Vec<RenderPipelineCacheKey>> {
         let pipeline_layout_key = pipeline_layouts.get_key(
             gpu,
@@ -150,7 +160,15 @@ impl LinePipelines {
         )?;
         Ok(VARIANT_KEYS
             .iter()
-            .map(|v| build_pipeline_cache_key(shader_key, pipeline_layout_key, formats, *v))
+            .map(|v| {
+                build_pipeline_cache_key(
+                    shader_key,
+                    pipeline_layout_key,
+                    formats,
+                    *v,
+                    depth_compare_strict,
+                )
+            })
             .collect())
     }
 
@@ -237,11 +255,13 @@ fn build_pipeline_cache_key(
     pipeline_layout_key: PipelineLayoutKey,
     formats: &RenderTextureFormats,
     variant: LineVariantKey,
+    depth_compare_strict: CompareFunction,
 ) -> RenderPipelineCacheKey {
+    // Main-camera depth convention (003): Less forward-Z / Greater reverse-Z.
     let compare = if variant.depth_test_always {
         CompareFunction::Always
     } else {
-        CompareFunction::Less
+        depth_compare_strict
     };
 
     let depth_stencil = DepthStencilState::new(formats.depth)
