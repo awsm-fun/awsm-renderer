@@ -219,10 +219,11 @@ pub struct Settings {
     /// viewport toggle/keyboard shortcut and any MCP-driven change stay in sync.
     pub editor_ortho: Mutable<bool>,
     /// Editor-camera clip planes: `false` (default) = AUTO — near/far are
-    /// re-derived from the orbit distance every move (clips scenes bigger or
-    /// closer than the assumed framing bounds); `true` = pin them to
-    /// [`Self::cam_clip_near`]/[`Self::cam_clip_far`]. Session-only (the
-    /// editor camera isn't persisted).
+    /// re-derived from the orbit distance every move by a depth-precision-aware
+    /// formula (bounded ~5000:1 far:near ratio, and `far` can't clip the scene);
+    /// `true` = MANUAL, near/far pinned to
+    /// [`Self::cam_clip_near`]/[`Self::cam_clip_far`]. Session-only (the editor
+    /// camera isn't persisted).
     pub cam_clip_manual: Mutable<bool>,
     /// Manual near plane (metres). Applied only when [`Self::cam_clip_manual`].
     pub cam_clip_near: Mutable<f64>,
@@ -247,9 +248,13 @@ impl Default for Settings {
             snap: Mutable::new(false),
             units: Mutable::new("meters".to_string()),
             editor_ortho: Mutable::new(false),
+            // AUTO by default — the robust orbit-distance formula (see
+            // `free_camera::auto_clip_planes`) eliminates the z-fighting the old
+            // manual 0.1/10000 (100,000:1) default caused. Manual stays an
+            // escape hatch with a saner starting pair.
             cam_clip_manual: Mutable::new(false),
-            cam_clip_near: Mutable::new(0.01),
-            cam_clip_far: Mutable::new(1000.0),
+            cam_clip_near: Mutable::new(1.0),
+            cam_clip_far: Mutable::new(5000.0),
         }
     }
 }
@@ -3059,6 +3064,19 @@ impl EditorController {
                 bloom,
                 dof,
                 exposure,
+                bloom_threshold,
+                bloom_knee,
+                bloom_intensity,
+                bloom_scatter,
+                ssr_enabled,
+                ssr_intensity,
+                ssr_max_distance,
+                ssr_thickness,
+                ssr_max_steps,
+                ssr_spread_cutoff,
+                ssr_edge_fade,
+                ssr_temporal,
+                ssr_resolution_scale,
             } => {
                 let prev = self.scene.post_process.get_cloned();
                 let mut next = prev.clone();
@@ -3074,6 +3092,45 @@ impl EditorController {
                 if let Some(v) = exposure {
                     next.exposure = v;
                 }
+                if let Some(v) = bloom_threshold {
+                    next.bloom_threshold = v;
+                }
+                if let Some(v) = bloom_knee {
+                    next.bloom_knee = v;
+                }
+                if let Some(v) = bloom_intensity {
+                    next.bloom_intensity = v;
+                }
+                if let Some(v) = bloom_scatter {
+                    next.bloom_scatter = v;
+                }
+                if let Some(v) = ssr_enabled {
+                    next.ssr.enabled = v;
+                }
+                if let Some(v) = ssr_intensity {
+                    next.ssr.intensity = v;
+                }
+                if let Some(v) = ssr_max_distance {
+                    next.ssr.max_distance = v;
+                }
+                if let Some(v) = ssr_thickness {
+                    next.ssr.thickness = v;
+                }
+                if let Some(v) = ssr_max_steps {
+                    next.ssr.max_steps = v;
+                }
+                if let Some(v) = ssr_spread_cutoff {
+                    next.ssr.spread_cutoff = v;
+                }
+                if let Some(v) = ssr_edge_fade {
+                    next.ssr.edge_fade = v;
+                }
+                if let Some(v) = ssr_temporal {
+                    next.ssr.temporal = v;
+                }
+                if let Some(v) = ssr_resolution_scale {
+                    next.ssr.resolution_scale = v;
+                }
                 self.scene.post_process.set(next);
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
@@ -3083,6 +3140,19 @@ impl EditorController {
                     bloom: Some(prev.bloom),
                     dof: Some(prev.dof),
                     exposure: Some(prev.exposure),
+                    bloom_threshold: Some(prev.bloom_threshold),
+                    bloom_knee: Some(prev.bloom_knee),
+                    bloom_intensity: Some(prev.bloom_intensity),
+                    bloom_scatter: Some(prev.bloom_scatter),
+                    ssr_enabled: Some(prev.ssr.enabled),
+                    ssr_intensity: Some(prev.ssr.intensity),
+                    ssr_max_distance: Some(prev.ssr.max_distance),
+                    ssr_thickness: Some(prev.ssr.thickness),
+                    ssr_max_steps: Some(prev.ssr.max_steps),
+                    ssr_spread_cutoff: Some(prev.ssr.spread_cutoff),
+                    ssr_edge_fade: Some(prev.ssr.edge_fade),
+                    ssr_temporal: Some(prev.ssr.temporal),
+                    ssr_resolution_scale: Some(prev.ssr.resolution_scale),
                 }))
             }
             EditorCommand::SnapCameraToAxis { axis } => {
@@ -3130,6 +3200,21 @@ impl EditorController {
                 // Mirror into the reactive flag so the viewport toggle / shortcut
                 // reflect the current mode regardless of who changed it (incl. MCP).
                 self.settings.editor_ortho.set_neq(!perspective);
+                Ok(None)
+            }
+            EditorCommand::SetCameraClip { manual, near, far } => {
+                // Drive the reactive settings — `settings_sync` observes these and
+                // pushes the resulting clip override into the camera, so the Settings
+                // drawer toggle/fields and any MCP-driven change stay in sync.
+                if let Some(m) = manual {
+                    self.settings.cam_clip_manual.set_neq(m);
+                }
+                if let Some(n) = near {
+                    self.settings.cam_clip_near.set_neq(n);
+                }
+                if let Some(f) = far {
+                    self.settings.cam_clip_far.set_neq(f);
+                }
                 Ok(None)
             }
             EditorCommand::FrameNode { node, padding } => {
@@ -5715,14 +5800,18 @@ impl EditorController {
                 }
                 let edge_count = all_edges.len();
                 let start = offset.unwrap_or(0) as usize;
-                let page = match limit {
-                    Some(l) => all_edges
-                        .iter()
-                        .skip(start)
-                        .take(l as usize)
-                        .collect::<Vec<_>>(),
-                    None => all_edges.iter().skip(start).collect::<Vec<_>>(),
-                };
+                // Bounded DEFAULT: an omitted `limit` used to return the ENTIRE UV
+                // wireframe (7000+ edges on a dense mesh → a ~120 KB result that
+                // overflows a normal tool budget). Cap the default page so a naive
+                // call stays readable; callers paginate via offset/limit (and see
+                // `edge_count` vs the returned length to know there's more).
+                const DEFAULT_UV_EDGE_PAGE: usize = 1000;
+                let take_n = limit.map(|l| l as usize).unwrap_or(DEFAULT_UV_EDGE_PAGE);
+                let page = all_edges
+                    .iter()
+                    .skip(start)
+                    .take(take_n)
+                    .collect::<Vec<_>>();
                 let edges: Vec<serde_json::Value> = page
                     .iter()
                     .filter_map(|e| {

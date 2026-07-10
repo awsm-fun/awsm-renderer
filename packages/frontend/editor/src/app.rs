@@ -742,7 +742,7 @@ fn post_processing_section() -> Dom {
             first = false;
             async move {
                 if fire {
-                    dispatch_post(None, Some(on), None, None);
+                    dispatch_post(None, Some(on), None, None, None, None, None, None);
                 }
             }
         }).await;
@@ -755,7 +755,7 @@ fn post_processing_section() -> Dom {
             first = false;
             async move {
                 if fire {
-                    dispatch_post(None, None, Some(on), None);
+                    dispatch_post(None, None, Some(on), None, None, None, None, None);
                 }
             }
         }).await;
@@ -780,7 +780,52 @@ fn post_processing_section() -> Dom {
                         "aces" => ToneMappingConfig::Aces,
                         _ => ToneMappingConfig::KhronosNeutralPbr,
                     };
-                    dispatch_post(Some(t), None, None, None);
+                    dispatch_post(Some(t), None, None, None, None, None, None, None);
+                }
+            }
+        }).await;
+    }));
+
+    // SSR toggles (structural — each recompiles / rebuilds the SSR pass) ride
+    // Mutables like bloom/dof, skipping the seed emission. Scalar SSR knobs are
+    // NumField blur-commit rows below (live uniforms). `half_res` is surfaced as
+    // a toggle mapping on→0.5 / off→1.0 onto `resolution_scale`.
+    let ssr_enabled = Mutable::new(pp.ssr.enabled);
+    spawn_local(clone!(ssr_enabled => async move {
+        let mut first = true;
+        ssr_enabled.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    dispatch_ssr(Some(on), None, None, None, None, None, None, None, None);
+                }
+            }
+        }).await;
+    }));
+    let ssr_temporal = Mutable::new(pp.ssr.temporal);
+    spawn_local(clone!(ssr_temporal => async move {
+        let mut first = true;
+        ssr_temporal.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    dispatch_ssr(None, None, None, None, None, None, None, Some(on), None);
+                }
+            }
+        }).await;
+    }));
+    let ssr_half_res = Mutable::new(pp.ssr.resolution_scale < 1.0);
+    spawn_local(clone!(ssr_half_res => async move {
+        let mut first = true;
+        ssr_half_res.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    let scale = if on { 0.5 } else { 1.0 };
+                    dispatch_ssr(None, None, None, None, None, None, None, None, Some(scale));
                 }
             }
         }).await;
@@ -814,6 +859,15 @@ fn post_processing_section() -> Dom {
                      -1 = half. Use it to pull photometric light intensities into the \
                      tonemapper's range.",
                 ),
+                (
+                    "SSR",
+                    "Screen-space reflections. Enabling recompiles the material + SSR passes \
+                     and allocates the reflection targets (zero cost when off). Intensity / \
+                     max distance / thickness / max steps / spread cutoff / edge fade are live \
+                     uniforms (tune freely, no recompile). Half-res and Temporal are structural \
+                     (they rebuild the SSR pass). Temporal accumulates across frames for static \
+                     scenes but ghosts moving objects — leave off for gameplay cameras.",
+                ),
             ],
         ))
         .child(row(
@@ -833,19 +887,92 @@ fn post_processing_section() -> Dom {
             "Exposure (EV)",
             NumField::new(pp.exposure as f64)
                 .step(0.25)
-                .on_change(|v| dispatch_post(None, None, None, Some(v as f32)))
+                .on_change(|v| dispatch_post(None, None, None, Some(v as f32), None, None, None, None))
                 .render(),
         ))
+        .child(row(
+            "Bloom threshold",
+            NumField::new(pp.bloom_threshold as f64)
+                .step(0.1)
+                .on_change(|v| dispatch_post(None, None, None, None, Some(v as f32), None, None, None))
+                .render(),
+        ))
+        .child(row(
+            "Bloom knee",
+            NumField::new(pp.bloom_knee as f64)
+                .step(0.05)
+                .on_change(|v| dispatch_post(None, None, None, None, None, Some(v as f32), None, None))
+                .render(),
+        ))
+        .child(row(
+            "Bloom intensity",
+            NumField::new(pp.bloom_intensity as f64)
+                .step(0.05)
+                .on_change(|v| dispatch_post(None, None, None, None, None, None, Some(v as f32), None))
+                .render(),
+        ))
+        .child(row(
+            "Bloom scatter",
+            NumField::new(pp.bloom_scatter as f64)
+                .step(0.1)
+                .on_change(|v| dispatch_post(None, None, None, None, None, None, None, Some(v as f32)))
+                .render(),
+        ))
+        // ── Screen-space reflections ──
+        .child(row("SSR", toggle(ssr_enabled)))
+        .child(row("SSR intensity",
+            NumField::new(pp.ssr.intensity as f64)
+                .step(0.05)
+                .on_change(|v| dispatch_ssr(None, Some(v as f32), None, None, None, None, None, None, None))
+                .render(),
+        ))
+        .child(row("SSR max distance",
+            NumField::new(pp.ssr.max_distance as f64)
+                .step(1.0)
+                .on_change(|v| dispatch_ssr(None, None, Some(v as f32), None, None, None, None, None, None))
+                .render(),
+        ))
+        .child(row("SSR thickness",
+            NumField::new(pp.ssr.thickness as f64)
+                .step(0.1)
+                .on_change(|v| dispatch_ssr(None, None, None, Some(v as f32), None, None, None, None, None))
+                .render(),
+        ))
+        .child(row("SSR max steps",
+            NumField::new(pp.ssr.max_steps as f64)
+                .step(8.0)
+                .on_change(|v| dispatch_ssr(None, None, None, None, Some(v.max(1.0) as u32), None, None, None, None))
+                .render(),
+        ))
+        .child(row("SSR spread cutoff",
+            NumField::new(pp.ssr.spread_cutoff as f64)
+                .step(0.05)
+                .on_change(|v| dispatch_ssr(None, None, None, None, None, Some(v as f32), None, None, None))
+                .render(),
+        ))
+        .child(row("SSR edge fade",
+            NumField::new(pp.ssr.edge_fade as f64)
+                .step(0.02)
+                .on_change(|v| dispatch_ssr(None, None, None, None, None, None, Some(v as f32), None, None))
+                .render(),
+        ))
+        .child(row("SSR half-res", toggle(ssr_half_res)))
+        .child(row("SSR temporal", toggle(ssr_temporal)))
         .render()
 }
 
 /// Dispatch a post-processing patch — only the `Some` fields change.
 /// Fire-and-forget; the `settings_sync` observer applies it live.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_post(
     tonemapping: Option<awsm_renderer_editor_protocol::ToneMappingConfig>,
     bloom: Option<bool>,
     dof: Option<bool>,
     exposure: Option<f32>,
+    bloom_threshold: Option<f32>,
+    bloom_knee: Option<f32>,
+    bloom_intensity: Option<f32>,
+    bloom_scatter: Option<f32>,
 ) {
     spawn_local(async move {
         if let Err(e) = controller()
@@ -854,10 +981,70 @@ fn dispatch_post(
                 bloom,
                 dof,
                 exposure,
+                bloom_threshold,
+                bloom_knee,
+                bloom_intensity,
+                bloom_scatter,
+                // SSR has no settings-drawer control yet (set via MCP); leave
+                // every SSR field unchanged from this UI path.
+                ssr_enabled: None,
+                ssr_intensity: None,
+                ssr_max_distance: None,
+                ssr_thickness: None,
+                ssr_max_steps: None,
+                ssr_spread_cutoff: None,
+                ssr_edge_fade: None,
+                ssr_temporal: None,
+                ssr_resolution_scale: None,
             })
             .await
         {
             tracing::error!("SetPostProcess: {e}");
+        }
+    });
+}
+
+/// Dispatch a single-field (or multi-field) SSR patch — only the `Some` fields
+/// change; every non-SSR post-process field is left untouched. Sibling of
+/// [`dispatch_post`] so the many bloom call sites don't grow SSR args. Structural
+/// SSR axes (`enabled`, `temporal`, `resolution_scale`) trigger the pass
+/// rebuild/recompile in `set_post_processing`; the rest are live uniforms.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_ssr(
+    ssr_enabled: Option<bool>,
+    ssr_intensity: Option<f32>,
+    ssr_max_distance: Option<f32>,
+    ssr_thickness: Option<f32>,
+    ssr_max_steps: Option<u32>,
+    ssr_spread_cutoff: Option<f32>,
+    ssr_edge_fade: Option<f32>,
+    ssr_temporal: Option<bool>,
+    ssr_resolution_scale: Option<f32>,
+) {
+    spawn_local(async move {
+        if let Err(e) = controller()
+            .dispatch(EditorCommand::SetPostProcess {
+                tonemapping: None,
+                bloom: None,
+                dof: None,
+                exposure: None,
+                bloom_threshold: None,
+                bloom_knee: None,
+                bloom_intensity: None,
+                bloom_scatter: None,
+                ssr_enabled,
+                ssr_intensity,
+                ssr_max_distance,
+                ssr_thickness,
+                ssr_max_steps,
+                ssr_spread_cutoff,
+                ssr_edge_fade,
+                ssr_temporal,
+                ssr_resolution_scale,
+            })
+            .await
+        {
+            tracing::error!("SetPostProcess (SSR): {e}");
         }
     });
 }

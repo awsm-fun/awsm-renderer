@@ -873,6 +873,13 @@ pub struct KindSchemaParams {
     /// `"modifier"` for the `ModifierStack` (mesh base + modifiers) schema.
     #[serde(default)]
     pub schema: Option<String>,
+    /// Optional: a single NodeKind VARIANT name (snake_case, e.g. `"collider"`,
+    /// `"light"`, `"particle_emitter"`) — returns just that variant's schema with
+    /// only the `$defs` it references, instead of the full multi-hundred-KB
+    /// `NodeKind` schema. Only applies to `schema: "node"`. An unknown name errors
+    /// with the list of available variants.
+    #[serde(default)]
+    pub variant: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1111,6 +1118,59 @@ pub struct PostProcessParams {
     /// uniform. Omit to leave unchanged.
     #[serde(default)]
     pub exposure: Option<f32>,
+    /// Bloom bright-pass threshold in pre-exposure HDR luminance — pixels
+    /// brighter than this glow (default 1.0). Live uniform. Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub bloom_threshold: Option<f32>,
+    /// Bloom soft-knee width below the threshold, for a smooth fade-in
+    /// (default 0.5). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub bloom_knee: Option<f32>,
+    /// Bloom mix strength over the scene (default 1.0). Live uniform. Omit to
+    /// leave unchanged.
+    #[serde(default)]
+    pub bloom_intensity: Option<f32>,
+    /// Bloom scatter — higher biases the glow toward wider, softer mips
+    /// (default 1.0). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub bloom_scatter: Option<f32>,
+    /// Screen-space reflections on/off. Off records + allocates nothing. Omit
+    /// to leave unchanged.
+    #[serde(default)]
+    pub ssr_enabled: Option<bool>,
+    /// SSR reflection strength (~0..2, default 1.0). Live uniform. Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub ssr_intensity: Option<f32>,
+    /// SSR maximum ray length in world units (default 100). Live uniform. Omit
+    /// to leave unchanged.
+    #[serde(default)]
+    pub ssr_max_distance: Option<f32>,
+    /// SSR hit thickness in world units — the depth band a ray must cross to
+    /// register a hit (default 1.0). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_thickness: Option<f32>,
+    /// SSR linear-march step budget (default 96). Live uniform. Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub ssr_max_steps: Option<u32>,
+    /// SSR reflection-spread cutoff (0 mirror … 1 diffuse) above which SSR hands
+    /// off to IBL (default 0.6). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_spread_cutoff: Option<f32>,
+    /// SSR screen-border fade width 0..1 (default 0.1). Live uniform. Omit to
+    /// leave unchanged.
+    #[serde(default)]
+    pub ssr_edge_fade: Option<f32>,
+    /// SSR temporal reprojection on/off (default off). STRUCTURAL — toggling
+    /// recompiles the SSR pass. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_temporal: Option<bool>,
+    /// SSR resolution scale: 0.5 = half-res trace (default), 1.0 = full-res.
+    /// STRUCTURAL — changing it recompiles. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_resolution_scale: Option<f32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1161,6 +1221,20 @@ pub struct CameraProjectionParams {
     /// Optional perspective vertical FOV (radians).
     #[serde(default)]
     pub fov_y: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CameraClipParams {
+    /// true = manual (pin near/far); false = auto (planes track the orbit
+    /// distance every move). Omit to leave the mode unchanged.
+    #[serde(default)]
+    pub manual: Option<bool>,
+    /// Near clip plane in metres (applied when manual). Omit to leave unchanged.
+    #[serde(default)]
+    pub near: Option<f64>,
+    /// Far clip plane in metres (applied when manual). Omit to leave unchanged.
+    #[serde(default)]
+    pub far: Option<f64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2799,7 +2873,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "UV-layout overlay of a node's resolved mesh (UV set `uv_set`, default 0): `{ has_uv, uv_set, island_count, bounds:{min,max}, islands:[{count,min,max}], edge_count, edges:[[[u,v],[u,v]],…] }`. Diagnoses 'atlas vs strip' in ONE read — a continuous strip UV is ONE island spanning ~[0,1] (good for scrolling/tiling); a baked atlas is MANY small islands (scrolling slides samples onto unrelated content). `edges` is the UV wireframe for drawing the overlay, paged by `offset`/`limit` (can be large); the island summaries are always full. `has_uv:false` means the mesh carries no such UV set."
+        description = "UV-layout overlay of a node's resolved mesh (UV set `uv_set`, default 0): `{ has_uv, uv_set, island_count, bounds:{min,max}, islands:[{count,min,max}], edge_count, edges:[[[u,v],[u,v]],…] }`. Diagnoses 'atlas vs strip' in ONE read — a continuous strip UV is ONE island spanning ~[0,1] (good for scrolling/tiling); a baked atlas is MANY small islands (scrolling slides samples onto unrelated content). `edges` is the UV wireframe for drawing the overlay, paged by `offset`/`limit` (DEFAULT 1000 edges/page when `limit` is omitted, so a naive call stays small — `edge_count` is the full total and `returned` the page length; page via `offset` for the rest); the island summaries are always full. `has_uv:false` means the mesh carries no such UV set."
     )]
     async fn get_uv_layout(
         &self,
@@ -3351,22 +3425,65 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "§3: the machine-readable JSON Schema for a node's `kind` config — the EXACT field shape + enum options of every NodeKind variant, so you can author a fresh kind via set_kind / patch_kind without guessing (the complement to get_node_details, which only shows an existing instance). Default (`schema: \"node\"`) returns the full `NodeKind` schema: every variant under `oneOf`, and every referenced sub-type (LightConfig, CameraConfig, MaterialInstance, ParticleEmitterDef, the KHR PBR extensions, …) fully expanded under `$defs`. `schema: \"modifier\"` returns the `ModifierStack` schema (mesh base + every modifier) for set_mesh_modifiers. Static metadata — no scene state. Returns a JSON Schema (draft 2020-12)."
+        description = "§3: the machine-readable JSON Schema for a node's `kind` config — the EXACT field shape + enum options of every NodeKind variant, so you can author a fresh kind via set_kind / patch_kind without guessing (the complement to get_node_details, which only shows an existing instance). `schema: \"node\"` (default) returns the full `NodeKind` schema: every variant under `oneOf`, and every referenced sub-type (LightConfig, CameraConfig, MaterialInstance, ParticleEmitterDef, the KHR PBR extensions, …) expanded under `$defs` — this is LARGE (hundreds of KB); prefer `variant` to scope it. `variant: \"<snake_case>\"` (e.g. `\"collider\"`, `\"light\"`, `\"particle_emitter\"`) returns JUST that one variant's schema plus only the `$defs` it references — small and targeted. `schema: \"modifier\"` returns the `ModifierStack` schema (mesh base + every modifier) for set_mesh_modifiers. Static metadata — no scene state. Returns a JSON Schema (draft 2020-12)."
     )]
     async fn get_kind_schema(
         &self,
         Parameters(p): Parameters<KindSchemaParams>,
     ) -> Result<CallToolResult, McpError> {
-        let json = match p.schema.as_deref() {
+        match p.schema.as_deref() {
             Some("modifier") | Some("modifier_stack") | Some("modifiers") => {
-                serde_json::to_string_pretty(&schemars::schema_for!(
+                let json = serde_json::to_string_pretty(&schemars::schema_for!(
                     awsm_renderer_editor_protocol::ModifierStack
                 ))
+                .map_err(|e| McpError::internal_error(format!("serialize schema: {e}"), None))?;
+                Ok(text(json))
             }
-            _ => serde_json::to_string_pretty(&schemars::schema_for!(NodeKind)),
+            None | Some("node") => {
+                let full = serde_json::to_value(schemars::schema_for!(NodeKind)).map_err(|e| {
+                    McpError::internal_error(format!("serialize schema: {e}"), None)
+                })?;
+                match p.variant.as_deref() {
+                    // Full NodeKind schema (large — the historical behaviour).
+                    None => Ok(text(
+                        serde_json::to_string_pretty(&full).unwrap_or_default(),
+                    )),
+                    // One variant + only its transitively-referenced $defs.
+                    Some(v) => {
+                        let scoped = filter_node_variant_schema(&full, v).ok_or_else(|| {
+                            McpError::invalid_params(
+                                format!(
+                                    "unknown NodeKind variant \"{v}\"; available: {}",
+                                    node_variant_names(&full).join(", ")
+                                ),
+                                None,
+                            )
+                        })?;
+                        Ok(text(
+                            serde_json::to_string_pretty(&scoped).unwrap_or_default(),
+                        ))
+                    }
+                }
+            }
+            // Previously an unrecognized `schema` (e.g. "environment") silently
+            // fell through to the full NodeKind schema — a confusing hundreds-of-KB
+            // dump for a value that isn't a valid selector. Reject it with guidance.
+            Some(other) => {
+                let full = serde_json::to_value(schemars::schema_for!(NodeKind)).ok();
+                let variants = full
+                    .as_ref()
+                    .map(node_variant_names)
+                    .unwrap_or_default()
+                    .join(", ");
+                Err(McpError::invalid_params(
+                    format!(
+                        "unknown schema \"{other}\"; valid: \"node\" | \"modifier\". For a SINGLE \
+                         node kind's (small) schema pass variant:<name>. NodeKind variants: {variants}"
+                    ),
+                    None,
+                ))
+            }
         }
-        .map_err(|e| McpError::internal_error(format!("serialize schema: {e}"), None))?;
-        Ok(text(json))
     }
 
     #[tool(
@@ -3731,7 +3848,14 @@ impl EditorMcp {
             ($arg:expr) => {
                 match $arg.as_deref() {
                     None => None,
-                    Some("builtin") | Some("builtin_default") => Some(EnvSlot::BuiltInDefault),
+                    // Accept every spelling of the built-in-default reset: the
+                    // canonical "builtin", plus "builtin_default" and the
+                    // "built_in_default" string the SCENE EXPORTER serializes into
+                    // `[environment] skybox/specular/irradiance` — so a value the
+                    // tool writes on export is a value it accepts back on input.
+                    Some("builtin") | Some("builtin_default") | Some("built_in_default") => {
+                        Some(EnvSlot::BuiltInDefault)
+                    }
                     Some(v) => Some(EnvSlot::Ktx {
                         asset_id: resolve_ktx!(v),
                     }),
@@ -3768,7 +3892,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright). Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof recompile the effects+display pipelines (wait_render_settled after); exposure is a live uniform. Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0."
+        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof recompile the effects+display pipelines (wait_render_settled after); exposure + the four bloom_* knobs are LIVE uniforms (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0."
     )]
     async fn set_post_process(
         &self,
@@ -3796,6 +3920,19 @@ impl EditorMcp {
             bloom: p.bloom,
             dof: p.dof,
             exposure: p.exposure,
+            bloom_threshold: p.bloom_threshold,
+            bloom_knee: p.bloom_knee,
+            bloom_intensity: p.bloom_intensity,
+            bloom_scatter: p.bloom_scatter,
+            ssr_enabled: p.ssr_enabled,
+            ssr_intensity: p.ssr_intensity,
+            ssr_max_distance: p.ssr_max_distance,
+            ssr_thickness: p.ssr_thickness,
+            ssr_max_steps: p.ssr_max_steps,
+            ssr_spread_cutoff: p.ssr_spread_cutoff,
+            ssr_edge_fade: p.ssr_edge_fade,
+            ssr_temporal: p.ssr_temporal,
+            ssr_resolution_scale: p.ssr_resolution_scale,
         })
         .await
     }
@@ -3863,6 +4000,21 @@ impl EditorMcp {
         self.dispatch(EditorCommand::SetCameraProjection {
             perspective: p.perspective,
             fov_y: p.fov_y,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the viewport camera near/far clip planes. `manual=true` pins the planes to `near`/`far` (metres); `manual=false` restores auto (planes track the orbit distance). Any omitted field is left unchanged. Editor default is manual, near 0.1, far 10000."
+    )]
+    async fn set_camera_clip(
+        &self,
+        Parameters(p): Parameters<CameraClipParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetCameraClip {
+            manual: p.manual,
+            near: p.near,
+            far: p.far,
         })
         .await
     }
@@ -4832,6 +4984,105 @@ impl ServerHandler for EditorMcp {
 
 fn text(s: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![Content::text(s.into())])
+}
+
+/// The externally-tagged variant name a `oneOf` schema entry represents — for a
+/// serde-external enum, either a `const`/single-`enum` string (unit variant) or
+/// the single `required`/`properties` key (data variant). `None` if the entry
+/// doesn't match that shape.
+fn oneof_variant_name(entry: &Value) -> Option<String> {
+    if let Some(c) = entry.get("const").and_then(Value::as_str) {
+        return Some(c.to_string());
+    }
+    if let Some(arr) = entry.get("enum").and_then(Value::as_array) {
+        if let [Value::String(s)] = arr.as_slice() {
+            return Some(s.clone());
+        }
+    }
+    if let Some(req) = entry.get("required").and_then(Value::as_array) {
+        if let [Value::String(s)] = req.as_slice() {
+            return Some(s.clone());
+        }
+    }
+    if let Some(props) = entry.get("properties").and_then(Value::as_object) {
+        if props.len() == 1 {
+            return props.keys().next().cloned();
+        }
+    }
+    None
+}
+
+/// Every NodeKind variant name (snake_case) from a schema's `oneOf`.
+fn node_variant_names(full: &Value) -> Vec<String> {
+    full.get("oneOf")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(oneof_variant_name).collect())
+        .unwrap_or_default()
+}
+
+/// Collect every `#/$defs/<Name>` referenced anywhere in `v`.
+fn collect_defs_refs(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, val) in m {
+                if k == "$ref" {
+                    if let Some(name) = val.as_str().and_then(|s| s.strip_prefix("#/$defs/")) {
+                        out.push(name.to_string());
+                    }
+                } else {
+                    collect_defs_refs(val, out);
+                }
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| collect_defs_refs(x, out)),
+        _ => {}
+    }
+}
+
+/// Scope a full `NodeKind` schema down to a single `variant`: the matching `oneOf`
+/// entry plus ONLY the `$defs` it references (transitively). `None` if no variant
+/// matches. Shrinks a hundreds-of-KB schema to just the relevant slice.
+fn filter_node_variant_schema(full: &Value, variant: &str) -> Option<Value> {
+    let one_of = full.get("oneOf").and_then(Value::as_array)?;
+    let entry = one_of
+        .iter()
+        .find(|e| oneof_variant_name(e).as_deref() == Some(variant))?
+        .clone();
+
+    // Transitive $defs closure reachable from the chosen variant.
+    let mut kept = serde_json::Map::new();
+    if let Some(defs) = full.get("$defs").and_then(Value::as_object) {
+        let mut stack = Vec::new();
+        collect_defs_refs(&entry, &mut stack);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(name) = stack.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if let Some(def) = defs.get(&name) {
+                kept.insert(name.clone(), def.clone());
+                collect_defs_refs(def, &mut stack);
+            }
+        }
+    }
+
+    let mut out = serde_json::Map::new();
+    if let Some(s) = full.get("$schema") {
+        out.insert("$schema".to_string(), s.clone());
+    }
+    out.insert(
+        "title".to_string(),
+        Value::String(format!("NodeKind::{variant}")),
+    );
+    if let Some(obj) = entry.as_object() {
+        for (k, v) in obj {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    if !kept.is_empty() {
+        out.insert("$defs".to_string(), Value::Object(kept));
+    }
+    Some(Value::Object(out))
 }
 
 fn parse_node(s: &str) -> Result<NodeId, McpError> {

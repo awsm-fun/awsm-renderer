@@ -548,6 +548,42 @@ pub enum EditorCommand {
         bloom: Option<bool>,
         dof: Option<bool>,
         exposure: Option<f32>,
+        bloom_threshold: Option<f32>,
+        bloom_knee: Option<f32>,
+        bloom_intensity: Option<f32>,
+        bloom_scatter: Option<f32>,
+        // The SSR fields are `#[serde(default)]` so a pre-SSR sender (e.g. an
+        // MCP binary built before this field set) still deserializes into the
+        // newer editor over the JSON `/editor` websocket — the SSR fields just
+        // default to `None` (leave unchanged). Keeps the protocol
+        // forward/backward compatible without a lockstep rebuild.
+        /// Screen-space reflections on/off. Records nothing when off.
+        #[serde(default)]
+        ssr_enabled: Option<bool>,
+        /// SSR reflection strength (live uniform).
+        #[serde(default)]
+        ssr_intensity: Option<f32>,
+        /// SSR max ray length, world units (live uniform).
+        #[serde(default)]
+        ssr_max_distance: Option<f32>,
+        /// SSR hit thickness, world units (live uniform).
+        #[serde(default)]
+        ssr_thickness: Option<f32>,
+        /// SSR linear-march step budget (live uniform).
+        #[serde(default)]
+        ssr_max_steps: Option<u32>,
+        /// SSR reflection-spread cutoff → IBL (live uniform).
+        #[serde(default)]
+        ssr_spread_cutoff: Option<f32>,
+        /// SSR screen-border fade width 0..1 (live uniform).
+        #[serde(default)]
+        ssr_edge_fade: Option<f32>,
+        /// SSR temporal reprojection on/off (STRUCTURAL — recompiles).
+        #[serde(default)]
+        ssr_temporal: Option<bool>,
+        /// SSR resolution scale: 0.5 half-res, 1.0 full-res (STRUCTURAL — recompiles).
+        #[serde(default)]
+        ssr_resolution_scale: Option<f32>,
     },
 
     /// Snap the viewport camera to a world axis (the nav-cube directions).
@@ -574,6 +610,19 @@ pub enum EditorCommand {
         perspective: bool,
         #[serde(default)]
         fov_y: Option<f32>,
+    },
+    /// Set the viewport camera's near/far clip planes. `manual = Some(true)`
+    /// pins the planes to `near`/`far`; `manual = Some(false)` restores AUTO
+    /// (planes re-derived from the orbit distance every move). `near`/`far`
+    /// (metres) update the pinned values; any field left `None` is unchanged.
+    /// **Transient** (view state, not undo-logged).
+    SetCameraClip {
+        #[serde(default)]
+        manual: Option<bool>,
+        #[serde(default)]
+        near: Option<f64>,
+        #[serde(default)]
+        far: Option<f64>,
     },
     /// Frame a node in the viewport — fit its world-space bounds with `padding`
     /// (0 = tight, 0.2 = 20% margin). **Transient** (view state).
@@ -1279,6 +1328,7 @@ impl EditorCommand {
                 | EditorCommand::ResetCamera
                 | EditorCommand::SetCameraOrbit { .. }
                 | EditorCommand::SetCameraProjection { .. }
+                | EditorCommand::SetCameraClip { .. }
                 | EditorCommand::FrameNode { .. }
                 | EditorCommand::ResetPose { .. }
                 | EditorCommand::SetFrameTime { .. }
@@ -1486,6 +1536,7 @@ impl EditorCommand {
             EditorCommand::ResetCamera => "Reset view",
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",
             EditorCommand::SetCameraProjection { .. } => "Set projection",
+            EditorCommand::SetCameraClip { .. } => "Set clip planes",
             EditorCommand::FrameNode { .. } => "Frame node",
             EditorCommand::ResetPose { .. } => "Reset pose",
             EditorCommand::SetFrameTime { .. } => "Pin frame time",

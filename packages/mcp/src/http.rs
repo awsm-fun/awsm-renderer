@@ -271,6 +271,13 @@ async fn png_download(Path(id): Path<String>) -> impl IntoResponse {
 /// `POST /glb/{id}` — the editor uploads an exported `.glb` here (off the control
 /// link). We write it to a temp file and remember the id for LRU eviction.
 async fn glb_upload(State(s): State<AppState>, Path(id): Path<String>, body: Bytes) -> StatusCode {
+    // Symmetric with `glb_download`, which strips a trailing `.glb` so a model
+    // can be GET as `/glb/<id>.glb` (a real-looking model URL) while stored under
+    // `<id>`. Strip here too so POST `/glb/<id>.glb` and POST `/glb/<id>`
+    // canonicalize to the SAME file — otherwise the `.glb`-suffixed POST writes
+    // `<id>.glb.glb`, which the suffix-stripping GET can never read, yielding a
+    // silent 404 on an upload that returned 200.
+    let id = id.strip_suffix(".glb").unwrap_or(&id).to_string();
     let path = glb_path(&id);
     if let Err(e) = std::fs::write(&path, &body) {
         tracing::warn!("glb upload write failed ({}): {e}", path.display());

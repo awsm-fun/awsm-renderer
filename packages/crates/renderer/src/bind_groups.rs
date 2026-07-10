@@ -85,6 +85,10 @@ pub struct BindGroupRecreateContext<'a> {
     /// per-instance mip levels. `None` when
     /// `features.gpu_culling == false`.
     pub hzb_full_view: Option<web_sys::GpuTextureView>,
+    /// Full-chain SSR min-Z pyramid view the Hi-Z trace descends. `None`
+    /// when the min-Z pass is absent (`post_processing.ssr.enabled == false`);
+    /// the SSR recreate leaves the trace bind group unbuilt in that case.
+    pub ssr_minz_full_view: Option<web_sys::GpuTextureView>,
     /// Per-tile decal classify buckets. `None` when
     /// `features.decals == false`.
     pub decal_classify_buffers:
@@ -248,6 +252,8 @@ impl BindGroups {
             TransparentTextures,
             TransparentShadows,
             LightCulling,
+            Bloom,
+            Ssr,
             Effects,
             Display,
             Picker,
@@ -327,6 +333,13 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
                     functions_to_call.insert(FunctionToCall::Display);
                     functions_to_call.insert(FunctionToCall::Effects);
+                    // Bloom pyramid pass binds composite (read) + the full-res
+                    // bloom texture (write) + its per-mip pyramid views — all
+                    // recreated on resize.
+                    functions_to_call.insert(FunctionToCall::Bloom);
+                    // SSR binds depth + normal + transparent (read) + the ssr
+                    // target (write); all recreated on resize.
+                    functions_to_call.insert(FunctionToCall::Ssr);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::Picker);
@@ -685,6 +698,40 @@ impl BindGroups {
                         .expect("Decal pass missing despite decals feature on")
                         .bind_groups
                         .recreate_texture_pool(&ctx)?;
+                }
+                FunctionToCall::Bloom => {
+                    // Split-borrow: bind_groups (mut) vs texture/params (shared).
+                    let crate::render_passes::bloom::render_pass::BloomRenderPass {
+                        bind_groups,
+                        texture,
+                        params,
+                        ..
+                    } = &mut render_passes.bloom;
+                    bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
+                }
+                FunctionToCall::Ssr => {
+                    // M2c: rebuild the min-Z pyramid's own seed + reduce bind
+                    // groups first — its texture may have just resized. `None`
+                    // when SSR is disabled (the pyramid pass wasn't built). The
+                    // SSR trace bind group below binds the pyramid's cloned
+                    // `view_all` via `ctx.ssr_minz_full_view` (already pointing
+                    // at the resized texture).
+                    if let Some(minz) = render_passes.ssr_minz.as_mut() {
+                        let crate::render_passes::ssr_minz::render_pass::SsrMinzRenderPass {
+                            bind_groups,
+                            texture,
+                            ..
+                        } = minz;
+                        bind_groups.recreate(&ctx, texture)?;
+                    }
+                    let crate::render_passes::ssr::render_pass::SsrRenderPass {
+                        bind_groups,
+                        params,
+                        composite,
+                        ..
+                    } = &mut render_passes.ssr;
+                    bind_groups.recreate(&ctx, &params.gpu_buffer)?;
+                    composite.recreate(&ctx)?;
                 }
                 FunctionToCall::Effects => {
                     render_passes.effects.bind_groups.recreate(&ctx)?;

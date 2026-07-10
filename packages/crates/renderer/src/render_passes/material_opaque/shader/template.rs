@@ -125,6 +125,11 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// former (their body doesn't read it) and the minimal skybox-only shader
     /// for the latter. Never the full "uber" set.
     pub pbr_features: awsm_renderer_materials::pbr::PbrFeatures,
+    /// M2a: emit the per-base reflectance computation + the
+    /// `reflection_descriptor_tex` stores. Gated so an SSR-off kernel computes
+    /// and stores nothing. See
+    /// [`ShaderCacheKeyMaterialOpaque::write_ssr_descriptor`].
+    pub write_ssr_descriptor: bool,
     /// For dynamic shader ids: the auto-generated `struct
     /// MaterialData { ... }` declaration emitted above the author's
     /// WGSL fragment. Empty string for first-party ids.
@@ -469,6 +474,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 pbr_features: awsm_renderer_materials::pbr::PbrFeatures::from_bits(
                     value.pbr_features,
                 ),
+                write_ssr_descriptor: value.write_ssr_descriptor,
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()
@@ -700,6 +706,7 @@ mod empty_registry_tests {
 
     fn render_first_party_wgsl(shader_id: MaterialShaderId, msaa: Option<u32>) -> String {
         let key = ShaderCacheKeyMaterialOpaque {
+            write_ssr_descriptor: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
@@ -1036,6 +1043,7 @@ mod size_regression {
             name: "noise".to_string(),
         });
         let key = ShaderCacheKeyMaterialOpaque {
+            write_ssr_descriptor: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,

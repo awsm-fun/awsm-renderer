@@ -363,8 +363,17 @@ impl MaterialOpaqueBindGroups {
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.extras_pool.buffer)),
         ));
+        // M2a: SSR reflection descriptor output (binding 24). Pushed before the
+        // prep block so its index stays stable across AA (the prep_edge_shadow
+        // entry after it is MSAA-gated). Matches the layout entry above.
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::TextureView(Cow::Borrowed(
+                &ctx.render_texture_views.reflection_descriptor,
+            )),
+        ));
 
-        // Plan B (stage 5a): prep_uv (binding 24) + prep_vcolor (binding 25) +
+        // Plan B (stage 5a): prep_uv (binding 25) + prep_vcolor (binding 26) +
         // prep_shadow_visibility (binding 26) for the PRIMARY `cs_opaque` read —
         // now under MSAA too (the prep textures are full-res sample-0). The prep
         // views are always `Some` (prep is unconditional), so this branch always
@@ -809,6 +818,19 @@ async fn create_main_bind_group_layout_key(
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::Buffer(
                 BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        },
+        // M2a: SSR reflection descriptor output (binding 24, both AA layouts —
+        // placed before the MSAA-gated prep_edge_shadow so its index is stable).
+        // Storage texture the material kernels write per pixel.
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::StorageTexture(
+                StorageTextureBindingLayout::new(ctx.render_texture_formats.reflection_descriptor)
+                    .with_view_dimension(TextureViewDimension::N2d)
+                    .with_access(StorageTextureAccess::WriteOnly),
             ),
             visibility_vertex: false,
             visibility_fragment: false,

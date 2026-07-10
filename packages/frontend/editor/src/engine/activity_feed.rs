@@ -476,6 +476,7 @@ fn describe(cmd: &EditorCommand) -> Option<(FocusTarget, String)> {
         | EditorCommand::ResetCamera
         | EditorCommand::SetCameraOrbit { .. }
         | EditorCommand::SetCameraProjection { .. }
+        | EditorCommand::SetCameraClip { .. }
         | EditorCommand::FrameNode { .. }
         | EditorCommand::SetFrameTime { .. }
         | EditorCommand::ClearFrameTime

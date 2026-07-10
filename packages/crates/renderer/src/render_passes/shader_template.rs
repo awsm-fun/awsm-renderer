@@ -6,6 +6,7 @@ use crate::render_passes::cluster_lod::shader::template::{
 };
 use crate::{
     render_passes::{
+        bloom::shader::template::{ShaderTemplateBloomCombine, ShaderTemplateBloomDownsample},
         coverage::shader::template::ShaderTemplateCoverage,
         display::shader::template::ShaderTemplateDisplay,
         effects::shader::template::ShaderTemplateEffects,
@@ -26,6 +27,8 @@ use crate::{
             ShaderTemplateOcclusionCompaction, ShaderTemplateOcclusionCull,
         },
         shader_cache_key::ShaderCacheKeyRenderPass,
+        ssr::shader::template::ShaderTemplateSsr,
+        ssr_minz::shader::template::{ShaderTemplateSsrMinzReduce, ShaderTemplateSsrMinzSeed},
     },
     shaders::AwsmShaderError,
 };
@@ -39,6 +42,8 @@ pub enum ShaderTemplateRenderPass {
     GeometryMaskedCustomVertex(ShaderTemplateGeometryMaskedCustomVertex),
     HzbSeed(ShaderTemplateHzbSeed),
     HzbReduce(ShaderTemplateHzbReduce),
+    BloomDownsample(ShaderTemplateBloomDownsample),
+    BloomCombine(ShaderTemplateBloomCombine),
     LightCulling(ShaderTemplateLightCulling),
     MaterialClassify(ShaderTemplateMaterialClassify),
     MaterialPrep(ShaderTemplateMaterialPrep),
@@ -56,6 +61,9 @@ pub enum ShaderTemplateRenderPass {
     ClusterCompaction(ShaderTemplateClusterCompaction),
     Effects(ShaderTemplateEffects),
     Display(ShaderTemplateDisplay),
+    Ssr(ShaderTemplateSsr),
+    SsrMinzSeed(ShaderTemplateSsrMinzSeed),
+    SsrMinzReduce(ShaderTemplateSsrMinzReduce),
 }
 
 impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
@@ -83,6 +91,12 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             }
             ShaderCacheKeyRenderPass::HzbReduce(cache_key) => {
                 Ok(ShaderTemplateRenderPass::HzbReduce(cache_key.try_into()?))
+            }
+            ShaderCacheKeyRenderPass::BloomDownsample(cache_key) => Ok(
+                ShaderTemplateRenderPass::BloomDownsample(cache_key.try_into()?),
+            ),
+            ShaderCacheKeyRenderPass::BloomCombine(cache_key) => {
+                Ok(ShaderTemplateRenderPass::BloomCombine(cache_key.try_into()?))
             }
             ShaderCacheKeyRenderPass::LightCulling(cache_key) => Ok(
                 ShaderTemplateRenderPass::LightCulling(cache_key.try_into()?),
@@ -131,6 +145,15 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::Display(cache_key) => {
                 Ok(ShaderTemplateRenderPass::Display(cache_key.try_into()?))
             }
+            ShaderCacheKeyRenderPass::Ssr(cache_key) => {
+                Ok(ShaderTemplateRenderPass::Ssr(cache_key.try_into()?))
+            }
+            ShaderCacheKeyRenderPass::SsrMinzSeed(cache_key) => {
+                Ok(ShaderTemplateRenderPass::SsrMinzSeed(cache_key.try_into()?))
+            }
+            ShaderCacheKeyRenderPass::SsrMinzReduce(cache_key) => Ok(
+                ShaderTemplateRenderPass::SsrMinzReduce(cache_key.try_into()?),
+            ),
         }
     }
 }
@@ -146,6 +169,8 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::GeometryMaskedCustomVertex(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::HzbSeed(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::BloomDownsample(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::BloomCombine(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialPrep(tmpl) => tmpl.into_source(),
@@ -163,6 +188,9 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::ClusterCompaction(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::Ssr(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::SsrMinzSeed(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::SsrMinzReduce(tmpl) => tmpl.into_source(),
         }
     }
 
@@ -178,6 +206,8 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::GeometryMaskedCustomVertex(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::HzbSeed(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::BloomDownsample(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::BloomCombine(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialPrep(tmpl) => tmpl.debug_label(),
@@ -195,6 +225,9 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::ClusterCompaction(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::Ssr(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::SsrMinzSeed(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::SsrMinzReduce(tmpl) => tmpl.debug_label(),
         }
     }
 }

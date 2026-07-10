@@ -62,6 +62,12 @@ pub struct RenderTextureFormats {
     // Output from coloring passes (opaque + transparent)
     pub color: TextureFormat,
 
+    /// Per-pixel material-owned SSR reflection descriptor (M2a). RGB =
+    /// `ssr_mask * ssr_tint` (reflectivity color; 0 = surface opts out of SSR),
+    /// A = `ssr_spread` (0 mirror … 1 diffuse). Written by `material_opaque`,
+    /// read by the SSR pass. Rgba8unorm is enough — these are 0..1 factors.
+    pub reflection_descriptor: TextureFormat,
+
     // output from display pass is whatever current gpu texture format is
 
     // For depth testing and transparency
@@ -82,6 +88,7 @@ impl RenderTextureFormats {
             normal_tangent: TextureFormat::Rgba16float,
             barycentric_derivatives: TextureFormat::Rgba16float,
             color: TextureFormat::Rgba16float, // HDR format for bloom/tonemapping
+            reflection_descriptor: TextureFormat::Rgba8unorm, // SSR reflectivity + spread factors
             depth: TextureFormat::Depth32float, // More precision for thin/close surfaces
         }
     }
@@ -195,6 +202,9 @@ impl RenderTextures {
         current_size: (u32, u32),
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
+        ssr_enabled: bool,
+        ssr_half_res: bool,
+        ssr_temporal: bool,
     ) -> Result<RenderTextureViews> {
         let size_changed = match self.inner.as_ref() {
             Some(inner) => (inner.width, inner.height) != current_size,
@@ -203,6 +213,34 @@ impl RenderTextures {
 
         let anti_aliasing_changed = match self.inner.as_ref() {
             Some(inner) => inner.anti_aliasing != anti_aliasing,
+            None => false,
+        };
+
+        // Lazy SSR-target allocation: the `ssr` + `reflection_descriptor` targets
+        // are full-res only when SSR is enabled, 1×1 placeholders otherwise (so a
+        // renderer that never uses SSR pays no full-res memory). Toggling SSR
+        // flips this and rebuilds inner just like an AA change — the next
+        // `views()` sees the new flag and re-allocates + recreates bind groups.
+        let ssr_enabled_changed = match self.inner.as_ref() {
+            Some(inner) => inner.ssr_enabled != ssr_enabled,
+            None => false,
+        };
+
+        // Half-res SSR trace: the `ssr` target shrinks to ((w+1)/2, (h+1)/2)
+        // when SSR is on AND resolution_scale < 1.0 (the composite step
+        // bilinearly upsamples it). Toggling it rebuilds inner + recreates the
+        // SSR bind groups, exactly like the `ssr_enabled` flip above.
+        let ssr_half_res_changed = match self.inner.as_ref() {
+            Some(inner) => inner.ssr_half_res != ssr_half_res,
+            None => false,
+        };
+
+        // M3 SSR temporal: the half-res history pair (`ssr_history`) is only
+        // allocated full-size when SSR is on AND temporal is on, else 1×1
+        // placeholders. Toggling it rebuilds inner + recreates the SSR bind
+        // groups exactly like the `ssr_half_res` flip above.
+        let ssr_temporal_changed = match self.inner.as_ref() {
+            Some(inner) => inner.ssr_temporal != ssr_temporal,
             None => false,
         };
 
@@ -222,7 +260,14 @@ impl RenderTextures {
             None => false,
         };
 
-        if size_changed || anti_aliasing_changed || opaque_mips_grown || hud_depth_appeared {
+        if size_changed
+            || anti_aliasing_changed
+            || opaque_mips_grown
+            || hud_depth_appeared
+            || ssr_enabled_changed
+            || ssr_half_res_changed
+            || ssr_temporal_changed
+        {
             if let Some(inner) = self.inner.take() {
                 // Defer destroy: a prior frame's "Rendering" submit may still
                 // reference these textures on the GPU. Destroying now would
@@ -245,6 +290,9 @@ impl RenderTextures {
                 self.prep_shadow_layers,
                 needs_opaque_mip_chain,
                 needs_hud_depth,
+                ssr_enabled,
+                ssr_half_res,
+                ssr_temporal,
             )?;
             self.inner = Some(inner);
         }
@@ -259,8 +307,13 @@ impl RenderTextures {
         // this flag was named `size_changed` and only fired on the
         // viewport-resize path — leaving stale views behind in the
         // T2.5 / T2.6 lazy-allocation paths.
-        let views_recreated =
-            size_changed || anti_aliasing_changed || opaque_mips_grown || hud_depth_appeared;
+        let views_recreated = size_changed
+            || anti_aliasing_changed
+            || opaque_mips_grown
+            || hud_depth_appeared
+            || ssr_enabled_changed
+            || ssr_half_res_changed
+            || ssr_temporal_changed;
         Ok(RenderTextureViews::new(
             self.inner.as_ref().unwrap(),
             self.ping_pong(),
@@ -342,6 +395,19 @@ pub struct RenderTextureViews {
     pub effects: web_sys::GpuTextureView,
     pub bloom: web_sys::GpuTextureView,
 
+    /// SSR reflection target — the SSR pass storage-writes its result here.
+    pub ssr: web_sys::GpuTextureView,
+    /// M3 SSR temporal history pair (same dims as `ssr`). The trace reads the
+    /// previous frame's accumulated reflection from one and writes this frame's
+    /// into the other, swapping by frame parity. 1×1 placeholders unless SSR is
+    /// on AND temporal is on.
+    pub ssr_history: [web_sys::GpuTextureView; 2],
+    /// Blits the `ssr` result over `transparent` (single-sample color blit).
+    pub ssr_to_transparent_blit_bind_group: web_sys::GpuBindGroup,
+    /// M2a material-owned reflection descriptor — `material_opaque` writes it,
+    /// the SSR pass reads it.
+    pub reflection_descriptor: web_sys::GpuTextureView,
+
     pub depth: web_sys::GpuTextureView,
     /// T2.6: `None` until the first HUD renderable registers
     /// (`Meshes::has_seen_hud`). The HUD geometry / transparent
@@ -407,6 +473,15 @@ impl RenderTextureViews {
             // flips on the first HUD renderable insertion.
             effects: inner.effects_view.clone(),
             bloom: inner.bloom_view.clone(),
+            ssr: inner.ssr_view.clone(),
+            ssr_history: [
+                inner.ssr_history_views[0].clone(),
+                inner.ssr_history_views[1].clone(),
+            ],
+            reflection_descriptor: inner.reflection_descriptor_view.clone(),
+            ssr_to_transparent_blit_bind_group: inner
+                .ssr_to_transparent_blit_bind_group_no_anti_alias
+                .clone(),
             composite: inner.composite_view.clone(),
             views_recreated,
             curr_index,
@@ -507,10 +582,40 @@ pub struct RenderTexturesInner {
     pub bloom: web_sys::GpuTexture,
     pub bloom_view: web_sys::GpuTextureView,
 
+    /// SSR reflection target — the SSR compute pass storage-writes `base +
+    /// reflection` here, then it blits over `transparent`. Full-res HDR, same
+    /// storage+sample usage as bloom.
+    pub ssr: web_sys::GpuTexture,
+    pub ssr_view: web_sys::GpuTextureView,
+    /// M3 SSR temporal history pair — same dims + format as `ssr`. Ping-ponged
+    /// by frame parity: one is read (previous frame), the other written (this
+    /// frame). 1×1 placeholders unless `ssr_enabled && ssr_temporal`.
+    pub ssr_history: [web_sys::GpuTexture; 2],
+    pub ssr_history_views: [web_sys::GpuTextureView; 2],
+    /// SSR result → transparent blit source (always single-sample).
+    pub ssr_to_transparent_blit_bind_group_no_anti_alias: web_sys::GpuBindGroup,
+
+    /// M2a material-owned reflection descriptor (Rgba8unorm). `material_opaque`
+    /// storage-writes it; the SSR pass texture-reads it. See
+    /// [`RenderTextureFormats::reflection_descriptor`].
+    pub reflection_descriptor: web_sys::GpuTexture,
+    pub reflection_descriptor_view: web_sys::GpuTextureView,
+
     pub width: u32,
     pub height: u32,
 
     pub anti_aliasing: AntiAliasing,
+    /// Whether the `ssr` + `reflection_descriptor` targets are full-res (SSR on)
+    /// or 1×1 placeholders (SSR off). `views()` rebuilds inner when this flips.
+    pub ssr_enabled: bool,
+    /// Whether the `ssr` target is half-res (SSR on AND resolution_scale < 1.0).
+    /// `reflection_descriptor` stays full-res regardless. `views()` rebuilds
+    /// inner when this flips.
+    pub ssr_half_res: bool,
+    /// M3: whether the `ssr_history` pair is allocated at the `ssr` dims (SSR on
+    /// AND temporal on) vs. 1×1 placeholders. `views()` rebuilds inner when this
+    /// flips.
+    pub ssr_temporal: bool,
 }
 
 impl RenderTexturesInner {
@@ -533,7 +638,29 @@ impl RenderTexturesInner {
         prep_shadow_layers: u32,
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
+        ssr_enabled: bool,
+        ssr_half_res: bool,
+        ssr_temporal: bool,
     ) -> Result<Self> {
+        // Lazy SSR-target sizing: full-res only when SSR is on, else a 1×1
+        // placeholder (the material_opaque layout always binds `reflection_descriptor`
+        // at binding 24, so a resource must exist — but the SSR-off kernel never
+        // writes it, so 1×1 is enough and costs no full-res memory).
+        //
+        // `reflection_descriptor` is written full-res by `material_opaque` and
+        // read full-res by the SSR trace, so it stays full-res whenever SSR is
+        // on. Only the `ssr` reflection TARGET shrinks to half-res (the trace
+        // writes it, the composite step bilinearly upsamples it).
+        let (refl_w, refl_h) = if ssr_enabled {
+            (width, height)
+        } else {
+            (1u32, 1u32)
+        };
+        let (ssr_w, ssr_h) = if ssr_enabled && ssr_half_res {
+            (width.div_ceil(2), height.div_ceil(2))
+        } else {
+            (refl_w, refl_h)
+        };
         let maybe_multisample_texture =
             |format: TextureFormat, label: &'static str| -> TextureDescriptor<'static> {
                 let mut descriptor = TextureDescriptor::new(
@@ -764,6 +891,64 @@ impl RenderTexturesInner {
                         .with_texture_binding(),
                 )
                 .with_label("Bloom")
+                .into(),
+            )
+            .map_err(AwsmRenderTextureError::CreateTexture)?;
+
+        let ssr = gpu
+            .create_texture(
+                &TextureDescriptor::new(
+                    render_texture_formats.color,
+                    Extent3d::new(ssr_w, Some(ssr_h), Some(1)),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
+                )
+                .with_label("SSR")
+                .into(),
+            )
+            .map_err(AwsmRenderTextureError::CreateTexture)?;
+
+        // M3 SSR temporal history pair — same dims + format (RGBA16F) + usage as
+        // the `ssr` target above (storage-write from the trace + texture/sampled
+        // read of the previous frame). Full-size only when SSR is on AND temporal
+        // is on; otherwise 1×1 placeholders (the temporal-off trace binds none of
+        // them, but the render-texture struct always carries a valid resource).
+        let (hist_w, hist_h) = if ssr_enabled && ssr_temporal {
+            (ssr_w, ssr_h)
+        } else {
+            (1u32, 1u32)
+        };
+        let make_history = |label: &'static str| -> Result<web_sys::GpuTexture> {
+            gpu.create_texture(
+                &TextureDescriptor::new(
+                    render_texture_formats.color,
+                    Extent3d::new(hist_w, Some(hist_h), Some(1)),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
+                )
+                .with_label(label)
+                .into(),
+            )
+            .map_err(AwsmRenderTextureError::CreateTexture)
+        };
+        let ssr_history = [make_history("SSR History 0")?, make_history("SSR History 1")?];
+
+        // M2a: material-owned SSR reflection descriptor. `material_opaque`
+        // storage-writes it per pixel; the SSR pass texture-reads it. Always
+        // allocated (a small Rgba8unorm target) — the zero-cost gate lives on
+        // the SSR PASS, not this producer-side target.
+        let reflection_descriptor = gpu
+            .create_texture(
+                &TextureDescriptor::new(
+                    render_texture_formats.reflection_descriptor,
+                    Extent3d::new(refl_w, Some(refl_h), Some(1)),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
+                )
+                .with_label("SSR Reflection Descriptor")
                 .into(),
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;
@@ -1037,6 +1222,23 @@ impl RenderTexturesInner {
             .create_view()
             .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("bloom: {e:?}")))?;
 
+        let ssr_view = ssr
+            .create_view()
+            .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("ssr: {e:?}")))?;
+
+        let ssr_history_views = [
+            ssr_history[0].create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("ssr_history[0]: {e:?}"))
+            })?,
+            ssr_history[1].create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("ssr_history[1]: {e:?}"))
+            })?,
+        ];
+
+        let reflection_descriptor_view = reflection_descriptor.create_view().map_err(|e| {
+            AwsmRenderTextureError::CreateTextureView(format!("reflection_descriptor: {e:?}"))
+        })?;
+
         // The blit shader uses `textureLoad(_, _, 0)` against mip 0, so
         // either of the opaque views technically works; bind the storage
         // (mip-0-only) view to keep its intent obvious.
@@ -1062,6 +1264,14 @@ impl RenderTexturesInner {
             } else {
                 None
             };
+
+        // SSR composite: same single-sample color blit pipeline, source = the
+        // SSR reflection target.
+        let ssr_to_transparent_blit_bind_group_no_anti_alias = blit_get_bind_group(
+            gpu,
+            transparent_to_composite_blit_pipeline_no_anti_alias,
+            &ssr_view,
+        );
         Ok(Self {
             visibility_data,
             visibility_data_view,
@@ -1118,10 +1328,22 @@ impl RenderTexturesInner {
             bloom,
             bloom_view,
 
+            ssr,
+            ssr_view,
+            ssr_history,
+            ssr_history_views,
+            ssr_to_transparent_blit_bind_group_no_anti_alias,
+
+            reflection_descriptor,
+            reflection_descriptor_view,
+
             width,
             height,
 
             anti_aliasing,
+            ssr_enabled,
+            ssr_half_res,
+            ssr_temporal,
         })
     }
 
@@ -1161,6 +1383,10 @@ impl RenderTexturesInner {
         self.composite.destroy();
         self.effects.destroy();
         self.bloom.destroy();
+        self.ssr.destroy();
+        self.ssr_history[0].destroy();
+        self.ssr_history[1].destroy();
+        self.reflection_descriptor.destroy();
     }
 }
 

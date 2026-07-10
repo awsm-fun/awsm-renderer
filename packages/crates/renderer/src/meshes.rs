@@ -57,6 +57,47 @@ impl AwsmRenderer {
         Ok(new_mesh_key)
     }
 
+    /// Register a per-instance skin cloned from `template_skin_key` bound to a
+    /// fresh joint set (prefab instancing). Thin wrapper over
+    /// [`Meshes::clone_skin_for_joints`] returning the renderer-level error.
+    pub fn clone_skin_for_joints(
+        &mut self,
+        template_skin_key: SkinKey,
+        instance_joints: Vec<TransformKey>,
+    ) -> crate::error::Result<SkinKey> {
+        Ok(self
+            .meshes
+            .clone_skin_for_joints(template_skin_key, instance_joints)?)
+    }
+
+    /// Duplicate a skinned mesh with an INDEPENDENT per-instance skin (prefab
+    /// instancing). Skinned counterpart of [`Self::duplicate_mesh_with_transform`]
+    /// — see [`Meshes::duplicate_skinned_with_new_skin`] for why a skinned
+    /// duplicate needs its own resource + skin rather than a shared one.
+    pub fn duplicate_skinned_mesh_with_skin(
+        &mut self,
+        mesh_key: MeshKey,
+        new_transform_key: TransformKey,
+        new_skin_key: SkinKey,
+    ) -> crate::error::Result<MeshKey> {
+        let new_mesh_key = self.meshes.duplicate_skinned_with_new_skin(
+            mesh_key,
+            new_transform_key,
+            new_skin_key,
+            &self.materials,
+            &self.transforms,
+        )?;
+
+        self.render_passes
+            .material_transparent
+            .pipelines
+            .clone_render_pipeline_key(mesh_key, new_mesh_key);
+
+        self.sync_spatial_for_mesh(new_mesh_key);
+
+        Ok(new_mesh_key)
+    }
+
     /// Clones a mesh and its current transform under the same parent.
     pub fn clone_mesh(&mut self, mesh_key: MeshKey) -> crate::error::Result<MeshKey> {
         let transform_key = self.meshes.get(mesh_key)?.transform_key;
@@ -1476,6 +1517,99 @@ impl Meshes {
         self.insert_instance(new_mesh, resource_key, materials, transforms)
     }
 
+    /// Duplicate a SKINNED mesh into `new_transform_key` with an INDEPENDENT
+    /// per-instance skin. Unlike [`Self::duplicate_with_transform`] — which
+    /// shares the source `MeshResource`, and thus its single `skin_key`, across
+    /// every duplicate, binding them all to the ONE template skeleton (they
+    /// render collapsed on top of each other) — this copies the source geometry
+    /// into a FRESH resource whose `skin_key` is `new_skin_key`, so each prefab
+    /// instance deforms through its own cloned skeleton. Geometry bytes are
+    /// re-uploaded (a rig-sized mesh a handful of times is cheap); the fresh
+    /// resource + buffer-info are owned solely by the new instance so its
+    /// lifetime is independent of the template's.
+    pub(crate) fn duplicate_skinned_with_new_skin(
+        &mut self,
+        mesh_key: MeshKey,
+        new_transform_key: TransformKey,
+        new_skin_key: SkinKey,
+        materials: &Materials,
+        transforms: &Transforms,
+    ) -> Result<MeshKey> {
+        let source_resource_key = self.resource_key(mesh_key)?;
+        let (buffer_info_key, aabb, geometry_morph_key, material_morph_key, vis_off, idx_off, data_off) = {
+            let r = self
+                .resources
+                .get(source_resource_key)
+                .ok_or(AwsmMeshError::ResourceNotFound(source_resource_key))?;
+            (
+                r.buffer_info_key,
+                r.aabb.clone(),
+                r.geometry_morph_key,
+                r.material_morph_key,
+                r.visibility_geometry_data_offset,
+                r.custom_attribute_index_offset,
+                r.custom_attribute_data_offset,
+            )
+        };
+        // Slice the source's merged geometry pool run back into the
+        // [vis || attr_index || attr_data] sections `insert_resource` expects.
+        // `.get(key)` returns that key's own 0-based run; the resource's stored
+        // offsets are absolute into the pool arena, so section LENGTHS come from
+        // their differences (`insert_resource` packs them contiguously).
+        let (vis_bytes, index_bytes, data_bytes) = {
+            let pool = self
+                .mesh_geometry_pool_buffers
+                .get(source_resource_key)
+                .ok_or(AwsmMeshError::ResourceNotFound(source_resource_key))?;
+            match vis_off {
+                Some(vis_abs) => {
+                    let vis_len = idx_off - vis_abs;
+                    let idx_len = data_off - idx_off;
+                    (
+                        Some(pool[..vis_len].to_vec()),
+                        pool[vis_len..vis_len + idx_len].to_vec(),
+                        pool[vis_len + idx_len..].to_vec(),
+                    )
+                }
+                None => {
+                    let idx_len = data_off - idx_off;
+                    (None, pool[..idx_len].to_vec(), pool[idx_len..].to_vec())
+                }
+            }
+        };
+        let transparency_bytes = self
+            .transparency_geometry_data_buffers
+            .get(source_resource_key)
+            .map(|s| s.to_vec());
+        // Fresh buffer-info clone so the new resource's layout lifetime is fully
+        // independent (freeing one instance can't drop layout another still reads).
+        let new_buffer_info_key = {
+            let bi = self.buffer_infos.get(buffer_info_key)?.clone();
+            self.buffer_infos.insert(bi)
+        };
+        let new_resource_key = self.insert_resource(
+            new_buffer_info_key,
+            vis_bytes.as_deref(),
+            transparency_bytes.as_deref(),
+            &data_bytes,
+            &index_bytes,
+            aabb.clone(),
+            geometry_morph_key,
+            material_morph_key,
+            Some(new_skin_key),
+        )?;
+
+        let world_aabb = match (aabb.as_ref(), transforms.get_world(new_transform_key).ok()) {
+            (Some(a), Some(w)) => Some(a.transformed(w)),
+            (Some(a), None) => Some(a.clone()),
+            (None, _) => None,
+        };
+        let mut new_mesh = self.get(mesh_key)?.clone();
+        new_mesh.transform_key = new_transform_key;
+        new_mesh.world_aabb = world_aabb;
+        self.insert_instance(new_mesh, new_resource_key, materials, transforms)
+    }
+
     /// Duplicates all meshes under a transform into a new transform key.
     pub(crate) fn duplicate_by_transform_key(
         &mut self,
@@ -2057,6 +2191,29 @@ impl Meshes {
     /// dynamic sidecar.
     pub fn mesh_skin_key(&self, mesh_key: MeshKey) -> Option<Option<SkinKey>> {
         self.resource(mesh_key).ok().map(|r| r.skin_key)
+    }
+
+    /// Joint `TransformKey`s of a mesh's skin (skin-array order), or `None` if
+    /// the mesh isn't skinned. Prefab instancing clones these into a fresh
+    /// per-instance skeleton so each instance deforms independently.
+    pub fn mesh_skin_joint_transforms(&self, mesh_key: MeshKey) -> Option<Vec<TransformKey>> {
+        let skin_key = self.mesh_skin_key(mesh_key).flatten()?;
+        self.skins.read_joint_transforms(skin_key).ok()
+    }
+
+    /// Registers a fresh per-instance skin: same inverse-bind matrices,
+    /// per-vertex joint/weight stream and set-count as `template_skin_key`, but
+    /// bound to `instance_joints` (a cloned skeleton). Returns the new key for
+    /// [`Self::duplicate_skinned_with_new_skin`] to bind onto the instance mesh.
+    pub fn clone_skin_for_joints(
+        &mut self,
+        template_skin_key: SkinKey,
+        instance_joints: Vec<TransformKey>,
+    ) -> Result<SkinKey> {
+        let ibms = self.skins.read_inverse_bind_matrices(template_skin_key)?;
+        let weights = self.skins.read_joint_index_weights(template_skin_key)?;
+        let set_len = self.skins.sets_len(template_skin_key)?;
+        Ok(self.skins.insert(instance_joints, &ibms, set_len, &weights)?)
     }
 
     /// Convenience accessor for the optional `GeometryMorphKey` on a mesh

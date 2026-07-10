@@ -414,10 +414,9 @@ impl CameraOrthographicProjection {
     }
 
     pub fn refresh_clip_planes(&mut self, view: &CameraView, aabb: &Aabb, margin: f32) {
-        let bounding_radius = aabb.size().length() * 0.5;
-        let distance = view.get_position().distance(view.look_at);
-        self.near = (distance - bounding_radius * margin * 2.0).max(0.01);
-        self.far = distance + bounding_radius * margin * 2.0;
+        let (near, far) = auto_clip_planes(view, aabb, margin);
+        self.near = near;
+        self.far = far;
     }
 
     pub fn on_resize(&mut self, view: &CameraView, aabb: &Aabb, margin: f32, aspect: f32) {
@@ -483,13 +482,40 @@ impl CameraPerspectiveProjection {
     }
 
     pub fn refresh_clip_planes(&mut self, view: &CameraView, aabb: &Aabb, margin: f32) {
-        let bounding_radius = aabb.size().length() * 0.5;
-        let distance = view.get_position().distance(view.look_at);
-        self.near = (distance - bounding_radius * margin * 2.0).max(0.01);
-        self.far = distance + bounding_radius * margin * 2.0;
+        let (near, far) = auto_clip_planes(view, aabb, margin);
+        self.near = near;
+        self.far = far;
     }
 
     pub fn projection_matrix(&self) -> Mat4 {
         Mat4::perspective_rh(self.fov_y, self.aspect, self.near, self.far)
     }
+}
+
+/// Depth-precision-aware auto near/far for the orbit/free camera.
+///
+/// The old formula floored `near` at `0.01` while `far` tracked
+/// `2·boundingRadius`, so any time the eye sat closer than ~2× the scene radius
+/// (i.e. almost always) the far:near ratio blew past 100,000:1 and the
+/// `Depth32Float` buffer z-fought badly; a too-small/stale AABB additionally
+/// let `far` clip large scenes. This instead:
+///
+/// * makes `far` cover the whole scene from this viewpoint **and** stay a few ×
+///   the orbit distance and the scene radius, so a stale or too-small AABB can
+///   never clip near/far geometry, and
+/// * derives `near` from `far` at a **bounded ~5000:1 ratio** (well within
+///   float32 depth's comfort zone → no z-fighting), while capping it at half the
+///   orbit distance so it can never clip the geometry being framed.
+///
+/// Shared by the perspective and orthographic projections (the ratio only
+/// matters for perspective's non-linear depth, but a robust, clip-free `far`
+/// helps both).
+fn auto_clip_planes(view: &CameraView, aabb: &Aabb, margin: f32) -> (f32, f32) {
+    let radius = (aabb.size().length() * 0.5 * margin).max(1.0);
+    let distance = view.get_position().distance(view.look_at);
+    let far = ((distance + radius) * 2.0)
+        .max(distance * 4.0)
+        .max(radius * 4.0);
+    let near = (far / 5000.0).clamp(0.05, (distance * 0.5).max(0.05));
+    (near, far)
 }

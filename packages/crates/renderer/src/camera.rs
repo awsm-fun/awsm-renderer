@@ -104,7 +104,16 @@ impl CameraBuffer {
     //  frustum corner rays (4 * vec4) 64 bytes
     //  viewport (vec4) 16 bytes
     //  dof_params (vec4: focus_distance, aperture, unused, unused) 16 bytes
-    // Total = 496 bytes (all members 16-byte aligned, no implicit gaps)
+    //  prev_view_projection (mat4)  64 bytes  (M3 SSR temporal reprojection)
+    // Total = 560 bytes (all members 16-byte aligned, no implicit gaps)
+    //
+    // `prev_view_projection` is END-APPENDED (M3): it carries the PRIOR frame's
+    // unjittered view-projection so the SSR temporal variant can depth-reproject
+    // this frame's world positions into last frame's screen space. Appending at
+    // the end preserves every existing field offset — the 17 shaders that share
+    // `CameraRaw` (`shared_wgsl/camera.wgsl`) ignore the trailing field unless
+    // they opt in, and none hardcode the struct size (a bound uniform buffer may
+    // be larger than the WGSL struct that reads it).
     //
     // A `vec4<u32>` slot used to live between `position` and
     // `frustum_rays` carrying `render_textures.frame_count()` as
@@ -113,7 +122,7 @@ impl CameraBuffer {
     // `crates/renderer/src/frame_globals`). The slot was removed —
     // Camera is 16 bytes slimmer.
     /// Byte size of the camera uniform buffer.
-    pub const BYTE_SIZE: usize = 496;
+    pub const BYTE_SIZE: usize = 560;
 
     /// Creates a camera buffer on the GPU.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
@@ -243,6 +252,24 @@ impl CameraBuffer {
                 0.0,
                 0.0,
             ],
+        );
+
+        // M3 SSR temporal: the PRIOR frame's unjittered view-projection, for
+        // depth reprojection in the temporal SSR variant. `self.last_matrices`
+        // still holds the previous frame's matrices here — it is overwritten
+        // with THIS frame's below. Frame 0 (no history) → the current
+        // view-projection, i.e. zero camera motion so the first temporal frame
+        // reprojects onto itself. Non-temporal shaders ignore this trailing
+        // field (see `BYTE_SIZE`'s rationale).
+        let prev_view_projection = self
+            .last_matrices
+            .as_ref()
+            .map(|m| m.view_projection())
+            .unwrap_or_else(|| camera_matrices_orig.view_projection());
+        write_f32_slice(
+            &mut self.raw_data,
+            &mut offset,
+            &prev_view_projection.to_cols_array(),
         );
 
         debug_assert_eq!(offset, Self::BYTE_SIZE, "Buffer layout mismatch!");

@@ -192,6 +192,16 @@ fn cs_opaque(
     var color: vec3<f32>;
     var base_alpha: f32;
 
+    {% if write_ssr_descriptor %}
+    // M2a: material-owned SSR reflection descriptor. RGB = reflectivity color
+    // (ssr_mask * ssr_tint; 0 = this surface opts out of SSR), A = ssr_spread
+    // (0 mirror … 1 diffuse). Defaults to "no reflection"; the PBR arm below
+    // opts in. Stored once per pixel at sample 0 beside the HDR write. Compiled
+    // out entirely when SSR is off (write_ssr_descriptor = false).
+    var ssr_reflectivity: vec3<f32> = vec3<f32>(0.0);
+    var ssr_spread: f32 = 0.0;
+    {% endif %}
+
     {% if base == ShadingBase::Unlit %}
         // Unlit material path
         let unlit_material = unlit_get_material(material_offset);
@@ -301,6 +311,14 @@ fn cs_opaque(
             );
         {% endif %}
         base_alpha = material_color.base.a;
+        {% if write_ssr_descriptor %}
+        // M2a/M2b: PBR opts into SSR by writing its specular reflectance F0 —
+        // dielectrics ~0.04 grey (weak at normal, →white at grazing via Schlick
+        // in the SSR pass), metals = base color (strong, tinted). The GGX
+        // roughness maps to reflection spread (0 mirror … 1 diffuse blur).
+        ssr_reflectivity = mix(vec3<f32>(0.04), material_color.base.rgb, material_color.metallic_roughness.x);
+        ssr_spread = material_color.metallic_roughness.y;
+        {% endif %}
     {% else if base == ShadingBase::Flipbook %}
         // FlipBook: grid-uniform sprite-sheet, sampled per
         // `frame_globals.time + time_offset`. Tints by `material.tint`.
@@ -415,6 +433,10 @@ fn cs_opaque(
 
     // Write to output texture for non-edge pixel
     textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
+    {% if write_ssr_descriptor %}
+    // M2a: material-owned SSR reflection descriptor, once per pixel at sample 0.
+    textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity, ssr_spread));
+    {% endif %}
 }
 {% endif %}
 
@@ -516,6 +538,16 @@ fn shade_sample(
     var color: vec3<f32>;
     var base_alpha: f32;
 
+    {% if write_ssr_descriptor %}
+    // M2a: material-owned SSR reflection descriptor. RGB = reflectivity color
+    // (ssr_mask * ssr_tint; 0 = this surface opts out of SSR), A = ssr_spread
+    // (0 mirror … 1 diffuse). Defaults to "no reflection"; the PBR arm below
+    // opts in. Stored once per pixel at sample 0 beside the HDR write. Compiled
+    // out entirely when SSR is off (write_ssr_descriptor = false).
+    var ssr_reflectivity: vec3<f32> = vec3<f32>(0.0);
+    var ssr_spread: f32 = 0.0;
+    {% endif %}
+
     {% if base == ShadingBase::Unlit %}
         let unlit_material = unlit_get_material(sample_mat_offset);
         {% match mipmap %}
@@ -606,6 +638,14 @@ fn shade_sample(
             );
         {% endif %}
         base_alpha = material_color.base.a;
+        {% if write_ssr_descriptor %}
+        // M2a/M2b: PBR opts into SSR by writing its specular reflectance F0 —
+        // dielectrics ~0.04 grey (weak at normal, →white at grazing via Schlick
+        // in the SSR pass), metals = base color (strong, tinted). The GGX
+        // roughness maps to reflection spread (0 mirror … 1 diffuse blur).
+        ssr_reflectivity = mix(vec3<f32>(0.04), material_color.base.rgb, material_color.metallic_roughness.x);
+        ssr_spread = material_color.metallic_roughness.y;
+        {% endif %}
     {% else if base == ShadingBase::Flipbook %}
         let flipbook_material = flipbook_get_material(sample_mat_offset);
         var flipbook_sampled: vec4<f32> = vec4<f32>(1.0);
@@ -829,6 +869,11 @@ fn cs_shade(
 
         var color: vec3<f32>;
         var base_alpha: f32;
+        {% if write_ssr_descriptor %}
+        // M2a: SSR reflection descriptor (interior arm). See cs_opaque.
+        var ssr_reflectivity: vec3<f32> = vec3<f32>(0.0);
+        var ssr_spread: f32 = 0.0;
+        {% endif %}
 
         {% if base == ShadingBase::Unlit %}
             let unlit_material = unlit_get_material(material_offset);
@@ -928,6 +973,11 @@ fn cs_shade(
                 );
             {% endif %}
             base_alpha = material_color.base.a;
+            {% if write_ssr_descriptor %}
+            // M2a: PBR opts into SSR (interior arm). See cs_opaque.
+            ssr_reflectivity = mix(vec3<f32>(0.04), material_color.base.rgb, material_color.metallic_roughness.x);
+            ssr_spread = material_color.metallic_roughness.y;
+            {% endif %}
         {% else if base == ShadingBase::Flipbook %}
             let flipbook_material = flipbook_get_material(material_offset);
             var flipbook_sampled: vec4<f32> = vec4<f32>(1.0);
@@ -1016,6 +1066,11 @@ fn cs_shade(
         {% endif %}
 
         textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
+        {% if write_ssr_descriptor %}
+        // M2a: material-owned SSR reflection descriptor (cs_shade interior arm,
+        // MSAA sample 0). Mirrors the cs_opaque store.
+        textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity, ssr_spread));
+        {% endif %}
         return;
     }
 

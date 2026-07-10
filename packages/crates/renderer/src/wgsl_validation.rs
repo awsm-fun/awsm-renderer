@@ -70,6 +70,7 @@ fn first_party_key_prep(
     mipmaps: bool,
 ) -> ShaderCacheKeyMaterialOpaque {
     ShaderCacheKeyMaterialOpaque {
+        write_ssr_descriptor: false,
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
@@ -101,6 +102,7 @@ fn custom_key(
         name: "noise".to_string(),
     });
     ShaderCacheKeyMaterialOpaque {
+        write_ssr_descriptor: false,
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
@@ -689,6 +691,7 @@ fn custom_froxel_lights_accessors_validate() {
         return OpaqueShadingOutput(c, 1.0);";
     for (msaa, mips) in CONFIGS {
         let key = ShaderCacheKeyMaterialOpaque {
+            write_ssr_descriptor: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
@@ -799,6 +802,84 @@ fn custom_transparent_shaders_validate() {
                 .into_source()
                 .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
             naga_validate(&src, &label);
+        }
+    }
+}
+
+#[test]
+fn ssr_shaders_validate() {
+    // SSR trace shader must naga-validate for
+    // EVERY permutation (mode × trace × temporal × half_res) — proving the §5a
+    // zero-cost templating emits valid WGSL for each variant, and that the
+    // shared `camera.wgsl` / `math.wgsl` includes resolve. Also asserts the
+    // compute entry point exists (the dispatch selects it by name).
+    use crate::render_passes::ssr::shader::cache_key::{ShaderCacheKeySsr, SsrMode, SsrTrace};
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for mode in [SsrMode::Mirror, SsrMode::Glossy] {
+        for trace in [SsrTrace::LinearDda, SsrTrace::HiZ] {
+            for temporal in [false, true] {
+                for half_res in [false, true] {
+                    for multisampled_geometry in [false, true] {
+                        let key = ShaderCacheKeySsr {
+                            mode,
+                            trace,
+                            temporal,
+                            half_res,
+                            multisampled_geometry,
+                        };
+                        let label = format!(
+                            "ssr mode={mode:?} trace={trace:?} temporal={temporal} \
+                             half_res={half_res} msaa={multisampled_geometry}"
+                        );
+                        let src = ShaderTemplateSsr::try_from(&key)
+                            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                            .into_source()
+                            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                        naga_validate(&src, &label);
+                        assert!(
+                            src.contains("fn cs_main("),
+                            "{label}: SSR module missing `fn cs_main` entry point"
+                        );
+                        // The multisampled variant must bind the MSAA depth type.
+                        if multisampled_geometry {
+                            assert!(
+                                src.contains("texture_depth_multisampled_2d"),
+                                "{label}: MSAA SSR must bind texture_depth_multisampled_2d"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ssr_composite_shader_validates() {
+    // M4b: the SSR composite pass is a plain const/function-built WGSL string
+    // (NOT part of the `ShaderTemplateSsr` naga suite above), so validate it
+    // here. The joint-bilateral upsample reads the full-res depth binding, whose
+    // WGSL type differs under MSAA (`texture_depth_multisampled_2d`); both
+    // variants must parse + validate and carry the fragment entry point.
+    use crate::render_passes::ssr::composite::shader_source;
+    for multisampled in [false, true] {
+        let label = format!("ssr composite multisampled={multisampled}");
+        let src = shader_source(multisampled);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn frag_main("),
+            "{label}: composite module missing `fn frag_main` entry point"
+        );
+        if multisampled {
+            assert!(
+                src.contains("texture_depth_multisampled_2d"),
+                "{label}: MSAA composite must bind texture_depth_multisampled_2d"
+            );
+        } else {
+            assert!(
+                src.contains("var depth_tex: texture_depth_2d"),
+                "{label}: non-MSAA composite must bind texture_depth_2d"
+            );
         }
     }
 }

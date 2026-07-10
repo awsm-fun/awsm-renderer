@@ -5,6 +5,7 @@ use crate::render_passes::cluster_lod::shader::cache_key::{
     ShaderCacheKeyClusterCompaction, ShaderCacheKeyClusterCut,
 };
 use crate::render_passes::{
+    bloom::shader::cache_key::{ShaderCacheKeyBloomCombine, ShaderCacheKeyBloomDownsample},
     coverage::shader::cache_key::ShaderCacheKeyCoverage,
     display::shader::cache_key::ShaderCacheKeyDisplay,
     effects::shader::cache_key::ShaderCacheKeyEffects,
@@ -24,6 +25,8 @@ use crate::render_passes::{
     occlusion::shader::cache_key::{
         ShaderCacheKeyOcclusionCompaction, ShaderCacheKeyOcclusionCull,
     },
+    ssr::shader::cache_key::ShaderCacheKeySsr,
+    ssr_minz::shader::cache_key::{ShaderCacheKeySsrMinzReduce, ShaderCacheKeySsrMinzSeed},
 };
 
 /// Cache key variants for render-pass shader templates.
@@ -44,6 +47,10 @@ pub enum ShaderCacheKeyRenderPass {
     GeometryMaskedCustomVertex(ShaderCacheKeyGeometryMaskedCustomVertex),
     HzbSeed(ShaderCacheKeyHzbSeed),
     HzbReduce(ShaderCacheKeyHzbReduce),
+    /// Bloom pyramid down-sample (prefilter + plain 13-tap variants).
+    BloomDownsample(ShaderCacheKeyBloomDownsample),
+    /// Bloom mip-sum combine → full-res bloom.
+    BloomCombine(ShaderCacheKeyBloomCombine),
     LightCulling(ShaderCacheKeyLightCulling),
     MaterialClassify(ShaderCacheKeyMaterialClassify),
     /// Plan B shared prep pass (docs/plans/deferred-shared-prep-pass.md).
@@ -66,4 +73,12 @@ pub enum ShaderCacheKeyRenderPass {
     ClusterCompaction(ShaderCacheKeyClusterCompaction),
     Effects(ShaderCacheKeyEffects),
     Display(ShaderCacheKeyDisplay),
+    /// Screen-space reflections trace. Permutes on mode
+    /// (mirror/glossy) × trace (linear/Hi-Z) × temporal × half-res.
+    Ssr(ShaderCacheKeySsr),
+    /// SSR min-Z pyramid seed (depth → mip 0). MSAA-aware, in lockstep with
+    /// the SSR trace's depth binding.
+    SsrMinzSeed(ShaderCacheKeySsrMinzSeed),
+    /// SSR min-Z pyramid reduce (mip N-1 → mip N). Format-only.
+    SsrMinzReduce(ShaderCacheKeySsrMinzReduce),
 }

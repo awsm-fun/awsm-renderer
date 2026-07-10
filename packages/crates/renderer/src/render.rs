@@ -545,6 +545,14 @@ impl AwsmRenderer {
             // T2.6: lazy HUD depth allocation. False until the first
             // HUD-flagged mesh enters the registry.
             self.meshes.has_seen_hud(),
+            // Lazy SSR-target allocation: full-res only when SSR is enabled.
+            self.post_processing.ssr.enabled,
+            // Half-res SSR trace target when resolution_scale < 1.0. Must match
+            // the picker's `views()` value to avoid rebuild thrash.
+            self.post_processing.ssr.resolution_scale < 1.0,
+            // M3 temporal-SSR history pair allocation. Must match the picker's
+            // `views()` value to avoid rebuild thrash.
+            self.post_processing.ssr.temporal,
         )?;
 
         if render_texture_views.views_recreated {
@@ -567,6 +575,69 @@ impl AwsmRenderer {
                 self.bind_groups
                     .mark_create(BindGroupCreate::TextureViewRecreate);
             }
+        }
+
+        // SSR min-Z pyramid (M2c): resize to the live viewport before the
+        // recreate dispatch below, so the SSR trace bind group (which binds the
+        // pyramid's `view_all` under Hi-Z) rebinds against the fresh views. The
+        // pyramid pass EXISTS whenever Hi-Z is the production trace (to satisfy
+        // the SSR layout binding), but we only grow it to viewport size when SSR
+        // is actually ENABLED — while SSR is off it stays a 1×1 placeholder
+        // (bound but never sampled, since the trace doesn't dispatch), so an
+        // inactive Hi-Z SSR costs no pyramid memory.
+        if self.post_processing.ssr.enabled {
+            if let Some(ssr_minz) = self.render_passes.ssr_minz.as_mut() {
+                if ssr_minz.ensure_size(
+                    &self.gpu,
+                    render_texture_views.width,
+                    render_texture_views.height,
+                )? {
+                    self.bind_groups
+                        .mark_create(BindGroupCreate::TextureViewRecreate);
+                }
+            }
+        }
+
+        // Bloom pyramid upkeep — only when bloom is enabled (matches the
+        // dispatch gate below), so a disabled bloom costs no memory or work.
+        // Both the resize and the live-param upload happen HERE, before the
+        // `RenderContext` borrows `&self.render_passes` for the frame (the
+        // param upload needs `&mut`). Recreating the pyramid invalidates its
+        // per-mip views, so its bind groups rebuild via `TextureViewRecreate`
+        // (the Bloom recreate arm rebinds pyramid + composite + full-res bloom
+        // target + params uniform).
+        if self.post_processing.bloom {
+            if self.render_passes.bloom.ensure_size(
+                &self.gpu,
+                render_texture_views.width,
+                render_texture_views.height,
+            )? {
+                self.bind_groups
+                    .mark_create(BindGroupCreate::TextureViewRecreate);
+            }
+            self.render_passes.bloom.params.write(
+                &self.gpu,
+                self.post_processing.bloom_threshold,
+                self.post_processing.bloom_knee,
+                self.post_processing.bloom_intensity,
+                self.post_processing.bloom_scatter,
+            )?;
+        }
+
+        // SSR live-tuning uniforms (no ensure_size — the ssr target lives in
+        // RenderTextures and resizes with the rest). Only written when enabled.
+        if self.post_processing.ssr.enabled {
+            let s = &self.post_processing.ssr;
+            self.render_passes.ssr.params.write(
+                &self.gpu,
+                s.intensity,
+                s.max_distance,
+                s.thickness,
+                s.max_steps as f32,
+                s.spread_cutoff,
+                s.edge_fade,
+                s.temporal_weight,
+            )?;
         }
 
         // Tile counts are reused by both the opaque classify buckets
@@ -681,6 +752,11 @@ impl AwsmRenderer {
                     .hzb
                     .as_ref()
                     .map(|hzb| hzb.texture.view_all.clone()),
+                ssr_minz_full_view: self
+                    .render_passes
+                    .ssr_minz
+                    .as_ref()
+                    .map(|p| p.texture.view_all.clone()),
                 decal_classify_buffers: self.decal_classify_buffers.as_ref(),
                 compaction_buffers: self.compaction_buffers.as_ref(),
                 coverage_buffers: self.coverage_buffers.as_ref(),
@@ -1451,6 +1527,7 @@ impl AwsmRenderer {
             }
         }
 
+
         // Built-in line render pass — must run after the opaque->transparent
         // blit (so depth + transparent target are populated) and before any
         // `before_transparent_pass` hook so editor overlays can draw on top.
@@ -1541,6 +1618,57 @@ impl AwsmRenderer {
                 bind_group,
                 &ctx.render_texture_views.composite,
                 &ctx.command_encoder,
+            )?;
+        }
+
+        // Screen-space reflections — runs on the RESOLVED single-sample
+        // `composite` HDR (populated above by the AA-off blit, or by the MSAA
+        // transparent-pass resolve), reflecting on-screen geometry via depth +
+        // normals and compositing back over `composite` before bloom. Placed
+        // here (not before the transparent pass) so the color source is always
+        // single-sample — a compute pass can't storage-write / single-sample-
+        // blit a multisampled `transparent`. Records nothing when disabled.
+        if ctx.post_processing.ssr.enabled {
+            // Build the min-Z pyramid FIRST (M2c) — the depth buffer is final
+            // here (post-opaque, post-resolve), and the Hi-Z trace below
+            // descends this pyramid. Gated on the same `ssr.enabled`, so the
+            // pass exists (`Some`) whenever this branch runs.
+            if let Some(ssr_minz) = self.render_passes.ssr_minz.as_ref() {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                    Some(tracing::span!(tracing::Level::INFO, "SSR MinZ RenderPass").entered())
+                } else {
+                    None
+                };
+                ssr_minz.render(&ctx)?;
+            }
+
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                Some(tracing::span!(tracing::Level::INFO, "SSR RenderPass").entered())
+            } else {
+                None
+            };
+            self.render_passes.ssr.render(
+                &ctx,
+                ctx.render_texture_views.width,
+                ctx.render_texture_views.height,
+                ctx.post_processing.ssr.resolution_scale < 1.0,
+            )?;
+        }
+
+        // Bloom mip-pyramid pass — builds a wide, soft bloom from the composite
+        // into `render_texture_views.bloom`, which the effects pass then blends
+        // over the scene. Only when bloom is enabled (matches the effects pass
+        // gate); skipped otherwise so the pyramid dispatches cost nothing.
+        if ctx.post_processing.bloom {
+            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                Some(tracing::span!(tracing::Level::INFO, "Bloom RenderPass").entered())
+            } else {
+                None
+            };
+            self.render_passes.bloom.render(
+                &ctx,
+                ctx.render_texture_views.width,
+                ctx.render_texture_views.height,
             )?;
         }
 

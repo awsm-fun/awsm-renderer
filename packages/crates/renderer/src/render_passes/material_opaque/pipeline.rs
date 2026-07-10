@@ -177,6 +177,9 @@ impl MaterialOpaquePipelines {
             max_shadow_casters,
             ctx.prep_config.sscs_enabled,
             ctx.prep_config.sscs_step_count,
+            // Inert at cold boot (include_first_party = false emits 0 descriptors),
+            // but carry the live value so the key is correct if this ever emits.
+            ctx.post_processing.ssr.enabled,
         )
     }
 
@@ -199,6 +202,7 @@ impl MaterialOpaquePipelines {
         max_shadow_casters: u32,
         sscs_enabled: bool,
         sscs_step_count: u32,
+        write_ssr_descriptor: bool,
     ) -> Result<Vec<OpaqueShaderDesc>> {
         // Which (main_bgl, slot) is active? Only emit the descriptors
         // for the live MSAA branch — the other half stays uncompiled
@@ -252,6 +256,7 @@ impl MaterialOpaquePipelines {
                         max_shadow_casters,
                         sscs_enabled,
                         sscs_step_count,
+                        write_ssr_descriptor,
                         shader_id,
                         base: crate::dynamic_materials::ShadingBase::for_shader_id(shader_id),
                         owns_skybox: shader_id == MaterialShaderId::SKYBOX,

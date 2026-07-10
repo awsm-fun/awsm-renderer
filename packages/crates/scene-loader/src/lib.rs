@@ -351,6 +351,50 @@ enum PrefabReplay {
 /// other nodes still materialize). Async pipeline warm-ups the live arms perform
 /// are intentionally omitted — `instantiate` is sync and the renderer's normal
 /// per-frame drive compiles line/shadow pipelines (or a prior load already did).
+/// Clone a skinned prefab node's joint skeleton into a fresh per-instance copy
+/// so the instance deforms independently of the template (whose skeleton is a
+/// single shared glb loaded once at capture — see the `SkinnedMesh` arm of
+/// [`build_node_meshes`]). Returns `template_joint_TransformKey → fresh_TransformKey`.
+///
+/// Each fresh joint copies its template joint's LOCAL transform. Parent wiring:
+/// a joint whose template parent is ALSO a template joint → parented to that
+/// parent's clone (preserving the skeleton hierarchy); a skeleton-**root** joint
+/// (template parent is the glb root / an armature above the joints, i.e. NOT in
+/// the joint set) → parented under `instance_root`, so driving the instance's
+/// placement transform moves the whole rig and its skinned mesh. Assumes any
+/// armature node between the root joint and the glb root is identity (true for
+/// the rigs this ships) — a non-identity intermediate would drop its offset.
+fn clone_skin_skeleton(
+    renderer: &mut AwsmRenderer,
+    template_joints: &[TransformKey],
+    instance_root: TransformKey,
+) -> HashMap<TransformKey, TransformKey> {
+    let joint_set: std::collections::HashSet<TransformKey> =
+        template_joints.iter().copied().collect();
+    let mut fresh: HashMap<TransformKey, TransformKey> =
+        HashMap::with_capacity(template_joints.len());
+    // Pass 1: mint a fresh transform per joint (local copied; parent fixed next).
+    for &jt in template_joints {
+        let local = renderer
+            .transforms
+            .get_local(jt)
+            .cloned()
+            .unwrap_or_default();
+        let new_tk = renderer.transforms.insert(local, Some(instance_root));
+        fresh.insert(jt, new_tk);
+    }
+    // Pass 2: rewire parents now that every clone exists.
+    for &jt in template_joints {
+        let new_tk = fresh[&jt];
+        let new_parent = match renderer.transforms.get_parent(jt).ok() {
+            Some(p) if joint_set.contains(&p) => fresh.get(&p).copied(),
+            _ => Some(instance_root),
+        };
+        renderer.transforms.set_parent(new_tk, new_parent);
+    }
+    fresh
+}
+
 fn replay_prefab_node(
     renderer: &mut AwsmRenderer,
     replay: &PrefabReplay,
@@ -475,6 +519,16 @@ impl PrefabTemplate {
         let mut world_for: HashMap<NodeId, Mat4> = HashMap::with_capacity(self.nodes.len());
         let mut nodes: HashMap<NodeId, NodeHandles> = HashMap::with_capacity(self.nodes.len());
         let mut root_tk: Option<TransformKey> = None;
+        // ONE cloned skeleton shared across every skinned part-node of this
+        // instance (template joint TransformKey → instance clone). A multi-part
+        // rig (e.g. BodyShell/Accent/JointDark/Visor) skins all its parts to the
+        // SAME template skeleton, so we clone it ONCE (not per part) — otherwise
+        // each part gets its own parallel skeleton (4× the joints) and the
+        // authored clips, which target ONE skeleton, can't drive them coherently.
+        let mut shared_skeleton: HashMap<TransformKey, TransformKey> = HashMap::new();
+        // Flattened per-instance cloned skin joints (see
+        // `PrefabInstance::skin_joints`) — the host's handle for posing/animation.
+        let mut skin_joints: Vec<TransformKey> = Vec::new();
 
         for pn in &self.nodes {
             // Root anchors at world_trs (replacing its authored local); others keep
@@ -498,9 +552,69 @@ impl PrefabTemplate {
 
             // Duplicate the hidden template meshes under the fresh transform and
             // un-hide each duplicate (it inherits the template's hidden flag).
+            //
+            // SKINNED meshes can't be plainly duplicated: `duplicate_mesh_with_
+            // transform` shares the source resource + its single `skin_key`, so
+            // every instance would bind to the ONE template skeleton and render
+            // collapsed. For a skinned node we instead clone its skeleton ONCE
+            // (shared across the node's skinned primitives), register a fresh
+            // per-instance skin over the clones, and duplicate each primitive
+            // onto that skin — so the instance deforms + moves independently.
             let mut mesh_keys = Vec::with_capacity(pn.template_meshes.len());
+            let skinned: Vec<_> = pn
+                .template_meshes
+                .iter()
+                .filter_map(|&mk| {
+                    let sk = renderer.meshes.mesh_skin_key(mk).flatten()?;
+                    let joints = renderer.meshes.mesh_skin_joint_transforms(mk)?;
+                    Some((mk, sk, joints))
+                })
+                .collect();
+            if !skinned.is_empty() {
+                // Union of this node's skinned-primitive joints.
+                let mut union: Vec<TransformKey> = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for (_, _, joints) in &skinned {
+                    for &j in joints {
+                        if seen.insert(j) {
+                            union.push(j);
+                        }
+                    }
+                }
+                // Clone only the joints NOT already in the instance's shared
+                // skeleton (the first skinned part clones the whole rig; sibling
+                // parts that skin to the SAME joints reuse it → one skeleton per
+                // instance). A genuinely distinct skeleton (different joints) still
+                // gets cloned and merged in. Parent the clones under the instance
+                // ROOT so driving `root` moves the whole rig; a skinned mesh's own
+                // node transform doesn't affect its skin (the joints do).
+                let missing: Vec<TransformKey> = union
+                    .iter()
+                    .copied()
+                    .filter(|j| !shared_skeleton.contains_key(j))
+                    .collect();
+                if !missing.is_empty() {
+                    let anchor = root_tk.unwrap_or(tk);
+                    let clones = clone_skin_skeleton(renderer, &missing, anchor);
+                    for (t, c) in clones {
+                        shared_skeleton.insert(t, c);
+                        skin_joints.push(c);
+                    }
+                }
+            }
             for &template_key in &pn.template_meshes {
-                let new_key = renderer.duplicate_mesh_with_transform(template_key, tk)?;
+                let new_key = match skinned.iter().find(|(mk, _, _)| *mk == template_key) {
+                    Some((_, tsk, joints)) => {
+                        let instance_joints: Vec<TransformKey> = joints
+                            .iter()
+                            .filter_map(|jt| shared_skeleton.get(jt).copied())
+                            .collect();
+                        let instance_skin =
+                            renderer.clone_skin_for_joints(*tsk, instance_joints)?;
+                        renderer.duplicate_skinned_mesh_with_skin(template_key, tk, instance_skin)?
+                    }
+                    None => renderer.duplicate_mesh_with_transform(template_key, tk)?,
+                };
                 renderer.set_mesh_hidden(new_key, false)?;
                 mesh_keys.push(new_key);
             }
@@ -569,7 +683,12 @@ impl PrefabTemplate {
         }
 
         let root = root_tk.ok_or_else(|| anyhow!("prefab template has no root node"))?;
-        Ok(PrefabInstance { root, nodes })
+        Ok(PrefabInstance {
+            root,
+            nodes,
+            skin_joints,
+            joint_remap: shared_skeleton,
+        })
     }
 }
 
@@ -592,6 +711,18 @@ pub struct PrefabInstance {
     /// mesh keys; non-mesh nodes carry only their transform (see
     /// [`PrefabTemplate`] coverage notes).
     pub nodes: HashMap<NodeId, NodeHandles>,
+    /// Every per-instance **cloned skin joint** [`TransformKey`] — ONE shared
+    /// skeleton per instance (a multi-part rig skins all its parts to it). A host
+    /// can pose the instance by writing these joints' locals and reading their
+    /// bind pose via `get_local` / `get_world`. Empty for a non-skinned prefab.
+    pub skin_joints: Vec<TransformKey>,
+    /// **Template joint `TransformKey` → this instance's cloned joint.** The
+    /// authored clips target the TEMPLATE's joints (bound in the loader's skinned
+    /// arm); this map lets a host RETARGET a clip onto THIS instance — clone the
+    /// clip's channels remapping each `AnimationTarget::Transform(templateTK)`
+    /// through this map — so the scene's animations play per-instance. Empty for
+    /// a non-skinned prefab.
+    pub joint_remap: HashMap<TransformKey, TransformKey>,
 }
 
 impl LoadedScene {
@@ -713,6 +844,22 @@ pub fn post_process_to_renderer(
         bloom: pp.bloom,
         dof: pp.dof,
         exposure: pp.exposure,
+        bloom_threshold: pp.bloom_threshold,
+        bloom_knee: pp.bloom_knee,
+        bloom_intensity: pp.bloom_intensity,
+        bloom_scatter: pp.bloom_scatter,
+        ssr: awsm_renderer::post_process::Ssr {
+            enabled: pp.ssr.enabled,
+            intensity: pp.ssr.intensity,
+            max_distance: pp.ssr.max_distance,
+            thickness: pp.ssr.thickness,
+            max_steps: pp.ssr.max_steps,
+            spread_cutoff: pp.ssr.spread_cutoff,
+            edge_fade: pp.ssr.edge_fade,
+            resolution_scale: pp.ssr.resolution_scale,
+            temporal: pp.ssr.temporal,
+            temporal_weight: pp.ssr.temporal_weight,
+        },
     }
 }
 
@@ -1168,7 +1315,7 @@ async fn materialize(
             node,
             None,
             assets,
-            &maps.node_materials,
+            maps,
             placeholder,
             loaded,
         )
@@ -1575,7 +1722,10 @@ async fn capture_prefab(
     node: &EditorNode,
     parent: Option<NodeId>,
     assets: &impl SceneAssets,
-    node_materials: &HashMap<NodeId, MaterialKey>,
+    // The shared resolve maps — capture binds skinned prefabs' bones into
+    // `maps.skin_joints` (so the scene's clips, lowered AFTER capture, resolve to
+    // the template's joints) and shares the rig via `maps.rig_cache`.
+    maps: &mut AnimResolveMaps,
     placeholder: MaterialKey,
     loaded: &mut LoadedScene,
 ) -> Result<PrefabTemplate> {
@@ -1603,7 +1753,7 @@ async fn capture_prefab(
                 n,
                 None,
                 assets,
-                node_materials,
+                &mut *maps,
                 placeholder,
                 loaded,
             ))
@@ -1611,11 +1761,11 @@ async fn capture_prefab(
             loaded.prefabs.insert(n.id, tmpl);
             continue;
         }
-        let mat = node_materials.get(&n.id).copied().unwrap_or(placeholder);
+        let mat = maps.node_materials.get(&n.id).copied().unwrap_or(placeholder);
         // Build this node's meshes (hidden) under the scratch transform; non-mesh
         // kinds yield an empty vec (their transform is still recorded).
         let template_meshes =
-            build_node_meshes(renderer, cache, scene, n, scratch, mat, assets, true).await?;
+            build_node_meshes(renderer, cache, scene, n, scratch, mat, assets, Some(&mut *maps), true).await?;
         // A.3: capture the non-mesh renderable to replay per instance. The decal
         // texture is resolved NOW (assets are available here; `instantiate` is
         // asset-free). Light/Camera/Line carry their authored config verbatim.
@@ -1730,6 +1880,10 @@ async fn build_node_meshes(
     tk: TransformKey,
     mat: MaterialKey,
     assets: &impl SceneAssets,
+    // `Some` from prefab capture (needs the rig cache + skin-joint binding so a
+    // skinned prefab shares ONE skeleton and its clips find their joints); `None`
+    // from the standalone public `materialize_node_mesh` path (no anim context).
+    mut maps: Option<&mut AnimResolveMaps>,
     hidden: bool,
 ) -> Result<Vec<MeshKey>> {
     let mut keys: Vec<MeshKey> = Vec::new();
@@ -1758,13 +1912,88 @@ async fn build_node_meshes(
             }
         }
         NodeKind::SkinnedMesh { skin, .. } => {
-            // Self-placing rig glb (rooted at None, like the live arm). For a
-            // prefab template the joint binding is omitted (skin-correspondence is
-            // a follow-on even outside prefabs); the rig poses at bind pose.
-            let (glb_keys, _, _) =
-                load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
-                    .await?;
-            keys.extend(glb_keys);
+            // Mirror the live `materialize` SkinnedMesh arm so a skinned PREFAB
+            // shares ONE skeleton across its sibling part-nodes and binds its
+            // bones so the authored clips find their joints. Several sibling
+            // `SkinnedMesh` nodes share one rig glb (same `skin.source` + joints):
+            // load it ONCE (keyed in `rig_cache` by glb leaf + first joint node),
+            // bind each bone `NodeId → baked joint TransformKey`, and select each
+            // node's OWN primitive via `skin.primitive_index`. Loading per-node
+            // (the old path) minted a duplicate skeleton per part AND bound no
+            // joints → the clips had no targets and the rig sat at bind pose.
+            if let Some(maps) = maps.as_deref_mut() {
+                let rig_key = (
+                    mesh_glb_filename(skin.source),
+                    skin.joints.first().map(|j| j.node).unwrap_or(node.id),
+                );
+                if !maps.rig_cache.contains_key(&rig_key) {
+                    let (all_keys, node_index_transforms, node_index_meshes) =
+                        load_glb_under(renderer, assets, &rig_key.0, Some(tk), mat).await?;
+                    // Bind each skeleton bone (scene NodeId) → this rig's baked
+                    // joint transform (by the joint's clean-glb node index), so a
+                    // bone's Transform track resolves to the joint the skin reads.
+                    let mut joints_resolved = 0usize;
+                    for j in &skin.joints {
+                        if let Some(&jtk) = node_index_transforms.get(&(j.index as usize)) {
+                            maps.skin_joints.insert(j.node, jtk);
+                            joints_resolved += 1;
+                        }
+                    }
+                    if joints_resolved < skin.joints.len() {
+                        tracing::warn!(
+                            "skinned prefab `{}`: only {}/{} skin joints resolved",
+                            node.name,
+                            joints_resolved,
+                            skin.joints.len(),
+                        );
+                    }
+                    // Hidden template meshes: `all_keys` are set hidden by the
+                    // caller's post-loop pass (they land in the returned `keys`).
+                    let _ = all_keys;
+                    maps.rig_cache
+                        .insert(rig_key.clone(), (node_index_transforms, node_index_meshes));
+                }
+                let (_node_index_transforms, node_index_meshes) = maps
+                    .rig_cache
+                    .get(&rig_key)
+                    .cloned()
+                    .expect("rig cache entry just ensured");
+                // `node_index_meshes` is keyed by glTF MESH index (a multi-part
+                // rig is one glTF mesh, one primitive per part): flatten in key
+                // order and select this node's primitive.
+                let flat: Vec<MeshKey> = {
+                    let mut mesh_indices: Vec<usize> = node_index_meshes.keys().copied().collect();
+                    mesh_indices.sort_unstable();
+                    mesh_indices
+                        .iter()
+                        .flat_map(|i| node_index_meshes[i].iter().copied())
+                        .collect()
+                };
+                let selected: Vec<MeshKey> = match skin.primitive_index {
+                    Some(pi) => flat.get(pi as usize).map(|k| vec![*k]).unwrap_or_default(),
+                    None => flat.clone(),
+                };
+                if selected.is_empty() {
+                    tracing::warn!(
+                        "skinned prefab `{}`: primitive {:?} not found (rig has {} primitives)",
+                        node.name,
+                        skin.primitive_index,
+                        flat.len()
+                    );
+                }
+                // The rig loaded with the FIRST sibling's material — rebind this
+                // node's own onto its selected primitive.
+                for &k in &selected {
+                    let _ = renderer.set_mesh_material(k, mat);
+                }
+                keys.extend(selected);
+            } else {
+                // No anim context (public `materialize_node_mesh`): naive load.
+                let (glb_keys, _, _) =
+                    load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
+                        .await?;
+                keys.extend(glb_keys);
+            }
         }
         NodeKind::Sprite(def) => {
             let key = build_sprite_mesh(renderer, cache, assets, def, tk).await?;
@@ -3256,7 +3485,7 @@ pub async fn materialize_node_mesh(
     // and on-demand-fetches within this node's own slots.
     let mut cache = texture::TextureCache::new(scene);
     build_node_meshes(
-        renderer, &mut cache, scene, node, tk, material, assets, false,
+        renderer, &mut cache, scene, node, tk, material, assets, None, false,
     )
     .await
 }

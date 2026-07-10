@@ -81,6 +81,13 @@ struct ClassifyBuckets {
 // host-side allocator.
 @group(0) @binding(23) var<storage, read> extras_pool: array<u32>;
 
+// M2a: material-owned SSR reflection descriptor output. Each material kernel
+// stores vec4(ssr_mask * ssr_tint, ssr_spread) per pixel at sample 0; the SSR
+// pass reads it (RGB = reflectivity color / 0 = opt out, A = spread). Always
+// present (both AA layouts) so the binding index is stable regardless of the
+// MSAA-gated prep_edge_shadow that follows.
+@group(0) @binding(24) var reflection_descriptor_tex: texture_storage_2d<rgba8unorm, write>;
+
 {% if prep_present %}
 // Plan B (stage 5a): the shared prep pass materialized interpolated UV
 // sets + vertex color into these array textures (layer = set index).
@@ -88,14 +95,14 @@ struct ClassifyBuckets {
 // from the geometry pool — now under MSAA too (the prep textures are full-res
 // sample-0). Sampled `texture_2d_array<f32>` (the rg32float / rgba32float
 // storage views read back as f32).
-@group(0) @binding(24) var prep_uv: texture_2d_array<f32>;
-@group(0) @binding(25) var prep_vcolor: texture_2d_array<f32>;
+@group(0) @binding(25) var prep_uv: texture_2d_array<f32>;
+@group(0) @binding(26) var prep_vcolor: texture_2d_array<f32>;
 // Plan B (stage 4/5a): the prep pass's per-pixel packed shadow-visibility
 // buffer (Rgba8unorm array — 4 slots/texel: slot j -> layer j/4, channel j%4).
 // `cs_opaque` (PRIMARY) reads it via `prep_shadow_read` instead of sampling
 // shadow maps inline. Declared whenever the prep bind group is present
 // (binding 26, ANY AA); only READ on the PRIMARY mode path in apply_lighting.
-@group(0) @binding(26) var prep_shadow_visibility: texture_2d_array<f32>;
+@group(0) @binding(27) var prep_shadow_visibility: texture_2d_array<f32>;
 {% if multisampled_geometry %}
 // Plan B (stage 5b-shadow): the compact per-edge-sample shadow buffer
 // `cs_prep_edge` fills. `cs_edge` (EDGE mode) reads it via `prep_shadow_read`
@@ -105,7 +112,7 @@ struct ClassifyBuckets {
 // see it; only cs_edge actually reads it. A TEXTURE (not a storage buffer) so it
 // doesn't count against cs_edge's 10-storage-buffer cap. Binding 27, gated
 // prep_present + MSAA.
-@group(0) @binding(27) var prep_edge_shadow: texture_2d_array<f32>;
+@group(0) @binding(28) var prep_edge_shadow: texture_2d_array<f32>;
 {% endif %}
 {% endif %}
 

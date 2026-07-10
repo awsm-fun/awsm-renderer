@@ -41,12 +41,18 @@ tasks:
       - media-additional-assets
 
   mcp-dev:
-    desc: "Editor + MCP server (+ media). Then open http://localhost:9085/?mcp=http://127.0.0.1:9086 to attach the editor to the MCP server."
+    desc: "Editor + MCP server (+ media) for LOCAL renderer/MCP dev. The MCP server runs on a dedicated dev port (9186), NOT the prod default (9086) that deployed editors dial into — so it never conflicts with a live production MCP server. This editor's connect button defaults straight to the dev port, so plain http://localhost:9085 attaches (no ?mcp= needed). Pass a custom port with `task mcp-dev -- <port>`."
+    vars:
+      MCP_PORT: '{{.CLI_ARGS | default .PORT_MCP_HTTP_LOCAL_DEV}}'
     deps:
-      - editor:dev
+      - task: editor:dev
+        vars:
+          MCP_ORIGIN: "http://127.0.0.1:{{.MCP_PORT}}"
       - media-local
       - media-additional-assets
-      - mcp:serve
+      - task: mcp:serve
+        vars:
+          MCP_PORT: "{{.MCP_PORT}}"
 
   model-tests-dev:
     desc: "Run model-tests dev server in parallel plus the media servers"

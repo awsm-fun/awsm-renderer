@@ -593,6 +593,7 @@ impl AwsmRenderer {
                     self.prep_config.clamped_k(),
                     self.prep_config.sscs_enabled,
                     self.prep_config.sscs_step_count,
+                    self.post_processing.ssr.enabled,
                 )
                 .await?;
         }
@@ -2919,6 +2920,10 @@ impl AwsmRenderer {
                 let key = ShaderCacheKeyMaterialOpaque {
                     texture_pool_arrays_len: 1,
                     texture_pool_samplers_len: 1,
+                    // Exercise the descriptor-store path in dynamic-material
+                    // WGSL validation (custom materials write the default 0
+                    // descriptor when SSR is on).
+                    write_ssr_descriptor: true,
                     msaa_sample_count: None,
                     mipmaps: false,
                     max_shadow_casters: 4,

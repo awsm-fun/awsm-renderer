@@ -122,6 +122,7 @@ fn opaque_compute_defines_every_called_loader_per_base() {
     use crate::render_passes::material_opaque::shader::template::ShaderTemplateMaterialOpaque;
     for (shader_id, base, name) in first_party_bases() {
         let key = ShaderCacheKeyMaterialOpaque {
+            write_ssr_descriptor: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: Some(4),

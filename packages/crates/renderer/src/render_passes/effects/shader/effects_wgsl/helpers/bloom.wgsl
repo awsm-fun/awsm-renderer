@@ -88,14 +88,17 @@ fn apply_bloom(
     coords: vec2<i32>,
     screen_dims: vec2<i32>
 ) -> vec3<f32> {
+    // The bloom is pre-built by the dedicated mip-pyramid BloomRenderPass into
+    // `bloom_tex` (full-res, intensity already applied). Just add it over the
+    // scene — no extra blur, no extra intensity.
     {% if !ping_pong %}
-    let blurred = blur_sample(bloom_tex, coords, screen_dims);
+    let bloom = textureLoad(bloom_tex, coords, 0).rgb;
     {% else %}
-    let blurred = blur_sample(effects_tex, coords, screen_dims);
+    let bloom = textureLoad(effects_tex, coords, 0).rgb;
     {% endif %}
 
     let original = textureLoad(composite_tex, coords, 0).rgb;
-    return original + blurred * BLOOM_INTENSITY;
+    return original + bloom;
 }
 {% else %}
 fn apply_bloom(

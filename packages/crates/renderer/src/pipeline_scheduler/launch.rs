@@ -490,6 +490,9 @@ impl crate::AwsmRenderer {
                     max_shadow_casters: self.prep_config.clamped_k(),
                     sscs_enabled: self.prep_config.sscs_enabled,
                     sscs_step_count: self.prep_config.sscs_step_count,
+                    // M2a: SSR-on ⇒ this kernel writes the reflection descriptor.
+                    // Flipping SSR re-keys → recompiles the live opaque modules.
+                    write_ssr_descriptor: self.post_processing.ssr.enabled,
                     shader_id,
                     base,
                     owns_skybox,
@@ -734,6 +737,7 @@ impl crate::AwsmRenderer {
                 self.prep_config.clamped_k(),
                 self.prep_config.sscs_enabled,
                 self.prep_config.sscs_step_count,
+                self.post_processing.ssr.enabled,
             )? {
             Some(d) => d,
             None => return Ok(()),

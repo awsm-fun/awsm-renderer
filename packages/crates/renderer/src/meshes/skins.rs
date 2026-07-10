@@ -212,6 +212,38 @@ impl Skins {
             .collect())
     }
 
+    /// The joint `TransformKey`s of a skin, in the skin's joint-array order —
+    /// the same order [`Self::read_inverse_bind_matrices`] returns IBMs in.
+    /// Prefab instancing reads these to know which joints to clone into a fresh
+    /// per-instance skeleton, then `insert`s a new skin over the clones so each
+    /// instance deforms independently of the template.
+    pub fn read_joint_transforms(&self, skin_key: SkinKey) -> Result<Vec<TransformKey>> {
+        self.skeleton_transforms
+            .get(skin_key)
+            .map(|v| v.to_vec())
+            .ok_or(AwsmSkinError::SkinNotFound(skin_key))
+    }
+
+    /// The inverse-bind matrices of a skin, in joint-array order (identity for
+    /// any joint that had none). Pairs 1:1 with [`Self::read_joint_transforms`]
+    /// — the input a per-instance `insert` needs so a cloned skeleton binds at
+    /// the same rest pose as the template.
+    pub fn read_inverse_bind_matrices(&self, skin_key: SkinKey) -> Result<Vec<Mat4>> {
+        let joints = self
+            .skeleton_transforms
+            .get(skin_key)
+            .ok_or(AwsmSkinError::SkinNotFound(skin_key))?;
+        Ok(joints
+            .iter()
+            .map(|jt| {
+                self.inverse_bind_matrices
+                    .get(*jt)
+                    .copied()
+                    .unwrap_or(Mat4::IDENTITY)
+            })
+            .collect())
+    }
+
     /// In-place edit of the packed joint/weight stream (same layout as
     /// [`Self::read_joint_index_weights`]). Marks the GPU copy dirty — the next
     /// `write_gpu` uploads it, so live skinned meshes re-deform immediately.

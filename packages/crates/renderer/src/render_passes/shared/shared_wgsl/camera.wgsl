@@ -19,6 +19,10 @@ struct CameraRaw {
     frustum_rays: array<vec4<f32>, 4>,
     viewport: vec4<f32>, // in pixels, x,y,width,height
     dof_params: vec4<f32>, // x=focus_distance, y=aperture (f-stop), zw=unused
+    // M3 SSR temporal reprojection: PRIOR frame's unjittered view-projection.
+    // END-APPENDED so every existing field offset is preserved (see camera.rs
+    // BYTE_SIZE). Ignored by shaders that don't opt into temporal reprojection.
+    prev_view_projection: mat4x4<f32>,
 };
 
 // Friendly camera structure (no padding, easier to work with)
@@ -36,6 +40,8 @@ struct Camera {
     viewport_size: vec2<f32>, // width,height
     focus_distance: f32, // DoF focus distance in world units
     aperture: f32, // DoF aperture f-stop (lower = more blur)
+    // M3 SSR temporal reprojection: PRIOR frame's unjittered view-projection.
+    prev_view_proj: mat4x4<f32>,
 };
 
 // Convert from raw uniform to friendly structure
@@ -53,5 +59,6 @@ fn camera_from_raw(raw: CameraRaw) -> Camera {
     camera.viewport_size = vec2<f32>(raw.viewport.z, raw.viewport.w);
     camera.focus_distance = raw.dof_params.x;
     camera.aperture = raw.dof_params.y;
+    camera.prev_view_proj = raw.prev_view_projection;
     return camera;
 }
