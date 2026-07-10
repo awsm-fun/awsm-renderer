@@ -9,6 +9,8 @@ use crate::{
 #[template(path = "decal_classify_wgsl/compute.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateDecalClassify {
     pub hzb_enabled: bool,
+    /// Depth convention (003) — flips the HZB occlusion gate.
+    pub reverse_z: bool,
 }
 
 impl TryFrom<&ShaderCacheKeyDecalClassify> for ShaderTemplateDecalClassify {
@@ -17,6 +19,7 @@ impl TryFrom<&ShaderCacheKeyDecalClassify> for ShaderTemplateDecalClassify {
     fn try_from(value: &ShaderCacheKeyDecalClassify) -> Result<Self> {
         Ok(Self {
             hzb_enabled: value.hzb_enabled,
+            reverse_z: value.reverse_z,
         })
     }
 }

@@ -6,6 +6,13 @@ pub struct ShaderCacheKeyDecalClassify {
     /// the classify shader. Only set when `features.gpu_culling` is
     /// on — the HZB texture is gated on that flag.
     pub hzb_enabled: bool,
+    /// Depth convention (003). Flips the HZB occlusion gate: under
+    /// reverse-Z "closest" is the numerical MAX corner depth and the
+    /// HZB stores the min-reduced (farthest) occluder bound, so the
+    /// drop test inverts. Without this axis the forward-Z gate ran
+    /// under reverse-Z and dropped every decal whose footprint
+    /// touched the sky (hzb min = 0.0 clear) — i.e. all of them.
+    pub reverse_z: bool,
 }
 
 impl From<ShaderCacheKeyDecalClassify> for ShaderCacheKey {

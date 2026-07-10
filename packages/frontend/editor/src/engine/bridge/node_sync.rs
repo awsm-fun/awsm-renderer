@@ -331,8 +331,19 @@ async fn add_node(
                     // parented to the node transform), so a move/rotate leaves it
                     // stale — re-bake it from the fresh transform so the on-screen
                     // affordance keeps matching where the collider actually is.
-                    if let NodeKind::Collider(shape) = entry.node.kind.get_cloned() {
-                        materialize_collider(entry.clone(), shape).await;
+                    // A decal is the same shape twice over: the renderer decal
+                    // carries a world-baked inverse_transform + AABB and its
+                    // volume wireframe is world-baked lines — without this
+                    // re-bake a moved decal keeps projecting at its
+                    // materialize-time placement (while the gizmo moves on).
+                    match entry.node.kind.get_cloned() {
+                        NodeKind::Collider(shape) => {
+                            materialize_collider(entry.clone(), shape).await;
+                        }
+                        NodeKind::Decal(cfg) => {
+                            materialize_decal(entry.clone(), cfg).await;
+                        }
+                        _ => {}
                     }
                 })
             }).await;
@@ -1556,26 +1567,83 @@ async fn materialize_collider(
 /// Projection decal (`NodeKind::Decal`) → inserts the renderer decal (inert
 /// until a texture is assigned) plus a unit-cube volume wireframe so the decal
 /// is placeable/visible in the editor (the projection volume).
+///
+/// Idempotent: drains any previously-inserted decal + wireframe first, so it
+/// doubles as the re-bake the transform observer calls on every move/rotate/
+/// scale (mirrors `materialize_collider`). Both the renderer decal (world-baked
+/// `inverse_transform` + AABB) and the wireframe (world-baked line geometry)
+/// are snapshots of the node's world matrix — without the re-bake they'd stay
+/// at the materialize-time placement while the node moved on.
 async fn materialize_decal(
     entry: Arc<RendererNode>,
     cfg: awsm_renderer_editor_protocol::DecalConfig,
 ) {
-    let parent_tk = entry.transform_key;
+    let key = entry.transform_key;
     let entry2 = entry.clone();
     let alpha = cfg.alpha;
+    let texture = cfg.texture;
+    let old_decals: Vec<_> = entry.decal_keys.lock().unwrap().drain(..).collect();
+    let old_lines: Vec<_> = entry.line_keys.lock().unwrap().drain(..).collect();
     with_renderer_mut(move |r| {
-        let world = r
+        for dk in old_decals {
+            r.remove_decal(dk);
+        }
+        for lk in old_lines {
+            r.remove_line(lk);
+        }
+        // Fresh world = parent's CURRENT world × this node's local. `get_world`
+        // on the node itself is a cached matrix only refreshed by the render
+        // loop's update_transforms, so reading it right after `set_local` (the
+        // transform-observer re-bake) or right after the transform was first
+        // established (whose cached world is seeded local-only, missing
+        // ancestors) would bake a stale/incomplete placement into the decal —
+        // same fix as `materialize_collider`.
+        let local = r
             .transforms
-            .get_world(parent_tk)
-            .copied()
+            .get_local(key)
+            .map(|t| t.to_matrix())
             .unwrap_or(glam::Mat4::IDENTITY);
-        match r.insert_decal(world, 0, alpha) {
+        let parent_world = r
+            .transforms
+            .get_parent(key)
+            .ok()
+            .and_then(|p| r.transforms.get_world(p).ok().copied())
+            .unwrap_or(glam::Mat4::IDENTITY);
+        let world = parent_world * local;
+        // Resolve the decal's texture asset to the pool's flat index the decal
+        // shader unpacks (`array_index * stride + layer_index` — the same
+        // packing the scene-loader uses). This was hard-coded to 0, which
+        // sampled whatever texture happened to occupy pool slot (0,0) — an
+        // editor decal never projected its ASSIGNED texture.
+        let texture_index = texture
+            .as_ref()
+            .and_then(|tref| {
+                super::material::resolve_texture_binding(
+                    r,
+                    tref,
+                    true,
+                    awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+                )
+            })
+            .and_then(|(key, _sampler)| {
+                let stride = awsm_renderer::decals::decal_texture_index_stride(&r.gpu);
+                r.textures
+                    .get_entry(key)
+                    .ok()
+                    .map(|e| (e.array_index as u32) * stride + e.layer_index as u32)
+            })
+            .unwrap_or(0);
+        match r.insert_decal(world, texture_index, alpha) {
             Ok(key) => entry2.decal_keys.lock().unwrap().push(key),
             Err(err) => tracing::warn!("insert_decal: {err:?}"),
         }
+        // The decal volume is the ±1 oriented unit cube (2×2×2 m under unit
+        // scale) — half-extents 1.0, so the wireframe shows the TRUE
+        // projection volume. (Was 0.5: the affordance covered an eighth of
+        // the volume the decal actually projects into.)
         let (positions, colors) = super::collider_wire::build(
             &awsm_renderer_editor_protocol::ColliderShape::Box {
-                half_extents: [0.5, 0.5, 0.5],
+                half_extents: [1.0, 1.0, 1.0],
             },
             &world,
         );

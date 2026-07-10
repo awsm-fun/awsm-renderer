@@ -554,7 +554,10 @@ impl RenderPasses {
             shader_cache_keys.extend(MaterialDecalPipelines::build_shader_cache_keys(ctx, bg)?);
         }
         if let Some(bg) = decal_classify_bg.as_ref() {
-            shader_cache_keys.extend(DecalClassifyPipelines::shader_cache_keys(bg));
+            shader_cache_keys.extend(DecalClassifyPipelines::shader_cache_keys(
+                bg,
+                ctx.features.reverse_z,
+            ));
         }
         shader_cache_keys.extend(MaterialOpaquePipelines::build_shader_cache_keys(
             ctx, &opaque_bg,

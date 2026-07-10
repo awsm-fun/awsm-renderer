@@ -971,23 +971,101 @@ fn ssr_composite_shader_validates() {
 fn decal_shader_validates_with_templated_layer_stride() {
     for msaa in [None, Some(4)] {
         for stride in [256u32, 2048u32] {
-            let key = ShaderCacheKeyMaterialDecal {
-                msaa_sample_count: msaa,
-                texture_pool_arrays_len: 1,
-                texture_pool_samplers_len: 1,
-                texture_pool_layers_per_array: stride,
-                reverse_z: false,
+            for reverse_z in [false, true] {
+                let key = ShaderCacheKeyMaterialDecal {
+                    msaa_sample_count: msaa,
+                    texture_pool_arrays_len: 1,
+                    texture_pool_samplers_len: 1,
+                    texture_pool_layers_per_array: stride,
+                    reverse_z,
+                };
+                let label = format!("decal msaa={msaa:?} stride={stride} reverse_z={reverse_z}");
+                let src = ShaderTemplateMaterialDecal::try_from(&key)
+                    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                    .into_source()
+                    .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                assert!(
+                    src.contains(&format!("% {stride}u")) && src.contains(&format!("/ {stride}u")),
+                    "{label}: expected the templated stride in the unpacking math"
+                );
+                // 003: the sky skip must match the depth clear value of the
+                // convention (reverse-Z clears to 0.0, forward-Z to 1.0).
+                if reverse_z {
+                    assert!(
+                        src.contains("depth <= 0.0"),
+                        "{label}: reverse-Z sky skip must test depth <= 0.0"
+                    );
+                } else {
+                    assert!(
+                        src.contains("depth >= 1.0"),
+                        "{label}: forward-Z sky skip must test depth >= 1.0"
+                    );
+                }
+                naga_validate(&src, &label);
+            }
+        }
+    }
+}
+
+/// The decal classify shader's HZB occlusion gate is depth-convention-aware
+/// (003): under reverse-Z "closest" is the numerical MAX corner depth and the
+/// HZB stores the min-reduced (farthest) occluder bound, so the drop test
+/// inverts. Before this axis existed the forward-Z gate ran under reverse-Z
+/// and dropped EVERY decal whose screen footprint touched the sky (hzb min =
+/// 0.0 clear) — i.e. all of them: the editor rendered no decals at all.
+/// Validate all four template variants and pin the gate's comparison
+/// direction + the mip-selection formula (the old `31u - firstLeadingBit`
+/// computed count-leading-zeros and always picked the coarsest mip).
+#[test]
+fn decal_classify_shader_validates_for_both_depth_conventions() {
+    use crate::render_passes::material_decal::classify::shader::{
+        cache_key::ShaderCacheKeyDecalClassify, template::ShaderTemplateDecalClassify,
+    };
+    for hzb_enabled in [false, true] {
+        for reverse_z in [false, true] {
+            let key = ShaderCacheKeyDecalClassify {
+                hzb_enabled,
+                reverse_z,
             };
-            let label = format!("decal msaa={msaa:?} stride={stride}");
-            let src = ShaderTemplateMaterialDecal::try_from(&key)
+            let label = format!("decal classify hzb={hzb_enabled} reverse_z={reverse_z}");
+            let src = ShaderTemplateDecalClassify::try_from(&key)
                 .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
                 .into_source()
                 .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
-            assert!(
-                src.contains(&format!("% {stride}u")) && src.contains(&format!("/ {stride}u")),
-                "{label}: expected the templated stride in the unpacking math"
-            );
             naga_validate(&src, &label);
+            if hzb_enabled {
+                assert!(
+                    !src.contains("31u - firstLeadingBit"),
+                    "{label}: mip selection must use firstLeadingBit (floor log2), \
+                     not its count-leading-zeros dual"
+                );
+                if reverse_z {
+                    assert!(
+                        src.contains("closest_depth = max(closest_depth"),
+                        "{label}: reverse-Z closest corner depth is the numerical max"
+                    );
+                    assert!(
+                        src.contains("closest_depth < hzb_bound"),
+                        "{label}: reverse-Z occlusion gate must drop when closest \
+                         depth is numerically SMALLER than the HZB min-bound"
+                    );
+                } else {
+                    assert!(
+                        src.contains("closest_depth = min(closest_depth"),
+                        "{label}: forward-Z closest corner depth is the numerical min"
+                    );
+                    assert!(
+                        src.contains("closest_depth > hzb_bound"),
+                        "{label}: forward-Z occlusion gate must drop when closest \
+                         depth is numerically GREATER than the HZB max-bound"
+                    );
+                }
+            } else {
+                assert!(
+                    !src.contains("hzb_texture"),
+                    "{label}: HZB binding must be absent when the gate is off"
+                );
+            }
         }
     }
 }

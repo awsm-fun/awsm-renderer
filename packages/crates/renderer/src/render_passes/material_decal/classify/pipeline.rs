@@ -21,7 +21,10 @@ impl DecalClassifyPipelines {
         bind_groups: &DecalClassifyBindGroups,
     ) -> Result<Self> {
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys(bind_groups))
+            .ensure_keys(
+                ctx.gpu,
+                Self::shader_cache_keys(bind_groups, ctx.features.reverse_z),
+            )
             .await?;
         let descs = Self::build_descriptors(ctx, bind_groups).await?;
         let pipeline_keys = ctx
@@ -37,9 +40,13 @@ impl DecalClassifyPipelines {
         Ok(Self::from_resolved(pipeline_keys))
     }
 
-    pub fn shader_cache_keys(bind_groups: &DecalClassifyBindGroups) -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys(
+        bind_groups: &DecalClassifyBindGroups,
+        reverse_z: bool,
+    ) -> Vec<ShaderCacheKey> {
         vec![ShaderCacheKey::from(ShaderCacheKeyDecalClassify {
             hzb_enabled: bind_groups.hzb_enabled,
+            reverse_z,
         })]
     }
 
@@ -58,6 +65,7 @@ impl DecalClassifyPipelines {
                 ctx.gpu,
                 ShaderCacheKeyDecalClassify {
                     hzb_enabled: bind_groups.hzb_enabled,
+                    reverse_z: ctx.features.reverse_z,
                 },
             )
             .await?;
