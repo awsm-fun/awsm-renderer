@@ -201,6 +201,12 @@ struct AppContext {
     _drop_tracker: Arc<AppContextDropTracker>,
 }
 
+/// The staged reverse-Z rollout flag (`?reversez`) — one source for the main
+/// viewport + the material preview renderer so the two can't diverge.
+pub fn reverse_z_flag() -> bool {
+    url_has_flag("reversez")
+}
+
 fn editor_features() -> RendererFeatures {
     use awsm_renderer::features::FeatureToggle;
     RendererFeatures {
@@ -233,6 +239,11 @@ fn editor_features() -> RendererFeatures {
         // a bounded VRAM budget in-editor. No-op (early-out) when no cluster mesh is
         // resident, so non-nanite scenes pay nothing per frame. `?nopaging` forces off.
         cluster_paging: !url_has_flag("nopaging"),
+        // Reverse-Z depth convention (docs/plans/003-reverse-z.md). Staged
+        // rollout: opt in with `?reversez` while the migration lands; the
+        // default flips ON at the end of plan 003 (with `?noreversez` as the
+        // A/B + rollback lever for one release).
+        reverse_z: reverse_z_flag(),
         indirect_first_instance: FeatureToggle::Auto,
     }
 }

@@ -66,6 +66,14 @@ pub struct RendererFeatures {
     /// [`RendererOptimizationPolicy`]: crate::optimization_policy::RendererOptimizationPolicy
     pub gpu_culling: bool,
 
+    /// REVERSE-Z depth convention (docs/plans/003-reverse-z.md): near→1,
+    /// far→0, float-depth precision near-uniform across the range — kills
+    /// far-field z-fighting. Construction-time: pipelines, clears, HZB ops,
+    /// frustum extraction, and shader sentinels all bake the convention via
+    /// [`crate::depth_convention::DepthConvention`]. Shadows migrate in the
+    /// stage-7 lockstep (they pin `DepthConvention::FORWARD` until then).
+    pub reverse_z: bool,
+
     /// Enable projection decals. Allocates `decal_color` (~16 MB at
     /// 4K) + `decal_classify_buffers` (~17 MB at 4K) up-front and
     /// dispatches the classify + decal compute + composite passes
@@ -191,6 +199,16 @@ pub struct RendererFeatures {
 }
 
 impl RendererFeatures {
+    /// The active main-camera depth convention, derived from
+    /// [`Self::reverse_z`]. Shadow paths pin
+    /// [`DepthConvention::FORWARD`](crate::depth_convention::DepthConvention::FORWARD)
+    /// until the stage-7 lockstep migration.
+    pub fn depth(&self) -> crate::depth_convention::DepthConvention {
+        crate::depth_convention::DepthConvention {
+            reverse_z: self.reverse_z,
+        }
+    }
+
     /// Reads the resolved value of [`Self::indirect_first_instance`].
     ///
     /// Only meaningful after the renderer builder has resolved `Auto`

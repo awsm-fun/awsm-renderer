@@ -45,6 +45,7 @@ pub mod cluster_lod;
 pub mod coverage;
 pub mod debug;
 pub mod decals;
+pub mod depth_convention;
 pub mod dynamic_materials;
 pub mod environment;
 pub mod error;
