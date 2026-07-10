@@ -233,6 +233,16 @@ pub struct AwsmRenderer {
     /// choose a level per instance. See [`crate::lod`].
     #[cfg(feature = "lod")]
     pub lod: crate::lod::LodRegistry,
+    /// Screen-space error budget (pixels) for LOD selection and the cluster
+    /// cut. Defaults to [`Self::LOD_ERROR_THRESHOLD_PX`]; runtime-tunable via
+    /// [`Self::set_lod_error_calibration`] for calibration passes.
+    #[cfg(feature = "lod")]
+    pub lod_error_threshold_px: f32,
+    /// Calibration factor applied to baked discrete-LOD errors at selection
+    /// time (the bake's sqrt-QEM metric under-reports perceptual error — see
+    /// [`Self::LOD_ERROR_CONSERVATISM`], the default).
+    #[cfg(feature = "lod")]
+    pub lod_error_conservatism: f32,
     /// GPU coverage producer buffers. The producer pass
     /// (`render_passes/coverage/`) atomic-adds per-pixel into
     /// `counts_buffer`; the renderer copies to `readback_buffer`
@@ -2603,6 +2613,10 @@ impl AwsmRendererBuilder {
             coverage: coverage::MeshCoverage::default(),
             #[cfg(feature = "lod")]
             lod: crate::lod::LodRegistry::default(),
+            #[cfg(feature = "lod")]
+            lod_error_threshold_px: AwsmRenderer::LOD_ERROR_THRESHOLD_PX,
+            #[cfg(feature = "lod")]
+            lod_error_conservatism: AwsmRenderer::LOD_ERROR_CONSERVATISM,
             coverage_buffers,
             coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 CoverageReadbackState::default(),

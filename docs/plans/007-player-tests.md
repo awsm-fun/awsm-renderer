@@ -5,12 +5,24 @@ absent); 7x load-transaction (one commit each; kitchen-sink 3.4s cold with
 model fetches, others 130-300ms); 7x counts vs scene.toml; instancing 16.7ms
 avg over 60 frames at 3 renderer meshes for 3000 instances; nanite streaming
 under the budget hook; prefab-churn 20 cycles with flat resources/bytes;
-lod-tri-drop level 2->3, 16,153->14,222 tris. FINDING for David (recorded
-below, deliberately not changed unilaterally): the LOD bake's QEM-sqrt error
-metric is so tight that the 15k-tri base level never draws once a chain
-exists (all exterior cameras select LOD2+ — switch distances 0.29u/1.0u/3.3u
-for a 1.27u-radius helmet); either the bake error needs a conservative
-scale/Hausdorff bound or LOD_ERROR_THRESHOLD_PX needs recalibration.
+lod-tri-drop level 2->3, 16,153->14,222 tris. FINDING → RESOLVED (2026-07-10):
+the LOD bake's QEM-sqrt error metric (≈RMS vertex deviation) was so tight
+that the 15k-tri base level never drew once a chain existed (all exterior
+cameras selected LOD2+ — switch distances 0.29u/1.0u/3.3u for a 1.27u-radius
+helmet at 600px/45°). Fixed at SELECTION time, not by rebaking (bakes keep
+the raw metric): `AwsmRenderer::LOD_ERROR_CONSERVATISM = 16.0` multiplies the
+baked error before projection — rationale: perceptual/silhouette error tracks
+MAX deviation plus interior shading error, empirically ~an order of magnitude
+above the RMS number, so the factor makes the projected error conservative.
+Helmet switches now land at 4.6u/16u/53u ≈ 3.6/12.6/42 object radii; the
+inspect-range camera sees the base mesh. The pair (threshold_px,
+conservatism) is runtime-tunable via `set_lod_error_calibration` for future
+calibration passes; native test
+`lod::tests::helmet_switch_distances_pin_the_calibration` pins the numbers
+(and documents the old 0.29u regression at factor 1.0). Perf note: drawing
+finer levels longer is the point — it trades triangles for correctness per
+the scene's own quality bar; lod-tri-drop now observes level 0→1 (near
+27,742 → far ~20,016 visible tris for the helmet scene).
 
 # 007 — Player runtime test projects (`examples/player-tests/`)
 

@@ -977,7 +977,7 @@ impl AwsmRenderer {
                                 cam.position_world,
                                 1.0 / proj_yy,
                                 vh as f32,
-                                Self::LOD_ERROR_THRESHOLD_PX,
+                                self.lod_error_threshold_px,
                             )?;
                         }
                     }
@@ -2530,8 +2530,43 @@ fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
 
 #[cfg(feature = "lod")]
 impl AwsmRenderer {
-    /// Geometric-error budget for discrete-LOD level selection, in screen pixels.
-    const LOD_ERROR_THRESHOLD_PX: f32 = 1.0;
+    /// Geometric-error budget for discrete-LOD level selection, in screen
+    /// pixels. Default for [`Self::lod_error_threshold_px`]; tune at runtime
+    /// via [`Self::set_lod_error_calibration`].
+    pub const LOD_ERROR_THRESHOLD_PX: f32 = 1.0;
+
+    /// Calibration factor applied to the baked per-level error during
+    /// selection. Default for [`Self::lod_error_conservatism`]; tune at
+    /// runtime via [`Self::set_lod_error_calibration`].
+    ///
+    /// The bake stores the RAW simplification metric — sqrt of the max
+    /// accumulated QEM cost (lod-bake `simplify.rs`), which behaves like an
+    /// RMS vertex deviation. Perceptual/silhouette error tracks the MAX
+    /// deviation plus interior shading error (normals, UVs, specular), which
+    /// is empirically about an order of magnitude larger than the RMS number.
+    /// Projecting the raw metric straight against the pixel budget therefore
+    /// switched to coarse levels far too early: the DamagedHelmet bake
+    /// (radius 1.27u, 15,452 tris, level errors 3.97e-4/1.37e-3/4.61e-3) got
+    /// switch distances of 0.29u/1.0u/3.3u at 600px/45° — LOD0/LOD1 were
+    /// unreachable from ANY exterior camera and the base mesh never drew.
+    ///
+    /// Multiplying the baked error by this factor before projection makes the
+    /// projected error conservative. 16.0 puts the helmet's switches at
+    /// 4.6u/16u/53u ≈ 3.6/12.6/42 object radii — the base mesh owns the
+    /// inspect range and coarser levels step outward in sensible bands
+    /// (pinned by `lod::tests::helmet_switch_distances_pin_the_calibration`).
+    /// Bakes stay raw on disk; recalibrating is a selection-time policy
+    /// change, never a rebake.
+    pub const LOD_ERROR_CONSERVATISM: f32 = 16.0;
+
+    /// Runtime override of [`Self::LOD_ERROR_THRESHOLD_PX`] /
+    /// [`Self::LOD_ERROR_CONSERVATISM`] for calibration passes. The pair is
+    /// read once per selection/cut update — no per-frame cost beyond two f32
+    /// loads already in the loop.
+    pub fn set_lod_error_calibration(&mut self, threshold_px: f32, conservatism: f32) {
+        self.lod_error_threshold_px = threshold_px;
+        self.lod_error_conservatism = conservatism;
+    }
 
     /// Per-frame Gap-B dynamic-paging update (CPU-driven). No-op unless
     /// `cluster_paging` armed the manager at load. Reads the live camera, then runs
@@ -2557,6 +2592,7 @@ impl AwsmRenderer {
             Err(_) => return,
         };
         // Disjoint inline field borrows: gpu + meshes (shared) vs render_passes (mut).
+        let error_threshold_px = self.lod_error_threshold_px;
         let gpu = &self.gpu;
         let meshes = &self.meshes;
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
@@ -2566,7 +2602,7 @@ impl AwsmRenderer {
                 cam_pos,
                 tan_half_fov_y,
                 viewport_h,
-                Self::LOD_ERROR_THRESHOLD_PX,
+                error_threshold_px,
             ) {
                 tracing::warn!("cluster paging stream_paging failed: {e:?}");
             }
@@ -2599,6 +2635,10 @@ impl AwsmRenderer {
             Err(_) => return,
         };
 
+        // The runtime calibration pair (defaults: the consts above).
+        let error_threshold_px = self.lod_error_threshold_px;
+        let error_conservatism = self.lod_error_conservatism;
+
         // Move the registry out so the loop can call `&mut self` methods without
         // aliasing `self.lod`. `take` swaps in an empty map — no allocation.
         let mut reg = std::mem::take(&mut self.lod);
@@ -2624,8 +2664,13 @@ impl AwsmRenderer {
             let distance = (center - cam_pos).length();
             let px_per_unit =
                 crate::lod::projected_px_per_unit(distance, tan_half_fov_y, viewport_h);
-            let selected =
-                crate::lod::select_level(chain, px_per_unit, scale, Self::LOD_ERROR_THRESHOLD_PX);
+            let selected = crate::lod::select_level(
+                chain,
+                px_per_unit,
+                scale,
+                error_threshold_px,
+                error_conservatism,
+            );
             if selected != chain.current_level {
                 let prev_key = chain.key_for_level(base_key, chain.current_level);
                 let sel_key = chain.key_for_level(base_key, selected);
