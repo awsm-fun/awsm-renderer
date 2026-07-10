@@ -321,6 +321,11 @@ pub enum EditorQuery {
     /// `PostProcessConfig` JSON. The read half of `SetPostProcess`.
     PostProcess,
 
+    /// The renderer-wide shadow config — the SSCS block, atlas sizes, EVSM
+    /// tuning, point-shadow pool, debug cascade tint — as its serialized
+    /// `ShadowsConfig` JSON. The read half of `SetShadows`.
+    Shadows,
+
     /// The editor viewport view options — grid / gizmos / light_gizmos /
     /// skeleton_viz / follow_agent / activity_overlay / mcp_notifications /
     /// msaa / smaa —

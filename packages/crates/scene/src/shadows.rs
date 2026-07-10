@@ -84,9 +84,10 @@ pub struct ShadowsConfig {
     // NOTE: the shadow-denoise blur is intentionally NOT persisted here.
     // It's a renderer-runtime quality knob (`renderer::ShadowsConfig::denoise`,
     // default on) toggled live in the editor's Settings drawer, exactly like
-    // MSAA — none of the renderer-wide shadow config is wired scene→renderer in
-    // the editor yet. If/when that subsystem lands, add `denoise` back alongside
-    // its siblings with real round-tripping rather than as a dangling field.
+    // MSAA — a per-session viewer preference, not authored scene data. The
+    // rest of this block IS wired scene→renderer live (the editor's
+    // `settings_sync` observer + the `SetShadows` command); the observer
+    // deliberately preserves the renderer's `denoise` when pushing it.
 }
 
 impl Default for ShadowsConfig {

@@ -31,7 +31,7 @@ use serde_json::Value;
 
 use awsm_renderer_editor_protocol::{
     CameraAxis, CompileError, CustomAlphaMode, EditorCommand, EditorMode, EditorQuery, InsertSpec,
-    ProceduralKind, QueryResult, Request, Response, SlotSpec, StepKind,
+    ProceduralKind, QueryResult, Request, Response, ShadowsPatch, SlotSpec, StepKind,
 };
 use awsm_renderer_scene::animation::{
     BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TexSlot, TexTransformProp,
@@ -1099,6 +1099,57 @@ pub struct SscsParams {
     /// directional since a cube map leaves a fully-lit contact gap to fill. Live.
     #[serde(default)]
     pub punctual_darkening: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ShadowsParams {
+    /// Master enable for screen-space contact shadows. Compile-time — flipping
+    /// recompiles the shadow pipelines.
+    #[serde(default)]
+    pub sscs_enabled: Option<bool>,
+    /// SSCS ray-march step count (clamped >= 1). Compile-time loop bound.
+    #[serde(default)]
+    pub sscs_step_count: Option<u32>,
+    /// World-space length of each SSCS step, in metres. Live uniform.
+    #[serde(default)]
+    pub sscs_step_world: Option<f32>,
+    /// SSCS occluder-slab thickness in metres. Live uniform.
+    #[serde(default)]
+    pub sscs_thickness: Option<f32>,
+    /// Max SSCS darkening (0..1) for the DIRECTIONAL shadow term. Live uniform.
+    #[serde(default)]
+    pub sscs_directional_darkening: Option<f32>,
+    /// Max SSCS darkening (0..1) for PUNCTUAL (point/spot) terms. Live uniform.
+    #[serde(default)]
+    pub sscs_punctual_darkening: Option<f32>,
+    /// 2D PCF/spot shadow atlas size in texels (square; rounded up to a power
+    /// of two, clamped 64..8192). STRUCTURAL — recreates the atlas texture.
+    #[serde(default)]
+    pub atlas_size: Option<u32>,
+    /// EVSM moments atlas size in texels (square pow2, 1..8192; RGBA16F costs
+    /// 8 bytes/texel — 2048 is ~32 MB; 1 = "never uses EVSM"). STRUCTURAL.
+    #[serde(default)]
+    pub evsm_atlas_size: Option<u32>,
+    /// EVSM depth-warp exponent (clamped 0.5..18 — above ~18 the fp16 moments
+    /// saturate into a hard binary mask). Higher = crisper contact hardening.
+    /// Live uniform.
+    #[serde(default)]
+    pub evsm_exponent: Option<f32>,
+    /// EVSM Gaussian blur half-width in texels (clamped 0..8). Live uniform.
+    #[serde(default)]
+    pub evsm_blur_radius: Option<u32>,
+    /// Max simultaneous point-light shadow casters (clamped 1..32) — sizes the
+    /// cube-map pool at ~24*resolution^2 bytes per light. STRUCTURAL.
+    #[serde(default)]
+    pub max_point_shadows: Option<u32>,
+    /// Per-face point-shadow cube resolution in texels (square pow2, 64..8192;
+    /// default 1024 costs ~24 MB at 8 lights). STRUCTURAL.
+    #[serde(default)]
+    pub point_shadow_resolution: Option<u32>,
+    /// Tint each directional cascade range so split boundaries are visible
+    /// (authoring aid). Live uniform.
+    #[serde(default)]
+    pub debug_cascade_colors: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -3962,21 +4013,60 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the global SSCS (screen-space contact shadows) settings — a short view-space ray-march that darkens contact gaps the shadow map leaves lit (e.g. the 'Peter-Pan' hole under a resting ball). Persisted on scene.shadows + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). `enabled` + `step_count` are compile-time and recompile the shadow pipelines; the scalars are live uniforms. Off by default."
+        description = "Set the global SSCS (screen-space contact shadows) settings — a short view-space ray-march that darkens contact gaps the shadow map leaves lit (e.g. the 'Peter-Pan' hole under a resting ball). Persisted on scene.shadows + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). `enabled` + `step_count` are compile-time and recompile the shadow pipelines; the scalars are live uniforms. Off by default. The SSCS-only subset of set_shadows (which also covers atlas sizes, EVSM tuning, the point-shadow pool, and debug cascade colors)."
     )]
     async fn set_sscs(
         &self,
         Parameters(p): Parameters<SscsParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::SetShadowsSscs {
-            enabled: p.enabled,
-            step_count: p.step_count,
-            step_world: p.step_world,
-            thickness: p.thickness,
-            directional_darkening: p.directional_darkening,
-            punctual_darkening: p.punctual_darkening,
+        // The SSCS-only subset of `set_shadows` — one live path.
+        self.dispatch(EditorCommand::SetShadows {
+            patch: ShadowsPatch {
+                sscs_enabled: p.enabled,
+                sscs_step_count: p.step_count,
+                sscs_step_world: p.step_world,
+                sscs_thickness: p.thickness,
+                sscs_directional_darkening: p.directional_darkening,
+                sscs_punctual_darkening: p.punctual_darkening,
+                ..Default::default()
+            },
         })
         .await
+    }
+
+    #[tool(
+        description = "Set the renderer-wide shadow config (the [shadows] block persisted in project.toml + carried in the player bundle; applied to the LIVE renderer immediately). Every field is optional — PATCH semantics, only the fields you pass change. Fields: sscs_enabled (bool) + sscs_step_count (u32, >=1) — screen-space contact shadows master toggle + ray-march step count, COMPILE-TIME (recompile the shadow pipelines; wait_render_settled after); sscs_step_world (f32, metres per step), sscs_thickness (f32, metres), sscs_directional_darkening / sscs_punctual_darkening (f32, 0..1 max darkening) — LIVE uniforms; atlas_size (u32 texels, square pow2 64..8192) — the 2D PCF/spot depth atlas, STRUCTURAL (texture + bind-group recreate next frame); evsm_atlas_size (u32 texels, square pow2 1..8192, RGBA16F ~8 B/texel, 1 = EVSM unused) — STRUCTURAL; evsm_exponent (f32, 0.5..18 fp16-safe depth-warp; higher = crisper contact hardening) and evsm_blur_radius (u32 texels, 0..8 Gaussian half-width; higher = softer) — LIVE; max_point_shadows (u32, 1..32 simultaneous point-light casters; VRAM ~24*res^2 bytes each) and point_shadow_resolution (u32 texels/cube face, pow2 64..8192) — STRUCTURAL; debug_cascade_colors (bool, tints each directional cascade range for authoring) — LIVE. Out-of-range values are clamped, sizes rounded up to a power of two. STRUCTURAL fields are cheap from authoring/level-load but don't poke them at frame rate. Read the current values back with get_shadows."
+    )]
+    async fn set_shadows(
+        &self,
+        Parameters(p): Parameters<ShadowsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetShadows {
+            patch: ShadowsPatch {
+                sscs_enabled: p.sscs_enabled,
+                sscs_step_count: p.sscs_step_count,
+                sscs_step_world: p.sscs_step_world,
+                sscs_thickness: p.sscs_thickness,
+                sscs_directional_darkening: p.sscs_directional_darkening,
+                sscs_punctual_darkening: p.sscs_punctual_darkening,
+                atlas_size: p.atlas_size,
+                evsm_atlas_size: p.evsm_atlas_size,
+                evsm_exponent: p.evsm_exponent,
+                evsm_blur_radius: p.evsm_blur_radius,
+                max_point_shadows: p.max_point_shadows,
+                point_shadow_resolution: p.point_shadow_resolution,
+                debug_cascade_colors: p.debug_cascade_colors,
+            },
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Current renderer-wide shadow config as JSON (the read half of set_shadows): the sscs_* block, atlas_size, evsm_atlas_size, evsm_exponent, evsm_blur_radius, max_point_shadows, point_shadow_resolution, debug_cascade_colors. Pure read."
+    )]
+    async fn get_shadows(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::Shadows).await
     }
 
     #[tool(

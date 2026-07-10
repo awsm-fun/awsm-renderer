@@ -1184,17 +1184,20 @@ fn dispatch_sscs(
 ) {
     spawn_local(async move {
         if let Err(e) = controller()
-            .dispatch(EditorCommand::SetShadowsSscs {
-                enabled,
-                step_count,
-                step_world,
-                thickness,
-                directional_darkening,
-                punctual_darkening,
+            .dispatch(EditorCommand::SetShadows {
+                patch: awsm_renderer_editor_protocol::ShadowsPatch {
+                    sscs_enabled: enabled,
+                    sscs_step_count: step_count,
+                    sscs_step_world: step_world,
+                    sscs_thickness: thickness,
+                    sscs_directional_darkening: directional_darkening,
+                    sscs_punctual_darkening: punctual_darkening,
+                    ..Default::default()
+                },
             })
             .await
         {
-            tracing::error!("SetShadowsSscs: {e}");
+            tracing::error!("SetShadows (SSCS): {e}");
         }
     });
 }

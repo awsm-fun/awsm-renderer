@@ -27,6 +27,7 @@ use crate::mesh_def::{CapturedMesh, VertexOverrides};
 
 use crate::anim_ui::{AnimSel, AnimView, StepKind};
 use crate::node_spec::{InsertSpec, NodeSpec};
+use crate::shadows_patch::ShadowsPatch;
 
 /// A procedural texture generator the Content Browser can author.
 /// Maps to `ProceduralTextureDef` with sensible defaults at apply-time.
@@ -535,12 +536,28 @@ pub enum EditorCommand {
         irradiance: Option<EnvSlot>,
     },
 
+    /// Patch the renderer-wide shadow config on `scene.shadows` (persisted into
+    /// `project.toml` + the player bundle; the `settings_sync` observer pushes
+    /// the whole block into the renderer live). Only the `Some` fields of the
+    /// patch change — see [`ShadowsPatch`] for per-field semantics and clamps.
+    /// `sscs_enabled` / `sscs_step_count` recompile the shadow-consuming
+    /// pipelines; `atlas_size` / `evsm_atlas_size` / `max_point_shadows` /
+    /// `point_shadow_resolution` recreate GPU textures + bind groups at the
+    /// next frame; everything else is a live uniform. Inverse: a full-replace
+    /// patch of the prior values. Supersedes `SetShadowsSscs` for new call
+    /// sites.
+    SetShadows { patch: ShadowsPatch },
+
     /// Patch the global SSCS (screen-space contact-shadow) settings on
-    /// `scene.shadows` (persisted; the `sscs_sync` bridge pushes them into the
-    /// renderer live). Every field is optional — only the `Some` ones change.
+    /// `scene.shadows` (persisted; the `settings_sync` observer pushes them into
+    /// the renderer live). Every field is optional — only the `Some` ones change.
     /// `enabled` + `step_count` recompile the shadow-consuming pipelines (they're
     /// compile-time template constants); the scalars are live uniforms. Inverse:
     /// restore the prior SSCS values.
+    ///
+    /// LEGACY: the SSCS-only subset of [`Self::SetShadows`]. Kept so an older
+    /// MCP binary (or a recorded undo history) still applies; new call sites
+    /// dispatch `SetShadows`.
     SetShadowsSscs {
         enabled: Option<bool>,
         step_count: Option<u32>,
@@ -1587,6 +1604,7 @@ impl EditorCommand {
             EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::PatchEnvironment { .. } => "Set environment",
+            EditorCommand::SetShadows { .. } => "Set shadows",
             EditorCommand::SetShadowsSscs { .. } => "Set SSCS",
             EditorCommand::SetPostProcess { .. } => "Set post-processing",
             EditorCommand::SetViewOptions { .. } => "Set view options",

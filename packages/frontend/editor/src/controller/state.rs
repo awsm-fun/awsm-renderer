@@ -3076,6 +3076,19 @@ impl EditorController {
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
             }
+            EditorCommand::SetShadows { patch } => {
+                // Patch semantics live in `ShadowsPatch::apply` (host-tested in
+                // editor-protocol): `None` preserves, `Some` sets clamped. The
+                // `settings_sync` observer pushes the new block into the
+                // renderer (SSCS enabled/step_count recompile; the resource-
+                // shape fields recreate their GPU textures next frame).
+                let prev = self.scene.shadows.get_cloned();
+                self.scene.shadows.set(patch.apply(prev.clone()));
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetShadows {
+                    patch: awsm_renderer_editor_protocol::ShadowsPatch::replace(&prev),
+                }))
+            }
             EditorCommand::SetShadowsSscs {
                 enabled,
                 step_count,
@@ -5985,6 +5998,9 @@ impl EditorController {
             ),
             EditorQuery::PostProcess => QueryResult::Text(
                 serde_json::to_string(&self.scene.post_process.get_cloned()).unwrap_or_default(),
+            ),
+            EditorQuery::Shadows => QueryResult::Text(
+                serde_json::to_string(&self.scene.shadows.get_cloned()).unwrap_or_default(),
             ),
             EditorQuery::ViewOptions => {
                 use serde_json::json;
