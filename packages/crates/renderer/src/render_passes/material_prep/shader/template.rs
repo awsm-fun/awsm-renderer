@@ -30,6 +30,10 @@ pub struct ShaderTemplateMaterialPrepBindGroups {
     /// Compile the shadow-SAMPLING bodies (`{% if needs_shadow_sampling %}` in
     /// `shadow/bind_groups.wgsl`). `true` — prep is a shadow sampler.
     pub needs_shadow_sampling: bool,
+    /// Emit the cascade-debug overlay (`debug_cascade_tint`) in
+    /// `shadow/bind_groups.wgsl`. `false` — prep computes shadow VISIBILITY,
+    /// not colour; the overlay is applied at shading time (opaque/transparent).
+    pub needs_cascade_debug: bool,
     /// SSCS effective gate = pass-capability (prep binds `depth_tex` +
     /// `camera_raw`) AND the global `ShadowsConfig::sscs_enabled`. When `false`
     /// the shared `apply_sscs` body is compiled out to `return 1.0` (zero cost).
@@ -84,6 +88,7 @@ impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
                 multisampled_geometry,
                 shadows: true,
                 needs_shadow_sampling: true,
+                needs_cascade_debug: false,
                 // Prep is SSCS-capable (binds depth_tex + camera_raw); the
                 // effective gate is the global enable. `sscs_step_count` is
                 // clamped ≥1 so the loop bound and `f32(steps)` divisor are safe.

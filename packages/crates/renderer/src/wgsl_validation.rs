@@ -538,6 +538,20 @@ fn opaque_shadow_from_buffer_variant_validates() {
         !src.contains("fn sample_shadow_directional"),
         "shadow_from_buffer opaque module should DROP `fn sample_shadow_directional` (the inline sampler)"
     );
+    // (d) the cascade-debug overlay SURVIVES the drop: it's a shading-time
+    // colour op reading only the always-bound shadow uniforms, emitted
+    // ungated (outside the `needs_shadow_sampling` block). Regression guard
+    // for `debug_cascade_colors` producing zero pixel change — the overlay
+    // used to sit inside the sampling block, so prep-only opaque (which is
+    // ALL opaque) compiled it out.
+    assert!(
+        src.contains("fn debug_cascade_tint("),
+        "shadow_from_buffer opaque module must KEEP `fn debug_cascade_tint` (cascade-debug overlay)"
+    );
+    assert!(
+        src.contains("color = debug_cascade_tint("),
+        "shadow_from_buffer opaque module must CALL the cascade-debug overlay from apply_lighting"
+    );
 
     // Control 2 (stage 5b-shadow): MSAA on ⇒ cs_opaque (PRIMARY) reads
     // the full-screen prep buffer AND cs_edge (EDGE) reads the compact
@@ -558,6 +572,13 @@ fn opaque_shadow_from_buffer_variant_validates() {
     assert!(
         !msaa_src.contains("fn sample_shadow_directional"),
         "MSAA+prep PBR opaque must DROP inline `fn sample_shadow_directional` (5b: cs_edge reads the compact edge-shadow buffer)"
+    );
+    // The cascade-debug overlay survives the 5b drop too (same guard as the
+    // no-MSAA (d) assert above).
+    assert!(
+        msaa_src.contains("fn debug_cascade_tint(")
+            && msaa_src.contains("color = debug_cascade_tint("),
+        "MSAA+prep PBR opaque must KEEP + CALL `debug_cascade_tint` (cascade-debug overlay)"
     );
     // cs_opaque (PRIMARY) reads the full-screen buffer; cs_edge (EDGE) reads the
     // compact per-edge-sample buffer. Both reads must be present.

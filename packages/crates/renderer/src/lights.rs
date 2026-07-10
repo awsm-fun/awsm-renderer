@@ -743,7 +743,13 @@ impl Light {
                 write(Value::SkipVec3); // skip position
                 write(Value::SkipN32(1)); // skip range
                                           // row 2
-                write(direction.into());
+                                          // Normalize at the pack boundary: the public setters take raw
+                                          // vectors, and every shader consumer (SSCS ray dirs, shadow
+                                          // to-light math) assumes unit length — normalizing once here
+                                          // lets the WGSL drop its defensive per-fragment normalizes
+                                          // without NaN risk from unnormalized caller input.
+                let dir_n = glam::Vec3::from_array(*direction).normalize_or_zero();
+                write((&dir_n.to_array()).into());
                 write(Value::SkipN32(1)); // skip inner cone
                                           // row 3
                 write(color.into());
@@ -801,7 +807,9 @@ impl Light {
                 write(position.into());
                 write((&gpu_range).into());
                 // row 2
-                write(direction.into());
+                // Normalized at pack (see the directional arm's rationale).
+                let dir_n = glam::Vec3::from_array(*direction).normalize_or_zero();
+                write((&dir_n.to_array()).into());
                 write((&inner_cos).into());
                 // row 3
                 write(color.into());

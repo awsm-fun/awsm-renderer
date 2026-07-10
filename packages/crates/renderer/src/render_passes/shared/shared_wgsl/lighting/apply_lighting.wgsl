@@ -71,7 +71,8 @@ fn apply_lighting(
                     // sample their own short-range shadow maps so SSCS
                     // would double-cost them for no win.
                     if light.kind == 1u && light.shadow_index != SHADOW_INDEX_NONE {
-                        let sscs_dir = normalize(-light.direction);
+                        // light.direction is normalized at the CPU pack boundary (lights.rs).
+                        let sscs_dir = -light.direction;
                         visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                     }
                 }
@@ -81,14 +82,17 @@ fn apply_lighting(
             {% endif %}
         }
         {% if needs_shadow_sampling %}
-            // Cascade-debug overlay (uses the dominant directional
-            // light's descriptor base, fetched via light 0's
-            // `shadow_index` — sufficient until phase 4 surfaces a
-            // proper sun-light index).
-            if lights_info.n_lights > 0u {
+            // Cascade-debug overlay — the first DIRECTIONAL light's
+            // descriptor base (cascades are directional-only; `get_light(0u)`
+            // could be a punctual light since directionals live behind the
+            // prefix indirection). Gated on `needs_shadow_sampling` because
+            // `view_z_for_shadow` only exists under it here (this flat
+            // variant is the transparent-pass surface, which always
+            // inline-samples when it lights).
+            if get_n_directional() > 0u {
                 color = debug_cascade_tint(
                     color,
-                    get_light(0u).shadow_index,
+                    get_light(get_directional_light_index(0u)).shadow_index,
                     world_position,
                     view_z_for_shadow,
                 );
@@ -241,7 +245,8 @@ fn apply_lighting_per_froxel(
                             view_z_for_shadow,
                         );
                         if light.shadow_index != SHADOW_INDEX_NONE {
-                            let sscs_dir = normalize(-light.direction);
+                            // light.direction is normalized at the CPU pack boundary (lights.rs).
+                            let sscs_dir = -light.direction;
                             visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                         }
                     }
@@ -258,7 +263,8 @@ fn apply_lighting_per_froxel(
                         view_z_for_shadow,
                     );
                     if light.shadow_index != SHADOW_INDEX_NONE {
-                        let sscs_dir = normalize(-light.direction);
+                        // light.direction is normalized at the CPU pack boundary (lights.rs).
+                        let sscs_dir = -light.direction;
                         visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                     }
                 }
@@ -357,16 +363,23 @@ fn apply_lighting_per_froxel(
             }
         }
 
-        {% if needs_shadow_sampling %}
-            if lights_info.n_lights > 0u {
-                color = debug_cascade_tint(
-                    color,
-                    get_light(0u).shadow_index,
-                    world_position,
-                    view_z_for_shadow,
-                );
-            }
-        {% endif %}
+        // Cascade-debug overlay — the first DIRECTIONAL light's descriptor
+        // base (cascades are directional-only; `get_light(0u)` could be a
+        // punctual light since directionals live behind the prefix
+        // indirection). UNGATED on `needs_shadow_sampling`: the opaque pass
+        // compiles with it `false` (prep reads the shadow buffer), which used
+        // to compile this overlay out of every opaque module — the
+        // `debug_cascade_colors` toggle changed zero pixels. The tint only
+        // reads the always-bound shadow uniforms (emitted ungated in
+        // `shadow/bind_groups.wgsl`) and short-circuits on `flags.x == 0u`.
+        if n_directional > 0u {
+            color = debug_cascade_tint(
+                color,
+                get_light(get_directional_light_index(0u)).shadow_index,
+                world_position,
+                view_z,
+            );
+        }
     {% endif %}
 
     return color;
@@ -453,7 +466,8 @@ fn apply_lighting_per_froxel_with_transmission(
                             view_z_for_shadow,
                         );
                         if light.shadow_index != SHADOW_INDEX_NONE {
-                            let sscs_dir = normalize(-light.direction);
+                            // light.direction is normalized at the CPU pack boundary (lights.rs).
+                            let sscs_dir = -light.direction;
                             visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                         }
                     }
@@ -470,7 +484,8 @@ fn apply_lighting_per_froxel_with_transmission(
                         view_z_for_shadow,
                     );
                     if light.shadow_index != SHADOW_INDEX_NONE {
-                        let sscs_dir = normalize(-light.direction);
+                        // light.direction is normalized at the CPU pack boundary (lights.rs).
+                        let sscs_dir = -light.direction;
                         visibility = visibility * apply_sscs(world_position, sscs_dir, shadow_globals.sscs_params.z);
                     }
                 }
@@ -557,16 +572,23 @@ fn apply_lighting_per_froxel_with_transmission(
             }
         }
 
-        {% if needs_shadow_sampling %}
-            if lights_info.n_lights > 0u {
-                color = debug_cascade_tint(
-                    color,
-                    get_light(0u).shadow_index,
-                    world_position,
-                    view_z_for_shadow,
-                );
-            }
-        {% endif %}
+        // Cascade-debug overlay — the first DIRECTIONAL light's descriptor
+        // base (cascades are directional-only; `get_light(0u)` could be a
+        // punctual light since directionals live behind the prefix
+        // indirection). UNGATED on `needs_shadow_sampling`: the opaque pass
+        // compiles with it `false` (prep reads the shadow buffer), which used
+        // to compile this overlay out of every opaque module — the
+        // `debug_cascade_colors` toggle changed zero pixels. The tint only
+        // reads the always-bound shadow uniforms (emitted ungated in
+        // `shadow/bind_groups.wgsl`) and short-circuits on `flags.x == 0u`.
+        if n_directional > 0u {
+            color = debug_cascade_tint(
+                color,
+                get_light(get_directional_light_index(0u)).shadow_index,
+                world_position,
+                view_z,
+            );
+        }
     {% endif %}
 
     return color;

@@ -54,6 +54,14 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// materials that don't run first-party lighting drop it. The shadow
     /// bind group + structs are always emitted (ABI) regardless.
     pub needs_shadow_sampling: bool,
+    /// Emit the cascade-debug overlay (`debug_cascade_tint` +
+    /// `debug_picked_cascade`) in `shared_wgsl/shadow/bind_groups.wgsl`. Set
+    /// from `inc.apply_lighting` (the only caller — the overlay is a
+    /// shading-time colour op), NOT from `needs_shadow_sampling`: opaque
+    /// compiles with the sampler block dropped (prep reads the shadow buffer)
+    /// but must still carry the overlay, or `debug_cascade_colors` changes
+    /// zero pixels. The overlay only reads the always-bound shadow uniforms.
+    pub needs_cascade_debug: bool,
     /// Plan B: always `true` for the opaque pass (prep is unconditional);
     /// the shared transparent template sets it `false`. When true, the gated
     /// `prep_uv` / `prep_vcolor` / `prep_shadow_visibility` sampled
@@ -429,6 +437,9 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // Under MSAA+prep cs_edge=RECOMPUTE still inline-samples, so it
                 // stays. (See `needs_shadow_sampling` derivation above.)
                 needs_shadow_sampling,
+                // The cascade-debug overlay rides `apply_lighting` (its only
+                // caller), independent of the dropped sampler block.
+                needs_cascade_debug: inc.apply_lighting,
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
                 prep_present,

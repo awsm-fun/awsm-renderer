@@ -1560,6 +1560,20 @@ fn sample_shadow_directional(
     return mix(primary, secondary, blend_t);
 }
 
+{% endif %}{# end needs_shadow_sampling — shadow sampling functions #}
+
+{% if needs_cascade_debug %}
+// ── Cascade-debug overlay ────────────────────────────────────────────────────
+// Deliberately OUTSIDE the `needs_shadow_sampling` block: the overlay is a
+// shading-time colour op that only reads the always-bound `shadow_globals` /
+// `shadow_descriptors` uniforms (ABI), never the sampler block. The opaque
+// pass compiles with `needs_shadow_sampling = false` (prep reads the shadow
+// buffer — Plan B stage 4/5b), so gating these on it compiled the overlay out
+// of every opaque module and `set_shadows { debug_cascade_colors }` changed
+// zero pixels. Gated on `needs_cascade_debug` (= `inc.apply_lighting`, the
+// only caller) instead, so lean modules (custom materials, prep, skybox)
+// don't regrow. Enabled-off costs one uniform branch per pixel.
+
 // DEBUG: returns the picked cascade index (0..3) as a float, or
 // 4.0 if no cascade was picked. Mirrors `sample_shadow_directional`'s
 // picker so the colour overlay matches what shadow sampling actually
@@ -1644,4 +1658,4 @@ fn debug_cascade_tint(
     return mix(base_color, tint, 0.35);
 }
 
-{% endif %}{# end needs_shadow_sampling — shadow sampling functions #}
+{% endif %}{# end needs_cascade_debug — cascade-debug overlay #}
