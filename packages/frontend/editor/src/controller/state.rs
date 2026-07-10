@@ -3168,6 +3168,8 @@ impl EditorController {
                 follow_agent,
                 activity_overlay,
                 mcp_notifications,
+                msaa,
+                smaa,
             } => {
                 let s = &self.settings;
                 if let Some(v) = grid {
@@ -3190,6 +3192,12 @@ impl EditorController {
                 }
                 if let Some(v) = mcp_notifications {
                     crate::remote::show_notifications().set_neq(v);
+                }
+                if let Some(v) = msaa {
+                    s.msaa.set_neq(v);
+                }
+                if let Some(v) = smaa {
+                    s.smaa.set_neq(v);
                 }
                 // Transient view state — no undo entry (same class as camera).
                 Ok(None)
@@ -5926,6 +5934,8 @@ impl EditorController {
                         "follow_agent": crate::engine::activity_feed::follow_enabled().get(),
                         "activity_overlay": crate::engine::activity_feed::enabled().get(),
                         "mcp_notifications": crate::remote::show_notifications().get(),
+                        "msaa": self.settings.msaa.get(),
+                        "smaa": self.settings.smaa.get(),
                     })
                     .to_string(),
                 )

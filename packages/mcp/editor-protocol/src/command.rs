@@ -620,6 +620,13 @@ pub enum EditorCommand {
         /// MCP info/error toasts (default off).
         #[serde(default)]
         mcp_notifications: Option<bool>,
+        /// Viewport MSAA (4x). STRUCTURAL — flipping recompiles AA-variant
+        /// pipelines; wait_render_settled after.
+        #[serde(default)]
+        msaa: Option<bool>,
+        /// SMAA post-process AA (independent of MSAA).
+        #[serde(default)]
+        smaa: Option<bool>,
     },
 
     /// Snap the viewport camera to a world axis (the nav-cube directions).

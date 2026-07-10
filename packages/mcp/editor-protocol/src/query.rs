@@ -322,7 +322,8 @@ pub enum EditorQuery {
     PostProcess,
 
     /// The editor viewport view options — grid / gizmos / light_gizmos /
-    /// skeleton_viz / follow_agent / activity_overlay / mcp_notifications —
+    /// skeleton_viz / follow_agent / activity_overlay / mcp_notifications /
+    /// msaa / smaa —
     /// as a flat JSON object of booleans. The read half of `SetViewOptions`.
     ViewOptions,
     /// Save-completeness census (Phase 0.2 roundtrip oracle): how many mesh /

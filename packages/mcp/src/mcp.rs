@@ -1205,6 +1205,14 @@ pub struct ViewOptionsParams {
     /// unchanged.
     #[serde(default)]
     pub mcp_notifications: Option<bool>,
+    /// Viewport MSAA (4x, default on). STRUCTURAL — recompiles AA-variant
+    /// pipelines; call wait_render_settled after. Omit to leave unchanged.
+    #[serde(default)]
+    pub msaa: Option<bool>,
+    /// SMAA post-process AA (default off; independent of MSAA). Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub smaa: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -3981,7 +3989,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications (all bool). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
+        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
     )]
     async fn set_view_options(
         &self,
@@ -3995,13 +4003,15 @@ impl EditorMcp {
             follow_agent: p.follow_agent,
             activity_overlay: p.activity_overlay,
             mcp_notifications: p.mcp_notifications,
+            msaa: p.msaa,
+            smaa: p.smaa,
         })
         .await
     }
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Current editor viewport view options as JSON booleans (grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications) — the read half of set_view_options. Pure read."
+        description = "Current editor viewport view options as JSON booleans (grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa) — the read half of set_view_options. Pure read."
     )]
     async fn get_view_options(&self) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::ViewOptions).await
