@@ -59,6 +59,18 @@ async fn handle_diff(
 ) {
     match diff {
         VecDiff::Replace { values } => {
+            // Hold the `WaitRenderSettled` barrier open across the WHOLE bulk
+            // materialization (teardown → transforms-first → declare-all →
+            // commit). Like the kind observer's guard, this is raised on the
+            // microtask queue — before a settled-wait's first (timer) poll —
+            // so a driver can't observe "settled" in the gap between the
+            // triggering command and this async processing. For a project
+            // load the barrier was additionally armed SYNCHRONOUSLY inside
+            // the command itself (`apply_project` →
+            // [`arm_load_settle_barrier`]); this guard extends the same
+            // coverage to every other bulk Replace (an imported subtree's
+            // children, New Project).
+            let _guard = crate::controller::CompileGuard::new();
             // Tear down whatever was there, then add all.
             for id in order_snapshot(parent_id) {
                 remove_node(id).await;
@@ -80,6 +92,13 @@ async fn handle_diff(
                 add_node(parent_id, parent_tk, i, node, true).await;
             }
             commit_bulk_load().await;
+            // The scene is now FULLY populated + committed: drop the barrier
+            // the load command armed (`apply_project`). Root list only — a
+            // nested children Replace mid-flight must not release the load's
+            // barrier early. No-op when nothing is armed (New Project).
+            if parent_id.is_none() {
+                release_load_settle_barrier();
+            }
         }
         VecDiff::InsertAt { index, value } => {
             add_node(parent_id, parent_tk, index, value, false).await
@@ -233,6 +252,44 @@ async fn commit_bulk_load() {
     {
         tracing::warn!("bulk-load commit_load: {e}");
     }
+}
+
+thread_local! {
+    /// Count of ARMED load-settle barriers — one per in-flight `apply_project`
+    /// (project load / in-memory reload). See [`arm_load_settle_barrier`].
+    static LOAD_SETTLE_ARMED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Raise the `WaitRenderSettled` barrier for a whole bulk scene load,
+/// SYNCHRONOUSLY inside the load command (`apply_project` calls this right
+/// before swapping the scene forest via `replace_cloned`). The matching release
+/// happens in `handle_diff`'s ROOT `Replace` arm after the single bulk-load
+/// `commit_load` completes — so a driver that dispatches `LoadProjectFromUrl`
+/// (or `ReloadProjectInMemory`) and then queries `wait_render_settled` observes
+/// the FULLY populated scene, instead of settling in the gap before the async
+/// Replace materialization starts (loading is ONE transaction — the §5b
+/// observability half; drivers previously had to poll node counts).
+///
+/// Deadlock-safe by construction: arming happens only immediately before
+/// `replace_cloned`, whose `Replace` diff is always delivered to the
+/// boot-started `node_sync` observer (which releases regardless of the commit's
+/// Ok/Err), and load failures BEFORE `apply_project` never arm.
+pub(crate) fn arm_load_settle_barrier() {
+    crate::controller::compile_begin();
+    LOAD_SETTLE_ARMED.with(|c| c.set(c.get() + 1));
+}
+
+/// Release one armed load-settle barrier. No-op when none is armed (a root
+/// `Replace` that wasn't a project load — e.g. New Project), so it can never
+/// underflow `compile_pending`.
+fn release_load_settle_barrier() {
+    LOAD_SETTLE_ARMED.with(|c| {
+        let n = c.get();
+        if n > 0 {
+            c.set(n - 1);
+            crate::controller::compile_end();
+        }
+    });
 }
 
 async fn add_node(
@@ -2219,14 +2276,55 @@ pub(crate) async fn rematerialize_mesh_nodes() {
     let _guard = crate::controller::CompileGuard::new();
     let entries: Vec<Arc<RendererNode>> =
         bridge().nodes.lock().unwrap().values().cloned().collect();
+    let mut declared = false;
     for entry in entries {
         let kind = entry.node.kind.get_cloned();
         // Instancers read the same mesh cache, so a geometry edit to a shared
         // mesh asset must re-upload them too (their kind didn't change either).
         if matches!(kind, NodeKind::Mesh { .. } | NodeKind::Instancer(_)) {
-            // Live re-materialise (mesh edit) — declares AND commits, as before.
-            apply_kind(entry, kind, false).await;
+            // ⭐ TRANSACTION grain = the USER OP, not the node: one mesh edit
+            // can re-materialize MANY referencing nodes (shared mesh asset →
+            // several Mesh/Instancer nodes) — declare each, commit ONCE below
+            // (was: a full commit_load per node inside apply_kind).
+            apply_kind(entry, kind, true).await;
+            declared = true;
         }
+    }
+    if declared {
+        commit_bulk_load().await;
+    }
+}
+
+#[cfg(test)]
+mod load_settle_barrier_tests {
+    use super::{arm_load_settle_barrier, release_load_settle_barrier};
+
+    /// The load-settle barrier must pair arm/release exactly onto
+    /// `compile_pending` (what `wait_render_settled` polls), tolerate an
+    /// UNARMED release (a New-Project root Replace runs the release path with
+    /// nothing armed), never underflow, and support nested arming (two loads
+    /// in flight → two Replaces → two releases).
+    #[test]
+    fn barrier_pairs_and_tolerates_unarmed_release() {
+        crate::controller::init();
+        let pending = || crate::controller::controller().compile_pending.get();
+        let base = pending();
+        // Unarmed release is a no-op (never underflows the settle counter).
+        release_load_settle_barrier();
+        assert_eq!(pending(), base);
+        // One load: armed holds the barrier, release drops it.
+        arm_load_settle_barrier();
+        assert_eq!(pending(), base + 1);
+        release_load_settle_barrier();
+        assert_eq!(pending(), base);
+        // Nested loads pair symmetrically; the extra release is a no-op.
+        arm_load_settle_barrier();
+        arm_load_settle_barrier();
+        assert_eq!(pending(), base + 2);
+        release_load_settle_barrier();
+        release_load_settle_barrier();
+        release_load_settle_barrier();
+        assert_eq!(pending(), base);
     }
 }
 

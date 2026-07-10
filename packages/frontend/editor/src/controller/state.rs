@@ -1302,6 +1302,13 @@ impl EditorController {
                 // left empty; reload the project to keep editing). An agent
                 // screenshots before/after to compare authored vs runtime render.
 
+                // Hold the `WaitRenderSettled` barrier for the WHOLE handler
+                // (created synchronously, before the first await): a driver
+                // dispatching through the fire-and-forget seam
+                // (`editor_dispatch_json` spawns the dispatch and returns
+                // immediately) must not observe "settled" while the bake +
+                // populate are still running. RAII — drops on every exit path.
+                let _load_guard = CompileGuard::new();
                 // 1. Bake the CURRENT project — must read it before we clear.
                 let files = crate::controller::export::bake_player_bundle(self)
                     .await
@@ -1409,6 +1416,11 @@ impl EditorController {
             }
             EditorCommand::ReloadProjectInMemory => {
                 use crate::controller::persistence;
+                // Settle-visibility front guard (see LoadPlayerBundle): held
+                // synchronously from handler entry until the arm returns; the
+                // async materialization tail past `apply_inmem` is covered by
+                // the armed load barrier (`apply_project` → node_sync release).
+                let _load_guard = CompileGuard::new();
                 // Editor-path round-trip self-test (no dir picker). Serialize the
                 // open project to its persisted form BEFORE clearing anything.
                 let (toml, mesh_map) = persistence::serialize_inmem(self)?;
@@ -1437,6 +1449,8 @@ impl EditorController {
             }
             EditorCommand::VerifyRoundtrip => {
                 use crate::controller::persistence;
+                // Settle-visibility front guard (see LoadPlayerBundle).
+                let _load_guard = CompileGuard::new();
                 // End-to-end losslessness proof (destructive self-test, not
                 // undoable). Census FIRST — the ground truth the cold reload
                 // must reproduce — then serialize while every cache is warm.
@@ -3508,6 +3522,19 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::LoadProjectFromUrl { base_url } => {
+                // Settle-visibility FRONT guard: `editor_dispatch_json` (the
+                // headless/MCP fire-and-forget seam) spawns this dispatch and
+                // returns "ok" immediately, so a driver's `wait_render_settled`
+                // can land while this handler is still FETCHING project.toml —
+                // before `apply_project` arms the load barrier — and settle on
+                // an unpopulated scene (verified: settled in 79 ms, roots=1,
+                // tree populated ms later). Created synchronously at handler
+                // entry (the spawned task's first synchronous slice runs before
+                // the settle query's first 16 ms timer poll); RAII drop covers
+                // the fetch/parse ERROR paths, which now happen while guarded.
+                // The async tail past `apply_project` (Replace materialization
+                // → bulk commit) is covered by the armed barrier hand-off.
+                let _load_guard = CompileGuard::new();
                 match persistence::load_project_from_url(self, &base_url).await {
                     Ok(()) => {
                         self.undo.borrow_mut().clear();
@@ -3523,6 +3550,12 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::ImportModelFromUrl { url } => {
+                // Settle-visibility front guard (see LoadProjectFromUrl): the
+                // fetch + glTF populate must hold the barrier for a driver
+                // dispatching through the fire-and-forget seam; the inserted
+                // subtree's async materialization is covered by the Replace
+                // arm's own guard in node_sync.
+                let _load_guard = CompileGuard::new();
                 let _activity =
                     crate::engine::activity::begin_activity("Inserting model — uploading to GPU…");
                 self.finish_model_import(crate::engine::bridge::gltf::import(&url).await)
@@ -3543,6 +3576,8 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::ImportModelFromFile { name, url } => {
+                // Settle-visibility front guard (see ImportModelFromUrl).
+                let _load_guard = CompileGuard::new();
                 let _activity =
                     crate::engine::activity::begin_activity("Inserting model — uploading to GPU…");
                 let result = crate::engine::bridge::gltf::import_file(&name, &url).await;

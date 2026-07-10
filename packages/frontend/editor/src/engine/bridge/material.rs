@@ -241,9 +241,14 @@ pub(crate) async fn import_texture_url(
 /// the new [`TextureKey`] so materials resolve their texture slots. This is a
 /// DECLARED LOAD INPUT — call it BEFORE the scene's materials/geometry
 /// materialise, so the slot is bound the first time a material resolves (NOT a
-/// post-hoc re-materialise). Decodes happen WITHOUT the renderer lock; all
-/// uploads + the single pool-finalising `commit_load` happen under one lock in
-/// ONE batch (not per-texture — transaction-aligned).
+/// post-hoc re-materialise). Decodes run CONCURRENTLY without the renderer lock
+/// (browser bitmap decoding overlaps across textures); all uploads happen under
+/// one lock in ONE ordered batch. DECLARE-ONLY: pool placement is assigned at
+/// upload, but the pool-finalising `commit_load` is deliberately NOT issued here
+/// — every caller sits inside a project load whose `apply_project` → bulk-load
+/// join commits ONCE for the whole transaction (textures + meshes + pipelines),
+/// so committing here too would recompile the texture-pool-baked shaders twice
+/// per load (loading is ONE transaction).
 ///
 /// The renderer upload descriptor for a texture's semantic role — the SINGLE place
 /// that maps a [`TextureColorKind`] to its `TextureColorInfo` (color space + mipmap
@@ -280,15 +285,21 @@ pub(crate) async fn restore_raster_textures(
     if items.is_empty() {
         return;
     }
-    // Decode all (async, network/codec) BEFORE taking the renderer lock. Carry the
-    // per-texture semantic ROLE through so the upload picks the right color space +
-    // mipmap kind (data maps — normal/metal-rough/occlusion — must NOT sRGB-decode
-    // and get role-specific mipmaps).
+    // Decode all CONCURRENTLY (async browser codec work — the bitmap decodes
+    // overlap across textures instead of a serial await chain) BEFORE taking the
+    // renderer lock. Carry the per-texture semantic ROLE through so the upload
+    // picks the right color space + mipmap kind (data maps —
+    // normal/metal-rough/occlusion — must NOT sRGB-decode and get role-specific
+    // mipmaps). `join_all` preserves input order, so the upload batch below
+    // stays deterministic.
+    let decode_futs = items.iter().map(|(id, bytes, mime, kind)| async move {
+        (*id, decode_rgba_from_bytes(bytes, mime).await, *kind)
+    });
     let mut decoded: Vec<(AssetId, Vec<u8>, u32, u32, TextureColorKind)> =
         Vec::with_capacity(items.len());
-    for (id, bytes, mime, kind) in &items {
-        match decode_rgba_from_bytes(bytes, mime).await {
-            Ok((rgba, w, h)) => decoded.push((*id, rgba, w, h, *kind)),
+    for (id, res, kind) in futures::future::join_all(decode_futs).await {
+        match res {
+            Ok((rgba, w, h)) => decoded.push((id, rgba, w, h, kind)),
             Err(e) => tracing::warn!("restore texture {id}: {e}"),
         }
     }
@@ -316,14 +327,12 @@ pub(crate) async fn restore_raster_textures(
             Err(e) => tracing::warn!("restore texture {id}: upload {e}"),
         }
     }
-    // ONE pool-finalising commit for the whole batch (the grow invalidates the
-    // texture-array-len-baked shaders; commit recompiles once).
-    if let Err(e) = r
-        .commit_load(crate::engine::activity::commit_phase_handler())
-        .await
-    {
-        tracing::warn!("restore textures commit_load: {e}");
-    }
+    // NO commit here (see the doc comment): the uploads are STAGED into the open
+    // load transaction — pool placement (array/layer index) is assigned at
+    // `add_image`, so anything reading `get_entry` during the declare phase (e.g.
+    // a decal's flat index) already resolves — and the load's single bulk-load
+    // `commit_load` (apply_project → node_sync Replace join) finalizes the pool +
+    // recompiles the pool-baked shaders ONCE for the whole transaction.
 }
 
 /// The "missing material" colour: flat, unlit magenta. A mesh with **no** assigned

@@ -283,7 +283,8 @@ where
 {
     use awsm_renderer_editor_protocol::TextureColorKind;
     use awsm_renderer_glb_export::ImageMime;
-    let mut items: Vec<(AssetId, Vec<u8>, String, TextureColorKind)> = Vec::new();
+    // Pass 1: collect every restorable texture's metadata (pure table walk).
+    let mut metas: Vec<(AssetId, String, &'static str, ImageMime, TextureColorKind)> = Vec::new();
     for (id, entry) in project.assets.entries.iter() {
         let AssetSource::Texture(TextureDef::Raster {
             display_name,
@@ -306,9 +307,25 @@ where
         // slot's semantics AND writes the role back onto the asset
         // (`record_asset_color_kind`), so the next save persists it.
         let kind = color_kind.unwrap_or_default();
-        if let Ok(bytes) = read(format!("assets/{name}")).await {
-            crate::engine::bridge::texture_cache::store(*id, bytes.clone(), mime);
-            items.push((*id, bytes, mime_str.to_string(), kind));
+        metas.push((*id, format!("assets/{name}"), mime_str, mime, kind));
+    }
+    // Pass 2: read ALL side files CONCURRENTLY — over HTTP (`?load=` project) the
+    // per-texture fetches previously serialized on the await chain. Each `read`
+    // call mints an independent future (created sequentially, awaited jointly);
+    // `join_all` preserves order, so the cache stores + upload batch below stay
+    // deterministic. Missing files are skipped, as before.
+    let reads: Vec<Fut> = metas
+        .iter()
+        .map(|(_, path, ..)| read(path.clone()))
+        .collect();
+    let mut items: Vec<(AssetId, Vec<u8>, String, TextureColorKind)> = Vec::new();
+    for ((id, _path, mime_str, mime, kind), res) in metas
+        .into_iter()
+        .zip(futures::future::join_all(reads).await)
+    {
+        if let Ok(bytes) = res {
+            crate::engine::bridge::texture_cache::store(id, bytes.clone(), mime);
+            items.push((id, bytes, mime_str.to_string(), kind));
         }
     }
     crate::engine::bridge::material::restore_raster_textures(items).await;
@@ -739,9 +756,15 @@ where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
-    for id in project.environment.ktx_asset_ids() {
-        let path = awsm_renderer_editor_protocol::env_ktx_path(id);
-        if let Ok(bytes) = read(path).await {
+    // Concurrent reads (up to 3 slots — skybox/specular/irradiance KTX2 files
+    // are the largest side files a project carries); stash order preserved.
+    let ids = project.environment.ktx_asset_ids();
+    let reads: Vec<Fut> = ids
+        .iter()
+        .map(|id| read(awsm_renderer_editor_protocol::env_ktx_path(*id)))
+        .collect();
+    for (id, res) in ids.into_iter().zip(futures::future::join_all(reads).await) {
+        if let Ok(bytes) = res {
             crate::engine::bridge::env_sync::stash_ktx(id, bytes);
         }
     }
@@ -816,6 +839,15 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
         .iter()
         .map(|n| node_from_spec(&NodeSpec::from_editor_node(n)))
         .collect();
+    // ⭐ Make the whole load settle-visible: raise the `WaitRenderSettled`
+    // barrier NOW — synchronously, inside the load command — and hand its
+    // release to the node_sync root-Replace arm, which drops it after the
+    // single bulk-load commit. A driver doing `load_project →
+    // wait_render_settled` then observes the FULLY populated scene instead of
+    // settling before the async Replace materialization starts. (Load errors
+    // happen before this point, so a failed load never arms; the Replace diff
+    // below is always delivered, so the barrier always releases.)
+    crate::engine::bridge::node_sync::arm_load_settle_barrier();
     ctrl.scene.nodes.lock_mut().replace_cloned(new_nodes);
 
     // Re-bake any Mesh asset whose `.mesh.bin` cache wasn't restored (missing

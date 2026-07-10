@@ -187,6 +187,33 @@ out), with per-texture `WebpLossy{quality}`/`Source` overrides.
   sequentially — decode via createImageBitmap can overlap).
 - Baseline to beat: kitchen-sink cold load ~306 ms.
 
+#### Axis 2 RESULT (2026-07-10)
+- **Load is now ONE settle-visible transaction.** Two-layer barrier:
+  handler-scoped CompileGuard armed SYNCHRONOUSLY at dispatch entry of
+  every load-shaped command (LoadProjectFromUrl / LoadPlayerBundle /
+  ReloadProjectInMemory / VerifyRoundtrip / ImportModel*) — closing the
+  editor_dispatch_json spawn_local front gap — overlapping an armed
+  counter from apply_project through the bulk-commit completion. Verified
+  on-device: dispatch → wait_render_settled → snapshot reads the FULLY
+  populated scene (14 roots) with no polling, twice consecutively.
+  RAII release on every error path; native pairing test.
+- **Double shader-recompile per load removed**: restore_raster_textures'
+  own pool-finalizing commit dropped (pool placement is assign-at-add, so
+  declare-phase readers still work); the one bulk commit finalizes.
+- **Concurrent decode/fetch**: texture side-file fetches, browser bitmap
+  decodes, and env-KTX reads now join_all (uploads stay ordered).
+- **rematerialize_mesh_nodes consolidated**: shared-asset mesh edits now
+  declare-all + one commit (was one commit per referencing node).
+- **Audit correction**: the "17 per-node commit_load sites" figure was
+  stale — at HEAD all 7 materializer sites were already declare_only-gated
+  onto the bulk Replace-join; the real offenders were the texture-restore
+  commit and the rematerialize sweep.
+- Numbers: end-to-end settled load (kitchen-sink, warm) ~304 ms — same
+  wall as the old polled 306 ms baseline but now honestly observable;
+  dispatch→populate without the settle wait measured 79–130 ms during
+  verification (the removed recompile + overlapped fetches dominate on
+  texture-heavy projects; kitchen-sink carries one texture).
+
 #### Axis 3 RESULT (2026-07-10)
 - **Bundle coverage: VERIFIED.** Across every test-scene bundle, all raster
   textures ship as `.webp` (7/7; zero stray PNG/JPEG — the remaining files
