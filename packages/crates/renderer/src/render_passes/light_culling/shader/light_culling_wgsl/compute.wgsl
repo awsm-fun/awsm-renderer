@@ -32,6 +32,11 @@
 // is left untouched here.
 
 const TILE_PIXEL_SIZE: u32 = 16u;
+// The NEAR plane's NDC z under the active depth convention. Reverse-Z maps
+// near to 1.0; unprojecting the forward-Z near (0.0) under infinite-reverse
+// is the far plane at infinity (w -> 0), which NaN'd the tile side planes
+// and culled every punctual light.
+const NEAR_NDC_Z: f32 = {% if reverse_z %}1.0{% else %}0.0{% endif %};
 const SLICE_COUNT: u32 = {{ slice_count }}u;
 const WORKGROUP_SIZE_LIGHTS: u32 = 64u;
 // The per-2D-tile candidate budget is a **runtime** value
@@ -40,23 +45,23 @@ const WORKGROUP_SIZE_LIGHTS: u32 = 64u;
 // `tile_lights` to match — so a tile slice can't overflow and Stage B
 // needs no fallback, while staying small for low-light scenes.
 
-// Project an NDC corner (z = 0 → near plane) to a normalized view-space
+// Project an NDC corner (z = near plane) to a normalized view-space
 // ray direction emanating from the camera origin. PERSPECTIVE ONLY — for
 // orthographic cameras view rays are parallel (not origin-emanating), so
 // this direction is meaningless; the ortho path uses `ndc_to_view_pos`
 // + an axis-aligned box test instead (see `cs_tile`).
 fn ndc_to_view_dir(ndc: vec2<f32>) -> vec3<f32> {
-    let clip = vec4<f32>(ndc, 0.0, 1.0);
+    let clip = vec4<f32>(ndc, NEAR_NDC_Z, 1.0);
     let view = camera_raw.inv_proj * clip;
     return normalize(view.xyz / view.w);
 }
 
-// Project an NDC corner (z = 0 → near plane) to a view-space POSITION
+// Project an NDC corner (z = near plane) to a view-space POSITION
 // (not normalized). For an orthographic projection the x/y of this point
 // are the view-space box bounds of the tile column (constant in depth),
 // which is exactly what the ortho side cull needs.
 fn ndc_to_view_pos(ndc: vec2<f32>) -> vec3<f32> {
-    let clip = vec4<f32>(ndc, 0.0, 1.0);
+    let clip = vec4<f32>(ndc, NEAR_NDC_Z, 1.0);
     let view = camera_raw.inv_proj * clip;
     return view.xyz / view.w;
 }

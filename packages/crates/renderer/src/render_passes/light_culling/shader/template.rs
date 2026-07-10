@@ -40,6 +40,9 @@ pub struct ShaderTemplateLightCullingCompute {
     /// Number of view-space Z slices. Constant-folded into the
     /// exponential-mapping math.
     pub slice_count: u32,
+    /// Depth convention: anchors the tile unproject helpers at the NEAR
+    /// plane's NDC z (1.0 reverse, 0.0 forward). See the cache-key doc.
+    pub reverse_z: bool,
 }
 
 impl ShaderTemplateLightCullingCompute {
@@ -51,6 +54,7 @@ impl ShaderTemplateLightCullingCompute {
     pub fn new(cache_key: &ShaderCacheKeyLightCulling) -> Self {
         Self {
             slice_count: cache_key.slice_count,
+            reverse_z: cache_key.reverse_z,
         }
     }
 }

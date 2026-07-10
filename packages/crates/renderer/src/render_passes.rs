@@ -511,7 +511,9 @@ impl RenderPasses {
         let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
         shader_cache_keys.extend(GeometryPipelines::shader_cache_keys(multisampled_geometry));
         // Light culling: one module, two entry points, MSAA-agnostic.
-        shader_cache_keys.extend(LightCullingPipelines::shader_cache_keys());
+        shader_cache_keys.extend(LightCullingPipelines::shader_cache_keys(
+            ctx.features.reverse_z,
+        ));
         // Material prep: active MSAA branch only (the megashader module also
         // covers cs_prep_edge); the blur module rides along while denoise is
         // configured on.

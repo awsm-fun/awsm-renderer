@@ -41,9 +41,10 @@ pub struct LightCullingPipelines {
 impl LightCullingPipelines {
     /// The cull shader's cache key (one module for both entry points) —
     /// pooled into the cross-renderer `Shaders::ensure_keys` batch.
-    pub fn shader_cache_keys() -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys(reverse_z: bool) -> Vec<ShaderCacheKey> {
         vec![ShaderCacheKeyLightCulling {
             slice_count: DEFAULT_SLICE_COUNT,
+            reverse_z,
         }
         .into()]
     }
@@ -65,7 +66,13 @@ impl LightCullingPipelines {
         )?;
         let shader_key = ctx
             .shaders
-            .get_key(ctx.gpu, ShaderCacheKeyLightCulling { slice_count })
+            .get_key(
+                ctx.gpu,
+                ShaderCacheKeyLightCulling {
+                    slice_count,
+                    reverse_z: ctx.features.reverse_z,
+                },
+            )
             .await?;
         Ok(LightCullingPrewarmDescriptors {
             pipeline_cache_keys: vec![
