@@ -37,6 +37,20 @@ impl AssetId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    /// The stable all-zeros sentinel, meaning "no asset referenced / unset".
+    /// Unlike [`AssetId::default`] (which mints a fresh random id), this is a
+    /// fixed value usable as a real "none" marker for optional asset references
+    /// (e.g. an instancer's not-yet-picked mesh). Pair with [`AssetId::is_nil`].
+    /// Mirrors [`super::tree::NodeId::nil`].
+    pub const fn nil() -> Self {
+        Self(Uuid::nil())
+    }
+
+    /// True when this is the [`AssetId::nil`] sentinel (an unset reference).
+    pub fn is_nil(&self) -> bool {
+        self.0.is_nil()
+    }
 }
 
 impl Default for AssetId {

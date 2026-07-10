@@ -96,9 +96,9 @@ numbers recorded here and in `docs/plans/006-optimizations.md`.
 
 ## Scene status
 
-All 20 buildable scenes are authored and versioned. `instancing-stress` is
-PENDING axis 5 (the explicit instancer NodeKind doesn't exist yet — the
-current `instances` InsertSpec is the curve-sampled variant only).
+All 21 scenes are authored and versioned. `instancing-stress` landed with
+axis 5 (the explicit instancer NodeKind): 3000 per-instance-colored boxes
+from ONE instancer node and ONE shared geometry at vsync.
 `prefab-skinned-morph`'s golden deliberately captures the CURRENT broken
 duplicate-skinned behavior (see its author.js) — regenerate after axis 4.
 `lod-nanite`'s bake recipe (export-pipeline bake, no standalone CLI) is in

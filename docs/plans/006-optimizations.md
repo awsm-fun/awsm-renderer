@@ -258,6 +258,22 @@ only reachable through the particle emitter.
 - Acceptance: `instancing-stress` scene: thousands of instances at interactive frame
   rate, one geometry upload, census-verified; editable per-instance transforms.
 
+#### Axis 5 RESULT (2026-07-10)
+Explicit instancer NodeKind SHIPPED full-stack (the LOCKED decision):
+`NodeKind::Instancer {mesh: <ASSET id — self-contained, no node
+indirection>, transforms, per_instance_colors, shadow, lod}`; InsertSpec
+"instancer" (unit); `set_instancer_transforms` bulk-replace command (one
+undo step, one re-materialize); editor materialize + inspector picker/
+count/shadow/lod rows + outliner icon + ribbon entry; scene-loader
+materializes through the same enable_mesh_instancing path; MCP
+insert_instancer / set_instancer_transforms tools; 6 native tests (TOML
+round-trip, wire shapes, replace+undo). instancing-stress scene verified
+on-device: 3000 instances = 4 scene nodes / 3 mesh resources (geometry
+shared) / vsync frame / 1.7 ms render_cpu. Known limits documented in
+code: no PrefabReplay of instancers, AABB/glb-export ignore instance
+extents, instanced draws don't reroute discrete-LOD chains (flags carried
+for future) — all matching InstancesAlongCurve precedent.
+
 ### Axis 6 — LOD robustness (classic + nanite)
 Both paths exist (skinned→discrete chain, static→cluster DAG; bake at export). The
 follow-up hardening (multi-mesh, degeneracy guards, global residency budget) shipped —

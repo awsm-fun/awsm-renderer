@@ -540,6 +540,7 @@ fn insert_label(spec: &InsertSpec) -> &'static str {
         InsertSpec::Decal => "decal",
         InsertSpec::Sweep => "sweep",
         InsertSpec::Instances => "instances",
+        InsertSpec::Instancer => "instancer",
         InsertSpec::Mesh => "mesh",
     }
 }

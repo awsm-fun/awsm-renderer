@@ -1012,6 +1012,37 @@ impl EditorController {
                 }))
                 .await
             }
+            EditorCommand::SetInstancerTransforms {
+                node,
+                transforms,
+                per_instance_colors,
+            } => {
+                let prev = match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => n.kind.get_cloned(),
+                    None => {
+                        return Err(crate::error::EditorError::msg(
+                            "target id not found — command not applied (check ids against get_snapshot)",
+                        ))
+                    }
+                };
+                // Reject loudly if the node isn't an instancer (no silent no-op).
+                let NodeKind::Instancer(mut def) = prev else {
+                    return Err(crate::error::EditorError::msg("node is not an instancer"));
+                };
+                // REPLACE the transform list wholesale (the bulk authoring
+                // contract — mirrors SetTrackKeys). Colors only when provided.
+                def.transforms = transforms;
+                if let Some(colors) = per_instance_colors {
+                    def.per_instance_colors = colors;
+                }
+                // Delegate to SetKind for identical re-materialize + inverse
+                // (undo restores the ENTIRE prior kind = the prior list).
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(NodeKind::Instancer(def)),
+                }))
+                .await
+            }
             EditorCommand::SetTransform { id, mut transform } => {
                 match mutate::find_by_id(&self.scene, id) {
                     Some(node) => {
@@ -9423,6 +9454,104 @@ mod unassigned_material_tests {
     #[test]
     fn non_geometry_is_none() {
         assert_eq!(unassigned_material_kind(&NodeKind::Group), "none");
+    }
+}
+
+#[cfg(test)]
+mod instancer_tests {
+    use super::*;
+    use awsm_renderer_editor_protocol::{InsertSpec, InstancerDef, Trs};
+    use futures::executor::block_on;
+
+    fn trs(t: [f32; 3]) -> Trs {
+        Trs {
+            translation: t,
+            ..Trs::IDENTITY
+        }
+    }
+
+    fn instancer_def(ctrl: &EditorController, node: NodeId) -> InstancerDef {
+        match crate::engine::scene::mutate::find_by_id(&ctrl.scene, node)
+            .expect("node exists")
+            .kind
+            .get_cloned()
+        {
+            NodeKind::Instancer(def) => def,
+            other => panic!("expected Instancer, got {other:?}"),
+        }
+    }
+
+    /// `SetInstancerTransforms` REPLACES the list wholesale, and applying the
+    /// returned inverse restores the prior list exactly (the bulk-set undo
+    /// contract, mirroring `SetTrackKeys`).
+    #[test]
+    fn set_instancer_transforms_replaces_and_undoes() {
+        let ctrl = EditorController::new();
+        let node = NodeId::new();
+        block_on(ctrl.apply(EditorCommand::Insert {
+            id: node,
+            spec: InsertSpec::Instancer,
+            parent: None,
+        }))
+        .unwrap();
+        assert!(instancer_def(&ctrl, node).transforms.is_empty());
+
+        // First bulk set: 3 transforms + colors.
+        let first = vec![
+            trs([1.0, 0.0, 0.0]),
+            trs([2.0, 0.0, 0.0]),
+            trs([3.0, 0.0, 0.0]),
+        ];
+        block_on(ctrl.apply(EditorCommand::SetInstancerTransforms {
+            node,
+            transforms: first.clone(),
+            per_instance_colors: Some(vec![[1.0, 0.0, 0.0, 1.0]]),
+        }))
+        .unwrap();
+        let def = instancer_def(&ctrl, node);
+        assert_eq!(def.transforms, first);
+        assert_eq!(def.per_instance_colors, vec![[1.0, 0.0, 0.0, 1.0]]);
+
+        // Second bulk set REPLACES (not appends); colors=None keeps current.
+        let second = vec![trs([9.0, 9.0, 9.0])];
+        let inverse = block_on(ctrl.apply(EditorCommand::SetInstancerTransforms {
+            node,
+            transforms: second.clone(),
+            per_instance_colors: None,
+        }))
+        .unwrap()
+        .expect("undoable");
+        let def = instancer_def(&ctrl, node);
+        assert_eq!(def.transforms, second, "list replaced wholesale");
+        assert_eq!(
+            def.per_instance_colors,
+            vec![[1.0, 0.0, 0.0, 1.0]],
+            "colors untouched when None"
+        );
+
+        // Undo (apply the inverse) restores the prior list exactly.
+        block_on(ctrl.apply(inverse)).unwrap();
+        let def = instancer_def(&ctrl, node);
+        assert_eq!(def.transforms, first, "undo restored the prior transforms");
+    }
+
+    /// The command rejects loudly on a non-instancer node (no silent no-op).
+    #[test]
+    fn set_instancer_transforms_rejects_wrong_kind() {
+        let ctrl = EditorController::new();
+        let node = NodeId::new();
+        block_on(ctrl.apply(EditorCommand::Insert {
+            id: node,
+            spec: InsertSpec::Empty,
+            parent: None,
+        }))
+        .unwrap();
+        let r = block_on(ctrl.apply(EditorCommand::SetInstancerTransforms {
+            node,
+            transforms: vec![],
+            per_instance_colors: None,
+        }));
+        assert!(r.is_err(), "group node must be rejected");
     }
 }
 

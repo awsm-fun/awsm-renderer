@@ -42,6 +42,7 @@ pub fn build_insert(spec: &InsertSpec) -> Arc<Node> {
         InsertSpec::Particle => Node::new_particle("Particle Emitter"),
         InsertSpec::Decal => Node::new_decal("Decal"),
         InsertSpec::Instances => Node::new_instances("Instances"),
+        InsertSpec::Instancer => Node::new_instancer("Instancer"),
         InsertSpec::Mesh => Node::new_mesh("Mesh"),
     }
 }

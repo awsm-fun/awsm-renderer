@@ -50,6 +50,7 @@ impl Scene {
                     NodeKind::ClusterMesh { .. } => stats.primitives += 1,
                     NodeKind::Curve(_) => stats.curves += 1,
                     NodeKind::InstancesAlongCurve(_) => stats.instances += 1,
+                    NodeKind::Instancer(_) => stats.instances += 1,
                     NodeKind::Line(_) => stats.lines += 1,
                     NodeKind::Sprite(_) => stats.sprites += 1,
                     NodeKind::ParticleEmitter(_) => stats.particles += 1,

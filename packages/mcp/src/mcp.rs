@@ -1436,6 +1436,44 @@ pub struct SetTrackKeysParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InsertInstancerParams {
+    /// Optional parent node UUID.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// Optional mesh ASSET UUID to instance (an `AssetSource::Mesh` entry — a
+    /// Mesh node's `mesh` ref from `get_node_details`). Omit to wire one up
+    /// later via `patch_kind` (`{"instancer":{"mesh":"<uuid>"}}`).
+    #[serde(default)]
+    pub mesh: Option<String>,
+}
+
+/// One instance placement for `set_instancer_transforms`. Rotation / scale are
+/// optional so a plain scatter is just a translation list.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InstancerTransformArg {
+    /// Local translation `[x, y, z]` (relative to the instancer node).
+    pub translation: [f32; 3],
+    /// Local rotation quaternion `[x, y, z, w]` (default identity).
+    #[serde(default)]
+    pub rotation: Option<[f32; 4]>,
+    /// Per-axis scale `[x, y, z]` (default `[1, 1, 1]`).
+    #[serde(default)]
+    pub scale: Option<[f32; 3]>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetInstancerTransformsParams {
+    /// Target Instancer node UUID.
+    pub node: String,
+    /// One entry per instance — REPLACES the node's entire transform list.
+    pub transforms: Vec<InstancerTransformArg>,
+    /// Optional replacement per-instance RGBA color list (shorter than
+    /// `transforms` repeats its last value). Omit to keep the current colors.
+    #[serde(default)]
+    pub per_instance_colors: Option<Vec<[f32; 4]>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListCommandsParams {
     /// Exact command tag (e.g. "reparent") for that command's full JSON Schema;
     /// omit for the compact list of all commands.
@@ -2113,6 +2151,62 @@ impl EditorMcp {
         Parameters(p): Parameters<InsertParams>,
     ) -> Result<CallToolResult, McpError> {
         self.insert(InsertSpec::Decal, p.parent).await
+    }
+
+    #[tool(
+        description = "Insert an explicit INSTANCER node: one node that references a mesh ASSET and owns N instance transforms, drawn as ONE GPU-instanced mesh (thousands of instances never become thousands of nodes). Optionally pass `mesh` (a mesh asset UUID — e.g. a Mesh node's `mesh` ref from get_node_details) to wire the source in the same undo step; then author the placements with set_instancer_transforms. Returns the new node id."
+    )]
+    async fn insert_instancer(
+        &self,
+        Parameters(p): Parameters<InsertInstancerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(mesh) = &p.mesh else {
+            return self.insert(InsertSpec::Instancer, p.parent).await;
+        };
+        // Insert + wire the mesh ref in ONE undo step (a Batch), echoing the
+        // caller-minted node id back like the plain `insert` helper.
+        let id = NodeId::new();
+        let mesh = parse_asset(mesh)?;
+        let cmd = EditorCommand::Batch(vec![
+            EditorCommand::Insert {
+                id,
+                spec: InsertSpec::Instancer,
+                parent: parse_node_opt(&p.parent)?,
+            },
+            EditorCommand::PatchKind {
+                id,
+                patch: serde_json::json!({ "instancer": { "mesh": mesh } }),
+            },
+        ]);
+        match self.req(Request::Dispatch(cmd)).await? {
+            Response::Ok => Ok(text(id.to_string())),
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        description = "REPLACE an Instancer node's entire instance-transform list in one call — the bulk authoring path (mirrors set_track_keys). Each entry is {translation, rotation?, scale?} (rotation defaults to identity, scale to [1,1,1]); `per_instance_colors` optionally replaces the RGBA tint list (shorter repeats its last value; omit to keep current). Single-step undoable (undo restores the prior list exactly)."
+    )]
+    async fn set_instancer_transforms(
+        &self,
+        Parameters(p): Parameters<SetInstancerTransformsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let transforms: Vec<Trs> = p
+            .transforms
+            .iter()
+            .map(|t| Trs {
+                translation: t.translation,
+                rotation: t.rotation.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                scale: t.scale.unwrap_or([1.0, 1.0, 1.0]),
+            })
+            .collect();
+        self.dispatch(EditorCommand::SetInstancerTransforms {
+            node: parse_node(&p.node)?,
+            transforms,
+            per_instance_colors: p.per_instance_colors,
+        })
+        .await
     }
 
     #[tool(description = "Delete a node and its subtree.")]

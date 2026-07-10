@@ -193,6 +193,7 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
         NodeKind::Camera(cfg) => camera_editor(node, &cfg),
         NodeKind::Collider(shape) => collider_editor(node, &shape),
         NodeKind::InstancesAlongCurve(_) => instances_editor(node),
+        NodeKind::Instancer(def) => instancer_editor(node, &def),
         NodeKind::Curve(def) => curve_editor(node, &def),
         NodeKind::Sprite(def) => sprite_editor(node, &def),
         NodeKind::Line(def) => line_editor(node, &def),
@@ -885,6 +886,54 @@ fn instances_editor(node: &Arc<Node>) -> Dom {
             },
         ))
         .render()
+}
+
+/// Explicit-instancer editor: pick the mesh SOURCE (via a Mesh node — its
+/// backing mesh ASSET id is what the def stores, so the instancer stays
+/// self-contained even if the picked node is later deleted) and show the
+/// authored instance count. The transform list itself is bulk-authored via
+/// MCP (`set_instancer_transforms`), not hand-edited here.
+fn instancer_editor(node: &Arc<Node>, def: &awsm_renderer_editor_protocol::InstancerDef) -> Dom {
+    let id = node.id;
+    // Every Mesh node is an eligible source; the picker shows the FIRST node
+    // backed by the currently-referenced mesh asset as selected (the def
+    // stores the asset, not the node).
+    let sources = collect_kind_nodes(|k| matches!(k, NodeKind::Mesh { .. }));
+    let current_asset = def.mesh.0;
+    let current_node =
+        collect_kind_nodes(|k| matches!(k, NodeKind::Mesh { mesh, .. } if mesh.0 == current_asset))
+            .first()
+            .map(|(id, _)| *id)
+            .unwrap_or_else(NodeId::nil);
+    let n_src = node.clone();
+    let count = def.transforms.len();
+    html!("div", {
+        .child(Section::new("Instancer")
+            .child(ref_picker("Source", sources, current_node, move |picked| {
+                let asset =
+                    match crate::engine::scene::mutate::find_by_id(&controller().scene, picked)
+                        .map(|n| n.kind.get_cloned())
+                    {
+                        Some(NodeKind::Mesh { mesh, .. }) => mesh.0,
+                        _ => awsm_renderer_editor_protocol::AssetId::nil(),
+                    };
+                if let NodeKind::Instancer(mut def) = n_src.kind.get_cloned() {
+                    def.mesh = awsm_renderer_editor_protocol::MeshRef(asset);
+                    dispatch_kind(id, NodeKind::Instancer(def));
+                }
+            }))
+            .child(row(
+                "Instances",
+                html!("div", {
+                    .style("font-size", "12px")
+                    .style("color", "var(--text-3)")
+                    .text(&format!("{count} (bulk-set via MCP set_instancer_transforms)"))
+                }),
+            ))
+            .render())
+        .child(mesh_shadow_editor(node, def.shadow))
+        .child(mesh_lod_editor(node, def.lod))
+    })
 }
 
 // ── Passive-kind editors (Curve / Sprite / Line / Decal / Particle) ──────────

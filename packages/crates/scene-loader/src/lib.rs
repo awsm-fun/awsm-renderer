@@ -126,8 +126,8 @@ use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOpts};
 use awsm_renderer_scene::{
     mesh_glb_filename, AssetId, AssetSource, CameraConfig, CurveDef, DecalConfig, EditorNode,
-    InstancesAlongCurveDef, LightConfig, LineDef, MaterialInstance, MaterialShading, NodeId,
-    NodeKind, ParticleEmitterDef, RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
+    InstancerDef, InstancesAlongCurveDef, LightConfig, LineDef, MaterialInstance, MaterialShading,
+    NodeId, NodeKind, ParticleEmitterDef, RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
 };
 use glam::{Mat4, Quat, Vec3, Vec4};
 
@@ -1232,6 +1232,15 @@ fn collect_prefetch_paths(nodes: &[EditorNode], scene: &Scene, paths: &mut Vec<S
                     paths.push(manifest_path(skin.source.to_string()));
                 }
             }
+            // An explicit instancer fetches its mesh asset's glb exactly like a
+            // Mesh node (same derivation as `materialize_instancer`).
+            NodeKind::Instancer(def) => {
+                if let Some(entry) = scene.assets.get(def.mesh.0) {
+                    if matches!(entry.source, AssetSource::Mesh(RuntimeMesh::Glb)) {
+                        paths.push(format!("{ASSETS_DIR}/{}", mesh_glb_filename(def.mesh.0)));
+                    }
+                }
+            }
             _ => {}
         }
         collect_prefetch_paths(&node.children, scene, paths);
@@ -1628,6 +1637,24 @@ async fn materialize(
         }
         NodeKind::InstancesAlongCurve(def) => {
             materialize_instances_along_curve(renderer, scene, def, maps)?;
+        }
+        // Explicit instancer: upload the referenced mesh ASSET once (same
+        // acquisition as the `Mesh` arm) and instance it with the node's
+        // authored transform list — one geometry upload, one instance buffer.
+        NodeKind::Instancer(def) => {
+            materialize_instancer(
+                renderer,
+                cache,
+                scene,
+                assets,
+                def,
+                node.id,
+                tk,
+                placeholder,
+                maps,
+                loaded,
+            )
+            .await?;
         }
         // A bare `Curve` is data-only: it emits no renderer node. It's consumed
         // by `InstancesAlongCurve` (and sweeps at bake time), which look the curve
@@ -2337,6 +2364,116 @@ fn materialize_instances_along_curve(
                 .collect();
         if let Err(err) = renderer.set_mesh_instance_attrs(transform_key, &attrs) {
             tracing::warn!("scene-loader: curve per-instance colours failed: {err}");
+        }
+    }
+    Ok(())
+}
+
+/// Materialize a [`NodeKind::Instancer`]: upload the referenced mesh **asset**
+/// once and draw it with the node's authored per-instance transforms via GPU
+/// instancing — ONE geometry upload + one instance buffer
+/// ([`AwsmRenderer::enable_mesh_instancing_opaque`]).
+///
+/// Geometry acquisition mirrors the `Mesh` arm exactly (a procedural primitive
+/// regenerates from params; a baked asset loads `assets/<id>.glb` — prefetched
+/// by [`collect_prefetch_paths`]). Unlike [`materialize_instances_along_curve`]
+/// (which reuses a *source node's* already-materialized mesh), the instancer is
+/// self-contained: it references the asset directly, so it needs no other node
+/// in the scene. Instances render with a default material (matching the
+/// editor's bridge, which uploads the instancer flat-default); per-instance
+/// **colors** apply via [`AwsmRenderer::set_mesh_instance_attrs`], expanded to
+/// the instance count with the last value repeated (the def's documented
+/// semantics). A nil mesh ref or an empty transform list renders nothing (a
+/// valid, not-yet-wired authored state).
+#[allow(clippy::too_many_arguments)]
+async fn materialize_instancer(
+    renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
+    scene: &Scene,
+    assets: &impl SceneAssets,
+    def: &InstancerDef,
+    node_id: NodeId,
+    tk: TransformKey,
+    placeholder: MaterialKey,
+    maps: &mut AnimResolveMaps,
+    loaded: &mut LoadedScene,
+) -> Result<()> {
+    if def.mesh.0.is_nil() || def.transforms.is_empty() {
+        return Ok(());
+    }
+    let Some(entry) = scene.assets.get(def.mesh.0) else {
+        tracing::warn!(
+            "scene-loader: Instancer references missing mesh asset {} — skipped",
+            def.mesh.0
+        );
+        return Ok(());
+    };
+    // Default material (the editor's instancer bridge renders flat-default; the
+    // kind carries no material palette). Built through the same resolve path as
+    // node materials so its pipeline compiles in the Phase-4 batch.
+    let default_inst = MaterialInstance {
+        asset: AssetId::new(),
+        inline: Default::default(),
+        uniform_overrides: Default::default(),
+        texture_overrides: Default::default(),
+        buffer_overrides: Default::default(),
+    };
+    let mat = resolve_material(
+        renderer,
+        cache,
+        Some(&default_inst),
+        placeholder,
+        assets,
+        &maps.custom_shaders,
+    )
+    .await;
+
+    // Same geometry acquisition as the `Mesh` arm (minus the LOD/cluster
+    // chains — the instanced draw is one mesh by design).
+    let mesh_key = match &entry.source {
+        AssetSource::Mesh(RuntimeMesh::Primitive(shape)) => {
+            let md = awsm_renderer_meshgen::primitive_mesh(shape);
+            Some(renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?)
+        }
+        AssetSource::Mesh(RuntimeMesh::Glb) => {
+            let (keys, _, _) = load_glb_under(
+                renderer,
+                assets,
+                &mesh_glb_filename(def.mesh.0),
+                Some(tk),
+                mat,
+            )
+            .await?;
+            // A baked mesh asset is a single-mesh glb (one asset = one glb,
+            // written by the bundle bake); instance its first (only) key.
+            keys.first().copied()
+        }
+        // An Instancer always references an AssetSource::Mesh; other source
+        // kinds can't be a mesh asset — ignore defensively (mirrors `Mesh`).
+        _ => None,
+    };
+    let Some(key) = mesh_key else {
+        return Ok(());
+    };
+    maps.meshes.entry(node_id).or_insert(key);
+    maps.node_meshes.entry(node_id).or_default().push(key);
+    loaded.meshes.push(key);
+
+    let transforms: Vec<Transform> = def.transforms.iter().map(trs_to_transform).collect();
+    // The per-instance attribute key (also read by `set_mesh_instance_attrs`).
+    let transform_key = renderer.meshes.get(key)?.transform_key;
+    if let Err(err) = renderer.enable_mesh_instancing_opaque(key, &transforms) {
+        tracing::warn!("scene-loader: instancer enable_mesh_instancing_opaque failed: {err}");
+        return Ok(());
+    }
+    if !def.per_instance_colors.is_empty() {
+        let attrs: Vec<awsm_renderer::instances::InstanceAttr> =
+            expand_instance_colors(&def.per_instance_colors, transforms.len())
+                .into_iter()
+                .map(|c| awsm_renderer::instances::InstanceAttr::from_rgba_alpha_size(c, 1.0, 1.0))
+                .collect();
+        if let Err(err) = renderer.set_mesh_instance_attrs(transform_key, &attrs) {
+            tracing::warn!("scene-loader: instancer per-instance colours failed: {err}");
         }
     }
     Ok(())

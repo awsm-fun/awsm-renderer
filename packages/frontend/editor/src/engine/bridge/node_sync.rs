@@ -687,6 +687,7 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         NodeKind::InstancesAlongCurve(def) => {
             materialize_instances(entry.clone(), def, declare_only).await
         }
+        NodeKind::Instancer(def) => materialize_instancer(entry.clone(), def, declare_only).await,
         NodeKind::ParticleEmitter(def) => {
             materialize_particle(entry.clone(), def, declare_only).await
         }
@@ -2028,6 +2029,70 @@ async fn materialize_instances(
     }
 }
 
+/// Explicit instancer (`NodeKind::Instancer`): draw the referenced mesh ASSET
+/// once with the node's authored per-instance transforms via GPU instancing —
+/// ONE geometry upload (`upload_simple_mesh`) + one instance buffer
+/// (`enable_mesh_instancing_opaque`), exactly like [`materialize_instances`]
+/// but with the transform list stored on the node instead of derived from a
+/// curve. Per-instance colors ride the same instance-attribute path.
+async fn materialize_instancer(
+    entry: Arc<RendererNode>,
+    def: awsm_renderer_editor_protocol::InstancerDef,
+    declare_only: bool,
+) {
+    use awsm_renderer::instances::InstanceAttr;
+
+    // A nil mesh ref just means "not wired up yet" — the node renders empty
+    // until the user picks a mesh (mirrors InstancesAlongCurve's nil refs).
+    // An empty transform list is likewise a valid authored state (instancing
+    // requires ≥ 1 transform, so there is nothing to draw).
+    if def.mesh.0.is_nil() || def.transforms.is_empty() {
+        return;
+    }
+    let Some(raw) = super::mesh_cache::get_raw(def.mesh.0) else {
+        tracing::warn!("Instancer mesh {} not in the capture cache", def.mesh.0);
+        return;
+    };
+
+    let transforms: Vec<Transform> = def.transforms.iter().map(trs_to_transform).collect();
+    let has_colors = !def.per_instance_colors.is_empty();
+    let attrs: Vec<InstanceAttr> = if has_colors {
+        // Expand to the instance count, repeating the last authored value (the
+        // def's documented semantics — same as InstancesAlongCurve).
+        (0..transforms.len())
+            .map(|i| {
+                let rgba = def.per_instance_colors[i.min(def.per_instance_colors.len() - 1)];
+                InstanceAttr::from_rgba_alpha_size(rgba, 1.0, 1.0)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mesh_key = upload_simple_mesh(
+        entry,
+        raw,
+        MeshMaterial::Flat(awsm_renderer_editor_protocol::MaterialDef::default()),
+        declare_only,
+    )
+    .await;
+    if let Some(mk) = mesh_key {
+        with_renderer_mut(move |r| {
+            if let Err(err) = r.enable_mesh_instancing_opaque(mk, &transforms) {
+                tracing::warn!("enable_mesh_instancing_opaque failed: {err}");
+            }
+            if has_colors {
+                if let Ok(tk) = r.meshes.get(mk).map(|m| m.transform_key) {
+                    if let Err(err) = r.set_mesh_instance_attrs(tk, &attrs) {
+                        tracing::warn!("set_mesh_instance_attrs failed: {err}");
+                    }
+                }
+            }
+        })
+        .await;
+    }
+}
+
 /// Particle emitter (`NodeKind::ParticleEmitter`) → an auto-playing simulator +
 /// instanced billboard quad, ticked each frame by the render loop.
 async fn materialize_particle(
@@ -2156,7 +2221,9 @@ pub(crate) async fn rematerialize_mesh_nodes() {
         bridge().nodes.lock().unwrap().values().cloned().collect();
     for entry in entries {
         let kind = entry.node.kind.get_cloned();
-        if matches!(kind, NodeKind::Mesh { .. }) {
+        // Instancers read the same mesh cache, so a geometry edit to a shared
+        // mesh asset must re-upload them too (their kind didn't change either).
+        if matches!(kind, NodeKind::Mesh { .. } | NodeKind::Instancer(_)) {
             // Live re-materialise (mesh edit) — declares AND commits, as before.
             apply_kind(entry, kind, false).await;
         }

@@ -275,6 +275,7 @@ fn insert_row() -> Dom {
                 ("Particle Emitter", InsertSpec::Particle),
                 ("Decal", InsertSpec::Decal),
                 ("Shared Mesh", InsertSpec::Mesh),
+                ("Instancer", InsertSpec::Instancer),
             ])).render())
     })
 }

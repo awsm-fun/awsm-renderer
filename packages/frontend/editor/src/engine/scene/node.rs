@@ -188,6 +188,16 @@ impl Node {
         )
     }
 
+    /// Explicit instancer: the user picks the mesh source via the inspector
+    /// (or MCP `patch_kind`) after insert; the transform list is authored via
+    /// `SetInstancerTransforms`.
+    pub fn new_instancer(name: impl Into<String>) -> Arc<Self> {
+        Self::new_inner(
+            name,
+            NodeKind::Instancer(awsm_renderer_editor_protocol::InstancerDef::default()),
+        )
+    }
+
     /// `Mesh` references an `AssetSource::Mesh(MeshDef)` by `MeshRef`.
     /// Until the asset-table editor lands, the user picks the ref via
     /// the inspector.

@@ -38,6 +38,7 @@ pub enum InsertSpec {
     Decal,
     Sweep,
     Instances,
+    Instancer,
     Mesh,
 }
 
@@ -129,6 +130,7 @@ pub fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::ClusterMesh { .. } => "cluster_mesh",
         NodeKind::Curve(_) => "curve",
         NodeKind::InstancesAlongCurve(_) => "instances",
+        NodeKind::Instancer(_) => "instancer",
         NodeKind::Line(_) => "line",
         NodeKind::Sprite(_) => "sprite",
         NodeKind::ParticleEmitter(_) => "particle",

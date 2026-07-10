@@ -281,6 +281,24 @@ pub enum EditorCommand {
         texture: Option<Option<AssetId>>,
     },
 
+    /// REPLACE an `Instancer` node's entire instance-transform list in one step
+    /// — the bulk authoring path (one command for N instances; mirrors
+    /// `SetTrackKeys` for keyframes). Optionally replaces the per-instance
+    /// color list in the same step (`None` leaves the current colors
+    /// untouched). The node must be an `Instancer` (rejected loudly
+    /// otherwise). Re-materializes like `SetKind`. Inverse: restore the prior
+    /// kind (a `SetKind`), so undo restores the previous transform list
+    /// exactly.
+    SetInstancerTransforms {
+        node: NodeId,
+        /// One local transform per instance (relative to the node's transform).
+        transforms: Vec<Trs>,
+        /// Optional replacement per-instance color list (RGBA; shorter than
+        /// `transforms` repeats the last value). `None` = keep current.
+        #[serde(default)]
+        per_instance_colors: Option<Vec<[f32; 4]>>,
+    },
+
     /// Set a node's local transform (TRS). Inverse: restore the prior transform.
     /// Consecutive `SetTransform`s on the same node coalesce into one undo step
     /// (so a drag-scrub is a single undo).
@@ -1533,6 +1551,7 @@ impl EditorCommand {
             EditorCommand::SetKind { .. } => "Edit properties",
             EditorCommand::PatchKind { .. } => "Patch properties",
             EditorCommand::SetParticleEmitter { .. } => "Configure emitter",
+            EditorCommand::SetInstancerTransforms { .. } => "Set instancer transforms",
             EditorCommand::SetTransform { .. } => "Transform",
             EditorCommand::ResetToBindPose { .. } => "Reset to bind pose",
             EditorCommand::Rename { .. } => "Rename",
@@ -1666,6 +1685,61 @@ impl EditorCommand {
             EditorCommand::TrimStrip { .. } => "Trim strip",
             EditorCommand::SetStripRepeat { .. } => "Set strip repeat",
         }
+    }
+}
+
+#[cfg(test)]
+mod instancer_command_tests {
+    use super::*;
+
+    /// The documented wire shape parses: tag `set_instancer_transforms`,
+    /// `transforms` as full TRS tables, optional `per_instance_colors`.
+    #[test]
+    fn set_instancer_transforms_wire_shape() {
+        let cmd: EditorCommand = serde_json::from_str(
+            r#"{"cmd":"set_instancer_transforms",
+                "node":"7a1c2e40-0000-4000-8000-00000000ca4d",
+                "transforms":[
+                  {"translation":[1.0,0.0,2.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},
+                  {"translation":[3.0,0.0,4.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[2.0,2.0,2.0]}
+                ],
+                "per_instance_colors":[[1.0,0.0,0.0,1.0]]}"#,
+        )
+        .unwrap();
+        let EditorCommand::SetInstancerTransforms {
+            transforms,
+            per_instance_colors,
+            ..
+        } = cmd
+        else {
+            panic!("wrong variant");
+        };
+        assert_eq!(transforms.len(), 2);
+        assert_eq!(transforms[1].scale, [2.0, 2.0, 2.0]);
+        assert_eq!(per_instance_colors, Some(vec![[1.0, 0.0, 0.0, 1.0]]));
+    }
+
+    /// `per_instance_colors` is optional — omitting it deserializes to `None`
+    /// (keep current colors), and the command round-trips through JSON.
+    #[test]
+    fn set_instancer_transforms_colors_optional_and_round_trips() {
+        let cmd: EditorCommand = serde_json::from_str(
+            r#"{"cmd":"set_instancer_transforms",
+                "node":"7a1c2e40-0000-4000-8000-00000000ca4d",
+                "transforms":[]}"#,
+        )
+        .unwrap();
+        let EditorCommand::SetInstancerTransforms {
+            per_instance_colors,
+            ..
+        } = &cmd
+        else {
+            panic!("wrong variant");
+        };
+        assert!(per_instance_colors.is_none());
+        let json = serde_json::to_string(&cmd).unwrap();
+        let back: EditorCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{cmd:?}"), format!("{back:?}"));
     }
 }
 
