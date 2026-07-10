@@ -1,0 +1,2337 @@
+name = "untitled.awsm"
+custom_materials = []
+
+[environment]
+skybox = "built_in_default"
+specular = "built_in_default"
+irradiance = "built_in_default"
+
+[shadows]
+sscs_enabled = false
+sscs_step_count = 16
+sscs_step_world = 0.03999999910593033
+sscs_thickness = 0.05000000074505806
+sscs_directional_darkening = 0.3499999940395355
+sscs_punctual_darkening = 0.8999999761581421
+atlas_size = 4096
+evsm_atlas_size = 2048
+evsm_exponent = 10.0
+evsm_blur_radius = 6
+max_point_shadows = 8
+point_shadow_resolution = 1024
+debug_cascade_colors = false
+
+[post_process]
+tonemapping = "khronos_neutral_pbr"
+bloom = false
+dof = false
+exposure = 0.0
+bloom_threshold = 1.0
+bloom_knee = 0.5
+bloom_intensity = 1.0
+bloom_scatter = 1.0
+
+[post_process.ssr]
+enabled = false
+intensity = 1.0
+max_distance = 100.0
+thickness = 1.0
+max_steps = 96
+spread_cutoff = 0.6000000238418579
+edge_fade = 0.10000000149011612
+resolution_scale = 0.5
+temporal = false
+temporal_weight = 0.8999999761581421
+
+[assets.566ae682-160f-40f9-b188-2aabce926a55]
+gltf_material_asset_ids = ["7124cb8b-aef6-421d-848b-e9296fb797cf"]
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.566ae682-160f-40f9-b188-2aabce926a55.source]
+filename = "566ae682-160f-40f9-b188-2aabce926a55.glb"
+
+[[animations]]
+id = "bd82215e-bc34-4cfa-8c9e-73dca5d584c4"
+name = "Square"
+duration = 4.199997425079346
+loop_style = "loop"
+speed = 1.0
+direction = "forward"
+color = "#7aa2f7"
+
+[[animations.tracks]]
+sampler = "linear"
+mute = false
+solo = false
+expanded = false
+times = [
+    0.0,
+    0.03333333507180214,
+    0.06666667014360428,
+    0.10000000894069672,
+    0.13333334028720856,
+    0.1666666716337204,
+    0.20000000298023224,
+    0.23333333432674408,
+    0.2666666805744171,
+    0.30000001192092896,
+    0.3333333432674408,
+    0.36666667461395264,
+    0.4000000059604645,
+    0.4333333373069763,
+    0.46666666865348816,
+    0.5,
+    0.5333333611488342,
+    0.5666667222976685,
+    0.6000000834465027,
+    0.6333334445953369,
+    0.6666668057441711,
+    0.7000001668930054,
+    0.7333335280418396,
+    0.7666668891906738,
+    0.8000002503395081,
+    0.8333336114883423,
+    0.8666669726371765,
+    0.9000003337860107,
+    0.933333694934845,
+    0.9666670560836792,
+    1.0000003576278687,
+    1.033333659172058,
+    1.0666669607162476,
+    1.100000262260437,
+    1.1333335638046265,
+    1.166666865348816,
+    1.2000001668930054,
+    1.2333334684371948,
+    1.2666667699813843,
+    1.3000000715255737,
+    1.3333333730697632,
+    1.3666666746139526,
+    1.399999976158142,
+    1.4333332777023315,
+    1.466666579246521,
+    1.4999998807907104,
+    1.5333331823349,
+    1.5666664838790894,
+    1.5999997854232788,
+    1.6333330869674683,
+    1.6666663885116577,
+    1.6999996900558472,
+    1.7333329916000366,
+    1.766666293144226,
+    1.7999995946884155,
+    1.833332896232605,
+    1.8666661977767944,
+    1.8999994993209839,
+    1.9333328008651733,
+    1.9666661024093628,
+    1.9999994039535522,
+    2.0333328247070313,
+    2.0666661262512207,
+    2.09999942779541,
+    2.1333327293395996,
+    2.166666030883789,
+    2.1999993324279785,
+    2.233332633972168,
+    2.2666659355163574,
+    2.299999237060547,
+    2.3333325386047363,
+    2.366665840148926,
+    2.3999991416931152,
+    2.4333324432373047,
+    2.466665744781494,
+    2.4999990463256836,
+    2.533332347869873,
+    2.5666656494140625,
+    2.599998950958252,
+    2.6333322525024414,
+    2.666665554046631,
+    2.6999988555908203,
+    2.7333321571350098,
+    2.766665458679199,
+    2.7999987602233887,
+    2.833332061767578,
+    2.8666653633117676,
+    2.899998664855957,
+    2.9333319664001465,
+    2.966665267944336,
+    2.9999985694885254,
+    3.033331871032715,
+    3.0666651725769043,
+    3.0999984741210938,
+    3.133331775665283,
+    3.1666650772094727,
+    3.199998378753662,
+    3.2333316802978516,
+    3.266664981842041,
+    3.2999982833862305,
+    3.33333158493042,
+    3.3666648864746094,
+    3.399998188018799,
+    3.4333314895629883,
+    3.4666647911071777,
+    3.499998092651367,
+    3.5333313941955566,
+    3.566664695739746,
+    3.5999979972839355,
+    3.633331298828125,
+    3.6666646003723145,
+    3.699997901916504,
+    3.7333312034606934,
+    3.766664505004883,
+    3.7999978065490723,
+    3.8333311080932617,
+    3.866664409637451,
+    3.8999977111816406,
+    3.93333101272583,
+    3.9666643142700195,
+    3.999997615814209,
+    4.033330917358398,
+    4.066664218902588,
+    4.099997520446777,
+    4.133330821990967,
+    4.166664123535156,
+    4.199997425079346,
+]
+
+[animations.tracks.target]
+target = "morph"
+node = "c8a4fd4a-f71a-47b7-a261-00b181e72306"
+index = 0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0012839989503845572
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.005063657183200121
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.011230469681322575
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.019675927236676216
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.030291520059108734
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0429687462747097
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.05759910121560097
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.07407407462596893
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.09228515625
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.11212385445833206
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.13348162174224854
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.1562499850988388
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.18032045662403107
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.20558446645736694
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.2319335788488388
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.25925925374031067
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.2874530255794525
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.31640633940696716
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.34601062536239624
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.3761574923992157
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.40673840045928955
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.4376448392868042
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.46876829862594604
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.5000002384185791
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.5312321186065674
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.562355637550354
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.5932620167732239
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.6238429546356201
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.6539897322654724
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.6835939884185791
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.712547242641449
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.7407408952713013
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.7680665850639343
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.7944157123565674
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.8196795582771301
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.84375
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.8665183782577515
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.8878762125968933
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9077147841453552
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9259259104728699
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9424008727073669
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.95703125
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9697085022926331
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9803240299224854
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.98876953125
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9949362874031067
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.998715877532959
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9999999403953552
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9982076287269592
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9929913282394409
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9845921397209167
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9732511639595032
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9592096209526062
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9427086114883423
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9239891767501831
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.9032925367355347
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.8808597326278687
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.8569319844245911
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.8317503929138184
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.8055561184883118
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.7785900235176086
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.7510936260223389
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.7233077883720398
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.6954737901687622
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.667832612991333
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.6406255960464478
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.6140936613082886
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.5884780287742615
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.5640197396278381
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.5409599542617798
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.5195398926734924
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.500000536441803
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.48106640577316284
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.4613668918609619
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.44100067019462585
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.4200665354728699
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.3986632525920868
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.3768896460533142
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.3548443913459778
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.3326263427734375
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.310334175825119
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.28806668519973755
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.2659226655960083
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.2440008968114853
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.22240006923675537
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.20121900737285614
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.18055644631385803
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.16051116585731506
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.14118194580078125
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.12266750633716583
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.105066679418087
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.08847816288471222
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.07300075888633728
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.05873321369290352
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.04577430710196495
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0342227928340435
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.02417747490108013
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.015737038105726242
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.009000319987535477
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.004066085908561945
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0010330963414162397
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.00000003814697180359872
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations]]
+id = "00000000-0000-4000-8000-0000000000a0"
+name = "two-morphs"
+duration = 2.0
+loop_style = "loop"
+speed = 1.0
+direction = "forward"
+color = "#7aa2f7"
+
+[[animations.tracks]]
+sampler = "linear"
+mute = false
+solo = false
+expanded = false
+times = [
+    0.0,
+    2.0,
+]
+
+[animations.tracks.target]
+target = "morph"
+node = "c8a4fd4a-f71a-47b7-a261-00b181e72306"
+index = 0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 1.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks]]
+sampler = "linear"
+mute = false
+solo = false
+expanded = false
+times = [
+    0.0,
+    2.0,
+]
+
+[animations.tracks.target]
+target = "morph"
+node = "c8a4fd4a-f71a-47b7-a261-00b181e72306"
+index = 1
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 1.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[[animations.tracks.keys]]
+interp = "linear"
+
+[animations.tracks.keys.value]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.in_tangent]
+kind = "scalar"
+value = 0.0
+
+[animations.tracks.keys.out_tangent]
+kind = "scalar"
+value = 0.0
+
+[mixer]
+layers = []
+
+[[nodes]]
+id = "b6162ac2-017d-4003-96b6-3581f0a8bf29"
+name = "Directional Light"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    -0.4226182699203491,
+    0.0,
+    0.0,
+    0.9063077569007874,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.light.directional]
+color = [
+    1.0,
+    1.0,
+    1.0,
+]
+intensity = 4.0
+
+[nodes.kind.light.directional.shadow]
+cast = true
+depth_bias = 0.0010000000474974513
+normal_bias = 0.0
+resolution = 2048
+hardness = "soft"
+pcss_penumbra_scale = 1.0
+kernel_slack = 0.0
+shadow_samples = 16
+max_distance = 0.0
+cascade_count = 4
+cascade_split_lambda = 0.5
+evsm_cutoff = "last_cascade"
+far_cascade_update_rate = "every4_frames"
+cube_face_update_rate = "every_frame"
+
+[[nodes]]
+id = "c8a4fd4a-f71a-47b7-a261-00b181e72306"
+name = "AnimatedMorphCube"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    -0.7071066498756409,
+    0.7071068286895752,
+    0.0,
+]
+scale = [
+    100.0,
+    99.99999237060547,
+    99.99999237060547,
+]
+
+[nodes.kind.skinned_mesh]
+selected_variant = "abb7f0d0-e87a-4917-96c9-d1d9ea0f4e85"
+
+[nodes.kind.skinned_mesh.skin]
+source = "566ae682-160f-40f9-b188-2aabce926a55"
+node_index = 0
+rig_node_index = 0
+joints = []
+
+[[nodes.kind.skinned_mesh.material_variants]]
+id = "abb7f0d0-e87a-4917-96c9-d1d9ea0f4e85"
+name = "Material"
+
+[nodes.kind.skinned_mesh.material_variants.instance]
+asset = "7124cb8b-aef6-421d-848b-e9296fb797cf"
+
+[nodes.kind.skinned_mesh.material_variants.instance.inline]
+label = "Material"
+base_color = [
+    0.6038274168968201,
+    0.6038274168968201,
+    0.6038274168968201,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.5
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.skinned_mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.skinned_mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.skinned_mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.skinned_mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.skinned_mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.skinned_mesh.lod]
+enabled = true
