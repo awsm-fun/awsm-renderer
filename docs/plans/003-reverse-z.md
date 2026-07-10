@@ -43,7 +43,33 @@ mandatory, in that order: flag → finite main-camera flip → HZB/occlusion →
 near/far threading → consumers/sentinels → shadows → infinite-far → relax
 auto_clip_planes.
 
-**Status:** NOT started — the sections below are the implementation-ready design.
+**STAGE PROGRESS (live, updated per commit):**
+- [x] Stage 1a (96a4597c): `RendererFeatures.reverse_z` + `depth_convention.rs`
+      (clear/compare/compare_strict/is_background/nearest/is_closer + mirror test);
+      editor `?reversez` opt-in (main viewport + material preview share one source).
+- [x] Stage 1b (f9eb4cdd): every main-camera depth site reads DepthConvention —
+      geometry×4 + transparent pipeline builders, lines strict-compare chain,
+      geometry+HUD clears, web-shared grid. Shadows pinned FORWARD until stage 7.
+      Flag-off browser-verified identical.
+- [ ] Stage 2: finite reverse-Z projection builders (camera.rs:69 + frustum-ray
+      reconstruction :323-328; editor render_loop persp/ortho; web-shared
+      free_camera persp/ortho; model-tests projections; examples) + flag-ON
+      single-opaque-scene visual check.
+- [ ] Stage 3: HZB + occlusion four coupled flips (seed/reduce min↔max, cull init
+      + compare) — flag-threaded WGSL template axis.
+- [ ] Stage 4: frustum extraction both crates + fix stale cull.wgsl:74 comment.
+- [ ] Stage 5: thread explicit near/far to froxels + cascade fit (MANDATORY —
+      infinite-far breaks matrix recovery).
+- [ ] Stage 6: depth-consumer sentinels (decal, SSCS, DoF load_depth, material
+      classify recheck, SSR trace + minz lockstep even though gated).
+- [ ] Stage 7: shadows lockstep migration (writers + receiver NDC + bounds +
+      EVSM remap + compare + clear together).
+- [ ] Stage 8: infinite-far main perspective camera
+      (perspective_infinite_reverse_rh; ortho paths stay finite reverse).
+- [ ] Stage 9: relax auto_clip_planes ratio cap; synthetic z-fight repros A/B
+      (§9.A scenes); flag default ON (?noreversez rollback).
+
+**Status:** stages 1a+1b landed — the sections below are the implementation-ready design.
 **Scope:** core renderer (`packages/crates/renderer/`) + the shared cameras
 (`web-shared`, editor, model-tests). Reverse-Z is a **global depth convention**;
 it is all-or-nothing for the main camera path and cannot be scoped to just the
