@@ -460,6 +460,25 @@ async fn dispatch(req: Request) -> Response {
         Request::ExportPlayerBundle => {
             bundle_response(crate::controller::export::bake_player_bundle(&ctrl).await).await
         }
+        Request::SaveProject => {
+            // Same persisted form a directory Save writes: `project.toml` first
+            // (mirrors `assemble_bundle`'s scene.toml-first ordering), then the
+            // byte side files sorted by path — the source is a HashMap, and an
+            // unsorted manifest would reshuffle on every save.
+            let files = crate::controller::persistence::serialize_inmem(&ctrl)
+                .map(|(toml, byte_files)| {
+                    let mut side: Vec<_> = byte_files.into_iter().collect();
+                    side.sort_by(|(a, _), (b, _)| a.cmp(b));
+                    std::iter::once(("project.toml".to_string(), toml.into_bytes()))
+                        .chain(side)
+                        .map(|(path, bytes)| {
+                            awsm_renderer_editor_protocol::BundleFile::new(path, bytes)
+                        })
+                        .collect()
+                })
+                .map_err(|e| format!("{e}"));
+            bundle_response(files).await
+        }
     }
 }
 

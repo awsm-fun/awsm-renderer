@@ -1889,6 +1889,41 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
+        description = "Save the open project's persisted form (project.toml + assets/* side files) to a temp directory on the MCP server's filesystem and return the path + manifest. The same bytes a directory Save writes — load it back with load_project_from_url or copy it into a versioned scenes dir. Files transfer over the /bundle side-channel; only the manifest crosses the control link."
+    )]
+    async fn save_project(&self) -> Result<CallToolResult, McpError> {
+        match self.req(Request::SaveProject).await? {
+            Response::Bundle(handle) => {
+                let dir = crate::http::bundle_dir(&handle.id);
+                // Confirm the uploads actually landed before reporting success.
+                if !dir.exists() {
+                    return Err(McpError::internal_error(
+                        format!("save {} not found at {}", handle.id, dir.display()),
+                        None,
+                    ));
+                }
+                let total: usize = handle.files.iter().map(|f| f.byte_len).sum();
+                let files: Vec<serde_json::Value> = handle
+                    .files
+                    .iter()
+                    .map(|f| serde_json::json!({ "path": f.path, "byte_len": f.byte_len }))
+                    .collect();
+                Ok(text(
+                    serde_json::json!({
+                        "save_dir": dir.display().to_string(),
+                        "files": files,
+                        "total_bytes": total,
+                    })
+                    .to_string(),
+                ))
+            }
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
         description = "Mean/min/max luma over a canvas region (or the whole canvas)."
     )]
     async fn canvas_stats(
