@@ -325,20 +325,22 @@ impl AwsmRenderer {
                 // skip the dangling write; the relower rebinds it. Present keys unchanged.
                 AnimationData::Vertex(vertex_animation) => match morph_key {
                     AnimationMorphKey::Geometry(morph_key) => {
-                        let _ = self.meshes.morphs.geometry.update_morph_weights_with(
-                            *morph_key,
-                            |target| {
-                                target.copy_from_slice(&vertex_animation.weights);
-                            },
-                        );
+                        let _ = self
+                            .meshes
+                            .morphs
+                            .geometry
+                            .update_morph_weights_with(*morph_key, |target| {
+                                vertex_animation.apply_mut(target)
+                            });
                     }
                     AnimationMorphKey::Material(morph_key) => {
-                        let _ = self.meshes.morphs.material.update_morph_weights_with(
-                            *morph_key,
-                            |target| {
-                                target.copy_from_slice(&vertex_animation.weights);
-                            },
-                        );
+                        let _ = self
+                            .meshes
+                            .morphs
+                            .material
+                            .update_morph_weights_with(*morph_key, |target| {
+                                vertex_animation.apply_mut(target)
+                            });
                     }
                 },
                 _ => {
@@ -808,22 +810,22 @@ impl AwsmRenderer {
                 // path; present keys are unchanged.
                 AnimationData::Vertex(vertex_animation) => match morph_key {
                     AnimationMorphKey::Geometry(morph_key) => {
-                        let _ = self.meshes.morphs.geometry.update_morph_weights_with(
-                            morph_key,
-                            |target| {
-                                let n = target.len().min(vertex_animation.weights.len());
-                                target[..n].copy_from_slice(&vertex_animation.weights[..n]);
-                            },
-                        );
+                        let _ = self
+                            .meshes
+                            .morphs
+                            .geometry
+                            .update_morph_weights_with(morph_key, |target| {
+                                vertex_animation.apply_mut(target)
+                            });
                     }
                     AnimationMorphKey::Material(morph_key) => {
-                        let _ = self.meshes.morphs.material.update_morph_weights_with(
-                            morph_key,
-                            |target| {
-                                let n = target.len().min(vertex_animation.weights.len());
-                                target[..n].copy_from_slice(&vertex_animation.weights[..n]);
-                            },
-                        );
+                        let _ = self
+                            .meshes
+                            .morphs
+                            .material
+                            .update_morph_weights_with(morph_key, |target| {
+                                vertex_animation.apply_mut(target)
+                            });
                     }
                 },
                 _ => {

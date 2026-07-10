@@ -151,17 +151,13 @@ impl Track {
             _ => None,
         };
         // A morph track keys ONE scalar weight per keyframe (`TrackTarget::Morph`
-        // + `TrackValue::Scalar`), but the renderer `Morph` target consumes the
-        // **whole** weight vector (`AnimationData::Vertex { weights }`). Reconcile
-        // by lowering each scalar into a weight vector of length `index + 1` whose
-        // position `index` carries the keyed scalar and every other entry is 0.
-        //
-        // LIMITATION: this drives the morph at `index` correctly for the
-        // common single-morph / first-target case, but because the lowered vector
-        // forces all leading weights `0..index` to 0 every frame, a clip with
-        // *separate* tracks for two morphs of the same mesh would have each track
-        // stomp the other's weight. Per-index masked morph blending (write only
-        // the keyed slot, leave the rest at rest) is deferred.
+        // + `TrackValue::Scalar`), but the renderer `Morph` target consumes a
+        // weight vector (`AnimationData::Vertex`). Reconcile by lowering each
+        // scalar into a **masked** single-index vertex animation
+        // (`VertexAnimation::new_single`): only the keyed slot is driven, so the
+        // renderer's blend/apply leaves every other index at its accumulator /
+        // rest value. Two tracks driving different morph indices of the same
+        // mesh therefore compose per-index instead of stomping each other.
         let morph_index = match &self.target {
             TrackTarget::Morph { index, .. } => Some(*index),
             _ => None,
@@ -329,10 +325,11 @@ fn track_value_to_data(value: &TrackValue, prop: Option<TransformProp>) -> Anima
 }
 
 /// Lower one authored morph keyframe (a single scalar weight) into the renderer
-/// `AnimationData::Vertex` the morph target consumes: a weight vector of length
-/// `index + 1` with position `index` carrying the scalar and the rest 0. A
-/// non-scalar value (shape mismatch) lowers to its first component / 0. See the
-/// reconciliation note + limitation in [`Track::lower`].
+/// `AnimationData::Vertex` the morph target consumes: a single-index **masked**
+/// vertex animation driving only `index` (untargeted indices hold their
+/// accumulator / rest value in the renderer's blend + apply). A non-scalar
+/// value (shape mismatch) lowers to its first component / 0. See the
+/// reconciliation note in [`Track::lower`].
 fn morph_scalar_to_vertex(value: &TrackValue, index: usize) -> AnimationData {
     let scalar = match value {
         TrackValue::Scalar(s) => *s,
@@ -341,9 +338,7 @@ fn morph_scalar_to_vertex(value: &TrackValue, index: usize) -> AnimationData {
         TrackValue::Vec4(v) => v.first().copied().unwrap_or(0.0),
         TrackValue::Quat(q) => q.first().copied().unwrap_or(0.0),
     };
-    let mut weights = vec![0.0_f32; index + 1];
-    weights[index] = scalar;
-    AnimationData::Vertex(VertexAnimation::new(weights))
+    AnimationData::Vertex(VertexAnimation::new_single(index, scalar))
 }
 
 /// A live, reactive animation clip in the library
@@ -465,3 +460,75 @@ pub fn stored_to_live(s: &StoredAnimation) -> Arc<CustomAnimation> {
 // now live in `awsm_renderer_editor_protocol` (so the MCP server shares them); re-exported
 // here at their established path.
 pub use awsm_renderer_editor_protocol::{AnimSel, AnimView, StepKind};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awsm_renderer::animation::{blend_replace, AnimationMorphKey};
+
+    /// A morph track bound to `(node, index)` keying `start → end` over [0, 1].
+    fn morph_track(node: NodeId, index: usize, start: f32, end: f32) -> Arc<Track> {
+        let track = Track::new(TrackTarget::Morph { node, index });
+        track.times.set(vec![0.0, 1.0]);
+        track.keys.set(vec![
+            new_keyframe(TrackValue::Scalar(start), Interp::Linear),
+            new_keyframe(TrackValue::Scalar(end), Interp::Linear),
+        ]);
+        track
+    }
+
+    fn as_vertex(d: &AnimationData) -> awsm_renderer::animation::VertexAnimation {
+        match d {
+            AnimationData::Vertex(v) => v.clone(),
+            other => panic!("expected Vertex, got {other:?}"),
+        }
+    }
+
+    /// §3 (save-load residuals): two morph tracks on the SAME mesh targeting
+    /// DIFFERENT morph indices must lower to per-index MASKED channels, so
+    /// each track drives only its own index — advancing time animates both
+    /// independently and untargeted indices hold rest (no whole-vector stomp).
+    #[test]
+    fn morph_tracks_lower_masked_and_compose_per_index() {
+        let node = NodeId::new();
+        // Both tracks resolve to the same renderer morph target (one mesh).
+        let resolve = |_: &TrackTarget| {
+            Some(AnimationTarget::Morph(AnimationMorphKey::Geometry(
+                Default::default(),
+            )))
+        };
+
+        // Track A drives index 0: 0.0 → 1.0; track B drives index 1: 0.0 → 0.5.
+        let ch_a = morph_track(node, 0, 0.0, 1.0).lower(&resolve).unwrap();
+        let ch_b = morph_track(node, 1, 0.0, 0.5).lower(&resolve).unwrap();
+
+        // Each lowered channel samples to a masked single-index vertex value.
+        let v_a = as_vertex(&ch_a.sample(0.5));
+        assert_eq!(v_a.mask, Some(0b01));
+        assert!((v_a.weights[0] - 0.5).abs() < 1e-6);
+        let v_b = as_vertex(&ch_b.sample(0.5));
+        assert_eq!(v_b.mask, Some(0b10));
+        assert!((v_b.weights[1] - 0.25).abs() < 1e-6);
+
+        // Folded like the renderer's mixer (rest-seeded accumulator,
+        // blend_replace per channel): both indices animate independently and
+        // the untargeted index 2 holds its rest value — in EITHER fold order.
+        let rest = AnimationData::Vertex(VertexAnimation::new(vec![0.0, 0.0, 0.7]));
+        for t in [0.25_f64, 0.75] {
+            let expected = [t as f32, t as f32 * 0.5, 0.7];
+            for order in [[&ch_a, &ch_b], [&ch_b, &ch_a]] {
+                let mut acc = rest.clone();
+                for ch in order {
+                    acc = blend_replace(&acc, &ch.sample(t), 1.0);
+                }
+                let weights = as_vertex(&acc).weights;
+                for (got, exp) in weights.iter().zip(&expected) {
+                    assert!(
+                        (got - exp).abs() < 1e-6,
+                        "t={t}: got {weights:?}, expected {expected:?}"
+                    );
+                }
+            }
+        }
+    }
+}
