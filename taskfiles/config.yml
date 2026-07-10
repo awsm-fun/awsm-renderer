@@ -25,6 +25,7 @@ vars:
   PORT_MODEL_TESTS_DEV: 9080
   PORT_MEDIA_LOCAL_DEV: 9082
   PORT_MEDIA_ADDITIONAL_ASSETS_DEV: 9083
+  PORT_TEST_SCENES_DEV: 9084 # `task test-scenes` — serves examples/test-scenes (projects + baked bundles + goldens)
   PORT_EDITOR_DEV: 9085
   PORT_MCP_HTTP_DEV: 9086 # TCP — rmcp /mcp + the editor link + control surface. The "prod" default: baked into editor builds (URL_MCP_DEFAULT) so deployed editors dial here.
   PORT_MCP_HTTP_LOCAL_DEV: 9186 # Dedicated port for `task mcp-dev` so a local dev MCP server never collides with a prod one on 9086. Override: `task mcp-dev -- <port>`.

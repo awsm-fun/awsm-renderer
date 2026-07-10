@@ -95,6 +95,13 @@ tasks:
         cd {{.PATH_MEDIA_ADDITIONAL_ASSETS}} &&
         http-server --cors -p {{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}
 
+  test-scenes:
+    desc: "Serve examples/test-scenes (the permanent verification suite: saved projects + baked bundles + goldens) on :{{.PORT_TEST_SCENES_DEV}}. Load a project in the editor via load_project_from_url http://localhost:{{.PORT_TEST_SCENES_DEV}}/<scene>/project; player bundles live at /<scene>/bundle."
+    cmds:
+      - >
+        cd {{joinPath .PATH_REPO_ROOT "examples/test-scenes"}} &&
+        http-server --cors -p {{.PORT_TEST_SCENES_DEV}}
+
   lint:
     desc: "Run the exact lints CI runs (rustfmt + clippy with -D warnings, all features, tests). Mirrors .github/workflows/test.yml."
     cmds:

@@ -94,6 +94,16 @@ numbers recorded here and in `docs/plans/006-optimizations.md`.
    known offenders: `sync_bones_to_skin` HashSet+Vec per frame. Scoreboard:
    traced steady-state frame allocation count + stress frame times.
 
+## Scene status
+
+All 20 buildable scenes are authored and versioned. `instancing-stress` is
+PENDING axis 5 (the explicit instancer NodeKind doesn't exist yet — the
+current `instances` InsertSpec is the curve-sampled variant only).
+`prefab-skinned-morph`'s golden deliberately captures the CURRENT broken
+duplicate-skinned behavior (see its author.js) — regenerate after axis 4.
+`lod-nanite`'s bake recipe (export-pipeline bake, no standalone CLI) is in
+its author.js.
+
 ## Baselines
 
 Recorded as axes land (scene → census / frame time / bundle bytes / load ms).
