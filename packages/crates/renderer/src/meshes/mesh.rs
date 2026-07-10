@@ -120,6 +120,20 @@ pub struct Mesh {
     /// forward-rendered stream the transparency pass draws from). Same
     /// insert-derived, `pub(crate)` contract as [`Self::has_visibility_geometry`].
     pub(crate) has_transparency_geometry: bool,
+    /// PER-INSTANCE skin override (prefab clones). A skinned duplicate SHARES
+    /// its source's `MeshResource` (geometry uploads once) but deforms through
+    /// its own skin — this key, when set, takes precedence over the shared
+    /// resource's `skin_key` everywhere the effective skin is resolved (meta,
+    /// skin-consumer index, accessors). OWNED by this mesh: `Meshes::remove`
+    /// frees it regardless of the shared resource's refcount. Set only by
+    /// `Meshes::duplicate_skinned_with_new_skin` / `duplicate_with_transform`.
+    pub(crate) instance_skin_key: Option<crate::meshes::skins::SkinKey>,
+    /// PER-INSTANCE geometry-morph override (prefab clones): an
+    /// `insert_instance` morph entry whose WEIGHTS are this mesh's own
+    /// animation state while the target-delta VALUES are shared with the
+    /// source. Same precedence + ownership contract as
+    /// [`Self::instance_skin_key`].
+    pub(crate) instance_geometry_morph_key: Option<crate::meshes::morphs::GeometryMorphKey>,
 }
 
 impl Mesh {
@@ -154,6 +168,8 @@ impl Mesh {
             // doesn't get to assert one; `insert` is the single source of truth.
             has_visibility_geometry: false,
             has_transparency_geometry: false,
+            instance_skin_key: None,
+            instance_geometry_morph_key: None,
         }
     }
 

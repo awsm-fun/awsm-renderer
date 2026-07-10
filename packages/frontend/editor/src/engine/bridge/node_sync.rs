@@ -984,33 +984,9 @@ fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Op
     // joint node-index → its editor bone `TransformKey`. A bone not yet in the bridge
     // means the transforms-first pass hasn't landed it → return `None` so the caller
     // retries (same ordering guard as before). Morph-only nodes have no skin → `None`.
-    let b = bridge();
     let raw_skin = match decode.skin.as_ref() {
         Some(ext_skin) => {
-            let mut joints = Vec::with_capacity(ext_skin.joint_node_indices.len());
-            for rig_idx in &ext_skin.joint_node_indices {
-                let bone_node = skin
-                    .joints
-                    .iter()
-                    .find(|sj| sj.index == *rig_idx as u32)
-                    .map(|sj| sj.node)?;
-                let tk = {
-                    let nodes = b.nodes.lock().unwrap();
-                    match nodes.get(&bone_node).map(|e| e.transform_key) {
-                        Some(tk) => tk,
-                        None => {
-                            tracing::warn!(
-                                "raw_mesh_from_rig: bone node {:?} (rig joint idx {}) not yet \
-                                 in bridge — falling back",
-                                bone_node,
-                                rig_idx
-                            );
-                            return None;
-                        }
-                    }
-                };
-                joints.push(tk);
-            }
+            let joints = resolve_skin_joint_transforms(skin, ext_skin)?;
             let inverse_bind_matrices: Vec<Mat4> = ext_skin
                 .inverse_bind_matrices
                 .iter()
@@ -1066,6 +1042,199 @@ fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Op
     })
 }
 
+/// Resolve a `SkinnedMesh` node's skin joints to their editor-bone renderer
+/// `TransformKey`s, in the RIG-GLB joint order (`ext_skin.joint_node_indices`)
+/// — the order every renderer skin built from this source uses, so the result
+/// pairs 1:1 with that skin's inverse-bind matrices. `None` when a joint isn't
+/// in the node's `skin.joints` table or its bone node hasn't materialized in
+/// the bridge yet (callers fall back / retry — the same ordering guard the
+/// raw-mesh path always had).
+fn resolve_skin_joint_transforms(
+    skin: &awsm_renderer_editor_protocol::SkinnedMeshRef,
+    ext_skin: &awsm_renderer_glb_export::ExtractedSkin,
+) -> Option<Vec<TransformKey>> {
+    let b = bridge();
+    let nodes = b.nodes.lock().unwrap();
+    let mut joints = Vec::with_capacity(ext_skin.joint_node_indices.len());
+    for rig_idx in &ext_skin.joint_node_indices {
+        let bone_node = skin
+            .joints
+            .iter()
+            .find(|sj| sj.index == *rig_idx as u32)
+            .map(|sj| sj.node)?;
+        match nodes.get(&bone_node).map(|e| e.transform_key) {
+            Some(tk) => joints.push(tk),
+            None => {
+                tracing::warn!(
+                    "skinned materialize: bone node {:?} (rig joint idx {}) not yet in \
+                     bridge — falling back",
+                    bone_node,
+                    rig_idx
+                );
+                return None;
+            }
+        }
+    }
+    Some(joints)
+}
+
+/// A live, already-materialized skinned drawable of the SAME rig geometry
+/// (same source / rig node index / primitive) on ANOTHER scene node — the
+/// geometry donor a duplicated `SkinnedMesh` shares GPU buffers with instead
+/// of re-uploading (axis 4: clone must never clone data). Returns the donor's
+/// `MeshKey`; `None` when this node is the first of its geometry (the normal
+/// first-materialize) or no candidate is live/skinned right now.
+fn find_skinned_geometry_donor(
+    r: &awsm_renderer::AwsmRenderer,
+    node_id: NodeId,
+    skin: &awsm_renderer_editor_protocol::SkinnedMeshRef,
+) -> Option<awsm_renderer::meshes::MeshKey> {
+    let b = bridge();
+    let nodes = b.nodes.lock().unwrap();
+    for entry in nodes.values() {
+        if entry.node_id == node_id {
+            continue;
+        }
+        let NodeKind::SkinnedMesh { skin: other, .. } = entry.node.kind.get_cloned() else {
+            continue;
+        };
+        if other.source != skin.source
+            || other.rig_node_index != skin.rig_node_index
+            || other.primitive_index != skin.primitive_index
+        {
+            continue;
+        }
+        // Node-owned drawables only (`model_meshes`) — the legacy
+        // template-reuse path's meshes are template-owned and never land here.
+        // Validate liveness + skinnedness against the renderer (the entry
+        // could be mid-rematerialize).
+        for mk in entry.model_meshes.lock().unwrap().iter() {
+            if r.meshes.get(*mk).is_ok() && r.meshes.mesh_skin_key(*mk).flatten().is_some() {
+                return Some(*mk);
+            }
+        }
+    }
+    None
+}
+
+/// Materialize a DUPLICATED `SkinnedMesh` node by SHARING an existing node's
+/// geometry: duplicate the donor's mesh (refcounted resource — no geometry
+/// re-upload) onto a fresh per-instance skin cloned over THIS node's bones.
+/// The per-instance GPU data is the skin's joint-matrix palette (+ a morph
+/// WEIGHTS slot when the rig is morphed) — exactly the prefab-instantiate
+/// model the scene-loader uses, so editor duplicates and player prefab
+/// instances agree on one sharing model. Returns `false` (having created
+/// nothing) when there is no donor / no rig decode / a bone isn't bridged yet
+/// / the resolved material needs a pass representation the donor's geometry
+/// doesn't carry — the caller then takes the normal `add_raw_mesh` path.
+async fn materialize_skinned_duplicate(
+    entry: &Arc<RendererNode>,
+    skin: &awsm_renderer_editor_protocol::SkinnedMeshRef,
+    material: Option<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
+    declare_only: bool,
+) -> bool {
+    let visible = entry.node.visible.get();
+    let shadow_cfg = entry
+        .node
+        .kind
+        .get_cloned()
+        .mesh_shadow()
+        .copied()
+        .unwrap_or_default();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
+
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    // Donor first — it's the cheap check, and on the COMMON first-materialize
+    // (no donor) it bails before paying for a rig decode clone.
+    let Some(donor_mk) = find_skinned_geometry_donor(&r, entry.node_id, skin) else {
+        return false;
+    };
+    let Some(donor_skin) = r.meshes.mesh_skin_key(donor_mk).flatten() else {
+        return false;
+    };
+    // Joint order comes from the rig decode (the order the donor's skin — and
+    // every renderer skin of this source — was inserted in); a morph-only node
+    // (no skin) or an uncached rig can't take this path.
+    let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
+        skin.source,
+        skin.rig_node_index,
+        skin.primitive_index,
+    ) else {
+        return false;
+    };
+    let Some(ext_skin) = decode.skin.as_ref() else {
+        return false;
+    };
+    let Some(instance_joints) = resolve_skin_joint_transforms(skin, ext_skin) else {
+        return false;
+    };
+
+    // Same geometry ⇒ same vertex-colour classification as the donor.
+    let vertex_color_set = mesh_vertex_color_set(&r, donor_mk);
+    let mat_key = resolve_assigned_material(&mut r, material, vertex_color_set);
+    // The duplicate reuses the donor's uploaded representations — a material
+    // routed to a pass the donor's geometry has no representation for (an
+    // opaque↔blend flip relative to how the donor committed) can't share;
+    // fall back to the fresh-upload path, which packs the right kind.
+    let donor_has_rep = if r.materials.is_transparency_pass(mat_key) {
+        r.meshes
+            .transparency_geometry_data_buffer_offset(donor_mk)
+            .is_ok()
+    } else {
+        r.meshes
+            .visibility_geometry_data_buffer_offset(donor_mk)
+            .is_ok()
+    };
+    if !donor_has_rep {
+        r.remove_material(mat_key);
+        return false;
+    }
+
+    // Same placement rule as the fresh path: skinned drawables ride an
+    // IDENTITY transform under the renderer root (the skin deforms via the
+    // joints; the glTF rule ignores a skinned mesh node's own transform).
+    let root = r.transforms.root_node;
+    let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(root));
+    let new_skin = match r.clone_skin_for_joints(donor_skin, instance_joints) {
+        Ok(k) => k,
+        Err(e) => {
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::warn!("skinned duplicate: clone_skin_for_joints failed: {e}");
+            return false;
+        }
+    };
+    match r.duplicate_skinned_mesh_with_skin(donor_mk, sub_tk, new_skin) {
+        Ok(mk) => {
+            let _ = r.set_mesh_material(mk, mat_key);
+            let _ = r.set_mesh_hidden(mk, !visible);
+            let _ = r.set_mesh_shadow_flags(mk, shadow_flags);
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("commit_load (skinned duplicate): {e}");
+                }
+            }
+            drop(r);
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(sub_tk);
+            entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
+            true
+        }
+        Err(e) => {
+            r.meshes.skins.remove(new_skin, None);
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::warn!("skinned duplicate: duplicate_skinned_mesh_with_skin failed: {e}");
+            false
+        }
+    }
+}
+
 /// Materialize (or re-materialize) a `SkinnedMesh` node. **The unified path** decodes
 /// the clean rig glb (our-format) into a NODE-OWNED skinned drawable via
 /// [`raw_mesh_from_rig`] + `add_raw_mesh` with the CURRENT material, so an
@@ -1085,6 +1254,14 @@ async fn materialize_skinned_mesh(
     material: Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
     declare_only: bool,
 ) {
+    // GEOMETRY-SHARING duplicate path (axis 4): when another node already
+    // materialized this exact rig geometry (a duplicated character), don't
+    // re-upload it — duplicate that mesh over the shared resource with a
+    // fresh per-instance skin bound to THIS node's (cloned) bones.
+    if materialize_skinned_duplicate(&entry, &skin, material.as_ref(), declare_only).await {
+        return;
+    }
+
     let Some(raw) = raw_mesh_from_rig(&skin) else {
         // No rig decode cached → the legacy template-reuse fallback (a SAFETY NET for
         // legacy projects / sources whose rig glb wasn't persisted). Kept on purpose:

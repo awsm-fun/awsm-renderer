@@ -1,21 +1,19 @@
 // test-scene: prefab-skinned-morph
 // Prefab duplication of a SKINNED model: CesiumMan duplicated 2x (3 figures)
-// with the walk clip frozen mid-stride. TARGET (post axis-4): all three
-// figures walk independently, geometry uploaded once (clones share vertex/
-// index/morph buffers; per-instance data = skin matrices + weights only).
-//
-// ⚠ KNOWN-BROKEN BASELINE (2026-07-10, pre-axis-4) — the golden captures the
-// CURRENT defect on purpose:
-//   1. Clones do NOT animate — the imported clip's tracks target the
-//      ORIGINAL armature's node ids; duplicated joints get fresh ids and no
-//      re-targeted clip. Independent per-instance playback needs axis-4's
-//      redesign (or clip re-targeting on duplicate).
-//   2. Clones render a MANGLED flat bind pose (not even a clean T-pose) —
-//      duplicate_skinned_with_new_skin loses/garbles joint local transforms.
-//   3. memory_stats meshes 2 -> 4 across two duplicates (fresh mesh entry
-//      per clone; the axis-4 offender re-slices + re-uploads geometry).
-// Regenerate this golden after axis 4; the scene then locks the fixed
-// behavior (three walking figures).
+// with the walk clip frozen mid-stride. Locks the axis-4 behavior:
+//   1. Duplicating retargets the clip — tracks targeting nodes inside the
+//      duplicated subtree are extended onto the cloned bones — so ALL THREE
+//      figures pose mid-stride at the frozen playhead (identical stances,
+//      spread on x).
+//   2. Clones bind at the source's exact rest pose (same IBMs via the shared
+//      skin data; cloned bones carry the authored locals).
+//   3. Geometry uploads ONCE: memory_stats `meshes` grows per duplicate
+//      (instance records) but `mesh_resources` / `mesh_geometry_bytes` stay
+//      FLAT — clones refcount the source's resource; per-instance GPU data is
+//      the skin joint-matrix palette (+ morph weights for morphed rigs).
+// Golden: three identical mid-stride walkers side by side. (Pre-axis-4 the
+// clones rendered a frozen bind pose and each duplicate re-uploaded the full
+// geometry — meshes 2 -> 4 with resources growing in lockstep.)
 async () => {
   const d = async (o) => {
     const r = await window.wasmBindings.editor_dispatch_json(JSON.stringify(o));
@@ -48,8 +46,12 @@ async () => {
   const snap = await q({ query: 'snapshot' });
   const roots = (snap.scene_tree || []).filter(n => n.name === 'Z_UP').map(n => n.id);
   const pos = [[-1.4, 0, 0], [0, 0, 0], [1.4, 0, 0]];
+  // Spread on x while PRESERVING each root's authored rotation/scale (Z_UP
+  // carries the Z-up -> Y-up rotation; clobbering it lays the figures flat).
+  const trs = await q({ query: 'node_transforms', nodes: roots });
   for (let i = 0; i < roots.length; i++) {
-    await d({ cmd: 'set_transform', id: roots[i], transform: { translation: pos[i], rotation: [0, 0, 0, 1], scale: [1, 1, 1] } });
+    const t = (trs.entries || {})[roots[i]] || { rotation: [0, 0, 0, 1], scale: [1, 1, 1] };
+    await d({ cmd: 'set_transform', id: roots[i], transform: { translation: pos[i], rotation: t.rotation, scale: t.scale } });
   }
   await d({ cmd: 'set_current_clip', id: clip });
   await d({ cmd: 'set_frame_time', seconds: 0.9 });
@@ -57,5 +59,5 @@ async () => {
   await d({ cmd: 'set_camera_orbit', yaw: 0.1, pitch: 0.2, radius: 5.5, look_at: [0, 0.9, 0] });
   await d({ cmd: 'set_view_options', grid: false, gizmos: false, light_gizmos: false, skeleton_viz: false });
   await q({ query: 'wait_render_settled' });
-  return 'prefab-skinned-morph authored (known-broken baseline pre-axis-4)';
+  return 'prefab-skinned-morph authored (axis-4: retargeted clip + shared geometry)';
 }

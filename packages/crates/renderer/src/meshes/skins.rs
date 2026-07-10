@@ -36,6 +36,20 @@ pub struct Skins {
     /// joint's matrix as bare IBM forever (mesh renders collapsed/shredded;
     /// the editor's mid-session skinned imports hit exactly this).
     pending_full_refresh: Vec<SkinKey>,
+    /// Weight-stream SHARING for per-instance skins (prefab clones): an
+    /// instance skin inserted via [`Self::insert_instance`] reads its
+    /// per-vertex joint/weight stream from another skin's slot instead of
+    /// uploading a copy — the stream is geometry-shaped and identical across
+    /// clones; only the joint-matrix palette is per-instance. Maps
+    /// `instance skin → the skin whose weights slot it reads` (always a
+    /// non-alias "owner"; chains are collapsed at insert).
+    joint_weights_alias: SecondaryMap<SkinKey, SkinKey>,
+    /// Owner-side alias count. When an owner is removed while aliases are
+    /// still live, its weights slot is PROMOTED to one surviving alias
+    /// (see [`Self::remove`]) so the slot's key always names a live skin —
+    /// a dead key's slot in the DenseSlotMap could be recycled, which would
+    /// collide inside the `SecondaryMap`-keyed weights buffer.
+    joint_weights_alias_refs: SecondaryMap<SkinKey, usize>,
     pub(crate) matrices_gpu_buffer: web_sys::GpuBuffer,
     pub(crate) joint_index_weights_gpu_buffer: web_sys::GpuBuffer,
     matrices_uploader: crate::buffer::mapped_uploader::MappedUploader,
@@ -85,6 +99,8 @@ impl Skins {
             matrices_gpu_dirty: true,
             joint_index_weights_gpu_dirty: true,
             pending_full_refresh: Vec::new(),
+            joint_weights_alias: SecondaryMap::new(),
+            joint_weights_alias_refs: SecondaryMap::new(),
             matrices_gpu_buffer,
             joint_index_weights_gpu_buffer,
             matrices_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Skin Matrices"),
@@ -113,6 +129,84 @@ impl Skins {
         inverse_bind_matrices: &[Mat4],
         set_len: usize,
         joint_index_weights: &[u8],
+    ) -> Result<SkinKey> {
+        let skin_key = self.insert_skeleton(skeleton_joint_transforms, inverse_bind_matrices)?;
+
+        if let Err(e) = self
+            .joint_index_weights
+            .update(skin_key, joint_index_weights)
+            .map_err(|e| AwsmSkinError::BufferCapacityOverflow(format!("joint index weights: {e}")))
+        {
+            // Roll back partial state so a failed allocation doesn't leave an orphan skin.
+            self.skin_matrices.remove(skin_key);
+            self.skeleton_transforms.remove(skin_key);
+            return Err(e);
+        }
+
+        self.sets_len.insert(skin_key, set_len);
+        self.pending_full_refresh.push(skin_key);
+
+        self.matrices_gpu_dirty = true;
+        self.joint_index_weights_gpu_dirty = true;
+        Ok(skin_key)
+    }
+
+    /// Register a PER-INSTANCE skin over `instance_joints` (a cloned skeleton),
+    /// SHARING `source_skin`'s per-vertex joint/weight stream instead of
+    /// duplicating it — the stream is geometry-shaped and identical across
+    /// prefab clones, so only the joint-matrix palette (uploaded here, refreshed
+    /// per frame from the instance joints) is per-instance GPU data. The
+    /// instance binds at the same rest pose as the source (same IBMs, in the
+    /// source's joint-array order — `instance_joints` must pair 1:1 with it).
+    pub fn insert_instance(
+        &mut self,
+        source_skin: SkinKey,
+        instance_joints: Vec<TransformKey>,
+    ) -> Result<SkinKey> {
+        let ibms = self.read_inverse_bind_matrices(source_skin)?;
+        if ibms.len() != instance_joints.len() {
+            return Err(AwsmSkinError::SkinJointMatrixMismatch {
+                skin_key: source_skin,
+                matrix_len: ibms.len(),
+                joint_len: instance_joints.len(),
+            });
+        }
+        let set_len = self.sets_len(source_skin)?;
+        // Collapse alias chains so every alias points at a real slot owner.
+        let owner = self.weights_owner(source_skin);
+
+        let skin_key = self.insert_skeleton(instance_joints, &ibms)?;
+        self.joint_weights_alias.insert(skin_key, owner);
+        *self
+            .joint_weights_alias_refs
+            .entry(owner)
+            .unwrap()
+            .or_insert(0) += 1;
+
+        self.sets_len.insert(skin_key, set_len);
+        self.pending_full_refresh.push(skin_key);
+        self.matrices_gpu_dirty = true;
+        Ok(skin_key)
+    }
+
+    /// The skin whose `joint_index_weights` slot `skin_key` reads — itself
+    /// unless it's a weight-sharing instance (see [`Self::insert_instance`]).
+    fn weights_owner(&self, skin_key: SkinKey) -> SkinKey {
+        self.joint_weights_alias
+            .get(skin_key)
+            .copied()
+            .unwrap_or(skin_key)
+    }
+
+    /// Shared skeleton half of [`Self::insert`] / [`Self::insert_instance`]:
+    /// registers the joint list + IBMs and uploads the initial joint-matrix
+    /// palette (bare IBMs; the one-shot `pending_full_refresh` in
+    /// `update_transforms` folds in the joint worlds). Does NOT touch the
+    /// weights stream, `sets_len`, or the refresh queue.
+    fn insert_skeleton(
+        &mut self,
+        skeleton_joint_transforms: Vec<TransformKey>,
+        inverse_bind_matrices: &[Mat4],
     ) -> Result<SkinKey> {
         let len = skeleton_joint_transforms.len();
         let mut initial_fill = Vec::with_capacity(len * 16 * 4);
@@ -154,26 +248,14 @@ impl Skins {
             .skin_matrices
             .update(skin_key, &initial_fill)
             .map_err(|e| AwsmSkinError::BufferCapacityOverflow(format!("skin matrices: {e}")))
-            .and_then(|_| {
-                self.joint_index_weights
-                    .update(skin_key, joint_index_weights)
-                    .map_err(|e| {
-                        AwsmSkinError::BufferCapacityOverflow(format!("joint index weights: {e}"))
-                    })
-            })
         {
             // Roll back partial state so a failed allocation doesn't leave an orphan skin.
             self.skin_matrices.remove(skin_key);
-            self.joint_index_weights.remove(skin_key);
             self.skeleton_transforms.remove(skin_key);
             return Err(e);
         }
 
-        self.sets_len.insert(skin_key, set_len);
-        self.pending_full_refresh.push(skin_key);
-
         self.matrices_gpu_dirty = true;
-        self.joint_index_weights_gpu_dirty = true;
         Ok(skin_key)
     }
 
@@ -184,7 +266,7 @@ impl Skins {
     /// which packs it, and shared_wgsl/vertex/skin.wgsl, which consumes it).
     pub fn read_joint_index_weights(&self, skin_key: SkinKey) -> Result<Vec<u8>> {
         self.joint_index_weights
-            .get(skin_key)
+            .get(self.weights_owner(skin_key))
             .map(|s| s.to_vec())
             .ok_or(AwsmSkinError::SkinNotFound(skin_key))
     }
@@ -247,13 +329,18 @@ impl Skins {
     /// In-place edit of the packed joint/weight stream (same layout as
     /// [`Self::read_joint_index_weights`]). Marks the GPU copy dirty — the next
     /// `write_gpu` uploads it, so live skinned meshes re-deform immediately.
+    ///
+    /// NOTE: an instance skin ([`Self::insert_instance`]) SHARES its weights
+    /// slot with its source — editing through the instance edits every sharer
+    /// (the stream is geometry data; per-instance weight edits aren't a thing).
     pub fn update_joint_index_weights_with(
         &mut self,
         skin_key: SkinKey,
         f: impl FnOnce(&mut [u8]),
     ) {
+        let owner = self.weights_owner(skin_key);
         self.joint_index_weights
-            .update_with_unchecked(skin_key, |_, bytes| f(bytes));
+            .update_with_unchecked(owner, |_, bytes| f(bytes));
         self.joint_index_weights_gpu_dirty = true;
     }
 
@@ -271,10 +358,12 @@ impl Skins {
             .ok_or(AwsmSkinError::SkinNotFound(skin_key))
     }
 
-    /// Returns the GPU buffer offset for joint index/weight data.
+    /// Returns the GPU buffer offset for joint index/weight data. For an
+    /// instance skin this resolves to the SHARED slot it reads (see
+    /// [`Self::insert_instance`]).
     pub fn joint_index_weights_offset(&self, skin_key: SkinKey) -> Result<usize> {
         self.joint_index_weights
-            .offset(skin_key)
+            .offset(self.weights_owner(skin_key))
             .ok_or(AwsmSkinError::SkinNotFound(skin_key))
     }
 
@@ -494,7 +583,47 @@ impl Skins {
     pub fn remove(&mut self, key: SkinKey, transform: Option<TransformKey>) {
         self.skeleton_transforms.remove(key);
         self.skin_matrices.remove(key);
-        self.joint_index_weights.remove(key);
+        self.sets_len.remove(key);
+        self.pending_full_refresh.retain(|k| *k != key);
+
+        if let Some(owner) = self.joint_weights_alias.remove(key) {
+            // Weight-sharing instance: drop the alias ref; the shared slot
+            // belongs to (and is freed with) its owner.
+            if let Some(refs) = self.joint_weights_alias_refs.get_mut(owner) {
+                *refs = refs.saturating_sub(1);
+                if *refs == 0 {
+                    self.joint_weights_alias_refs.remove(owner);
+                }
+            }
+        } else if self.joint_weights_alias_refs.get(key).copied().unwrap_or(0) > 0 {
+            // Weights OWNER removed while instances still read its slot:
+            // PROMOTE the slot to a surviving instance so it stays keyed by a
+            // live skin (this `key`'s DenseSlotMap slot may be recycled, which
+            // would collide inside the SecondaryMap-keyed weights buffer).
+            // Rare (delete-the-original-keep-the-clones), so the linear alias
+            // walk is fine.
+            let heir = self
+                .joint_weights_alias
+                .iter()
+                .find(|(_, o)| **o == key)
+                .map(|(k, _)| k)
+                .expect("alias refs > 0 but no alias found");
+            self.joint_index_weights.rekey(key, heir);
+            self.joint_weights_alias.remove(heir);
+            let refs = self.joint_weights_alias_refs.remove(key).unwrap_or(1) - 1;
+            // Re-point the remaining aliases at the heir.
+            for (_, owner) in self.joint_weights_alias.iter_mut() {
+                if *owner == key {
+                    *owner = heir;
+                }
+            }
+            if refs > 0 {
+                self.joint_weights_alias_refs.insert(heir, refs);
+            }
+        } else {
+            self.joint_index_weights.remove(key);
+        }
+
         if let Some(transform) = transform {
             self.inverse_bind_matrices.remove(transform);
         }

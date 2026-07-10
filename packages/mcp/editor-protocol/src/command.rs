@@ -298,12 +298,13 @@ pub enum EditorCommand {
     /// Set a node's prefab-root flag. Inverse: restore prior value.
     SetPrefab { id: NodeId, prefab: bool },
 
-    /// Duplicate a node (deep clone, fresh ids) as a following sibling. Inverse:
-    /// delete the clone.
     /// Deep-clone a node (fresh ids) as a following sibling. `new_id` (optional,
     /// caller-minted) forces the clone's **root** id so the MCP `duplicate_node`
     /// can echo it back (§6); `None` mints one. Descendants always get fresh ids.
-    /// Inverse: `Delete` of the new root.
+    /// Clip tracks targeting nodes INSIDE the duplicated subtree are extended
+    /// with retargeted duplicates driving the cloned nodes, so the clip
+    /// animates the original AND the clone. Inverse: `Delete` of the new root
+    /// (wrapped in a `Batch` with `DeleteTrack`s when tracks were retargeted).
     Duplicate {
         id: NodeId,
         #[serde(default)]

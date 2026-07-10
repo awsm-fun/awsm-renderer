@@ -1123,10 +1123,57 @@ impl EditorController {
             },
             EditorCommand::Duplicate { id, new_id } => {
                 match mutate::duplicate_by_id(&self.scene, id, new_id) {
-                    Some(new_id) => {
+                    Some((new_id, id_map)) => {
                         self.scene.bump_revision();
                         self.selected.set(vec![new_id]);
-                        Ok(Some(EditorCommand::Delete { id: new_id }))
+                        // RETARGET animation onto the clone: any clip track that
+                        // targets a node inside the duplicated subtree gets a
+                        // duplicated track driving the cloned node — so playing
+                        // the clip animates the original AND the duplicate (a
+                        // duplicated walking character keeps walking). Model
+                        // choice (documented on `retarget_track_for_duplicate`):
+                        // EXTEND the same clip rather than mint a clip per clone,
+                        // so the one authored clip drives every instance. The
+                        // inverse batches `DeleteTrack`s (descending indices)
+                        // before the node `Delete`, keeping undo coherent.
+                        let mut inverse: Vec<EditorCommand> = Vec::new();
+                        for clip in self.custom_animations.lock_ref().iter() {
+                            let clones: Vec<_> = clip
+                                .tracks
+                                .lock_ref()
+                                .iter()
+                                .filter_map(|t| {
+                                    crate::controller::animation::retarget_track_for_duplicate(
+                                        t, &id_map,
+                                    )
+                                })
+                                .collect();
+                            if clones.is_empty() {
+                                continue;
+                            }
+                            let mut tracks = clip.tracks.lock_mut();
+                            for track in clones {
+                                inverse.push(EditorCommand::DeleteTrack {
+                                    clip: clip.id,
+                                    track: tracks.len(),
+                                });
+                                tracks.push_cloned(track);
+                            }
+                        }
+                        if inverse.is_empty() {
+                            return Ok(Some(EditorCommand::Delete { id: new_id }));
+                        }
+                        // `Duplicate` isn't in `affects_animation` (the common
+                        // case adds no tracks) — bump the relower signal here,
+                        // where tracks WERE added, so the clip lowers onto the
+                        // clone as soon as it materializes.
+                        self.anim_revision.replace_with(|v| v.wrapping_add(1));
+                        // Descending track indices so each `DeleteTrack` in the
+                        // batch still points at the right slot after the ones
+                        // behind it are removed.
+                        inverse.reverse();
+                        inverse.push(EditorCommand::Delete { id: new_id });
+                        Ok(Some(EditorCommand::Batch(inverse)))
                     }
                     None => Err(crate::error::EditorError::msg(
                     "target id not found — command not applied (check ids against get_snapshot)",
@@ -6024,6 +6071,8 @@ impl EditorController {
                 // Renderer-side object counts (under the renderer guard)…
                 let (
                     meshes,
+                    mesh_resources,
+                    mesh_geometry_bytes,
                     transforms,
                     materials,
                     lines,
@@ -6037,6 +6086,8 @@ impl EditorController {
                 ) = crate::engine::context::with_renderer_mut(|r| {
                     (
                         r.meshes.len(),
+                        r.meshes.resource_count(),
+                        r.meshes.geometry_pool_used_bytes(),
                         r.transforms.len(),
                         r.materials.len(),
                         r.line_count(),
@@ -6061,6 +6112,15 @@ impl EditorController {
                     .await;
                 let mut entries = std::collections::BTreeMap::new();
                 entries.insert("meshes".to_string(), json!(meshes));
+                // Shared-geometry census (axis 4): `meshes` counts INSTANCE
+                // records; `mesh_resources` counts deduped geometry uploads and
+                // `mesh_geometry_bytes` the pool bytes backing them. Prefab
+                // duplicates grow `meshes` but leave these two flat.
+                entries.insert("mesh_resources".to_string(), json!(mesh_resources));
+                entries.insert(
+                    "mesh_geometry_bytes".to_string(),
+                    json!(mesh_geometry_bytes),
+                );
                 entries.insert("transforms".to_string(), json!(transforms));
                 entries.insert("materials".to_string(), json!(materials));
                 entries.insert("lines".to_string(), json!(lines));

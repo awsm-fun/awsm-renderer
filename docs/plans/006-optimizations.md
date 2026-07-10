@@ -221,6 +221,29 @@ divergence lives in transforms, uniforms, and animation state — not buffers.
   assert GPU buffer count/bytes grow by per-instance data only (census), animations
   drive each clone independently.
 
+#### Axis 4 RESULT (2026-07-10)
+All three defects fixed; prefab-skinned-morph golden REGENERATED (three
+upright identical mid-stride walkers; was mangled frozen bind poses):
+- **Geometry sharing**: skinned duplicates refcount the source's
+  MeshResource — per-mesh `instance_skin_key`/`instance_geometry_morph_key`
+  overrides beat the resource keys everywhere the effective key resolves.
+  Per-instance GPU data = joint-matrix palette (+ own morph WEIGHTS slot;
+  target values shared). Vertex joint/weight streams alias with refcounts;
+  owner-death promotes the slot via DynamicStorageBuffer::rekey.
+- **Clip retargeting**: editor Duplicate appends retargeted duplicates of
+  every track that targets nodes inside the duplicated subtree, so the one
+  authored clip drives all instances; undo = Batch(DeleteTracks + Delete).
+- **Bind pose**: editor duplicates materialize via a donor-node path over
+  the shared resource with a fresh skin on the cloned bones (falls back to
+  full upload when no donor). Scene-loader PrefabInstance shares the same
+  primitives.
+- **Census** (new metrics `mesh_resources` / `mesh_geometry_bytes` in
+  memory_stats): 3 walkers = meshes 6, resources 4, geometry 2.24 MB FLAT
+  across duplicates (pre-fix each duplicate re-uploaded).
+- Residuals documented in code: morph-only skinless nodes still full-upload;
+  per-instance skin-weight edits mutate the shared stream; loader
+  PrefabInstance teardown leak (pre-existing).
+
 ### Axis 5 — Instancing as a first-class authoring feature
 GPU instancing exists (`renderer/src/instances.rs`, 64-byte world-matrix stride) but is
 only reachable through the particle emitter.

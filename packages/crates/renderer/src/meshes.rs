@@ -72,8 +72,9 @@ impl AwsmRenderer {
 
     /// Duplicate a skinned mesh with an INDEPENDENT per-instance skin (prefab
     /// instancing). Skinned counterpart of [`Self::duplicate_mesh_with_transform`]
-    /// — see [`Meshes::duplicate_skinned_with_new_skin`] for why a skinned
-    /// duplicate needs its own resource + skin rather than a shared one.
+    /// — the clone SHARES the source's geometry resource (nothing re-uploads);
+    /// see [`Meshes::duplicate_skinned_with_new_skin`] for the per-instance
+    /// skin/morph override model.
     pub fn duplicate_skinned_mesh_with_skin(
         &mut self,
         mesh_key: MeshKey,
@@ -1492,9 +1493,13 @@ impl Meshes {
             visibility_geometry_data_offset,
             custom_attribute_index_offset,
             custom_attribute_data_offset,
-            geometry_morph_key,
+            // Per-instance overrides (skinned/morphed prefab clones sharing the
+            // resource) win over the shared resource's keys — the meta slot is
+            // per-mesh, so each clone's shader reads its OWN skin palette /
+            // morph weights over the shared geometry.
+            mesh.instance_geometry_morph_key.or(geometry_morph_key),
             material_morph_key,
-            skin_key,
+            mesh.instance_skin_key.or(skin_key),
             materials,
             transforms,
             &self.morphs,
@@ -1517,6 +1522,22 @@ impl Meshes {
         transforms: &Transforms,
     ) -> Result<MeshKey> {
         let mesh = self.get(mesh_key)?.clone();
+        // A source that is itself a per-instance clone carries OWNED instance
+        // keys (skin / morph weights) — the duplicate must mint its OWN
+        // (over the same joints / targets), never alias them: both meshes
+        // free their instance keys on removal, so sharing would double-free
+        // and couple their animation state.
+        let instance_skin_key = match mesh.instance_skin_key {
+            Some(sk) => {
+                let joints = self.skins.read_joint_transforms(sk)?;
+                Some(self.skins.insert_instance(sk, joints)?)
+            }
+            None => None,
+        };
+        let instance_geometry_morph_key = match mesh.instance_geometry_morph_key {
+            Some(mk) => Some(self.morphs.geometry.insert_instance(mk)?),
+            None => None,
+        };
         let resource_key = self.resource_key(mesh_key)?;
         let resource_aabb = {
             let resource = self
@@ -1546,6 +1567,8 @@ impl Meshes {
         let mut new_mesh = mesh.clone();
         new_mesh.transform_key = new_transform_key;
         new_mesh.world_aabb = world_aabb;
+        new_mesh.instance_skin_key = instance_skin_key;
+        new_mesh.instance_geometry_morph_key = instance_geometry_morph_key;
 
         self.insert_instance(new_mesh, resource_key, materials, transforms)
     }
@@ -1554,12 +1577,14 @@ impl Meshes {
     /// per-instance skin. Unlike [`Self::duplicate_with_transform`] — which
     /// shares the source `MeshResource`, and thus its single `skin_key`, across
     /// every duplicate, binding them all to the ONE template skeleton (they
-    /// render collapsed on top of each other) — this copies the source geometry
-    /// into a FRESH resource whose `skin_key` is `new_skin_key`, so each prefab
-    /// instance deforms through its own cloned skeleton. Geometry bytes are
-    /// re-uploaded (a rig-sized mesh a handful of times is cheap); the fresh
-    /// resource + buffer-info are owned solely by the new instance so its
-    /// lifetime is independent of the template's.
+    /// render collapsed on top of each other) — this stores `new_skin_key` as a
+    /// PER-MESH override ([`Mesh::instance_skin_key`]) so each prefab instance
+    /// deforms through its own cloned skeleton while the geometry/buffer-info
+    /// stay the source's SHARED resource (refcounted; NOTHING re-uploads —
+    /// axis 4's "clone must never clone data"). Per-instance GPU data is the
+    /// skin's joint-matrix palette plus (when the source is morphed) a fresh
+    /// morph WEIGHTS slot — morph target values and the per-vertex
+    /// joint/weight stream are shared with the source.
     pub(crate) fn duplicate_skinned_with_new_skin(
         &mut self,
         mesh_key: MeshKey,
@@ -1568,107 +1593,43 @@ impl Meshes {
         materials: &Materials,
         transforms: &Transforms,
     ) -> Result<MeshKey> {
+        let mesh = self.get(mesh_key)?.clone();
         let source_resource_key = self.resource_key(mesh_key)?;
-        let (
-            buffer_info_key,
-            aabb,
-            geometry_morph_key,
-            material_morph_key,
-            vis_off,
-            idx_off,
-            data_off,
-        ) = {
-            let r = self
-                .resources
-                .get(source_resource_key)
-                .ok_or(AwsmMeshError::ResourceNotFound(source_resource_key))?;
-            (
-                r.buffer_info_key,
-                r.aabb.clone(),
-                r.geometry_morph_key,
-                r.material_morph_key,
-                r.visibility_geometry_data_offset,
-                r.custom_attribute_index_offset,
-                r.custom_attribute_data_offset,
-            )
-        };
-        // Slice the source's merged geometry pool run back into the
-        // [vis || attr_index || attr_data] sections `insert_resource` expects.
-        // `.get(key)` returns that key's own 0-based run; the resource's stored
-        // offsets are absolute into the pool arena, so section LENGTHS come from
-        // their differences (`insert_resource` packs them contiguously).
-        let (vis_bytes, index_bytes, data_bytes) = {
-            let pool = self
-                .mesh_geometry_pool_buffers
-                .get(source_resource_key)
-                .ok_or(AwsmMeshError::ResourceNotFound(source_resource_key))?;
-            match vis_off {
-                Some(vis_abs) => {
-                    // The section math is load-bearing on `insert_resource`'s
-                    // contiguous [vis || attr_index || attr_data] packing with
-                    // the data section running to end-of-run — pin the offset
-                    // monotonicity that packing implies.
-                    debug_assert!(
-                        vis_abs <= idx_off && idx_off <= data_off,
-                        "geometry pool offsets not monotonic: vis {vis_abs} idx {idx_off} data {data_off}"
-                    );
-                    let vis_len = idx_off - vis_abs;
-                    let idx_len = data_off - idx_off;
-                    debug_assert!(
-                        vis_len + idx_len <= pool.len(),
-                        "geometry pool run shorter than its sections: {} + {} > {}",
-                        vis_len,
-                        idx_len,
-                        pool.len()
-                    );
-                    (
-                        Some(pool[..vis_len].to_vec()),
-                        pool[vis_len..vis_len + idx_len].to_vec(),
-                        pool[vis_len + idx_len..].to_vec(),
-                    )
-                }
-                None => {
-                    debug_assert!(
-                        idx_off <= data_off,
-                        "geometry pool offsets not monotonic: idx {idx_off} data {data_off}"
-                    );
-                    let idx_len = data_off - idx_off;
-                    debug_assert!(idx_len <= pool.len());
-                    (None, pool[..idx_len].to_vec(), pool[idx_len..].to_vec())
-                }
+        // Per-instance morph WEIGHTS over the source's (effective) morph
+        // targets, so a clone's morph animation is independent — minted before
+        // the refcount bump so an allocation failure leaves nothing to unwind.
+        let instance_geometry_morph_key = {
+            let source_morph = mesh.instance_geometry_morph_key.or_else(|| {
+                self.resources
+                    .get(source_resource_key)
+                    .and_then(|r| r.geometry_morph_key)
+            });
+            match source_morph {
+                Some(mk) => Some(self.morphs.geometry.insert_instance(mk)?),
+                None => None,
             }
         };
-        let transparency_bytes = self
-            .transparency_geometry_data_buffers
-            .get(source_resource_key)
-            .map(|s| s.to_vec());
-        // Fresh buffer-info clone so the new resource's layout lifetime is fully
-        // independent (freeing one instance can't drop layout another still reads).
-        let new_buffer_info_key = {
-            let bi = self.buffer_infos.get(buffer_info_key)?.clone();
-            self.buffer_infos.insert(bi)
+
+        let aabb = {
+            let resource = self
+                .resources
+                .get_mut(source_resource_key)
+                .ok_or(AwsmMeshError::ResourceNotFound(source_resource_key))?;
+            resource.refcount += 1;
+            resource.aabb.clone()
         };
-        let new_resource_key = self.insert_resource(
-            new_buffer_info_key,
-            vis_bytes.as_deref(),
-            transparency_bytes.as_deref(),
-            &data_bytes,
-            &index_bytes,
-            aabb.clone(),
-            geometry_morph_key,
-            material_morph_key,
-            Some(new_skin_key),
-        )?;
 
         let world_aabb = match (aabb.as_ref(), transforms.get_world(new_transform_key).ok()) {
             (Some(a), Some(w)) => Some(a.transformed(w)),
             (Some(a), None) => Some(a.clone()),
             (None, _) => None,
         };
-        let mut new_mesh = self.get(mesh_key)?.clone();
+        let mut new_mesh = mesh;
         new_mesh.transform_key = new_transform_key;
         new_mesh.world_aabb = world_aabb;
-        self.insert_instance(new_mesh, new_resource_key, materials, transforms)
+        new_mesh.instance_skin_key = Some(new_skin_key);
+        new_mesh.instance_geometry_morph_key = instance_geometry_morph_key;
+        self.insert_instance(new_mesh, source_resource_key, materials, transforms)
     }
 
     /// Duplicates all meshes under a transform into a new transform key.
@@ -1993,14 +1954,16 @@ impl Meshes {
             for bucket in skin_consumers_scratch.values_mut() {
                 bucket.clear();
             }
-            for (mesh_key, _mesh) in list.iter() {
+            for (mesh_key, mesh) in list.iter() {
                 let Some(resource_key) = mesh_to_resource.get(mesh_key).copied() else {
                     continue;
                 };
                 let Some(resource) = resources.get(resource_key) else {
                     continue;
                 };
-                if let Some(skin_key) = resource.skin_key {
+                // Per-instance skin override (prefab clones sharing the
+                // resource) wins — each clone is a consumer of ITS skin.
+                if let Some(skin_key) = mesh.instance_skin_key.or(resource.skin_key) {
                     skin_consumers_scratch
                         .entry(skin_key)
                         .or_default()
@@ -2200,9 +2163,10 @@ impl Meshes {
             visibility_geometry_data_offset,
             custom_attribute_index_offset,
             custom_attribute_data_offset,
-            geometry_morph_key,
+            // Same per-instance precedence as `wire_instance`.
+            mesh.instance_geometry_morph_key.or(geometry_morph_key),
             material_morph_key,
-            skin_key,
+            mesh.instance_skin_key.or(skin_key),
             materials,
             transforms,
             &self.morphs,
@@ -2223,10 +2187,8 @@ impl Meshes {
     /// duplicate (or a hidden original) loses its skinning. Callers use this to
     /// leave skinned meshes rendering in place.
     pub fn mesh_is_skinned(&self, mesh_key: MeshKey) -> bool {
-        self.resource_key(mesh_key)
-            .ok()
-            .and_then(|rk| self.resources.get(rk))
-            .map(|r| r.skin_key.is_some())
+        self.mesh_skin_key(mesh_key)
+            .map(|sk| sk.is_some())
             .unwrap_or(false)
     }
 
@@ -2271,12 +2233,16 @@ impl Meshes {
             .ok_or(AwsmMeshError::ResourceNotFound(resource_key))
     }
 
-    /// Convenience accessor for the optional `SkinKey` on a mesh resource.
-    /// Returns `None` if the mesh has no resource or no skin. Used by the
-    /// spatial-index auto-flagger to route skinned meshes through the
-    /// dynamic sidecar.
+    /// Convenience accessor for the EFFECTIVE `SkinKey` of a mesh — the
+    /// per-instance override (a skinned prefab clone sharing its source's
+    /// resource) when set, otherwise the shared resource's skin. Returns
+    /// `None` if the mesh has no resource. Used by the spatial-index
+    /// auto-flagger to route skinned meshes through the dynamic sidecar.
     pub fn mesh_skin_key(&self, mesh_key: MeshKey) -> Option<Option<SkinKey>> {
-        self.resource(mesh_key).ok().map(|r| r.skin_key)
+        let mesh = self.list.get(mesh_key)?;
+        self.resource(mesh_key)
+            .ok()
+            .map(|r| mesh.instance_skin_key.or(r.skin_key))
     }
 
     /// Joint `TransformKey`s of a mesh's skin (skin-array order), or `None` if
@@ -2287,32 +2253,35 @@ impl Meshes {
         self.skins.read_joint_transforms(skin_key).ok()
     }
 
-    /// Registers a fresh per-instance skin: same inverse-bind matrices,
-    /// per-vertex joint/weight stream and set-count as `template_skin_key`, but
-    /// bound to `instance_joints` (a cloned skeleton). Returns the new key for
-    /// [`Self::duplicate_skinned_with_new_skin`] to bind onto the instance mesh.
+    /// Registers a fresh per-instance skin: same inverse-bind matrices and
+    /// set-count as `template_skin_key`, SHARING its per-vertex joint/weight
+    /// stream (geometry-shaped, identical across clones — see
+    /// [`Skins::insert_instance`]), but bound to `instance_joints` (a cloned
+    /// skeleton). The only per-instance GPU data is the joint-matrix palette.
+    /// Returns the new key for [`Self::duplicate_skinned_with_new_skin`] to
+    /// bind onto the instance mesh.
     pub fn clone_skin_for_joints(
         &mut self,
         template_skin_key: SkinKey,
         instance_joints: Vec<TransformKey>,
     ) -> Result<SkinKey> {
-        let ibms = self.skins.read_inverse_bind_matrices(template_skin_key)?;
-        let weights = self.skins.read_joint_index_weights(template_skin_key)?;
-        let set_len = self.skins.sets_len(template_skin_key)?;
         Ok(self
             .skins
-            .insert(instance_joints, &ibms, set_len, &weights)?)
+            .insert_instance(template_skin_key, instance_joints)?)
     }
 
-    /// Convenience accessor for the optional `GeometryMorphKey` on a mesh
-    /// resource. Returns `None` if the mesh has no resource or no geometry
-    /// morph targets. Used by the editor's animation bridge to resolve a
-    /// morph-weight animation track (which names a node) to the renderer
-    /// morph-weight set it drives.
+    /// Convenience accessor for the EFFECTIVE `GeometryMorphKey` of a mesh —
+    /// the per-instance override (a morphed prefab clone sharing its source's
+    /// resource but owning its weights) when set, otherwise the shared
+    /// resource's key. Returns `None` if the mesh has no resource or no
+    /// geometry morph targets. Used by the editor's animation bridge to
+    /// resolve a morph-weight animation track (which names a node) to the
+    /// renderer morph-weight set it drives.
     pub fn geometry_morph_key_for_mesh(&self, mesh_key: MeshKey) -> Option<GeometryMorphKey> {
+        let mesh = self.list.get(mesh_key)?;
         self.resource(mesh_key)
             .ok()
-            .and_then(|r| r.geometry_morph_key)
+            .and_then(|r| mesh.instance_geometry_morph_key.or(r.geometry_morph_key))
     }
 
     /// Material-morph counterpart of [`Self::geometry_morph_key_for_mesh`] —
@@ -2337,7 +2306,7 @@ impl Meshes {
             let same_skin = self
                 .resource(mesh_key)
                 .ok()
-                .and_then(|r| r.skin_key)
+                .and_then(|r| mesh.instance_skin_key.or(r.skin_key))
                 .map(|k| k == skin_key)
                 .unwrap_or(false);
             if !same_skin {
@@ -2361,11 +2330,11 @@ impl Meshes {
         coverage: &crate::coverage::MeshCoverage,
     ) -> bool {
         let mut had_any_consumer = false;
-        for (mesh_key, _mesh) in self.iter() {
+        for (mesh_key, mesh) in self.iter() {
             let same_skin = self
                 .resource(mesh_key)
                 .ok()
-                .and_then(|r| r.skin_key)
+                .and_then(|r| mesh.instance_skin_key.or(r.skin_key))
                 .map(|k| k == skin_key)
                 .unwrap_or(false);
             if !same_skin {
@@ -2495,6 +2464,21 @@ impl Meshes {
         self.list.len()
     }
 
+    /// Number of SHARED geometry resources (deduped uploads). The prefab
+    /// geometry-sharing census metric (axis 4): duplicating a mesh — skinned
+    /// or static — grows [`Self::len`] (one instance record each) but NOT
+    /// this count, since clones refcount the source's resource.
+    pub fn resource_count(&self) -> usize {
+        self.resources.len()
+    }
+
+    /// Total bytes of live allocations in the merged geometry pool
+    /// ([vis || attr_index || attr_data] per resource). Companion census
+    /// metric to [`Self::resource_count`] — flat across prefab duplicates.
+    pub fn geometry_pool_used_bytes(&self) -> usize {
+        self.mesh_geometry_pool_buffers.used_size()
+    }
+
     /// True when there are no `Mesh` entries.
     pub fn is_empty(&self) -> bool {
         self.list.is_empty()
@@ -2575,6 +2559,17 @@ impl Meshes {
             // MeshKey can't inherit a stale "effective_material was X"
             // hit (which would suppress the first frame's patch).
             self.last_effective_material.remove(mesh_key);
+
+            // Per-instance keys are OWNED by this mesh (a skinned/morphed
+            // prefab clone sharing the resource) — free them regardless of
+            // the shared resource's refcount.
+            if let Some(skin_key) = mesh.instance_skin_key {
+                self.skins.remove(skin_key, None);
+                self.skin_zero_coverage_grace.remove(skin_key);
+            }
+            if let Some(morph_key) = mesh.instance_geometry_morph_key {
+                self.morphs.geometry.remove(morph_key);
+            }
 
             if let Some(meshes) = self.transform_to_meshes.get_mut(mesh.transform_key) {
                 meshes.retain(|&key| key != mesh_key)

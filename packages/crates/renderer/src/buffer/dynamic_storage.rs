@@ -177,6 +177,22 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
         Ok(off)
     }
 
+    /// Transfers `old`'s allocation to `new` without touching the bytes.
+    /// Used by the instance-sharing stores (skins / morphs) to PROMOTE a
+    /// shared slot to a surviving instance when its original owner is
+    /// removed — the data stays in place, only the key that addresses it
+    /// changes, so no GPU write happens. No-op when `old` has no slot;
+    /// `new` must not already have one (debug-pinned).
+    pub fn rekey(&mut self, old: K, new: K) {
+        if let Some(slot) = self.slot_indices.remove(old) {
+            debug_assert!(
+                self.slot_indices.get(new).is_none(),
+                "rekey target {new:?} already has an allocation"
+            );
+            self.slot_indices.insert(new, slot);
+        }
+    }
+
     /// Removes a key and frees its allocation.
     pub fn remove(&mut self, key: K) {
         if let Some((off, size)) = self.slot_indices.remove(key) {

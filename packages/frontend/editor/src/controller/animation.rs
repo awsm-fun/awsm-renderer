@@ -382,6 +382,57 @@ pub fn find_clip(
     clips.lock_ref().iter().find(|c| c.id == id).map(Arc::clone)
 }
 
+/// The same target retargeted through an `original → clone` node map, or
+/// `None` when the target doesn't bind to a mapped node (a node outside the
+/// duplicated subtree, or a `Uniform` target — those bind to a material, not a
+/// node). The retarget half of node duplication (see
+/// [`retarget_track_for_duplicate`]).
+pub fn retarget_target(
+    target: &TrackTarget,
+    id_map: &std::collections::HashMap<NodeId, NodeId>,
+) -> Option<TrackTarget> {
+    let mut retargeted = target.clone();
+    let node = match &mut retargeted {
+        TrackTarget::Transform { node, .. }
+        | TrackTarget::Morph { node, .. }
+        | TrackTarget::BuiltinParam { node, .. }
+        | TrackTarget::Light { node, .. }
+        | TrackTarget::Camera { node, .. }
+        | TrackTarget::TextureTransform { node, .. } => node,
+        TrackTarget::Uniform { .. } => return None,
+    };
+    let clone = id_map.get(node)?;
+    *node = *clone;
+    Some(retargeted)
+}
+
+/// Duplicate `track` retargeted onto the cloned node (through `id_map`), or
+/// `None` when the track doesn't target a duplicated node. Everything but the
+/// target — sampler, mute/solo, the shared time axis + keyframes — is copied
+/// verbatim, so the clone plays the identical curve on the cloned subtree.
+///
+/// This is how node duplication keeps animation working: the pragmatic model
+/// is to EXTEND each affected clip with retargeted tracks (rather than mint a
+/// clip per clone), so the ONE authored clip drives the original and every
+/// duplicate together — matching what "duplicate a walking character" should
+/// look like. The Duplicate command builds its undo as `DeleteTrack`s over the
+/// appended tracks + the node `Delete`, so undo removes both halves.
+pub fn retarget_track_for_duplicate(
+    track: &Track,
+    id_map: &std::collections::HashMap<NodeId, NodeId>,
+) -> Option<Arc<Track>> {
+    let target = retarget_target(&track.target, id_map)?;
+    Some(Arc::new(Track {
+        target,
+        sampler: Mutable::new(track.sampler.get()),
+        mute: Mutable::new(track.mute.get()),
+        solo: Mutable::new(track.solo.get()),
+        expanded: Mutable::new(false),
+        times: Mutable::new(track.times.get_cloned()),
+        keys: Mutable::new(track.keys.get_cloned()),
+    }))
+}
+
 // ───────────────────────────── serde projection ─────────────────────────────
 // The stored projection types (`StoredAnimation`, `StoredTrack`, the mixer docs)
 // live in `awsm_renderer_editor_protocol::animation` (re-exported above) so the live model +
@@ -529,6 +580,112 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod retarget_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn keyed_track(target: TrackTarget) -> Arc<Track> {
+        let track = Track::new(target);
+        track.sampler.set(SamplerKind::Step);
+        track.mute.set(true);
+        track.times.set(vec![0.0, 0.5, 1.0]);
+        track.keys.set(vec![
+            new_keyframe(TrackValue::Vec3([0.0; 3]), Interp::Step),
+            new_keyframe(TrackValue::Vec3([1.0, 2.0, 3.0]), Interp::Step),
+            new_keyframe(TrackValue::Vec3([4.0, 5.0, 6.0]), Interp::Step),
+        ]);
+        track
+    }
+
+    // A track targeting a duplicated node retargets onto the clone with the
+    // curve (times/keys) and playback flags copied verbatim.
+    #[test]
+    fn duplicated_node_track_retargets_with_identical_curve() {
+        let (orig, clone) = (NodeId::new(), NodeId::new());
+        let map = HashMap::from([(orig, clone)]);
+        let track = keyed_track(TrackTarget::Transform {
+            node: orig,
+            prop: TransformProp::Translation,
+        });
+        let out = retarget_track_for_duplicate(&track, &map).expect("mapped node retargets");
+        assert_eq!(
+            out.target,
+            TrackTarget::Transform {
+                node: clone,
+                prop: TransformProp::Translation,
+            }
+        );
+        assert_eq!(out.times.get_cloned(), track.times.get_cloned());
+        assert_eq!(out.keys.get_cloned(), track.keys.get_cloned());
+        assert_eq!(out.sampler.get(), SamplerKind::Step);
+        assert!(out.mute.get(), "mute state carries over");
+    }
+
+    // Tracks whose target is outside the duplicated subtree — or doesn't bind
+    // a node at all (Uniform) — must NOT duplicate.
+    #[test]
+    fn unmapped_and_uniform_targets_do_not_duplicate() {
+        let map = HashMap::from([(NodeId::new(), NodeId::new())]);
+        let outside = keyed_track(TrackTarget::Transform {
+            node: NodeId::new(),
+            prop: TransformProp::Rotation,
+        });
+        assert!(retarget_track_for_duplicate(&outside, &map).is_none());
+        let uniform = keyed_track(TrackTarget::Uniform {
+            material: AssetId::new(),
+            name: "speed".to_string(),
+        });
+        assert!(retarget_track_for_duplicate(&uniform, &map).is_none());
+    }
+
+    // Every node-binding target kind retargets (the walk animating a
+    // duplicated character is Transform tracks on bones; Morph/Light/etc.
+    // follow the same rule).
+    #[test]
+    fn all_node_target_kinds_retarget() {
+        let (orig, clone) = (NodeId::new(), NodeId::new());
+        let map = HashMap::from([(orig, clone)]);
+        let targets = [
+            TrackTarget::Transform {
+                node: orig,
+                prop: TransformProp::Scale,
+            },
+            TrackTarget::Morph {
+                node: orig,
+                index: 2,
+            },
+            TrackTarget::BuiltinParam {
+                node: orig,
+                param: BuiltinParamKind::Roughness,
+            },
+            TrackTarget::Light {
+                node: orig,
+                param: LightParamKind::Intensity,
+            },
+            TrackTarget::Camera {
+                node: orig,
+                param: CameraParamKind::FovY,
+            },
+            TrackTarget::TextureTransform {
+                node: orig,
+                slot: TexSlot::BaseColor,
+                prop: TexTransformProp::Offset,
+            },
+        ];
+        for t in targets {
+            let out = retarget_target(&t, &map).expect("node target retargets");
+            assert_eq!(target_node(&out), Some(clone), "{t:?}");
+            // Only the node changed — the identity string modulo the node
+            // matches (same kind + same params).
+            assert_eq!(
+                target_key(&t).replace(&orig.to_string(), &clone.to_string()),
+                target_key(&out)
+            );
         }
     }
 }
