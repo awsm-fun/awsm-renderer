@@ -122,6 +122,16 @@ commit. Make that true everywhere:
 - Acceptance: cold bundle load time on `kitchen-sink` before/after; a trace showing
   overlapped compiles, not a staircase.
 
+#### Axis 2 BASELINE (2026-07-10, pre-work)
+- Cold `kitchen-sink` project load (dispatch → tree fully populated →
+  settled): **~306 ms** (3 runs: 305/306/307 — remarkably consistent; local
+  http-server on :9084).
+- FINDING for the consolidation work: `wait_render_settled` returns BEFORE
+  the async load populates the tree — the load path is not inside the
+  settle barrier, i.e. not yet ONE observable transaction end-to-end. The
+  §5b consolidation should close that seam (drivers must be able to await
+  load completion without polling node counts).
+
 ### Axis 3 — Compression (WebP and friends)
 Current state: `TextureExport::WebpLossless` IS already the default for bundle bakes
 (`editor-protocol/src/assets.rs:94` — every raster ships lossless WebP unless opted
