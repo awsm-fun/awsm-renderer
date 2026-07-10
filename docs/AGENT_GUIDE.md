@@ -28,7 +28,11 @@ stale or half-compiled frame.
 ```
 
 - **Always** `wait_render_settled` after a batch of mutations, before a
-  screenshot. It returns `{ settled: true, waited_ms }`.
+  screenshot. It returns `{ settled: true, waited_ms }`. Bloom / SSR / decal /
+  cluster pipelines compile **lazily on first use**, so the first settle after
+  enabling one of those takes longer. Loads (`import_model_from_url` /
+  `load_project_from_url` / `load_player_bundle`) are settle-visible: one settle
+  observes the fully-populated scene — no `get_snapshot` polling loops.
 - `screenshot_scene { width? }` returns a PNG of the viewport. `canvas_stats {
   region? }` returns mean/min/max luma — cheap way to confirm "something is
   rendering" or "the object is in frame" without eyeballing every frame.
@@ -89,13 +93,18 @@ aren't born black. To light deliberately:
   inner, outer }` (radians).
 - Per-light: `set_light_color { node, color }` (linear RGB 0..1),
   `set_light_intensity { node, value }`.
-- **Environment / IBL**: `set_environment { skybox?, ibl_prefiltered?,
-  ibl_irradiance? }`. Omit args for the built-in default sky + IBL; pass KTX URLs
-  for custom. IBL is what makes PBR materials read correctly — keep it on.
+- **Environment / IBL**: `set_environment { skybox?, specular?, irradiance? }` —
+  three independent slots (skybox background / specular IBL / irradiance IBL),
+  each `"builtin"`, a KTX asset id, or a `.ktx2` URL. **Partial update:** an
+  omitted slot KEEPS its current binding — pass `"builtin"` explicitly to reset
+  a slot (an empty `set_environment {}` changes nothing). IBL is what makes PBR
+  materials read correctly — keep it on. Read the slots back via `get_snapshot`
+  → `project.environment`.
 
 Rules of thumb: a single directional light at intensity ~1–4 + default IBL gives
 a readable scene. **"Scene looks dark"** → raise intensity, confirm a light
-exists (`get_snapshot`), or call `set_environment {}` to restore default IBL.
+exists (`get_snapshot`), or reset the environment with `set_environment
+{ skybox: "builtin", specular: "builtin", irradiance: "builtin" }`.
 
 ## 5. Batch for fewer round-trips
 
@@ -113,7 +122,7 @@ Prefer one batch over dozens of single calls when laying out a scene. Still
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Mesh is flat **magenta** | No variant selected (magenta = sentinel) | `add_material_variant { node, material }` then `select_material_variant { node, variant }` |
-| Mesh is **black** | No light/IBL, or unlit shader returns black | add/raise a light; `set_environment {}`; in WGSL add base color / `apply_lighting` |
+| Mesh is **black** | No light/IBL, or unlit shader returns black | add/raise a light; reset the env (`set_environment { skybox:"builtin", specular:"builtin", irradiance:"builtin" }` — an empty `{}` is a no-op); in WGSL add base color / `apply_lighting` |
 | Screenshot is **blank/empty** | Took it before the frame presented | `wait_render_settled` first; confirm object framed (`frame_node`, `canvas_stats`) |
 | `set_material_wgsl` returns an **error** | WGSL didn't compile | Read the error; it quotes the offending line. Re-read `get_material_contract` |
 | `get_material_diagnostics` `ok:false` | Same as above | Fix the WGSL; the `errors` array has details |

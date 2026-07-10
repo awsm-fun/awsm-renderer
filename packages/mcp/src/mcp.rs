@@ -2094,7 +2094,7 @@ impl EditorMcp {
     // ── scene / nodes ───────────────────────────────────────────────────────
 
     #[tool(
-        description = "Insert a primitive (plane/box/sphere/cylinder/cone/torus) under an optional parent."
+        description = "Insert a primitive (plane/box/sphere/cylinder/cone/torus) under an optional parent. Raw dispatch_command form: {\"cmd\":\"insert\",\"spec\":...} — UNIT-variant specs (\"empty\"/\"camera\"/\"instancer\"/…) are the bare string or {\"<tag>\":{}}; inlining fields into a unit variant errors with 'expected unit'."
     )]
     async fn insert_primitive(
         &self,
@@ -2614,7 +2614,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Round-trip self-test: bake the CURRENT project to an in-memory player bundle (scene.toml + assets/), reset to empty, then reload it through populate_awsm_scene (the runtime/player path). DESTRUCTIVE: the viewport ends up showing the reload and the scene tree is left empty (reload your project to keep editing). Workflow: screenshot_scene (authored) → load_player_bundle → wait_render_settled → screenshot_scene (runtime reload), and compare. Geometry/built-in-materials/lights load today; textures, custom-WGSL, glb-mesh materials, cameras + clips are follow-ons."
+        description = "Round-trip self-test: bake the CURRENT project to an in-memory player bundle (scene.toml + assets/), reset to empty, then reload it through populate_awsm_scene (the runtime/player path). DESTRUCTIVE: the viewport ends up showing the reload and the scene tree is left empty (reload your project to keep editing). Workflow: screenshot_scene (authored) → load_player_bundle → wait_render_settled → screenshot_scene (runtime reload), and compare — the load is SETTLE-VISIBLE (that single wait_render_settled observes the fully-reloaded scene; no polling). Geometry/built-in-materials/lights load today; textures, custom-WGSL, glb-mesh materials, cameras + clips are follow-ons."
     )]
     async fn load_player_bundle(&self) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::LoadPlayerBundle).await
@@ -2631,7 +2631,9 @@ impl EditorMcp {
         self.query(EditorQuery::VerifyRoundtripReport).await
     }
 
-    #[tool(description = "Load a project from a base URL (fetches <base>/project.toml).")]
+    #[tool(
+        description = "Load a project from a base URL (fetches <base>/project.toml). SETTLE-VISIBLE: one wait_render_settled after this call observes the fully-loaded scene — no get_snapshot polling loop needed."
+    )]
     async fn load_project_from_url(
         &self,
         Parameters(p): Parameters<BaseUrlParams>,
@@ -2643,7 +2645,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Import a glTF/glb model from a URL and return the import report (created root node ids/names, node/material/skin-joint/clip counts, source asset id). Fails with the load error when the fetch/parse fails — note the URL's server must send CORS headers (`Access-Control-Allow-Origin`): the editor is a browser app, and e.g. plain `python3 -m http.server` will fail."
+        description = "Import a glTF/glb model from a URL and return the import report (created root node ids/names, node/material/skin-joint/clip counts, source asset id). SETTLE-VISIBLE: one wait_render_settled after this call observes the fully-populated scene — no get_snapshot polling loop needed. Fails with the load error when the fetch/parse fails — note the URL's server must send CORS headers (`Access-Control-Allow-Origin`): the editor is a browser app, and e.g. plain `python3 -m http.server` will fail."
     )]
     async fn import_model_from_url(
         &self,
@@ -3166,7 +3168,9 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Register (compile to a renderer bucket) a custom material by id.")]
+    #[tool(
+        description = "Register (compile to a renderer bucket) a custom material by id. Returns ok IMMEDIATELY — that is only 'request accepted', not 'compiled': the debounced compile lands later, so poll get_material_diagnostics until {ok:true, registered:true} (that query is the actual compile gate) before trusting screenshots."
+    )]
     async fn register_material(
         &self,
         Parameters(p): Parameters<AssetArg>,
@@ -3435,7 +3439,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Replace a custom material's declared slot layout (uniforms / textures / buffers). Send the FULL lists. Each slot is { name, ty, val?, debug? }. Re-registers the material."
+        description = "Replace a custom material's declared slot layout (uniforms / textures / buffers). Send the FULL lists. Each slot is { name, ty, val?, debug? }. GOTCHA: `ty` must be a WGSL TYPE STRING (\"f32\", \"vec3<f32>\", \"vec4<f32>\", \"texture_2d<f32>\", \"array<vec4<f32>>\") — friendly names like \"color3\"/\"vec3\" are accepted silently but fall back to f32, and registration then fails later with confusing naga compose errors. Re-registers the material; check get_material_diagnostics after."
     )]
     async fn set_material_layout(
         &self,
@@ -3451,7 +3455,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras, ibl. `ibl` exposes sample_ibl(albedo, normal, surface_to_camera, roughness, metallic) (+ sample_ibl_diffuse/_specular) — the SAME environment ambient + reflection first-party PBR gets, so a custom material matches the scene IBL instead of hand-faking a sky gradient (fixes black custom materials in IBL-only scenes; pair with normals + view_dir fragment_inputs). The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + ibl). Unknown keys are dropped. Call material_helper_catalog for descriptions."
+        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras, ibl. `ibl` exposes sample_ibl(albedo, normal, surface_to_camera, roughness, metallic) (+ sample_ibl_diffuse/_specular) — the SAME environment ambient + reflection first-party PBR gets, so a custom material matches the scene IBL instead of hand-faking a sky gradient (fixes black custom materials in IBL-only scenes; pair with normals + view_dir fragment_inputs). The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + ibl). Unknown keys are dropped. Per-key descriptions: get_material_contract (or the awsm://docs/material-contract-opaque resource)."
     )]
     async fn set_material_includes(
         &self,
@@ -3720,7 +3724,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive), texture (billboard SPRITE asset id — a soft radial-alpha disc imported via import_texture_from_url gives soft-edged particles; pair with blend:true so the alpha fades the edges). Errors if the node isn't a particle emitter."
+        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive), texture (billboard SPRITE asset id — a soft radial-alpha disc imported via import_texture_from_url gives soft-edged particles; pair with blend:true so the alpha fades the edges). GOTCHAS: the config fields are FLAT top-level params — a nested {\"emitter\":{...}} object is SILENTLY IGNORED (unknown fields don't error); and the gravity force's vector field is named `acceleration` (not gravity/force). Verify with get_node_details after setting. Errors if the node isn't a particle emitter."
     )]
     async fn set_particle_emitter(
         &self,
@@ -4164,7 +4168,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Also SCREEN-SPACE REFLECTIONS via the ssr_* fields: ssr_enabled (bool, default off — zero cost when off), ssr_intensity / ssr_max_distance / ssr_thickness / ssr_max_steps / ssr_spread_cutoff / ssr_edge_fade / ssr_temporal_weight (LIVE uniforms), ssr_temporal + ssr_resolution_scale (0.5 half-res default / 1.0 full — STRUCTURAL, recompile the SSR pass). Glossy/metallic PBR surfaces reflect on-screen content; roughness beyond ssr_spread_cutoff falls back to IBL. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof/ssr_enabled/ssr_temporal/ssr_resolution_scale recompile pipelines (wait_render_settled after); everything else is a LIVE uniform (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0. Read the current values back with get_post_process."
+        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Also SCREEN-SPACE REFLECTIONS via the ssr_* fields: ssr_enabled (bool, default off — zero cost when off), ssr_intensity / ssr_max_distance / ssr_thickness / ssr_max_steps / ssr_spread_cutoff / ssr_edge_fade / ssr_temporal_weight (LIVE uniforms), ssr_temporal + ssr_resolution_scale (0.5 half-res default / 1.0 full — STRUCTURAL, recompile the SSR pass). Glossy/metallic PBR surfaces reflect on-screen content; roughness beyond ssr_spread_cutoff falls back to IBL. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof/ssr_enabled/ssr_temporal/ssr_resolution_scale recompile pipelines (wait_render_settled after); everything else is a LIVE uniform (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0. GOTCHA: the ssr_* params are FLAT top-level fields — a nested {\"ssr\":{...}} object is SILENTLY IGNORED (unknown fields don't error); verify with get_post_process after setting. Read the current values back with get_post_process."
     )]
     async fn set_post_process(
         &self,
@@ -4502,7 +4506,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Pin the renderer's frame_globals.time to `seconds` so a temporal material (sin(time*f)) screenshots the same phase every call. Separate from the animation playhead. Clear with clear_frame_time."
+        description = "Pin the renderer's frame_globals.time to `seconds` so a temporal material (sin(time*f)) screenshots the same phase every call. Separate from the animation playhead. Raw dispatch_command form takes {\"seconds\":N} (this tool's param is `t`; set_playhead's raw form takes {\"t\":N}). Clear with clear_frame_time."
     )]
     async fn set_frame_time(
         &self,
@@ -4544,7 +4548,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Add an animation track to a clip, bound to a target. target.kind = transform (node+prop) | morph (node+index) | uniform (material+name) | builtin_param/light/camera (node+param) | texture_transform (node + slot[base_color|metallic_roughness|normal|occlusion|emissive] + prop[offset(vec2)|scale(vec2)|rotation(scalar)] — keyframe a built-in texture's UV offset/scale/rotation, e.g. a directional/reversible conveyor scroll). Tracks append; the new index is the prior track count."
+        description = "Add an animation track to a clip, bound to a target. target.kind = transform (node+prop) | morph (node+index) | uniform (material+name) | builtin_param/light/camera (node+param) | texture_transform (node + slot[base_color|metallic_roughness|normal|occlusion|emissive] + prop[offset(vec2)|scale(vec2)|rotation(scalar)] — keyframe a built-in texture's UV offset/scale/rotation, e.g. a directional/reversible conveyor scroll). Raw dispatch_command form: the morph target is {\"target\":\"morph\",\"node\":...,\"index\":N} (internally tagged by \"target\"). Tracks append; the new index is the prior track count."
     )]
     async fn add_track(
         &self,
@@ -4558,7 +4562,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Add a one-line SPIN: a rotation Transform track on `node` that turns `turns` full revolutions about local `axis` [x,y,z] over `duration` seconds, expanded to evenly-spaced quaternion keyframes (`keys_per_turn` per revolution, default 4; linear). Collapses the verbose hand-author-N-quarter-turn-quats workflow for wheels / rotors / fans. `turns` may be fractional (0.25 = a quarter turn) or negative (reverse). Plays/reverses further via set_clip_speed / set_clip_direction. Appends one track (its index = prior track count); undo removes it."
+        description = "Add a one-line SPIN: a rotation Transform track on `node` that turns `turns` full revolutions about local `axis` [x,y,z] over `duration` seconds, expanded to evenly-spaced quaternion keyframes (`keys_per_turn` per revolution, default 4; linear). Collapses the verbose hand-author-N-quarter-turn-quats workflow for wheels / rotors / fans. `turns` may be fractional (0.25 = a quarter turn) or negative (reverse). Plays/reverses further via set_clip_speed, or dispatch_command {\"cmd\":\"set_clip_direction\",\"id\":<clip>,\"direction\":\"forward|reverse\"} (no dedicated tool). Appends one track (its index = prior track count); undo removes it."
     )]
     async fn add_spin_track(
         &self,
@@ -4576,7 +4580,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Insert a keyframe at time `t` (seconds) with `value` on a track. value.kind = vec2 | vec3 | vec4 | quat (xyzw) | scalar. Optional `interp` = step | linear | cubic (omit to use the track's sampler). Replaces any existing key at `t`."
+        description = "Insert a keyframe at time `t` (seconds) with `value` on a track. `track` is the NUMERIC track index within the clip (0-based, the order get_snapshot/get_track_data list them), not an id. value.kind = vec2 | vec3 | vec4 | quat (xyzw) | scalar. Optional `interp` = step | linear | cubic (omit to use the track's sampler). Replaces any existing key at `t`."
     )]
     async fn add_keyframe(
         &self,
@@ -4724,7 +4728,7 @@ impl EditorMcp {
     // ── generic escape hatch ────────────────────────────────────────────────
 
     #[tool(
-        description = "Dispatch a raw EditorCommand (escape hatch for any command without a dedicated tool: keyframes, tracks, mixer, environment…). `command` is internally tagged by \"cmd\"."
+        description = "Dispatch a raw EditorCommand (escape hatch for any command without a dedicated tool: keyframes, tracks, mixer, environment…). `command` is internally tagged by \"cmd\". WARNING: unknown/misspelled fields in a command payload are SILENTLY IGNORED (serde skips them — a wrong field name becomes a partial or no-op edit that still returns ok), so check the exact shape with list_commands{cmd} first and ALWAYS verify the result via a query (get_node_details / get_post_process / run_query) after mutating."
     )]
     async fn dispatch_command(
         &self,
