@@ -316,6 +316,8 @@ async fn run_render(
             aperture: 5.6,
             // Examples/model-tests stay forward-Z (features default; 003)
             reverse_z: false,
+            near: 0.1,
+            far: 200.0,
         });
         r.update_transforms();
         if let Err(err) = r.render(None) {

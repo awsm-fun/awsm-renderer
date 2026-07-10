@@ -425,8 +425,22 @@ impl AwsmRenderer {
             self.bind_groups
                 .mark_create(BindGroupCreate::LightCullingFroxelsResize);
         }
-        let (z_near_for_cull, z_far_for_cull) =
-            camera_near_far_from_projection(&self.camera.last_matrices);
+        // 003 stage 5: read the EXPLICIT near/far carried on the matrices —
+        // matrix recovery breaks under reverse-Z / infinite-far. Clamp an
+        // infinite far to a large finite bound for the exponential froxel
+        // slicing (lights beyond it land in the last slice, still correct).
+        let (z_near_for_cull, z_far_for_cull) = match &self.camera.last_matrices {
+            Some(m) => {
+                let near = m.near.max(1e-4);
+                let far = if m.far.is_finite() {
+                    m.far.max(near + 1e-3)
+                } else {
+                    (near * 100_000.0).max(10_000.0)
+                };
+                (near, far)
+            }
+            None => (0.1, 1000.0),
+        };
         self.light_culling_buffers.write_params(
             &self.gpu,
             z_near_for_cull,
@@ -2516,45 +2530,6 @@ impl<'a> RenderContext<'a> {
             )
             .map_err(Into::into)
     }
-}
-
-/// Derives view-space `(near, far)` from a perspective projection
-/// matrix. The renderer doesn't separately track near/far — they're
-/// derived from `proj` so the camera buffer stays the single source
-/// of truth. Returns sensible defaults (`(0.1, 1000.0)`) when no
-/// camera matrices have been uploaded yet (first-frame race).
-///
-/// Recovery (right-handed glam / WebGPU NDC `z ∈ [0, 1]`):
-///   `proj[2][2] = far / (near - far)`
-///   `proj[3][2] = far * near / (near - far)`
-/// solved as
-///   `near = proj[3][2] / proj[2][2]`
-///   `far  = proj[3][2] / (proj[2][2] + 1)`
-fn camera_near_far_from_projection(
-    last_matrices: &Option<crate::camera::CameraMatrices>,
-) -> (f32, f32) {
-    let Some(matrices) = last_matrices else {
-        return (0.1, 1000.0);
-    };
-    if matrices.is_orthographic() {
-        // Orthographic: no perspective divide; near/far come from
-        // `proj[2][2]` and `proj[3][2]` differently. The exponential
-        // froxel mapping assumes perspective; for ortho we just hand
-        // back something safe and let the cull pass cover the whole
-        // depth range coarsely.
-        return (0.1, 1000.0);
-    }
-    let p22 = matrices.projection.z_axis.z;
-    let p32 = matrices.projection.w_axis.z;
-    // Guard against degenerate matrices.
-    if p22.abs() < f32::EPSILON || (p22 + 1.0).abs() < f32::EPSILON {
-        return (0.1, 1000.0);
-    }
-    let near = p32 / p22;
-    let far = p32 / (p22 + 1.0);
-    let near = near.abs().max(1e-4);
-    let far = far.abs().max(near + 1e-3);
-    (near, far)
 }
 
 /// Largest world-space axis scale of an object→world transform — used to project

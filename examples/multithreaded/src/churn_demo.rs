@@ -229,6 +229,8 @@ async fn run_render(
             aperture: 5.6,
             // Examples/model-tests stay forward-Z (features default; 003)
             reverse_z: false,
+            near: 0.1,
+            far: 100.0,
         });
         s.renderer.update_transforms();
         let torn = s.renderer.transforms.last_descend_stats().torn;

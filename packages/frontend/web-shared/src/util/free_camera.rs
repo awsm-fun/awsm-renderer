@@ -126,14 +126,14 @@ impl FreeCamera {
         let convention = awsm_renderer::depth_convention::DepthConvention {
             reverse_z: self.reverse_z,
         };
-        let projection = match self.mode {
+        let (projection, near, far) = match self.mode {
             ProjectionMode::Perspective => {
                 let mut p = self.perspective.clone();
                 if let Some((near, far)) = self.clip_override {
                     p.near = near;
                     p.far = far;
                 }
-                p.projection_matrix(convention)
+                (p.projection_matrix(convention), p.near, p.far)
             }
             ProjectionMode::Orthographic => {
                 let mut p = self.orthographic.clone();
@@ -141,7 +141,7 @@ impl FreeCamera {
                     p.near = near;
                     p.far = far;
                 }
-                p.projection_matrix(convention)
+                (p.projection_matrix(convention), p.near, p.far)
             }
         };
         CameraMatrices {
@@ -151,6 +151,8 @@ impl FreeCamera {
             aperture: self.aperture,
             focus_distance: self.focus_distance,
             reverse_z: self.reverse_z,
+            near,
+            far,
         }
     }
 

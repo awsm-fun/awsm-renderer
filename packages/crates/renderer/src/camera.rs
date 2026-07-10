@@ -54,6 +54,15 @@ pub struct CameraMatrices {
     /// extraction, near/far recovery) read this instead of guessing from the
     /// matrix. MUST match the renderer's `features.reverse_z`.
     pub reverse_z: bool,
+    /// Near clip plane in world units — carried EXPLICITLY (003 stage 5) so
+    /// froxel z-slicing / cascade fitting never recover it from the matrix
+    /// (that algebra breaks under reverse-Z and outright fails under
+    /// infinite-far, where `proj[2][2] == 0`).
+    pub near: f32,
+    /// Far clip plane in world units. May be `f32::INFINITY` under the
+    /// stage-8 infinite-far projection — consumers that need a finite bound
+    /// (froxel slicing, cascade fitting) clamp it themselves.
+    pub far: f32,
 }
 
 impl CameraMatrices {
@@ -77,6 +86,8 @@ impl CameraMatrices {
             view: Mat4::look_at_rh(eye, target, up),
             projection: convention.perspective(fov_y, aspect, near, far),
             reverse_z: convention.reverse_z,
+            near,
+            far,
             position_world: eye,
             focus_distance: (target - eye).length().max(0.001),
             aperture: 16.0,

@@ -51,10 +51,9 @@ use crate::{
         helpers::{
             build_cascade_layer_views, build_cube_face_views, build_evsm_blur_bind_group,
             build_evsm_moment_write_bind_group, create_cascade_array_view,
-            create_cube_2d_array_view, create_cube_array_view, extract_near_far,
-            shadow_pipeline_cache_key, view_projection_drift,
-            write_shadow_cascade_array_descriptor, write_shadow_descriptor, write_shadow_view_slot,
-            SHADOW_DESCRIPTOR_UNIFORM_BYTES,
+            create_cube_2d_array_view, create_cube_array_view, shadow_pipeline_cache_key,
+            view_projection_drift, write_shadow_cascade_array_descriptor, write_shadow_descriptor,
+            write_shadow_view_slot, SHADOW_DESCRIPTOR_UNIFORM_BYTES,
         },
         light_shadow::{EvsmCutoff, LightShadowParams},
         record::{
@@ -1767,11 +1766,15 @@ impl Shadows {
         // Approximate the camera's near/far in world-space depth.
         // The actual values live on the camera but aren't exposed
         // directly here; reconstruct from the projection's column.
-        // For a standard RH perspective with `Mat4::perspective_rh`
-        // (which glam uses): proj[2][3] is `-2*near*far/(far-near)`
-        // and proj[2][2] is `-(far+near)/(far-near)`; solving gives
-        // the planes. Falls back to (0.1, 100.0) for orthographic.
-        let (camera_near, camera_far) = extract_near_far(&camera_matrices.projection);
+        // 003 stage 5: explicit near/far from the matrices — matrix recovery
+        // breaks under reverse-Z / infinite-far. Cascade fitting needs a
+        // finite far; clamp an infinite one to a generous shadow range.
+        let camera_near = camera_matrices.near.max(1e-4);
+        let camera_far = if camera_matrices.far.is_finite() {
+            camera_matrices.far.max(camera_near + 1e-3)
+        } else {
+            (camera_near * 10_000.0).max(1_000.0)
+        };
 
         // Per-mesh shadow-caster AABBs. `fit_cascades` clips each one
         // to the cascade's world footprint per-cascade, so we hand it

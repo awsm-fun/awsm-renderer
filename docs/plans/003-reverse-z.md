@@ -87,8 +87,16 @@ auto_clip_planes.
       untouched). Browser A/B: 12-sphere ring, camera inside, 6 orbit angles —
       4/6 captures byte-identical across conventions, rest within 40 B; no
       popping at screen edges, zero console errors.
-- [ ] Stage 5: thread explicit near/far to froxels + cascade fit (MANDATORY —
-      infinite-far breaks matrix recovery).
+- [x] Stage 5 (this commit): CameraMatrices carries explicit near/far (every
+      producer sets them — FreeCamera incl. clip_override, editor scene
+      cameras, model-tests, examples). Froxel z-slicing (render.rs) + cascade
+      fitting (shadows/state.rs) read the fields with infinite-far clamps
+      (froxels: near*1e5 floor 10k; cascades: near*1e4 floor 1k) so stage 8's
+      INFINITY sentinel is already handled. The two matrix-recovery fns
+      (camera_near_far_from_projection, extract_near_far) are DELETED — the
+      breaks-on-infinite-far algebra no longer exists to misuse. Browser A/B:
+      3 colored point lights at different depths over floor+spheres — froxel
+      lighting identical across conventions (PNG 326,786 vs 326,726 B, 0.02%).
 - [ ] Stage 6: depth-consumer sentinels (decal, SSCS, DoF load_depth, material
       classify recheck, SSR trace + minz lockstep even though gated).
 - [ ] Stage 7: shadows lockstep migration (writers + receiver NDC + bounds +

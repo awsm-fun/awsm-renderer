@@ -344,27 +344,6 @@ pub(super) fn view_projection_drift(prev: &Mat4, current: &Mat4) -> f32 {
     acc
 }
 
-/// Extracts the world-space near + far planes from a projection
-/// matrix. Handles glam's right-handed perspective convention; falls
-/// back to `(0.1, 100.0)` for matrices we don't recognise
-/// (orthographic, custom).
-pub(super) fn extract_near_far(projection: &Mat4) -> (f32, f32) {
-    let m22 = projection.z_axis.z;
-    let m23 = projection.w_axis.z;
-    // Reverse the glam `Mat4::perspective_rh` formulation:
-    //   m22 = far / (near - far)
-    //   m23 = (near * far) / (near - far)
-    // → near = m23 / m22, far = m23 / (m22 + 1)
-    if m22.abs() > 1e-4 && (m22 + 1.0).abs() > 1e-4 {
-        let near = m23 / m22;
-        let far = m23 / (m22 + 1.0);
-        if near > 0.0 && far > near {
-            return (near, far);
-        }
-    }
-    (0.1, 100.0)
-}
-
 /// 2D-array sampling view of the cascade depth texture. Receivers
 /// sample with `textureSampleCompareLevel(tex, samp, uv, layer, ref)`.
 pub(super) fn create_cascade_array_view(
