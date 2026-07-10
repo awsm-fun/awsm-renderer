@@ -68,15 +68,13 @@ traversal and temporal denoise are built but deliberately parked (gated off) —
 The dedicated bloom mip-pyramid pass replaced the effects-pass extract/blur, but the old path is
 duplicated rather than deleted:
 
-- [ ] `effects/pipeline.rs:156-171` (`slot_inputs_for`) still compiles the `BloomPhase::Extract` +
-      both `Blur` pipelines when bloom is on; `effects/render_pass.rs` only dispatches `Blend`.
-      Remove the dead slots/pipelines and the old extract/blur branches in
-      `effects_wgsl/helpers/bloom.wgsl:85-114` (incl. `blur_sample`).
-- [ ] Dead const `BLOOM_INTENSITY` (`bloom.wgsl:3`) — unreferenced (intensity is now pre-applied in
-      the bloom pass).
-- [ ] `effects/render_pass.rs:69` `let _ = BLOOM_BLUR_PASSES;` leftover — drop the import.
-- [ ] Blend `ping_pong` hardcoded `false` in render_pass.rs while pipeline.rs still derives
-      `(1+BLOOM_BLUR_PASSES)%2==1` — they agree today; unify so they can't diverge.
+- [x] DONE (all four, one cut): `BloomPhase` reduced to `None | Blend` (Extract/Blur variants
+      deleted), the `ping_pong` axis removed from the effects cache key / templates /
+      bind-groups (B bind group deleted — blend can no longer diverge from the compiled
+      pipeline by construction), `BLOOM_BLUR_PASSES` + `BLOOM_INTENSITY` + `blur_sample` +
+      `bloom_threshold` + the extract/blur WGSL branches all deleted; bloom.wgsl is now just
+      the blend fn. Bloom-on compiles 2 slots instead of 5. Browser-verified: emissive sphere
+      + bloom on → wide pyramid glow, zero console errors; bloom-off path unchanged.
 
 ## P2 — SSR polish / doc drift (stale M1 blit-design docstrings in shipped M4 code)
 

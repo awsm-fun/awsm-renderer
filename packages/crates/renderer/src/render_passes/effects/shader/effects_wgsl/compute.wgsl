@@ -68,9 +68,5 @@ fn main(
         rgb = apply_dof(rgb, coords, screen_dims_i32, camera);
     {% endif %}
 
-    {% if !ping_pong %}
-        textureStore(effects_tex, coords, vec4<f32>(rgb, 1.0));
-    {% else %}
-        textureStore(bloom_tex, coords, vec4<f32>(rgb, 1.0));
-    {% endif %}
+    textureStore(effects_tex, coords, vec4<f32>(rgb, 1.0));
 }

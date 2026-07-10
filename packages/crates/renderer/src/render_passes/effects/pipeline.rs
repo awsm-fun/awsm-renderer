@@ -22,10 +22,6 @@ use crate::{
     shaders::{ShaderCacheKey, Shaders},
 };
 
-/// Number of bloom blur passes (more = smoother but slower).
-/// Total passes = 1 extract + BLOOM_BLUR_PASSES + 1 blend.
-pub const BLOOM_BLUR_PASSES: u32 = 3;
-
 /// Compute pipelines for post-processing effects.
 pub struct EffectsPipelines {
     multisampled_pipeline_layout_key: PipelineLayoutKey,
@@ -34,11 +30,9 @@ pub struct EffectsPipelines {
     // When bloom is disabled - single pass for other effects
     no_bloom_pipeline: Option<ComputePipelineKey>,
 
-    // When bloom is enabled - multi-pass pipelines
-    bloom_extract_pipeline: Option<ComputePipelineKey>, // Always ping_pong=false
-    bloom_blur_pipeline_a: Option<ComputePipelineKey>,  // ping_pong=false
-    bloom_blur_pipeline_b: Option<ComputePipelineKey>,  // ping_pong=true
-    bloom_blend_pipeline: Option<ComputePipelineKey>, // Always ping_pong=false (to write to effects_tex)
+    // When bloom is enabled - blends the dedicated BloomRenderPass's
+    // pre-built pyramid over the composite
+    bloom_blend_pipeline: Option<ComputePipelineKey>,
 }
 
 /// Pre-resolved shader + compute-pipeline cache keys for the effects
@@ -82,29 +76,14 @@ impl EffectsPipelines {
             multisampled_pipeline_layout_key,
             singlesampled_pipeline_layout_key,
             no_bloom_pipeline: None,
-            bloom_extract_pipeline: None,
-            bloom_blur_pipeline_a: None,
-            bloom_blur_pipeline_b: None,
             bloom_blend_pipeline: None,
         })
     }
 
-    /// Get pipeline for a specific bloom phase and ping_pong state
-    pub fn get_bloom_pipeline(
-        &self,
-        phase: BloomPhase,
-        ping_pong: bool,
-    ) -> Option<ComputePipelineKey> {
+    /// Get pipeline for a specific bloom phase
+    pub fn get_bloom_pipeline(&self, phase: BloomPhase) -> Option<ComputePipelineKey> {
         match phase {
             BloomPhase::None => self.no_bloom_pipeline,
-            BloomPhase::Extract => self.bloom_extract_pipeline,
-            BloomPhase::Blur => {
-                if ping_pong {
-                    self.bloom_blur_pipeline_b
-                } else {
-                    self.bloom_blur_pipeline_a
-                }
-            }
             BloomPhase::Blend => self.bloom_blend_pipeline,
         }
     }
@@ -137,37 +116,26 @@ impl EffectsPipelines {
         let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
         Ok(slot_inputs
             .iter()
-            .map(|&(bloom_phase, ping_pong)| {
+            .map(|&bloom_phase| {
                 ShaderCacheKey::from(ShaderCacheKeyEffects {
                     smaa_anti_alias: anti_aliasing.smaa,
                     bloom_phase,
                     dof: post_processing.dof,
-                    ping_pong,
                     multisampled_geometry,
                 })
             })
             .collect())
     }
 
-    /// The 5-slot canonical phase order (no_bloom, extract, blur_a,
-    /// blur_b, blend) — when bloom is off, only the first slot
-    /// (no_bloom) is returned, so the cross-tail pool stays minimal
-    /// at cold-boot.
-    fn slot_inputs_for(post_processing: &PostProcessing) -> Vec<(BloomPhase, bool)> {
+    /// The canonical phase slots (no_bloom, blend) — when bloom is off,
+    /// only the no_bloom slot is returned, so the cross-tail pool stays
+    /// minimal at cold-boot. The old in-pass extract/blur slots died with
+    /// the migration to the dedicated `BloomRenderPass` pyramid.
+    fn slot_inputs_for(post_processing: &PostProcessing) -> Vec<BloomPhase> {
         if !post_processing.bloom {
-            // Bloom off: only the no_bloom slot is dispatched. Saves
-            // 4 of 5 shader compiles + 4 of 5 pipeline compiles at
-            // cold-boot for the default-configuration case.
-            return vec![(BloomPhase::None, false)];
+            return vec![BloomPhase::None];
         }
-        let blend_ping_pong = (1 + BLOOM_BLUR_PASSES) % 2 == 1;
-        vec![
-            (BloomPhase::None, false),
-            (BloomPhase::Extract, false),
-            (BloomPhase::Blur, false),
-            (BloomPhase::Blur, true),
-            (BloomPhase::Blend, blend_ping_pong),
-        ]
+        vec![BloomPhase::None, BloomPhase::Blend]
     }
 
     /// Builds the 5 (shader, compute-pipeline) cache key pairs for the
@@ -202,9 +170,8 @@ impl EffectsPipelines {
     /// Writes the resolved keys into the per-phase slots.
     /// Lazy-pool aware: the input length matches the live
     /// `slot_inputs_for(post_processing)` size — 1 when bloom is off,
-    /// 5 when on. Slot identity comes from the matching `slot_inputs`
-    /// list rather than positional indexing into a fixed-5 array.
-    /// Pure sync.
+    /// 2 when on. Slot identity comes from the matching `slot_inputs`
+    /// list rather than positional indexing. Pure sync.
     pub fn install_resolved(
         &mut self,
         post_processing: &PostProcessing,
@@ -212,13 +179,10 @@ impl EffectsPipelines {
     ) {
         let slot_inputs = Self::slot_inputs_for(post_processing);
         debug_assert_eq!(resolved.len(), slot_inputs.len());
-        for ((phase, ping_pong), key) in slot_inputs.into_iter().zip(resolved) {
-            match (phase, ping_pong) {
-                (BloomPhase::None, _) => self.no_bloom_pipeline = Some(key),
-                (BloomPhase::Extract, _) => self.bloom_extract_pipeline = Some(key),
-                (BloomPhase::Blur, false) => self.bloom_blur_pipeline_a = Some(key),
-                (BloomPhase::Blur, true) => self.bloom_blur_pipeline_b = Some(key),
-                (BloomPhase::Blend, _) => self.bloom_blend_pipeline = Some(key),
+        for (phase, key) in slot_inputs.into_iter().zip(resolved) {
+            match phase {
+                BloomPhase::None => self.no_bloom_pipeline = Some(key),
+                BloomPhase::Blend => self.bloom_blend_pipeline = Some(key),
             }
         }
     }
@@ -229,7 +193,7 @@ impl EffectsPipelines {
     /// [`crate::AwsmRenderer::set_post_processing`]) — at startup the
     /// orchestrator goes through [`Self::build_descriptors`] +
     /// [`Self::install_resolved`] directly via the cross-tail pool.
-    /// Builds all five bloom-phase variants concurrently via two
+    /// Builds the live bloom-phase variants concurrently via two
     /// batched `ensure_keys` calls (shaders then compute pipelines).
     #[allow(clippy::too_many_arguments)]
     pub async fn set_render_pipeline_keys(
