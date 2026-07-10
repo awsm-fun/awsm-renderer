@@ -112,10 +112,14 @@ Census source: `memory_stats` query on a cold page reload (editor :9085,
 
 | Scene | Render pipelines | Compute pipelines | Shaders | Pool tex | render_cpu ms |
 |---|---|---|---|---|---|
-| _empty_ (cold boot) | 68 | 31 | 49 | 2 | 1.5 |
-| kitchen-sink | 69 | 32 | 51 | 4 | 1.8 |
+| _empty_ (cold, PRE axis 1) | 68 | 31 | 49 | 2 | 1.5 |
+| _empty_ (cold, POST axis 1) | 68 | **22** | **40** | 2 | 1.5 |
+| kitchen-sink (pre) | 69 | 32 | 51 | 4 | 1.8 |
 
-**Axis-1 headline (pre-optimization):** an EMPTY scene already compiles
-68/31/49 — the full pipeline surface is eager at init; the busiest scene
-adds only ~1/1/2 on top. "Build only what we need" means moving most of
-that eager set behind lazy/deferred compilation.
+**Axis-1 result:** bloom (3), SSR (2), decal + classify (3) and cluster-LOD
+(2) compute pipelines + 9 shader modules no longer compile on scenes that
+don't use them — they land lazily on first enable (bloom/SSR), first decal
+insert (render-loop kick/poll, same-frame bind), or first cluster-mesh
+commit. AA flips on SSR-less sessions no longer recompile SSR. hzb /
+occlusion / coverage stay eager by design (the optimization policy flips
+GPU culling at runtime; lazy would hitch mid-session).

@@ -106,6 +106,26 @@ its actual scene requires.
 - Acceptance: empty-scene and per-scene census numbers recorded in the test-scenes
   README; no scene compiles a pipeline it doesn't draw with.
 
+#### Axis 1 RESULT (2026-07-10)
+Empty-scene cold census: compute pipelines **31 → 22**, shader modules
+**49 → 40** (render pipelines 68 unchanged — content-correct for the editor
+scene). Bloom, SSR, decal(+classify+composite) and cluster-LOD went from
+eager-at-boot to lazy: bloom/SSR compile awaited inside their enable
+setters; decals compile via a render-loop kick/poll (fat-line pattern) so
+the editor's commit-less live-insert path works — found and fixed TWO
+regressions during verification: (1) the editor insert path never reaches
+a commit, so the original commit-anchored trigger left decals never
+projecting; (2) the lazily-installed composite's bind group was never
+marked for creation, and its Err abandoned the WHOLE frame encoder —
+black viewport with zero validation errors. Composite now marks
+TextureViewRecreate on install (both paths) and skip-renders instead of
+erroring when unbound. Classification table lives at the prewarm assembly
+(render_passes.rs). Player note: bundles compile feature pipelines inside
+the loading screen (post_process flows before commit; decals/clusters
+land at commit) — no runtime hitches. hzb/occlusion/coverage deliberately
+eager (runtime policy flips). New naga-validation tests for bloom +
+cluster families.
+
 ### Axis 2 — Concurrency at commit time
 The transactional design exists so a batch of declared work compiles concurrently at
 commit. Make that true everywhere:
@@ -249,6 +269,21 @@ Highest performance without sacrificing quality; goldens are the quality lock.
   used to prove it), stress-scene frame times recorded.
 
 ---
+
+### Axis 8 RESULT (2026-07-10)
+Per-frame allocation sweep (pool/hoist/reuse; David's standard applies
+without measured deltas): lights.rs punctual pack scratch + stack info
+block; transforms.rs recycled dirty map + spare; instances.rs
+double-buffered dirty set; meshes.rs update_world 4 sites (chained dedup,
+pooled touched/skip_skins/skin_keys, &HashMap signature) +
+set_mesh_instance_attrs scratch; light_buckets pooled per-light bucket
+Vecs + to_mark scratch; buffer take_dirty_ranges spare + 14 call sites
+hand the Vec back; animations.rs mixer writes by reference (clone only on
+rest-restore/first-seed; morph-masking semantics preserved); editor
+selection_box thread-local scratch; skin_bridge was already pooled
+(d4561d33). Deliberately left (reasons recorded in commit): readback
+future ownership moves, core descriptor-vec API (pervasive, collides with
+axis-1 files), blend AnimationData in-place redesign (flagged follow-up).
 
 ## Method / sequencing
 1. Phase 0 scenes + README (with the axes list), Phase 0.5 feature gaps.

@@ -515,8 +515,10 @@ impl AwsmRenderer {
         //    invalid bind group → the whole frame's command buffer fails
         //    (black screen; found by the 004 verification matrix). Rebuild
         //    exactly like `set_post_processing` does for the structural SSR
-        //    axes; cheap when SSR is off (1×1 placeholders, tiny layouts).
-        {
+        //    axes. LAZY SSR (axis 1): skip entirely while the pass is `None`
+        //    (never enabled) — the eventual first enable constructs it
+        //    against the then-live AA, so nothing can go stale.
+        if self.render_passes.ssr.is_some() {
             let mut ctx = crate::render_passes::RenderPassInitContext {
                 gpu: &self.gpu,
                 bind_group_layouts: &mut self.bind_group_layouts,
@@ -538,7 +540,7 @@ impl AwsmRenderer {
                     ),
             };
             let ssr = crate::render_passes::ssr::render_pass::SsrRenderPass::new(&mut ctx).await?;
-            self.render_passes.ssr = ssr;
+            self.render_passes.ssr = Some(ssr);
         }
 
         Ok(())

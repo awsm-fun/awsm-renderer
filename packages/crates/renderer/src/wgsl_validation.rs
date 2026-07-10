@@ -1069,3 +1069,67 @@ fn decal_classify_shader_validates_for_both_depth_conventions() {
         }
     }
 }
+
+/// Axis 1 (docs/plans/006): bloom went content/config-lazy — its 3 compute
+/// shaders no longer compile at boot (only when `post_processing.bloom` turns
+/// on), so on-device boot validation no longer covers them. Keep them
+/// natively validated here: both downsample variants (prefilter on/off) and
+/// the combine must parse + validate and carry the compute entry point.
+#[test]
+fn bloom_shaders_validate() {
+    use crate::render_passes::bloom::shader::template::{
+        ShaderTemplateBloomCombine, ShaderTemplateBloomDownsample,
+    };
+    for prefilter in [false, true] {
+        let label = format!("bloom downsample prefilter={prefilter}");
+        let src = ShaderTemplateBloomDownsample { prefilter }
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn cs_main("),
+            "{label}: bloom module missing `fn cs_main` entry point"
+        );
+    }
+    let src = ShaderTemplateBloomCombine
+        .into_source()
+        .expect("bloom combine: render failed");
+    naga_validate(&src, "bloom combine");
+    assert!(
+        src.contains("fn cs_main("),
+        "bloom combine: module missing `fn cs_main` entry point"
+    );
+}
+
+/// Axis 1 (docs/plans/006): the cluster-LOD cut + compaction went
+/// content-lazy — they no longer compile at boot (only at the first commit
+/// with a resident cluster mesh), so the "creating the pipeline validates
+/// `cluster_cut.wgsl` on-device" boot checkpoint moved to that commit. Keep
+/// every variant natively validated here: cut with paging off/on plus the
+/// compaction.
+#[cfg(feature = "lod")]
+#[test]
+fn cluster_lod_shaders_validate() {
+    use crate::render_passes::cluster_lod::shader::template::{
+        ShaderTemplateClusterCompaction, ShaderTemplateClusterCut,
+    };
+    for paging in [false, true] {
+        let label = format!("cluster cut paging={paging}");
+        let src = ShaderTemplateClusterCut { paging }
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn cs_main("),
+            "{label}: cluster cut missing `fn cs_main` entry point"
+        );
+    }
+    let src = ShaderTemplateClusterCompaction
+        .into_source()
+        .expect("cluster compaction: render failed");
+    naga_validate(&src, "cluster compaction");
+    assert!(
+        src.contains("fn cs_main("),
+        "cluster compaction: module missing `fn cs_main` entry point"
+    );
+}

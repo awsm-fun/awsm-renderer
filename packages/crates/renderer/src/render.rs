@@ -206,6 +206,15 @@ impl AwsmRenderer {
         )?;
         self.lines.poll_compile(&mut self.pipelines.render)?;
 
+        // Content-lazy decal pipelines (axis 1): same kick/poll auto-drive as
+        // the lines above. Covers the LIVE `insert_decal` path (editor node
+        // observer — no `commit_load` afterwards, §5b pending); the
+        // scene-load path compiles at commit via `ensure_config_pipelines`.
+        // Both are boolean-check no-ops when no decal exists or everything
+        // is compiled, so decal-free projects pay effectively nothing.
+        self.kick_decal_pipelines_compile()?;
+        self.poll_decal_pipelines_compile()?;
+
         // HUD meshes (editor gizmos, in-game HUD primitives) draw
         // through the transparent pipeline, which is per-mesh and
         // texture-pool-shape-coupled. Unlike world transparents — whose
@@ -600,38 +609,46 @@ impl AwsmRenderer {
         // per-mip views, so its bind groups rebuild via `TextureViewRecreate`
         // (the Bloom recreate arm rebinds pyramid + composite + full-res bloom
         // target + params uniform).
+        // Lazy pass: `None` until the first `bloom: true` (set_post_processing
+        // builds it awaited, so enabled ⇒ `Some` by the next frame).
         if self.post_processing.bloom {
-            if self.render_passes.bloom.ensure_size(
-                &self.gpu,
-                render_texture_views.width,
-                render_texture_views.height,
-            )? {
-                self.bind_groups
-                    .mark_create(BindGroupCreate::TextureViewRecreate);
+            if let Some(bloom) = self.render_passes.bloom.as_mut() {
+                if bloom.ensure_size(
+                    &self.gpu,
+                    render_texture_views.width,
+                    render_texture_views.height,
+                )? {
+                    self.bind_groups
+                        .mark_create(BindGroupCreate::TextureViewRecreate);
+                }
+                bloom.params.write(
+                    &self.gpu,
+                    self.post_processing.bloom_threshold,
+                    self.post_processing.bloom_knee,
+                    self.post_processing.bloom_intensity,
+                    self.post_processing.bloom_scatter,
+                )?;
             }
-            self.render_passes.bloom.params.write(
-                &self.gpu,
-                self.post_processing.bloom_threshold,
-                self.post_processing.bloom_knee,
-                self.post_processing.bloom_intensity,
-                self.post_processing.bloom_scatter,
-            )?;
         }
 
         // SSR live-tuning uniforms (no ensure_size — the ssr target lives in
         // RenderTextures and resizes with the rest). Only written when enabled.
         if self.post_processing.ssr.enabled {
-            let s = &self.post_processing.ssr;
-            self.render_passes.ssr.params.write(
-                &self.gpu,
-                s.intensity,
-                s.max_distance,
-                s.thickness,
-                s.max_steps as f32,
-                s.spread_cutoff,
-                s.edge_fade,
-                s.temporal_weight,
-            )?;
+            // Lazy pass: enabled ⇒ `Some` (set_post_processing builds it
+            // awaited on the first enable).
+            if let Some(ssr) = self.render_passes.ssr.as_mut() {
+                let s = &self.post_processing.ssr;
+                ssr.params.write(
+                    &self.gpu,
+                    s.intensity,
+                    s.max_distance,
+                    s.thickness,
+                    s.max_steps as f32,
+                    s.spread_cutoff,
+                    s.edge_fade,
+                    s.temporal_weight,
+                )?;
+            }
         }
 
         // Tile counts are reused by both the opaque classify buckets
@@ -1617,17 +1634,20 @@ impl AwsmRenderer {
         // single-sample — a compute pass can't storage-write / single-sample-
         // blit a multisampled `transparent`. Records nothing when disabled.
         if ctx.post_processing.ssr.enabled {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "SSR RenderPass").entered())
-            } else {
-                None
-            };
-            self.render_passes.ssr.render(
-                &ctx,
-                ctx.render_texture_views.width,
-                ctx.render_texture_views.height,
-                ctx.post_processing.ssr.resolution_scale < 1.0,
-            )?;
+            // Lazy pass: enabled ⇒ `Some` (built awaited on the first enable).
+            if let Some(ssr) = self.render_passes.ssr.as_ref() {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                    Some(tracing::span!(tracing::Level::INFO, "SSR RenderPass").entered())
+                } else {
+                    None
+                };
+                ssr.render(
+                    &ctx,
+                    ctx.render_texture_views.width,
+                    ctx.render_texture_views.height,
+                    ctx.post_processing.ssr.resolution_scale < 1.0,
+                )?;
+            }
         }
 
         // Bloom mip-pyramid pass — builds a wide, soft bloom from the composite
@@ -1635,16 +1655,19 @@ impl AwsmRenderer {
         // over the scene. Only when bloom is enabled (matches the effects pass
         // gate); skipped otherwise so the pyramid dispatches cost nothing.
         if ctx.post_processing.bloom {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Bloom RenderPass").entered())
-            } else {
-                None
-            };
-            self.render_passes.bloom.render(
-                &ctx,
-                ctx.render_texture_views.width,
-                ctx.render_texture_views.height,
-            )?;
+            // Lazy pass: enabled ⇒ `Some` (built awaited on the first enable).
+            if let Some(bloom) = self.render_passes.bloom.as_ref() {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                    Some(tracing::span!(tracing::Level::INFO, "Bloom RenderPass").entered())
+                } else {
+                    None
+                };
+                bloom.render(
+                    &ctx,
+                    ctx.render_texture_views.width,
+                    ctx.render_texture_views.height,
+                )?;
+            }
         }
 
         {

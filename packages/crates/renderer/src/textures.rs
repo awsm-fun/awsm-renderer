@@ -335,7 +335,15 @@ impl AwsmRenderer {
                     &self.render_passes.material_opaque.bind_groups,
                 )?,
             );
-            if let Some(decal) = self.render_passes.material_decal.as_ref() {
+            // Content-lazy decal pipelines: only re-key when they were already
+            // compiled (a decal is or was live). While `None`, the eventual
+            // `ensure_config_pipelines` compile builds against the final pool.
+            if let Some(decal) = self
+                .render_passes
+                .material_decal
+                .as_ref()
+                .filter(|d| d.pipelines.is_some())
+            {
                 all_shader_keys.extend(
                     crate::render_passes::material_decal::pipeline::MaterialDecalPipelines::build_shader_cache_keys(
                         &mut render_pass_ctx,
@@ -382,7 +390,13 @@ impl AwsmRenderer {
                 &self.render_passes.material_opaque.bind_groups,
             )
             .await?;
-            let decal_descs = if let Some(decal) = self.render_passes.material_decal.as_ref() {
+            // Content-lazy gate mirrors the shader-key collection above.
+            let decal_descs = if let Some(decal) = self
+                .render_passes
+                .material_decal
+                .as_ref()
+                .filter(|d| d.pipelines.is_some())
+            {
                 Some(
                     crate::render_passes::material_decal::pipeline::MaterialDecalPipelines::build_descriptors(
                         &mut render_pass_ctx,
@@ -457,11 +471,12 @@ impl AwsmRenderer {
         if let (Some(decal_descs), Some(decal)) =
             (decal_descs, self.render_passes.material_decal.as_mut())
         {
-            decal.pipelines =
+            decal.pipelines = Some(
                 crate::render_passes::material_decal::pipeline::MaterialDecalPipelines::from_resolved(
                     decal_descs.is_msaa,
                     decal_keys_slice.to_vec(),
-                );
+                ),
+            );
         }
         let mesh_keys: Vec<_> = transparent_requests.iter().map(|r| r.mesh_key).collect();
         self.render_passes
@@ -1621,6 +1636,7 @@ impl Textures {
                     self.texture_transforms_buffer.raw_slice(),
                     &ranges,
                 )?;
+                self.texture_transforms_buffer.recycle_dirty_ranges(ranges);
             }
 
             self.texture_transforms_gpu_dirty = false;

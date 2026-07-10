@@ -609,9 +609,13 @@ impl AwsmRenderer {
 
         // 5. Content-gated pipelines that used to compile at build:
         //    the transmission mipgen (only if a transmissive material is
-        //    actually attached) and the decal composite (feature-gated).
+        //    actually attached), the decal compute + classify + composite
+        //    (only when a decal is actually live), and the cluster-LOD cut +
+        //    compaction (only when a cluster mesh is resident).
         self.ensure_opaque_mipgen_compiled().await?;
-        self.ensure_decal_composite_compiled().await?;
+        self.ensure_decal_pipelines_compiled().await?;
+        #[cfg(feature = "lod")]
+        self.ensure_cluster_pipelines_compiled().await?;
 
         // 6. The eager pass groups registered Pending at build are real now.
         let eager_ids = std::mem::take(&mut self.eager_pass_ids);
@@ -694,15 +698,129 @@ impl AwsmRenderer {
         Ok(())
     }
 
-    /// Compile the decal composite's two inline-WGSL pipelines iff the decals
-    /// feature is on and they aren't compiled yet (moved out of build()).
-    async fn ensure_decal_composite_compiled(&mut self) -> crate::error::Result<()> {
-        let needs = self
+    /// Compile the decal pass's pipelines — the two MSAA-variant compute
+    /// kernels, the classify cull, and the composite's two inline-WGSL render
+    /// pipelines — iff the decals feature is on, **a decal is actually live**,
+    /// and they aren't compiled yet. Content-lazy (axis 1): a decals-enabled
+    /// build that never places a decal compiles none of them. Runs at every
+    /// `ensure_config_pipelines` (i.e. every `commit_load`), so both a scene
+    /// load's decals and a live editor insert (whose change lands via the
+    /// per-change commit) get their pipelines before the committed frame.
+    async fn ensure_decal_pipelines_compiled(&mut self) -> crate::error::Result<()> {
+        let any_decals = self.decals.as_ref().is_some_and(|d| !d.is_empty());
+        let needs = any_decals
+            && self.render_passes.material_decal.as_ref().is_some_and(|d| {
+                d.pipelines.is_none()
+                    || d.classify_pass.pipelines.is_none()
+                    || d.composite.is_none()
+            });
+        if !needs {
+            return Ok(());
+        }
+        // The render-loop kick (`kick_decal_pipelines_compile`) may have a
+        // compile in flight for the same pieces — cancel it so only THIS
+        // awaited path installs (the orphaned browser promises resolve into
+        // dropped futures, harmlessly).
+        if let Some(decal) = self.render_passes.material_decal.as_mut() {
+            decal.cancel_inflight();
+        }
+        let mut ctx = crate::render_passes::RenderPassInitContext {
+            gpu: &self.gpu,
+            bind_group_layouts: &mut self.bind_group_layouts,
+            pipeline_layouts: &mut self.pipeline_layouts,
+            pipelines: &mut self.pipelines,
+            shaders: &mut self.shaders,
+            render_texture_formats: &mut self.render_textures.formats,
+            textures: &mut self.textures,
+            features: &self.features,
+            anti_aliasing: &self.anti_aliasing,
+            post_processing: &self.post_processing,
+            prep_config: &self.prep_config,
+            max_edge_budget: self
+                .material_edge_buffers
+                .as_ref()
+                .map(|b| b.max_edge_budget)
+                .unwrap_or(
+                    crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+                ),
+        };
+        // Disjoint field borrows: `ctx` holds `&mut` on cache fields only —
+        // `render_passes` is not part of it (same shape as
+        // `ensure_material_prep_pipelines`).
+        let decal = self
             .render_passes
             .material_decal
             .as_ref()
-            .is_some_and(|d| d.composite.is_none());
-        if !needs {
+            .expect("checked is_some_and above");
+        let pipelines = if decal.pipelines.is_none() {
+            Some(
+                crate::render_passes::material_decal::pipeline::MaterialDecalPipelines::new(
+                    &mut ctx,
+                    &decal.bind_groups,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let classify_pipelines = if decal.classify_pass.pipelines.is_none() {
+            Some(
+                crate::render_passes::material_decal::classify::pipeline::DecalClassifyPipelines::new(
+                    &mut ctx,
+                    &decal.classify_pass.bind_groups,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let composite = if decal.composite.is_none() {
+            Some(
+                crate::render_passes::material_decal::composite::MaterialDecalComposite::new(
+                    &mut ctx,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let composite_installed = composite.is_some();
+        if let Some(decal) = self.render_passes.material_decal.as_mut() {
+            if let Some(p) = pipelines {
+                decal.pipelines = Some(p);
+            }
+            if let Some(p) = classify_pipelines {
+                decal.classify_pass.pipelines = Some(p);
+            }
+            if let Some(c) = composite {
+                decal.composite = Some(c);
+            }
+        }
+        if composite_installed {
+            // A fresh composite starts UNBOUND (its bind group is only built
+            // by the `MaterialDecalComposite` recreate arm on this event) and
+            // skip-renders until bound. Mark it so the next frame's recreate
+            // drain binds it before the decal dispatch.
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+        }
+        Ok(())
+    }
+
+    /// Compile the cluster-LOD cut + compaction pipelines iff a cluster mesh
+    /// is resident and they aren't compiled yet. Content-lazy (axis 1): a
+    /// `virtual_geometry` build that never loads a cluster mesh compiles
+    /// neither. The scene-loader's `upload_cluster_pages` runs inside the load
+    /// transaction, so the commit's `ensure_config_pipelines` lands here with
+    /// the states populated.
+    #[cfg(feature = "lod")]
+    async fn ensure_cluster_pipelines_compiled(&mut self) -> crate::error::Result<()> {
+        if self
+            .render_passes
+            .cluster_lod
+            .as_ref()
+            .is_none_or(|p| p.pipelines.is_some() || p.states.is_empty())
+        {
             return Ok(());
         }
         let mut ctx = crate::render_passes::RenderPassInitContext {
@@ -725,11 +843,8 @@ impl AwsmRenderer {
                     crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
                 ),
         };
-        let composite =
-            crate::render_passes::material_decal::composite::MaterialDecalComposite::new(&mut ctx)
-                .await?;
-        if let Some(decal) = self.render_passes.material_decal.as_mut() {
-            decal.composite = Some(composite);
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.ensure_pipelines_compiled(&mut ctx).await?;
         }
         Ok(())
     }
@@ -997,8 +1112,13 @@ impl AwsmRenderer {
     /// - **Geometry render pipelines** — every (MSAA × instancing ×
     ///   storage-array × cull_mode) variant. See
     ///   `GeometryRenderPipelineKeys::new`.
-    /// - **Shadow / HZB / coverage / decal / classify / light-culling**
-    ///   passes — all built once during `RenderPasses::new`.
+    /// - **HZB / coverage / classify / light-culling** passes — built once
+    ///   during `RenderPasses::new`. Shadow caster + EVSM compile on the
+    ///   first shadow-casting light; decal (+ classify/composite) and the
+    ///   cluster-LOD cut compile at the first commit that actually has a
+    ///   decal / cluster mesh; bloom + SSR compile on their first
+    ///   `set_post_processing` enable (axis 1 — see the classification
+    ///   comment in `render_passes.rs::describe_shaders`).
     ///
     /// So this method is **mostly a labelling hook today** — its real
     /// payoff is the call-site UX: a consumer can advance their boot

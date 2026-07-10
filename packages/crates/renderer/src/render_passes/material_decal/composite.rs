@@ -81,7 +81,25 @@ pub struct MaterialDecalComposite {
 
 impl MaterialDecalComposite {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let gpu = ctx.gpu;
+        Self::new_static(ctx.gpu.clone(), ctx.render_texture_formats.color).await
+    }
+
+    /// `'static` constructor for the render-loop kick path
+    /// ([`MaterialDecalRenderPass::kick_compile`](crate::render_passes::material_decal::render_pass::MaterialDecalRenderPass::kick_compile)):
+    /// takes only a cloned gpu handle + the color format BY VALUE, so the
+    /// returned future is `'static` — it can be stored on the pass and polled
+    /// across frames (`now_or_never`) without borrowing the renderer.
+    pub async fn new_static(
+        gpu: awsm_renderer_core::renderer::AwsmRendererWebGpu,
+        format: awsm_renderer_core::texture::TextureFormat,
+    ) -> Result<Self> {
+        Self::new_inner(&gpu, format).await
+    }
+
+    async fn new_inner(
+        gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
+        format: awsm_renderer_core::texture::TextureFormat,
+    ) -> Result<Self> {
         let shader_module = gpu.compile_shader(
             &ShaderModuleDescriptor::new(SHADER_SOURCE, Some("Decal Composite shader")).into(),
         );
@@ -116,7 +134,6 @@ impl MaterialDecalComposite {
         // owns its own bind-group layout + pipeline layout (not in
         // any of the cache crates) — wiring it through the cache
         // would be more work than the parallelisation it gains.
-        let format = ctx.render_texture_formats.color;
         let descriptor_singlesampled = {
             let vertex = VertexState::new(&shader_module, None);
             let fragment =
@@ -193,6 +210,18 @@ impl MaterialDecalComposite {
     /// vertex buffer; the per-fragment `discard` preserves untouched
     /// pixels of `transparent`.
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
+        // A freshly (lazily) installed composite hasn't had its bind group
+        // created yet — that happens at the next `TextureViewRecreate` drain
+        // (the install paths mark it, so this lasts at most one frame). Skip
+        // gracefully rather than erroring: a returned Err here would abandon
+        // the WHOLE frame's encoder (black screen), which is a far worse
+        // failure than the decal not compositing for a frame.
+        let Some(bind_group) = self.bind_group.as_ref() else {
+            tracing::debug!(
+                "decal composite: bind group not yet created (pending TextureViewRecreate) — skipping this frame"
+            );
+            return Ok(());
+        };
         let pipeline = if ctx.anti_aliasing.msaa_sample_count.is_some() {
             &self.pipeline_multisampled
         } else {
@@ -213,7 +242,7 @@ impl MaterialDecalComposite {
             .into(),
         )?;
         render_pass.set_pipeline(pipeline);
-        render_pass.set_bind_group(0, self.get_bind_group()?, None)?;
+        render_pass.set_bind_group(0, bind_group, None)?;
         render_pass.draw(3);
         render_pass.end();
         Ok(())

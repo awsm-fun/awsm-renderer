@@ -50,6 +50,29 @@ impl DecalClassifyPipelines {
         })]
     }
 
+    /// Sync cache-key build for the render-loop kick path
+    /// ([`MaterialDecalRenderPass::kick_compile`](crate::render_passes::material_decal::render_pass::MaterialDecalRenderPass::kick_compile)):
+    /// creates the classify shader module WITHOUT awaiting validation
+    /// (errors surface through the pipeline-creation promise).
+    pub fn build_cache_key_sync(
+        ctx: &mut RenderPassInitContext<'_>,
+        bind_groups: &DecalClassifyBindGroups,
+    ) -> Result<ComputePipelineCacheKey> {
+        let pipeline_layout_key = ctx.pipeline_layouts.get_key(
+            ctx.gpu,
+            ctx.bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![bind_groups.layout_key]),
+        )?;
+        let shader_keys = ctx.shaders.ensure_keys_sync_skip_validate(
+            ctx.gpu,
+            Self::shader_cache_keys(bind_groups, ctx.features.reverse_z),
+        )?;
+        Ok(ComputePipelineCacheKey::new(
+            shader_keys[0],
+            pipeline_layout_key,
+        ))
+    }
+
     pub async fn build_descriptors(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &DecalClassifyBindGroups,

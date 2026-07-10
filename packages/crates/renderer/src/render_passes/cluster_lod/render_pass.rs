@@ -22,7 +22,13 @@ use crate::render_passes::cluster_lod::{
 use crate::render_passes::RenderPassInitContext;
 
 pub struct ClusterLodRenderPass {
-    pub pipelines: ClusterLodPipelines,
+    /// Content-lazy (axis 1): `None` until [`Self::ensure_pipelines_compiled`]
+    /// runs at the first commit with a resident cluster mesh
+    /// (`ensure_config_pipelines`). A `virtual_geometry` build that never
+    /// loads a cluster mesh compiles zero cluster pipelines. The per-frame
+    /// [`Self::dispatch_all`] no-ops while missing (the compacted draw args
+    /// stay zeroed, so the cluster mesh simply isn't drawn until the commit).
+    pub pipelines: Option<ClusterLodPipelines>,
     /// Bind-group prototypes (layout key + paging flag, NO bound group) cloned per
     /// mesh state in [`Self::upload_pages`]. The cut/compaction layouts are identical
     /// for every cluster mesh; only the bound buffers differ — so we capture the
@@ -193,19 +199,41 @@ impl ClusterPaging {
 }
 
 impl ClusterLodRenderPass {
-    /// Builds the bind-group layout + cut compute pipeline. **Creating the
-    /// pipeline validates `cluster_cut.wgsl` on-device** (the GPU driver compiles
-    /// it here) — the first on-GPU checkpoint for the per-cluster cut.
-    pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
+    /// Builds the bind-group layout prototypes only — cheap layout
+    /// registrations, no Dawn compile. The cut + compaction pipelines are
+    /// content-lazy: [`Self::ensure_pipelines_compiled`] builds them at the
+    /// first commit with a resident cluster mesh, which is also where
+    /// `cluster_cut.wgsl` gets its on-device validation.
+    pub fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let proto_cut_bg = ClusterCutBindGroups::new(ctx)?;
         let proto_compaction_bg = ClusterCompactionBindGroups::new(ctx)?;
-        let pipelines = ClusterLodPipelines::new(ctx, &proto_cut_bg, &proto_compaction_bg).await?;
         Ok(Self {
-            pipelines,
+            pipelines: None,
             proto_cut_bg,
             proto_compaction_bg,
             states: Vec::new(),
         })
+    }
+
+    /// Compile the cut + compaction pipelines if a cluster mesh is resident
+    /// and they aren't compiled yet. **Creating the cut pipeline validates
+    /// `cluster_cut.wgsl` on-device** (the GPU driver compiles it here) — the
+    /// first on-GPU checkpoint for the per-cluster cut. Called from
+    /// `ensure_config_pipelines` (every `commit_load`), so the scene-loader's
+    /// `upload_cluster_pages` → `commit_load` transaction lands with the
+    /// pipelines GPU-resident before the first committed frame. Idempotent +
+    /// cheap when warm (cache-keyed). Returns whether a compile ran.
+    pub async fn ensure_pipelines_compiled(
+        &mut self,
+        ctx: &mut RenderPassInitContext<'_>,
+    ) -> Result<bool> {
+        if self.pipelines.is_some() || self.states.is_empty() {
+            return Ok(false);
+        }
+        self.pipelines = Some(
+            ClusterLodPipelines::new(ctx, &self.proto_cut_bg, &self.proto_compaction_bg).await?,
+        );
+        Ok(true)
     }
 
     /// The resident state for a render mesh, if loaded.
@@ -524,6 +552,13 @@ impl ClusterLodRenderPass {
         viewport_h: f32,
         pixel_budget: f32,
     ) -> Result<Option<Vec<(web_sys::GpuBuffer, u32)>>> {
+        // Content-lazy: pipelines compile at the commit that loaded the first
+        // cluster mesh. Between `upload_pages` and that commit, skip — the
+        // zeroed `draw_args` mean the cluster mesh isn't drawn yet, matching
+        // the load transaction's "not drawn until commit" contract.
+        let Some(pipelines) = self.pipelines.as_ref() else {
+            return Ok(None);
+        };
         for state in &self.states {
             if state.cluster_count == 0 {
                 continue;
@@ -555,7 +590,7 @@ impl ClusterLodRenderPass {
                 let cp = ctx.command_encoder.begin_compute_pass(Some(
                     &ComputePassDescriptor::new(Some("Cluster Cut")).into(),
                 ));
-                cp.set_pipeline(ctx.pipelines.compute.get(self.pipelines.cut)?);
+                cp.set_pipeline(ctx.pipelines.compute.get(pipelines.cut)?);
                 cp.set_bind_group(0, state.bind_groups.get_bind_group()?, None)?;
                 cp.dispatch_workgroups(
                     ClusterLodBuffers::dispatch_groups(state.cluster_count),
@@ -570,7 +605,7 @@ impl ClusterLodRenderPass {
                 let cp = ctx.command_encoder.begin_compute_pass(Some(
                     &ComputePassDescriptor::new(Some("Cluster Compaction")).into(),
                 ));
-                cp.set_pipeline(ctx.pipelines.compute.get(self.pipelines.compaction)?);
+                cp.set_pipeline(ctx.pipelines.compute.get(pipelines.compaction)?);
                 cp.set_bind_group(0, state.compaction_bind_groups.get_bind_group()?, None)?;
                 cp.dispatch_workgroups(
                     ClusterLodBuffers::dispatch_groups(state.cluster_count),

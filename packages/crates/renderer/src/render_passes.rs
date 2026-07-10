@@ -124,16 +124,19 @@ pub struct RenderPasses {
     pub material_opaque: MaterialOpaqueRenderPass,
     pub material_transparent: MaterialTransparentRenderPass,
     pub effects: EffectsRenderPass,
-    /// COD/Jimenez mip-pyramid bloom pass. Always present; builds a bloom
-    /// pyramid from the HDR composite and writes the wide glow into the
-    /// full-res `bloom` render texture the effects pass samples. The
-    /// per-frame `render()` / `ensure_size` wiring lives in `render.rs`.
-    pub bloom: BloomRenderPass,
-    /// Screen-space reflections. Self-contained like bloom; runs after the
-    /// transparent pass / MSAA resolve (single-sample color source) and before
-    /// bloom, gated per-frame on `post_processing.ssr.enabled` (records +
-    /// allocates nothing when off).
-    pub ssr: SsrRenderPass,
+    /// COD/Jimenez mip-pyramid bloom pass. LAZY: `None` until
+    /// `post_processing.bloom` is on — built at boot only when the builder's
+    /// config enables bloom, otherwise compiled by `set_post_processing` on
+    /// the first `bloom: true` flip (awaited there, so the next frame
+    /// dispatches without further compiles). The per-frame `render()` /
+    /// `ensure_size` wiring lives in `render.rs` and skips when `None`.
+    pub bloom: Option<BloomRenderPass>,
+    /// Screen-space reflections. LAZY like bloom: `None` until
+    /// `post_processing.ssr.enabled` — built at boot only when the builder's
+    /// config enables SSR, otherwise compiled by `set_post_processing` on the
+    /// first enable. Kept `Some` after a later disable (targets shrink back to
+    /// 1×1; `set_anti_aliasing` keeps the layouts fresh while it exists).
+    pub ssr: Option<SsrRenderPass>,
     pub display: DisplayRenderPass,
 }
 
@@ -227,23 +230,20 @@ pub struct RenderPassesDescriptors {
     pub render_pipeline_cache_keys: Vec<RenderPipelineCacheKey>,
     ranges: RenderPassesRanges,
     per_pass_descs: RenderPassesPerPassDescs,
-    /// Built outside the cross-renderer pool — the composite uses
-    /// an inline WGSL source that bypasses the shared shader cache
-    /// and is already batched via `create_render_pipeline_promise` +
-    /// `try_join` internally. Only present when `features.decals`.
-    material_decal_composite: Option<material_decal::composite::MaterialDecalComposite>,
     /// Tiny initial HZB texture allocated against `ctx.gpu` during
     /// `describe_pipelines` so `from_resolved` doesn't need a gpu
     /// handle to assemble the typed `HzbRenderPass`. Per-frame
     /// resize in `render.rs` reallocates against the live viewport.
     hzb_texture: Option<hzb::texture::HzbTexture>,
     /// Fully-constructed bloom pass. Built in `describe_pipelines` (which has
-    /// the gpu handle + async ctx) and moved straight into `from_resolved`'s
-    /// output — bloom self-contains its own bind groups + pipelines rather
-    /// than joining the cross-renderer pool.
-    bloom: BloomRenderPass,
-    /// Fully-constructed SSR pass — self-contained like bloom.
-    ssr: SsrRenderPass,
+    /// the gpu handle + async ctx) ONLY when the boot config enables bloom,
+    /// and moved straight into `from_resolved`'s output — bloom self-contains
+    /// its own bind groups + pipelines rather than joining the cross-renderer
+    /// pool.
+    bloom: Option<BloomRenderPass>,
+    /// Fully-constructed SSR pass — self-contained like bloom, and lazy on
+    /// `ssr.enabled` the same way.
+    ssr: Option<SsrRenderPass>,
 }
 
 impl RenderPassesDescriptors {
@@ -276,8 +276,6 @@ struct RenderPassesRanges {
     classify: Range<usize>,
     light_culling: Range<usize>,
     material_prep: Range<usize>,
-    decal: Option<Range<usize>>,
-    decal_classify: Option<Range<usize>>,
     opaque: Range<usize>,
 }
 
@@ -303,7 +301,6 @@ struct RenderPassesPerPassDescs {
     /// Slot identity per HZB pipeline pool entry. Lazy-pool: the
     /// pool has 2 entries (1 seed + 1 reduce) for the live config.
     hzb_slot: Vec<crate::render_passes::hzb::pipeline::HzbPipelineSlot>,
-    decal_is_msaa: Option<Vec<bool>>,
 }
 
 impl RenderPasses {
@@ -359,8 +356,6 @@ impl RenderPasses {
         use crate::render_passes::geometry::pipeline::GeometryPipelines;
         use crate::render_passes::hzb::pipeline::HzbPipelines;
         use crate::render_passes::material_classify::pipeline::MaterialClassifyPipelines;
-        use crate::render_passes::material_decal::classify::pipeline::DecalClassifyPipelines;
-        use crate::render_passes::material_decal::pipeline::MaterialDecalPipelines;
         use crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines;
         use crate::render_passes::occlusion::compaction::CompactionPipeline;
         use crate::render_passes::occlusion::pipeline::OcclusionPipelines;
@@ -456,12 +451,14 @@ impl RenderPasses {
         // eagerly inside their `new()` (sequential single-pipeline awaits);
         // the prep megashader alone was ~2.6s of cold boot.
         let light_culling_bg = LightCullingBindGroups::new(ctx).await?;
-        // Cluster-LOD cut pass (Phase B). Eager + gated; creating its pipeline
-        // validates `cluster_cut.wgsl` on-device. Buffers/bind-group instance
-        // come when a cluster mesh loads.
+        // Cluster-LOD cut pass (Phase B). Gated + LAZY (class (c)): only the
+        // bind-group layout prototypes are built here; the cut + compaction
+        // pipelines compile at the first commit with a resident cluster mesh
+        // (`ensure_config_pipelines` → `ensure_pipelines_compiled`), which is
+        // also where `cluster_cut.wgsl` gets its on-device validation.
         #[cfg(feature = "lod")]
         let cluster_lod = if features.virtual_geometry {
-            Some(ClusterLodRenderPass::new(ctx).await?)
+            Some(ClusterLodRenderPass::new(ctx)?)
         } else {
             None
         };
@@ -504,6 +501,31 @@ impl RenderPasses {
         // Collect every shader cache key the pipeline-pool phase
         // will need. The orchestrator concatenates this onto the
         // cross-renderer shader pool — see `AwsmRendererBuilder::build`.
+        //
+        // ── Pass-family compile classification (axis 1, docs/plans/006) ──
+        // (a) UNIVERSAL, in this pool: geometry (active MSAA branch only),
+        //     light_culling, material_prep (active branch), material_classify
+        //     (first-party bucket baseline), material_opaque (empty kernel —
+        //     first-party material kernels are scene-lazy via
+        //     `ensure_scene_pipelines`). Effects + display join the pool in
+        //     `AwsmRendererBuilder::build` (config-keyed variants only).
+        // (b) FEATURE-GATED + ALREADY LAZY (not in this pool): picker (first
+        //     `pick()`), lines (first `add_line_*`), shadow caster + EVSM
+        //     (first shadow-casting light), masked / custom-vertex geometry +
+        //     shadow variant pools (first such material), transparent
+        //     (per-mesh at load), opaque edge-resolve (scheduler),
+        //     inactive-MSAA branches of geometry/prep (set_anti_aliasing).
+        // (c) FEATURE/CONFIG-GATED, CONTENT-LAZY (formerly eager; not in this
+        //     pool): bloom + SSR (set_post_processing / boot config —
+        //     self-contained passes below), decal + decal-classify +
+        //     decal-composite (first decal present at a commit —
+        //     `ensure_config_pipelines`), cluster_lod cut/compaction (first
+        //     cluster mesh resident at a commit).
+        // (d) FEATURE-GATED + EAGER BY DESIGN: hzb / occlusion / compaction +
+        //     coverage (gpu_culling / coverage_lod) — the optimization policy
+        //     flips GPU culling per-frame at runtime, so lazy-compiling would
+        //     hitch mid-session; scenes that don't want them disable the
+        //     feature at build time.
         let mut shader_cache_keys: Vec<ShaderCacheKey> = Vec::new();
         // Geometry MSAA-lazy: only the active branch's 3 shader keys
         // at cold-boot. Inactive branch fills on first
@@ -550,15 +572,11 @@ impl RenderPasses {
         if let Some(bg) = coverage_bg_msaa.as_ref() {
             shader_cache_keys.extend(CoveragePipelines::shader_cache_keys(bg));
         }
-        if let Some(bg) = decal_bg.as_ref() {
-            shader_cache_keys.extend(MaterialDecalPipelines::build_shader_cache_keys(ctx, bg)?);
-        }
-        if let Some(bg) = decal_classify_bg.as_ref() {
-            shader_cache_keys.extend(DecalClassifyPipelines::shader_cache_keys(
-                bg,
-                ctx.features.reverse_z,
-            ));
-        }
+        // Decal + decal-classify shader keys are NOT prewarmed (class (c)
+        // above): they compile at the first commit that actually has a decal,
+        // via `ensure_config_pipelines`. Only the bind groups (cheap layout
+        // registrations) are built eagerly so the per-frame recreate arms and
+        // the eventual lazy compile have their layouts ready.
         shader_cache_keys.extend(MaterialOpaquePipelines::build_shader_cache_keys(
             ctx, &opaque_bg,
         )?);
@@ -617,8 +635,6 @@ impl RenderPasses {
         use crate::render_passes::geometry::pipeline::GeometryPipelines;
         use crate::render_passes::hzb::pipeline::HzbPipelines;
         use crate::render_passes::material_classify::pipeline::MaterialClassifyPipelines;
-        use crate::render_passes::material_decal::classify::pipeline::DecalClassifyPipelines;
-        use crate::render_passes::material_decal::pipeline::MaterialDecalPipelines;
         use crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines;
         use crate::render_passes::occlusion::compaction::CompactionPipeline;
         use crate::render_passes::occlusion::pipeline::OcclusionPipelines;
@@ -731,41 +747,15 @@ impl RenderPasses {
             None
         };
 
-        let (decal_range, decal_classify_range, decal_is_msaa) =
-            if let (Some(decal_bg), Some(decal_classify_bg)) = (
-                bindings.decal_bg.as_ref(),
-                bindings.decal_classify_bg.as_ref(),
-            ) {
-                let descs = MaterialDecalPipelines::build_descriptors(ctx, decal_bg).await?;
-                let start = compute_pool.len();
-                let end = start + descs.pipeline_cache_keys.len();
-                compute_pool.extend(descs.pipeline_cache_keys.iter().cloned());
-                let decal_range = start..end;
-                let is_msaa = descs.is_msaa;
-
-                let classify_descs =
-                    DecalClassifyPipelines::build_descriptors(ctx, decal_classify_bg).await?;
-                let start = compute_pool.len();
-                let end = start + classify_descs.pipeline_cache_keys.len();
-                compute_pool.extend(classify_descs.pipeline_cache_keys.iter().cloned());
-                let decal_classify_range = start..end;
-
-                (Some(decal_range), Some(decal_classify_range), Some(is_msaa))
-            } else {
-                (None, None, None)
-            };
+        // Decal + decal-classify pipelines are NOT pooled here (content-lazy —
+        // see the classification comment in `describe_shaders`); they compile
+        // at the first commit with a live decal via `ensure_config_pipelines`.
 
         let opaque_descs =
             MaterialOpaquePipelines::build_descriptors(ctx, &bindings.opaque_bg).await?;
         let opaque_range =
             compute_pool.len()..compute_pool.len() + opaque_descs.pipeline_cache_keys.len();
         compute_pool.extend(opaque_descs.pipeline_cache_keys.iter().cloned());
-
-        // Decal composite — deferred-boot: NOT built here anymore. Its two
-        // inline-WGSL pipelines compile in `ensure_config_pipelines`
-        // (`ensure_decal_composite_compiled`), so build() stays compile-free.
-        let material_decal_composite: Option<material_decal::composite::MaterialDecalComposite> =
-            None;
 
         // HZB texture — tiny initial allocation, recreated against
         // the live viewport on the first frame. Allocated here
@@ -778,15 +768,28 @@ impl RenderPasses {
         };
 
         // Bloom — self-contained (own bind groups + pipelines + params + tiny
-        // initial texture). Built here where the async ctx + gpu handle are
-        // available; moved unchanged into `from_resolved`'s output.
-        let bloom = BloomRenderPass::new(ctx).await?;
+        // initial texture). LAZY: built only when the boot config enables
+        // bloom; otherwise `set_post_processing` compiles it on the first
+        // `bloom: true` flip. Built here (when needed) where the async ctx +
+        // gpu handle are available; moved unchanged into `from_resolved`'s
+        // output.
+        let bloom = if ctx.post_processing.bloom {
+            Some(BloomRenderPass::new(ctx).await?)
+        } else {
+            None
+        };
 
         // SSR — self-contained like bloom (own bind groups + pipeline + params).
-        // Its reflection target lives in RenderTextures; the pass just needs its
-        // bind group recreated once the views exist (via bind_groups.rs). The
-        // trace is the linear-DDA march (`SsrTrace::PRODUCTION`).
-        let ssr = SsrRenderPass::new(ctx).await?;
+        // LAZY on `ssr.enabled` the same way (`set_post_processing` builds it on
+        // first enable). Its reflection target lives in RenderTextures; the pass
+        // just needs its bind group recreated once the views exist (via
+        // bind_groups.rs). The trace is the linear-DDA march
+        // (`SsrTrace::PRODUCTION`).
+        let ssr = if ctx.post_processing.ssr.enabled {
+            Some(SsrRenderPass::new(ctx).await?)
+        } else {
+            None
+        };
 
         Ok(RenderPassesDescriptors {
             bindings,
@@ -802,8 +805,6 @@ impl RenderPasses {
                 classify: classify_range,
                 light_culling: light_culling_range,
                 material_prep: material_prep_range,
-                decal: decal_range,
-                decal_classify: decal_classify_range,
                 opaque: opaque_range,
             },
             per_pass_descs: RenderPassesPerPassDescs {
@@ -814,9 +815,7 @@ impl RenderPasses {
                 opaque_slots: opaque_descs.slots,
                 classify_slot_msaa: classify_descs.slot_msaa,
                 hzb_slot,
-                decal_is_msaa,
             },
-            material_decal_composite,
             hzb_texture,
             bloom,
             ssr,
@@ -840,8 +839,6 @@ impl RenderPasses {
         use crate::render_passes::coverage::pipeline::CoveragePipelines;
         use crate::render_passes::geometry::pipeline::GeometryPipelines;
         use crate::render_passes::hzb::pipeline::HzbPipelines;
-        use crate::render_passes::material_decal::classify::pipeline::DecalClassifyPipelines;
-        use crate::render_passes::material_decal::pipeline::MaterialDecalPipelines;
         use crate::render_passes::material_opaque::pipeline::MaterialOpaquePipelines;
         use crate::render_passes::occlusion::compaction::CompactionPipeline;
         use crate::render_passes::occlusion::pipeline::OcclusionPipelines;
@@ -850,7 +847,6 @@ impl RenderPasses {
             bindings,
             ranges,
             per_pass_descs,
-            material_decal_composite,
             hzb_texture,
             bloom,
             ssr,
@@ -994,34 +990,17 @@ impl RenderPasses {
             ))
         };
 
-        let material_decal = match (
-            decal_bg,
-            ranges.decal,
-            decal_classify_bg,
-            ranges.decal_classify,
-            per_pass_descs.decal_is_msaa,
-        ) {
-            (
-                Some(decal_bg),
-                Some(decal_range),
-                Some(decal_classify_bg),
-                Some(decal_classify_range),
-                Some(decal_is_msaa),
-            ) => Some(MaterialDecalRenderPass {
-                bind_groups: decal_bg,
-                pipelines: MaterialDecalPipelines::from_resolved(
-                    decal_is_msaa,
-                    compute_keys[decal_range].to_vec(),
-                ),
-                // Deferred-boot: compiled by `ensure_decal_composite_compiled`.
-                composite: material_decal_composite,
-                classify_pass: material_decal::classify::render_pass::DecalClassifyRenderPass {
+        // Decal pass: bind groups only — the compute + classify + composite
+        // pipelines are content-lazy (`None` until `ensure_config_pipelines`
+        // sees a live decal). The render path warn-skips while missing.
+        let material_decal = match (decal_bg, decal_classify_bg) {
+            (Some(decal_bg), Some(decal_classify_bg)) => Some(MaterialDecalRenderPass::from_parts(
+                decal_bg,
+                material_decal::classify::render_pass::DecalClassifyRenderPass {
                     bind_groups: decal_classify_bg,
-                    pipelines: DecalClassifyPipelines::from_resolved(
-                        compute_keys[decal_classify_range].to_vec(),
-                    ),
+                    pipelines: None,
                 },
-            }),
+            )),
             _ => None,
         };
 

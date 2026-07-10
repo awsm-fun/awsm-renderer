@@ -158,10 +158,17 @@ impl AwsmRenderer {
         // passes on the MSAA structural flip the same way.
         let ssr_pass_rebuild_needed = self.post_processing.ssr.temporal != pp.ssr.temporal
             || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale;
+        // LAZY SSR (axis 1): the pass is `None` until the first enable — a
+        // session that never turns SSR on compiles neither the trace compute
+        // nor the composite render pipeline. Build it now when enabling with
+        // no pass yet; also rebuild an EXISTING pass on the structural axes
+        // (see the comment above). Both go through the same construction.
+        let ssr_pass_build_needed = (pp.ssr.enabled && self.render_passes.ssr.is_none())
+            || (ssr_pass_rebuild_needed && self.render_passes.ssr.is_some());
         self.post_processing = pp;
 
-        if ssr_pass_rebuild_needed {
-            // Reconstruct the SSR pass against the NEW post-processing state
+        if ssr_pass_build_needed {
+            // (Re)construct the SSR pass against the NEW post-processing state
             // (`self.post_processing` was just assigned above, so `SsrRenderPass::new`
             // reads the new `temporal`/`resolution_scale`). Same `RenderPassInitContext`
             // shape the cold-boot + `set_anti_aliasing` paths build. `render_passes`
@@ -182,10 +189,40 @@ impl AwsmRenderer {
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
             };
             let ssr = crate::render_passes::ssr::render_pass::SsrRenderPass::new(&mut ctx).await?;
-            self.render_passes.ssr = ssr;
+            self.render_passes.ssr = Some(ssr);
             // The reflection / history targets are sized from `temporal` +
             // `resolution_scale` too, so force `views()` to re-evaluate their
             // sizes and rebind the freshly-built SSR bind group against them.
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+        }
+
+        // LAZY bloom (axis 1): mirrors SSR — the mip-pyramid pass is `None`
+        // until the first `bloom: true`, so a session that never enables bloom
+        // compiles none of its 3 compute pipelines. Built awaited here, so the
+        // next frame dispatches without further compiles; the
+        // `TextureViewRecreate` mark makes the next frame's bind-group drain
+        // build its groups against the live views (the per-frame `ensure_size`
+        // then grows the 1×1 pyramid, marking again — same flow a boot-enabled
+        // bloom uses).
+        if self.post_processing.bloom && self.render_passes.bloom.is_none() {
+            let mut ctx = crate::render_passes::RenderPassInitContext {
+                gpu: &self.gpu,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                render_texture_formats: &mut self.render_textures.formats,
+                textures: &mut self.textures,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
+            };
+            let bloom =
+                crate::render_passes::bloom::render_pass::BloomRenderPass::new(&mut ctx).await?;
+            self.render_passes.bloom = Some(bloom);
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
         }

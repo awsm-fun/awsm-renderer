@@ -696,24 +696,33 @@ impl BindGroups {
                         .recreate_texture_pool(&ctx)?;
                 }
                 FunctionToCall::Bloom => {
-                    // Split-borrow: bind_groups (mut) vs texture/params (shared).
-                    let crate::render_passes::bloom::render_pass::BloomRenderPass {
-                        bind_groups,
-                        texture,
-                        params,
-                        ..
-                    } = &mut render_passes.bloom;
-                    bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
+                    // Lazy pass: `None` until bloom is first enabled — its
+                    // eventual construction marks `TextureViewRecreate`, so
+                    // this arm runs against the live views right after.
+                    if let Some(bloom) = render_passes.bloom.as_mut() {
+                        // Split-borrow: bind_groups (mut) vs texture/params (shared).
+                        let crate::render_passes::bloom::render_pass::BloomRenderPass {
+                            bind_groups,
+                            texture,
+                            params,
+                            ..
+                        } = bloom;
+                        bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
+                    }
                 }
                 FunctionToCall::Ssr => {
-                    let crate::render_passes::ssr::render_pass::SsrRenderPass {
-                        bind_groups,
-                        params,
-                        composite,
-                        ..
-                    } = &mut render_passes.ssr;
-                    bind_groups.recreate(&ctx, &params.gpu_buffer)?;
-                    composite.recreate(&ctx)?;
+                    // Lazy pass: `None` until SSR is first enabled (same flow
+                    // as bloom above).
+                    if let Some(ssr) = render_passes.ssr.as_mut() {
+                        let crate::render_passes::ssr::render_pass::SsrRenderPass {
+                            bind_groups,
+                            params,
+                            composite,
+                            ..
+                        } = ssr;
+                        bind_groups.recreate(&ctx, &params.gpu_buffer)?;
+                        composite.recreate(&ctx)?;
+                    }
                 }
                 FunctionToCall::Effects => {
                     render_passes.effects.bind_groups.recreate(&ctx)?;

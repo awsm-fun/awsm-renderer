@@ -124,6 +124,30 @@ impl MaterialDecalPipelines {
         ])
     }
 
+    /// Sync descriptor build for the render-loop kick path
+    /// ([`MaterialDecalRenderPass::kick_compile`](crate::render_passes::material_decal::render_pass::MaterialDecalRenderPass::kick_compile)):
+    /// creates the two shader modules WITHOUT awaiting validation
+    /// (`ensure_keys_sync_skip_validate` — any error surfaces through the
+    /// pipeline-creation promises, same trade-off the boot pool takes) and
+    /// returns the compute pipeline cache keys + their MSAA slot flags.
+    pub fn build_cache_keys_sync(
+        ctx: &mut RenderPassInitContext<'_>,
+        bind_groups: &MaterialDecalBindGroups,
+    ) -> Result<(Vec<ComputePipelineCacheKey>, Vec<bool>)> {
+        let shader_descs = Self::shader_descs(ctx, bind_groups)?;
+        let shader_keys = ctx.shaders.ensure_keys_sync_skip_validate(
+            ctx.gpu,
+            shader_descs.iter().map(|d| d.shader_cache.clone()),
+        )?;
+        let mut cache_keys = Vec::with_capacity(shader_descs.len());
+        let mut is_msaa = Vec::with_capacity(shader_descs.len());
+        for (d, shader_key) in shader_descs.iter().zip(shader_keys) {
+            cache_keys.push(ComputePipelineCacheKey::new(shader_key, d.layout_key));
+            is_msaa.push(d.is_msaa);
+        }
+        Ok((cache_keys, is_msaa))
+    }
+
     /// Shader cache keys this pass would compile.
     pub fn build_shader_cache_keys(
         ctx: &mut RenderPassInitContext<'_>,
