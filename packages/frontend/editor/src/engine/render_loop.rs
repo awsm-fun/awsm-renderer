@@ -405,13 +405,19 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
             }
         };
 
+    // Scene cameras follow the renderer's depth convention (003) exactly like
+    // the free camera — a forward-Z projection on a reverse-Z renderer would
+    // invert every depth test.
+    let convention = awsm_renderer::depth_convention::DepthConvention {
+        reverse_z: crate::engine::context::reverse_z_flag(),
+    };
     let projection = match projection_params {
         CameraProjectionParams::Perspective { fov_y_rad } => {
-            Mat4::perspective_rh(fov_y_rad, aspect, near, far)
+            convention.perspective(fov_y_rad, aspect, near, far)
         }
         CameraProjectionParams::Orthographic { half_height } => {
             let half_width = half_height * aspect;
-            Mat4::orthographic_rh(
+            convention.orthographic(
                 -half_width,
                 half_width,
                 -half_height,

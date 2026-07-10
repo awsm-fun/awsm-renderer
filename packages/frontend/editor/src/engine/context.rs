@@ -155,6 +155,9 @@ pub async fn create_context(canvas: web_sys::HtmlCanvasElement) -> EditorResult<
 
     let camera = {
         let mut cam = Camera::new_default_cube(16.0 / 9.0);
+        // Depth convention (003): the viewport camera's projections must match
+        // the renderer's reverse_z feature — same flag source as editor_features.
+        cam.set_reverse_z(reverse_z_flag());
         cam.set_aperture(super::config::CONFIG.camera_aperture);
         cam.set_focus_distance(super::config::CONFIG.camera_focus_distance);
         Arc::new(std::sync::Mutex::new(cam))

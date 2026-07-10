@@ -22,6 +22,7 @@ impl AwsmRenderer {
             &self.render_textures,
             current_width as f32,
             current_height as f32,
+            self.features.depth(),
         )?;
 
         Ok(())
@@ -55,7 +56,10 @@ impl CameraMatrices {
     /// common case, so a consumer doesn't hand-roll glam matrices. `fov_y` is in
     /// radians; `aspect` = width / height. Depth-of-field defaults to focusing on
     /// `target` at f/16 (tweak `focus_distance` / `aperture` afterward if needed).
+    /// `convention` MUST match the renderer's `features.depth()` — a forward-Z
+    /// projection on a reverse-Z renderer inverts every depth test.
     pub fn perspective(
+        convention: crate::depth_convention::DepthConvention,
         eye: Vec3,
         target: Vec3,
         up: Vec3,
@@ -66,7 +70,7 @@ impl CameraMatrices {
     ) -> Self {
         Self {
             view: Mat4::look_at_rh(eye, target, up),
-            projection: Mat4::perspective_rh(fov_y, aspect, near, far),
+            projection: convention.perspective(fov_y, aspect, near, far),
             position_world: eye,
             focus_distance: (target - eye).length().max(0.001),
             aperture: 16.0,
@@ -158,6 +162,7 @@ impl CameraBuffer {
         render_textures: &RenderTextures,
         screen_width: f32,
         screen_height: f32,
+        convention: crate::depth_convention::DepthConvention,
     ) -> Result<()> {
         let mut camera_matrices = camera_matrices_orig.clone();
 
@@ -204,7 +209,7 @@ impl CameraBuffer {
         let inv_projection = camera_matrices.projection.inverse();
         let inv_view_projection = camera_matrices.inv_view_projection();
         let inv_view = camera_matrices.view.inverse();
-        let frustum_rays = compute_view_frustum_rays(inv_projection);
+        let frustum_rays = compute_view_frustum_rays(inv_projection, convention.near_ndc_z());
 
         // let s = format!("CameraBuffer Update, inv_projection: {inv_projection:?} inv_view_projection: {inv_view_projection:?} inv_view: {inv_view:?} frustum rays: {frustum_rays:?}");
 
@@ -344,15 +349,17 @@ fn halton(mut index: u32, base: u32) -> f32 {
 /// **NOT for frustum culling** - culling needs 6 frustum planes extracted from view-proj matrix.
 ///
 /// Order: [0]=bottom-left, [1]=bottom-right, [2]=top-left, [3]=top-right
-fn compute_view_frustum_rays(inv_projection: Mat4) -> [Vec4; 4] {
-    // Reproject the clip-space corners of the near plane back into view space. These serve as
+fn compute_view_frustum_rays(inv_projection: Mat4, near_ndc_z: f32) -> [Vec4; 4] {
+    // Reproject the clip-space corners of the NEAR plane back into view space. These serve as
     // canonical ray directions that the compute shader can bilinearly interpolate per pixel.
-    // Use z=0 (near plane in WebGPU NDC), not z=1 (far plane) to avoid infinities
+    // The near plane's NDC z is convention-dependent (forward-Z 0, reverse-Z 1) — the FAR
+    // plane must never be used: it sits at infinity under infinite-far reverse-Z, where
+    // unprojection yields w=0 → NaN rays.
     let ndc_corners = [
-        Vec4::new(-1.0, -1.0, 0.0, 1.0),
-        Vec4::new(1.0, -1.0, 0.0, 1.0),
-        Vec4::new(-1.0, 1.0, 0.0, 1.0),
-        Vec4::new(1.0, 1.0, 0.0, 1.0),
+        Vec4::new(-1.0, -1.0, near_ndc_z, 1.0),
+        Vec4::new(1.0, -1.0, near_ndc_z, 1.0),
+        Vec4::new(-1.0, 1.0, near_ndc_z, 1.0),
+        Vec4::new(1.0, 1.0, near_ndc_z, 1.0),
     ];
 
     let mut rays = [Vec4::ZERO; 4];

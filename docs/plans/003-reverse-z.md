@@ -51,10 +51,19 @@ auto_clip_planes.
       geometry×4 + transparent pipeline builders, lines strict-compare chain,
       geometry+HUD clears, web-shared grid. Shadows pinned FORWARD until stage 7.
       Flag-off browser-verified identical.
-- [ ] Stage 2: finite reverse-Z projection builders (camera.rs:69 + frustum-ray
-      reconstruction :323-328; editor render_loop persp/ortho; web-shared
-      free_camera persp/ortho; model-tests projections; examples) + flag-ON
-      single-opaque-scene visual check.
+- [x] Stage 2 (this commit): DepthConvention::{perspective, orthographic,
+      near_ndc_z} helpers (+ matrix unit tests proving near→1/far→0 + ordering
+      flip); renderer CameraMatrices::perspective takes the convention;
+      compute_view_frustum_rays unprojects at the convention's near NDC z (z=0
+      is the FAR plane under reverse — NaN rays under stage-8 infinite-far);
+      web-shared FreeCamera.set_reverse_z + projection_matrix(convention);
+      editor scene-camera matrices + viewport camera init + thumbnail camera
+      wired to the ?reversez flag. model-tests + examples deliberately stay
+      forward-Z (they don't opt into the feature; the RendererFeatures default
+      remains false for library consumers). Flag-ON browser-verified: 3-object
+      overlap scene renders with CORRECT depth ordering (front sphere occludes
+      rear sphere occludes box; grid + axis lines correct; zero console
+      errors) — occlusion culling did not mis-cull this scene pre-stage-3.
 - [ ] Stage 3: HZB + occlusion four coupled flips (seed/reduce min↔max, cull init
       + compare) — flag-threaded WGSL template axis.
 - [ ] Stage 4: frustum extraction both crates + fix stale cull.wgsl:74 comment.

@@ -79,6 +79,50 @@ impl DepthConvention {
         }
     }
 
+    /// The NDC z of the NEAR plane under this convention (forward → 0,
+    /// reverse → 1). Screen-space reconstruction that unprojects "at the near
+    /// plane" must use this, not a literal 0 — under reverse-Z, z=0 is the FAR
+    /// plane (at infinity once stage 8 lands, where unprojecting it yields
+    /// w=0 → NaN rays).
+    pub fn near_ndc_z(self) -> f32 {
+        if self.reverse_z {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Right-handed perspective projection under this convention ([0,1] NDC
+    /// depth). Finite reverse-Z = the standard matrix with near/far swapped —
+    /// maps near→1, far→0. Stage 8 upgrades the reverse arm to
+    /// `perspective_infinite_reverse_rh`.
+    pub fn perspective(self, fov_y: f32, aspect: f32, near: f32, far: f32) -> glam::Mat4 {
+        if self.reverse_z {
+            glam::Mat4::perspective_rh(fov_y, aspect, far, near)
+        } else {
+            glam::Mat4::perspective_rh(fov_y, aspect, near, far)
+        }
+    }
+
+    /// Right-handed orthographic projection under this convention. Ortho is
+    /// inherently finite — reverse-Z just swaps near/far (near→1, far→0).
+    #[allow(clippy::too_many_arguments)]
+    pub fn orthographic(
+        self,
+        left: f32,
+        right: f32,
+        bottom: f32,
+        top: f32,
+        near: f32,
+        far: f32,
+    ) -> glam::Mat4 {
+        if self.reverse_z {
+            glam::Mat4::orthographic_rh(left, right, bottom, top, far, near)
+        } else {
+            glam::Mat4::orthographic_rh(left, right, bottom, top, near, far)
+        }
+    }
+
     /// `true` when depth `a` is closer to the camera than `b`.
     pub fn is_closer(self, a: f32, b: f32) -> bool {
         if self.reverse_z {
@@ -109,5 +153,38 @@ mod tests {
         assert!(r.is_closer(0.9, 0.1) && !r.is_closer(0.1, 0.9));
         assert_eq!(f.nearest_value(), 0.0);
         assert_eq!(r.nearest_value(), 1.0);
+        assert_eq!(f.near_ndc_z(), 0.0);
+        assert_eq!(r.near_ndc_z(), 1.0);
+    }
+
+    /// Project a point at a given view-space depth and return NDC z.
+    fn ndc_z(proj: glam::Mat4, view_z: f32) -> f32 {
+        let clip = proj * glam::Vec4::new(0.0, 0.0, view_z, 1.0);
+        clip.z / clip.w
+    }
+
+    #[test]
+    fn reverse_perspective_maps_near_to_one_far_to_zero() {
+        let f = DepthConvention { reverse_z: false };
+        let r = DepthConvention { reverse_z: true };
+        let (near, far) = (0.5, 100.0);
+        let pf = f.perspective(1.0, 1.0, near, far);
+        let pr = r.perspective(1.0, 1.0, near, far);
+        // RH view space looks down -Z: the near plane is at view z = -near.
+        assert!((ndc_z(pf, -near) - 0.0).abs() < 1e-5);
+        assert!((ndc_z(pf, -far) - 1.0).abs() < 1e-5);
+        assert!((ndc_z(pr, -near) - 1.0).abs() < 1e-5);
+        assert!((ndc_z(pr, -far) - 0.0).abs() < 1e-5);
+        // Midpoint ordering flips: closer = larger depth under reverse.
+        assert!(ndc_z(pr, -1.0) > ndc_z(pr, -10.0));
+        assert!(ndc_z(pf, -1.0) < ndc_z(pf, -10.0));
+    }
+
+    #[test]
+    fn reverse_orthographic_maps_near_to_one_far_to_zero() {
+        let r = DepthConvention { reverse_z: true };
+        let po = r.orthographic(-1.0, 1.0, -1.0, 1.0, 0.5, 100.0);
+        assert!((ndc_z(po, -0.5) - 1.0).abs() < 1e-5);
+        assert!((ndc_z(po, -100.0) - 0.0).abs() < 1e-5);
     }
 }

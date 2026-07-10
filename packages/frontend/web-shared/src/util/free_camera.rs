@@ -78,6 +78,10 @@ pub struct FreeCamera {
     /// assumed bounds. `Some` pins both planes; the auto refresh still runs
     /// underneath but is masked at matrix build.
     clip_override: Option<(f32, f32)>,
+    /// Depth convention for the projection matrices — MUST match the
+    /// renderer's `features.reverse_z` (003). Set via [`Self::set_reverse_z`]
+    /// right after construction; defaults to forward-Z.
+    reverse_z: bool,
 }
 
 impl FreeCamera {
@@ -98,6 +102,7 @@ impl FreeCamera {
             aperture: 5.6,
             focus_distance: 10.0,
             clip_override: None,
+            reverse_z: false,
         }
     }
 
@@ -111,7 +116,16 @@ impl FreeCamera {
         Self::new_aabb(Aabb::new_cube(40.0, 40.0), aspect, 1.1)
     }
 
+    /// Set the depth convention (003) — call right after construction, matching
+    /// the renderer's `features.reverse_z`.
+    pub fn set_reverse_z(&mut self, reverse_z: bool) {
+        self.reverse_z = reverse_z;
+    }
+
     pub fn matrices(&self) -> CameraMatrices {
+        let convention = awsm_renderer::depth_convention::DepthConvention {
+            reverse_z: self.reverse_z,
+        };
         let projection = match self.mode {
             ProjectionMode::Perspective => {
                 let mut p = self.perspective.clone();
@@ -119,7 +133,7 @@ impl FreeCamera {
                     p.near = near;
                     p.far = far;
                 }
-                p.projection_matrix()
+                p.projection_matrix(convention)
             }
             ProjectionMode::Orthographic => {
                 let mut p = self.orthographic.clone();
@@ -127,7 +141,7 @@ impl FreeCamera {
                     p.near = near;
                     p.far = far;
                 }
-                p.projection_matrix()
+                p.projection_matrix(convention)
             }
         };
         CameraMatrices {
@@ -428,8 +442,11 @@ impl CameraOrthographicProjection {
         self.refresh_clip_planes(view, aabb, margin);
     }
 
-    pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::orthographic_rh(
+    pub fn projection_matrix(
+        &self,
+        convention: awsm_renderer::depth_convention::DepthConvention,
+    ) -> Mat4 {
+        convention.orthographic(
             self.left,
             self.right,
             self.bottom,
@@ -487,8 +504,11 @@ impl CameraPerspectiveProjection {
         self.far = far;
     }
 
-    pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, self.aspect, self.near, self.far)
+    pub fn projection_matrix(
+        &self,
+        convention: awsm_renderer::depth_convention::DepthConvention,
+    ) -> Mat4 {
+        convention.perspective(self.fov_y, self.aspect, self.near, self.far)
     }
 }
 

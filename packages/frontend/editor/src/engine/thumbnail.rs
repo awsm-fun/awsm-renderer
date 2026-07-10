@@ -137,11 +137,12 @@ async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<Arc<Gen>, String> {
     let renderer = preview::build_renderer(canvas.clone()).await?;
     let renderer = Arc::new(xutex::AsyncMutex::new(renderer));
     // Frame tightly on the 0.85-radius preview sphere (not the 80 m default cube).
-    let camera = Arc::new(Mutex::new(Camera::new_aabb(
-        Aabb::new_cube(1.8, 1.8),
-        1.0,
-        1.4,
-    )));
+    let camera = Arc::new(Mutex::new({
+        let mut cam = Camera::new_aabb(Aabb::new_cube(1.8, 1.8), 1.0, 1.4);
+        // Depth convention (003): thumbnails render through the main renderer.
+        cam.set_reverse_z(crate::engine::context::reverse_z_flag());
+        cam
+    }));
 
     let mesh = {
         let mut r = renderer.lock().await;
